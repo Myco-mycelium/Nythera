@@ -1,0 +1,52 @@
+site_name: Nythera
+site_description: Documentation for the Nythera operating system project
+repo_url: https://github.com/your-org/Nythera
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: black
+      accent: indigo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - content.code.copy
+
+nav:
+  - Home: 00-platform/000-THE_NYTHERA_MANIFEST.md
+  - Platform:
+      - Manifest: 00-platform/000-THE_NYTHERA_MANIFEST.md
+      - Constitution: 00-platform/001-PROJECT_CONSTITUTION.md
+      - AI Collaboration Protocol: 00-platform/002-AI_COLLABORATION_PROTOCOL.md
+      - Engineering Handbook: 00-platform/003-ENGINEERING_HANDBOOK.md
+      - Specification Index: 00-platform/004-SPECIFICATION_INDEX.md
+      - ADR Index: 00-platform/005-ADR_INDEX.md
+      - Glossary: 00-platform/006-GLOSSARY.md
+      - Roadmap: 00-platform/007-PROJECT_ROADMAP.md
+      - Repository State: 00-platform/REPOSITORY_STATE.md
+      - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
+  - Tutorials: tutorials/
+  - How-To Guides: how-to/
+  - Reference:
+      - ADRs: reference/adr/
+      - NPS: reference/nps/
+      - ABI: reference/abi/
+      - API: reference/api/
+      - Package Format: reference/package-format/
+      - Capability Registry: reference/capability-registry/
+      - Object Registry: reference/object-registry/
+  - Explanation: explanation/
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight
+
+plugins:
+  - search

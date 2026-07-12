@@ -1,0 +1,21 @@
+# Build artifacts
+/build/
+/dist/
+*.o
+*.obj
+*.img
+*.nygi
+
+# Documentation site build
+/site/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python (MkDocs)
+__pycache__/
+*.pyc
+.venv/
