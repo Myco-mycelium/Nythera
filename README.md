@@ -53,9 +53,13 @@ for the full standard.
 
 ## Project Status
 
-Milestone 1 — Repository Bootstrap. See
+Milestones 1–4 complete (Repository Bootstrap, Platform Constitution, Core
+Architecture, Storage). Milestone 5 (Runtime) not yet started. See
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
+
+All subsystems in [`NPC-008 Subsystem Owners`](docs/00-platform/SUBSYSTEM_OWNERS.md)
+are currently unassigned pending contributors.
 
 ## Contributing
 

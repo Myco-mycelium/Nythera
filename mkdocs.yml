@@ -26,6 +26,7 @@ nav:
       - ADR Index: 00-platform/005-ADR_INDEX.md
       - Glossary: 00-platform/006-GLOSSARY.md
       - Roadmap: 00-platform/007-PROJECT_ROADMAP.md
+      - Subsystem Owners: 00-platform/SUBSYSTEM_OWNERS.md
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
   - Tutorials: tutorials/

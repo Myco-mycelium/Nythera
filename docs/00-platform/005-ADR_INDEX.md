@@ -8,6 +8,7 @@ owners:
   - Nythera Architecture
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
 ---

@@ -6,6 +6,7 @@ status: Proposed
 owners: [Nythera Architecture]
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0002]
 ---
 

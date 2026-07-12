@@ -8,6 +8,7 @@ owners:
   - Nythera Architecture
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NTM-000, NPC-003]
 ---
@@ -20,7 +21,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M4 — Storage** (in progress). M1 and M3 complete.
+**M2 — Platform Constitution** complete. M1, M3, M4 also complete. M5 (Runtime) not yet started.
 
 ## Roadmap
 
@@ -39,8 +40,9 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [x] CONTRIBUTING.md and LICENSE
 
 ### M2 — Platform Constitution
-- [ ] Move NPC-001/002/003 from Draft to Accepted after Architecture Group review
-- [ ] Establish subsystem ownership list
+- [x] Move NPC-001/002/003 from Draft to Accepted after Architecture Group review
+- [x] Establish subsystem ownership list (NPC-008 `SUBSYSTEM_OWNERS.md` — all subsystems currently Unassigned, pending contributors)
+- [x] Retroactively add `ai_assisted: true` to all existing normative documents (NPC-002 §3.1 compliance)
 
 ### M3 — Core Architecture
 - [x] Kernel base selection ADR (ADR-0006 — hybrid microkernel, Proposed)

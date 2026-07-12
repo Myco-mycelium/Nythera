@@ -1,13 +1,14 @@
 ---
 title: Engineering Handbook
 document_id: NPC-003
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 owners:
   - Nythera Architecture
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 review_cycle: Semiannual
 depends_on: [NTM-000, NPC-001]
 ---
@@ -146,6 +147,7 @@ reviewed by the Architecture Group per NPC-001 §3.1.
 | Version | Date       | Change                  |
 |---------|------------|--------------------------|
 | 1.0.0   | 2026-07-12 | Initial draft for review |
+| 1.0.1   | 2026-07-12 | Architecture Group review completed. Status: Draft → Accepted (Milestone 2). |
 
 ---
 **End of Document**

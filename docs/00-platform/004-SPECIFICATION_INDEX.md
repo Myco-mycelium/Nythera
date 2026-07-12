@@ -1,13 +1,14 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.2.0
+version: 1.3.0
 status: Draft
 classification: Reference
 owners:
   - Nythera Architecture
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
 ---
@@ -23,13 +24,14 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ID | Title | Status | Version |
 |----|-------|--------|---------|
 | NTM-000 | The Nythera Manifest | Accepted | 1.0.0 |
-| NPC-001 | Project Constitution | Draft | 1.0.0 |
-| NPC-002 | AI Collaboration Protocol | Draft | 1.0.0 |
-| NPC-003 | Engineering Handbook | Draft | 1.0.0 |
-| NPC-004 | Specification Index (this document) | Draft | 1.0.0 |
-| NPC-005 | ADR Index | Draft | 1.0.0 |
+| NPC-001 | Project Constitution | Accepted | 1.0.1 |
+| NPC-002 | AI Collaboration Protocol | Accepted | 1.0.1 |
+| NPC-003 | Engineering Handbook | Accepted | 1.0.1 |
+| NPC-004 | Specification Index (this document) | Draft | 1.3.0 |
+| NPC-005 | ADR Index | Draft | 1.2.0 |
 | NPC-006 | Glossary | Draft | 1.0.0 |
 | NPC-007 | Project Roadmap | Draft | 1.0.0 |
+| NPC-008 | Subsystem Owners | Draft | 1.0.0 |
 
 ## Architecture Decision Records
 
@@ -81,6 +83,7 @@ Runtime, security, and gaming-hub specifications remain to be drafted
 | 1.0.0   | 2026-07-12 | Initial index at repository bootstrap |
 | 1.1.0   | 2026-07-12 | Add ADR-0006 and NPS-001..003 (Core Architecture, M3) |
 | 1.2.0   | 2026-07-12 | Add ADR-0007 and NPS-004..006 (Storage, M4) |
+| 1.3.0   | 2026-07-12 | Accept NPC-001/002/003 (Draft → Accepted); add NPC-008 Subsystem Owners (Milestone 2) |
 
 ---
 **End of Document**

@@ -1,13 +1,14 @@
 ---
 title: Project Constitution
 document_id: NPC-001
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 owners:
   - Nythera Architecture
 created: 2026-07-12
 updated: 2026-07-12
+ai_assisted: true
 review_cycle: Annual
 depends_on: [NTM-000]
 ---
@@ -45,8 +46,11 @@ Architecture Decision Record (ADR) that alters a cross-cutting subsystem
 (kernel, filesystem, security model, package format, UI shell).
 
 ### 3.2 Subsystem Owners
-Each subsystem defined in the `SPECIFICATION_INDEX` **MUST** have at least one
-named owner responsible for its specifications and reference implementation.
+Each subsystem enumerated in `docs/00-platform/SUBSYSTEM_OWNERS.md` **MUST**
+have at least one named owner responsible for its specifications and
+reference implementation. `SUBSYSTEM_OWNERS.md` **MUST** be updated
+whenever a new subsystem is introduced (e.g. a new top-level `subsystem`
+value used in an NPS front-matter block).
 
 ### 3.3 Contributors
 Any contributor **MAY** propose a Nythera Proposal for Specification (NPS) or
@@ -185,6 +189,8 @@ proposal, which **SHOULD** be rare.
 | Version | Date       | Change                     |
 |---------|------------|-----------------------------|
 | 1.0.0   | 2026-07-12 | Initial draft for review    |
+| 1.0.1   | 2026-07-12 | Clarify §3.2 to reference `SUBSYSTEM_OWNERS.md` as the canonical ownership list |
+| 1.0.1   | 2026-07-12 | Architecture Group review completed. Status: Draft → Accepted (Milestone 2). |
 
 ---
 **End of Document**

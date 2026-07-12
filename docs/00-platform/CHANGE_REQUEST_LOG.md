@@ -13,6 +13,8 @@ independent of chat or discussion history.
 | CR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | ADR-0005 |
 | CR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | ADR-0006 |
 | CR-0007 | Adopt Zstandard as the default compression codec | Proposed | ADR-0007 |
+| CR-0008 | Accept NPC-001, NPC-002, NPC-003 as binding governance (Milestone 2 review) | Accepted | — |
+| CR-0009 | Establish NPC-008 Subsystem Owners as the canonical ownership list | Accepted | — |
 
 ## How to Add an Entry
 

@@ -8,18 +8,19 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 4 — Storage (in progress). Milestones 1 and 3 complete.
+Milestone 2 — Platform Constitution: complete. Milestones 1, 3, 4 also complete. Milestone 5 (Runtime) not yet started.
 
 ## Governance Documents
 
 - [x] NTM-000 The Nythera Manifest — Accepted
-- [x] NPC-001 Project Constitution — Draft
-- [x] NPC-002 AI Collaboration Protocol — Draft
-- [x] NPC-003 Engineering Handbook — Draft
+- [x] NPC-001 Project Constitution — Accepted
+- [x] NPC-002 AI Collaboration Protocol — Accepted
+- [x] NPC-003 Engineering Handbook — Accepted
 - [x] NPC-004 Specification Index — Draft
 - [x] NPC-005 ADR Index — Draft
 - [x] NPC-006 Glossary — Draft
 - [x] NPC-007 Project Roadmap — Draft
+- [x] NPC-008 Subsystem Owners — Draft (all subsystems currently Unassigned)
 
 ## Architecture Decision Records
 
@@ -57,9 +58,9 @@ Not started.
 Structure created; MkDocs Material configuration pending.
 
 ## Next Actions
-1. Architecture Group review to move NPC-001/002/003 to Accepted (Milestone 2).
-2. Assign subsystem owners per NPC-001 §3.2, including Core Architecture and Storage owners.
-3. Benchmark IPC round-trip latency before NPS-003 exits Draft (per NPC-002 §5.2).
-4. Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed.
-5. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
-6. Configure CI build for the MkDocs Material site.
+1. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) as contributors join.
+2. Benchmark IPC round-trip latency before NPS-003 exits Draft (per NPC-002 §5.2).
+3. Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed.
+4. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
+5. Configure CI build for the MkDocs Material site.
+6. Begin Milestone 5 (Runtime): Windows compatibility, Android runtime, adaptive UI shell NPS.
