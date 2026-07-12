@@ -21,7 +21,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M2 — Platform Constitution** complete. M1, M3, M4 also complete. M5 (Runtime) not yet started.
+**M5 — Runtime** (in progress). M1, M2, M3, M4 complete.
 
 ## Roadmap
 
@@ -62,9 +62,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [ ] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted
 
 ### M5 — Runtime
-- [ ] Windows compatibility subsystem NPS (per ADR-0005)
-- [ ] Android runtime subsystem NPS
-- [ ] Adaptive UI shell NPS (desktop / touch / console / handheld modes)
+- [x] Windows compatibility subsystem NPS (NPS-007, Draft, implements ADR-0005)
+- [x] Android runtime approach decision (ADR-0008 — AOSP-based container runtime)
+- [x] Android runtime subsystem NPS (NPS-008, Draft, implements ADR-0008)
+- [x] Adaptive UI shell NPS (NPS-009, Draft — desktop/gaming/phone/tablet/handheld/server modes)
+- [ ] Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7)
+- [ ] Architecture Group review to move ADR-0005/0008 and NPS-007..009 to Accepted
 
 ### M6 — Security
 - [ ] Capability registry population (per ADR-0004)

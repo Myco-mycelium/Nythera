@@ -41,6 +41,7 @@ nav:
           - ADR-0005 Windows compatibility layer: reference/adr/ADR-0005-windows-compat-layer.md
           - ADR-0006 Hybrid microkernel: reference/adr/ADR-0006-hybrid-microkernel.md
           - ADR-0007 Compression codec: reference/adr/ADR-0007-compression-codec.md
+          - ADR-0008 Android runtime approach: reference/adr/ADR-0008-android-runtime-approach.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -48,6 +49,9 @@ nav:
           - NPS-004 NyFS Filesystem Core: reference/nps/NPS-004-nyfs-filesystem-core.md
           - NPS-005 Transparent Compression Policy: reference/nps/NPS-005-transparent-compression-policy.md
           - NPS-006 Game Image Format (.nygi): reference/nps/NPS-006-game-image-format.md
+          - NPS-007 Windows Compatibility Runtime: reference/nps/NPS-007-windows-compatibility-runtime.md
+          - NPS-008 Android Compatibility Runtime: reference/nps/NPS-008-android-compatibility-runtime.md
+          - NPS-009 Adaptive UI Shell: reference/nps/NPS-009-adaptive-ui-shell.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
@@ -58,6 +62,8 @@ nav:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
       - Storage:
           - Why Mounted Game Images: explanation/storage/why-mounted-game-images.md
+      - Runtime:
+          - Why One Shared Compatibility Model: explanation/runtime/why-shared-compatibility-model.md
 
 markdown_extensions:
   - admonition

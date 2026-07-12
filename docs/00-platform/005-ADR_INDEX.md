@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.2.0
+version: 1.3.0
 status: Draft
 classification: Reference
 owners:
@@ -29,6 +29,7 @@ only.
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | 2026-07-12 | — |
 | ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | 2026-07-12 | — |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed | 2026-07-12 | — |
+| ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | 2026-07-12 | — |
 
 ## ADR Statuses
 
@@ -44,6 +45,7 @@ only.
 | 1.0.0   | 2026-07-12 | Initial index        |
 | 1.1.0   | 2026-07-12 | Add ADR-0006 (kernel base selection) |
 | 1.2.0   | 2026-07-12 | Add ADR-0007 (compression codec selection) |
+| 1.3.0   | 2026-07-12 | Add ADR-0008 (Android runtime approach) |
 
 ---
 **End of Document**

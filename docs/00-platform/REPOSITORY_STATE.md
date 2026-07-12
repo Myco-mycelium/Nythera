@@ -8,7 +8,7 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 2 — Platform Constitution: complete. Milestones 1, 3, 4 also complete. Milestone 5 (Runtime) not yet started.
+Milestone 5 — Runtime (in progress). Milestones 1, 2, 3, 4 complete.
 
 ## Governance Documents
 
@@ -31,9 +31,10 @@ Milestone 2 — Platform Constitution: complete. Milestones 1, 3, 4 also complet
 - [x] ADR-0005 Windows compatibility translation layer — Proposed
 - [x] ADR-0006 Hybrid microkernel as kernel base — Proposed
 - [x] ADR-0007 Zstandard as default compression codec — Proposed
+- [x] ADR-0008 AOSP-based container runtime for Android compatibility — Proposed
 
 ## Specifications (NPS)
-0 accepted, 6 drafted.
+0 accepted, 9 drafted.
 
 - [x] NPS-001 Kernel Architecture and Boot — Draft
 - [x] NPS-002 Process and Thread Model — Draft
@@ -41,6 +42,9 @@ Milestone 2 — Platform Constitution: complete. Milestones 1, 3, 4 also complet
 - [x] NPS-004 NyFS Filesystem Core — Draft
 - [x] NPS-005 Transparent Compression Policy — Draft
 - [x] NPS-006 Nythera Game/Application Image Format (.nygi) and Overlay — Draft
+- [x] NPS-007 Windows Compatibility Runtime — Draft
+- [x] NPS-008 Android Compatibility Runtime — Draft
+- [x] NPS-009 Adaptive UI Shell — Draft
 
 ## ABI / API References
 Not started.
@@ -62,5 +66,6 @@ Structure created; MkDocs Material configuration pending.
 2. Benchmark IPC round-trip latency before NPS-003 exits Draft (per NPC-002 §5.2).
 3. Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed.
 4. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
-5. Configure CI build for the MkDocs Material site.
-6. Begin Milestone 5 (Runtime): Windows compatibility, Android runtime, adaptive UI shell NPS.
+5. Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) before either runtime exits Draft.
+6. Configure CI build for the MkDocs Material site.
+7. Begin Milestone 6 (Security): container runtime NPS, capability registry population.
