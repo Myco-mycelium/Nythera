@@ -17,6 +17,7 @@ independent of chat or discussion history.
 | CR-0009 | Establish NPC-008 Subsystem Owners as the canonical ownership list | Accepted | — |
 | CR-0010 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | ADR-0008 |
 | CR-0011 | Adopt per-container token-bucket rate limiting for IPC | Proposed | ADR-0009 |
+| CR-0012 | Adopt Vulkan as the native graphics API foundation | Proposed | ADR-0010 |
 
 ## How to Add an Entry
 

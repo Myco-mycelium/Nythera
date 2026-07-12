@@ -21,7 +21,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M6 — Security** (in progress). M1–M5 complete.
+**M7 — Gaming Subsystem** (in progress). M1–M6 complete.
 
 ## Roadmap
 
@@ -78,8 +78,13 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [ ] Architecture Group review to move ADR-0009 and NPS-010/011 to Accepted
 
 ### M7 — Gaming Subsystem
-- [ ] `.nygi` image format NPS (per ADR-0003)
-- [ ] Controller, GPU (VRR/HDR/ray tracing/upscaling), emulator hub NPS
+- [x] Native graphics API foundation decision (ADR-0010 — Vulkan)
+- [x] Controller and input subsystem NPS (NPS-012, Draft — native controllers, Steam Input, VR deferred)
+- [x] GPU feature support NPS (NPS-013, Draft — HDR, VRR, ray tracing, upscaling)
+- [x] Emulator hub NPS (NPS-014, Draft — user-supplied ROM/BIOS only, no bundled content)
+- [ ] Scope VR integration and define its capability class (NPS-012 §5.1)
+- [ ] Evaluate vendor-neutral upscaling integration point (NPS-013 §9)
+- [ ] Architecture Group review to move ADR-0010 and NPS-012..014 to Accepted
 
 ### M8 — AI Subsystem
 - [ ] Local AI assistant boundary NPS (per NTM-000 §9)

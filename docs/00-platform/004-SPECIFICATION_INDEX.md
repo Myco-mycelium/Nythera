@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.5.0
+version: 1.6.0
 status: Draft
 classification: Reference
 owners:
@@ -46,6 +46,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed |
+| ADR-0010 | Adopt Vulkan as the native graphics API foundation | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -65,9 +66,12 @@ index.
 | NPS-009 | Adaptive UI Shell | runtime | Draft |
 | NPS-010 | Container Runtime | security | Draft |
 | NPS-011 | Capability Registry | security | Draft |
+| NPS-012 | Controller and Input Subsystem | gaming | Draft |
+| NPS-013 | GPU Feature Support | gaming | Draft |
+| NPS-014 | Emulator Hub | gaming | Draft |
 
-Gaming-hub and AI-subsystem specifications remain to be drafted (Milestones
-M7–M8, see NPC-003 §7).
+The AI Subsystem specification set remains to be drafted (Milestone M8, see
+NPC-003 §7).
 
 ## ABI / API References
 
@@ -93,6 +97,7 @@ M7–M8, see NPC-003 §7).
 | 1.3.0   | 2026-07-12 | Accept NPC-001/002/003 (Draft → Accepted); add NPC-008 Subsystem Owners (Milestone 2) |
 | 1.4.0   | 2026-07-12 | Add ADR-0008 and NPS-007..009 (Runtime, M5) |
 | 1.5.0   | 2026-07-12 | Add ADR-0009 and NPS-010..011 (Security, M6) |
+| 1.6.0   | 2026-07-12 | Add ADR-0010 and NPS-012..014 (Gaming Subsystem, M7) |
 
 ---
 **End of Document**

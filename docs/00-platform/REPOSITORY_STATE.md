@@ -8,7 +8,7 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 6 — Security (in progress). Milestones 1-5 complete.
+Milestone 7 — Gaming Subsystem (in progress). Milestones 1-6 complete.
 
 ## Governance Documents
 
@@ -33,9 +33,10 @@ Milestone 6 — Security (in progress). Milestones 1-5 complete.
 - [x] ADR-0007 Zstandard as default compression codec — Proposed
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Proposed
 - [x] ADR-0009 Per-container token-bucket IPC rate limiting — Proposed
+- [x] ADR-0010 Vulkan as native graphics API foundation — Proposed
 
 ## Specifications (NPS)
-0 accepted, 11 drafted.
+0 accepted, 14 drafted.
 
 - [x] NPS-001 Kernel Architecture and Boot — Draft
 - [x] NPS-002 Process and Thread Model — Draft
@@ -48,6 +49,9 @@ Milestone 6 — Security (in progress). Milestones 1-5 complete.
 - [x] NPS-009 Adaptive UI Shell — Draft
 - [x] NPS-010 Container Runtime — Draft
 - [x] NPS-011 Capability Registry — Draft (14 capabilities registered)
+- [x] NPS-012 Controller and Input Subsystem — Draft
+- [x] NPS-013 GPU Feature Support — Draft
+- [x] NPS-014 Emulator Hub — Draft
 
 ## ABI / API References
 Not started.
@@ -72,5 +76,7 @@ Structure created; MkDocs Material configuration pending.
 5. Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) before either runtime exits Draft.
 6. Benchmark default IPC token-bucket parameters before ADR-0009 exits Proposed.
 7. Expand NPS-011 Android permission mapping incrementally as gaps are found (NPS-011 §6).
-8. Configure CI build for the MkDocs Material site.
-9. Begin Milestone 7 (Gaming Subsystem): controller/GPU support, emulator hub NPS.
+8. Scope VR integration to define the deferred VR input capability (NPS-012 §5.1, NPS-009 §8).
+9. Evaluate vendor-neutral upscaling integration point (NPS-013 §9) once specific SDKs are reviewed.
+10. Configure CI build for the MkDocs Material site.
+11. Begin Milestone 8 (AI Subsystem): local assistant boundary NPS, optional cloud sync NPS.

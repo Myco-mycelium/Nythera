@@ -43,6 +43,7 @@ nav:
           - ADR-0007 Compression codec: reference/adr/ADR-0007-compression-codec.md
           - ADR-0008 Android runtime approach: reference/adr/ADR-0008-android-runtime-approach.md
           - ADR-0009 IPC rate limiting: reference/adr/ADR-0009-ipc-rate-limiting.md
+          - ADR-0010 Vulkan graphics foundation: reference/adr/ADR-0010-vulkan-graphics-foundation.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -54,6 +55,9 @@ nav:
           - NPS-008 Android Compatibility Runtime: reference/nps/NPS-008-android-compatibility-runtime.md
           - NPS-009 Adaptive UI Shell: reference/nps/NPS-009-adaptive-ui-shell.md
           - NPS-010 Container Runtime: reference/nps/NPS-010-container-runtime.md
+          - NPS-012 Controller and Input Subsystem: reference/nps/NPS-012-controller-and-input-subsystem.md
+          - NPS-013 GPU Feature Support: reference/nps/NPS-013-gpu-feature-support.md
+          - NPS-014 Emulator Hub: reference/nps/NPS-014-emulator-hub.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
@@ -69,6 +73,8 @@ nav:
           - Why One Shared Compatibility Model: explanation/runtime/why-shared-compatibility-model.md
       - Security:
           - Why Capabilities Aren't Bolted On: explanation/security/why-capabilities-not-bolted-on.md
+      - Gaming:
+          - Why Gaming Reuses the Platform: explanation/gaming/why-gaming-reuses-the-platform.md
 
 markdown_extensions:
   - admonition
