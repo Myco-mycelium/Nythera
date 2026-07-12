@@ -21,7 +21,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M5 — Runtime** (in progress). M1, M2, M3, M4 complete.
+**M6 — Security** (in progress). M1–M5 complete.
 
 ## Roadmap
 
@@ -70,8 +70,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [ ] Architecture Group review to move ADR-0005/0008 and NPS-007..009 to Accepted
 
 ### M6 — Security
-- [ ] Capability registry population (per ADR-0004)
-- [ ] Container runtime NPS
+- [x] Container runtime NPS (NPS-010, Draft — lifecycle, capability assignment, revocation, resource limits)
+- [x] IPC rate-limiting mechanism decision (ADR-0009 — per-container token buckets)
+- [x] Capability registry populated (NPS-011, Draft — 14 capabilities registered, closing the gap NPC-001 §9.3 has referenced since Milestone 1)
+- [ ] Benchmark default IPC token-bucket parameters before ADR-0009 exits Proposed
+- [ ] Expand Android permission mapping (NPS-011 §6) incrementally
+- [ ] Architecture Group review to move ADR-0009 and NPS-010/011 to Accepted
 
 ### M7 — Gaming Subsystem
 - [ ] `.nygi` image format NPS (per ADR-0003)

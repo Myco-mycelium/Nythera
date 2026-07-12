@@ -42,6 +42,7 @@ nav:
           - ADR-0006 Hybrid microkernel: reference/adr/ADR-0006-hybrid-microkernel.md
           - ADR-0007 Compression codec: reference/adr/ADR-0007-compression-codec.md
           - ADR-0008 Android runtime approach: reference/adr/ADR-0008-android-runtime-approach.md
+          - ADR-0009 IPC rate limiting: reference/adr/ADR-0009-ipc-rate-limiting.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -52,10 +53,12 @@ nav:
           - NPS-007 Windows Compatibility Runtime: reference/nps/NPS-007-windows-compatibility-runtime.md
           - NPS-008 Android Compatibility Runtime: reference/nps/NPS-008-android-compatibility-runtime.md
           - NPS-009 Adaptive UI Shell: reference/nps/NPS-009-adaptive-ui-shell.md
+          - NPS-010 Container Runtime: reference/nps/NPS-010-container-runtime.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
-      - Capability Registry: reference/capability-registry/
+      - Capability Registry:
+          - NPS-011 Capability Registry: reference/capability-registry/NPS-011-capability-registry.md
       - Object Registry: reference/object-registry/
   - Explanation:
       - Core Architecture:
@@ -64,6 +67,8 @@ nav:
           - Why Mounted Game Images: explanation/storage/why-mounted-game-images.md
       - Runtime:
           - Why One Shared Compatibility Model: explanation/runtime/why-shared-compatibility-model.md
+      - Security:
+          - Why Capabilities Aren't Bolted On: explanation/security/why-capabilities-not-bolted-on.md
 
 markdown_extensions:
   - admonition

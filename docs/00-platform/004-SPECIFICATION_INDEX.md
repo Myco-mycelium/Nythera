@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.4.0
+version: 1.5.0
 status: Draft
 classification: Reference
 owners:
@@ -45,6 +45,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed |
+| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -62,9 +63,11 @@ index.
 | NPS-007 | Windows Compatibility Runtime | runtime | Draft |
 | NPS-008 | Android Compatibility Runtime | runtime | Draft |
 | NPS-009 | Adaptive UI Shell | runtime | Draft |
+| NPS-010 | Container Runtime | security | Draft |
+| NPS-011 | Capability Registry | security | Draft |
 
-Security and gaming-hub specifications remain to be drafted (Milestones
-M6–M8, see NPC-003 §7).
+Gaming-hub and AI-subsystem specifications remain to be drafted (Milestones
+M7–M8, see NPC-003 §7).
 
 ## ABI / API References
 
@@ -89,6 +92,7 @@ M6–M8, see NPC-003 §7).
 | 1.2.0   | 2026-07-12 | Add ADR-0007 and NPS-004..006 (Storage, M4) |
 | 1.3.0   | 2026-07-12 | Accept NPC-001/002/003 (Draft → Accepted); add NPC-008 Subsystem Owners (Milestone 2) |
 | 1.4.0   | 2026-07-12 | Add ADR-0008 and NPS-007..009 (Runtime, M5) |
+| 1.5.0   | 2026-07-12 | Add ADR-0009 and NPS-010..011 (Security, M6) |
 
 ---
 **End of Document**

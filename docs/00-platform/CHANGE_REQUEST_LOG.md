@@ -16,6 +16,7 @@ independent of chat or discussion history.
 | CR-0008 | Accept NPC-001, NPC-002, NPC-003 as binding governance (Milestone 2 review) | Accepted | — |
 | CR-0009 | Establish NPC-008 Subsystem Owners as the canonical ownership list | Accepted | — |
 | CR-0010 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | ADR-0008 |
+| CR-0011 | Adopt per-container token-bucket rate limiting for IPC | Proposed | ADR-0009 |
 
 ## How to Add an Entry
 

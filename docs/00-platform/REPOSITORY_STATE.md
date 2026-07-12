@@ -8,7 +8,7 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 5 — Runtime (in progress). Milestones 1, 2, 3, 4 complete.
+Milestone 6 — Security (in progress). Milestones 1-5 complete.
 
 ## Governance Documents
 
@@ -32,9 +32,10 @@ Milestone 5 — Runtime (in progress). Milestones 1, 2, 3, 4 complete.
 - [x] ADR-0006 Hybrid microkernel as kernel base — Proposed
 - [x] ADR-0007 Zstandard as default compression codec — Proposed
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Proposed
+- [x] ADR-0009 Per-container token-bucket IPC rate limiting — Proposed
 
 ## Specifications (NPS)
-0 accepted, 9 drafted.
+0 accepted, 11 drafted.
 
 - [x] NPS-001 Kernel Architecture and Boot — Draft
 - [x] NPS-002 Process and Thread Model — Draft
@@ -45,6 +46,8 @@ Milestone 5 — Runtime (in progress). Milestones 1, 2, 3, 4 complete.
 - [x] NPS-007 Windows Compatibility Runtime — Draft
 - [x] NPS-008 Android Compatibility Runtime — Draft
 - [x] NPS-009 Adaptive UI Shell — Draft
+- [x] NPS-010 Container Runtime — Draft
+- [x] NPS-011 Capability Registry — Draft (14 capabilities registered)
 
 ## ABI / API References
 Not started.
@@ -67,5 +70,7 @@ Structure created; MkDocs Material configuration pending.
 3. Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed.
 4. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
 5. Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) before either runtime exits Draft.
-6. Configure CI build for the MkDocs Material site.
-7. Begin Milestone 6 (Security): container runtime NPS, capability registry population.
+6. Benchmark default IPC token-bucket parameters before ADR-0009 exits Proposed.
+7. Expand NPS-011 Android permission mapping incrementally as gaps are found (NPS-011 §6).
+8. Configure CI build for the MkDocs Material site.
+9. Begin Milestone 7 (Gaming Subsystem): controller/GPU support, emulator hub NPS.
