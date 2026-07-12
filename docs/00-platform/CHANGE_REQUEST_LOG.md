@@ -12,6 +12,7 @@ independent of chat or discussion history.
 | CR-0004 | Containerize all application classes (native/Windows/Android) | Proposed | ADR-0004 |
 | CR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | ADR-0005 |
 | CR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | ADR-0006 |
+| CR-0007 | Adopt Zstandard as the default compression codec | Proposed | ADR-0007 |
 
 ## How to Add an Entry
 

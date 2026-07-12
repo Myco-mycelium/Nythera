@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.1.0
+version: 1.2.0
 status: Draft
 classification: Reference
 owners:
@@ -41,6 +41,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0004 | Containerized execution model for all application classes | Proposed |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Proposed |
 | ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed |
+| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -52,9 +53,12 @@ index.
 | NPS-001 | Kernel Architecture and Boot | core-architecture | Draft |
 | NPS-002 | Process and Thread Model | core-architecture | Draft |
 | NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft |
+| NPS-004 | NyFS Filesystem Core | storage | Draft |
+| NPS-005 | Transparent Compression Policy | storage | Draft |
+| NPS-006 | Nythera Game/Application Image Format (.nygi) and Overlay | storage | Draft |
 
-Storage, runtime, security, and gaming specifications remain to be drafted
-(Milestones M4–M8, see NPC-003 §7).
+Runtime, security, and gaming-hub specifications remain to be drafted
+(Milestones M5–M8, see NPC-003 §7).
 
 ## ABI / API References
 
@@ -76,6 +80,7 @@ Storage, runtime, security, and gaming specifications remain to be drafted
 |---------|------------|-----------------------------------|
 | 1.0.0   | 2026-07-12 | Initial index at repository bootstrap |
 | 1.1.0   | 2026-07-12 | Add ADR-0006 and NPS-001..003 (Core Architecture, M3) |
+| 1.2.0   | 2026-07-12 | Add ADR-0007 and NPS-004..006 (Storage, M4) |
 
 ---
 **End of Document**

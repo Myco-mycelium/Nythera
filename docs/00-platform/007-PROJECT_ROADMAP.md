@@ -20,7 +20,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M3 — Core Architecture** (in progress). M1 complete.
+**M4 — Storage** (in progress). M1 and M3 complete.
 
 ## Roadmap
 
@@ -52,8 +52,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [ ] IPC round-trip latency benchmark (NPS-003 §6.1)
 
 ### M4 — Storage
-- [ ] Finalize ADR-0002 (filesystem) into Accepted NPS specifications
-- [ ] Compression codec selection (Zstd/LZ4 defaults)
+- [x] Finalize ADR-0002 (filesystem) into NPS specifications (NPS-004, Draft)
+- [x] Compression codec selection (ADR-0007 — Zstd default, LZ4 fast-path override)
+- [x] NPS-005 Transparent Compression Policy (Draft)
+- [x] NPS-006 Game/Application Image Format (.nygi) and Overlay (Draft, implements ADR-0003)
+- [ ] Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed
+- [ ] Architecture Group review to move ADR-0002/0003/0007 and NPS-004..006 to Accepted
 
 ### M5 — Runtime
 - [ ] Windows compatibility subsystem NPS (per ADR-0005)

@@ -39,10 +39,14 @@ nav:
           - ADR-0004 Containerized execution: reference/adr/ADR-0004-containerized-execution.md
           - ADR-0005 Windows compatibility layer: reference/adr/ADR-0005-windows-compat-layer.md
           - ADR-0006 Hybrid microkernel: reference/adr/ADR-0006-hybrid-microkernel.md
+          - ADR-0007 Compression codec: reference/adr/ADR-0007-compression-codec.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
           - NPS-003 IPC and Capability Passing: reference/nps/NPS-003-ipc-and-capability-passing.md
+          - NPS-004 NyFS Filesystem Core: reference/nps/NPS-004-nyfs-filesystem-core.md
+          - NPS-005 Transparent Compression Policy: reference/nps/NPS-005-transparent-compression-policy.md
+          - NPS-006 Game Image Format (.nygi): reference/nps/NPS-006-game-image-format.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
@@ -51,6 +55,8 @@ nav:
   - Explanation:
       - Core Architecture:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
+      - Storage:
+          - Why Mounted Game Images: explanation/storage/why-mounted-game-images.md
 
 markdown_extensions:
   - admonition
