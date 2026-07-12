@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Reference
 owners:
@@ -40,19 +40,21 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0003 | Games distributed as mounted disk images with writable overlay | Proposed |
 | ADR-0004 | Containerized execution model for all application classes | Proposed |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Proposed |
+| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
 
 ## Nythera Proposals for Specification (NPS)
 
-No NPS documents have been accepted yet. This table will be populated as
-`source/`, storage, runtime, and security specifications are drafted
-(Milestones M3–M8, see NPC-003 §7).
-
 | ID | Title | Subsystem | Status |
 |----|-------|-----------|--------|
-| — | — | — | — |
+| NPS-001 | Kernel Architecture and Boot | core-architecture | Draft |
+| NPS-002 | Process and Thread Model | core-architecture | Draft |
+| NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft |
+
+Storage, runtime, security, and gaming specifications remain to be drafted
+(Milestones M4–M8, see NPC-003 §7).
 
 ## ABI / API References
 
@@ -73,6 +75,7 @@ No NPS documents have been accepted yet. This table will be populated as
 | Version | Date       | Change                          |
 |---------|------------|-----------------------------------|
 | 1.0.0   | 2026-07-12 | Initial index at repository bootstrap |
+| 1.1.0   | 2026-07-12 | Add ADR-0006 and NPS-001..003 (Core Architecture, M3) |
 
 ---
 **End of Document**

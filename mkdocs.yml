@@ -31,14 +31,26 @@ nav:
   - Tutorials: tutorials/
   - How-To Guides: how-to/
   - Reference:
-      - ADRs: reference/adr/
-      - NPS: reference/nps/
+      - ADRs:
+          - Index: reference/adr/README.md
+          - ADR-0001 Diátaxis + MkDocs Material: reference/adr/ADR-0001-diataxis-mkdocs.md
+          - ADR-0002 Copy-on-write filesystem: reference/adr/ADR-0002-filesystem.md
+          - ADR-0003 Game disk images: reference/adr/ADR-0003-game-disk-images.md
+          - ADR-0004 Containerized execution: reference/adr/ADR-0004-containerized-execution.md
+          - ADR-0005 Windows compatibility layer: reference/adr/ADR-0005-windows-compat-layer.md
+          - ADR-0006 Hybrid microkernel: reference/adr/ADR-0006-hybrid-microkernel.md
+      - NPS:
+          - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
+          - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
+          - NPS-003 IPC and Capability Passing: reference/nps/NPS-003-ipc-and-capability-passing.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
       - Capability Registry: reference/capability-registry/
       - Object Registry: reference/object-registry/
-  - Explanation: explanation/
+  - Explanation:
+      - Core Architecture:
+          - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
 
 markdown_extensions:
   - admonition

@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Reference
 owners:
@@ -26,6 +26,7 @@ only.
 | ADR-0003 | Games distributed as mounted disk images with writable overlay | Proposed | 2026-07-12 | — |
 | ADR-0004 | Containerized execution model for all application classes | Proposed | 2026-07-12 | — |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | 2026-07-12 | — |
+| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | 2026-07-12 | — |
 
 ## ADR Statuses
 
@@ -39,6 +40,7 @@ only.
 | Version | Date       | Change              |
 |---------|------------|----------------------|
 | 1.0.0   | 2026-07-12 | Initial index        |
+| 1.1.0   | 2026-07-12 | Add ADR-0006 (kernel base selection) |
 
 ---
 **End of Document**

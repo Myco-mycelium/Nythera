@@ -8,7 +8,7 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 1 — Repository Bootstrap (in progress)
+Milestone 3 — Core Architecture (in progress). Milestone 1 complete.
 
 ## Governance Documents
 
@@ -28,9 +28,14 @@ Milestone 1 — Repository Bootstrap (in progress)
 - [x] ADR-0003 Game disk images with overlay — Proposed
 - [x] ADR-0004 Containerized execution model — Proposed
 - [x] ADR-0005 Windows compatibility translation layer — Proposed
+- [x] ADR-0006 Hybrid microkernel as kernel base — Proposed
 
 ## Specifications (NPS)
-0 accepted, 0 drafted.
+0 accepted, 3 drafted.
+
+- [x] NPS-001 Kernel Architecture and Boot — Draft
+- [x] NPS-002 Process and Thread Model — Draft
+- [x] NPS-003 Inter-Process Communication and Capability Passing — Draft
 
 ## ABI / API References
 Not started.
@@ -48,7 +53,8 @@ Not started.
 Structure created; MkDocs Material configuration pending.
 
 ## Next Actions
-1. Add CONTRIBUTING.md and LICENSE at repository root.
-2. Configure MkDocs Material (`mkdocs.yml`) and CI build.
-3. Architecture Group review to move NPC-001/002/003 to Accepted (Milestone 2).
-4. Assign subsystem owners per NPC-001 §3.2.
+1. Architecture Group review to move NPC-001/002/003 to Accepted (Milestone 2).
+2. Assign subsystem owners per NPC-001 §3.2, including a Core Architecture owner.
+3. Benchmark IPC round-trip latency before NPS-003 exits Draft (per NPC-002 §5.2).
+4. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
+5. Configure CI build for the MkDocs Material site.

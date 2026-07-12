@@ -20,7 +20,7 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M1 — Repository Bootstrap** (in progress)
+**M3 — Core Architecture** (in progress). M1 complete.
 
 ## Roadmap
 
@@ -34,16 +34,22 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [x] NPC-006 Glossary
 - [x] NPC-007 Project Roadmap (this document)
 - [x] REPOSITORY_STATE.md, CHANGE_REQUEST_LOG.md
-- [ ] MkDocs Material site configuration and CI build
-- [ ] CONTRIBUTING.md and LICENSE
+- [x] MkDocs Material site configuration
+- [ ] CI build for the documentation site
+- [x] CONTRIBUTING.md and LICENSE
 
 ### M2 — Platform Constitution
 - [ ] Move NPC-001/002/003 from Draft to Accepted after Architecture Group review
 - [ ] Establish subsystem ownership list
 
 ### M3 — Core Architecture
-- [ ] Kernel base selection ADR
-- [ ] Initial NPS set for boot, process model, IPC
+- [x] Kernel base selection ADR (ADR-0006 — hybrid microkernel, Proposed)
+- [x] NPS-001 Kernel Architecture and Boot (Draft)
+- [x] NPS-002 Process and Thread Model (Draft)
+- [x] NPS-003 Inter-Process Communication and Capability Passing (Draft)
+- [ ] Architecture Group review to move ADR-0006 and NPS-001..003 to Accepted
+- [ ] Scheduler algorithm decision (NPS-001 §7 open question)
+- [ ] IPC round-trip latency benchmark (NPS-003 §6.1)
 
 ### M4 — Storage
 - [ ] Finalize ADR-0002 (filesystem) into Accepted NPS specifications

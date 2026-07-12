@@ -11,6 +11,7 @@ independent of chat or discussion history.
 | CR-0003 | Distribute games as mounted disk images with writable overlay | Proposed | ADR-0003 |
 | CR-0004 | Containerize all application classes (native/Windows/Android) | Proposed | ADR-0004 |
 | CR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | ADR-0005 |
+| CR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | ADR-0006 |
 
 ## How to Add an Entry
 
