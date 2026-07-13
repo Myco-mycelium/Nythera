@@ -115,3 +115,20 @@ Not benchmark-gated, resolved this pass:
 Genuinely still open, not fabricable:
 7. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.
 8. Begin implementation work on the Linux Backend (NPS-017 §6) — this is code, not documentation; the design is now unblocked enough to start (containers/capabilities/IPC/storage strategy all decided), but actually writing it is a separate phase of work.
+9. Choose a real license (`LICENSE` is still the Milestone 1 placeholder — "no rights granted... until a formal license is adopted"). This is a legal/business decision for the repository owner, not one to pick unilaterally on their behalf.
+10. Enable GitHub Pages with source "GitHub Actions" (Settings → Pages) so `.github/workflows/docs.yml`'s deploy step has somewhere to publish to — the workflow runs regardless, but won't be visibly served until this is set.
+
+Documentation hygiene, fixed this pass:
+- A prior review pass (Milestone 9) left several documents with a Markdown
+  table-formatting bug: the row recording that milestone's own review
+  (e.g. "Architecture Group review completed... Status: Draft → Accepted")
+  had gotten separated from its revision-history table by a blank line,
+  rendering as an orphaned single-row table instead of part of the
+  sequence. This affected all 13 `Accepted` NPS documents (every one that
+  went through the Milestone 9 review): NPS-001, 004, 006, 007, 008, 009,
+  011, 012, 013, 014, 015, 016, 017 — fixed across the M10 commit and this
+  pass; verified via `mkdocs build --strict` and a repo-wide grep for the
+  pattern, which is now clean.
+- `mkdocs.yml`'s `repo_url` was still the bootstrap placeholder
+  (`your-org/Nythera`) despite the real repository existing since
+  Milestone 1's first push; corrected to `Myco-mycelium/Nythera`.

@@ -100,9 +100,8 @@ NPS-010 §7.1.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
-| 1.1.0   | 2026-07-13 | Resolve §5 VR open question: explicit decision to defer VR to a future milestone rather than leave undefined |
-
-| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.0   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.1   | 2026-07-13 | Resolve §5 VR open question: explicit decision to defer VR to a future milestone rather than leave undefined |
 
 ---
 **End of Document**

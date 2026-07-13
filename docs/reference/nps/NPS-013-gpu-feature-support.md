@@ -149,9 +149,8 @@ vendor SDK support for Vulkan changes frequently.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
-| 1.1.0   | 2026-07-13 | Resolve §7 upscaling open question with current vendor SDK research (FSR open-source/native-Vulkan vs. FSR4 DX12-only vs. XeSS-SR closed/native-Vulkan) |
-
-| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.0   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.1   | 2026-07-13 | Resolve §7 upscaling open question with current vendor SDK research (FSR open-source/native-Vulkan vs. FSR4 DX12-only vs. XeSS-SR closed/native-Vulkan) |
 
 ---
 **End of Document**

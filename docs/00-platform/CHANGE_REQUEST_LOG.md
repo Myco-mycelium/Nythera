@@ -28,6 +28,8 @@ independent of chat or discussion history.
 | CR-0020 | Expand NPS-011 Android permission mapping with 8 capabilities (contacts, calendar, telephony, SMS, sensors, media library, NFC, biometric) | Accepted | — |
 | CR-0021 | Configure and verify CI build for the MkDocs Material documentation site | Accepted | — |
 
+| CR-0022 | Fix orphaned revision-history tables across 13 NPS documents; correct stale `repo_url` placeholder in mkdocs.yml | Accepted | — |
+
 ## How to Add an Entry
 
 1. Assign the next sequential `CR-XXXX` ID.

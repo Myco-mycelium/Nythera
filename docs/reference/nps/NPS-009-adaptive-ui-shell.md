@@ -127,9 +127,8 @@ settings across devices.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
-| 1.1.0   | 2026-07-13 | Cross-reference NPS-012 §5.1's VR deferral decision instead of leaving it as an independent open question |
-
-| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.0   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.1   | 2026-07-13 | Cross-reference NPS-012 §5.1's VR deferral decision instead of leaving it as an independent open question |
 
 ---
 **End of Document**

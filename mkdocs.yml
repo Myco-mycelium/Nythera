@@ -1,6 +1,6 @@
 site_name: Nythera
 site_description: Documentation for the Nythera operating system project
-repo_url: https://github.com/your-org/Nythera
+repo_url: https://github.com/Myco-mycelium/Nythera
 docs_dir: docs
 
 theme:

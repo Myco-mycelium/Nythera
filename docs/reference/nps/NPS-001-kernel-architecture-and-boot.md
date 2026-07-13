@@ -124,9 +124,8 @@ NPS.
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial draft      |
 | 1.1.0   | 2026-07-12 | Add backend scope note (§2): this document defines the NyKernel Backend specifically, per ADR-0012/NPS-017 |
+| 1.1.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.1.2   | 2026-07-13 | Resolve §7 secure boot open question via ADR-0014 (UEFI Secure Boot, user-enrollable keys) |
-
-| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**
