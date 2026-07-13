@@ -29,8 +29,8 @@ nav:
       - Subsystem Owners: 00-platform/SUBSYSTEM_OWNERS.md
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
-  - Tutorials: tutorials/
-  - How-To Guides: how-to/
+  - Tutorials: tutorials/README.md
+  - How-To Guides: how-to/README.md
   - Reference:
       - ADRs:
           - Index: reference/adr/README.md
@@ -47,6 +47,9 @@ nav:
           - ADR-0011 AI assistant containerization: reference/adr/ADR-0011-ai-assistant-containerization.md
           - ADR-0012 NyHAL pluggable kernel backend: reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md
           - ADR-0013 Scheduler algorithm: reference/adr/ADR-0013-scheduler-algorithm.md
+          - ADR-0014 Secure boot key management: reference/adr/ADR-0014-secure-boot-key-management.md
+          - ADR-0015 Shared ARM translation: reference/adr/ADR-0015-shared-arm-translation.md
+          - ADR-0016 NyFS Linux Backend (FUSE): reference/adr/ADR-0016-nyfs-linux-backend-fuse.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -64,26 +67,39 @@ nav:
           - NPS-015 Local AI Assistant: reference/nps/NPS-015-local-ai-assistant.md
           - NPS-016 Optional Cloud Synchronization: reference/nps/NPS-016-optional-cloud-synchronization.md
           - NPS-017 NyHAL Kernel Abstraction: reference/nps/NPS-017-nyhal-kernel-abstraction.md
-      - ABI: reference/abi/
-      - API: reference/api/
-      - Package Format: reference/package-format/
+      - ABI: reference/abi/README.md
+      - API: reference/api/README.md
+      - Package Format: reference/package-format/README.md
       - Capability Registry:
+          - Index: reference/capability-registry/README.md
           - NPS-011 Capability Registry: reference/capability-registry/NPS-011-capability-registry.md
-      - Object Registry: reference/object-registry/
+      - Object Registry: reference/object-registry/README.md
   - Explanation:
       - Core Architecture:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
           - Why NyHAL Pluggable Backends: explanation/architecture/why-nyhal-pluggable-backends.md
+          - (subsystem index): explanation/architecture/README.md
       - Storage:
           - Why Mounted Game Images: explanation/storage/why-mounted-game-images.md
+          - (subsystem index): explanation/storage/README.md
       - Runtime:
           - Why One Shared Compatibility Model: explanation/runtime/why-shared-compatibility-model.md
+          - (subsystem index): explanation/runtime/README.md
       - Security:
           - Why Capabilities Aren't Bolted On: explanation/security/why-capabilities-not-bolted-on.md
+          - (subsystem index): explanation/security/README.md
       - Gaming:
           - Why Gaming Reuses the Platform: explanation/gaming/why-gaming-reuses-the-platform.md
+          - (subsystem index): explanation/gaming/README.md
       - AI:
           - Why the Assistant Suggests but Doesn't Act: explanation/ai/why-suggest-not-act.md
+          - (subsystem index): explanation/ai/README.md
+      - Platform: explanation/platform/README.md
+  - Diagrams: diagrams/README.md
+  - Assets: assets/README.md
+  - Reference Indexes:
+      - NPC (Platform docs live under Platform tab): reference/npc/README.md
+      - NPS (specs live under Reference › NPS above): reference/nps/README.md
 
 markdown_extensions:
   - admonition

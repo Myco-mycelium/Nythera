@@ -1,13 +1,13 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Informative
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NTM-000, NPC-003]
@@ -21,9 +21,13 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M9 — Architecture Group Review** complete. All M1–M8 content reviewed;
-13/17 NPS and 10/13 ADRs moved to `Accepted`. See "Milestone 9" section
-below and `REPOSITORY_STATE.md` for the full accounting.
+**M10 — Backlog Closure Pass** complete. Building on M9's Architecture
+Group Review, this pass closed the remaining non-benchmark items:
+secure boot, shared ARM translation approach, NyFS's Linux Backend
+storage strategy, an expanded Android permission mapping, and a
+CI-verified documentation build. What's left genuinely requires either
+real hardware benchmarking or real contributors — see "Milestone 10"
+section below and `REPOSITORY_STATE.md` for the full accounting.
 
 ## Roadmap
 
@@ -103,9 +107,9 @@ matures.
 - [x] ADR-0012: adopt NyHAL as a pluggable kernel abstraction layer (Linux Backend, Experimental Backend, NyKernel Backend)
 - [x] NPS-017: NyHAL backend contract (containers, capabilities, IPC, storage, boot — all as portable guarantees)
 - [x] NPS-001 amended to scope itself to the NyKernel Backend specifically, without changing its normative content
-- [ ] Architecture Group review of ADR-0012/NPS-017 — flagged cross-cutting per NPC-001 §3.1, touches every backend-facing contract since M3
-- [ ] Begin Linux Backend implementation work (NPS-017 §6)
-- [ ] Decide NyFS's Linux Backend implementation strategy (NPS-017 §8)
+- [x] Architecture Group review of ADR-0012/NPS-017 — completed as part of Milestone 9
+- [ ] Begin Linux Backend implementation work (NPS-017 §6) — design is now unblocked (containers/capabilities/IPC/storage strategy all decided); actual coding is separate, later work
+- [x] Decide NyFS's Linux Backend implementation strategy (NPS-017 §8) — ADR-0016: FUSE first, kernel-module fallback open pending benchmark
 
 ### M9 — Architecture Group Review
 A full review pass across every M1–M8 document, resolving what could
@@ -122,11 +126,29 @@ honestly be resolved and naming what couldn't, per NPC-001 §5's rule that
 - [x] Keep NPS-005, NPS-010 at `Draft` — each transitively blocked on an ADR (0007, 0009) that isn't Accepted yet, with an explicit status note added explaining why
 - [ ] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land
 
+### M10 — Backlog Closure Pass
+A follow-up pass working through Milestone 9's remaining `Next Actions`
+list, closing everything that could honestly be closed without fabricated
+data, and naming what genuinely still requires either real hardware
+benchmarking or real contributors.
+
+- [x] ADR-0014: adopt UEFI Secure Boot with user-enrollable keys, resolving NPS-001 §7's secure-boot open question
+- [x] ADR-0015: adopt a shared dynamic binary translation approach for ARM/x86, resolving NPS-007 §7 / NPS-008 §7's shared deferral
+- [x] ADR-0016: implement NyFS's Linux Backend as a user-space FUSE filesystem, resolving NPS-017 §8's storage-strategy question
+- [x] Expand NPS-011 Android permission mapping: `CAP-CONTACTS`, `CAP-CALENDAR`, `CAP-TELEPHONY`, `CAP-SMS`, `CAP-SENSORS`, `CAP-MEDIA-LIBRARY`, `CAP-NEAR-FIELD`, `CAP-BIOMETRIC`
+- [x] `tests/BENCHMARK_PLAN.md`: methodology for every pending benchmark (IPC latency, compression levels, token-bucket tuning, FUSE overhead) — no fabricated numbers, per NPC-002 §5.2
+- [x] `.github/workflows/docs.yml`: CI build + GitHub Pages deploy for the MkDocs site, verified locally with `mkdocs build --strict` (zero warnings) before committing
+- [x] `requirements-docs.txt`: pin `mkdocs-material` to the 9.x line given the Material team's own public warning about breaking, production-unready changes in MkDocs 2.0
+- [ ] Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` — requires actual contributors, intentionally not fabricated
+- [ ] Begin Linux Backend implementation work (NPS-017 §6) — a coding phase, not a documentation task
+- [ ] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` once something exists to measure
+
 ## Revision History
 
 | Version | Date       | Change            |
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial roadmap at bootstrap |
+| 1.1.0   | 2026-07-13 | Add M9 (Architecture Group Review) and M10 (Backlog Closure Pass) sections |
 
 ---
 **End of Document**

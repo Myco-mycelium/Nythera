@@ -1,17 +1,17 @@
 ---
 title: Windows Compatibility Runtime
 document_id: NPS-007
-version: 1.0.1
+version: 1.0.2
 status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0005, ADR-0006, NPS-002, NPS-003]
+depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0005, ADR-0006, ADR-0015, NPS-002, NPS-003]
 ---
 
 # NPS-007 — Windows Compatibility Runtime
@@ -83,13 +83,16 @@ writes, per §5.3) redirected into the overlay, identically to native
 applications — the compatibility runtime **MUST NOT** require a different
 storage model.
 
-## 7. ARM Instruction Translation *(Informative — deferred)*
+## 7. ARM Instruction Translation *(Informative — approach decided, implementation pending)*
 
 Running x86/x64 Windows applications on ARM hardware (phones, some
-handhelds) requires CPU instruction translation. This is flagged in
-ADR-0005 as the highest-risk element of Windows compatibility and is
-deferred to a dedicated follow-up specification once a concrete ARM target
-device class is chosen; this document does not claim ARM support is solved.
+handhelds) requires CPU instruction translation. Per ADR-0015, this is
+implemented as a **shared** dynamic binary translation subsystem (JIT with
+hot-path caching) used by both this runtime and the Android compatibility
+runtime (NPS-008 §7), rather than a Windows-specific translator. This
+document does not claim ARM support is complete — the shared approach is
+decided, but performance validation remains open pending benchmark data
+(ADR-0015 §"Consequences", NPC-002 §5.2).
 
 ## 8. Performance and Compatibility Targets
 
@@ -114,8 +117,8 @@ failing silently or with a generic error.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
-
-| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.0.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.0.2   | 2026-07-13 | Resolve §7 ARM translation open question via ADR-0015 (shared DBT approach with NPS-008) |
 
 ---
 **End of Document**

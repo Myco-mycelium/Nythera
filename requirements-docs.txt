@@ -1,0 +1,7 @@
+# Pin Material for MkDocs to the 9.x line. The Material for MkDocs team has
+# publicly flagged that MkDocs 2.0 will introduce backward-incompatible
+# changes (plugin system removed, theming rewritten, no migration path) and
+# is, as of their own analysis, unsuitable for production use. Do not
+# unpin without re-reading their migration guidance first.
+# See: https://squidfunk.github.io/mkdocs-material/blog/2026/02/18/mkdocs-2.0/
+mkdocs-material>=9.7,<10

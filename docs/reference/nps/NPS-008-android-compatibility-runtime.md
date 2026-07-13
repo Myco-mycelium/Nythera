@@ -1,17 +1,17 @@
 ---
 title: Android Compatibility Runtime
 document_id: NPS-008
-version: 1.0.1
+version: 1.0.2
 status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0008, NPS-002, NPS-003]
+depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0008, ADR-0015, NPS-002, NPS-003]
 ---
 
 # NPS-008 — Android Compatibility Runtime
@@ -86,13 +86,16 @@ default, consistent with the adaptive UI shell's per-device-type behavior
 its Android manifest) **SHOULD** be respected where they don't conflict
 with the current device mode.
 
-## 7. ARM/x86 Instruction Translation *(Informative — deferred)*
+## 7. ARM/x86 Instruction Translation *(Informative — approach decided, implementation pending)*
 
 Running ARM-compiled APKs on x86 hardware (and the inverse, less common
-case) requires instruction translation. Per ADR-0008, this work SHOULD be
-shared with the equivalent Windows/ARM translation effort raised in
-NPS-007 §7 rather than duplicated; neither document claims this problem is
-solved yet.
+case) requires instruction translation. Per ADR-0015, this is implemented
+as a **shared** dynamic binary translation subsystem (JIT with hot-path
+caching), used by both this runtime and the Windows compatibility runtime
+(NPS-007 §7), rather than duplicated. Neither document claims this problem
+is fully solved — the shared approach is decided, but performance
+validation remains open pending benchmark data (ADR-0015
+§"Consequences", NPC-002 §5.2).
 
 ## 8. Google Play Services *(Informative)*
 
@@ -115,8 +118,8 @@ a generic app crash.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
-
-| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.0.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.0.2   | 2026-07-13 | Resolve §7 ARM translation open question via ADR-0015 (shared DBT approach with NPS-007) |
 
 ---
 **End of Document**

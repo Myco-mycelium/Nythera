@@ -22,6 +22,11 @@ independent of chat or discussion history.
 | CR-0014 | Adopt NyHAL as a pluggable kernel abstraction layer (Linux/Experimental/NyKernel backends) | Accepted | ADR-0012 |
 | CR-0015 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning-blocked | ADR-0013 |
 | CR-0016 | Milestone 9 Architecture Group review: accept ADR-0002/0003/0004/0005/0006/0008 and NPS-001/004/006/007/008/009/012/013/014/015/016/017; resolve VR scoping (NPS-012/009) | Accepted | — |
+| CR-0017 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed | ADR-0014 |
+| CR-0018 | Adopt a shared dynamic binary translation approach for ARM/x86 compatibility (replaces the separate deferrals in NPS-007 §7 / NPS-008 §7) | Proposed — perf-validation-blocked | ADR-0015 |
+| CR-0019 | Implement NyFS's Linux Backend as a user-space FUSE filesystem | Proposed — kernel-module fallback benchmark-gated | ADR-0016 |
+| CR-0020 | Expand NPS-011 Android permission mapping with 8 capabilities (contacts, calendar, telephony, SMS, sensors, media library, NFC, biometric) | Accepted | — |
+| CR-0021 | Configure and verify CI build for the MkDocs Material documentation site | Accepted | — |
 
 ## How to Add an Entry
 

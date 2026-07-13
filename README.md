@@ -54,11 +54,14 @@ for the full standard.
 ## Project Status
 
 Milestones 1–8 complete (Repository Bootstrap through AI Subsystem), plus a
-cross-cutting NyHAL pluggable kernel backend layer (ADR-0012, NPS-017) and
-Milestone 9 — a full Architecture Group review that moved 13 of 17 NPS
-documents and 10 of 13 ADRs to `Accepted`. The remainder are held at
-`Draft`/`Proposed` for named, specific reasons — a pending benchmark or a
-dependency on one — not incompleteness. See
+cross-cutting NyHAL pluggable kernel backend layer (ADR-0012, NPS-017),
+Milestone 9 (a full Architecture Group review that moved 13 of 17 NPS
+documents and 10 of 13 ADRs to `Accepted`), and Milestone 10 (a backlog
+closure pass resolving secure boot, shared ARM translation, NyFS's Linux
+Backend storage strategy, an expanded Android permission mapping, and a
+CI-verified documentation build). What remains open now genuinely
+requires real hardware benchmarking or real contributors, not more design
+work — see
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
 

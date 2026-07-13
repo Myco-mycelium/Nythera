@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.9.0
+version: 1.10.0
 status: Draft
 classification: Reference
 owners:
@@ -50,6 +50,9 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
 | ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning-blocked |
+| ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
+| ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
+| ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -111,6 +114,7 @@ and `REPOSITORY_STATE.md` for the consolidated list.
 | 1.7.0   | 2026-07-12 | Add ADR-0011 and NPS-015..016 (AI Subsystem, M8); add CAP-AI-DIAGNOSTICS-READ, CAP-AI-SUGGEST-ACTION, CAP-CLOUD-SYNC to NPS-011 |
 | 1.8.0   | 2026-07-12 | Add ADR-0012 and NPS-017 (NyHAL pluggable kernel backend, cross-cutting); amend NPS-001 scope to NyKernel Backend specifically |
 | 1.9.0   | 2026-07-13 | Milestone 9 Architecture Group review: add ADR-0013 (scheduler algorithm, Proposed); accept ADR-0002/0003/0004/0005/0006/0008/0010/0011/0012 and NPS-001/004/006/007/008/009/011/012/013/014/015/016/017 (Draft/Proposed → Accepted); NPS-002/003/005/010 remain Draft, each with a named benchmark or upstream-dependency blocker |
+| 1.10.0  | 2026-07-13 | Backlog pass: add ADR-0014 (secure boot), ADR-0015 (shared ARM translation), ADR-0016 (NyFS Linux Backend FUSE strategy); resolve remaining open questions in NPS-001/007/008 via cross-reference; expand NPS-011 Android permission mapping (8 new capabilities); add tests/BENCHMARK_PLAN.md and CI docs build workflow |
 
 ---
 **End of Document**

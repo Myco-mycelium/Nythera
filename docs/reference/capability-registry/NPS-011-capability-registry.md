@@ -1,14 +1,14 @@
 ---
 title: Capability Registry
 document_id: NPS-011
-version: 1.1.1
+version: 1.2.0
 status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, NPS-002, NPS-008, NPS-010]
@@ -63,6 +63,14 @@ Every capability class **MUST** be recorded with:
 | `CAP-AI-DIAGNOSTICS-READ` | Read-only access to system diagnostics and performance counters (ADR-0011) | Low | — | Default grant for AI assistant containers only; not grantable to arbitrary applications without justification |
 | `CAP-AI-SUGGEST-ACTION` | Present a suggested system/settings change to the user for their own explicit action (ADR-0011); does NOT permit executing the change itself | Low | — | Default grant for AI assistant containers only |
 | `CAP-CLOUD-SYNC` | Transmit user-selected data (saves, settings, installed-app list) to a user-configured cloud endpoint | Medium | — | Denied by default; requires explicit opt-in per NPC-001 §10.2 |
+| `CAP-CONTACTS` | Read/write the user's contacts data | High | `android.permission.READ_CONTACTS` / `WRITE_CONTACTS` | Prompt required |
+| `CAP-CALENDAR` | Read/write the user's calendar data | Medium | `android.permission.READ_CALENDAR` / `WRITE_CALENDAR` | Prompt required |
+| `CAP-TELEPHONY` | Place/receive calls and read call state (relevant to Android-compat phone-class devices only) | High | `android.permission.CALL_PHONE`, `READ_PHONE_STATE` | Prompt required |
+| `CAP-SMS` | Send/read SMS and MMS messages | High | `android.permission.SEND_SMS`, `READ_SMS`, `RECEIVE_SMS` | Prompt required |
+| `CAP-SENSORS` | Access motion/environmental sensors (accelerometer, gyroscope, ambient light, etc.) | Low | `android.permission.BODY_SENSORS`, `HIGH_SAMPLING_RATE_SENSORS` | Prompt required for body sensors; default grant for basic motion sensors |
+| `CAP-MEDIA-LIBRARY` | Read the user's photo/video/audio library (scoped, distinct from general `CAP-DOCUMENTS`) | Medium | `android.permission.READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` / `READ_MEDIA_AUDIO` | Prompt required |
+| `CAP-NEAR-FIELD` | Access NFC hardware | Medium | `android.permission.NFC` | Prompt required |
+| `CAP-BIOMETRIC` | Request biometric authentication (fingerprint/face) via the platform's own prompt, without exposing raw biometric data to the application | Low | `android.permission.USE_BIOMETRIC` | Default grant (the OS-owned prompt itself, not raw sensor access, is what's exposed) |
 
 ## 4. Default Grant Behavior
 
@@ -119,8 +127,8 @@ added here, rather than approximated.
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial registry populated (Milestone 6) |
 | 1.1.0   | 2026-07-12 | Add `CAP-AI-DIAGNOSTICS-READ`, `CAP-AI-SUGGEST-ACTION`, `CAP-CLOUD-SYNC` (Milestone 8, per ADR-0011 and NPC-001 §10.2) |
-
-| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.2.0   | 2026-07-13 | Add `CAP-CONTACTS`, `CAP-CALENDAR`, `CAP-TELEPHONY`, `CAP-SMS`, `CAP-SENSORS`, `CAP-MEDIA-LIBRARY`, `CAP-NEAR-FIELD`, `CAP-BIOMETRIC` — expanding Android permission mapping per §6, still intentionally incomplete |
 
 ---
 **End of Document**

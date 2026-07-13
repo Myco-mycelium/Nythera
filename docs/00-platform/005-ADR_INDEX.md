@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.8.0
+version: 1.9.0
 status: Draft
 classification: Reference
 owners:
@@ -35,6 +35,9 @@ only.
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted | 2026-07-13 | — |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted | 2026-07-13 | — |
 | ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed | 2026-07-13 | — |
+| ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed | 2026-07-13 | — |
+| ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed | 2026-07-13 | — |
+| ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed | 2026-07-13 | — |
 
 ## ADR Statuses
 
@@ -56,6 +59,7 @@ only.
 | 1.6.0   | 2026-07-12 | Add ADR-0011 (AI assistant containerization) |
 | 1.7.0   | 2026-07-12 | Add ADR-0012 (NyHAL pluggable kernel backend) |
 | 1.8.0   | 2026-07-13 | Milestone 9 review: accept ADR-0002/0003/0004/0005/0006/0008/0010/0011/0012; add ADR-0013 (scheduler algorithm, Proposed — tuning-blocked). ADR-0007 and ADR-0009 remain Proposed pending benchmark data. |
+| 1.9.0   | 2026-07-13 | Add ADR-0014 (secure boot), ADR-0015 (shared ARM translation), ADR-0016 (NyFS Linux Backend FUSE strategy) — closing three of the backlog's open architecture-decision items |
 
 ---
 **End of Document**

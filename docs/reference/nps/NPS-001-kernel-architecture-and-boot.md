@@ -1,17 +1,17 @@
 ---
 title: Kernel Architecture and Boot
 document_id: NPS-001
-version: 1.1.1
+version: 1.1.2
 status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0013]
+depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0013, ADR-0014]
 ---
 
 # NPS-001 — Kernel Architecture and Boot
@@ -111,9 +111,12 @@ NPS.
   decided~~ — resolved by ADR-0013: EEVDF-derived, with a separate
   real-time priority class. Tuning parameters (time slice, weight curve,
   admission limits) remain pending benchmark data per NPC-002 §5.2.
-- Secure boot / signature verification key management is out of scope for
-  this document and will be addressed in a security-subsystem NPS
-  (Milestone M6).
+- ~~Secure boot / signature verification key management is out of
+  scope for this document~~ — resolved by ADR-0014: standard UEFI Secure
+  Boot with a shim-equivalent first-stage loader, verified against a
+  Nythera key, with user-enrollable keys supported for self-built kernels
+  or Experimental Backend (NPS-017 §6) use. Exact interaction with NyHAL
+  backend selection remains open pending backend implementation.
 
 ## Revision History
 
@@ -121,6 +124,7 @@ NPS.
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial draft      |
 | 1.1.0   | 2026-07-12 | Add backend scope note (§2): this document defines the NyKernel Backend specifically, per ADR-0012/NPS-017 |
+| 1.1.2   | 2026-07-13 | Resolve §7 secure boot open question via ADR-0014 (UEFI Secure Boot, user-enrollable keys) |
 
 | 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
