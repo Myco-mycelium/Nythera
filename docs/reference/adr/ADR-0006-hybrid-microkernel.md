@@ -1,11 +1,11 @@
 ---
 title: Adopt a Hybrid Microkernel as the Nythera Kernel Base
 document_id: ADR-0006
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0004]
 ---
@@ -77,4 +77,4 @@ architecture, rather than a second, unrelated isolation mechanism.
   NPS-003.
 
 ## Status
-Proposed — pending Architecture Group review per NPC-001 §6.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). NPS-001 (NyKernel Backend) implements this decision. Scheduler algorithm is resolved by ADR-0013; exact IPC latency and resource-limit tuning remain pending benchmark data (NPS-002 §9, NPS-003 §6.1), which does not block acceptance of the architectural decision itself.

@@ -1,8 +1,8 @@
 ---
 title: NyHAL — Kernel Abstraction Layer and Backend Contract
 document_id: NPS-017
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
@@ -135,6 +135,8 @@ to future work once more than one backend exists to migrate between.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+
+| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

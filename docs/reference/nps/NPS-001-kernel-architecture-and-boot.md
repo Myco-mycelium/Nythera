@@ -1,8 +1,8 @@
 ---
 title: Kernel Architecture and Boot
 document_id: NPS-001
-version: 1.1.0
-status: Draft
+version: 1.1.1
+status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012]
+depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0013]
 ---
 
 # NPS-001 — Kernel Architecture and Boot
@@ -107,8 +107,10 @@ NPS.
 
 ## 7. Open Questions *(Informative)*
 
-- Exact scheduler algorithm (e.g. EEVDF-derived vs. custom) is not yet
-  decided; to be addressed in a follow-up NPS before implementation.
+- ~~Exact scheduler algorithm (e.g. EEVDF-derived vs. custom) is not yet
+  decided~~ — resolved by ADR-0013: EEVDF-derived, with a separate
+  real-time priority class. Tuning parameters (time slice, weight curve,
+  admission limits) remain pending benchmark data per NPC-002 §5.2.
 - Secure boot / signature verification key management is out of scope for
   this document and will be addressed in a security-subsystem NPS
   (Milestone M6).
@@ -119,6 +121,8 @@ NPS.
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial draft      |
 | 1.1.0   | 2026-07-12 | Add backend scope note (§2): this document defines the NyKernel Backend specifically, per ADR-0012/NPS-017 |
+
+| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

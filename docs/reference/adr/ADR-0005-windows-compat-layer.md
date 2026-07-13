@@ -1,11 +1,11 @@
 ---
 title: Windows Compatibility via Translation Layer, Not Full Emulation
 document_id: ADR-0005
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0004]
 ---
@@ -43,4 +43,4 @@ the highest-risk element of this decision.
   Windows compatibility specification.
 
 ## Status
-Proposed — pending Milestone M5 runtime specification work.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). The pending runtime specification work (NPS-007 Windows Compatibility Runtime) is complete. ARM instruction translation remains an explicitly deferred, unsolved risk (NPS-007 §7), tracked separately in REPOSITORY_STATE.md — this does not block acceptance of the translation-layer-vs-emulation decision itself.

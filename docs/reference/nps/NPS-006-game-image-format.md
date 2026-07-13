@@ -1,8 +1,8 @@
 ---
 title: Nythera Game/Application Image Format (.nygi) and Overlay
 document_id: NPS-006
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 subsystem: storage
 owners:
@@ -126,6 +126,8 @@ rather than omitted.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+
+| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

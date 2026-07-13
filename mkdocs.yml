@@ -46,6 +46,7 @@ nav:
           - ADR-0010 Vulkan graphics foundation: reference/adr/ADR-0010-vulkan-graphics-foundation.md
           - ADR-0011 AI assistant containerization: reference/adr/ADR-0011-ai-assistant-containerization.md
           - ADR-0012 NyHAL pluggable kernel backend: reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md
+          - ADR-0013 Scheduler algorithm: reference/adr/ADR-0013-scheduler-algorithm.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md

@@ -1,11 +1,11 @@
 ---
 title: Adopt Vulkan as the Native Graphics API Foundation
 document_id: ADR-0010
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0005, ADR-0006, NPS-001, NPS-007]
 ---
@@ -64,4 +64,4 @@ then need to target as a second step.
   rather than omitted.
 
 ## Status
-Proposed — pending Architecture Group review.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9).

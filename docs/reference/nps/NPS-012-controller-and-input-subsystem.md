@@ -1,14 +1,14 @@
 ---
 title: Controller and Input Subsystem
 document_id: NPS-012
-version: 1.0.0
-status: Draft
+version: 1.1.1
+status: Accepted
 classification: Normative
 subsystem: gaming
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, NPS-002, NPS-009, NPS-011]
@@ -59,18 +59,21 @@ consistent with NPC-001 §9.2's "no implicit elevated privileges" rule.
 
 ## 5. VR Headset Input
 
-5.1. VR headset tracking and controller input **MAY** be supported as an
-optional capability distinct from `CAP-INPUT`, given its higher data rate
-and different latency requirements; the exact capability definition is
-deferred to a future NPS-011 registry addition once a concrete VR
-integration is scoped (see NPS-009 §8's open question on whether VR is a
-distinct UI mode).
+5.1. **Decision (2026-07-13):** VR is explicitly out of scope for v1 of
+this specification. Rather than leave VR input capability undefined
+indefinitely, it is formally deferred to a future Milestone (tentatively
+M9) once a concrete VR integration is scoped end-to-end (input, rendering
+via NPS-013, and the UI-mode question raised in NPS-009 §8). Nythera v1
+**MUST NOT** claim VR support; this is a scope boundary, not an
+oversight.
 
-5.2. VR input, when supported, **MUST** go through the same capability
-evaluation path as any other input source (NPS-010 §4.2) — it MUST NOT
-bypass container capability checks for latency reasons; latency
+5.2. When VR is scoped, its input handling **MUST** go through the same
+capability evaluation path as any other input source (NPS-010 §4.2) — it
+MUST NOT bypass container capability checks for latency reasons; latency
 requirements are addressed through IPC and scheduling priority (NPS-002
-§6.2), not through weakened isolation.
+§6.2), not through weakened isolation. This constraint is fixed now, in
+advance of the rest of the design, precisely so latency pressure can't
+later be used to justify an exception.
 
 ## 6. Real-Time Scheduling Interaction
 
@@ -89,14 +92,17 @@ NPS-010 §7.1.
 - Exact normalized controller capability schema (§3.3) — e.g. how
   adaptive triggers or haptic feedback are represented — is deferred to
   implementation-phase work.
-- VR capability definition (§5.1) is deferred pending a concrete VR
-  integration scope.
+- ~~VR capability definition~~ — resolved by §5.1: formally deferred to a
+  future milestone rather than left open-ended.
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.1.0   | 2026-07-13 | Resolve §5 VR open question: explicit decision to defer VR to a future milestone rather than leave undefined |
+
+| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

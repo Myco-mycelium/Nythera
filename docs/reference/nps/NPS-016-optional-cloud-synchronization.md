@@ -1,8 +1,8 @@
 ---
 title: Optional Cloud Synchronization
 document_id: NPS-016
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 subsystem: ai
 owners:
@@ -117,6 +117,8 @@ a default first-party option **MAY** be offered.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+
+| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

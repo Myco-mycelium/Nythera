@@ -1,8 +1,8 @@
 ---
 title: Windows Compatibility Runtime
 document_id: NPS-007
-version: 1.0.0
-status: Draft
+version: 1.0.1
+status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
@@ -114,6 +114,8 @@ failing silently or with a generic error.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+
+| 1.0.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

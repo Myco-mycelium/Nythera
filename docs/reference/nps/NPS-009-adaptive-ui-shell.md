@@ -1,14 +1,14 @@
 ---
 title: Adaptive UI Shell
 document_id: NPS-009
-version: 1.0.0
-status: Draft
+version: 1.1.1
+status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, NPS-001, NPS-007, NPS-008]
@@ -116,15 +116,20 @@ settings across devices.
 - The exact hardware-signal heuristics for mode detection (§4.1) require
   testing across real device classes and are left unspecified pending that
   work.
-- Whether VR headset presentation (mentioned under Gaming Features in the
-  original design discussion) is a distinct mode or a Gaming Mode variant
-  is undecided.
+- ~~Whether VR headset presentation... is a distinct mode or a Gaming Mode
+  variant~~ — resolved by NPS-012 §5.1: VR is deferred to a future
+  milestone (tentatively M9) entirely; this document's mode table (§3)
+  intentionally excludes VR pending that scoping work, rather than
+  guessing at a mode definition ahead of it.
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.1.0   | 2026-07-13 | Cross-reference NPS-012 §5.1's VR deferral decision instead of leaving it as an independent open question |
+
+| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

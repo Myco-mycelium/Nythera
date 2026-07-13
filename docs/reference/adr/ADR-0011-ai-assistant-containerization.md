@@ -1,11 +1,11 @@
 ---
 title: AI Assistant Runs as an Ordinary Capability-Scoped Container
 document_id: ADR-0011
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, NPS-010, NPS-011]
 ---
@@ -67,4 +67,4 @@ implementing NPC-001 §11.1.
   since it never held any capability the rest of the system depends on.
 
 ## Status
-Proposed — pending Architecture Group review.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). NPS-015 (Local AI Assistant) and the NPS-011 capability additions implement this decision.

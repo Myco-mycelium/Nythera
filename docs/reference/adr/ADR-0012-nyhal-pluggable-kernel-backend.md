@@ -1,11 +1,11 @@
 ---
 title: Adopt NyHAL as a Pluggable Kernel Abstraction Layer
 document_id: ADR-0012
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002, NPS-003]
 ---
@@ -101,8 +101,4 @@ match NPS-001's internal structure.
   rather than only architecturally.
 
 ## Status
-Proposed — pending Architecture Group review. Because this decision
-reframes how every prior core-architecture, storage, runtime, and
-security document is implemented (without changing their normative
-requirements), it is flagged as cross-cutting per NPC-001 §3.1 and
-requires review beyond the `core-architecture` subsystem alone.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). Flagged and reviewed as cross-cutting per NPC-001 §3.1. NPS-017 implements the backend contract; NPS-001 has been amended to scope itself to the NyKernel Backend specifically.

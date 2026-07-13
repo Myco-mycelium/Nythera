@@ -1,8 +1,8 @@
 ---
 title: Capability Registry
 document_id: NPS-011
-version: 1.1.0
-status: Draft
+version: 1.1.1
+status: Accepted
 classification: Normative
 subsystem: security
 owners:
@@ -119,6 +119,8 @@ added here, rather than approximated.
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial registry populated (Milestone 6) |
 | 1.1.0   | 2026-07-12 | Add `CAP-AI-DIAGNOSTICS-READ`, `CAP-AI-SUGGEST-ACTION`, `CAP-CLOUD-SYNC` (Milestone 8, per ADR-0011 and NPC-001 §10.2) |
+
+| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

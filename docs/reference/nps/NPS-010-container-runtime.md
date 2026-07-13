@@ -1,14 +1,14 @@
 ---
 title: Container Runtime
 document_id: NPS-010
-version: 1.0.0
+version: 1.0.1
 status: Draft
 classification: Normative
 subsystem: security
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0009, NPS-002, NPS-003]
@@ -132,6 +132,14 @@ administrator questions.
 
 ## 9. Open Questions *(Informative)*
 
+- **Status note (Milestone 9 review):** §7.1 of this document normatively
+  requires the ADR-0009 token-bucket mechanism, which remains `Proposed`
+  pending its own benchmark data. The container lifecycle, capability
+  assignment, and revocation sections (§4–§6, §8) are not themselves
+  blocked, but this document is kept `Draft` as a whole rather than
+  partially accepted, consistent with NPC-001 §5's rule that acceptance
+  applies to a document, not a subset of its sections. Expected to move to
+  `Accepted` alongside ADR-0009.
 - Exact default CPU/memory limit values (§7.2) require benchmarking across
   representative workloads and are deferred pending that data, per NPC-002
   §5.2.
@@ -143,6 +151,7 @@ administrator questions.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.0.1   | 2026-07-13 | Clarify Draft status is a transitive dependency on ADR-0009 §7.1, not an issue in this document's own content (Milestone 9 review) |
 
 ---
 **End of Document**

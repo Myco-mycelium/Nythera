@@ -1,11 +1,11 @@
 ---
 title: Containerized Execution Model for All Application Classes
 document_id: ADR-0004
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001]
 ---
@@ -40,4 +40,4 @@ runtime.
   measured and documented per NPC-002 §5.2 before claims are published.
 
 ## Status
-Proposed — pending Milestone M6 security specification work.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). The pending security specification work (NPS-010 Container Runtime, NPS-011 Capability Registry) is complete.

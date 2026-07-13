@@ -1,14 +1,14 @@
 ---
 title: GPU Feature Support
 document_id: NPS-013
-version: 1.0.0
-status: Draft
+version: 1.1.1
+status: Accepted
 classification: Normative
 subsystem: gaming
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0010, NPS-001, NPS-007]
@@ -86,6 +86,29 @@ consistent with the same reasoning applied to Oodle in ADR-0007 — the
 platform's default rendering path MUST NOT require a closed-source
 upscaling dependency to function.
 
+7.3. As of this version, vendor SDK status differs meaningfully by
+technology and MUST inform integration priority:
+
+- Older AMD FSR releases (FSR 2 / 3.1.5 and earlier) are MIT-licensed and
+  open source, with native Vulkan support built in. These **SHOULD** be
+  the first upscaling path integrated, since they satisfy both the
+  vendor-neutrality goal (§7.1) and the no-closed-dependency requirement
+  (§7.2) directly.
+- Intel's XeSS Super Resolution (XeSS-SR) SDK is closed-source but freely
+  redistributable, with native Vulkan 1.1 support across vendor hardware
+  via its DP4a path. It **MAY** be integrated as an optional module under
+  §7.2's "vendor-provided library" treatment.
+- AMD's newer FSR4 (ML/matrix-unit-based) is, as of this version,
+  officially DirectX 12-only; Vulkan access exists only through
+  unofficial community translation layers, not a first-party SDK path.
+  FSR4 **MUST NOT** be treated as Vulkan-ready in NPS-013 planning until
+  AMD ships native Vulkan support; the Windows compatibility runtime's
+  DirectX-to-Vulkan translation (NPS-007 §4) MAY still expose it to
+  translated Windows titles, subject to §8.2's known-gap disclosure.
+- XeSS Frame Generation and FSR4 Frame Generation are both, as of this
+  version, Windows/DirectX 12-only; frame generation support is
+  deferred pending either vendor shipping a native Vulkan path.
+
 ## 8. Interaction with Compatibility Runtimes
 
 8.1. The Windows compatibility runtime's DirectX-to-Vulkan translation
@@ -100,17 +123,35 @@ informing the user.
 
 ## 9. Open Questions *(Informative)*
 
-- The vendor-neutral upscaling integration point (§7.1) requires further
-  design once specific upscaling SDKs are evaluated for Vulkan
-  integration maturity.
+- ~~The vendor-neutral upscaling integration point (§7.1) requires further
+  design~~ — resolved in part by §7.3: integration priority is FSR
+  (2/3.1.5, open source, native Vulkan) first, XeSS-SR (closed but
+  redistributable, native Vulkan) second, with FSR4 and both vendors'
+  frame-generation features deferred pending native Vulkan support.
+  Exact API surface for the vendor-neutral integration point itself is
+  still deferred to implementation-phase design.
 - Exact HDR tone-mapping behavior when compositing mixed HDR/SDR windows
   (§4.2) is deferred to the adaptive UI shell's visual design work.
+
+## Sources *(Informative — checked 2026-07-13)*
+
+- AMD FSR SDK / GPUOpen: https://gpuopen.com/amd-fsr-sdk/
+- FSR4 Compatibility List (OptiScaler wiki): https://github.com/optiscaler/OptiScaler/wiki/fsr4-compatibility-list
+- "FSR 4 will eventually be open-sourced, bar the core technology" — PC Gamer: https://www.pcgamer.com/hardware/graphics-cards/amd-suggests-that-fsr-4-will-eventually-be-open-sourced-bar-the-core-technology-as-part-of-its-long-term-plan/
+- Intel XeSS SDK releases: https://github.com/intel/xess/releases
+- "Intel shares XeSS 3.0 SDK... still hasn't followed through on open-source promise" — Tom's Hardware: https://www.tomshardware.com/pc-components/gpu-drivers/intel-shares-xess-3-0-sdk-for-game-devs-with-3x-and-4x-mfg-modes-but-it-still-hasnt-followed-through-on-its-open-source-promise
+
+This section should be re-checked before implementation begins, since
+vendor SDK support for Vulkan changes frequently.
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.1.0   | 2026-07-13 | Resolve §7 upscaling open question with current vendor SDK research (FSR open-source/native-Vulkan vs. FSR4 DX12-only vs. XeSS-SR closed/native-Vulkan) |
+
+| 1.1.1 | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 
 ---
 **End of Document**

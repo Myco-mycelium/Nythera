@@ -1,11 +1,11 @@
 ---
 title: Adopt an AOSP-Based Container Runtime for Android Compatibility
 document_id: ADR-0008
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006]
 ---
@@ -59,4 +59,4 @@ twice.
   raised in ADR-0005, rather than maintaining two independent translators.
 
 ## Status
-Proposed — pending Milestone M5 runtime specification work.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). The pending runtime specification work (NPS-008 Android Compatibility Runtime) is complete. Shared ARM instruction-translation risk with ADR-0005 remains open, tracked in REPOSITORY_STATE.md.

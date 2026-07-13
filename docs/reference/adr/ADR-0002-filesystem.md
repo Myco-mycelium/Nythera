@@ -1,11 +1,11 @@
 ---
 title: Adopt Copy-on-Write Filesystem with Built-in Compression
 document_id: ADR-0002
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001]
 ---
@@ -44,4 +44,4 @@ default Nythera filesystem (working name: **NyFS**), providing:
 - All game/application image mounting (ADR-0003) depends on this decision.
 
 ## Status
-Proposed — pending Milestone M4 storage specification work.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). The pending storage specification work (NPS-004 NyFS Filesystem Core) is complete; exact compression codec/level defaults remain governed separately by ADR-0007.

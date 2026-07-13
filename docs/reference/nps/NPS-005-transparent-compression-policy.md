@@ -1,14 +1,14 @@
 ---
 title: Transparent Compression Policy
 document_id: NPS-005
-version: 1.0.0
+version: 1.0.1
 status: Draft
 classification: Normative
 subsystem: storage
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0007, NPS-004]
@@ -85,6 +85,13 @@ successfully," completing the write **MUST** take priority.
 
 ## 7. Open Questions *(Informative)*
 
+- **Status note (Milestone 9 review):** this document defines default
+  compression levels per data category (§3), which are directly tied to
+  ADR-0007's still-`Proposed` codec/level benchmarks. It remains `Draft`
+  transitively — not for issues in its own normative content, but because
+  accepting a policy that names specific default levels ahead of the ADR
+  that sets them would be premature. It is expected to move to `Accepted`
+  in the same review cycle as ADR-0007.
 - The exact inactivity threshold for automatic Active→Cold migration
   (§4.2) requires usage-pattern data and is left unspecified pending
   benchmarking, per NPC-002 §5.2.
@@ -97,6 +104,7 @@ successfully," completing the write **MUST** take priority.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.0.1   | 2026-07-13 | Clarify Draft status is a transitive dependency on ADR-0007, not an issue in this document's own content (Milestone 9 review) |
 
 ---
 **End of Document**

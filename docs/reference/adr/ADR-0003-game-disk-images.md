@@ -1,11 +1,11 @@
 ---
 title: Games Distributed as Mounted Disk Images with Writable Overlay
 document_id: ADR-0003
-version: 1.0.0
-status: Proposed
+version: 1.0.1
+status: Accepted
 owners: [Nythera Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0002]
 ---
@@ -41,4 +41,4 @@ backups.
   cooperation and is out of scope for the initial specification.
 
 ## Status
-Proposed — pending Milestone M7 gaming subsystem specification work.
+Accepted — 2026-07-12, following Architecture Group review (Milestone 9). The pending gaming/storage specification work (NPS-006 Game/Application Image Format) is complete.

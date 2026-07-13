@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.7.0
+version: 1.8.0
 status: Draft
 classification: Reference
 owners:
@@ -23,17 +23,18 @@ only.
 | ID | Title | Status | Date | Supersedes |
 |----|-------|--------|------|------------|
 | ADR-0001 | Adopt Diátaxis + MkDocs Material for documentation | Accepted | 2026-07-12 | — |
-| ADR-0002 | Adopt copy-on-write filesystem with built-in compression | Proposed | 2026-07-12 | — |
-| ADR-0003 | Games distributed as mounted disk images with writable overlay | Proposed | 2026-07-12 | — |
-| ADR-0004 | Containerized execution model for all application classes | Proposed | 2026-07-12 | — |
-| ADR-0005 | Windows compatibility via translation layer, not full emulation | Proposed | 2026-07-12 | — |
-| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Proposed | 2026-07-12 | — |
+| ADR-0002 | Adopt copy-on-write filesystem with built-in compression | Accepted | 2026-07-13 | — |
+| ADR-0003 | Games distributed as mounted disk images with writable overlay | Accepted | 2026-07-13 | — |
+| ADR-0004 | Containerized execution model for all application classes | Accepted | 2026-07-13 | — |
+| ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted | 2026-07-13 | — |
+| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Accepted | 2026-07-13 | — |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed | 2026-07-12 | — |
-| ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | 2026-07-12 | — |
+| ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted | 2026-07-13 | — |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed | 2026-07-12 | — |
-| ADR-0010 | Adopt Vulkan as the native graphics API foundation | Proposed | 2026-07-12 | — |
-| ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Proposed | 2026-07-12 | — |
-| ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Proposed | 2026-07-12 | — |
+| ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted | 2026-07-13 | — |
+| ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted | 2026-07-13 | — |
+| ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted | 2026-07-13 | — |
+| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed | 2026-07-13 | — |
 
 ## ADR Statuses
 
@@ -54,6 +55,7 @@ only.
 | 1.5.0   | 2026-07-12 | Add ADR-0010 (Vulkan graphics foundation) |
 | 1.6.0   | 2026-07-12 | Add ADR-0011 (AI assistant containerization) |
 | 1.7.0   | 2026-07-12 | Add ADR-0012 (NyHAL pluggable kernel backend) |
+| 1.8.0   | 2026-07-13 | Milestone 9 review: accept ADR-0002/0003/0004/0005/0006/0008/0010/0011/0012; add ADR-0013 (scheduler algorithm, Proposed — tuning-blocked). ADR-0007 and ADR-0009 remain Proposed pending benchmark data. |
 
 ---
 **End of Document**

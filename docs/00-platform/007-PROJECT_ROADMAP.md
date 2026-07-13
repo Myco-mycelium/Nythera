@@ -21,10 +21,9 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M8 — AI Subsystem** complete. All M1–M8 milestones now have draft-level
-content. A cross-cutting NyHAL pluggable-backend layer (ADR-0012, NPS-017)
-has also been added on top of the original roadmap scope — see the new
-"Cross-Cutting" section below.
+**M9 — Architecture Group Review** complete. All M1–M8 content reviewed;
+13/17 NPS and 10/13 ADRs moved to `Accepted`. See "Milestone 9" section
+below and `REPOSITORY_STATE.md` for the full accounting.
 
 ## Roadmap
 
@@ -107,6 +106,21 @@ matures.
 - [ ] Architecture Group review of ADR-0012/NPS-017 — flagged cross-cutting per NPC-001 §3.1, touches every backend-facing contract since M3
 - [ ] Begin Linux Backend implementation work (NPS-017 §6)
 - [ ] Decide NyFS's Linux Backend implementation strategy (NPS-017 §8)
+
+### M9 — Architecture Group Review
+A full review pass across every M1–M8 document, resolving what could
+honestly be resolved and naming what couldn't, per NPC-001 §5's rule that
+`Draft` → `Accepted` requires a recorded review.
+
+- [x] ADR-0013: adopt an EEVDF-derived scheduler with a real-time priority class, resolving NPS-001 §7's open scheduler-algorithm question (tuning parameters remain benchmark-gated)
+- [x] Resolve VR scoping ambiguity (NPS-012 §5.1, NPS-009 §7): explicitly deferred to a future milestone rather than left as an open question indefinitely
+- [x] Verify NPS-013 §7.3's FSR/XeSS/FSR4 vendor SDK licensing claims via web search before accepting (per NPC-002 §5.1) — confirmed accurate
+- [x] Accept ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0010, ADR-0011, ADR-0012 (9 of 13 ADRs)
+- [x] Accept NPS-001, NPS-004, NPS-006, NPS-007, NPS-008, NPS-009, NPS-011, NPS-012, NPS-013, NPS-014, NPS-015, NPS-016, NPS-017 (13 of 17 NPS)
+- [x] Keep ADR-0007, ADR-0009, ADR-0013 at `Proposed` — each explicitly benchmark/tuning-blocked in its own text, not a review oversight
+- [x] Keep NPS-002, NPS-003 at `Draft` — each self-blocks on benchmark data in its own normative text (§9, §6.1 respectively)
+- [x] Keep NPS-005, NPS-010 at `Draft` — each transitively blocked on an ADR (0007, 0009) that isn't Accepted yet, with an explicit status note added explaining why
+- [ ] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land
 
 ## Revision History
 

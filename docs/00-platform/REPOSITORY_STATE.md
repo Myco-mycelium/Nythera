@@ -5,13 +5,16 @@ Nythera repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-07-12
+2026-07-13
 
 ## Current Milestone
-Milestone 8 — AI Subsystem: complete. All eight original roadmap milestones
-(M1–M8) now have draft-level content. A cross-cutting addition — NyHAL
-pluggable kernel backend (ADR-0012, NPS-017) — has also landed, reframing
-NPS-001 as the NyKernel-specific backend rather than the only backend.
+Milestone 9 — Architecture Group Review: complete. Every document from
+M1–M8 has been reviewed; documents whose own text does not gate acceptance
+on a pending benchmark or an unresolved dependency have moved to
+`Accepted`. Two items — VR scoping (NPS-012 §5.1/NPS-009 §8) and the
+scheduler algorithm (NPS-001 §7) — were also resolved during this review
+(the former deferred explicitly to a future milestone, the latter decided
+via new ADR-0013).
 
 ## Governance Documents
 
@@ -26,40 +29,42 @@ NPS-001 as the NyKernel-specific backend rather than the only backend.
 - [x] NPC-008 Subsystem Owners — Draft (all subsystems currently Unassigned)
 
 ## Architecture Decision Records
+10 accepted, 3 held (named blockers below).
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
-- [x] ADR-0002 Copy-on-write filesystem — Proposed
-- [x] ADR-0003 Game disk images with overlay — Proposed
-- [x] ADR-0004 Containerized execution model — Proposed
-- [x] ADR-0005 Windows compatibility translation layer — Proposed
-- [x] ADR-0006 Hybrid microkernel as kernel base — Proposed
-- [x] ADR-0007 Zstandard as default compression codec — Proposed
-- [x] ADR-0008 AOSP-based container runtime for Android compatibility — Proposed
-- [x] ADR-0009 Per-container token-bucket IPC rate limiting — Proposed
-- [x] ADR-0010 Vulkan as native graphics API foundation — Proposed
-- [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Proposed
-- [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Proposed
+- [x] ADR-0002 Copy-on-write filesystem — Accepted
+- [x] ADR-0003 Game disk images with overlay — Accepted
+- [x] ADR-0004 Containerized execution model — Accepted
+- [x] ADR-0005 Windows compatibility translation layer — Accepted
+- [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
+- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, blocked on compression-level benchmark data
+- [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
+- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, blocked on default bucket-parameter benchmark data
+- [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
+- [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
+- [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
+- [ ] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Proposed**, algorithm family decided, tuning parameters blocked on benchmark data
 
 ## Specifications (NPS)
-0 accepted, 17 drafted.
+13 accepted, 4 held (named blockers below).
 
-- [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Draft
-- [x] NPS-002 Process and Thread Model — Draft
-- [x] NPS-003 Inter-Process Communication and Capability Passing — Draft
-- [x] NPS-004 NyFS Filesystem Core — Draft
-- [x] NPS-005 Transparent Compression Policy — Draft
-- [x] NPS-006 Nythera Game/Application Image Format (.nygi) and Overlay — Draft
-- [x] NPS-007 Windows Compatibility Runtime — Draft
-- [x] NPS-008 Android Compatibility Runtime — Draft
-- [x] NPS-009 Adaptive UI Shell — Draft
-- [x] NPS-010 Container Runtime — Draft
-- [x] NPS-011 Capability Registry — Draft (17 capabilities registered)
-- [x] NPS-012 Controller and Input Subsystem — Draft
-- [x] NPS-013 GPU Feature Support — Draft
-- [x] NPS-014 Emulator Hub — Draft
-- [x] NPS-015 Local AI Assistant — Draft
-- [x] NPS-016 Optional Cloud Synchronization — Draft
-- [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Draft
+- [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted
+- [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
+- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking)
+- [x] NPS-004 NyFS Filesystem Core — Accepted
+- [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
+- [x] NPS-006 Nythera Game/Application Image Format (.nygi) and Overlay — Accepted
+- [x] NPS-007 Windows Compatibility Runtime — Accepted (ARM translation remains an explicitly deferred, unsolved risk — §7)
+- [x] NPS-008 Android Compatibility Runtime — Accepted (ARM translation remains an explicitly deferred, unsolved risk — §7)
+- [x] NPS-009 Adaptive UI Shell — Accepted (VR resolved: explicitly deferred to a future milestone, not an open mode definition)
+- [ ] NPS-010 Container Runtime — **Draft**, transitively blocked on ADR-0009 (§7.1 normatively requires its still-Proposed rate-limiting mechanism)
+- [x] NPS-011 Capability Registry — Accepted (17 capabilities registered; continuous by design, new entries added via normal change process)
+- [x] NPS-012 Controller and Input Subsystem — Accepted (VR capability formally deferred, not left ambiguous — §5.1)
+- [x] NPS-013 GPU Feature Support — Accepted (§7.3 documents current FSR/XeSS/FSR4 vendor SDK status, verified 2026-07-13)
+- [x] NPS-014 Emulator Hub — Accepted
+- [x] NPS-015 Local AI Assistant — Accepted
+- [x] NPS-016 Optional Cloud Synchronization — Accepted
+- [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Accepted
 
 ## ABI / API References
 Not started.
@@ -77,16 +82,19 @@ Not started.
 Structure created; MkDocs Material configuration pending.
 
 ## Next Actions
-1. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) as contributors join.
-2. Benchmark IPC round-trip latency before NPS-003 exits Draft (per NPC-002 §5.2).
-3. Benchmark Zstd compression levels (install size vs. load time) before ADR-0007 exits Proposed.
-4. Decide scheduler algorithm and secure-boot key management (NPS-001 §7 open questions).
-5. Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) before either runtime exits Draft.
-6. Benchmark default IPC token-bucket parameters before ADR-0009 exits Proposed.
-7. Expand NPS-011 Android permission mapping incrementally as gaps are found (NPS-011 §6).
-8. Scope VR integration to define the deferred VR input capability (NPS-012 §5.1, NPS-009 §8).
-9. Evaluate vendor-neutral upscaling integration point (NPS-013 §9) once specific SDKs are reviewed.
+Benchmark-gated (unblocks the 3 ADRs + 4 NPS documents held above):
+1. Benchmark IPC round-trip latency (unblocks NPS-003, transitively NPS-010's remaining path once ADR-0009 also clears).
+2. Benchmark default IPC token-bucket parameters (unblocks ADR-0009, then NPS-010 §7.1).
+3. Benchmark Zstd compression levels, install size vs. load time (unblocks ADR-0007, then NPS-005).
+4. Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning (unblocks ADR-0013 in full; algorithm family is already decided).
+5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
+
+Not benchmark-gated:
+6. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) as contributors join.
+7. Resolve shared ARM instruction-translation approach (NPS-007 §7 / NPS-008 §7) — acknowledged limitation, not yet a solved design.
+8. Scope VR integration end-to-end (input, rendering, UI mode) — currently deferred, not designed (NPS-012 §5.1, NPS-009 §7 note).
+9. Evaluate vendor-neutral upscaling integration point (NPS-013 §9) given the FSR/XeSS/FSR4 licensing landscape documented in §7.3.
 10. Begin implementation work on the Linux Backend (NPS-017 §6) as the practical near-term NyHAL target.
 11. Decide NyFS's Linux Backend implementation strategy — FUSE, kernel module, or user-space daemon (NPS-017 §8).
-12. Configure CI build for the MkDocs Material site.
-13. Architecture Group review of ADR-0012/NPS-017, since it is cross-cutting per NPC-001 §3.1 and affects every backend-facing contract.
+12. Expand NPS-011 Android permission mapping incrementally as gaps are found (NPS-011 §6).
+13. Configure CI build for the MkDocs Material site.
