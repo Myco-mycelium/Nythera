@@ -1,7 +1,7 @@
 ---
 title: Capability Registry
 document_id: NPS-011
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -60,6 +60,9 @@ Every capability class **MUST** be recorded with:
 | `CAP-NOTIFY` | Post user-facing notifications | Low | `android.permission.POST_NOTIFICATIONS` | Default grant |
 | `CAP-BACKGROUND-EXEC` | Continue executing while not the foreground container | Medium | — (approximated by Android background-execution limits) | Prompt required |
 | `CAP-IPC-HIGH-THROUGHPUT` | Non-default IPC token-bucket parameters (ADR-0009 §"Decision") | Medium | — | Denied by default; requires justification per NPS-010 §7.1 |
+| `CAP-AI-DIAGNOSTICS-READ` | Read-only access to system diagnostics and performance counters (ADR-0011) | Low | — | Default grant for AI assistant containers only; not grantable to arbitrary applications without justification |
+| `CAP-AI-SUGGEST-ACTION` | Present a suggested system/settings change to the user for their own explicit action (ADR-0011); does NOT permit executing the change itself | Low | — | Default grant for AI assistant containers only |
+| `CAP-CLOUD-SYNC` | Transmit user-selected data (saves, settings, installed-app list) to a user-configured cloud endpoint | Medium | — | Denied by default; requires explicit opt-in per NPC-001 §10.2 |
 
 ## 4. Default Grant Behavior
 
@@ -115,6 +118,7 @@ added here, rather than approximated.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial registry populated (Milestone 6) |
+| 1.1.0   | 2026-07-12 | Add `CAP-AI-DIAGNOSTICS-READ`, `CAP-AI-SUGGEST-ACTION`, `CAP-CLOUD-SYNC` (Milestone 8, per ADR-0011 and NPC-001 §10.2) |
 
 ---
 **End of Document**

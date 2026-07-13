@@ -18,6 +18,8 @@ independent of chat or discussion history.
 | CR-0010 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | ADR-0008 |
 | CR-0011 | Adopt per-container token-bucket rate limiting for IPC | Proposed | ADR-0009 |
 | CR-0012 | Adopt Vulkan as the native graphics API foundation | Proposed | ADR-0010 |
+| CR-0013 | AI assistant runs as an ordinary capability-scoped container | Proposed | ADR-0011 |
+| CR-0014 | Adopt NyHAL as a pluggable kernel abstraction layer (Linux/Experimental/NyKernel backends) | Proposed | ADR-0012 |
 
 ## How to Add an Entry
 

@@ -1,7 +1,7 @@
 ---
 title: Kernel Architecture and Boot
 document_id: NPS-001
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: core-architecture
@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006]
+depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012]
 ---
 
 # NPS-001 — Kernel Architecture and Boot
@@ -32,6 +32,13 @@ This specification covers:
 
 It does **not** cover process/thread semantics (see NPS-002) or IPC message
 format (see NPS-003).
+
+**Backend scope note (per ADR-0012, NPS-017):** this document defines the
+**NyKernel Backend** specifically. Other NyHAL backends (e.g. the Linux
+Backend) MUST satisfy the behavioral contract in NPS-017 §4 but are not
+required to match this document's kernel-space component list or boot
+stage structure internally — NPS-001 remains normative for NyKernel, not
+for every backend.
 
 ## 3. Kernel-Space Components
 
@@ -111,6 +118,7 @@ NPS.
 | Version | Date       | Change            |
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial draft      |
+| 1.1.0   | 2026-07-12 | Add backend scope note (§2): this document defines the NyKernel Backend specifically, per ADR-0012/NPS-017 |
 
 ---
 **End of Document**

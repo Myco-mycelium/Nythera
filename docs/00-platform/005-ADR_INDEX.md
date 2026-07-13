@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.5.0
+version: 1.7.0
 status: Draft
 classification: Reference
 owners:
@@ -32,6 +32,8 @@ only.
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed | 2026-07-12 | — |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed | 2026-07-12 | — |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Proposed | 2026-07-12 | — |
+| ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Proposed | 2026-07-12 | — |
+| ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Proposed | 2026-07-12 | — |
 
 ## ADR Statuses
 
@@ -50,6 +52,8 @@ only.
 | 1.3.0   | 2026-07-12 | Add ADR-0008 (Android runtime approach) |
 | 1.4.0   | 2026-07-12 | Add ADR-0009 (IPC rate limiting) |
 | 1.5.0   | 2026-07-12 | Add ADR-0010 (Vulkan graphics foundation) |
+| 1.6.0   | 2026-07-12 | Add ADR-0011 (AI assistant containerization) |
+| 1.7.0   | 2026-07-12 | Add ADR-0012 (NyHAL pluggable kernel backend) |
 
 ---
 **End of Document**

@@ -53,10 +53,14 @@ for the full standard.
 
 ## Project Status
 
-Milestones 1–6 complete (Repository Bootstrap, Platform Constitution, Core
-Architecture, Storage, Runtime, Security). Milestone 7 (Gaming Subsystem)
-in progress. See [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md)
-and [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
+Milestones 1–8 complete (Repository Bootstrap, Platform Constitution, Core
+Architecture, Storage, Runtime, Security, Gaming Subsystem, AI Subsystem) —
+the full original roadmap scope now has draft-level content. A
+cross-cutting NyHAL pluggable kernel backend layer (ADR-0012, NPS-017) has
+also been added, allowing Nythera to target a Linux backend while the
+long-term NyKernel design (ADR-0006) matures. See
+[`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
+[`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
 
 All subsystems in [`NPC-008 Subsystem Owners`](docs/00-platform/SUBSYSTEM_OWNERS.md)
 are currently unassigned pending contributors.

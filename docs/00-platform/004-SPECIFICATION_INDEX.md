@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.6.0
+version: 1.8.0
 status: Draft
 classification: Reference
 owners:
@@ -47,6 +47,8 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Proposed |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Proposed |
+| ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Proposed |
+| ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -55,7 +57,7 @@ index.
 
 | ID | Title | Subsystem | Status |
 |----|-------|-----------|--------|
-| NPS-001 | Kernel Architecture and Boot | core-architecture | Draft |
+| NPS-001 | Kernel Architecture and Boot (NyKernel Backend) | core-architecture | Draft |
 | NPS-002 | Process and Thread Model | core-architecture | Draft |
 | NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft |
 | NPS-004 | NyFS Filesystem Core | storage | Draft |
@@ -69,9 +71,15 @@ index.
 | NPS-012 | Controller and Input Subsystem | gaming | Draft |
 | NPS-013 | GPU Feature Support | gaming | Draft |
 | NPS-014 | Emulator Hub | gaming | Draft |
+| NPS-015 | Local AI Assistant | ai | Draft |
+| NPS-016 | Optional Cloud Synchronization | ai | Draft |
+| NPS-017 | NyHAL — Kernel Abstraction Layer and Backend Contract | core-architecture | Draft |
 
-The AI Subsystem specification set remains to be drafted (Milestone M8, see
-NPC-003 §7).
+All eight milestones from `NPC-007 Project Roadmap`'s original scope (M1–M8)
+have at least draft-level content, plus a cross-cutting NyHAL layering
+(ADR-0012, NPS-017) that reframes how every backend-facing contract above
+is implemented. See `REPOSITORY_STATE.md` for outstanding open questions
+and benchmarks required before any document can move to `Accepted`.
 
 ## ABI / API References
 
@@ -98,6 +106,8 @@ NPC-003 §7).
 | 1.4.0   | 2026-07-12 | Add ADR-0008 and NPS-007..009 (Runtime, M5) |
 | 1.5.0   | 2026-07-12 | Add ADR-0009 and NPS-010..011 (Security, M6) |
 | 1.6.0   | 2026-07-12 | Add ADR-0010 and NPS-012..014 (Gaming Subsystem, M7) |
+| 1.7.0   | 2026-07-12 | Add ADR-0011 and NPS-015..016 (AI Subsystem, M8); add CAP-AI-DIAGNOSTICS-READ, CAP-AI-SUGGEST-ACTION, CAP-CLOUD-SYNC to NPS-011 |
+| 1.8.0   | 2026-07-12 | Add ADR-0012 and NPS-017 (NyHAL pluggable kernel backend, cross-cutting); amend NPS-001 scope to NyKernel Backend specifically |
 
 ---
 **End of Document**

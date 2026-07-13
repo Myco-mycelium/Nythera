@@ -8,7 +8,10 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-12
 
 ## Current Milestone
-Milestone 7 — Gaming Subsystem (in progress). Milestones 1-6 complete.
+Milestone 8 — AI Subsystem: complete. All eight original roadmap milestones
+(M1–M8) now have draft-level content. A cross-cutting addition — NyHAL
+pluggable kernel backend (ADR-0012, NPS-017) — has also landed, reframing
+NPS-001 as the NyKernel-specific backend rather than the only backend.
 
 ## Governance Documents
 
@@ -34,11 +37,13 @@ Milestone 7 — Gaming Subsystem (in progress). Milestones 1-6 complete.
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Proposed
 - [x] ADR-0009 Per-container token-bucket IPC rate limiting — Proposed
 - [x] ADR-0010 Vulkan as native graphics API foundation — Proposed
+- [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Proposed
+- [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Proposed
 
 ## Specifications (NPS)
-0 accepted, 14 drafted.
+0 accepted, 17 drafted.
 
-- [x] NPS-001 Kernel Architecture and Boot — Draft
+- [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Draft
 - [x] NPS-002 Process and Thread Model — Draft
 - [x] NPS-003 Inter-Process Communication and Capability Passing — Draft
 - [x] NPS-004 NyFS Filesystem Core — Draft
@@ -48,10 +53,13 @@ Milestone 7 — Gaming Subsystem (in progress). Milestones 1-6 complete.
 - [x] NPS-008 Android Compatibility Runtime — Draft
 - [x] NPS-009 Adaptive UI Shell — Draft
 - [x] NPS-010 Container Runtime — Draft
-- [x] NPS-011 Capability Registry — Draft (14 capabilities registered)
+- [x] NPS-011 Capability Registry — Draft (17 capabilities registered)
 - [x] NPS-012 Controller and Input Subsystem — Draft
 - [x] NPS-013 GPU Feature Support — Draft
 - [x] NPS-014 Emulator Hub — Draft
+- [x] NPS-015 Local AI Assistant — Draft
+- [x] NPS-016 Optional Cloud Synchronization — Draft
+- [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Draft
 
 ## ABI / API References
 Not started.
@@ -78,5 +86,7 @@ Structure created; MkDocs Material configuration pending.
 7. Expand NPS-011 Android permission mapping incrementally as gaps are found (NPS-011 §6).
 8. Scope VR integration to define the deferred VR input capability (NPS-012 §5.1, NPS-009 §8).
 9. Evaluate vendor-neutral upscaling integration point (NPS-013 §9) once specific SDKs are reviewed.
-10. Configure CI build for the MkDocs Material site.
-11. Begin Milestone 8 (AI Subsystem): local assistant boundary NPS, optional cloud sync NPS.
+10. Begin implementation work on the Linux Backend (NPS-017 §6) as the practical near-term NyHAL target.
+11. Decide NyFS's Linux Backend implementation strategy — FUSE, kernel module, or user-space daemon (NPS-017 §8).
+12. Configure CI build for the MkDocs Material site.
+13. Architecture Group review of ADR-0012/NPS-017, since it is cross-cutting per NPC-001 §3.1 and affects every backend-facing contract.

@@ -21,7 +21,10 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M7 — Gaming Subsystem** (in progress). M1–M6 complete.
+**M8 — AI Subsystem** complete. All M1–M8 milestones now have draft-level
+content. A cross-cutting NyHAL pluggable-backend layer (ADR-0012, NPS-017)
+has also been added on top of the original roadmap scope — see the new
+"Cross-Cutting" section below.
 
 ## Roadmap
 
@@ -87,8 +90,23 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 - [ ] Architecture Group review to move ADR-0010 and NPS-012..014 to Accepted
 
 ### M8 — AI Subsystem
-- [ ] Local AI assistant boundary NPS (per NTM-000 §9)
-- [ ] Optional cloud sync NPS (opt-in, per NPC-001 §10.2)
+- [x] AI assistant containerization decision (ADR-0011 — ordinary capability-scoped container, no implicit elevated access)
+- [x] Local AI assistant boundary NPS (NPS-015, Draft — functional scope, suggest-vs-act boundary, offline operation, disableability)
+- [x] Optional cloud sync NPS (NPS-016, Draft — opt-in per data class, offline-first, conflict handling)
+- [x] New capability registry entries: `CAP-AI-DIAGNOSTICS-READ`, `CAP-AI-SUGGEST-ACTION`, `CAP-CLOUD-SYNC`
+- [ ] Architecture Group review to move ADR-0011 and NPS-015/016 to Accepted
+
+### Cross-Cutting — NyHAL Pluggable Kernel Backend
+Added after the original M1–M8 scope was fully drafted, in response to a
+practical concern: shipping something runnable while the NyKernel (ADR-0006)
+matures.
+
+- [x] ADR-0012: adopt NyHAL as a pluggable kernel abstraction layer (Linux Backend, Experimental Backend, NyKernel Backend)
+- [x] NPS-017: NyHAL backend contract (containers, capabilities, IPC, storage, boot — all as portable guarantees)
+- [x] NPS-001 amended to scope itself to the NyKernel Backend specifically, without changing its normative content
+- [ ] Architecture Group review of ADR-0012/NPS-017 — flagged cross-cutting per NPC-001 §3.1, touches every backend-facing contract since M3
+- [ ] Begin Linux Backend implementation work (NPS-017 §6)
+- [ ] Decide NyFS's Linux Backend implementation strategy (NPS-017 §8)
 
 ## Revision History
 

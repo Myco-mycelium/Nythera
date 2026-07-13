@@ -44,6 +44,8 @@ nav:
           - ADR-0008 Android runtime approach: reference/adr/ADR-0008-android-runtime-approach.md
           - ADR-0009 IPC rate limiting: reference/adr/ADR-0009-ipc-rate-limiting.md
           - ADR-0010 Vulkan graphics foundation: reference/adr/ADR-0010-vulkan-graphics-foundation.md
+          - ADR-0011 AI assistant containerization: reference/adr/ADR-0011-ai-assistant-containerization.md
+          - ADR-0012 NyHAL pluggable kernel backend: reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -58,6 +60,9 @@ nav:
           - NPS-012 Controller and Input Subsystem: reference/nps/NPS-012-controller-and-input-subsystem.md
           - NPS-013 GPU Feature Support: reference/nps/NPS-013-gpu-feature-support.md
           - NPS-014 Emulator Hub: reference/nps/NPS-014-emulator-hub.md
+          - NPS-015 Local AI Assistant: reference/nps/NPS-015-local-ai-assistant.md
+          - NPS-016 Optional Cloud Synchronization: reference/nps/NPS-016-optional-cloud-synchronization.md
+          - NPS-017 NyHAL Kernel Abstraction: reference/nps/NPS-017-nyhal-kernel-abstraction.md
       - ABI: reference/abi/
       - API: reference/api/
       - Package Format: reference/package-format/
@@ -67,6 +72,7 @@ nav:
   - Explanation:
       - Core Architecture:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
+          - Why NyHAL Pluggable Backends: explanation/architecture/why-nyhal-pluggable-backends.md
       - Storage:
           - Why Mounted Game Images: explanation/storage/why-mounted-game-images.md
       - Runtime:
@@ -75,6 +81,8 @@ nav:
           - Why Capabilities Aren't Bolted On: explanation/security/why-capabilities-not-bolted-on.md
       - Gaming:
           - Why Gaming Reuses the Platform: explanation/gaming/why-gaming-reuses-the-platform.md
+      - AI:
+          - Why the Assistant Suggests but Doesn't Act: explanation/ai/why-suggest-not-act.md
 
 markdown_extensions:
   - admonition
