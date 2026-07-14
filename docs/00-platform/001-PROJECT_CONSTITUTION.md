@@ -1,13 +1,13 @@
 ---
 title: Project Constitution
 document_id: NPC-001
-version: 1.0.1
+version: 1.1.0
 status: Accepted
 classification: Normative
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: Annual
 depends_on: [NTM-000]
@@ -68,6 +68,7 @@ an ADR. Proposals **MUST** follow the process in Section 6.
 | Architecture Decision Record | ADR | Records of a specific decision and its rationale | Yes (historical) |
 | Application Binary Interface | ABI | Binary compatibility contracts | Yes |
 | API Reference | API | Public interfaces | Yes |
+| Requirement | REQ | Individually-testable, traceable obligation restating a specification's normative language | Yes |
 
 All normative documents **MUST** include a YAML front-matter block containing
 at minimum: `title`, `document_id`, `version`, `status`, `owners`, `created`,
@@ -190,7 +191,8 @@ proposal, which **SHOULD** be rare.
 |---------|------------|-----------------------------|
 | 1.0.0   | 2026-07-12 | Initial draft for review    |
 | 1.0.1   | 2026-07-12 | Clarify §3.2 to reference `SUBSYSTEM_OWNERS.md` as the canonical ownership list |
-| 1.0.1   | 2026-07-12 | Architecture Group review completed. Status: Draft → Accepted (Milestone 2). |
+| 1.0.2   | 2026-07-12 | Architecture Group review completed. Status: Draft → Accepted (Milestone 2). |
+| 1.1.0   | 2026-07-13 | Add `REQ` (Requirement) document class to §4, per NPC-009 Requirements Database |
 
 ---
 **End of Document**

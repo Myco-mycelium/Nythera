@@ -8,16 +8,18 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-13
 
 ## Current Milestone
-Milestone 9 — Architecture Group Review: complete, plus a follow-up
-backlog pass (2026-07-13) that closed most remaining non-benchmark open
-items: secure boot key management (ADR-0014), shared ARM instruction
-translation approach (ADR-0015), NyFS's Linux Backend implementation
-strategy (ADR-0016), an expanded Android permission mapping (NPS-011), a
-CI-verified documentation build, and an honest benchmark methodology
-document for everything that still requires real hardware measurement.
-What remains open now genuinely requires either real contributors
-(subsystem ownership) or actual implementation work (Linux Backend code,
-then benchmarking it) — not more design decisions.
+Milestones 9–10 complete (Architecture Group Review + backlog closure
+pass), plus a first tested code spike (`nyctr` container primitive) and,
+as of 2026-07-13, a response to an external repository review: a
+Requirements Database (NPC-009 + seed ledger) built per the review's
+top-stated priority, and one proposal from that review (domain-grouped
+NPS renumbering) formally rejected via ADR-0017 rather than silently
+adopted or ignored. The review's other 9 gap categories (diagrams, API
+reference, ABI specification, full object registry, package format split,
+threat model, governance expansion, build architecture docs, performance
+budgets, developer onboarding) are logged as a prioritized backlog in
+`007-PROJECT_ROADMAP.md`'s new Milestone 11 section — not built yet, and
+not claimed to be.
 
 ## Governance Documents
 
@@ -30,11 +32,11 @@ then benchmarking it) — not more design decisions.
 - [x] NPC-006 Glossary — Draft
 - [x] NPC-007 Project Roadmap — Draft
 - [x] NPC-008 Subsystem Owners — Draft (all subsystems currently Unassigned)
+- [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-10 accepted, 6 held (named blockers below; 3 are new decisions this pass,
-not benchmark-blocked — they're Proposed only pending Architecture Group
-sign-off, same as any other new ADR).
+10 accepted, 6 held (named blockers below; 3 are new decisions pending
+Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
 - [x] ADR-0002 Copy-on-write filesystem — Accepted
@@ -52,6 +54,7 @@ sign-off, same as any other new ADR).
 - [ ] ADR-0014 UEFI Secure Boot with user-enrollable keys — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 - [ ] ADR-0015 Shared dynamic binary translation for ARM/x86 — **Proposed**, approach decided; performance validation blocked on benchmark data
 - [ ] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Proposed**, initial strategy decided; kernel-module fallback blocked on FUSE-overhead benchmark data
+- [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
 
 ## Specifications (NPS)
 13 accepted, 4 held (named blockers below).
@@ -73,6 +76,15 @@ sign-off, same as any other new ADR).
 - [x] NPS-015 Local AI Assistant — Accepted
 - [x] NPS-016 Optional Cloud Synchronization — Accepted
 - [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Accepted
+
+## Requirements Database
+NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
+29 requirements across all 17 domain prefixes, each traced to a specific
+section of an already-`Accepted` spec. One entry (`REQ-NYHAL-0003`) marked
+`Implemented (partial)`, referencing the `nyctr` PoC with an explicit
+caveat about what it doesn't cover. Not full coverage of NPS-001..017 by
+design (NPC-009 §7.3) — expand incrementally, and going forward new
+normative additions should cite a REQ ID from the start (NPC-009 §7.2).
 
 ## ABI / API References
 Not started.
@@ -140,3 +152,11 @@ Documentation hygiene, fixed this pass:
 - `mkdocs.yml`'s `repo_url` was still the bootstrap placeholder
   (`your-org/Nythera`) despite the real repository existing since
   Milestone 1's first push; corrected to `Myco-mycelium/Nythera`.
+
+External review response (2026-07-13), not fabricable/decided instantly:
+9. Work through Milestone 11's prioritized backlog (`007-PROJECT_ROADMAP.md`)
+   — architecture diagrams, API reference, ABI specification, full object
+   registry, package format split, threat model, governance expansion,
+   build architecture docs, performance budgets, developer onboarding.
+   Each is roughly the size of a prior milestone on its own; not attempted
+   in a single pass.

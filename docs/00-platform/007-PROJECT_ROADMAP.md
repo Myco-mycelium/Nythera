@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.1.0
+version: 1.2.0
 status: Draft
 classification: Informative
 owners:
@@ -21,13 +21,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M10 — Backlog Closure Pass** complete. Building on M9's Architecture
-Group Review, this pass closed the remaining non-benchmark items:
-secure boot, shared ARM translation approach, NyFS's Linux Backend
-storage strategy, an expanded Android permission mapping, and a
-CI-verified documentation build. What's left genuinely requires either
-real hardware benchmarking or real contributors — see "Milestone 10"
-section below and `REPOSITORY_STATE.md` for the full accounting.
+**M11 — Response to External Repository Review** in progress. Its two
+structural recommendations (Requirements Database, NPS renumbering) are
+resolved; its 10 gap categories are logged in priority order and not yet
+built — each is roughly milestone-sized on its own. M9 and M10 remain
+complete underneath it. See "Milestone 11" section below and
+`REPOSITORY_STATE.md` for the full accounting.
 
 ## Roadmap
 
@@ -108,7 +107,7 @@ matures.
 - [x] NPS-017: NyHAL backend contract (containers, capabilities, IPC, storage, boot — all as portable guarantees)
 - [x] NPS-001 amended to scope itself to the NyKernel Backend specifically, without changing its normative content
 - [x] Architecture Group review of ADR-0012/NPS-017 — completed as part of Milestone 9
-- [ ] Begin Linux Backend implementation work (NPS-017 §6) — design is now unblocked (containers/capabilities/IPC/storage strategy all decided); actual coding is separate, later work
+- [x] Begin Linux Backend implementation work (NPS-017 §6) — first spike done in Milestone 10 (`source/nyhal-linux-backend/poc-container/nyctr.py`); container-primitive isolation only, §4.2–§4.5 remain unstarted (full status tracked in Milestone 10's section below)
 - [x] Decide NyFS's Linux Backend implementation strategy (NPS-017 §8) — ADR-0016: FUSE first, kernel-module fallback open pending benchmark
 
 ### M9 — Architecture Group Review
@@ -140,8 +139,46 @@ benchmarking or real contributors.
 - [x] `.github/workflows/docs.yml`: CI build + GitHub Pages deploy for the MkDocs site, verified locally with `mkdocs build --strict` (zero warnings) before committing
 - [x] `requirements-docs.txt`: pin `mkdocs-material` to the 9.x line given the Material team's own public warning about breaking, production-unready changes in MkDocs 2.0
 - [ ] Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` — requires actual contributors, intentionally not fabricated
-- [ ] Begin Linux Backend implementation work (NPS-017 §6) — a coding phase, not a documentation task
+- [x] Begin Linux Backend implementation work (NPS-017 §6) — see the Cross-Cutting NyHAL section above; first spike done, §4.2–§4.5 remain unstarted
 - [ ] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` once something exists to measure
+
+### M11 — Response to External Repository Review
+An external review of the repository (2026-07-13) rated it 8.6/10 and
+proposed 10 gap categories plus two structural recommendations. Both
+structural recommendations were acted on immediately; the gap categories
+are logged here in the review's own stated priority order, to be worked
+through incrementally rather than all at once — each is roughly the size
+of a prior milestone by itself.
+
+**Structural recommendations — resolved:**
+- [x] Requirements Database — the review's own top priority. NPC-009 +
+  seed ledger (`docs/reference/requirements/REQUIREMENTS.md`), 29
+  requirements across all 17 domain prefixes, traced to existing
+  `Accepted` specification sections, not fabricated new obligations.
+- [x] NPS domain-grouped renumbering (NPS-100/200/...) — considered and
+  **rejected** via ADR-0017: breaks every existing cross-reference across
+  17 already-cited documents for a benefit (domain grouping) the existing
+  `subsystem` front-matter field and `SPECIFICATION_INDEX.md` already
+  provide at zero citation-breakage cost.
+
+**Gap categories — prioritized per the review's own "what I would focus
+on next" ordering, not yet built:**
+1. [ ] Security architecture and threat model (`docs/reference/security/`) — STRIDE analysis, attack surface, privilege boundaries, container escape analysis, AI threat model, package trust model
+2. [ ] Complete Object Registry (`docs/reference/object-registry/`) — every object type (Workspace, Window, Application, Package, Capability, Identity, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service) with fields, lifecycle, permissions, serialization, relationships
+3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
+4. [ ] Public API specification (`docs/reference/api/`) — NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin APIs
+5. [ ] ABI specification (`docs/reference/abi/`) — calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI
+6. [ ] Architecture diagrams (`docs/diagrams/`) — boot sequence, NyHAL architecture, NyCore, object graph, capability graph, package lifecycle, runtime lifecycle, scheduler, memory manager, game package layering, AI subsystem, identity subsystem, update pipeline
+7. [ ] Package format specification, split per the review's suggestion — manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution
+8. [ ] Governance expansion — RFC process, release process, deprecation policy, versioning policy, branching strategy, commit conventions, ADR workflow (some of this already exists in NPC-001/003; the review's ask is to make it a dedicated, fuller treatment)
+9. [ ] Build architecture (`docs/reference/build/`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
+10. [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency, filesystem performance, gaming targets, AI inference targets (methodology already exists in `tests/BENCHMARK_PLAN.md`; the review's ask is target *numbers*, which still require real hardware and are not fabricated ahead of that)
+11. [ ] Developer onboarding — install prerequisites, build docs, coding standards, repository tour, first-contribution guide, debugging, testing, documentation style
+
+An "Identity subsystem" and "Update pipeline" were mentioned by the review
+under diagrams/object-registry but have no corresponding NPS document yet
+— they surface a genuine gap in the specification set itself, not just in
+diagrams, and should get their own NPS before being diagrammed.
 
 ## Revision History
 
@@ -149,6 +186,7 @@ benchmarking or real contributors.
 |---------|------------|--------------------|
 | 1.0.0   | 2026-07-12 | Initial roadmap at bootstrap |
 | 1.1.0   | 2026-07-13 | Add M9 (Architecture Group Review) and M10 (Backlog Closure Pass) sections |
+| 1.2.0   | 2026-07-13 | Add M11 (Response to External Repository Review): Requirements Database delivered, NPS renumbering rejected, remaining 10 gap categories logged in priority order |
 
 ---
 **End of Document**

@@ -27,6 +27,7 @@ nav:
       - Glossary: 00-platform/006-GLOSSARY.md
       - Roadmap: 00-platform/007-PROJECT_ROADMAP.md
       - Subsystem Owners: 00-platform/SUBSYSTEM_OWNERS.md
+      - Requirements Database: 00-platform/009-REQUIREMENTS_DATABASE.md
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
   - Tutorials: tutorials/README.md
@@ -50,6 +51,7 @@ nav:
           - ADR-0014 Secure boot key management: reference/adr/ADR-0014-secure-boot-key-management.md
           - ADR-0015 Shared ARM translation: reference/adr/ADR-0015-shared-arm-translation.md
           - ADR-0016 NyFS Linux Backend (FUSE): reference/adr/ADR-0016-nyfs-linux-backend-fuse.md
+          - ADR-0017 Reject NPS renumbering (Rejected): reference/adr/ADR-0017-reject-nps-renumbering.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md
@@ -73,6 +75,8 @@ nav:
       - Capability Registry:
           - Index: reference/capability-registry/README.md
           - NPS-011 Capability Registry: reference/capability-registry/NPS-011-capability-registry.md
+      - Requirements:
+          - Ledger: reference/requirements/REQUIREMENTS.md
       - Object Registry: reference/object-registry/README.md
   - Explanation:
       - Core Architecture:

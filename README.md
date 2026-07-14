@@ -53,15 +53,18 @@ for the full standard.
 
 ## Project Status
 
-Milestones 1–8 complete (Repository Bootstrap through AI Subsystem), plus a
-cross-cutting NyHAL pluggable kernel backend layer (ADR-0012, NPS-017),
-Milestone 9 (a full Architecture Group review that moved 13 of 17 NPS
-documents and 10 of 13 ADRs to `Accepted`), and Milestone 10 (a backlog
-closure pass resolving secure boot, shared ARM translation, NyFS's Linux
-Backend storage strategy, an expanded Android permission mapping, and a
-CI-verified documentation build). What remains open now genuinely
-requires real hardware benchmarking or real contributors, not more design
-work — see
+Milestones 1–10 complete (Repository Bootstrap through a backlog closure
+pass — see `007-PROJECT_ROADMAP.md` for the full history), plus a
+cross-cutting NyHAL pluggable kernel backend layer and a first tested code
+spike (`source/nyhal-linux-backend/poc-container/`). Milestone 11 is in
+progress: a response to an external repository review. Its two structural
+recommendations are resolved — a Requirements Database
+(`NPC-009` + `docs/reference/requirements/REQUIREMENTS.md`) built per the
+review's own top priority, and a proposed NPS domain-renumbering scheme
+formally **rejected** via `ADR-0017` rather than silently adopted. The
+review's other 10 gap categories (diagrams, API/ABI reference, full object
+registry, threat model, and more) are logged in priority order, not yet
+built. See
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
 

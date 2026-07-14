@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.10.0
+version: 1.11.0
 status: Draft
 classification: Reference
 owners:
@@ -24,14 +24,15 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ID | Title | Status | Version |
 |----|-------|--------|---------|
 | NTM-000 | The Nythera Manifest | Accepted | 1.0.0 |
-| NPC-001 | Project Constitution | Accepted | 1.0.1 |
+| NPC-001 | Project Constitution | Accepted | 1.1.0 |
 | NPC-002 | AI Collaboration Protocol | Accepted | 1.0.1 |
 | NPC-003 | Engineering Handbook | Accepted | 1.0.1 |
 | NPC-004 | Specification Index (this document) | Draft | 1.3.0 |
 | NPC-005 | ADR Index | Draft | 1.2.0 |
 | NPC-006 | Glossary | Draft | 1.0.0 |
-| NPC-007 | Project Roadmap | Draft | 1.0.0 |
+| NPC-007 | Project Roadmap | Draft | 1.1.0 |
 | NPC-008 | Subsystem Owners | Draft | 1.0.0 |
+| NPC-009 | Requirements Database | Draft | 1.0.0 |
 
 ## Architecture Decision Records
 
@@ -86,6 +87,22 @@ dependency on another document that is itself benchmark-blocked) rather
 than incompleteness — see each document's Open Questions / Status section,
 and `REPOSITORY_STATE.md` for the consolidated list.
 
+ADR-0017 is the project's first `Rejected` ADR — a proposal to renumber
+NPS identifiers into domain-grouped ranges was considered and declined;
+see the ADR for the reasoning. The existing sequential IDs and each
+document's `subsystem` front-matter field remain the domain-organization
+mechanism.
+
+## Requirements Database
+
+Governed by [`NPC-009`](009-REQUIREMENTS_DATABASE.md). The ledger itself
+lives at
+[`docs/reference/requirements/REQUIREMENTS.md`](../reference/requirements/REQUIREMENTS.md)
+— 29 seed requirements across all 17 domain prefixes, each traced to a
+specific section of an already-`Accepted` specification. Not full
+coverage by design (NPC-009 §7.3); expand incrementally via the normal
+change process.
+
 ## ABI / API References
 
 | ID | Title | Status |
@@ -115,6 +132,7 @@ and `REPOSITORY_STATE.md` for the consolidated list.
 | 1.8.0   | 2026-07-12 | Add ADR-0012 and NPS-017 (NyHAL pluggable kernel backend, cross-cutting); amend NPS-001 scope to NyKernel Backend specifically |
 | 1.9.0   | 2026-07-13 | Milestone 9 Architecture Group review: add ADR-0013 (scheduler algorithm, Proposed); accept ADR-0002/0003/0004/0005/0006/0008/0010/0011/0012 and NPS-001/004/006/007/008/009/011/012/013/014/015/016/017 (Draft/Proposed → Accepted); NPS-002/003/005/010 remain Draft, each with a named benchmark or upstream-dependency blocker |
 | 1.10.0  | 2026-07-13 | Backlog pass: add ADR-0014 (secure boot), ADR-0015 (shared ARM translation), ADR-0016 (NyFS Linux Backend FUSE strategy); resolve remaining open questions in NPS-001/007/008 via cross-reference; expand NPS-011 Android permission mapping (8 new capabilities); add tests/BENCHMARK_PLAN.md and CI docs build workflow |
+| 1.11.0  | 2026-07-13 | In response to external review: add ADR-0017 (Rejected — declines NPS domain-renumbering proposal); add NPC-009 Requirements Database and its seed ledger (29 requirements, 17 domains); bump NPC-001 to 1.1.0 for the new REQ document class |
 
 ---
 **End of Document**

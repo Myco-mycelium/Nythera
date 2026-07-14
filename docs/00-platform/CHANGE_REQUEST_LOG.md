@@ -27,10 +27,10 @@ independent of chat or discussion history.
 | CR-0019 | Implement NyFS's Linux Backend as a user-space FUSE filesystem | Proposed — kernel-module fallback benchmark-gated | ADR-0016 |
 | CR-0020 | Expand NPS-011 Android permission mapping with 8 capabilities (contacts, calendar, telephony, SMS, sensors, media library, NFC, biometric) | Accepted | — |
 | CR-0021 | Configure and verify CI build for the MkDocs Material documentation site | Accepted | — |
-
 | CR-0022 | Fix orphaned revision-history tables across 13 NPS documents; correct stale `repo_url` placeholder in mkdocs.yml | Accepted | — |
-
 | CR-0023 | Add nyctr container-primitive proof-of-concept (Linux namespaces + cgroups), tested and passing 4/4 cases | Accepted | — |
+| CR-0024 | Reject proposed NPS domain-grouped renumbering (NPS-100/200/...) in favor of existing sequential IDs + subsystem metadata | **Rejected** | ADR-0017 |
+| CR-0025 | Establish NPC-009 Requirements Database and seed it with 29 requirements traced from existing Accepted specifications | Accepted | — |
 
 ## How to Add an Entry
 
