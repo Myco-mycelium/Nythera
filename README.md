@@ -53,17 +53,23 @@ for the full standard.
 
 ## Project Status
 
-Milestones 1–10 complete (Repository Bootstrap through a backlog closure
-pass — see `007-PROJECT_ROADMAP.md` for the full history), plus a
-cross-cutting NyHAL pluggable kernel backend layer and a first tested code
-spike (`source/nyhal-linux-backend/poc-container/`). Milestone 11 is in
-progress: a response to an external repository review. Its two structural
-recommendations are resolved — a Requirements Database
+Milestones 1–11 complete (Repository Bootstrap through a response to an
+external repository review — see `007-PROJECT_ROADMAP.md` for the full
+history), plus a first tested code spike
+(`source/nyhal-linux-backend/poc-container/`). Milestone 11's structural
+recommendations are resolved: a Requirements Database
 (`NPC-009` + `docs/reference/requirements/REQUIREMENTS.md`) built per the
-review's own top priority, and a proposed NPS domain-renumbering scheme
-formally **rejected** via `ADR-0017` rather than silently adopted. The
-review's other 10 gap categories (diagrams, API/ABI reference, full object
-registry, threat model, and more) are logged in priority order, not yet
+external review's own top priority, and a proposed NPS domain-renumbering
+scheme formally **rejected** via `ADR-0017` rather than silently adopted.
+
+Milestone 12 (the security threat model, one of Milestone 11's remaining
+gap categories) is now in progress, built in explicit phases — Phase 1
+(`NPS-018` methodology + `NPS-019` attack surface enumeration, 24
+surfaces across 10 trust boundaries) is complete; see
+[`docs/reference/security/README.md`](docs/reference/security/README.md)
+for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
+API/ABI reference, full object registry, and more) remain logged in
+priority order, not yet
 built. See
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).

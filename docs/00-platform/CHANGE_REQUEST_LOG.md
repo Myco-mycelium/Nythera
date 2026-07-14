@@ -31,6 +31,7 @@ independent of chat or discussion history.
 | CR-0023 | Add nyctr container-primitive proof-of-concept (Linux namespaces + cgroups), tested and passing 4/4 cases | Accepted | — |
 | CR-0024 | Reject proposed NPS domain-grouped renumbering (NPS-100/200/...) in favor of existing sequential IDs + subsystem metadata | **Rejected** | ADR-0017 |
 | CR-0025 | Establish NPC-009 Requirements Database and seed it with 29 requirements traced from existing Accepted specifications | Accepted | — |
+| CR-0026 | Begin phased threat model: NPS-018 (methodology, trust boundaries) and NPS-019 (attack surface enumeration, 24 surfaces) | Accepted | — |
 
 ## How to Add an Entry
 

@@ -8,18 +8,18 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 2026-07-13
 
 ## Current Milestone
-Milestones 9–10 complete (Architecture Group Review + backlog closure
-pass), plus a first tested code spike (`nyctr` container primitive) and,
-as of 2026-07-13, a response to an external repository review: a
-Requirements Database (NPC-009 + seed ledger) built per the review's
-top-stated priority, and one proposal from that review (domain-grouped
-NPS renumbering) formally rejected via ADR-0017 rather than silently
-adopted or ignored. The review's other 9 gap categories (diagrams, API
-reference, ABI specification, full object registry, package format split,
-threat model, governance expansion, build architecture docs, performance
-budgets, developer onboarding) are logged as a prioritized backlog in
-`007-PROJECT_ROADMAP.md`'s new Milestone 11 section — not built yet, and
-not claimed to be.
+Milestones 9–11 complete (Architecture Group Review, backlog closure
+pass, response to external review), plus a first tested code spike
+(`nyctr` container primitive). Milestone 12 — the phased security threat
+model — is now in progress, with Phase 1 done: `NPS-018` (methodology,
+10 trust boundaries, 6 attacker profiles, a deliberately simple severity
+model) and `NPS-019` (24 concrete attack surfaces, each citing its
+governing spec). Phases 2–7 are planned and sequenced but not started —
+see `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
+categories (diagrams, API reference, ABI specification, full object
+registry, package format split, governance expansion, build architecture
+docs, performance budgets, developer onboarding) are still logged as a
+prioritized backlog in `007-PROJECT_ROADMAP.md` — not built yet.
 
 ## Governance Documents
 
@@ -57,7 +57,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
 
 ## Specifications (NPS)
-13 accepted, 4 held (named blockers below).
+13 accepted, 6 held (4 named benchmark/dependency blockers, plus NPS-018
+and NPS-019 which are new Draft documents pending Architecture Group
+sign-off, not benchmark-blocked).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -76,6 +78,8 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] NPS-015 Local AI Assistant — Accepted
 - [x] NPS-016 Optional Cloud Synchronization — Accepted
 - [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Accepted
+- [x] NPS-018 Threat Model Methodology and Trust Boundaries — Draft (Threat Model Phase 1a)
+- [x] NPS-019 Attack Surface Enumeration — Draft (Threat Model Phase 1b, 24 surfaces catalogued)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -154,9 +158,14 @@ Documentation hygiene, fixed this pass:
   Milestone 1's first push; corrected to `Myco-mycelium/Nythera`.
 
 External review response (2026-07-13), not fabricable/decided instantly:
-9. Work through Milestone 11's prioritized backlog (`007-PROJECT_ROADMAP.md`)
-   — architecture diagrams, API reference, ABI specification, full object
-   registry, package format split, threat model, governance expansion,
-   build architecture docs, performance budgets, developer onboarding.
-   Each is roughly the size of a prior milestone on its own; not attempted
-   in a single pass.
+9. Work through Milestone 11's remaining prioritized backlog
+   (`007-PROJECT_ROADMAP.md`) — architecture diagrams, API reference, ABI
+   specification, full object registry, package format split, governance
+   expansion, build architecture docs, performance budgets, developer
+   onboarding. Each is roughly the size of a prior milestone on its own;
+   not attempted in a single pass.
+10. Continue the threat model (Milestone 12, `docs/reference/security/`):
+    Phase 2 (STRIDE analysis applied to all 24 surfaces in NPS-019) is the
+    next phase, followed by four deep-dive phases (privilege escalation,
+    container escape, secure boot, AI, package trust) that each expand on
+    specific Phase 2 findings rather than starting fresh.

@@ -69,6 +69,10 @@ nav:
           - NPS-015 Local AI Assistant: reference/nps/NPS-015-local-ai-assistant.md
           - NPS-016 Optional Cloud Synchronization: reference/nps/NPS-016-optional-cloud-synchronization.md
           - NPS-017 NyHAL Kernel Abstraction: reference/nps/NPS-017-nyhal-kernel-abstraction.md
+      - Threat Model:
+          - Phase Plan: reference/security/README.md
+          - NPS-018 Methodology & Trust Boundaries: reference/security/NPS-018-threat-model-methodology.md
+          - NPS-019 Attack Surface Enumeration: reference/security/NPS-019-attack-surface-enumeration.md
       - ABI: reference/abi/README.md
       - API: reference/api/README.md
       - Package Format: reference/package-format/README.md

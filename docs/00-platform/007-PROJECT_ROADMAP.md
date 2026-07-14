@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.2.0
+version: 1.3.0
 status: Draft
 classification: Informative
 owners:
@@ -21,12 +21,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M11 — Response to External Repository Review** in progress. Its two
-structural recommendations (Requirements Database, NPS renumbering) are
-resolved; its 10 gap categories are logged in priority order and not yet
-built — each is roughly milestone-sized on its own. M9 and M10 remain
-complete underneath it. See "Milestone 11" section below and
-`REPOSITORY_STATE.md` for the full accounting.
+**M12 — Threat Model (phased)**, Phase 1 complete. Building the security
+threat model requested by the Milestone 11 external review in explicit
+phases rather than one pass — see "Milestone 12" section below and
+[`docs/reference/security/README.md`](../reference/security/README.md)
+for the full phase table. M9, M10, and M11's structural items remain
+complete underneath it.
 
 ## Roadmap
 
@@ -163,7 +163,7 @@ of a prior milestone by itself.
 
 **Gap categories — prioritized per the review's own "what I would focus
 on next" ordering, not yet built:**
-1. [ ] Security architecture and threat model (`docs/reference/security/`) — STRIDE analysis, attack surface, privilege boundaries, container escape analysis, AI threat model, package trust model
+1. [~] Security architecture and threat model (`docs/reference/security/`) — **in progress as Milestone 12**, phased; see below
 2. [ ] Complete Object Registry (`docs/reference/object-registry/`) — every object type (Workspace, Window, Application, Package, Capability, Identity, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service) with fields, lifecycle, permissions, serialization, relationships
 3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
 4. [ ] Public API specification (`docs/reference/api/`) — NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin APIs
@@ -180,6 +180,22 @@ under diagrams/object-registry but have no corresponding NPS document yet
 — they surface a genuine gap in the specification set itself, not just in
 diagrams, and should get their own NPS before being diagrammed.
 
+### M12 — Threat Model (phased)
+Building the complete security threat model in explicit phases, per
+gap category 1 of Milestone 11. Phase order follows dependency: later
+phases apply earlier ones to specific trust boundaries rather than
+starting from scratch. Full phase table and links:
+[`docs/reference/security/README.md`](../reference/security/README.md).
+
+- [x] Phase 1a — Threat Model Methodology & Trust Boundaries (`NPS-018`): STRIDE framework, 10 trust boundaries derived from existing decisions, 6 attacker profiles, a deliberately simple (non-CVSS) severity model
+- [x] Phase 1b — Attack Surface Enumeration (`NPS-019`): 24 concrete surfaces catalogued across all 10 trust boundaries, each citing its governing spec
+- [ ] Phase 2 — STRIDE Analysis per Trust Boundary: apply NPS-018 §3 to every surface in NPS-019 §3
+- [ ] Phase 3 — Privilege Boundaries & Capability Escalation Analysis
+- [ ] Phase 4 — Container Escape Analysis & Runtime Isolation
+- [ ] Phase 5 — Secure Boot Threat Model (extends ADR-0014)
+- [ ] Phase 6 — AI Threat Model (extends NPS-015)
+- [ ] Phase 7 — Package Trust Model (extends NPS-006)
+
 ## Revision History
 
 | Version | Date       | Change            |
@@ -187,6 +203,7 @@ diagrams, and should get their own NPS before being diagrammed.
 | 1.0.0   | 2026-07-12 | Initial roadmap at bootstrap |
 | 1.1.0   | 2026-07-13 | Add M9 (Architecture Group Review) and M10 (Backlog Closure Pass) sections |
 | 1.2.0   | 2026-07-13 | Add M11 (Response to External Repository Review): Requirements Database delivered, NPS renumbering rejected, remaining 10 gap categories logged in priority order |
+| 1.3.0   | 2026-07-13 | Add M12 (Threat Model, phased): Phase 1 (methodology + attack surface) complete, Phases 2–7 planned and sequenced |
 
 ---
 **End of Document**

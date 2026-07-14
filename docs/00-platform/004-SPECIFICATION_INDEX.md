@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.11.0
+version: 1.12.0
 status: Draft
 classification: Reference
 owners:
@@ -79,6 +79,8 @@ index.
 | NPS-015 | Local AI Assistant | ai | Accepted |
 | NPS-016 | Optional Cloud Synchronization | ai | Accepted |
 | NPS-017 | NyHAL — Kernel Abstraction Layer and Backend Contract | core-architecture | Accepted |
+| NPS-018 | Threat Model Methodology and Trust Boundaries | security | Draft |
+| NPS-019 | Attack Surface Enumeration | security | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
@@ -133,6 +135,7 @@ change process.
 | 1.9.0   | 2026-07-13 | Milestone 9 Architecture Group review: add ADR-0013 (scheduler algorithm, Proposed); accept ADR-0002/0003/0004/0005/0006/0008/0010/0011/0012 and NPS-001/004/006/007/008/009/011/012/013/014/015/016/017 (Draft/Proposed → Accepted); NPS-002/003/005/010 remain Draft, each with a named benchmark or upstream-dependency blocker |
 | 1.10.0  | 2026-07-13 | Backlog pass: add ADR-0014 (secure boot), ADR-0015 (shared ARM translation), ADR-0016 (NyFS Linux Backend FUSE strategy); resolve remaining open questions in NPS-001/007/008 via cross-reference; expand NPS-011 Android permission mapping (8 new capabilities); add tests/BENCHMARK_PLAN.md and CI docs build workflow |
 | 1.11.0  | 2026-07-13 | In response to external review: add ADR-0017 (Rejected — declines NPS domain-renumbering proposal); add NPC-009 Requirements Database and its seed ledger (29 requirements, 17 domains); bump NPC-001 to 1.1.0 for the new REQ document class |
+| 1.12.0  | 2026-07-13 | Add NPS-018 and NPS-019 (Threat Model Phase 1: methodology + trust boundaries, attack surface enumeration), new `docs/reference/security/` directory |
 
 ---
 **End of Document**
