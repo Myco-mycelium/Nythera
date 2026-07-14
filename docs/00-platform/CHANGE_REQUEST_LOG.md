@@ -30,6 +30,8 @@ independent of chat or discussion history.
 
 | CR-0022 | Fix orphaned revision-history tables across 13 NPS documents; correct stale `repo_url` placeholder in mkdocs.yml | Accepted | — |
 
+| CR-0023 | Add nyctr container-primitive proof-of-concept (Linux namespaces + cgroups), tested and passing 4/4 cases | Accepted | — |
+
 ## How to Add an Entry
 
 1. Assign the next sequential `CR-XXXX` ID.

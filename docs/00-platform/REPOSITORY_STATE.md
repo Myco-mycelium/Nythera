@@ -81,7 +81,15 @@ Not started.
 Not started.
 
 ## Source Code
-Not started.
+One tested proof-of-concept: `source/nyhal-linux-backend/poc-container/`
+(`nyctr.py`) — proves the most basic container primitive (PID/mount/UTS/
+user namespace isolation + a cgroup memory/pid limit) works on stock
+Linux, per NPS-017 §4.1. Verified with a repeatable test script
+(`test_nyctr.sh`), all 4 cases passing. This is explicitly a spike, not
+the start of a real implementation — see the PoC's own README for what it
+does not prove (no capability enforcement, no IPC, no storage, no boot
+integration — NPS-017 §4.2 through §4.5 remain untouched). Every other
+subsystem is unstarted.
 
 ## Build System
 Not started.
@@ -114,7 +122,7 @@ Not benchmark-gated, resolved this pass:
 
 Genuinely still open, not fabricable:
 7. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.
-8. Begin implementation work on the Linux Backend (NPS-017 §6) — this is code, not documentation; the design is now unblocked enough to start (containers/capabilities/IPC/storage strategy all decided), but actually writing it is a separate phase of work.
+8. Begin implementation work on the Linux Backend (NPS-017 §6) — the container-primitive spike (`source/nyhal-linux-backend/poc-container/`) is done and passing; next up is capability enforcement (seccomp/LSM, NPS-017 §4.2), which needs the capability registry (NPS-011) mapped onto concrete Linux mechanisms, not just documented in the abstract.
 9. Choose a real license (`LICENSE` is still the Milestone 1 placeholder — "no rights granted... until a formal license is adopted"). This is a legal/business decision for the repository owner, not one to pick unilaterally on their behalf.
 10. Enable GitHub Pages with source "GitHub Actions" (Settings → Pages) so `.github/workflows/docs.yml`'s deploy step has somewhere to publish to — the workflow runs regardless, but won't be visibly served until this is set.
 
