@@ -11,11 +11,16 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus a first tested code spike
 (`nyctr` container primitive). Milestone 12 — the phased security threat
-model — is now in progress, with Phase 1 done: `NPS-018` (methodology,
-10 trust boundaries, 6 attacker profiles, a deliberately simple severity
-model) and `NPS-019` (24 concrete attack surfaces, each citing its
-governing spec). Phases 2–7 are planned and sequenced but not started —
-see `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
+model — is in progress: Phase 1 (`NPS-018` methodology, `NPS-019` attack
+surface enumeration) and Phase 2 (`NPS-020` STRIDE analysis across all
+10 trust boundaries) are both done. Phase 2 produced 3 genuine findings
+requiring action, not just observations: two closed immediately by
+amending `NPS-001` and `NPS-003` directly (with new `REQ-GPU-0002` /
+`REQ-IPC-0003` entries), and one (no package signing — only checksums)
+that strengthens the case for Milestone 11's package-format gap category
+rather than being fixable by a quick amendment. Phases 3–7 remain planned
+and sequenced but not started — see
+`docs/reference/security/README.md`. Milestone 11's remaining 9 gap
 categories (diagrams, API reference, ABI specification, full object
 registry, package format split, governance expansion, build architecture
 docs, performance budgets, developer onboarding) are still logged as a
@@ -61,9 +66,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 and NPS-019 which are new Draft documents pending Architecture Group
 sign-off, not benchmark-blocked).
 
-- [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted
+- [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
-- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking)
+- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
 - [x] NPS-006 Nythera Game/Application Image Format (.nygi) and Overlay — Accepted
@@ -80,15 +85,18 @@ sign-off, not benchmark-blocked).
 - [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Accepted
 - [x] NPS-018 Threat Model Methodology and Trust Boundaries — Draft (Threat Model Phase 1a)
 - [x] NPS-019 Attack Surface Enumeration — Draft (Threat Model Phase 1b, 24 surfaces catalogued)
+- [x] NPS-020 STRIDE Analysis per Trust Boundary — Draft (Threat Model Phase 2, 10 boundaries, 3 findings drove real spec amendments this pass)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
-29 requirements across all 17 domain prefixes, each traced to a specific
-section of an already-`Accepted` spec. One entry (`REQ-NYHAL-0003`) marked
-`Implemented (partial)`, referencing the `nyctr` PoC with an explicit
-caveat about what it doesn't cover. Not full coverage of NPS-001..017 by
-design (NPC-009 §7.3) — expand incrementally, and going forward new
-normative additions should cite a REQ ID from the start (NPC-009 §7.2).
+31 requirements across all 17 domain prefixes. Nearly all traced to
+`Accepted` specs; one (`REQ-IPC-0003`) traces to still-`Draft` NPS-003,
+called out explicitly rather than silently overstating coverage quality.
+One entry (`REQ-NYHAL-0003`) marked `Implemented (partial)`, referencing
+the `nyctr` PoC with an explicit caveat about what it doesn't cover. Not
+full coverage of NPS-001..020 by design (NPC-009 §7.3) — expand
+incrementally, and going forward new normative additions should cite a
+REQ ID from the start (NPC-009 §7.2).
 
 ## ABI / API References
 Not started.
@@ -165,7 +173,14 @@ External review response (2026-07-13), not fabricable/decided instantly:
    onboarding. Each is roughly the size of a prior milestone on its own;
    not attempted in a single pass.
 10. Continue the threat model (Milestone 12, `docs/reference/security/`):
-    Phase 2 (STRIDE analysis applied to all 24 surfaces in NPS-019) is the
-    next phase, followed by four deep-dive phases (privilege escalation,
-    container escape, secure boot, AI, package trust) that each expand on
-    specific Phase 2 findings rather than starting fresh.
+    Phase 3 (Privilege Boundaries & Capability Escalation Analysis) is
+    next, deepening the `TB-CAPABILITY` findings NPS-020 §6 flagged as
+    needing fuller treatment (`FIND-CAPABILITY-001`, `FIND-CAPABILITY-002`).
+    Phases 4–7 (container escape, secure boot, AI, package trust) follow.
+11. Elevate priority on Milestone 11's package-format gap category
+    (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
+    found that `.nygi` integrity currently relies on checksums alone,
+    which don't establish publisher authenticity; an attacker can tamper
+    with an image and simply recompute a valid checksum. Not fixable by a
+    quick amendment like the other two Phase 2 findings; needs a real
+    package-signing/PKI specification.

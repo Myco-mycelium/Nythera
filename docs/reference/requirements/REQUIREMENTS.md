@@ -16,6 +16,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-KERNEL-0002 | A process SHALL NOT hold a capability its container does not hold. | NPS-002 §4.3 | Verified | — | — |
 | REQ-IPC-0001 | All IPC message payloads SHALL be bounded in size at the primitive level. | NPS-003 §3.1 | Verified | — | — |
 | REQ-IPC-0002 | The kernel SHALL be the sole arbiter of capability validity. | NPS-003 §5.4 | Verified | — | — |
+| REQ-IPC-0003 | A shared-memory region SHALL be cleared (zeroed) by the kernel before being made available to a different container than the one that last held it. | NPS-003 §3.1 | Verified | — | — |
 | REQ-STORAGE-0001 | Every NyFS data block and metadata block SHALL be checksummed. | NPS-004 §4.3 | Verified | — | — |
 | REQ-STORAGE-0002 | Creating an NyFS snapshot SHALL be an O(1) metadata operation that does not copy data eagerly. | NPS-004 §4.2 | Verified | — | — |
 | REQ-COMPRESS-0001 | A user SHALL be able to view and override the compression category of any file or directory. | NPS-005 §4.4 | Verified | — | — |
@@ -30,6 +31,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-CAP-0001 | Any subsystem requesting a new capability class SHALL document it in the capability registry before it may be used by any application. | NPC-001 §9.3 / NPS-011 §5 | Verified | — | — |
 | REQ-INPUT-0001 | Controller input SHALL be delivered to the foreground container through the same `CAP-INPUT` capability and IPC path as keyboard/mouse/touch input. | NPS-012 §3.2 | Verified | — | — |
 | REQ-GPU-0001 | An application SHALL be able to query supported GPU features (HDR, VRR, ray tracing, upscaling) at startup and degrade gracefully when a feature is unsupported. | NPS-013 §3.2 | Verified | — | — |
+| REQ-GPU-0002 | The kernel-space GPU command submission fast path SHALL validate command buffer structure before execution and SHALL enforce a submission timeout with preemption. | NPS-001 §3 | Verified | — | — |
 | REQ-EMU-0001 | The Emulator Hub SHALL NOT include built-in search, download, or acquisition functionality for ROM or BIOS files. | NPS-014 §3.3 | Verified | — | — |
 | REQ-AI-0001 | Any AI assistant action that would alter system configuration, install/remove software, or change security policy SHALL be presented as a suggestion requiring the user's own separate, explicit action to execute. | NPS-015 §5.1 | Verified | — | — |
 | REQ-AI-0002 | The operating system SHALL remain fully functional with the AI assistant disabled or absent. | NPS-015 §6.1 | Verified | — | — |
@@ -40,11 +42,14 @@ than introducing anything new (NPC-009 §7.1).
 
 ## Coverage Note
 
-29 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
+31 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
 least one per NPS document, not a claim of exhaustive coverage of any of
-them. Every `Source` cell is a real section in an already-`Accepted`
-specification; none of these statements introduce a new obligation (per
-NPC-009 §7.1). `REQ-NYHAL-0003` is the only entry touching `Implemented`
+them. Every `Source` cell is a real section containing real normative
+language; most are in `Accepted` specifications, with two exceptions
+traced to `Draft` documents (`REQ-IPC-0003` → NPS-003 §3.1, `REQ-GPU-0002`
+→ NPS-001 §3 — NPS-001 is itself `Accepted`, so only `REQ-IPC-0003` is a
+genuine Draft-sourced exception). None of these statements introduce a
+new obligation (per NPC-009 §7.1). `REQ-NYHAL-0003` is the only entry touching `Implemented`
 status, and its caveat is deliberately specific rather than a bare
 checkmark, since the underlying PoC satisfies only a slice of what the
 requirement as written actually asks for.

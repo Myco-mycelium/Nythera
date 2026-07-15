@@ -1,17 +1,17 @@
 ---
 title: Inter-Process Communication and Capability Passing
 document_id: NPS-003
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002]
+depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002, NPS-020]
 ---
 
 # NPS-003 — Inter-Process Communication and Capability Passing
@@ -44,7 +44,11 @@ Nythera **MUST** provide the following kernel-mediated primitives:
 3.1. All message payloads **MUST** be bounded in size at the primitive
 level. Bulk data transfer (e.g. large buffers) **MUST** use shared-memory
 regions established via an explicit capability grant, not by inflating
-message size limits.
+message size limits. A shared-memory region **MUST** be cleared (zeroed)
+by the kernel before being made available to a different container than
+the one that last held it, so that a container cannot read stale data
+left by a prior occupant of the same physical memory (per the threat
+model, `FIND-CONTAINER-003`, NPS-020 §5).
 
 3.2. `send`/`receive`/`call` **MUST** target an **endpoint**, not a raw
 process ID, so that access is mediated by capability possession rather than
@@ -128,6 +132,7 @@ security specifications.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
+| 1.1.0   | 2026-07-13 | Add shared-memory zeroing requirement to §3.1, closing threat model finding FIND-CONTAINER-003 (NPS-020) |
 
 ---
 **End of Document**

@@ -73,6 +73,7 @@ nav:
           - Phase Plan: reference/security/README.md
           - NPS-018 Methodology & Trust Boundaries: reference/security/NPS-018-threat-model-methodology.md
           - NPS-019 Attack Surface Enumeration: reference/security/NPS-019-attack-surface-enumeration.md
+          - NPS-020 STRIDE Analysis: reference/security/NPS-020-stride-analysis.md
       - ABI: reference/abi/README.md
       - API: reference/api/README.md
       - Package Format: reference/package-format/README.md

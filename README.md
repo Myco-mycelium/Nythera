@@ -63,9 +63,14 @@ external review's own top priority, and a proposed NPS domain-renumbering
 scheme formally **rejected** via `ADR-0017` rather than silently adopted.
 
 Milestone 12 (the security threat model, one of Milestone 11's remaining
-gap categories) is now in progress, built in explicit phases — Phase 1
-(`NPS-018` methodology + `NPS-019` attack surface enumeration, 24
-surfaces across 10 trust boundaries) is complete; see
+gap categories) is now in progress, built in explicit phases — Phases 1–2
+are complete: `NPS-018` (methodology), `NPS-019` (24 attack surfaces
+across 10 trust boundaries), and `NPS-020` (STRIDE analysis of all 10
+boundaries). Phase 2 produced 3 real findings, not just observations: two
+were closed immediately by amending `NPS-001` (GPU command buffer
+validation) and `NPS-003` (shared-memory zeroing) directly, and one — no
+package-signing scheme, only checksums — elevated the priority of
+Milestone 11's package-format gap category. See
 [`docs/reference/security/README.md`](docs/reference/security/README.md)
 for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
 API/ABI reference, full object registry, and more) remain logged in

@@ -32,6 +32,7 @@ independent of chat or discussion history.
 | CR-0024 | Reject proposed NPS domain-grouped renumbering (NPS-100/200/...) in favor of existing sequential IDs + subsystem metadata | **Rejected** | ADR-0017 |
 | CR-0025 | Establish NPC-009 Requirements Database and seed it with 29 requirements traced from existing Accepted specifications | Accepted | — |
 | CR-0026 | Begin phased threat model: NPS-018 (methodology, trust boundaries) and NPS-019 (attack surface enumeration, 24 surfaces) | Accepted | — |
+| CR-0027 | Threat model Phase 2: NPS-020 STRIDE analysis, all 10 trust boundaries; amend NPS-001 (GPU command validation) and NPS-003 (shared-memory zeroing) closing 2 findings; identify package-signing gap (FIND-PACKAGE-001) | Accepted | — |
 
 ## How to Add an Entry
 

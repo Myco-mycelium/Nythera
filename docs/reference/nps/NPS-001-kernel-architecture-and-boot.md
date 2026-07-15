@@ -1,7 +1,7 @@
 ---
 title: Kernel Architecture and Boot
 document_id: NPS-001
-version: 1.1.2
+version: 1.2.0
 status: Accepted
 classification: Normative
 subsystem: core-architecture
@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0013, ADR-0014]
+depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0013, ADR-0014, NPS-020]
 ---
 
 # NPS-001 — Kernel Architecture and Boot
@@ -51,7 +51,7 @@ and **MUST NOT** grow beyond this list without a new ADR:
 | Memory Manager | Physical memory allocation, virtual address space setup, page fault handling |
 | Interrupt Layer | Hardware interrupt routing to the scheduler or registered handlers |
 | Capability/IPC Primitives | Creation, transfer, and revocation of capabilities (NPS-003); message passing primitives |
-| GPU Command Submission Path | Low-latency submission of command buffers to the GPU, where user-space indirection would violate performance requirements |
+| GPU Command Submission Path | Low-latency submission of command buffers to the GPU, where user-space indirection would violate performance requirements. This path **MUST** validate command buffer structure before execution and **MUST** enforce a submission timeout with preemption, so that a malformed or malicious buffer cannot achieve kernel-adjacent memory corruption (per the threat model, `FIND-KERNEL-001`) or hang the GPU for every other container (`FIND-KERNEL-003`, NPS-020 §4). |
 | Storage I/O Fast Path | Low-latency block I/O submission/completion, where user-space indirection would violate performance requirements |
 
 Any component not listed here **MUST** run in user space.
@@ -126,6 +126,7 @@ NPS.
 | 1.1.0   | 2026-07-12 | Add backend scope note (§2): this document defines the NyKernel Backend specifically, per ADR-0012/NPS-017 |
 | 1.1.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.1.2   | 2026-07-13 | Resolve §7 secure boot open question via ADR-0014 (UEFI Secure Boot, user-enrollable keys) |
+| 1.2.0   | 2026-07-13 | Add GPU command buffer validation and submission-timeout requirements to §3, closing threat model findings FIND-KERNEL-001/003 (NPS-020) |
 
 ---
 **End of Document**

@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.3.0
+version: 1.4.0
 status: Draft
 classification: Informative
 owners:
@@ -21,12 +21,12 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M12 — Threat Model (phased)**, Phase 1 complete. Building the security
-threat model requested by the Milestone 11 external review in explicit
-phases rather than one pass — see "Milestone 12" section below and
-[`docs/reference/security/README.md`](../reference/security/README.md)
-for the full phase table. M9, M10, and M11's structural items remain
-complete underneath it.
+**M12 — Threat Model (phased)**, Phases 1–2 complete. Phase 2's STRIDE
+analysis (`NPS-020`) produced 3 real findings: two closed by amending
+`NPS-001` and `NPS-003` directly, one (no package signing) strengthening
+Milestone 11's package-format gap category. Phase 3 (Privilege Boundaries
+& Capability Escalation Analysis) is next — see "Milestone 12" section
+below and [`docs/reference/security/README.md`](../reference/security/README.md).
 
 ## Roadmap
 
@@ -169,7 +169,7 @@ on next" ordering, not yet built:**
 4. [ ] Public API specification (`docs/reference/api/`) — NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin APIs
 5. [ ] ABI specification (`docs/reference/abi/`) — calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI
 6. [ ] Architecture diagrams (`docs/diagrams/`) — boot sequence, NyHAL architecture, NyCore, object graph, capability graph, package lifecycle, runtime lifecycle, scheduler, memory manager, game package layering, AI subsystem, identity subsystem, update pipeline
-7. [ ] Package format specification, split per the review's suggestion — manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution
+7. [ ] Package format specification, split per the review's suggestion — manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution. **Priority elevated above its list position**: M12 Phase 2's `FIND-PACKAGE-001` found `.nygi` integrity relies on checksums alone (NPS-006 §6), which don't establish publisher authenticity.
 8. [ ] Governance expansion — RFC process, release process, deprecation policy, versioning policy, branching strategy, commit conventions, ADR workflow (some of this already exists in NPC-001/003; the review's ask is to make it a dedicated, fuller treatment)
 9. [ ] Build architecture (`docs/reference/build/`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
 10. [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency, filesystem performance, gaming targets, AI inference targets (methodology already exists in `tests/BENCHMARK_PLAN.md`; the review's ask is target *numbers*, which still require real hardware and are not fabricated ahead of that)
@@ -189,7 +189,7 @@ starting from scratch. Full phase table and links:
 
 - [x] Phase 1a — Threat Model Methodology & Trust Boundaries (`NPS-018`): STRIDE framework, 10 trust boundaries derived from existing decisions, 6 attacker profiles, a deliberately simple (non-CVSS) severity model
 - [x] Phase 1b — Attack Surface Enumeration (`NPS-019`): 24 concrete surfaces catalogued across all 10 trust boundaries, each citing its governing spec
-- [ ] Phase 2 — STRIDE Analysis per Trust Boundary: apply NPS-018 §3 to every surface in NPS-019 §3
+- [x] Phase 2 — STRIDE Analysis per Trust Boundary (`NPS-020`): all 10 boundaries analyzed; 3 genuine findings surfaced. Two closed immediately by amending `NPS-001` (GPU command buffer validation) and `NPS-003` (shared-memory zeroing) directly, plus new `REQ-GPU-0002`/`REQ-IPC-0003`. One (`FIND-PACKAGE-001` — no package signing, checksums only) elevates the priority of Milestone 11's package-format gap category rather than being fixable by amendment.
 - [ ] Phase 3 — Privilege Boundaries & Capability Escalation Analysis
 - [ ] Phase 4 — Container Escape Analysis & Runtime Isolation
 - [ ] Phase 5 — Secure Boot Threat Model (extends ADR-0014)
@@ -204,6 +204,7 @@ starting from scratch. Full phase table and links:
 | 1.1.0   | 2026-07-13 | Add M9 (Architecture Group Review) and M10 (Backlog Closure Pass) sections |
 | 1.2.0   | 2026-07-13 | Add M11 (Response to External Repository Review): Requirements Database delivered, NPS renumbering rejected, remaining 10 gap categories logged in priority order |
 | 1.3.0   | 2026-07-13 | Add M12 (Threat Model, phased): Phase 1 (methodology + attack surface) complete, Phases 2–7 planned and sequenced |
+| 1.4.0   | 2026-07-13 | M12 Phase 2 complete (STRIDE analysis, NPS-020); 3 findings, 2 closed by direct spec amendment, 1 elevating package-format priority |
 
 ---
 **End of Document**
