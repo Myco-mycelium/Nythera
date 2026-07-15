@@ -39,7 +39,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-SYNC-0001 | No cloud-syncable data class SHALL be synchronized without the user explicitly enabling that specific class. | NPS-016 §4.1 | Verified | — | — |
 | REQ-NYHAL-0001 | A NyHAL backend SHALL be the sole arbiter of capability validity for its containers, regardless of native enforcement mechanism. | NPS-017 §4.2 | Verified | — | — |
 | REQ-NYHAL-0002 | An application built against NySDK SHALL run unmodified across any conformant NyHAL backend. | NPS-017 §7.1 | Verified | — | — |
-| REQ-NYHAL-0003 | A NyHAL backend SHALL provide container creation, teardown, suspension, and resource-limit enforcement sufficient to satisfy the process/container lifecycle state machines in NPS-002 §5 and NPS-010 §4. | NPS-017 §4.1 | Implemented (partial) | — | `source/nyhal-linux-backend/poc-container/nyctr.py` — creation, teardown, and a basic memory/pid resource limit only; suspension is NOT implemented, and this is namespace/cgroup isolation, not the Nythera capability model (see the PoC's own README for the full limitation list) |
+| REQ-NYHAL-0003 | A NyHAL backend SHALL provide container creation, teardown, suspension, and resource-limit enforcement sufficient to satisfy the process/container lifecycle state machines in NPS-002 §5 and NPS-010 §4. | NPS-017 §4.1 | Tested | `test_backend.py::TestContainerPrimitives` (4 tests, all passing as of 2026-07-15) | `source/nyhal-linux-backend/backend/container.py` — creation, graceful teardown (SIGTERM→SIGKILL), suspension (SIGSTOP/SIGCONT), and cgroup v1/v2 resource limits, all covering more than the original `nyctr` PoC. Does not cover `CAP-*` capability *enforcement* (that's `REQ-CAP-0001`, still open at the OS-enforcement level — see the same module's `IMPLEMENTATION_STATUS.md`) |
 
 ## Coverage Note
 
@@ -50,10 +50,12 @@ language; most are in `Accepted` specifications, with two genuine
 `Draft`-sourced exceptions, both from NPS-003 (`REQ-IPC-0003` → §3.1,
 `REQ-IPC-0004` → §5.2–§5.3; `REQ-GPU-0002` cites NPS-001 §3, which is
 itself `Accepted`, so it isn't a third exception). None of these statements introduce a
-new obligation (per NPC-009 §7.1). `REQ-NYHAL-0003` is the only entry touching `Implemented`
-status, and its caveat is deliberately specific rather than a bare
-checkmark, since the underlying PoC satisfies only a slice of what the
-requirement as written actually asks for.
+new obligation (per NPC-009 §7.1). `REQ-NYHAL-0003` is the only entry
+reaching `Tested` status, and even that has a specific, bounded caveat
+(§"Implemented By") rather than a bare checkmark — the requirement's own
+wording covers only lifecycle/resource-limit primitives, not capability
+enforcement, which remains open at a different requirement (`REQ-CAP-0001`)
+and is explicitly not conflated with this one.
 
 ## Adding a Requirement
 

@@ -1,14 +1,14 @@
 ---
 title: NyHAL — Kernel Abstraction Layer and Backend Contract
 document_id: NPS-017
-version: 1.0.2
+version: 1.0.3
 status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-07-15
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, NPS-001, NPS-002, NPS-003, NPS-004, NPS-010, NPS-011]
@@ -102,7 +102,7 @@ runtime and storage limitations (NPS-007 §9, NPS-006 §8).
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| Linux Backend | Not started | Initial practical target per ADR-0012; containers via namespaces/cgroups, capabilities via seccomp/LSM, NyFS via FUSE per ADR-0016 |
+| Linux Backend | **Experimental** — core logic implemented, not yet conformant | `source/nyhal-linux-backend/`: container primitives, capability tracking, IPC primitives, NyFS core, and boot sequence all have working code with a passing test suite (20/20, `test_backend.py`). Per its own `IMPLEMENTATION_STATUS.md`, **not yet conformant to §5.1**: capability enforcement is tracked state without seccomp/LSM wiring, NyFS's FUSE integration is structural only, and no performance benchmarks (IPC latency, FUSE overhead, compression ratio) exist yet. Threat model finding `FIND-BACKEND-001` (NPS-020 §7) was written against an earlier, much smaller PoC and needs re-examination against this implementation in Phase 4 of the threat model. |
 | Experimental Backend | Not started | Staging ground for partial NyKernel components and other experiments; explicitly not required to be conformant per §5.1 |
 | NyKernel Backend | Not started | The hybrid microkernel target defined in ADR-0006 and specified in NPS-001; the long-term reference backend |
 
@@ -138,6 +138,7 @@ to future work once more than one backend exists to migrate between.
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.0.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.0.2   | 2026-07-13 | Resolve §8 NyFS Linux Backend strategy question via ADR-0016 (FUSE, kernel-module fallback open) — informative clarification, no change to binding requirements |
+| 1.0.3   | 2026-07-15 | Update §6 Backend Registry: Linux Backend moved from "Not started" to "Experimental" — a substantial implementation (`source/nyhal-linux-backend/`) landed with a passing 20/20 test suite, independently verified before this update, not yet conformant per its own honest self-assessment |
 
 ---
 **End of Document**

@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.14.0
+version: 1.15.0
 status: Draft
 classification: Reference
 owners:
@@ -142,6 +142,7 @@ change process.
 | 1.12.0  | 2026-07-13 | Add NPS-018 and NPS-019 (Threat Model Phase 1: methodology + trust boundaries, attack surface enumeration), new `docs/reference/security/` directory |
 | 1.13.0  | 2026-07-13 | Add NPS-020 (Threat Model Phase 2: STRIDE analysis, all 10 trust boundaries); amend NPS-001 (GPU command buffer validation, 1.1.2→1.2.0) and NPS-003 (shared-memory zeroing, 1.0.0→1.1.0) to close two findings; add REQ-GPU-0002 and REQ-IPC-0003 |
 | 1.14.0  | 2026-07-13 | Add NPS-021 (Threat Model Phase 3: privilege boundaries, capability escalation) and ADR-0018 (hash-chained audit log); also add ADR-0017 to this table, missed in the prior revision; amend NPS-010 (atomic grant-check, tamper-evident audit) and NPS-011 (split CAP-MEDIA-LIBRARY into three capabilities); add REQ-IPC-0004 |
+| 1.15.0  | 2026-07-15 | Reconcile with an externally-contributed Linux Backend implementation (`source/nyhal-linux-backend/`, merged after a push conflict, independently verified — 20/20 tests pass): NPS-017 §6 backend registry updated from "Not started" to "Experimental," REQ-NYHAL-0003 upgraded to `Tested` |
 
 ---
 **End of Document**

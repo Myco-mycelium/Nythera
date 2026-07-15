@@ -5,7 +5,7 @@ Nythera repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-07-13
+2026-07-15
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -110,15 +110,41 @@ Not started.
 Not started.
 
 ## Source Code
-One tested proof-of-concept: `source/nyhal-linux-backend/poc-container/`
-(`nyctr.py`) — proves the most basic container primitive (PID/mount/UTS/
-user namespace isolation + a cgroup memory/pid limit) works on stock
-Linux, per NPS-017 §4.1. Verified with a repeatable test script
-(`test_nyctr.sh`), all 4 cases passing. This is explicitly a spike, not
-the start of a real implementation — see the PoC's own README for what it
-does not prove (no capability enforcement, no IPC, no storage, no boot
-integration — NPS-017 §4.2 through §4.5 remain untouched). Every other
-subsystem is unstarted.
+Two things now, not one:
+
+- `source/nyhal-linux-backend/poc-container/` (`nyctr.py`) — the original
+  spike: proves the most basic container primitive (PID/mount/UTS/user
+  namespace isolation + a cgroup memory/pid limit) works on stock Linux.
+  Superseded in scope by the item below but kept as the minimal reference
+  it was designed to be.
+
+- `source/nyhal-linux-backend/` — a substantially fuller Linux Backend
+  implementation (`backend/container.py`, `backend/capability.py`,
+  `ipc/core.py`, `fuse/nyfs.py`, `boot/lifecycle.py`), contributed
+  externally (not authored in this session — merged from the remote after
+  a `git push` conflict surfaced it) and **independently verified before
+  being documented here**: `python3 -m pytest test_backend.py` passes
+  20/20. Real cgroup v1/v2 detection and namespace usage confirmed by
+  reading the code, not assumed from its own claims.
+
+  Its own `IMPLEMENTATION_STATUS.md` (`document_id: IMPL-001`) self-rates
+  as **"Experimental Backend — Core Implementation Complete,
+  Performance/Integration Work Pending,"** explicitly **not yet
+  conformant** to NPS-017 §5: capability enforcement exists as tracked
+  state (grant/revoke/attenuate/audit, all tested) but has no seccomp/LSM
+  enforcement wired in yet; the NyFS FUSE integration is structural only
+  (no `pyfuse3`/`fusepy` daemon yet); no IPC latency, FUSE overhead, or
+  compression benchmarks exist. That self-assessment reads as accurate
+  against the code, not inflated — consistent with this project's
+  existing discipline.
+
+  **Not yet reconciled with this session's threat model work**: Phase 4
+  (Container Escape Analysis, not yet started) should specifically
+  re-examine `FIND-BACKEND-001` against this implementation — it's a
+  meaningfully different situation than the bare `nyctr` PoC (capability
+  *tracking* now exists, even though OS-level *enforcement* still
+  doesn't), and the finding's severity/status should be reassessed with
+  that distinction in mind rather than left describing the old PoC.
 
 ## Build System
 Not started.
