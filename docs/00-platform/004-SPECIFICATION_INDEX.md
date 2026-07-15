@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.13.0
+version: 1.14.0
 status: Draft
 classification: Reference
 owners:
@@ -54,6 +54,8 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
+| ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** |
+| ADR-0018 | Hash-chained append-only log for capability audit records | Proposed |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -82,6 +84,7 @@ index.
 | NPS-018 | Threat Model Methodology and Trust Boundaries | security | Draft |
 | NPS-019 | Attack Surface Enumeration | security | Draft |
 | NPS-020 | STRIDE Analysis per Trust Boundary | security | Draft |
+| NPS-021 | Privilege Boundaries and Capability Escalation Analysis | security | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
@@ -138,6 +141,7 @@ change process.
 | 1.11.0  | 2026-07-13 | In response to external review: add ADR-0017 (Rejected — declines NPS domain-renumbering proposal); add NPC-009 Requirements Database and its seed ledger (29 requirements, 17 domains); bump NPC-001 to 1.1.0 for the new REQ document class |
 | 1.12.0  | 2026-07-13 | Add NPS-018 and NPS-019 (Threat Model Phase 1: methodology + trust boundaries, attack surface enumeration), new `docs/reference/security/` directory |
 | 1.13.0  | 2026-07-13 | Add NPS-020 (Threat Model Phase 2: STRIDE analysis, all 10 trust boundaries); amend NPS-001 (GPU command buffer validation, 1.1.2→1.2.0) and NPS-003 (shared-memory zeroing, 1.0.0→1.1.0) to close two findings; add REQ-GPU-0002 and REQ-IPC-0003 |
+| 1.14.0  | 2026-07-13 | Add NPS-021 (Threat Model Phase 3: privilege boundaries, capability escalation) and ADR-0018 (hash-chained audit log); also add ADR-0017 to this table, missed in the prior revision; amend NPS-010 (atomic grant-check, tamper-evident audit) and NPS-011 (split CAP-MEDIA-LIBRARY into three capabilities); add REQ-IPC-0004 |
 
 ---
 **End of Document**

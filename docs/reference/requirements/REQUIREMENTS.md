@@ -17,6 +17,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-IPC-0001 | All IPC message payloads SHALL be bounded in size at the primitive level. | NPS-003 §3.1 | Verified | — | — |
 | REQ-IPC-0002 | The kernel SHALL be the sole arbiter of capability validity. | NPS-003 §5.4 | Verified | — | — |
 | REQ-IPC-0003 | A shared-memory region SHALL be cleared (zeroed) by the kernel before being made available to a different container than the one that last held it. | NPS-003 §3.1 | Verified | — | — |
+| REQ-IPC-0004 | A capability transfer SHALL NOT be widened at transfer time — attenuation (narrowing) is permitted, but a transferred capability SHALL NOT exceed the scope of the capability held by the transferring process. | NPS-003 §5.2–§5.3 | Verified | — | — |
 | REQ-STORAGE-0001 | Every NyFS data block and metadata block SHALL be checksummed. | NPS-004 §4.3 | Verified | — | — |
 | REQ-STORAGE-0002 | Creating an NyFS snapshot SHALL be an O(1) metadata operation that does not copy data eagerly. | NPS-004 §4.2 | Verified | — | — |
 | REQ-COMPRESS-0001 | A user SHALL be able to view and override the compression category of any file or directory. | NPS-005 §4.4 | Verified | — | — |
@@ -42,13 +43,13 @@ than introducing anything new (NPC-009 §7.1).
 
 ## Coverage Note
 
-31 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
+32 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
 least one per NPS document, not a claim of exhaustive coverage of any of
 them. Every `Source` cell is a real section containing real normative
-language; most are in `Accepted` specifications, with two exceptions
-traced to `Draft` documents (`REQ-IPC-0003` → NPS-003 §3.1, `REQ-GPU-0002`
-→ NPS-001 §3 — NPS-001 is itself `Accepted`, so only `REQ-IPC-0003` is a
-genuine Draft-sourced exception). None of these statements introduce a
+language; most are in `Accepted` specifications, with two genuine
+`Draft`-sourced exceptions, both from NPS-003 (`REQ-IPC-0003` → §3.1,
+`REQ-IPC-0004` → §5.2–§5.3; `REQ-GPU-0002` cites NPS-001 §3, which is
+itself `Accepted`, so it isn't a third exception). None of these statements introduce a
 new obligation (per NPC-009 §7.1). `REQ-NYHAL-0003` is the only entry touching `Implemented`
 status, and its caveat is deliberately specific rather than a bare
 checkmark, since the underlying PoC satisfies only a slice of what the

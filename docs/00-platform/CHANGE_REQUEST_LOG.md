@@ -33,6 +33,8 @@ independent of chat or discussion history.
 | CR-0025 | Establish NPC-009 Requirements Database and seed it with 29 requirements traced from existing Accepted specifications | Accepted | — |
 | CR-0026 | Begin phased threat model: NPS-018 (methodology, trust boundaries) and NPS-019 (attack surface enumeration, 24 surfaces) | Accepted | — |
 | CR-0027 | Threat model Phase 2: NPS-020 STRIDE analysis, all 10 trust boundaries; amend NPS-001 (GPU command validation) and NPS-003 (shared-memory zeroing) closing 2 findings; identify package-signing gap (FIND-PACKAGE-001) | Accepted | — |
+| CR-0028 | Threat model Phase 3: NPS-021 privilege/escalation analysis; new ADR-0018 (hash-chained audit log); amend NPS-010 (atomic grant-check, tamper-evident audit) and NPS-011 (split CAP-MEDIA-LIBRARY); add REQ-IPC-0004; record FIND-CAPABILITY-005 against NPC-008 | Accepted | ADR-0018 |
+| CR-0029 | Add tools/check_depends_on_cycles.py; fix 4 real circular dependencies it found across NPS-001, NPS-003, NPS-007, NPS-008, ADR-0012/13/14/15 (each individually reasonable when added, circular together) | Accepted | — |
 
 ## How to Add an Entry
 

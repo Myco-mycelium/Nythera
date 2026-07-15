@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002, NPS-020]
+depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002]
 ---
 
 # NPS-003 — Inter-Process Communication and Capability Passing

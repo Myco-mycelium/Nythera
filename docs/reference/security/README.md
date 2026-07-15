@@ -10,7 +10,7 @@ depend on earlier ones and are not started out of order.
 | 1 — Methodology & Trust Boundaries | **Done** | [`NPS-018`](NPS-018-threat-model-methodology.md) |
 | 1 — Attack Surface Enumeration | **Done** | [`NPS-019`](NPS-019-attack-surface-enumeration.md) |
 | 2 — STRIDE Analysis per Trust Boundary | **Done** | [`NPS-020`](NPS-020-stride-analysis.md) — 3 findings, 2 closed by direct amendment to NPS-001/NPS-003, 1 elevating the package-format gap category's priority |
-| 3 — Privilege Boundaries & Capability Escalation Analysis | Not started | deepens `TB-CAPABILITY` findings from Phase 2 (`FIND-CAPABILITY-001`, `FIND-CAPABILITY-002`) |
+| 3 — Privilege Boundaries & Capability Escalation Analysis | **Done** | [`NPS-021`](NPS-021-privilege-and-escalation-analysis.md) — 5 findings (2 carried from Phase 2, 3 new); 4 resolved by direct amendment or new artifact, 1 (governance-level) recorded but explicitly not a technical fix |
 | 4 — Container Escape Analysis & Runtime Isolation | Not started | deepens `TB-CONTAINER` / `TB-BACKEND` findings from Phase 2 |
 | 5 — Secure Boot Threat Model | Not started | deepens `TB-BOOT` findings from Phase 2, extends ADR-0014 |
 | 6 — AI Threat Model | Not started | deepens `TB-AI` findings from Phase 2, extends NPS-015 |

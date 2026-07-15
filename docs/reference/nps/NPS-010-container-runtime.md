@@ -1,7 +1,7 @@
 ---
 title: Container Runtime
 document_id: NPS-010
-version: 1.0.1
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: security
@@ -57,7 +57,12 @@ already-running privileged container spawning a helper).
 the requester is itself permitted to grant (NPS-002 §7.1: a process cannot
 grant what its own container doesn't hold) and against the capability
 registry (NPS-011) for validity. A manifest requesting an undefined
-capability **MUST** be rejected, per NPC-001 §9.3.
+capability **MUST** be rejected, per NPC-001 §9.3. This validity check and
+the grant recorded at the end of this state (§5.1) **MUST** be a single
+atomic operation against one consistent read of the capability registry —
+not two separate reads — so that a capability deprecated between check
+and grant cannot still be issued (per the threat model, `FIND-CAPABILITY-001`,
+NPS-021 §5.1).
 
 4.3. **ACTIVE** — the container exists with at least one process (NPS-002
 §5); its granted capabilities are enforceable by the kernel (NPS-003 §5.4).
@@ -123,7 +128,11 @@ access control.
 
 8.1. Every grant and revocation **MUST** be recorded in a form a user can
 inspect, per NTM-000 §4 ("Transparency") and NPC-001 §9.1's requirement
-that permission sets be user-visible.
+that permission sets be user-visible. This record **MUST** be
+tamper-evident, implemented as the hash-chained, append-only log decided
+in ADR-0018, so that a compromised container or service with write access
+to the log cannot silently falsify its own capability history (per the
+threat model, `FIND-CAPABILITY-002`, NPS-021 §5.2).
 
 8.2. The audit record **SHOULD** be queryable per-container ("what can this
 app do right now") and per-capability ("what currently holds camera
@@ -152,6 +161,7 @@ administrator questions.
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.0.1   | 2026-07-13 | Clarify Draft status is a transitive dependency on ADR-0009 §7.1, not an issue in this document's own content (Milestone 9 review) |
+| 1.1.0   | 2026-07-13 | §4.2: require atomic validity-check-and-grant, closing FIND-CAPABILITY-001. §8.1: require tamper-evident (hash-chained) audit log per new ADR-0018, closing FIND-CAPABILITY-002. Both from threat model Phase 3 (NPS-021). |
 
 ---
 **End of Document**

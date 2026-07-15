@@ -11,15 +11,17 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus a first tested code spike
 (`nyctr` container primitive). Milestone 12 — the phased security threat
-model — is in progress: Phase 1 (`NPS-018` methodology, `NPS-019` attack
-surface enumeration) and Phase 2 (`NPS-020` STRIDE analysis across all
-10 trust boundaries) are both done. Phase 2 produced 3 genuine findings
-requiring action, not just observations: two closed immediately by
-amending `NPS-001` and `NPS-003` directly (with new `REQ-GPU-0002` /
-`REQ-IPC-0003` entries), and one (no package signing — only checksums)
-that strengthens the case for Milestone 11's package-format gap category
-rather than being fixable by a quick amendment. Phases 3–7 remain planned
-and sequenced but not started — see
+model — is in progress: Phases 1–3 are done (`NPS-018` methodology,
+`NPS-019` attack surface enumeration, `NPS-020` STRIDE analysis,
+`NPS-021` privilege boundaries and capability escalation). Between
+Phases 2 and 3, 8 findings surfaced and every one has a disposition — no
+bare observations left dangling: `NPS-001`, `NPS-003`, `NPS-010`, and
+`NPS-011` were amended directly; a new `ADR-0018` (hash-chained audit
+log) and 4 new `REQ-*` entries were added; the package-signing gap
+strengthened Milestone 11's package-format priority; and one governance
+risk was recorded against `NPC-008` rather than forced into a runtime
+fix that wouldn't actually address it. Phases 4–7 remain planned and
+sequenced but not started — see
 `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
 categories (diagrams, API reference, ABI specification, full object
 registry, package format split, governance expansion, build architecture
@@ -40,7 +42,7 @@ prioritized backlog in `007-PROJECT_ROADMAP.md` — not built yet.
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-10 accepted, 6 held (named blockers below; 3 are new decisions pending
+10 accepted, 7 held (named blockers below; 4 are new decisions pending
 Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
@@ -60,11 +62,12 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0015 Shared dynamic binary translation for ARM/x86 — **Proposed**, approach decided; performance validation blocked on benchmark data
 - [ ] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Proposed**, initial strategy decided; kernel-module fallback blocked on FUSE-overhead benchmark data
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
+- [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 6 held (4 named benchmark/dependency blockers, plus NPS-018
-and NPS-019 which are new Draft documents pending Architecture Group
-sign-off, not benchmark-blocked).
+13 accepted, 8 held (4 named benchmark/dependency blockers, plus NPS-018,
+NPS-019, NPS-020, and NPS-021 — new Draft documents pending Architecture
+Group sign-off, not benchmark-blocked).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -75,8 +78,8 @@ sign-off, not benchmark-blocked).
 - [x] NPS-007 Windows Compatibility Runtime — Accepted (ARM translation approach now decided via ADR-0015; performance validation still pending benchmark data)
 - [x] NPS-008 Android Compatibility Runtime — Accepted (ARM translation approach now decided via ADR-0015; performance validation still pending benchmark data)
 - [x] NPS-009 Adaptive UI Shell — Accepted (VR resolved: explicitly deferred to a future milestone, not an open mode definition)
-- [ ] NPS-010 Container Runtime — **Draft**, transitively blocked on ADR-0009 (§7.1 normatively requires its still-Proposed rate-limiting mechanism)
-- [x] NPS-011 Capability Registry — Accepted (25 capabilities registered: 17 from Milestone 8 plus 8 new Android permission mappings added this pass — contacts, calendar, telephony, SMS, sensors, media library, NFC, biometric; still intentionally incomplete by design)
+- [ ] NPS-010 Container Runtime — **Draft**, transitively blocked on ADR-0009 (§7.1 normatively requires its still-Proposed rate-limiting mechanism); v1.1.0 added atomic grant-check (§4.2) and tamper-evident audit log requirement (§8.1, per new ADR-0018), closing threat model findings FIND-CAPABILITY-001/002
+- [x] NPS-011 Capability Registry — Accepted (27 capabilities registered: 25 through Milestone 10, minus 1 split into 3 this pass — `CAP-MEDIA-LIBRARY` → `CAP-MEDIA-IMAGES`/`CAP-MEDIA-VIDEO`/`CAP-MEDIA-AUDIO`, closing threat model finding FIND-CAPABILITY-004; still intentionally incomplete by design)
 - [x] NPS-012 Controller and Input Subsystem — Accepted (VR capability formally deferred, not left ambiguous — §5.1)
 - [x] NPS-013 GPU Feature Support — Accepted (§7.3 documents current FSR/XeSS/FSR4 vendor SDK status, verified 2026-07-13)
 - [x] NPS-014 Emulator Hub — Accepted
@@ -86,16 +89,18 @@ sign-off, not benchmark-blocked).
 - [x] NPS-018 Threat Model Methodology and Trust Boundaries — Draft (Threat Model Phase 1a)
 - [x] NPS-019 Attack Surface Enumeration — Draft (Threat Model Phase 1b, 24 surfaces catalogued)
 - [x] NPS-020 STRIDE Analysis per Trust Boundary — Draft (Threat Model Phase 2, 10 boundaries, 3 findings drove real spec amendments this pass)
+- [x] NPS-021 Privilege Boundaries and Capability Escalation Analysis — Draft (Threat Model Phase 3, 5 findings — 4 resolved, 1 governance-level recorded not technically fixed)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
-31 requirements across all 17 domain prefixes. Nearly all traced to
-`Accepted` specs; one (`REQ-IPC-0003`) traces to still-`Draft` NPS-003,
-called out explicitly rather than silently overstating coverage quality.
-One entry (`REQ-NYHAL-0003`) marked `Implemented (partial)`, referencing
-the `nyctr` PoC with an explicit caveat about what it doesn't cover. Not
-full coverage of NPS-001..020 by design (NPC-009 §7.3) — expand
-incrementally, and going forward new normative additions should cite a
+32 requirements across all 17 domain prefixes. Nearly all traced to
+`Accepted` specs; two (`REQ-IPC-0003`, `REQ-IPC-0004`) trace to
+still-`Draft` NPS-003, called out explicitly rather than silently
+overstating coverage quality. One entry (`REQ-NYHAL-0003`) marked
+`Implemented (partial)`, referencing the `nyctr` PoC with an explicit
+caveat about what it doesn't cover. Not full coverage of NPS-001..021 by
+design (NPC-009 §7.3) — expand incrementally, and going forward new
+normative additions should cite a
 REQ ID from the start (NPC-009 §7.2).
 
 ## ABI / API References
@@ -173,10 +178,11 @@ External review response (2026-07-13), not fabricable/decided instantly:
    onboarding. Each is roughly the size of a prior milestone on its own;
    not attempted in a single pass.
 10. Continue the threat model (Milestone 12, `docs/reference/security/`):
-    Phase 3 (Privilege Boundaries & Capability Escalation Analysis) is
-    next, deepening the `TB-CAPABILITY` findings NPS-020 §6 flagged as
-    needing fuller treatment (`FIND-CAPABILITY-001`, `FIND-CAPABILITY-002`).
-    Phases 4–7 (container escape, secure boot, AI, package trust) follow.
+    Phase 4 (Container Escape Analysis & Runtime Isolation) is next,
+    deepening `TB-CONTAINER`/`TB-BACKEND` — including a fuller look at
+    `FIND-BACKEND-001`, the `nyctr` PoC's complete lack of capability
+    enforcement, which Phase 3 explicitly left for Phase 4 rather than
+    duplicating. Phases 5–7 (secure boot, AI, package trust) follow.
 11. Elevate priority on Milestone 11's package-format gap category
     (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
     found that `.nygi` integrity currently relies on checksums alone,
@@ -184,3 +190,26 @@ External review response (2026-07-13), not fabricable/decided instantly:
     with an image and simply recompute a valid checksum. Not fixable by a
     quick amendment like the other two Phase 2 findings; needs a real
     package-signing/PKI specification.
+12. Benchmark hash-chain computation/verification overhead before
+    ADR-0018 exits Proposed — expected to be negligible but not asserted
+    as fact without a measurement, per NPC-002 §5.2.
+13. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design
+    once the project has more than one active contributor —
+    `FIND-CAPABILITY-005` (NPS-021 §5.4) flagged this as a soft privilege
+    path, recorded against the governance document rather than given a
+    runtime fix that wouldn't be the right tool for it.
+14. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
+    as a CI step. It found 4 real circular dependencies this pass
+    (NPS-001↔ADR-0012, NPS-001↔ADR-0013, NPS-001↔ADR-0014,
+    NPS-007/008↔ADR-0015 — each individually reasonable when added, only
+    circular together) that had been sitting in already-committed,
+    already-pushed documents undetected. Running it by hand caught them
+    this time; it should run automatically going forward.
+
+## Documentation Hygiene Notes *(ongoing)*
+- 2026-07-13: `tools/check_depends_on_cycles.py` added and run for the
+  first time, surfacing 4 real cycles across documents committed in
+  earlier sessions. All fixed by removing the back-reference that closed
+  each loop, following the same rule documented in the script's own
+  docstring: a document may cite something that depends on it in prose,
+  but must not list it back in its own `depends_on` front-matter.
