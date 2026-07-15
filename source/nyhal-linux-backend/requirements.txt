@@ -1,0 +1,25 @@
+# Nythera Linux Backend Requirements
+# 
+# Core dependencies for the NyHAL Linux Backend implementation.
+# References:
+# - NPS-017: NyHAL Kernel Abstraction Layer and Backend Contract
+# - ADR-0012: Adopt NyHAL as a pluggable kernel abstraction layer
+
+# Compression (ADR-0007: Zstandard as default codec)
+zstandard>=0.21.0
+
+# FUSE filesystem support (ADR-0016: NyFS via FUSE)
+# Note: pyfuse3 requires libfuse3-dev on the system
+# pyfuse3>=3.3.0  # Deferred: FUSE integration in progress
+
+# Optional: For enhanced logging and monitoring
+python-json-logger>=2.0.0
+
+# Development and testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-timeout>=2.1.0
+
+# Documentation
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.0.0
