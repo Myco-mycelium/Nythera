@@ -1,7 +1,7 @@
 ---
 title: NyHAL — Kernel Abstraction Layer and Backend Contract
 document_id: NPS-017
-version: 1.0.3
+version: 1.1.0
 status: Accepted
 classification: Normative
 subsystem: core-architecture
@@ -59,6 +59,23 @@ suspension, and resource-limit enforcement sufficient to satisfy NPS-002
 (process/thread model) and NPS-010 (container lifecycle) in full,
 including the state machines defined in NPS-002 §5 and NPS-010 §4.
 
+Where a backend implements resource limits via Linux cgroups and falls
+back to cgroup v1 because v2 is unavailable, the container's mount
+namespace **MUST NOT** expose write access to the v1 `release_agent` or
+`notify_on_release` mechanism, since a process with such access can
+achieve host-level code execution when its cgroup's last process exits —
+a well-documented container escape technique independent of this project
+(per the threat model, `FIND-BACKEND-003`, NPS-022 §4). A backend
+**SHOULD** prefer failing container creation over silently falling back
+to an unhardened v1 path where v2 was expected to be available.
+
+A backend **SHOULD NOT** construct shell command strings by interpolating
+container-supplied values (hostname, command arguments, or any other
+field an application or package manifest controls) without escaping,
+even where the resulting shell execution is contained within the
+container's own namespace — the blast radius may be low, but it's an
+avoidable pattern (per the threat model, `FIND-BACKEND-004`, NPS-022 §4).
+
 ### 4.2 Capability Enforcement
 A backend **MUST** be the sole arbiter of capability validity for its
 containers, per NPS-003 §5.4 and NPS-010 §5 — a backend that allows a
@@ -66,6 +83,25 @@ container to self-issue or forge access beyond its granted capability set
 is non-conformant, regardless of what native mechanism it uses to enforce
 this (e.g. Linux LSM/seccomp policy, or NyKernel's native capability
 primitives per NPS-003).
+
+This requirement **MUST** be satisfied at two distinct levels, and
+satisfying only the first **MUST NOT** be presented as conformant:
+
+- **Control-plane enforcement** — the backend's own orchestration code
+  checks capabilities before performing an operation on a container's
+  behalf (e.g. before relaying an IPC message). This is necessary but not
+  sufficient.
+- **Data-plane enforcement** — a process running inside a container's own
+  execution context is prevented, by an OS-level mechanism (seccomp, LSM,
+  or equivalent), from directly performing an operation its container
+  lacks the capability for, regardless of whether it goes through the
+  backend's own API. A container holding code-execution ability inside
+  its namespace (the baseline assumption for the "unprivileged local
+  application" and "compromised compat-runtime application" attacker
+  profiles, per NPS-018 §5) that can simply bypass the orchestrator and
+  make the syscall directly has not had that capability enforced, even if
+  every control-plane check the orchestrator performs is correct (per
+  the threat model, `FIND-BACKEND-002`, NPS-022 §4).
 
 ### 4.3 IPC Semantics
 A backend **MUST** provide the `send`/`receive`/`call`/`notify` primitives
@@ -139,6 +175,7 @@ to future work once more than one backend exists to migrate between.
 | 1.0.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.0.2   | 2026-07-13 | Resolve §8 NyFS Linux Backend strategy question via ADR-0016 (FUSE, kernel-module fallback open) — informative clarification, no change to binding requirements |
 | 1.0.3   | 2026-07-15 | Update §6 Backend Registry: Linux Backend moved from "Not started" to "Experimental" — a substantial implementation (`source/nyhal-linux-backend/`) landed with a passing 20/20 test suite, independently verified before this update, not yet conformant per its own honest self-assessment |
+| 1.1.0   | 2026-07-15 | Three amendments closing threat model Phase 4 findings (NPS-022): §4.1 adds cgroup v1 release_agent hardening requirement (FIND-BACKEND-003) and a shell-interpolation hygiene SHOULD (FIND-BACKEND-004); §4.2 requires capability enforcement to cover both control-plane and data-plane levels, not just orchestrator-side checks (FIND-BACKEND-002). Current Linux Backend implementation is non-conformant against the tightened §4.2 requirement — logged, not silently accepted. |
 
 ---
 **End of Document**

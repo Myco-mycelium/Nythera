@@ -9,19 +9,21 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
-pass, response to external review), plus a first tested code spike
-(`nyctr` container primitive). Milestone 12 — the phased security threat
-model — is in progress: Phases 1–3 are done (`NPS-018` methodology,
-`NPS-019` attack surface enumeration, `NPS-020` STRIDE analysis,
-`NPS-021` privilege boundaries and capability escalation). Between
-Phases 2 and 3, 8 findings surfaced and every one has a disposition — no
-bare observations left dangling: `NPS-001`, `NPS-003`, `NPS-010`, and
-`NPS-011` were amended directly; a new `ADR-0018` (hash-chained audit
-log) and 4 new `REQ-*` entries were added; the package-signing gap
-strengthened Milestone 11's package-format priority; and one governance
-risk was recorded against `NPC-008` rather than forced into a runtime
-fix that wouldn't actually address it. Phases 4–7 remain planned and
-sequenced but not started — see
+pass, response to external review), plus an externally-contributed,
+independently-verified Linux Backend implementation
+(`source/nyhal-linux-backend/`, 20/20 tests passing). Milestone 12 — the
+phased security threat model — is in progress: Phases 1–4 are done
+(`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
+STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
+container escape analysis). Phase 4 is the first phase analyzed against
+real code rather than a hypothetical, and it found the most severe issue
+in the threat model to date: capability enforcement in the Linux Backend
+covers exactly one operation class (IPC), leaving direct syscalls
+completely unmediated. `NPS-017` §4.1/§4.2 were tightened accordingly,
+and the implementation is formally flagged non-conformant against the
+new requirement — not silently accepted. Across Phases 2–4, 12 findings
+have surfaced and every one has a disposition — no bare observations left
+dangling. Phases 5–7 remain planned and sequenced but not started — see
 `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
 categories (diagrams, API reference, ABI specification, full object
 registry, package format split, governance expansion, build architecture
@@ -65,9 +67,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 8 held (4 named benchmark/dependency blockers, plus NPS-018,
-NPS-019, NPS-020, and NPS-021 — new Draft documents pending Architecture
-Group sign-off, not benchmark-blocked).
+13 accepted, 9 held (4 named benchmark/dependency blockers, plus NPS-018,
+NPS-019, NPS-020, NPS-021, and NPS-022 — new Draft documents pending
+Architecture Group sign-off, not benchmark-blocked).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -90,6 +92,7 @@ Group sign-off, not benchmark-blocked).
 - [x] NPS-019 Attack Surface Enumeration — Draft (Threat Model Phase 1b, 24 surfaces catalogued)
 - [x] NPS-020 STRIDE Analysis per Trust Boundary — Draft (Threat Model Phase 2, 10 boundaries, 3 findings drove real spec amendments this pass)
 - [x] NPS-021 Privilege Boundaries and Capability Escalation Analysis — Draft (Threat Model Phase 3, 5 findings — 4 resolved, 1 governance-level recorded not technically fixed)
+- [x] NPS-022 Container Escape Analysis and Runtime Isolation — Draft (Threat Model Phase 4, grounded in the real Linux Backend code; found capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding to date, flagged as the implementation's top priority)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -138,13 +141,20 @@ Two things now, not one:
   against the code, not inflated — consistent with this project's
   existing discipline.
 
-  **Not yet reconciled with this session's threat model work**: Phase 4
-  (Container Escape Analysis, not yet started) should specifically
-  re-examine `FIND-BACKEND-001` against this implementation — it's a
-  meaningfully different situation than the bare `nyctr` PoC (capability
-  *tracking* now exists, even though OS-level *enforcement* still
-  doesn't), and the finding's severity/status should be reassessed with
-  that distinction in mind rather than left describing the old PoC.
+  **Reconciled with Phase 4 of the threat model** (`NPS-022`, done this
+  session): capability *tracking* exists and is correctly implemented,
+  but enforcement covers exactly one operation class (IPC `send`/`call`,
+  2 call sites total) — direct syscalls, file/storage access, and
+  container lifecycle operations are completely unmediated by it. This
+  was confirmed by reading the code, not inferred from its own status
+  document. It's the most severe finding in the threat model to date
+  (`FIND-BACKEND-002`), and `NPS-017` §4.2 has been tightened accordingly
+  — the current implementation is now formally non-conformant against
+  that requirement, which is the honest state of things until seccomp/LSM
+  enforcement is actually wired in. Two smaller findings closed alongside
+  it: a cgroup v1 `release_agent` hardening gap (`FIND-BACKEND-003`,
+  §4.1 amended) and unsanitized shell interpolation of container-supplied
+  strings (`FIND-BACKEND-004`, a `SHOULD`-level hygiene note).
 
 ## Build System
 Not started.
@@ -204,33 +214,43 @@ External review response (2026-07-13), not fabricable/decided instantly:
    onboarding. Each is roughly the size of a prior milestone on its own;
    not attempted in a single pass.
 10. Continue the threat model (Milestone 12, `docs/reference/security/`):
-    Phase 4 (Container Escape Analysis & Runtime Isolation) is next,
-    deepening `TB-CONTAINER`/`TB-BACKEND` — including a fuller look at
-    `FIND-BACKEND-001`, the `nyctr` PoC's complete lack of capability
-    enforcement, which Phase 3 explicitly left for Phase 4 rather than
-    duplicating. Phases 5–7 (secure boot, AI, package trust) follow.
-11. Elevate priority on Milestone 11's package-format gap category
+    Phase 5 (Secure Boot Threat Model, extending ADR-0014) is next.
+    Phases 6–7 (AI, package trust) follow.
+11. Implement data-plane capability enforcement (seccomp/LSM) in
+    `source/nyhal-linux-backend/backend/capability.py` — `FIND-BACKEND-002`
+    (NPS-022 §4) found capability tracking exists but enforcement covers
+    only IPC send/call, leaving direct syscalls completely unmediated.
+    This is now the Linux Backend's single highest-priority remaining
+    item, ahead of FUSE integration or benchmarking, since it's a
+    security gap rather than a completeness gap. `REQ-NYHAL-0004` tracks
+    it formally.
+12. Elevate priority on Milestone 11's package-format gap category
     (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
     found that `.nygi` integrity currently relies on checksums alone,
     which don't establish publisher authenticity; an attacker can tamper
     with an image and simply recompute a valid checksum. Not fixable by a
     quick amendment like the other two Phase 2 findings; needs a real
     package-signing/PKI specification.
-12. Benchmark hash-chain computation/verification overhead before
+13. Benchmark hash-chain computation/verification overhead before
     ADR-0018 exits Proposed — expected to be negligible but not asserted
     as fact without a measurement, per NPC-002 §5.2.
-13. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design
+14. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design
     once the project has more than one active contributor —
     `FIND-CAPABILITY-005` (NPS-021 §5.4) flagged this as a soft privilege
     path, recorded against the governance document rather than given a
     runtime fix that wouldn't be the right tool for it.
-14. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
+15. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
     as a CI step. It found 4 real circular dependencies this pass
     (NPS-001↔ADR-0012, NPS-001↔ADR-0013, NPS-001↔ADR-0014,
     NPS-007/008↔ADR-0015 — each individually reasonable when added, only
     circular together) that had been sitting in already-committed,
     already-pushed documents undetected. Running it by hand caught them
     this time; it should run automatically going forward.
+16. Wire the cgroup v1 `release_agent` hardening and data-plane
+    enforcement requirements (`NPS-017` §4.1/§4.2, this session) into the
+    Linux Backend implementation directly, and correct
+    `IMPLEMENTATION_STATUS.md`'s own conformance claims to reference
+    `FIND-BACKEND-002`/`003`/`004` once fixed.
 
 ## Documentation Hygiene Notes *(ongoing)*
 - 2026-07-13: `tools/check_depends_on_cycles.py` added and run for the

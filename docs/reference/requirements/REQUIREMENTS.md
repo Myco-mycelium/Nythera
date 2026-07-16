@@ -40,10 +40,11 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-NYHAL-0001 | A NyHAL backend SHALL be the sole arbiter of capability validity for its containers, regardless of native enforcement mechanism. | NPS-017 §4.2 | Verified | — | — |
 | REQ-NYHAL-0002 | An application built against NySDK SHALL run unmodified across any conformant NyHAL backend. | NPS-017 §7.1 | Verified | — | — |
 | REQ-NYHAL-0003 | A NyHAL backend SHALL provide container creation, teardown, suspension, and resource-limit enforcement sufficient to satisfy the process/container lifecycle state machines in NPS-002 §5 and NPS-010 §4. | NPS-017 §4.1 | Tested | `test_backend.py::TestContainerPrimitives` (4 tests, all passing as of 2026-07-15) | `source/nyhal-linux-backend/backend/container.py` — creation, graceful teardown (SIGTERM→SIGKILL), suspension (SIGSTOP/SIGCONT), and cgroup v1/v2 resource limits, all covering more than the original `nyctr` PoC. Does not cover `CAP-*` capability *enforcement* (that's `REQ-CAP-0001`, still open at the OS-enforcement level — see the same module's `IMPLEMENTATION_STATUS.md`) |
+| REQ-NYHAL-0004 | A NyHAL backend's capability enforcement SHALL cover both control-plane operations (what the backend's own orchestration code performs on a container's behalf) and data-plane operations (what a process running inside the container's own execution context can do directly, independent of the orchestrator). | NPS-017 §4.2 | Verified | — | `source/nyhal-linux-backend/backend/capability.py` implements control-plane checks only (2 call sites, both gating IPC send/call in `ipc/core.py`); data-plane enforcement (seccomp/LSM) is unimplemented — **known non-conformant**, tracked as the Linux Backend's highest-priority remaining item |
 
 ## Coverage Note
 
-32 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
+33 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
 least one per NPS document, not a claim of exhaustive coverage of any of
 them. Every `Source` cell is a real section containing real normative
 language; most are in `Accepted` specifications, with two genuine

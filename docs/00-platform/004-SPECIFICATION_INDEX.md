@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.15.0
+version: 1.16.0
 status: Draft
 classification: Reference
 owners:
@@ -85,6 +85,7 @@ index.
 | NPS-019 | Attack Surface Enumeration | security | Draft |
 | NPS-020 | STRIDE Analysis per Trust Boundary | security | Draft |
 | NPS-021 | Privilege Boundaries and Capability Escalation Analysis | security | Draft |
+| NPS-022 | Container Escape Analysis and Runtime Isolation | security | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
@@ -143,6 +144,7 @@ change process.
 | 1.13.0  | 2026-07-13 | Add NPS-020 (Threat Model Phase 2: STRIDE analysis, all 10 trust boundaries); amend NPS-001 (GPU command buffer validation, 1.1.2→1.2.0) and NPS-003 (shared-memory zeroing, 1.0.0→1.1.0) to close two findings; add REQ-GPU-0002 and REQ-IPC-0003 |
 | 1.14.0  | 2026-07-13 | Add NPS-021 (Threat Model Phase 3: privilege boundaries, capability escalation) and ADR-0018 (hash-chained audit log); also add ADR-0017 to this table, missed in the prior revision; amend NPS-010 (atomic grant-check, tamper-evident audit) and NPS-011 (split CAP-MEDIA-LIBRARY into three capabilities); add REQ-IPC-0004 |
 | 1.15.0  | 2026-07-15 | Reconcile with an externally-contributed Linux Backend implementation (`source/nyhal-linux-backend/`, merged after a push conflict, independently verified — 20/20 tests pass): NPS-017 §6 backend registry updated from "Not started" to "Experimental," REQ-NYHAL-0003 upgraded to `Tested` |
+| 1.16.0  | 2026-07-15 | Add NPS-022 (Threat Model Phase 4: container escape analysis, grounded in the real implementation); amend NPS-017 §4.1/§4.2 (cgroup v1 hardening, control-plane/data-plane enforcement distinction); add REQ-NYHAL-0004; implementation flagged non-conformant against the tightened §4.2 requirement |
 
 ---
 **End of Document**

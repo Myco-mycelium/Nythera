@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.5.0
+version: 1.6.0
 status: Draft
 classification: Informative
 owners:
@@ -21,12 +21,13 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M12 — Threat Model (phased)**, Phases 1–3 complete. Phase 3's escalation
-analysis produced 5 findings; 4 resolved by direct spec amendment or new
-artifact (`ADR-0018`, `REQ-IPC-0004`, a `CAP-MEDIA-LIBRARY` split), one
-recorded against governance (`NPC-008`) rather than forced into a runtime
-fix. Phase 4 (Container Escape Analysis & Runtime Isolation) is next —
-see "Milestone 12" section below and
+**M12 — Threat Model (phased)**, Phases 1–4 complete. Phase 4 was the
+first analyzed against real code (an externally-contributed Linux
+Backend implementation merged mid-session) rather than a hypothetical,
+and found the most severe issue in the threat model to date: capability
+enforcement covers only IPC, not direct syscalls. `NPS-017` was tightened
+accordingly and the implementation flagged non-conformant. Phase 5
+(Secure Boot Threat Model) is next — see "Milestone 12" section below and
 [`docs/reference/security/README.md`](../reference/security/README.md).
 
 ## Roadmap
@@ -192,7 +193,7 @@ starting from scratch. Full phase table and links:
 - [x] Phase 1b — Attack Surface Enumeration (`NPS-019`): 24 concrete surfaces catalogued across all 10 trust boundaries, each citing its governing spec
 - [x] Phase 2 — STRIDE Analysis per Trust Boundary (`NPS-020`): all 10 boundaries analyzed; 3 genuine findings surfaced. Two closed immediately by amending `NPS-001` (GPU command buffer validation) and `NPS-003` (shared-memory zeroing) directly, plus new `REQ-GPU-0002`/`REQ-IPC-0003`. One (`FIND-PACKAGE-001` — no package signing, checksums only) elevates the priority of Milestone 11's package-format gap category rather than being fixable by amendment.
 - [x] Phase 3 — Privilege Boundaries & Capability Escalation Analysis (`NPS-021`): 5 findings (2 carried from Phase 2, 3 new from deeper analysis). `FIND-CAPABILITY-001` (grant/registry race) and `FIND-CAPABILITY-002` (audit tamper-evidence) closed by amending `NPS-010` directly plus new `ADR-0018`. `FIND-CAPABILITY-003` (attenuation formalization) closed via new `REQ-IPC-0004`. `FIND-CAPABILITY-004` (capability granularity mismatch) closed by splitting `CAP-MEDIA-LIBRARY` into three capabilities in `NPS-011`. `FIND-CAPABILITY-005` (governance-level soft privilege path) recorded against `NPC-008`, not given a runtime fix that wouldn't address it.
-- [ ] Phase 4 — Container Escape Analysis & Runtime Isolation
+- [x] Phase 4 — Container Escape Analysis & Runtime Isolation (`NPS-022`): grounded in the real, externally-merged Linux Backend implementation rather than a hypothetical. 4 findings: `FIND-BACKEND-002` (capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding in the threat model to date) closed by tightening `NPS-017` §4.2 to require both control-plane and data-plane enforcement; `FIND-BACKEND-003` (cgroup v1 `release_agent` exposure) and `FIND-BACKEND-004` (shell interpolation hygiene) closed via `NPS-017` §4.1; `FIND-CONTAINER-004` (PID namespace `/proc` isolation) confirmed correct by code review. New `REQ-NYHAL-0004`. Implementation formally flagged non-conformant against the tightened requirement.
 - [ ] Phase 5 — Secure Boot Threat Model (extends ADR-0014)
 - [ ] Phase 6 — AI Threat Model (extends NPS-015)
 - [ ] Phase 7 — Package Trust Model (extends NPS-006)
@@ -207,6 +208,7 @@ starting from scratch. Full phase table and links:
 | 1.3.0   | 2026-07-13 | Add M12 (Threat Model, phased): Phase 1 (methodology + attack surface) complete, Phases 2–7 planned and sequenced |
 | 1.4.0   | 2026-07-13 | M12 Phase 2 complete (STRIDE analysis, NPS-020); 3 findings, 2 closed by direct spec amendment, 1 elevating package-format priority |
 | 1.5.0   | 2026-07-13 | M12 Phase 3 complete (privilege/escalation analysis, NPS-021); 5 findings, 4 resolved (NPS-010/011 amendments, new ADR-0018, new REQ-IPC-0004), 1 recorded against NPC-008 governance |
+| 1.6.0   | 2026-07-15 | M12 Phase 4 complete (container escape analysis, NPS-022), grounded in an externally-merged Linux Backend implementation; 4 findings, 3 resolved (NPS-017 §4.1/§4.2 amendments, new REQ-NYHAL-0004), implementation flagged non-conformant against the tightened requirement |
 
 ---
 **End of Document**

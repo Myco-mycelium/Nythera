@@ -55,25 +55,28 @@ for the full standard.
 
 Milestones 1–11 complete (Repository Bootstrap through a response to an
 external repository review — see `007-PROJECT_ROADMAP.md` for the full
-history), plus a first tested code spike
-(`source/nyhal-linux-backend/poc-container/`). Milestone 11's structural
-recommendations are resolved: a Requirements Database
+history), plus a substantial, externally-contributed Linux Backend
+implementation (`source/nyhal-linux-backend/`) — merged mid-session after
+a push conflict, independently verified (`pytest` 20/20 passing) rather
+than taken on faith. Milestone 11's structural recommendations are
+resolved: a Requirements Database
 (`NPC-009` + `docs/reference/requirements/REQUIREMENTS.md`) built per the
 external review's own top priority, and a proposed NPS domain-renumbering
 scheme formally **rejected** via `ADR-0017` rather than silently adopted.
 
-Milestone 12 (the security threat model, one of Milestone 11's remaining
-gap categories) is now in progress, built in explicit phases — Phases 1–3
-are complete: `NPS-018` (methodology), `NPS-019` (24 attack surfaces
-across 10 trust boundaries), `NPS-020` (STRIDE analysis of all 10
-boundaries), and `NPS-021` (privilege boundaries and capability
-escalation). Between Phases 2–3, 8 findings surfaced and every one has a
-disposition: `NPS-001`, `NPS-003`, `NPS-010`, and `NPS-011` were amended
-directly; a new `ADR-0018` (hash-chained audit log) and 4 new `REQ-*`
-entries were added; the package-signing gap elevated Milestone 11's
-package-format priority; and one governance risk was recorded against
-`NPC-008` rather than forced into a runtime fix that wouldn't actually
-address it. See
+Milestone 12 (the security threat model) is in progress, built in
+explicit phases — Phases 1–4 are complete: methodology, attack surface
+enumeration, STRIDE analysis, and privilege/escalation analysis. Phase 4
+was the first phase analyzed against real code rather than a
+hypothetical, and it found the most severe issue in the threat model to
+date: the Linux Backend's capability enforcement covers exactly one
+operation class (IPC send/call) — direct syscalls are completely
+unmediated. `NPS-017` was tightened to require both control-plane and
+data-plane enforcement, and the implementation is formally flagged
+non-conformant against that requirement rather than the gap being
+smoothed over. Across Phases 2–4, 12 findings have surfaced with a
+disposition each — spec amendments, new ADRs, new requirements, or an
+explicit "not fixable by amendment, tracked elsewhere." See
 [`docs/reference/security/README.md`](docs/reference/security/README.md)
 for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
 API/ABI reference, full object registry, and more) remain logged in
