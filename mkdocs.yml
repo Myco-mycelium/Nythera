@@ -79,6 +79,7 @@ nav:
           - NPS-020 STRIDE Analysis: reference/security/NPS-020-stride-analysis.md
           - NPS-021 Privilege & Escalation Analysis: reference/security/NPS-021-privilege-and-escalation-analysis.md
           - NPS-022 Container Escape Analysis: reference/security/NPS-022-container-escape-analysis.md
+          - NPS-023 Secure Boot Threat Model: reference/security/NPS-023-secure-boot-threat-model.md
       - ABI: reference/abi/README.md
       - API: reference/api/README.md
       - Package Format: reference/package-format/README.md

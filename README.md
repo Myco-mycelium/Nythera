@@ -65,18 +65,20 @@ external review's own top priority, and a proposed NPS domain-renumbering
 scheme formally **rejected** via `ADR-0017` rather than silently adopted.
 
 Milestone 12 (the security threat model) is in progress, built in
-explicit phases — Phases 1–4 are complete: methodology, attack surface
-enumeration, STRIDE analysis, and privilege/escalation analysis. Phase 4
-was the first phase analyzed against real code rather than a
-hypothetical, and it found the most severe issue in the threat model to
-date: the Linux Backend's capability enforcement covers exactly one
-operation class (IPC send/call) — direct syscalls are completely
-unmediated. `NPS-017` was tightened to require both control-plane and
-data-plane enforcement, and the implementation is formally flagged
-non-conformant against that requirement rather than the gap being
-smoothed over. Across Phases 2–4, 12 findings have surfaced with a
-disposition each — spec amendments, new ADRs, new requirements, or an
-explicit "not fixable by amendment, tracked elsewhere." See
+explicit phases — Phases 1–5 are complete: methodology, attack surface
+enumeration, STRIDE analysis, privilege/escalation analysis, container
+escape analysis, and secure boot. Phase 4 was the first phase analyzed
+against real code rather than a hypothetical, and it found the most
+severe issue in the threat model to date: the Linux Backend's capability
+enforcement covers exactly one operation class (IPC send/call) — direct
+syscalls are completely unmediated. Phase 5 found the same backend has
+zero Secure Boot status visibility and unvalidated boot-phase
+transitions. `NPS-017`/`NPS-001` were tightened accordingly, and the
+implementation is formally flagged non-conformant against both
+requirements rather than the gaps being smoothed over. Across Phases 2–5,
+24 unique findings have surfaced (verified by ID) with a disposition
+each — spec amendments, new ADRs, new requirements, or an explicit "not
+fixable by amendment, tracked elsewhere." See
 [`docs/reference/security/README.md`](docs/reference/security/README.md)
 for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
 API/ABI reference, full object registry, and more) remain logged in

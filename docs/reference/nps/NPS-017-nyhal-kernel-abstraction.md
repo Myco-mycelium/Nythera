@@ -1,7 +1,7 @@
 ---
 title: NyHAL — Kernel Abstraction Layer and Backend Contract
 document_id: NPS-017
-version: 1.1.0
+version: 1.2.0
 status: Accepted
 classification: Normative
 subsystem: core-architecture
@@ -122,6 +122,15 @@ substance — hardware/host initialization, a trusted first process, service
 bring-up, and a usable session — even where its internal stages don't
 literally match NPS-001 §5's NyKernel-specific stage names.
 
+Where a backend does not itself own the boot chain covered by `ADR-0014`
+(e.g. a backend running as userspace code atop an already-booted host
+operating system), it **MUST** query and report the host's own Secure
+Boot engagement status as part of reaching a usable session, rather than
+leaving its presence or absence silent. A user **MUST** be able to learn,
+from Nythera itself, whether the boot integrity guarantee `ADR-0014`
+describes as the platform's default posture is actually in effect on
+their running system (per the threat model, `FIND-BOOT-001`, NPS-023 §4).
+
 ## 5. Backend Conformance
 
 5.1. A backend **MUST NOT** be presented as Nythera-conformant unless it
@@ -176,6 +185,7 @@ to future work once more than one backend exists to migrate between.
 | 1.0.2   | 2026-07-13 | Resolve §8 NyFS Linux Backend strategy question via ADR-0016 (FUSE, kernel-module fallback open) — informative clarification, no change to binding requirements |
 | 1.0.3   | 2026-07-15 | Update §6 Backend Registry: Linux Backend moved from "Not started" to "Experimental" — a substantial implementation (`source/nyhal-linux-backend/`) landed with a passing 20/20 test suite, independently verified before this update, not yet conformant per its own honest self-assessment |
 | 1.1.0   | 2026-07-15 | Three amendments closing threat model Phase 4 findings (NPS-022): §4.1 adds cgroup v1 release_agent hardening requirement (FIND-BACKEND-003) and a shell-interpolation hygiene SHOULD (FIND-BACKEND-004); §4.2 requires capability enforcement to cover both control-plane and data-plane levels, not just orchestrator-side checks (FIND-BACKEND-002). Current Linux Backend implementation is non-conformant against the tightened §4.2 requirement — logged, not silently accepted. |
+| 1.2.0   | 2026-07-15 | §4.5 amended: a backend not owning its own boot chain MUST report the host's Secure Boot engagement status at usable-session, closing threat model finding FIND-BOOT-001 (NPS-023 §4) |
 
 ---
 **End of Document**

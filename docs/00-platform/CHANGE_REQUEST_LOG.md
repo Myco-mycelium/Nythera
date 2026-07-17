@@ -37,6 +37,7 @@ independent of chat or discussion history.
 | CR-0029 | Add tools/check_depends_on_cycles.py; fix 4 real circular dependencies it found across NPS-001, NPS-003, NPS-007, NPS-008, ADR-0012/13/14/15 (each individually reasonable when added, circular together) | Accepted | — |
 | CR-0030 | Merge externally-contributed Linux Backend implementation (source/nyhal-linux-backend/), verify independently (20/20 tests pass), reconcile NPS-017 backend registry and REQ-NYHAL-0003 status accordingly | Accepted | — |
 | CR-0031 | Threat model Phase 4: NPS-022 container escape analysis, grounded in the real implementation; amend NPS-017 Sec 4.1/4.2 (cgroup v1 hardening, control-plane/data-plane enforcement); add REQ-NYHAL-0004; flag implementation non-conformant against tightened requirement | Accepted | — |
+| CR-0032 | Threat model Phase 5: NPS-023 secure boot threat model, first full pass on TB-BOOT; amend NPS-017 Sec 4.5 (Secure Boot status reporting) and NPS-001 Sec 5 (phase-transition validation); add REQ-BOOT-0004; log measured-boot/TPM gap as not fixable by amendment | Accepted | — |
 
 ## How to Add an Entry
 

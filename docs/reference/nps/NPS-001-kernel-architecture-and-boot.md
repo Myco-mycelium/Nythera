@@ -1,14 +1,14 @@
 ---
 title: Kernel Architecture and Boot
 document_id: NPS-001
-version: 1.2.0
+version: 1.3.0
 status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-07-15
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0006]
@@ -89,6 +89,15 @@ The boot sequence **MUST** proceed through the following stages in order:
 Each stage **MUST** be independently observable via boot logs to satisfy
 NTM-000 §4 ("Transparency").
 
+Whatever mechanism a backend uses to track and transition between these
+stages **MUST** validate that a requested transition is a legal next step
+from the current stage, rejecting out-of-order transitions at the API
+level itself — not merely producing the correct order because the one
+call path currently in use happens to invoke stages correctly (per the
+threat model, `FIND-BOOT-002`, NPS-023 §4). A stage-tracking interface
+that accepts any transition without validation is non-conformant to this
+requirement even if nothing currently misuses it.
+
 ## 6. Failure Handling
 
 6.1. A failure in Stage 5 (Service Bring-Up) **MUST NOT** halt the entire
@@ -127,6 +136,7 @@ NPS.
 | 1.1.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
 | 1.1.2   | 2026-07-13 | Resolve §7 secure boot open question via ADR-0014 (UEFI Secure Boot, user-enrollable keys) |
 | 1.2.0   | 2026-07-13 | Add GPU command buffer validation and submission-timeout requirements to §3, closing threat model findings FIND-KERNEL-001/003 (NPS-020) |
+| 1.3.0   | 2026-07-15 | §5 amended: stage-transition mechanisms MUST validate legal ordering at the API level, not just via a correctly-ordered call path, closing threat model finding FIND-BOOT-002 (NPS-023 §4) |
 
 ---
 **End of Document**

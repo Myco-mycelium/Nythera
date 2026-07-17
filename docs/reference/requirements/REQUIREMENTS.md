@@ -12,6 +12,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-BOOT-0001 | The boot loader SHALL verify kernel image integrity (checksum, and signature where Secure Boot is enabled) before loading it. | NPS-001 §5 (Stage 2) | Verified | — | — |
 | REQ-BOOT-0002 | A failure in boot Stages 1–4 SHALL halt boot and present a diagnostic screen. | NPS-001 §6.2 | Verified | — | — |
 | REQ-BOOT-0003 | The platform SHALL support UEFI Secure Boot with user-enrollable keys. | ADR-0014 | Verified | — | — |
+| REQ-BOOT-0004 | A backend not owning its own boot chain SHALL query and report the host's Secure Boot engagement status as part of reaching a usable session. | NPS-017 §4.5 | Verified | — | `source/nyhal-linux-backend/boot/lifecycle.py` does not yet implement this (no EFI variable check exists) — known gap, not yet resolved in code |
 | REQ-KERNEL-0001 | Every process SHALL belong to exactly one container at creation time. | NPS-002 §4.1 | Verified | — | — |
 | REQ-KERNEL-0002 | A process SHALL NOT hold a capability its container does not hold. | NPS-002 §4.3 | Verified | — | — |
 | REQ-IPC-0001 | All IPC message payloads SHALL be bounded in size at the primitive level. | NPS-003 §3.1 | Verified | — | — |
@@ -44,7 +45,7 @@ than introducing anything new (NPC-009 §7.1).
 
 ## Coverage Note
 
-33 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
+34 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
 least one per NPS document, not a claim of exhaustive coverage of any of
 them. Every `Source` cell is a real section containing real normative
 language; most are in `Accepted` specifications, with two genuine

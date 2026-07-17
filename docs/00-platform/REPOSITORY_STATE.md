@@ -12,18 +12,17 @@ Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
 (`source/nyhal-linux-backend/`, 20/20 tests passing). Milestone 12 — the
-phased security threat model — is in progress: Phases 1–4 are done
+phased security threat model — is in progress: Phases 1–5 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
-container escape analysis). Phase 4 is the first phase analyzed against
-real code rather than a hypothetical, and it found the most severe issue
-in the threat model to date: capability enforcement in the Linux Backend
-covers exactly one operation class (IPC), leaving direct syscalls
-completely unmediated. `NPS-017` §4.1/§4.2 were tightened accordingly,
-and the implementation is formally flagged non-conformant against the
-new requirement — not silently accepted. Across Phases 2–4, 12 findings
-have surfaced and every one has a disposition — no bare observations left
-dangling. Phases 5–7 remain planned and sequenced but not started — see
+container escape analysis, `NPS-023` secure boot). Phase 4 found the most
+severe issue in the threat model to date (capability enforcement covers
+IPC only, not direct syscalls); Phase 5 found the Linux Backend has zero
+Secure Boot status visibility and unvalidated boot-phase transitions,
+both closed by amending `NPS-017`/`NPS-001`. Across Phases 2–5, 24 unique
+findings have surfaced and every one has a disposition — no bare
+observations left dangling. Phases 6–7 remain planned and sequenced but
+not started — see
 `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
 categories (diagrams, API reference, ABI specification, full object
 registry, package format split, governance expansion, build architecture
@@ -67,9 +66,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 9 held (4 named benchmark/dependency blockers, plus NPS-018,
-NPS-019, NPS-020, NPS-021, and NPS-022 — new Draft documents pending
-Architecture Group sign-off, not benchmark-blocked).
+13 accepted, 10 held (4 named benchmark/dependency blockers, plus
+NPS-018, NPS-019, NPS-020, NPS-021, NPS-022, and NPS-023 — new Draft
+documents pending Architecture Group sign-off, not benchmark-blocked).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -93,6 +92,7 @@ Architecture Group sign-off, not benchmark-blocked).
 - [x] NPS-020 STRIDE Analysis per Trust Boundary — Draft (Threat Model Phase 2, 10 boundaries, 3 findings drove real spec amendments this pass)
 - [x] NPS-021 Privilege Boundaries and Capability Escalation Analysis — Draft (Threat Model Phase 3, 5 findings — 4 resolved, 1 governance-level recorded not technically fixed)
 - [x] NPS-022 Container Escape Analysis and Runtime Isolation — Draft (Threat Model Phase 4, grounded in the real Linux Backend code; found capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding to date, flagged as the implementation's top priority)
+- [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -175,82 +175,74 @@ numbers exist yet — see `tests/BENCHMARK_PLAN.md` for methodology):
 4. Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning (unblocks ADR-0013 in full; algorithm family is already decided).
 5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
 6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016; determines whether the FUSE decision holds or needs a kernel-module fallback).
-
-Not benchmark-gated, resolved this pass:
-- ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).
-- ~~Scope VR integration~~ — explicitly deferred to a future milestone (NPS-012 §5.1), not designed further; this was the decision, not a placeholder.
-- ~~Evaluate vendor-neutral upscaling integration point~~ — NPS-013 §7.3, grounded in current (2026-07-13) FSR/XeSS/FSR4 vendor SDK status.
-- ~~Decide NyFS's Linux Backend implementation strategy~~ — ADR-0016 (FUSE first, kernel-module fallback open pending benchmark #6 above).
-- ~~Decide secure boot key management~~ — ADR-0014 (UEFI Secure Boot, shim-equivalent chain, user-enrollable keys).
-- ~~Configure CI build for the MkDocs Material site~~ — `.github/workflows/docs.yml`, verified locally with `mkdocs build --strict` (zero warnings) before committing.
-- Expand NPS-011 Android permission mapping — 8 new capabilities added (contacts, calendar, telephony, SMS, sensors, media library, NFC, biometric); still intentionally incomplete per NPS-011 §6, expand further as gaps are found.
+7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
 
 Genuinely still open, not fabricable:
-7. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.
-8. Begin implementation work on the Linux Backend (NPS-017 §6) — the container-primitive spike (`source/nyhal-linux-backend/poc-container/`) is done and passing; next up is capability enforcement (seccomp/LSM, NPS-017 §4.2), which needs the capability registry (NPS-011) mapped onto concrete Linux mechanisms, not just documented in the abstract.
+8. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.
 9. Choose a real license (`LICENSE` is still the Milestone 1 placeholder — "no rights granted... until a formal license is adopted"). This is a legal/business decision for the repository owner, not one to pick unilaterally on their behalf.
 10. Enable GitHub Pages with source "GitHub Actions" (Settings → Pages) so `.github/workflows/docs.yml`'s deploy step has somewhere to publish to — the workflow runs regardless, but won't be visibly served until this is set.
+11. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design once the project has more than one active contributor — `FIND-CAPABILITY-005` (NPS-021 §5.4) flagged this as a soft privilege path, recorded against the governance document rather than given a runtime fix that wouldn't be the right tool for it.
+12. Design a measured-boot/TPM attestation story once a concrete need justifies it (`FIND-BOOT-003`, NPS-023 §4) — not fixable by a quick amendment, same category as the package-signing gap.
 
-Documentation hygiene, fixed this pass:
-- A prior review pass (Milestone 9) left several documents with a Markdown
-  table-formatting bug: the row recording that milestone's own review
-  (e.g. "Architecture Group review completed... Status: Draft → Accepted")
-  had gotten separated from its revision-history table by a blank line,
-  rendering as an orphaned single-row table instead of part of the
-  sequence. This affected all 13 `Accepted` NPS documents (every one that
-  went through the Milestone 9 review): NPS-001, 004, 006, 007, 008, 009,
-  011, 012, 013, 014, 015, 016, 017 — fixed across the M10 commit and this
-  pass; verified via `mkdocs build --strict` and a repo-wide grep for the
-  pattern, which is now clean.
-- `mkdocs.yml`'s `repo_url` was still the bootstrap placeholder
-  (`your-org/Nythera`) despite the real repository existing since
-  Milestone 1's first push; corrected to `Myco-mycelium/Nythera`.
-
-External review response (2026-07-13), not fabricable/decided instantly:
-9. Work through Milestone 11's remaining prioritized backlog
-   (`007-PROJECT_ROADMAP.md`) — architecture diagrams, API reference, ABI
-   specification, full object registry, package format split, governance
-   expansion, build architecture docs, performance budgets, developer
-   onboarding. Each is roughly the size of a prior milestone on its own;
-   not attempted in a single pass.
-10. Continue the threat model (Milestone 12, `docs/reference/security/`):
-    Phase 5 (Secure Boot Threat Model, extending ADR-0014) is next.
-    Phases 6–7 (AI, package trust) follow.
-11. Implement data-plane capability enforcement (seccomp/LSM) in
+Implementation now needs to catch up to what the threat model has already
+decided at the spec level — none of these are documentation tasks:
+13. Implement data-plane capability enforcement (seccomp/LSM) in
     `source/nyhal-linux-backend/backend/capability.py` — `FIND-BACKEND-002`
     (NPS-022 §4) found capability tracking exists but enforcement covers
     only IPC send/call, leaving direct syscalls completely unmediated.
-    This is now the Linux Backend's single highest-priority remaining
-    item, ahead of FUSE integration or benchmarking, since it's a
-    security gap rather than a completeness gap. `REQ-NYHAL-0004` tracks
-    it formally.
-12. Elevate priority on Milestone 11's package-format gap category
-    (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
-    found that `.nygi` integrity currently relies on checksums alone,
-    which don't establish publisher authenticity; an attacker can tamper
-    with an image and simply recompute a valid checksum. Not fixable by a
-    quick amendment like the other two Phase 2 findings; needs a real
-    package-signing/PKI specification.
-13. Benchmark hash-chain computation/verification overhead before
-    ADR-0018 exits Proposed — expected to be negligible but not asserted
-    as fact without a measurement, per NPC-002 §5.2.
-14. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design
-    once the project has more than one active contributor —
-    `FIND-CAPABILITY-005` (NPS-021 §5.4) flagged this as a soft privilege
-    path, recorded against the governance document rather than given a
-    runtime fix that wouldn't be the right tool for it.
-15. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
+    This is the Linux Backend's single highest-priority remaining item,
+    ahead of FUSE integration or benchmarking, since it's a security gap
+    rather than a completeness gap. `REQ-NYHAL-0004` tracks it formally.
+14. Wire the cgroup v1 `release_agent` hardening and shell-interpolation
+    hygiene fixes (`NPS-017` §4.1) into `backend/container.py`.
+15. Implement Secure Boot status reporting (`REQ-BOOT-0004`, `NPS-017`
+    §4.5) and boot-phase transition validation (`FIND-BOOT-002`, `NPS-001`
+    §5) in `boot/lifecycle.py`.
+16. Once 13–15 land, correct `IMPLEMENTATION_STATUS.md`'s own conformance
+    claims to reflect them rather than leaving it describing the
+    pre-fix state.
+
+Process and tooling:
+17. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
     as a CI step. It found 4 real circular dependencies this pass
     (NPS-001↔ADR-0012, NPS-001↔ADR-0013, NPS-001↔ADR-0014,
     NPS-007/008↔ADR-0015 — each individually reasonable when added, only
     circular together) that had been sitting in already-committed,
     already-pushed documents undetected. Running it by hand caught them
     this time; it should run automatically going forward.
-16. Wire the cgroup v1 `release_agent` hardening and data-plane
-    enforcement requirements (`NPS-017` §4.1/§4.2, this session) into the
-    Linux Backend implementation directly, and correct
-    `IMPLEMENTATION_STATUS.md`'s own conformance claims to reference
-    `FIND-BACKEND-002`/`003`/`004` once fixed.
+18. Elevate priority on Milestone 11's package-format gap category
+    (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
+    found that `.nygi` integrity currently relies on checksums alone,
+    which don't establish publisher authenticity; an attacker can tamper
+    with an image and simply recompute a valid checksum. Not fixable by a
+    quick amendment; needs a real package-signing/PKI specification.
+19. Work through Milestone 11's remaining prioritized backlog
+    (`007-PROJECT_ROADMAP.md`) — architecture diagrams, API reference, ABI
+    specification, full object registry, package format split, governance
+    expansion, build architecture docs, performance budgets, developer
+    onboarding. Each is roughly the size of a prior milestone on its own;
+    not attempted in a single pass.
+20. Continue the threat model (Milestone 12, `docs/reference/security/`):
+    Phase 6 (AI Threat Model, extending NPS-015) is next. Phase 7
+    (Package Trust Model) follows.
+
+Resolved earlier this session, kept here for a complete record:
+- ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).
+- ~~Scope VR integration~~ — explicitly deferred to a future milestone (NPS-012 §5.1).
+- ~~Evaluate vendor-neutral upscaling integration point~~ — NPS-013 §7.3, grounded in vendor SDK research.
+- ~~Decide NyFS's Linux Backend implementation strategy~~ — ADR-0016 (FUSE first, kernel-module fallback open pending benchmark #6).
+- ~~Decide secure boot key management~~ — ADR-0014 (UEFI Secure Boot, shim-equivalent chain, user-enrollable keys).
+- ~~Configure CI build for the MkDocs Material site~~ — `.github/workflows/docs.yml`, verified locally with `mkdocs build --strict` before committing.
+- Expand NPS-011 Android permission mapping — 8 new capabilities added; still intentionally incomplete per NPS-011 §6.
+
+Documentation hygiene, fixed earlier this session:
+- A prior review pass (Milestone 9) left several documents with a Markdown
+  table-formatting bug: the row recording that milestone's own review
+  had gotten separated from its revision-history table by a blank line.
+  Affected all 13 `Accepted` NPS documents from that review; fixed and
+  verified via `mkdocs build --strict` and a repo-wide grep, now clean.
+- `mkdocs.yml`'s `repo_url` was still the bootstrap placeholder; corrected
+  to `Myco-mycelium/Nythera`.
 
 ## Documentation Hygiene Notes *(ongoing)*
 - 2026-07-13: `tools/check_depends_on_cycles.py` added and run for the
