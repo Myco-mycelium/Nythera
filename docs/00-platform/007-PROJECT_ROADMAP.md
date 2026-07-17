@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.7.0
+version: 1.8.0
 status: Draft
 classification: Informative
 owners:
@@ -21,14 +21,13 @@ NPC-003 §7 are the source of truth for what each milestone contains.
 
 ## Current Milestone
 
-**M12 — Threat Model (phased)**, Phases 1–5 complete. Phase 4 (against
-real, externally-contributed code) found the threat model's most severe
-issue: capability enforcement covers only IPC, not direct syscalls. Phase
-5 (secure boot) found the Linux Backend has zero Secure Boot status
-visibility and unvalidated boot-phase transitions. Both phases resulted
-in tightened `NPS-017`/`NPS-001` requirements with the implementation
-formally flagged non-conformant, not silently accepted. Phase 6 (AI
-Threat Model) is next — see "Milestone 12" section below and
+**M12 — Threat Model (phased)**, Phases 1–6 complete. Phase 4 (against
+real code) found capability enforcement covers only IPC, not direct
+syscalls — the threat model's most severe issue. Phase 6 found the
+suggest-vs-act boundary's confirmation UI has no requirement to be
+unspoofable, meaning even a spec-compliant implementation wouldn't have
+closed the gap. Phase 7 (Package Trust Model) is the last planned phase —
+see "Milestone 12" section below and
 [`docs/reference/security/README.md`](../reference/security/README.md).
 
 ## Roadmap
@@ -196,7 +195,7 @@ starting from scratch. Full phase table and links:
 - [x] Phase 3 — Privilege Boundaries & Capability Escalation Analysis (`NPS-021`): 5 findings (2 carried from Phase 2, 3 new from deeper analysis). `FIND-CAPABILITY-001` (grant/registry race) and `FIND-CAPABILITY-002` (audit tamper-evidence) closed by amending `NPS-010` directly plus new `ADR-0018`. `FIND-CAPABILITY-003` (attenuation formalization) closed via new `REQ-IPC-0004`. `FIND-CAPABILITY-004` (capability granularity mismatch) closed by splitting `CAP-MEDIA-LIBRARY` into three capabilities in `NPS-011`. `FIND-CAPABILITY-005` (governance-level soft privilege path) recorded against `NPC-008`, not given a runtime fix that wouldn't address it.
 - [x] Phase 4 — Container Escape Analysis & Runtime Isolation (`NPS-022`): grounded in the real, externally-merged Linux Backend implementation rather than a hypothetical. 4 findings: `FIND-BACKEND-002` (capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding in the threat model to date) closed by tightening `NPS-017` §4.2 to require both control-plane and data-plane enforcement; `FIND-BACKEND-003` (cgroup v1 `release_agent` exposure) and `FIND-BACKEND-004` (shell interpolation hygiene) closed via `NPS-017` §4.1; `FIND-CONTAINER-004` (PID namespace `/proc` isolation) confirmed correct by code review. New `REQ-NYHAL-0004`. Implementation formally flagged non-conformant against the tightened requirement.
 - [x] Phase 5 — Secure Boot Threat Model (`NPS-023`): first full pass on `TB-BOOT`, since Phase 2 deferred it without analysis. Identified an architectural gap Phase 2's framing hadn't anticipated — `ADR-0014`'s boot chain describes the NyKernel Backend, but the Linux Backend runs entirely as userspace code after the host's own Secure Boot chain has already completed. 4 findings: `FIND-BOOT-001` (zero Secure Boot status visibility) and `FIND-BOOT-002` (unvalidated boot-phase transitions) closed via `NPS-017` §4.5 and `NPS-001` §5 respectively, plus new `REQ-BOOT-0004`; `FIND-BOOT-003` (no measured-boot/TPM story) logged as not fixable by amendment; `FIND-BOOT-004` (MOK enrollment's physical-presence auth) confirmed as an accepted, inherent tradeoff, not a new risk.
-- [ ] Phase 6 — AI Threat Model (extends NPS-015)
+- [x] Phase 6 — AI Threat Model (`NPS-024`): first full pass on `TB-AI`, since Phase 2 deferred it. No implementation exists yet, so analyzed directly against `NPS-015`'s specified guarantees. 5 findings: `FIND-AI-001` (the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — arguably the most conceptually significant finding since Phase 4's capability-enforcement gap, since it means the security guarantee would be missing even from a spec-compliant implementation) closed via `NPS-015` §5.2 plus new `REQ-AI-0003`; `FIND-AI-002` (no distinct audit trail for AI suggestions, separate from the capability audit log) closed via new `NPS-015` §5.5 reusing `ADR-0018`'s mechanism plus new `REQ-AI-0004`; `FIND-AI-003` (file search was justified under a capability whose registry definition doesn't cover file access) closed via `NPS-015` §5.3 correction; `FIND-AI-004` (code-assistance writes could blur into autostart/persistence mechanisms, bypassing the suggest-and-confirm flow) closed via `NPS-015` §5.4; `FIND-AI-005` (adversarial/inaudible voice commands) confirmed bounded by the other controls already required, no new action.
 - [ ] Phase 7 — Package Trust Model (extends NPS-006)
 
 ## Revision History
@@ -211,6 +210,7 @@ starting from scratch. Full phase table and links:
 | 1.5.0   | 2026-07-13 | M12 Phase 3 complete (privilege/escalation analysis, NPS-021); 5 findings, 4 resolved (NPS-010/011 amendments, new ADR-0018, new REQ-IPC-0004), 1 recorded against NPC-008 governance |
 | 1.6.0   | 2026-07-15 | M12 Phase 4 complete (container escape analysis, NPS-022), grounded in an externally-merged Linux Backend implementation; 4 findings, 3 resolved (NPS-017 §4.1/§4.2 amendments, new REQ-NYHAL-0004), implementation flagged non-conformant against the tightened requirement |
 | 1.7.0   | 2026-07-15 | M12 Phase 5 complete (secure boot, NPS-023), first full pass on TB-BOOT; 4 findings, 2 resolved (NPS-017 §4.5, NPS-001 §5 amendments, new REQ-BOOT-0004), 1 logged as not fixable by amendment, 1 confirmed as an accepted inherent tradeoff |
+| 1.8.0   | 2026-07-15 | M12 Phase 6 complete (AI, NPS-024), first full pass on TB-AI, no implementation exists yet; 5 findings, 4 resolved (NPS-015 §5.2/§5.3/§5.4/§5.5 amendments, new REQ-AI-0003/0004), 1 confirmed bounded by existing controls |
 
 ---
 **End of Document**

@@ -65,20 +65,24 @@ external review's own top priority, and a proposed NPS domain-renumbering
 scheme formally **rejected** via `ADR-0017` rather than silently adopted.
 
 Milestone 12 (the security threat model) is in progress, built in
-explicit phases — Phases 1–5 are complete: methodology, attack surface
+explicit phases — Phases 1–6 are complete: methodology, attack surface
 enumeration, STRIDE analysis, privilege/escalation analysis, container
-escape analysis, and secure boot. Phase 4 was the first phase analyzed
-against real code rather than a hypothetical, and it found the most
-severe issue in the threat model to date: the Linux Backend's capability
-enforcement covers exactly one operation class (IPC send/call) — direct
-syscalls are completely unmediated. Phase 5 found the same backend has
-zero Secure Boot status visibility and unvalidated boot-phase
-transitions. `NPS-017`/`NPS-001` were tightened accordingly, and the
-implementation is formally flagged non-conformant against both
-requirements rather than the gaps being smoothed over. Across Phases 2–5,
-24 unique findings have surfaced (verified by ID) with a disposition
-each — spec amendments, new ADRs, new requirements, or an explicit "not
-fixable by amendment, tracked elsewhere." See
+escape analysis, secure boot, and AI. Phase 4 was the first phase
+analyzed against real code rather than a hypothetical, and found the
+threat model's most severe issue: the Linux Backend's capability
+enforcement covers exactly one operation class (IPC send/call), leaving
+direct syscalls unmediated. Phase 6, working with no implementation yet
+to inspect, found something arguably more consequential at the
+specification level: the AI assistant's suggest-vs-act boundary
+(NPC-001 §11.1's core mechanism for keeping AI "a tool, not the operating
+system") required its confirmation prompt to be *reviewable*, but never
+required it to be *unspoofable* — meaning even a perfectly spec-compliant
+implementation would have shipped with the gap. `NPS-001`, `NPS-015`, and
+`NPS-017` were all tightened this session, each time with the
+implementation (where one exists) flagged non-conformant rather than the
+requirement softened to match it. Across Phases 2–6, 29 unique findings
+have surfaced (verified by ID, not estimated) with a disposition
+each. See
 [`docs/reference/security/README.md`](docs/reference/security/README.md)
 for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
 API/ABI reference, full object registry, and more) remain logged in

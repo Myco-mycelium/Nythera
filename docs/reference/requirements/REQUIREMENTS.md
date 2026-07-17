@@ -37,6 +37,8 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-EMU-0001 | The Emulator Hub SHALL NOT include built-in search, download, or acquisition functionality for ROM or BIOS files. | NPS-014 §3.3 | Verified | — | — |
 | REQ-AI-0001 | Any AI assistant action that would alter system configuration, install/remove software, or change security policy SHALL be presented as a suggestion requiring the user's own separate, explicit action to execute. | NPS-015 §5.1 | Verified | — | — |
 | REQ-AI-0002 | The operating system SHALL remain fully functional with the AI assistant disabled or absent. | NPS-015 §6.1 | Verified | — | — |
+| REQ-AI-0003 | An AI suggestion's confirmation UI SHALL be rendered through a protected system-UI surface that ordinary application containers cannot draw over, overlay, or visually replicate the identity of. | NPS-015 §5.2 | Verified | — | — |
+| REQ-AI-0004 | AI suggestions and their outcomes SHALL be recorded in a user-inspectable, tamper-evident log using the same mechanism as capability audit events. | NPS-015 §5.5 | Verified | — | — |
 | REQ-SYNC-0001 | No cloud-syncable data class SHALL be synchronized without the user explicitly enabling that specific class. | NPS-016 §4.1 | Verified | — | — |
 | REQ-NYHAL-0001 | A NyHAL backend SHALL be the sole arbiter of capability validity for its containers, regardless of native enforcement mechanism. | NPS-017 §4.2 | Verified | — | — |
 | REQ-NYHAL-0002 | An application built against NySDK SHALL run unmodified across any conformant NyHAL backend. | NPS-017 §7.1 | Verified | — | — |
@@ -45,7 +47,7 @@ than introducing anything new (NPC-009 §7.1).
 
 ## Coverage Note
 
-34 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
+36 requirements across all 17 domain prefixes defined in NPC-009 §4 — at
 least one per NPS document, not a claim of exhaustive coverage of any of
 them. Every `Source` cell is a real section containing real normative
 language; most are in `Accepted` specifications, with two genuine

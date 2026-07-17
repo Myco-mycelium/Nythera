@@ -80,6 +80,7 @@ nav:
           - NPS-021 Privilege & Escalation Analysis: reference/security/NPS-021-privilege-and-escalation-analysis.md
           - NPS-022 Container Escape Analysis: reference/security/NPS-022-container-escape-analysis.md
           - NPS-023 Secure Boot Threat Model: reference/security/NPS-023-secure-boot-threat-model.md
+          - NPS-024 AI Threat Model: reference/security/NPS-024-ai-threat-model.md
       - ABI: reference/abi/README.md
       - API: reference/api/README.md
       - Package Format: reference/package-format/README.md

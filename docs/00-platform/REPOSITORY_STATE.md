@@ -12,17 +12,18 @@ Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
 (`source/nyhal-linux-backend/`, 20/20 tests passing). Milestone 12 — the
-phased security threat model — is in progress: Phases 1–5 are done
+phased security threat model — is in progress: Phases 1–6 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
-container escape analysis, `NPS-023` secure boot). Phase 4 found the most
-severe issue in the threat model to date (capability enforcement covers
-IPC only, not direct syscalls); Phase 5 found the Linux Backend has zero
-Secure Boot status visibility and unvalidated boot-phase transitions,
-both closed by amending `NPS-017`/`NPS-001`. Across Phases 2–5, 24 unique
-findings have surfaced and every one has a disposition — no bare
-observations left dangling. Phases 6–7 remain planned and sequenced but
-not started — see
+container escape analysis, `NPS-023` secure boot, `NPS-024` AI). Phase 4
+found the most severe issue in the threat model to date (capability
+enforcement covers IPC only, not direct syscalls); Phase 6 found the
+suggest-vs-act boundary NPC-001 §11.1 depends on has no requirement that
+its confirmation UI actually be unspoofable — meaning even a
+perfectly-implemented assistant following the spec as written wouldn't
+have closed the gap. Across Phases 2–6, 29 unique findings have surfaced
+and every one has a disposition — no bare observations left dangling.
+Phase 7 (Package Trust Model) is the last planned phase — see
 `docs/reference/security/README.md`. Milestone 11's remaining 9 gap
 categories (diagrams, API reference, ABI specification, full object
 registry, package format split, governance expansion, build architecture
@@ -66,9 +67,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 10 held (4 named benchmark/dependency blockers, plus
-NPS-018, NPS-019, NPS-020, NPS-021, NPS-022, and NPS-023 — new Draft
-documents pending Architecture Group sign-off, not benchmark-blocked).
+13 accepted, 11 held (4 named benchmark/dependency blockers, plus
+NPS-018, NPS-019, NPS-020, NPS-021, NPS-022, NPS-023, and NPS-024 — new
+Draft documents pending Architecture Group sign-off, not benchmark-blocked).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -84,7 +85,7 @@ documents pending Architecture Group sign-off, not benchmark-blocked).
 - [x] NPS-012 Controller and Input Subsystem — Accepted (VR capability formally deferred, not left ambiguous — §5.1)
 - [x] NPS-013 GPU Feature Support — Accepted (§7.3 documents current FSR/XeSS/FSR4 vendor SDK status, verified 2026-07-13)
 - [x] NPS-014 Emulator Hub — Accepted
-- [x] NPS-015 Local AI Assistant — Accepted
+- [x] NPS-015 Local AI Assistant — Accepted (v1.1.0: four amendments closing threat model Phase 6 findings — unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log)
 - [x] NPS-016 Optional Cloud Synchronization — Accepted
 - [x] NPS-017 NyHAL — Kernel Abstraction Layer and Backend Contract — Accepted
 - [x] NPS-018 Threat Model Methodology and Trust Boundaries — Draft (Threat Model Phase 1a)
@@ -93,6 +94,7 @@ documents pending Architecture Group sign-off, not benchmark-blocked).
 - [x] NPS-021 Privilege Boundaries and Capability Escalation Analysis — Draft (Threat Model Phase 3, 5 findings — 4 resolved, 1 governance-level recorded not technically fixed)
 - [x] NPS-022 Container Escape Analysis and Runtime Isolation — Draft (Threat Model Phase 4, grounded in the real Linux Backend code; found capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding to date, flagged as the implementation's top priority)
 - [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
+- [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -223,8 +225,13 @@ Process and tooling:
     onboarding. Each is roughly the size of a prior milestone on its own;
     not attempted in a single pass.
 20. Continue the threat model (Milestone 12, `docs/reference/security/`):
-    Phase 6 (AI Threat Model, extending NPS-015) is next. Phase 7
-    (Package Trust Model) follows.
+    Phase 7 (Package Trust Model, extending NPS-006, already well-motivated
+    by `FIND-PACKAGE-001`) is the last planned phase.
+21. Once an AI assistant implementation begins, build it against the
+    amended `NPS-015` from the start — a protected confirmation UI
+    (`REQ-AI-0003`), suggestion audit logging via `ADR-0018`'s mechanism
+    (`REQ-AI-0004`), and the corrected file-search capability scoping —
+    rather than building the naive version and retrofitting these later.
 
 Resolved earlier this session, kept here for a complete record:
 - ~~Resolve shared ARM instruction-translation approach~~ — ADR-0015 (shared dynamic binary translation, JIT + hot-path cache).

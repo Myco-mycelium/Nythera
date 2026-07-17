@@ -38,6 +38,7 @@ independent of chat or discussion history.
 | CR-0030 | Merge externally-contributed Linux Backend implementation (source/nyhal-linux-backend/), verify independently (20/20 tests pass), reconcile NPS-017 backend registry and REQ-NYHAL-0003 status accordingly | Accepted | — |
 | CR-0031 | Threat model Phase 4: NPS-022 container escape analysis, grounded in the real implementation; amend NPS-017 Sec 4.1/4.2 (cgroup v1 hardening, control-plane/data-plane enforcement); add REQ-NYHAL-0004; flag implementation non-conformant against tightened requirement | Accepted | — |
 | CR-0032 | Threat model Phase 5: NPS-023 secure boot threat model, first full pass on TB-BOOT; amend NPS-017 Sec 4.5 (Secure Boot status reporting) and NPS-001 Sec 5 (phase-transition validation); add REQ-BOOT-0004; log measured-boot/TPM gap as not fixable by amendment | Accepted | — |
+| CR-0033 | Threat model Phase 6: NPS-024 AI threat model, first full pass on TB-AI; amend NPS-015 Sec 5.2/5.3/5.4 and add Sec 5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003/0004 | Accepted | — |
 
 ## How to Add an Entry
 
