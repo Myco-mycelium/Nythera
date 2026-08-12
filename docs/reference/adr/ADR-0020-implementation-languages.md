@@ -162,3 +162,6 @@ order, each gated on the Migration rule's evidence requirement:
   assigns languages to.
 - `source/nyhal-linux-backend/` — the current Python implementation
   this strategy preserves.
+- `source/nyhal-linux-backend/rust/seccomp/` — the first migration's
+  scaffold (FFI boundary contract + conformance plan; unbuilt — no
+  Rust toolchain on the dev host).

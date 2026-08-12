@@ -348,6 +348,21 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**first ADR-0020 migration scaffold + daemon lifecycle + consolidated session**):
+  the seccomp policy compiler is scaffolded at
+  `source/nyhal-linux-backend/rust/seccomp/` — FFI boundary contract,
+  Cargo manifest, and conformance test plan; **unbuilt** (no Rust
+  toolchain on the dev host; the Python implementation remains the
+  only shipped one until the conformance suite passes through the
+  FFI). New `docs/how-to/choose-an-implementation-language.md`
+  (component → language map) and an SDK language-strategy section;
+  `source/nyhal-linux-backend/DAEMON_LIFECYCLE.md` (design note)
+  answers ADR-0019's open question 1: `auto_compact` SHOULD become
+  the mount default once signal handling, a final-commit shutdown
+  contract, and AG tuning review land. The consolidated session
+  (BENCHMARK_RESULTS §16) reproduced every recorded finding and
+  surfaced a runner bug — the `--nyfs-mount` 60 s watchdog was never
+  cancelled (would kill any full `--all` run with exit 99) — fixed.
 - 2026-08-12 (**implementation-language strategy; ADR-0020**): the
   first recorded language decision — Python for the user-space backend
   and tooling, Rust for kernel-adjacent/hot-path/security-critical

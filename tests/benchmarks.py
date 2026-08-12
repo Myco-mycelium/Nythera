@@ -373,7 +373,12 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
     m = NyFSMount(fs, mnt)
     m.operations = ops
     # Watchdog: a hung kernel FUSE request must not hang the runner.
-    threading.Timer(60.0, lambda: os._exit(99)).start()
+    # Cancelled in the finally below — an un-cancelled timer would fire
+    # os._exit(99) 60 s later even when the benchmark finished or was
+    # skipped, killing any further sections in the same process (found
+    # by the 2026-08-12 consolidated-session run).
+    watchdog = threading.Timer(60.0, lambda: os._exit(99))
+    watchdog.start()
     try:
         if not m.mount(foreground=True, blocking=False):
             return {"skipped": "mount could not be started"}
@@ -402,6 +407,7 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
         results["total_bytes"] = total
         return results
     finally:
+        watchdog.cancel()
         try:
             m.unmount()
         except Exception:

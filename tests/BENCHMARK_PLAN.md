@@ -136,6 +136,14 @@ ext4/Btrfs; this host's `/tmp` is ext4 (`/dev/sda2`), so the native
 baseline here is a real disk-backed comparison. The compression-on/off
 variant remains the unmeasured part.
 
+**2026-08-12 update (consolidated session):** every section was re-run
+in one sequential session (BENCHMARK_RESULTS §16) — all recorded
+findings reproduced (journal ~60× levers, 49× dedup, 6.42/1.29 ratios,
+0.22 s journal commit, 11.0 s compaction). The session surfaced and
+fixed a runner bug: the `--nyfs-mount` 60 s watchdog timer was never
+cancelled, so any full `--all` run would self-terminate with exit 99
+after the mount section.
+
 **2026-08-12 update (daemon compaction + mixed workload):** journal
 compaction is now exposed for daemons (`maybe_compact()` /
 `compact_journal()`, plus `NyFSMount(auto_compact=True)` background

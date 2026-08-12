@@ -1,0 +1,13 @@
+[package]
+name = "nyrqis-seccomp"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis seccomp BPF policy compiler — ADR-0020 first migration (scaffold)"
+
+[lib]
+name = "nyrqis_seccomp"
+crate-type = ["cdylib"]
+
+# Scaffold status: no logic implemented yet (see README.md). The crate
+# is not part of any build/CI until a Rust toolchain exists on the dev
+# host and the conformance plan in README.md has been executed.

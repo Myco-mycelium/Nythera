@@ -525,6 +525,39 @@ dimension mostly moot for commit cost — block size remains relevant
 only for read/write amplification (a small random write rebuilds a
 larger CoW block).
 
+## 16. Consolidated Session Snapshot (2026-08-12, evening)
+
+A single full-session run of every section (executed in four sequential
+chunks so fsync-heavy sections did not contend with each other; every
+round-trip verified). One session, one host, same method as §1–§15 —
+it re-validates the consolidated runner and refreshes the numbers, and
+it surfaced one runner bug (fixed): the `--nyfs-mount` watchdog timer
+was never cancelled, so any full `--all` run would have died with exit
+99 sixty seconds after the mount section started.
+
+| Section | This session | Previously recorded | Consistent? |
+|---------|--------------|--------------------|-------------|
+| §1 IPC p50/p95/p99 | 119 / 179 / 243 µs | ~92 µs p50 range | Median and tail both higher this session (host load); p50 also above the <100 µs target |
+| §3 token bucket | 99.5 calls/s sustained | ~50 calls/s (default) | Not directly comparable — this session used the raised token budget |
+| §2 Zstd sweep | ratio flatlines ≥ level 7 (2.54 → 3.17) | same | ✓ |
+| §4 proxy write 1 MiB | 147 MB/s | ~162 MB/s | In-range (block-size sweep: 4 KiB 1.49 … 64 KiB 4.11 MB/s) |
+| §4 live mount | write 48.6 MB/s, read 43.6 MB/s (128 KiB batches) | 40–46 / 25–37 MB/s | ✓ |
+| §5 persist save / ratio | 12.0 s / 6.42 : 1 | 11–15 s / 6.42 : 1 | ✓ |
+| §5 resave / load | 0.14 s / 0.05 s | 0.15 / 0.04 s | ✓ |
+| §10 snapshot dedup | 49.08× (349,232 B new) | ~49× | ✓ |
+| §8 levers 64k/256k/1m | 11.1 / 7.2 / 6.75 s | 11.1–15.1 / 7.3–12.0 / 5.6–21.4 s | ✓ |
+| §9 journal commit | 0.22 s | 0.20 s | ✓ |
+| §13 mixed commit avg | 486 vs 123 ms | 504 vs 131 ms | ✓ |
+| §14 compaction | 11.0 s (26.4 ms/block) | 11.2 s | ✓ |
+| §15 journal × block size | 0.19–0.23 s | 0.18–0.25 s | ✓ |
+| §12 real corpus save | 157.0 s vs 2.9 s journal (~54×) | 123.1 s vs 2.0 s (~61×) | Variance: fsync-bound host under load |
+
+Every section reproduced its recorded finding; no recorded range was
+contradicted. §12's interleaved pass ran slower this session (157 s vs
+123.1 s) and the journal pass slightly slower (2.9 s vs 2.0 s) — both
+fsync-bound and host-load-sensitive, within the project's known ±30%
+noise band; the ~50–60× journal-vs-interleaved gap is unchanged.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

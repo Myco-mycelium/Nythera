@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **103/103 passing** (`python3 test_backend.py`), including end-to-end container launches and a live FUSE mount verified on this host.
+Test suite: **103/103 passing** (`python3 test_backend.py`), including end-to-end container launches and a live FUSE mount verified on this host. Per ADR-0020 (Proposed) the first Python→Rust migration is scaffolded at `rust/seccomp/` (FFI contract + conformance plan; **no Rust toolchain on this host, so nothing there is built or shipped** — the Python implementation remains the only one). Daemon lifecycle design (signals, shutdown ordering, compaction scheduling, the auto_compact-default recommendation) is in `DAEMON_LIFECYCLE.md` (design note, not yet normative).
 
 ## Detailed Implementation Status
 
