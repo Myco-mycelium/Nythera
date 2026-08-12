@@ -14,7 +14,10 @@ import errno
 import json
 import logging
 import os
+import shutil
+import signal
 import stat as stat_module
+import subprocess
 import sys
 import tempfile
 import time
@@ -35,7 +38,9 @@ from backend import seccomp
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
-from fuse.nyfs import NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount
+from fuse.nyfs import (
+    NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount, _import_fusepy
+)
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -1172,6 +1177,116 @@ class TestNyFSOperations(unittest.TestCase):
             self.assertFalse(mount.attach())
 
 
+def _fuse_mount_available() -> bool:
+    """True when a live FUSE mount can be attempted on this host."""
+    try:
+        if not os.path.exists("/dev/fuse"):
+            return False
+        if shutil.which("fusermount3") is None and shutil.which("fusermount") is None:
+            return False
+        return _import_fusepy() is not None
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(
+    _fuse_mount_available(),
+    "live FUSE mount unavailable (needs fusepy, /dev/fuse, and fusermount)",
+)
+class TestNyFSLiveMount(unittest.TestCase):
+    """End-to-end NyFS through a real kernel FUSE mount.
+
+    Requires a host with fusepy + /dev/fuse + fusermount (present on
+    this dev host; skipped elsewhere). Exercises the full stack — kernel
+    FUSE path -> NyFSOperations -> NyFSFilesystem — including the fsync
+    durability hook (NPS-004 §7) and CoW snapshots across
+    unmount/reload/re-mount (verified on 2026-08-12; see
+    BENCHMARK_RESULTS.md §6).
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.backing = os.path.join(self.temp_dir, "fs")
+        self.mnt = os.path.join(self.temp_dir, "mnt")
+        self.mounts = []
+
+    def tearDown(self):
+        for m in self.mounts:
+            try:
+                m.unmount()
+            except Exception:
+                pass
+        try:
+            subprocess.run(
+                ["fusermount3", "-u", self.mnt], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    def _mount(self, fs):
+        m = NyFSMount(fs, self.mnt)
+        self.assertTrue(m.mount(foreground=True, blocking=False))
+        self.mounts.append(m)
+        self.assertTrue(m.wait_ready(timeout=5.0), "mount never became live")
+        return m
+
+    def test_fsync_durability_and_snapshot_roundtrip_through_mount(self):
+        # Hard cap: a hung FUSE request must fail loudly, not hang CI.
+        signal.alarm(90)
+        try:
+            self._run_mount_e2e()
+        finally:
+            signal.alarm(0)
+
+    def _run_mount_e2e(self):
+        fs = NyFSFilesystem(self.backing)
+        m = self._mount(fs)
+
+        # Multi-block write through the kernel path, then fsync -> save().
+        os.makedirs(os.path.join(self.mnt, "games"))
+        payload = b"level1-data" * 30000  # 330000 bytes, several 64 KiB blocks
+        path = os.path.join(self.mnt, "games", "save.sav")
+        with open(path, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        # The FUSE fsync handler must have committed on-disk state.
+        state = os.path.join(self.backing, "state")
+        self.assertTrue(os.path.exists(os.path.join(state, "metadata.json")))
+        self.assertGreater(len(os.listdir(os.path.join(state, "blocks"))), 0)
+
+        # CoW snapshot, overwrite through the mount, commit again.
+        snap = fs.create_snapshot()
+        with open(path, "r+b") as fh:
+            fh.seek(0)
+            fh.write(b"LEVEL2!")
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(len(b"LEVEL2!")), b"LEVEL2!")
+        # Timestamps must be float seconds, not 1970 (regression: fusepy's
+        # use_ns flag would misinterpret them as nanoseconds).
+        st = os.stat(path)
+        self.assertGreater(st.st_mtime, 1700000000, "mount timestamps broken")
+
+        # Unmount, reload from disk: committed content + snapshot present.
+        m.unmount()
+        fs2 = NyFSFilesystem.load(self.backing)
+        f = fs2.resolve("/games/save.sav")
+        d = fs2.read(f)
+        self.assertEqual(d[:7], b"LEVEL2!")
+        self.assertEqual(len(d), len(payload))
+        self.assertIn(snap, fs2.list_snapshots())
+        fs2.restore_snapshot(snap)
+        self.assertEqual(fs2.read(fs2.resolve("/games/save.sav")), payload)
+
+        # Re-mount the reloaded state and read through the kernel path.
+        m2 = self._mount(fs2)
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), payload)
+        m2.unmount()
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -1221,6 +1336,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPathAPI))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPersistence))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSOperations))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSLiveMount))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

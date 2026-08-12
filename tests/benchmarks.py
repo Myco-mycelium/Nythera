@@ -15,13 +15,18 @@ this host in one reproducible script:
   (2026-08-12) this reports two access patterns — 4 KiB sequential writes
   (per-call overhead dominates) and 1 MiB-chunk streaming (per-block CoW
   win) — plus a block-size sweep on the 4 KiB pattern.
+- §4 (live mount, 2026-08-12): ``--nyfs-mount`` drives the same patterns
+  through a REAL kernel FUSE mount (fusepy + /dev/fuse + fusermount;
+  skipped when absent) vs native I/O, and reports how the kernel batches
+  write requests to the daemon.
 
 Usage:
-  python3 tests/benchmarks.py --all      # everything (default)
-  python3 tests/benchmarks.py --ipc      # §1 IPC round-trip
-  python3 tests/benchmarks.py --bucket   # §3 token-bucket defaults
-  python3 tests/benchmarks.py --zstd     # §2 Zstd level sweep
-  python3 tests/benchmarks.py --nyfs     # §4 NyFS vs native proxy
+  python3 tests/benchmarks.py --all       # everything (default)
+  python3 tests/benchmarks.py --ipc       # §1 IPC round-trip
+  python3 tests/benchmarks.py --bucket    # §3 token-bucket defaults
+  python3 tests/benchmarks.py --zstd      # §2 Zstd level sweep
+  python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
+  python3 tests/benchmarks.py --nyfs-mount  # §4 live-mount FUSE vs native
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -30,9 +35,10 @@ Honesty notes (NPC-002 §5.2):
   shared-memory transport, so these numbers bound the control-plane cost,
   not the final IPC wire cost.
 - Results belong in `tests/BENCHMARK_RESULTS.md`, not in this file.
-- A full `--all` run takes roughly 1–2 minutes (the Zstd level sweep is
-  the long pole at ~30 s); use the individual flags to re-run one
-  section quickly.
+- A full `--all` run takes roughly 1–3 minutes (the Zstd level sweep is
+  the long pole at ~30 s, and `--nyfs-mount` adds ~15–20 s where the
+  host supports a live FUSE mount); use the individual flags to re-run
+  one section quickly.
 """
 
 import os
@@ -258,6 +264,130 @@ def benchmark_nyfs_vs_native():
     }
 
 
+def _fuse_mount_available() -> bool:
+    """True when a live FUSE mount can be attempted on this host."""
+    try:
+        if not os.path.exists("/dev/fuse"):
+            return False
+        import shutil
+
+        if shutil.which("fusermount3") is None and shutil.which("fusermount") is None:
+            return False
+        from fuse.nyfs import _import_fusepy
+
+        return _import_fusepy() is not None
+    except Exception:
+        return False
+
+
+class _CountingOps(NyFSOperations):
+    """Wraps the ops layer to count what the kernel actually sends us."""
+
+    def __init__(self, fs):
+        super().__init__(fs)
+        self.write_calls = 0
+        self.max_write = 0
+
+    def write(self, path, data, offset, fh=None):
+        self.write_calls += 1
+        self.max_write = max(self.max_write, len(data))
+        return super().write(path, data, offset, fh)
+
+
+def benchmark_nyfs_mount(total=16 * 1024 * 1024):
+    """Through a REAL FUSE mount vs native I/O on the same tmp dir (§4).
+
+    First-pass, environment-gated (skipped when fusepy, /dev/fuse, or
+    fusermount is unavailable). Honesty caveats:
+    - The native baseline is the same ``tempfile`` location as the
+      backing store (tmpfs on this host) — RAM-backed, so it is far
+      faster than a disk-backed fs would be.
+    - Reads run with the kernel page cache + readahead active (real
+      users get the same), which batches 4 KiB user reads into larger
+      daemon requests.
+    - The kernel's write batching to the daemon is reported explicitly:
+      on this host it is 4 KiB regardless of mount options (fusepy does
+      not negotiate writeback caching), so each 4 KiB write request
+      rebuilds a full ``block_size`` CoW block in the daemon.
+    """
+    if not _fuse_mount_available():
+        return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}
+    from fuse.nyfs import NyFSMount
+
+    def mbps(bytes_, seconds):
+        return round(bytes_ / seconds / (1024 * 1024), 2) if seconds else float("inf")
+
+    def bench_write(path, chunk, size):
+        data = os.urandom(chunk)
+        with open(path, "wb") as fh:
+            t0 = time.perf_counter()
+            off = 0
+            while off < size:
+                fh.write(data[:size - off])
+                off += chunk
+            fh.flush()
+            return mbps(size, time.perf_counter() - t0)
+
+    def bench_read(path, chunk, size):
+        with open(path, "rb") as fh:
+            t0 = time.perf_counter()
+            read = 0
+            while read < size:
+                fh.read(chunk)
+                read += chunk
+            return mbps(size, time.perf_counter() - t0)
+
+    base = tempfile.mkdtemp()
+    mnt = os.path.join(tempfile.mkdtemp(), "mnt")
+    native_dir = os.path.join(base, "native")
+    os.makedirs(native_dir)
+    fs = NyFSFilesystem(os.path.join(base, "fs"))
+    ops = _CountingOps(fs)
+    m = NyFSMount(fs, mnt)
+    m.operations = ops
+    # Watchdog: a hung kernel FUSE request must not hang the runner.
+    threading.Timer(60.0, lambda: os._exit(99)).start()
+    try:
+        if not m.mount(foreground=True, blocking=False):
+            return {"skipped": "mount could not be started"}
+        if not m.wait_ready(timeout=5.0):
+            return {"skipped": "mount never became live"}
+
+        results = {}
+        for chunk, tag in ((1024 * 1024, "1m"), (4096, "4k")):
+            results[f"write_{tag}_fuse_mbps"] = bench_write(
+                os.path.join(mnt, "b.bin"), chunk, total)
+            results[f"write_{tag}_native_mbps"] = bench_write(
+                os.path.join(native_dir, "b.bin"), chunk, total)
+        for chunk, tag in ((1024 * 1024, "1m"), (4096, "4k")):
+            results[f"read_{tag}_fuse_mbps"] = bench_read(
+                os.path.join(mnt, "b.bin"), chunk, total)
+            results[f"read_{tag}_native_mbps"] = bench_read(
+                os.path.join(native_dir, "b.bin"), chunk, total)
+
+        # Kernel write batching: how does the daemon see a 1 MiB write?
+        ops.write_calls = ops.max_write = 0
+        with open(os.path.join(mnt, "b.bin"), "wb") as fh:
+            fh.write(os.urandom(1024 * 1024))
+            fh.flush()
+        results["write_requests_per_1m"] = ops.write_calls
+        results["max_write_request_bytes"] = ops.max_write
+        results["total_bytes"] = total
+        return results
+    finally:
+        try:
+            m.unmount()
+        except Exception:
+            pass
+        try:
+            import subprocess
+
+            subprocess.run(["fusermount3", "-u", mnt],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -306,11 +436,13 @@ def main():
     parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
     parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
+    parser.add_argument("--nyfs-mount", action="store_true",
+                        help="§4 live-mount FUSE vs native")
     args = parser.parse_args()
 
-    selected = args.ipc or args.bucket or args.zstd or args.nyfs
+    selected = args.ipc or args.bucket or args.zstd or args.nyfs or args.nyfs_mount
     if not selected or args.all:
-        args.ipc = args.bucket = args.zstd = args.nyfs = True
+        args.ipc = args.bucket = args.zstd = args.nyfs = args.nyfs_mount = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -325,6 +457,9 @@ def main():
     if args.nyfs:
         _print_section("NyFS vs native (§4 proxy; per-block CoW):",
                        benchmark_nyfs_vs_native())
+    if args.nyfs_mount:
+        _print_section("NyFS live FUSE mount vs native (§4):",
+                       benchmark_nyfs_mount())
 
 
 if __name__ == "__main__":

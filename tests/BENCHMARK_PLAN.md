@@ -104,8 +104,19 @@ in one script (`--ipc`, `--bucket`, `--zstd`, `--nyfs`). Results in
 - §4 proxy data re-run after the per-block CoW rewrite: streaming
   writes ~162 MB/s (~4× the old whole-file path), small 4 KiB ops
   dominated by per-call block compress + per-read checksum verification
-  (see `BENCHMARK_RESULTS.md` §5); the live FUSE-vs-ext4 comparison
-  still requires a kernel mount.
+  (see `BENCHMARK_RESULTS.md` §5).
+
+**2026-08-12 update (live FUSE mount measured):** this host turned out
+to have fusepy + `/dev/fuse` all along, so the plan's "kernel mount"
+comparison was actually measured (`python3 tests/benchmarks.py
+--nyfs-mount`, results in `BENCHMARK_RESULTS.md` §6): through the real
+kernel FUSE path, writes land at ~1.8–2.2 MB/s because the kernel splits
+every write syscall into 4 KiB requests (256 per 1 MiB), each of which
+rebuilds a full 64 KiB CoW block in the daemon; reads batch at 128 KiB
+(readahead) and run at ~25–37 MB/s. The §4 method's native baseline is
+ext4/Btrfs; the first-pass baseline here was the same tmpfs as the
+backing store, so the ext4 comparison (and the compression-on/off
+variant) remains the unmeasured part.
 
 None of the plan's pass/fail gates are declared met on the strength of
 these runs — these numbers exist to inform implementation, not to close

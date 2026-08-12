@@ -1105,63 +1105,125 @@ class NyFSMount:
             logger.info("fusepy loaded; NyFS mount available")
         return self._fusepy is not None
 
-    def _build_fuse(self, foreground: bool = True):
+    def _build_fuse(self, foreground: bool = True, **fuse_kwargs):
+        """Construct the fusepy FUSE object for this mount.
+
+        NOTE: fusepy runs the FUSE event loop inside ``FUSE.__init__``
+        (there is no ``main()``), so this call blocks until the mount is
+        unmounted. ``mount()`` therefore runs it in a daemon thread in
+        non-blocking mode.
+
+        ``fuse_kwargs`` are forwarded to fusepy as FUSE mount options
+        (e.g. ``max_write=131072``); they are appended to the ``-o``
+        string.
+        """
         fuse_mod = self._fusepy or _import_fusepy()
         if fuse_mod is None:
             raise NyFSError(errno.ENODEV, "fusepy is not available")
 
         class _Adapter:
-            """Translates NyFSError -> fusepy.FuseOSError."""
+            """Callable operations object for fusepy.
+
+            fusepy both probes handler presence with ``getattr(operations,
+            name)`` (so ``__getattr__`` exposes the NyFSOperations methods)
+            and dispatches requests by calling ``operations(name, path,
+            *args)`` (so ``__call__`` routes them, translating
+            ``NyFSError`` -> ``FuseOSError``).
+            """
+
+            # NB: do NOT set use_ns here. fusepy's ``use_ns`` flag
+            # changes how getattr timestamps are interpreted (divmod by
+            # 1e9 — nanoseconds), which breaks the float-seconds
+            # convention NyFSFilesystem.getattr returns. Leaving it
+            # unset keeps timestamps correct; the one-time DeprecationWarning
+            # at mount is harmless.
 
             def __init__(self, ops: NyFSOperations):
                 self._ops = ops
 
             def __getattr__(self, name):
-                handler = getattr(self._ops, name)
+                return getattr(self._ops, name)
 
-                def wrapped(*args, **kwargs):
-                    try:
-                        return handler(*args, **kwargs)
-                    except NyFSError as e:
-                        raise fuse_mod.FuseOSError(e.errno)
+            def __call__(self, op, path, *args):
+                try:
+                    return getattr(self._ops, op)(path, *args)
+                except NyFSError as e:
+                    raise fuse_mod.FuseOSError(e.errno)
 
-                return wrapped
-
-        self._fuse = fuse_mod.Fuse(
+        fuse_cls = getattr(fuse_mod, "FUSE", None) or getattr(
+            fuse_mod, "Fuse", None)
+        if fuse_cls is None:
+            raise NyFSError(errno.ENODEV, "fusepy has no FUSE class")
+        self._fuse = fuse_cls(
             _Adapter(self.operations),
             str(self.mount_point),
             foreground=foreground,
             nothreads=False,
+            fsname="nyfs",
+            **fuse_kwargs,
         )
         return self._fuse
 
-    def mount(self, foreground: bool = True, blocking: bool = True):
+    def mount(self, foreground: bool = True, blocking: bool = True,
+              **fuse_kwargs):
         """Mount the filesystem.
 
         Args:
             foreground: Run in the foreground (default True for a daemon).
+                False lets fusepy daemonize (fork into the background).
             blocking: Block until unmounted (True) or run in a thread.
+            fuse_kwargs: Extra FUSE mount options forwarded to fusepy
+                (e.g. ``max_write=131072``).
 
         Returns:
             True if the mount was attempted, False if fusepy is unavailable.
         """
         if not self.attach():
             return False
-        fuse = self._build_fuse(foreground=foreground)
+        self._mount_error = None
 
         def _run():
             logger.info("Mounting NyFS at %s (FUSE)", self.mount_point)
-            fuse.main()
+            try:
+                self._build_fuse(foreground=foreground, **fuse_kwargs)
+            except Exception as e:
+                # Surface background mount failures: ``wait_ready()``
+                # re-raises this instead of letting the caller believe a
+                # dead mount succeeded.
+                logger.error("FUSE mount failed: %s", e)
+                self._mount_error = e
 
         if blocking:
             _run()
+            if self._mount_error is not None:
+                raise self._mount_error
         else:
             self._thread = threading.Thread(target=_run, daemon=True)
             self._thread.start()
         return True
 
+    def wait_ready(self, timeout: float = 10.0) -> bool:
+        """Wait until the background mount is live (or has failed).
+
+        Returns True once the kernel mount is visible. Raises the
+        FUSE-constructor error if the background mount failed. Use after
+        ``mount(blocking=False)`` before issuing I/O to avoid racing the
+        mount thread.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._mount_error is not None:
+                raise self._mount_error
+            if os.path.ismount(self.mount_point):
+                return True
+            time.sleep(0.05)
+        return False
+
     def unmount(self) -> None:
         """Best-effort unmount via fusepy or ``fusermount -u``."""
+        if self._mount_error is not None:
+            # The background mount never came up; nothing to unmount.
+            return
         try:
             if self._fusepy is not None and hasattr(self._fusepy, "fuse_unmount"):
                 self._fusepy.fuse_unmount(str(self.mount_point))

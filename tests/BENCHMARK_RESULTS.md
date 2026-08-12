@@ -79,9 +79,9 @@ switches. **Per-block CoW landed 2026-08-12** (`fuse/nyfs.py` — fixed
 64 KiB blocks; a write rebuilds only the blocks it overlaps), so these
 proxy numbers are now **superseded and must be re-run** before they are
 quoted again. The plan's actual question — FUSE-vs-ext4 with a live
-kernel mount — is **still pending**: it requires `fusepy` + `/dev/fuse`
-access (not available in this environment), and remains the prerequisite
-for judging the FUSE decision for gaming workloads (NPS-006 §5).
+kernel mount — has now been measured through a **real kernel mount**
+(2026-08-12, §6 below): this host turned out to have fusepy + `/dev/fuse`
+all along.
 
 ## 4. Zstd Compression-Level Sweep (BENCHMARK_PLAN §2)
 
@@ -164,7 +164,7 @@ larger writes, not small scattered I/O.
    (~162 MB/s vs 40.5 MB/s whole-file), but the benchmark's original
    small-op shape (4 KiB writes/reads) is now dominated by per-call
    checksum + compression of the full block. These numbers replace the
-   §3 proxy row; no FUSE-vs-ext4 judgment is implied (no live mount).
+   §3 proxy row; the live-mount comparison is §6 below.
 2. **Per-read SHA-256 verification is the single largest read cost**
    (NPS-004 §4.3 requires detection on read; caching the verification
    would trade that guarantee away and is NOT proposed). A cheaper
@@ -173,6 +173,51 @@ larger writes, not small scattered I/O.
    is a design question for Architecture Group review, not something
    this benchmark decided.
 
+## 6. Live FUSE Mount vs Native (2026-08-12, real kernel mount)
+
+`python3 tests/benchmarks.py --nyfs-mount` — NyFS mounted through the
+real kernel FUSE path (fusepy + `/dev/fuse` + `fusermount3`, available on
+this host) and driven with ordinary `open`/`write`/`read` syscalls,
+16 MiB dataset, vs native I/O into a directory on the same tmpfs. First
+pass, environment-gated (the section is skipped where the pieces are
+missing); no gate declared met.
+
+| Access pattern | FUSE | Native (tmpfs) |
+|----------------|-----:|---------------:|
+| 1 MiB-chunk streaming write | 1.76 MB/s | 740 MB/s |
+| 4 KiB sequential write | 2.21 MB/s | 687 MB/s |
+| 1 MiB-chunk streaming read | 36.6 MB/s | 3,522 MB/s |
+| 4 KiB sequential read | 25.6 MB/s | 731 MB/s |
+
+**The dominant live-mount finding — kernel write batching is 4 KiB:**
+the daemon observed **256 write requests of 4096 bytes each** for a
+single 1 MiB `write()` syscall (reproducibly, and unchanged by
+`max_write` mount options — fusepy never negotiates
+`FUSE_CAP_WRITEBACK_CACHE`/`max_pages`, so the kernel submits
+page-granular writes). Each 4 KiB write request makes NyFS rebuild a
+full 64 KiB CoW block (decompress + recompress + SHA-256), which is why
+live-mount writes land at ~1.8–2.2 MB/s while the operations-layer
+benchmark (§5) streams at ~162 MB/s: **the gap is the 4 KiB↔64 KiB
+request/block granularity mismatch plus the FUSE round-trip, not the
+NyFS core**. Reads batch at 128 KiB (kernel readahead), so read
+throughput is far healthier; the per-read SHA-256 verify cost noted in
+§5 still applies to the daemon side.
+
+**Honest caveats:** (1) the native baseline is tmpfs (RAM-backed) on the
+same path as the backing store — far faster than a disk-backed fs, so
+the raw ratios are not the ext4 comparison. (2) Reads run with the
+kernel page cache + readahead active (as real users get). (3) These are
+environment numbers; the write-batching behaviour is libfuse/fusepy
+negotiation, potentially fixable by a custom `init`/mount layer rather
+than by NyFS itself.
+
+**End-to-end through a live mount — verified (not a benchmark):** the
+same session that produced these numbers also ran the durability and CoW
+snapshot cycle through the kernel path — multi-block write, `fsync(2)`
+(→ the FUSE `fsync` handler → `save()`), snapshot + overwrite + commit,
+unmount, reload from disk with snapshot restore, re-mount and read-back
+— all correct (`TestNyFSLiveMount`, in `test_backend.py`).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
@@ -180,7 +225,7 @@ larger writes, not small scattered I/O.
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (see §5); live-mount comparison still pending `/dev/fuse` access |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); writes are bounded by the kernel's 4 KiB write batching × 64 KiB CoW blocks (~1.8–2.2 MB/s vs tmpfs); no gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next

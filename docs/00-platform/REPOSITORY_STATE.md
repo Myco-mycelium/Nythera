@@ -244,8 +244,14 @@ measurements:
    native; small 4 KiB ops are now dominated by per-call block compress
    + per-read SHA-256 verification (~3.6 MB/s write / ~2.8 MB/s read),
    with the checksum-verification read cost recorded as the key finding
-   for Architecture Group review. The live FUSE-vs-ext4 mount
-   comparison still requires `/dev/fuse` access.
+   for Architecture Group review. **Live-mount first-pass data
+   collected 2026-08-12** (`tests/BENCHMARK_RESULTS.md` §6): this host
+   turned out to have fusepy + `/dev/fuse` all along, so the real
+   kernel mount was measured — writes ~1.8–2.2 MB/s, bounded by the
+   kernel's 4 KiB write batching × 64 KiB CoW blocks (256 requests per
+   1 MiB write), reads ~25–37 MB/s (readahead-batched); durability and
+   CoW snapshots verified end-to-end through the kernel path
+   (`TestNyFSLiveMount`). No gate declared met.
 7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
 
 Genuinely still open, not fabricable:
@@ -337,6 +343,21 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**NyFS live FUSE mount verified**): `fuse/nyfs.py`'s mount
+  wiring was fixed against the installed fusepy's actual API (operations
+  must be callable — dispatch is `operations(op, path, *args)` — and
+  `FUSE.__init__` runs the event loop itself, so there is no `main()`;
+  non-blocking mounts run the constructor in a daemon thread). A real
+  kernel mount now works end-to-end: multi-block write through the
+  mount, `fsync(2)` → `save()` durability, CoW snapshot + overwrite +
+  commit, unmount, reload from disk with snapshot restore, re-mount and
+  read-back — all verified (`TestNyFSLiveMount`, 80/80 tests; skipped
+  where fusepy//dev/fuse/fusermount are absent). Live-mount first-pass
+  benchmark data recorded in `BENCHMARK_RESULTS.md` §6 (key finding: the
+  kernel splits writes into 4 KiB requests, each rebuilding a 64 KiB CoW
+  block). `benchmarks.py` gained `--nyfs-mount`; `NyFSMount.mount()`
+  now forwards FUSE options (`max_write`, …). Temp diagnostic scripts
+  removed.
 - 2026-08-12 (**NyFS durability**): `fuse/nyfs.py` gained explicit
   `save()`/`load()` persistence (NPS-004 §7) — inode tree + snapshots in
   `state/metadata.json`, immutable block files in `state/blocks/`,
