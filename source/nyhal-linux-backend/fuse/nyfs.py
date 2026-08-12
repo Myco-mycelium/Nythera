@@ -858,7 +858,7 @@ class NyFSFilesystem:
             ],
         }
 
-    def save(self) -> None:
+    def save(self, batched_fsync: bool = False) -> None:
         """Persist the current filesystem state atomically.
 
         Blocks are immutable (CoW), so files already on disk are skipped
@@ -872,6 +872,16 @@ class NyFSFilesystem:
         mountable state is always consistent (NPS-004 §7.1). Orphaned
         block files from superseded versions are left in place (CoW
         history); ``gc_blocks`` can reclaim them.
+
+        ``batched_fsync`` groups the per-block durability work instead
+        of interleaving it: every new block temp is written first, then
+        all are fsynced, then all are renamed into place. The same
+        crash-consistency guarantee holds (nothing is visible until its
+        temp is fsynced, and the metadata swap is still the commit
+        point), but the disk sees one write phase followed by one
+        fsync phase. On single disks the fsync syscall count is
+        unchanged, so the gain — if any — comes from kernel write
+        coalescing; measured in ``tests/BENCHMARK_RESULTS.md`` §8.
         """
         with self.lock:
             blocks_dir = self._blocks_dir()
@@ -886,6 +896,7 @@ class NyFSFilesystem:
                 live_blocks |= {
                     b.block_id for b in self._all_blocks(snap)
                 }
+            pending: List[Tuple[Path, Path]] = []
             for block_id in live_blocks:
                 block = self._find_block(block_id)
                 if block is None:
@@ -900,8 +911,21 @@ class NyFSFilesystem:
                 with open(tmp, "wb") as fh:
                     fh.write(block.compressed_data or block.data or b"")
                     fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, target)
+                    if batched_fsync:
+                        # Defer the fsync + rename to the grouped phase.
+                        pending.append((tmp, target))
+                    else:
+                        os.fsync(fh.fileno())
+                        os.replace(tmp, target)
+            if batched_fsync and pending:
+                # Grouped phase: flush every temp to disk, then publish
+                # all renames. Until this completes, the old metadata
+                # references only old, present blocks — consistent.
+                for tmp, _target in pending:
+                    with open(tmp, "rb") as fh:
+                        os.fsync(fh.fileno())
+                for tmp, target in pending:
+                    os.replace(tmp, target)
 
             # Fsync the block directory so the new block files are
             # durable before the metadata swap becomes the commit point.

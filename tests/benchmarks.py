@@ -23,6 +23,10 @@ this host in one reproducible script:
   deterministic mixed asset corpus, saves it to disk (durability,
   NPS-004 §7), reloads it, and measures the loaded-image read patterns
   plus the end-to-end storage compression ratio.
+- §5 (save() commit-cost levers, 2026-08-12): ``--save-levers`` measures
+  the two knobs the fsync-bound finding named — block size (64 KiB /
+  256 KiB / 1 MiB) and ``save(batched_fsync=True)`` group-commit — on
+  the same corpus, each verified by a save -> load -> read round-trip.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -32,6 +36,7 @@ Usage:
   python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
   python3 tests/benchmarks.py --nyfs-mount  # §4 live-mount FUSE vs native
   python3 tests/benchmarks.py --nyfs-persist  # §5 persisted-image lifecycle
+  python3 tests/benchmarks.py --save-levers   # §5 save() commit-cost levers
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -395,6 +400,43 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
             pass
 
 
+def _build_persist_corpus(seed: int = 11):
+    """Deterministic mixed asset corpus shared by the persisted-image
+    benchmarks: ~150 small compressible text-like files, 30 medium files
+    of mixed compressibility, and 5 large streaming files.
+
+    Seeded (no ``os.urandom``), so the exact byte image reproduces
+    across runs. Returns ``(corpus, total_logical)``.
+    """
+    import random
+
+    rng = random.Random(seed)
+    corpus = []
+    # ~150 small text-like files (compressible).
+    for i in range(150):
+        n = rng.randint(10, 200)
+        body = ("The quick brown fox jumps over the lazy dog. " * n).encode()
+        corpus.append((f"/assets/text_{i}.txt", body))
+    # 30 medium files: mixed compressibility.
+    for i in range(30):
+        size = rng.randint(64_000, 200_000)
+        if i % 3 == 0:
+            body = rng.randbytes(size)  # pseudo-random, incompressible
+        elif i % 3 == 1:
+            body = (b"level-data-v1;" * (size // 13 + 1))[:size]
+        else:
+            body = rng.randbytes(size)
+        corpus.append((f"/assets/med_{i}.bin", body))
+    # 5 large streaming files (~1-4 MiB, compressible).
+    for i in range(5):
+        n = rng.randint(1, 4)
+        body = (b"stream-chunk;" * (1024 * 1024 // 13)) * n
+        corpus.append((f"/assets/big_{i}.dat", body))
+
+    total_logical = sum(len(b) for _, b in corpus)
+    return corpus, total_logical
+
+
 def benchmark_nyfs_persisted():
     """Persisted-image lifecycle: save/load, ratio, loaded-image reads.
 
@@ -411,33 +453,8 @@ def benchmark_nyfs_persisted():
       small-file random access — the "installed once, read many times"
       shape that matters for gaming loads (NPS-006 §5).
     """
-    import random
-
     with tempfile.TemporaryDirectory() as tmp:
-        rng = random.Random(11)
-        corpus = []
-        # ~150 small text-like files (compressible).
-        for i in range(150):
-            n = rng.randint(10, 200)
-            body = ("The quick brown fox jumps over the lazy dog. " * n).encode()
-            corpus.append((f"/assets/text_{i}.txt", body))
-        # 30 medium files: mixed compressibility.
-        for i in range(30):
-            size = rng.randint(64_000, 200_000)
-            if i % 3 == 0:
-                body = rng.randbytes(size)  # pseudo-random, incompressible
-            elif i % 3 == 1:
-                body = (b"level-data-v1;" * (size // 13 + 1))[:size]
-            else:
-                body = rng.randbytes(size)
-            corpus.append((f"/assets/med_{i}.bin", body))
-        # 5 large streaming files (~1-4 MiB, compressible).
-        for i in range(5):
-            n = rng.randint(1, 4)
-            body = (b"stream-chunk;" * (1024 * 1024 // 13)) * n
-            corpus.append((f"/assets/big_{i}.dat", body))
-
-        total_logical = sum(len(b) for _, b in corpus)
+        corpus, total_logical = _build_persist_corpus()
         fs = NyFSFilesystem(os.path.join(tmp, "fs"))
         fs.mkdir("/assets")
 
@@ -506,6 +523,78 @@ def benchmark_nyfs_persisted():
         }
 
 
+def benchmark_save_levers():
+    """save() commit-cost levers (BENCHMARK_RESULTS.md §8).
+
+    The §7 fsync-bound finding named three design questions for commit
+    cost; the first two are measured here on the same deterministic
+    corpus (``_build_persist_corpus``):
+    - larger blocks (fewer block files -> fewer per-file fsyncs, at the
+      cost of padding waste for small files): 64 KiB (baseline),
+      256 KiB, and 1 MiB;
+    - batched fsync (``save(batched_fsync=True)``: all temps written,
+      then all fsynced, then all renamed) vs the default interleaved
+      path, at the default 64 KiB block size.
+    Every config verifies a full save -> load -> read round-trip before
+    reporting (``roundtrip_ok``), so a lever that broke durability would
+    fail loudly here. Each config repeats twice and reports the minimum
+    save time: fsync-bound timings swing ±30% run to run on this host,
+    so single-run comparisons would be noise.
+    """
+    corpus, total_logical = _build_persist_corpus()
+
+    def run(block_size, batched, repeats=2):
+        # fsync-bound timings are noisy on this host (observed ±30% run
+        # to run), so each config is repeated and the minimum (least
+        # noise-inflated) save time is reported; the other metrics come
+        # from the best run.
+        best = None
+        for _ in range(repeats):
+            with tempfile.TemporaryDirectory() as tmp:
+                fs = NyFSFilesystem(os.path.join(tmp, "fs"),
+                                    block_size=block_size)
+                fs.mkdir("/assets")
+                for path, body in corpus:
+                    fs.write(fs.create_file(path), body)
+                t0 = time.perf_counter()
+                fs.save(batched_fsync=batched)
+                save_s = time.perf_counter() - t0
+                state_dir = os.path.join(tmp, "fs", "state")
+                on_disk = 0
+                for root, _dirs, files in os.walk(state_dir):
+                    for name in files:
+                        on_disk += os.path.getsize(os.path.join(root, name))
+                n_blocks = len([n for n in os.listdir(
+                    os.path.join(state_dir, "blocks"))
+                    if n.endswith(".bin")])
+                fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+                ok = all(
+                    fs2.read(fs2.resolve(p)) == body
+                    for p, body in corpus
+                )
+                row = {
+                    "save_s": round(save_s, 3),
+                    "block_files": n_blocks,
+                    "on_disk_bytes": on_disk,
+                    "ratio": round(total_logical / on_disk, 2),
+                    "roundtrip_ok": ok,
+                }
+                if best is None or save_s < best["save_s"]:
+                    best = row
+        return best
+
+    rows = {
+        "64k_interleaved": run(65536, False),
+        "64k_batched": run(65536, True),
+        "256k_interleaved": run(262144, False),
+        "1m_interleaved": run(1048576, False),
+    }
+    out = {"logical_bytes": total_logical}
+    for name, row in rows.items():
+        out.update({f"{name}_{k}": v for k, v in row.items()})
+    return out
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -558,13 +647,15 @@ def main():
                         help="§4 live-mount FUSE vs native")
     parser.add_argument("--nyfs-persist", action="store_true",
                         help="§5 persisted-image lifecycle")
+    parser.add_argument("--save-levers", action="store_true",
+                        help="§5 save() commit-cost levers (block size, batched fsync)")
     args = parser.parse_args()
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
-                or args.nyfs_mount or args.nyfs_persist)
+                or args.nyfs_mount or args.nyfs_persist or args.save_levers)
     if not selected or args.all:
         args.ipc = args.bucket = args.zstd = args.nyfs = True
-        args.nyfs_mount = args.nyfs_persist = True
+        args.nyfs_mount = args.nyfs_persist = args.save_levers = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -585,6 +676,9 @@ def main():
     if args.nyfs_persist:
         _print_section("NyFS persisted-image lifecycle (§5):",
                        benchmark_nyfs_persisted())
+    if args.save_levers:
+        _print_section("NyFS save() commit-cost levers (§5):",
+                       benchmark_save_levers())
 
 
 if __name__ == "__main__":

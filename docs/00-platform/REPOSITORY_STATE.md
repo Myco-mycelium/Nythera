@@ -348,6 +348,18 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**save() commit-cost levers measured**): `save()` gained
+  an opt-in `batched_fsync=True` mode (all block temps written, then
+  all fsynced, then all renamed — same crash-atomicity contract,
+  correctness-tested) and `benchmarks.py` gained `--save-levers`
+  (`BENCHMARK_RESULTS.md` §8). Finding on this host's single ext4 disk:
+  **block size is the lever** (1 MiB blocks cut save ~40–60% for the
+  17.1 MB corpus, 417 → 192 block files; ratio nearly unchanged at
+  6.52 because zero padding compresses away), **batched fsync is not**
+  (direction flipped across sessions — noise; fsync syscall count is
+  unchanged). Journal-style commit remains the untested lever. Test
+  suite 91 → 94 (`TestNyFSPersistence` batched-save roundtrip / no
+  leftover temps / crash-atomicity).
 - 2026-08-12 (**NyFS FUSE write-batching fixed**): `NyFSMount` now
   negotiates `FUSE_CAP_BIG_WRITES` + `FUSE_CAP_WRITEBACK_CACHE` +
   `FUSE_CAP_MAX_PAGES` in the FUSE INIT handshake (`writeback_cache=True`,

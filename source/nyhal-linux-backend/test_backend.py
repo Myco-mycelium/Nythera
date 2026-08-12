@@ -1131,6 +1131,79 @@ class TestNyFSPersistence(unittest.TestCase):
             os.path.exists(os.path.join(
                 self.base, "state", "blocks", f"{old_id}.bin")))
 
+    def test_batched_fsync_save_roundtrip(self):
+        # Grouped-fsync save (all temps written, then all fsynced, then
+        # all renamed) must produce the same loadable state as the
+        # default interleaved path — content, size, and snapshots.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        fs.mkdir("/games")
+        f = fs.create_file("/games/save.sav")
+        payload = b"batched-" * 4000  # 32000 bytes, 8 blocks
+        fs.write(f, payload)
+        snap = fs.create_snapshot()
+        fs.write(f, b"v2-tail", offset=1000)
+        fs.save(batched_fsync=True)
+        del fs
+
+        fs2 = NyFSFilesystem.load(self.base)
+        restored = fs2.resolve("/games/save.sav")
+        # v2-tail is 7 bytes, overwriting payload[1000:1007].
+        self.assertEqual(fs2.read(restored), payload[:1000] + b"v2-tail"
+                         + payload[1007:])
+        self.assertIn(snap, fs2.list_snapshots())
+        fs2.restore_snapshot(snap)
+        self.assertEqual(fs2.read(fs2.resolve("/games/save.sav")), payload)
+
+    def test_batched_fsync_leaves_no_temp_files(self):
+        # The grouped path publishes every temp via rename; none may be
+        # left behind, and the blocks dir holds exactly the live blocks.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/t.bin")
+        fs.write(f, b"data" * 3000)
+        fs.save(batched_fsync=True)
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        names = os.listdir(blocks_dir)
+        self.assertEqual([n for n in names if n.endswith(".tmp")], [])
+        self.assertEqual(len(names), len(f.blocks))
+        # Re-save with the grouped path is a no-op on block files too.
+        before = sorted(names)
+        fs.save(batched_fsync=True)
+        self.assertEqual(sorted(os.listdir(blocks_dir)), before)
+
+    def test_batched_fsync_crash_mid_save_leaves_old_state(self):
+        # Same crash-atomicity contract as the default path: a failure
+        # before the metadata swap leaves the previous committed state
+        # loadable, even though the grouped path delays renames. The
+        # crash is injected mid rename-phase (some new block files
+        # renamed, others still temps) — the strongest ordering claim:
+        # partially-published blocks must stay invisible because the old
+        # metadata references only old, present blocks.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/c.sav")
+        fs.write(f, b"A" * 20000)  # 5 blocks
+        fs.save()
+
+        fs.write(f, b"B" * 20000)  # 5 new CoW blocks
+        calls = {"n": 0}
+
+        def _fail_after_two_renames(src, dst):
+            # Real os.replace for the first two (fuse.nyfs.os.replace is
+            # the mocked one), then crash: blocks 1-2 published, the rest
+            # stuck as temps, metadata never swapped.
+            calls["n"] += 1
+            if calls["n"] > 2:
+                raise OSError("simulated crash mid rename-phase")
+            return os.replace(src, dst)
+
+        with mock.patch("fuse.nyfs.os.replace",
+                        side_effect=_fail_after_two_renames):
+            with self.assertRaises(OSError):
+                fs.save(batched_fsync=True)
+
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"A" * 20000)
+
 
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""

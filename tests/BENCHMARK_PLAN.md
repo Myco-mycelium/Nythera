@@ -118,7 +118,12 @@ writes now batch at 128 KiB and stream at ~40–46 MB/s; reads batch at
 128 KiB (readahead) and run at ~25–37 MB/s. `--nyfs-persist` added the
 save/load lifecycle (`BENCHMARK_RESULTS.md` §7): 6.42 : 1 end-to-end
 compression ratio on a synthetic corpus, and an fsync-bound save()
-(~27 ms per block file). The §4 method's native baseline is ext4/Btrfs;
+(~27 ms per block file). The commit-cost levers named there were then
+measured (`--save-levers`, §8): 1 MiB blocks cut save ~40–60% for the
+17.1 MB corpus (417 → 192 block files) at a nearly unchanged ratio
+(6.52 — zero padding compresses away); batched fsync is a wash on a
+single disk (fsync count unchanged); a journal-style commit is the
+remaining untested lever. The §4 method's native baseline is ext4/Btrfs;
 this host's `/tmp` is ext4 (`/dev/sda2`), so the native baseline here is
 a real disk-backed comparison. The compression-on/off variant remains
 the unmeasured part.

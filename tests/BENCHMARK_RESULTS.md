@@ -279,6 +279,53 @@ that matters for gaming loads (NPS-006 §5).
    saved the corpus just before) — these are hot-path numbers, not
    cold-read numbers.
 
+## 8. save() Commit-Cost Levers — Block Size vs Batched Fsync (2026-08-12)
+
+`python3 tests/benchmarks.py --save-levers` — the same deterministic
+corpus as §7 (185 files, 17,139,978 bytes) committed under four
+configurations: 64 KiB (baseline) and 64 KiB with
+`save(batched_fsync=True)` (all temps written, then all fsynced, then
+all renamed), 256 KiB, and 1 MiB. Every config verified a full
+save → load →read round-trip (`roundtrip_ok`). The benchmark repeats each config
+twice and reports the minimum save time; the table shows the spread
+across **three separate benchmark sessions** — two captured before the
+repeat-twice change (single-run) and one after — because fsync-bound
+timings on this host swing ±30%+ run to run (the host was under
+concurrent load, loadavg ~1.4–2.2, during measurement). Within-
+session ordering is the reliable signal; absolute numbers are not.
+
+| Config | Save time (3 sessions) | Block files | Ratio |
+|--------|------------------------|-------------|-------|
+| 64 KiB, interleaved (baseline) | 11.1 – 15.1 s | 417 | 6.42 |
+| 64 KiB, batched fsync | 11.3 – 17.2 s | 417 | 6.42 |
+| 256 KiB | 7.3 – 12.0 s | 228 | 6.51 |
+| 1 MiB | 5.6 – 7.8 s | 192 | 6.52 |
+
+**Findings, recorded honestly:**
+1. **Block size is the reliable lever; batched fsync is not.** 1 MiB
+   blocks cut save time ~40–60% vs 64 KiB within every session (fewer
+   block files → fewer per-file fsyncs: 417 → 192). 256 KiB helped in
+   two of three sessions (−28%, −51%) but was flat in the third (−7%) —
+   marginal for this corpus because most files are small (one block
+   each regardless of 256 KiB vs 1 MiB; only the 5 large streaming
+   files split further).
+2. **Batched fsync shows no measurable gain on a single disk.** The
+   batched-vs-interleaved comparison flipped direction across sessions
+   (−24%, +2%, +33%) — within noise. The fsync syscall count is
+   unchanged (one per block file either way) and the disk serializes
+   them regardless of grouping, so this matches expectation.
+   `save(batched_fsync=True)` is kept (correctness-tested: roundtrip,
+   no leftover temps, same crash-atomicity) but is not a win here. The
+   remaining untested lever is a journal-style commit — an append-only
+   transaction log fsynced once per commit instead of once per block
+   file.
+3. **Larger blocks barely cost ratio** (6.42 → 6.51 → 6.52): small
+   files are padded to full block size, but the zero padding
+   compresses away, so on-disk waste stays minimal for this corpus.
+   The real cost of large blocks is write amplification for small
+   random writes — a 4 KiB write rebuilds a whole 1 MiB CoW block — a
+   through-the-mount trade-off (ADRs decision, not measured here).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
@@ -286,7 +333,7 @@ that matters for gaming loads (NPS-006 §5).
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratio 6.42 : 1 measured 2026-08-12, §7**; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus (first §2 data point, no gate met), save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. No gate declared met |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus (first §2 data point, no gate met), save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8) — block size is the lever (1 MiB saves ~40–60% at the cost of small-write amplification); batched fsync is not (noise-level, single disk); journal-style commit untested. No gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next
