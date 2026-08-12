@@ -43,6 +43,7 @@ import logging
 import os
 import site
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -172,8 +173,10 @@ class NyFSFilesystem:
     BLOCK_SIZE = 65536  # default CoW block size, in bytes
     STATE_DIR = "state"  # subdirectory holding metadata + block files
     METADATA_FILE = "metadata.json"
+    JOURNAL_FILE = "journal.bin"  # append-only commit journal
 
-    def __init__(self, base_path: str, block_size: int = BLOCK_SIZE):
+    def __init__(self, base_path: str, block_size: int = BLOCK_SIZE,
+                 journal_compact_bytes: int = 64 * 1024 * 1024):
         """Initialize the NyFS filesystem.
 
         Args:
@@ -181,6 +184,11 @@ class NyFSFilesystem:
             block_size: Fixed block size in bytes for CoW extents
                 (default 64 KiB). A write rewrites only the blocks it
                 touches, so this bounds the per-write compress cost.
+            journal_compact_bytes: Journal size (bytes) that triggers
+                compaction on the next journal-mode save — referenced
+                blocks are materialized into ``state/blocks/`` and the
+                journal truncated (default 64 MiB; small values in tests
+                exercise compaction cheaply).
         """
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -188,6 +196,7 @@ class NyFSFilesystem:
         if block_size <= 0:
             raise ValueError(f"block_size must be positive, got {block_size}")
         self.block_size = block_size
+        self.journal_compact_bytes = journal_compact_bytes
 
         self.inode_counter = 1
         self.root_inode = self._create_inode(0, "/", stat.S_IFDIR | 0o755, is_directory=True)
@@ -196,6 +205,11 @@ class NyFSFilesystem:
         self.lock = threading.Lock()
         self._fh_counter = 0
         self._open_files: Dict[int, int] = {}  # fh -> inode number
+        # Journal bookkeeping: block_ids whose payloads are already
+        # durable in the journal (immutable blocks are never re-appended),
+        # and a lazily-built scan cache.
+        self._journal_ids: set = set()
+        self._journal_index = None
 
         logger.info(f"Initialized NyFS filesystem at {self.base_path}")
 
@@ -858,7 +872,8 @@ class NyFSFilesystem:
             ],
         }
 
-    def save(self, batched_fsync: bool = False) -> None:
+    def save(self, batched_fsync: bool = False, use_journal: bool = False,
+             compact_threshold: Optional[int] = None) -> None:
         """Persist the current filesystem state atomically.
 
         Blocks are immutable (CoW), so files already on disk are skipped
@@ -882,10 +897,22 @@ class NyFSFilesystem:
         fsync phase. On single disks the fsync syscall count is
         unchanged, so the gain — if any — comes from kernel write
         coalescing; measured in ``tests/BENCHMARK_RESULTS.md`` §8.
+
+        ``use_journal`` replaces the per-block fsyncs with an
+        append-only journal (``state/journal.bin``): every new block
+        payload is appended to the journal and the whole transaction is
+        fsynced ONCE, then the metadata swap becomes the commit point.
+        The crash-consistency guarantee is unchanged — the journal is
+        fsynced before the metadata swap, so new metadata never
+        references un-durable entries, and a torn journal tail (crash
+        mid-append) is ignored by ``load()``. The journal is compacted
+        (materialize referenced blocks into ``state/blocks/``, truncate)
+        once it exceeds ``journal_compact_bytes``. Journal commit is the
+        design lever the §8 batched-fsync finding named as remaining;
+        measured in ``tests/BENCHMARK_RESULTS.md`` §9.
         """
         with self.lock:
             blocks_dir = self._blocks_dir()
-            blocks_dir.mkdir(parents=True, exist_ok=True)
 
             # 1. Persist every block referenced by the live state (and
             #    snapshots, which share block IDs with the tree).
@@ -896,40 +923,50 @@ class NyFSFilesystem:
                 live_blocks |= {
                     b.block_id for b in self._all_blocks(snap)
                 }
-            pending: List[Tuple[Path, Path]] = []
-            for block_id in live_blocks:
-                block = self._find_block(block_id)
-                if block is None:
-                    continue
-                tmp = blocks_dir / f".{block_id}.tmp"
-                target = blocks_dir / f"{block_id}.bin"
-                if target.exists():
-                    # Blocks are immutable (CoW), so a file already on
-                    # disk for this ID was written by a previous save of
-                    # the exact same content — re-saving is a no-op.
-                    continue
-                with open(tmp, "wb") as fh:
-                    fh.write(block.compressed_data or block.data or b"")
-                    fh.flush()
-                    if batched_fsync:
-                        # Defer the fsync + rename to the grouped phase.
-                        pending.append((tmp, target))
-                    else:
-                        os.fsync(fh.fileno())
+            if use_journal:
+                self._journal_append_new(live_blocks, blocks_dir)
+            else:
+                blocks_dir.mkdir(parents=True, exist_ok=True)
+                pending: List[Tuple[Path, Path]] = []
+                for block_id in live_blocks:
+                    block = self._find_block(block_id)
+                    if block is None:
+                        continue
+                    tmp = blocks_dir / f".{block_id}.tmp"
+                    target = blocks_dir / f"{block_id}.bin"
+                    if target.exists():
+                        # Blocks are immutable (CoW), so a file already
+                        # on disk for this ID was written by a previous
+                        # save of the exact same content — re-saving is
+                        # a no-op.
+                        continue
+                    with open(tmp, "wb") as fh:
+                        fh.write(block.compressed_data or block.data or b"")
+                        fh.flush()
+                        if batched_fsync:
+                            # Defer the fsync + rename to the grouped
+                            # phase.
+                            pending.append((tmp, target))
+                        else:
+                            os.fsync(fh.fileno())
+                            os.replace(tmp, target)
+                if batched_fsync and pending:
+                    # Grouped phase: flush every temp to disk, then
+                    # publish all renames. Until this completes, the old
+                    # metadata references only old, present blocks —
+                    # consistent.
+                    for tmp, _target in pending:
+                        with open(tmp, "rb") as fh:
+                            os.fsync(fh.fileno())
+                    for tmp, target in pending:
                         os.replace(tmp, target)
-            if batched_fsync and pending:
-                # Grouped phase: flush every temp to disk, then publish
-                # all renames. Until this completes, the old metadata
-                # references only old, present blocks — consistent.
-                for tmp, _target in pending:
-                    with open(tmp, "rb") as fh:
-                        os.fsync(fh.fileno())
-                for tmp, target in pending:
-                    os.replace(tmp, target)
 
             # Fsync the block directory so the new block files are
-            # durable before the metadata swap becomes the commit point.
-            self._fsync_dir(blocks_dir)
+            # durable before the metadata swap becomes the commit point
+            # (journal mode writes no block files, so the directory may
+            # not exist).
+            if blocks_dir.exists():
+                self._fsync_dir(blocks_dir)
 
             # 2. Serialize the metadata (tree + snapshots).
             metadata = {
@@ -956,6 +993,17 @@ class NyFSFilesystem:
             # Fsync the state directory so the metadata rename itself is
             # durable — the commit point.
             self._fsync_dir(state_dir)
+            # Journal-mode compaction: materialize referenced blocks and
+            # truncate once the journal exceeds the threshold. Runs only
+            # after the commit point, so a failure here leaves the
+            # (still valid) journal intact.
+            if use_journal:
+                journal = state_dir / self.JOURNAL_FILE
+                threshold = (compact_threshold
+                             if compact_threshold is not None
+                             else self.journal_compact_bytes)
+                if journal.exists() and journal.stat().st_size > threshold:
+                    self._materialize_journal()
             logger.info(
                 f"Saved NyFS state: {len(live_blocks)} blocks, "
                 f"{len(self.inodes)} inodes"
@@ -977,6 +1025,156 @@ class NyFSFilesystem:
                 os.close(fd)
         except OSError as e:
             logger.warning("directory fsync of %s failed: %s", path, e)
+
+    # ------------------------------------------------------------------
+    # Journal commit (NPS-004 §7, append-only log with one fsync per
+    # transaction; measured in BENCHMARK_RESULTS.md §9)
+    # ------------------------------------------------------------------
+
+    def _journal_path(self) -> Path:
+        return self._state_dir() / self.JOURNAL_FILE
+
+    @staticmethod
+    def _valid_block_id(block_id: str) -> bool:
+        """True for a canonical 36-char UUID hex id (dashes at 8/13/18/23)."""
+        if len(block_id) != 36:
+            return False
+        for i, c in enumerate(block_id):
+            if i in (8, 13, 18, 23):
+                if c != "-":
+                    return False
+            elif c not in "0123456789abcdefABCDEF":
+                return False
+        return True
+
+    def _journal_append_new(self, live_blocks, blocks_dir) -> None:
+        """Append new block payloads to the append-only journal with a
+        single fsync for the whole transaction.
+
+        Blocks already durable in the journal (``_journal_ids``) or as
+        ``.bin`` files are skipped — block payloads are immutable, so
+        their journal entry stays valid forever. A crash mid-append can
+        leave a torn tail; ``_scan_journal`` stops at the first
+        malformed record, and since appends are sequential that is
+        exactly the torn tail.
+        """
+        state_dir = self._state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        if not self._journal_ids:
+            # Seed from the on-disk journal so a freshly constructed
+            # (non-loaded) instance never re-appends blocks that another
+            # instance already journaled. Scanned once; after any save
+            # the in-memory set is populated.
+            self._journal_ids |= set(self._scan_journal().keys())
+        new_records = []
+        for block_id in sorted(live_blocks):
+            if block_id in self._journal_ids:
+                continue
+            if (blocks_dir / f"{block_id}.bin").exists():
+                self._journal_ids.add(block_id)
+                continue
+            block = self._find_block(block_id)
+            if block is None:
+                continue
+            payload = block.compressed_data or block.data or b""
+            new_records.append((block_id, payload))
+        if not new_records:
+            return
+        with open(state_dir / self.JOURNAL_FILE, "ab") as fh:
+            for block_id, payload in new_records:
+                fh.write(struct.pack("<I", len(payload)))
+                fh.write(block_id.encode("ascii"))
+                fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())  # ONE fsync per transaction
+        self._journal_ids.update(bid for bid, _ in new_records)
+        self._journal_index = None  # invalidate the scan cache
+
+    def _scan_journal(self):
+        """Index journal records (block_id -> payload offset/length).
+
+        Robust to a torn tail: scanning stops at the first malformed
+        record. Appends are sequential, so everything before the first
+        bad record is valid and anything after it is torn garbage.
+        """
+        if self._journal_index is not None:
+            return self._journal_index
+        index = {}
+        journal = self._journal_path()
+        if journal.exists():
+            with open(journal, "rb") as fh:
+                while True:
+                    header = fh.read(4)
+                    if len(header) < 4:
+                        break
+                    (plen,) = struct.unpack("<I", header)
+                    if plen > 512 * 1024 * 1024:
+                        break  # sanity bound: torn header
+                    bid = fh.read(36)
+                    if len(bid) < 36 or not self._valid_block_id(
+                            bid.decode("ascii", "replace")):
+                        break
+                    pos = fh.tell()
+                    payload = fh.read(plen)
+                    if len(payload) < plen:
+                        break  # torn payload
+                    index[bid.decode("ascii")] = (pos, plen)
+        self._journal_index = index
+        return index
+
+    def _journal_read(self, block_id: str) -> Optional[bytes]:
+        """Read a block payload from the journal, or None if absent."""
+        entry = self._scan_journal().get(block_id)
+        if entry is None:
+            return None
+        offset, plen = entry
+        with open(self._journal_path(), "rb") as fh:
+            fh.seek(offset)
+            return fh.read(plen)
+
+    def _materialize_journal(self) -> int:
+        """Move referenced blocks out of the journal into ``.bin`` files
+        and truncate the journal (compaction).
+
+        Unreferenced records are garbage (blocks orphaned by CoW) and
+        are dropped with the truncate. Returns the record count moved.
+        """
+        index = self._scan_journal()
+        if not index:
+            return 0
+        blocks_dir = self._blocks_dir()
+        blocks_dir.mkdir(parents=True, exist_ok=True)
+        referenced = {b.block_id for b in self._all_blocks(self.inodes)}
+        for snap in self.snapshots.values():
+            referenced |= {b.block_id for b in self._all_blocks(snap)}
+        pending = []
+        moved = 0
+        for block_id in referenced:
+            if block_id not in index:
+                continue
+            target = blocks_dir / f"{block_id}.bin"
+            if target.exists():
+                continue
+            payload = self._journal_read(block_id)
+            if payload is None:
+                continue
+            tmp = blocks_dir / f".{block_id}.tmp"
+            with open(tmp, "wb") as fh:
+                fh.write(payload)
+                fh.flush()
+            pending.append((tmp, target))
+            moved += 1
+        for tmp, _t in pending:
+            with open(tmp, "rb") as fh:
+                os.fsync(fh.fileno())
+        for tmp, target in pending:
+            os.replace(tmp, target)
+        self._fsync_dir(blocks_dir)
+        # Everything referenced is now in .bin; the rest is garbage.
+        self._journal_path().write_bytes(b"")
+        self._journal_ids = set()
+        self._journal_index = None
+        return moved
 
     def _all_blocks(self, inodes: Dict[int, NyFSInode]):
         for inode in inodes.values():
@@ -1031,9 +1229,13 @@ class NyFSFilesystem:
             path = fs._blocks_dir() / f"{block_id}.bin"
             try:
                 payload = path.read_bytes()
-            except OSError as e:
-                raise NyFSError(
-                    errno.EIO, f"missing block file {path.name}: {e}") from e
+            except OSError:
+                # Fall back to the append-only journal (journal-mode
+                # commits never wrote a .bin for this block).
+                payload = fs._journal_read(block_id)
+                if payload is None:
+                    raise NyFSError(
+                        errno.EIO, f"missing block file {path.name}")
             block = NyFSBlock(block_id=block_id,
                               checksum=meta.get("checksum", ""),
                               compression_level=meta.get("compression_level", 3))
@@ -1085,6 +1287,11 @@ class NyFSFilesystem:
                 snap_inodes[inode.inode_number] = inode
                 stack.extend(inode.children.values())
             fs.snapshots[snap_id] = snap_inodes
+
+        # Journal entries are durable block payloads; remember which
+        # block_ids they cover so a later journal-mode save never
+        # re-appends immutable blocks.
+        fs._journal_ids = set(fs._scan_journal().keys())
 
         logger.info(
             f"Loaded NyFS state from {meta_path}: "

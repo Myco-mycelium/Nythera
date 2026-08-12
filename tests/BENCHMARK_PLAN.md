@@ -119,14 +119,20 @@ writes now batch at 128 KiB and stream at ~40–46 MB/s; reads batch at
 save/load lifecycle (`BENCHMARK_RESULTS.md` §7): 6.42 : 1 end-to-end
 compression ratio on a synthetic corpus, and an fsync-bound save()
 (~27 ms per block file). The commit-cost levers named there were then
-measured (`--save-levers`, §8): 1 MiB blocks cut save ~40–60% for the
+measured (`--save-levers`, §8–9): 1 MiB blocks cut save ~40–60% for the
 17.1 MB corpus (417 → 192 block files) at a nearly unchanged ratio
 (6.52 — zero padding compresses away); batched fsync is a wash on a
-single disk (fsync count unchanged); a journal-style commit is the
-remaining untested lever. The §4 method's native baseline is ext4/Btrfs;
-this host's `/tmp` is ext4 (`/dev/sda2`), so the native baseline here is
-a real disk-backed comparison. The compression-on/off variant remains
-the unmeasured part.
+single disk (fsync count unchanged); **journal commit (`save(use_journal=
+True)`, one fsync per transaction) is decisive — ~60–70× faster** (0.20 s
+vs 11–15 s, §9; ~61× on a 3,855-file real corpus, §12). The §2 data
+points also grew: a real-corpus sample from `/usr/share` gives **1.29 : 1**
+end-to-end (§12 — below the synthetic corpus's 6.42 : 1, no gate met),
+and the plan's LZ4 comparison is approximated with zlib-6 (§11,
+python-lz4 unavailable). Cross-snapshot dedup measured (§10): ~49×
+CoW sharing on a 20%-churn snapshot. The §4 method's native baseline is
+ext4/Btrfs; this host's `/tmp` is ext4 (`/dev/sda2`), so the native
+baseline here is a real disk-backed comparison. The compression-on/off
+variant remains the unmeasured part.
 
 None of the plan's pass/fail gates are declared met on the strength of
 these runs — these numbers exist to inform implementation, not to close

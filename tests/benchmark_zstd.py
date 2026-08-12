@@ -38,13 +38,24 @@ def build_corpus():
     return corpus
 
 
-def throughput(fn, data, rounds=ROUNDS):
-    """Return MB/s for fn(data) averaged over rounds."""
+def throughput(fn, data, rounds=ROUNDS, size=None):
+    """Return MB/s for fn(data) averaged over rounds.
+
+    ``size`` is the byte count the work actually produces/consumes
+    (defaults to ``len(data)``). For compression that is the input
+    length; for decompression it must be the DECOMPRESSED length —
+    measuring decompression throughput against the compressed input
+    would understate it by the compression ratio (fixed 2026-08-12;
+    earlier §2 numbers used the compressed size and are corrected in
+    BENCHMARK_RESULTS.md §2).
+    """
+    if size is None:
+        size = len(data)
     start = time.perf_counter()
     for _ in range(rounds):
         fn(data)
     elapsed = time.perf_counter() - start
-    return (len(data) * rounds) / elapsed / 1e6
+    return (size * rounds) / elapsed / 1e6
 
 
 def bench_level(level, corpus):
@@ -60,8 +71,10 @@ def bench_level(level, corpus):
         total_out += len(cdata)
         # compression throughput on this slice
         c_speed = throughput(lambda d: cctx.compress(d), data, 4)
-        # decompression throughput
-        d_speed = throughput(lambda d: dctx.decompress(d), cdata, 4)
+        # decompression throughput (measured against the decompressed
+        # output size — see throughput())
+        d_speed = throughput(lambda d: dctx.decompress(d), cdata, 4,
+                             size=len(data))
         results[name] = (ratio, c_speed, d_speed)
     overall_ratio = total_in / total_out
     return results, overall_ratio

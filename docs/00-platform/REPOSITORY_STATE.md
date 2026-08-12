@@ -348,18 +348,24 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
-- 2026-08-12 (**save() commit-cost levers measured**): `save()` gained
-  an opt-in `batched_fsync=True` mode (all block temps written, then
-  all fsynced, then all renamed — same crash-atomicity contract,
-  correctness-tested) and `benchmarks.py` gained `--save-levers`
-  (`BENCHMARK_RESULTS.md` §8). Finding on this host's single ext4 disk:
-  **block size is the lever** (1 MiB blocks cut save ~40–60% for the
-  17.1 MB corpus, 417 → 192 block files; ratio nearly unchanged at
-  6.52 because zero padding compresses away), **batched fsync is not**
-  (direction flipped across sessions — noise; fsync syscall count is
-  unchanged). Journal-style commit remains the untested lever. Test
-  suite 91 → 94 (`TestNyFSPersistence` batched-save roundtrip / no
-  leftover temps / crash-atomicity).
+- 2026-08-12 (**journal commit + benchmark followups**): `save()` gained
+  `use_journal=True` — an append-only journal (`state/journal.bin`)
+  fsynced once per transaction before the atomic metadata swap, with
+  `load()` journal fallback, torn-tail tolerance, and compaction past
+  `journal_compact_bytes`. Benchmark (`BENCHMARK_RESULTS.md` §9, §12):
+  **~60–70× faster commit** (0.20 s vs 11–15 s on 17.1 MB/417 blocks;
+  2.0 s vs 123 s on a 3,855-file real corpus) at ~0.3% on-disk
+  overhead — the decisive commit-cost lever; whether it becomes the
+  default is an Architecture Group decision. Three more benchmark
+  sections: cross-snapshot dedup (§10 — CoW sharing costs ~2% of an
+  independent copy for a 20%-churn snapshot, ~49×), zstd-3 vs zlib-6
+  codec comparison (§11 — LZ4 approximated with zlib, python-lz4
+  unavailable; zlib wins ratio 3.13 vs 2.54, zstd wins speed ~23× on
+  incompressible data), and real-corpus ratio (§12 — **1.29 : 1** on a
+  real /usr/share sample vs 6.42 : 1 synthetic, the honest §2 data
+  point). Fixed a decompress-throughput measurement bug in
+  `benchmark_zstd.py` (was measured against compressed input; §4 table
+  re-run). Test suite 91 → 99.
 - 2026-08-12 (**NyFS FUSE write-batching fixed**): `NyFSMount` now
   negotiates `FUSE_CAP_BIG_WRITES` + `FUSE_CAP_WRITEBACK_CACHE` +
   `FUSE_CAP_MAX_PAGES` in the FUSE INIT handshake (`writeback_cache=True`,

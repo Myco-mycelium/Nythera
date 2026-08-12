@@ -24,9 +24,21 @@ this host in one reproducible script:
   NPS-004 §7), reloads it, and measures the loaded-image read patterns
   plus the end-to-end storage compression ratio.
 - §5 (save() commit-cost levers, 2026-08-12): ``--save-levers`` measures
-  the two knobs the fsync-bound finding named — block size (64 KiB /
-  256 KiB / 1 MiB) and ``save(batched_fsync=True)`` group-commit — on
-  the same corpus, each verified by a save -> load -> read round-trip.
+  the knobs the fsync-bound finding named — block size (64 KiB / 256 KiB /
+  1 MiB), ``save(batched_fsync=True)`` group-commit, and the new
+  ``save(use_journal=True)`` append-only journal (one fsync per
+  transaction) — on the same corpus, each verified by a save -> load ->
+  read round-trip.
+- §5 (cross-snapshot dedup, 2026-08-12): ``--snapshot-dedup`` measures
+  how much block-store space a snapshot chain really costs when 20% of
+  the corpus changes between snapshots (CoW block sharing).
+- §2 (codec comparison, 2026-08-12): ``--codec`` compares zstd level 3
+  (NyFS default) against zlib level 6 (stdlib; python-lz4 is not
+  installed on this host) on the ``benchmark_zstd`` corpus.
+- §2 (real-corpus ratio, 2026-08-12): ``--real-corpus`` runs the
+  end-to-end compression-ratio measurement on a deterministic sample of
+  real files from ``/usr/share`` (fonts, locale, man, mime, zoneinfo,
+  applications).
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -37,6 +49,9 @@ Usage:
   python3 tests/benchmarks.py --nyfs-mount  # §4 live-mount FUSE vs native
   python3 tests/benchmarks.py --nyfs-persist  # §5 persisted-image lifecycle
   python3 tests/benchmarks.py --save-levers   # §5 save() commit-cost levers
+  python3 tests/benchmarks.py --snapshot-dedup  # §5 cross-snapshot dedup
+  python3 tests/benchmarks.py --codec        # §2 zstd vs zlib codec compare
+  python3 tests/benchmarks.py --real-corpus  # §2 real-corpus ratio
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -400,6 +415,16 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
             pass
 
 
+def _state_tree_bytes(state_dir) -> int:
+    """Total bytes under the NyFS state tree (blocks + journal + inode
+    tables + metadata) — the end-to-end on-disk footprint."""
+    total = 0
+    for root, _dirs, files in os.walk(state_dir):
+        for name in files:
+            total += os.path.getsize(os.path.join(root, name))
+    return total
+
+
 def _build_persist_corpus(seed: int = 11):
     """Deterministic mixed asset corpus shared by the persisted-image
     benchmarks: ~150 small compressible text-like files, 30 medium files
@@ -475,10 +500,7 @@ def benchmark_nyfs_persisted():
         # End-to-end on-disk footprint: block store + inode tables + any
         # snapshot/metadata files under the state tree.
         state_dir = os.path.join(tmp, "fs", "state")
-        on_disk = 0
-        for root, _dirs, files in os.walk(state_dir):
-            for name in files:
-                on_disk += os.path.getsize(os.path.join(root, name))
+        on_disk = _state_tree_bytes(state_dir)
 
         # Reload.
         t0 = time.perf_counter()
@@ -534,7 +556,10 @@ def benchmark_save_levers():
       256 KiB, and 1 MiB;
     - batched fsync (``save(batched_fsync=True)``: all temps written,
       then all fsynced, then all renamed) vs the default interleaved
-      path, at the default 64 KiB block size.
+      path, at the default 64 KiB block size;
+    - journal commit (``save(use_journal=True)``: one fsync for the
+      whole transaction's block payloads, then the metadata swap) at
+      the default 64 KiB block size.
     Every config verifies a full save -> load -> read round-trip before
     reporting (``roundtrip_ok``), so a lever that broke durability would
     fail loudly here. Each config repeats twice and reports the minimum
@@ -543,7 +568,7 @@ def benchmark_save_levers():
     """
     corpus, total_logical = _build_persist_corpus()
 
-    def run(block_size, batched, repeats=2):
+    def run(block_size, batched, use_journal=False, repeats=2):
         # fsync-bound timings are noisy on this host (observed ±30% run
         # to run), so each config is repeated and the minimum (least
         # noise-inflated) save time is reported; the other metrics come
@@ -557,16 +582,17 @@ def benchmark_save_levers():
                 for path, body in corpus:
                     fs.write(fs.create_file(path), body)
                 t0 = time.perf_counter()
-                fs.save(batched_fsync=batched)
+                fs.save(batched_fsync=batched, use_journal=use_journal)
                 save_s = time.perf_counter() - t0
                 state_dir = os.path.join(tmp, "fs", "state")
-                on_disk = 0
-                for root, _dirs, files in os.walk(state_dir):
-                    for name in files:
-                        on_disk += os.path.getsize(os.path.join(root, name))
-                n_blocks = len([n for n in os.listdir(
-                    os.path.join(state_dir, "blocks"))
-                    if n.endswith(".bin")])
+                on_disk = _state_tree_bytes(state_dir)
+                blocks_dir = os.path.join(state_dir, "blocks")
+                n_blocks = (len([n for n in os.listdir(blocks_dir)
+                                 if n.endswith(".bin")])
+                            if os.path.isdir(blocks_dir) else 0)
+                journal = os.path.join(state_dir, "journal.bin")
+                j_bytes = (os.path.getsize(journal)
+                           if os.path.exists(journal) else 0)
                 fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
                 ok = all(
                     fs2.read(fs2.resolve(p)) == body
@@ -575,6 +601,7 @@ def benchmark_save_levers():
                 row = {
                     "save_s": round(save_s, 3),
                     "block_files": n_blocks,
+                    "journal_bytes": j_bytes,
                     "on_disk_bytes": on_disk,
                     "ratio": round(total_logical / on_disk, 2),
                     "roundtrip_ok": ok,
@@ -586,12 +613,208 @@ def benchmark_save_levers():
     rows = {
         "64k_interleaved": run(65536, False),
         "64k_batched": run(65536, True),
+        "64k_journal": run(65536, False, use_journal=True),
         "256k_interleaved": run(262144, False),
         "1m_interleaved": run(1048576, False),
     }
     out = {"logical_bytes": total_logical}
     for name, row in rows.items():
         out.update({f"{name}_{k}": v for k, v in row.items()})
+    return out
+
+
+def benchmark_snapshot_dedup():
+    """Cross-snapshot deduplication measured on disk (BENCHMARK_RESULTS
+    §10).
+
+    NyFS dedups by CoW sharing: snapshots reference the same immutable
+    blocks, so a save stores each distinct block once. This measures how
+    much block-store space a snapshot chain actually costs when 20% of
+    the corpus changes between snapshots — vs the naive cost of an
+    independent full copy.
+    """
+    corpus, total_logical = _build_persist_corpus()
+    with tempfile.TemporaryDirectory() as tmp:
+        fs = NyFSFilesystem(os.path.join(tmp, "fs"))
+        fs.mkdir("/assets")
+        for path, body in corpus:
+            fs.write(fs.create_file(path), body)
+        snap1 = fs.create_snapshot()
+        fs.save()
+        state_dir = os.path.join(tmp, "fs", "state")
+        after_snap1 = _state_tree_bytes(state_dir)
+
+        # Modify ~20% of the corpus: rewrite 30 text files with new
+        # content and flip the first 4 KiB of 5 medium files.
+        for i in range(30):
+            fs.write(fs.resolve(f"/assets/text_{i}.txt"),
+                     f"changed-v2;{i}".encode() * 80)
+        for i in range(5):
+            med = fs.resolve(f"/assets/med_{i}.bin")
+            head = fs.read(med, 4096, 0)
+            fs.write(med, bytes(b ^ 0xFF for b in head), 0)
+        snap2 = fs.create_snapshot()
+        fs.save()
+        after_snap2 = _state_tree_bytes(state_dir)
+        bins = [n for n in os.listdir(os.path.join(state_dir, "blocks"))
+                if n.endswith(".bin")]
+        new_bytes = after_snap2 - after_snap1
+        return {
+            "logical_bytes": total_logical,
+            "on_disk_after_snap1": after_snap1,
+            "on_disk_after_snap2": after_snap2,
+            "new_block_bytes_for_snap2": new_bytes,
+            "naive_full_copy_bytes": total_logical,
+            "dedup_factor": (round(total_logical / new_bytes, 2)
+                              if new_bytes else None),
+            "block_files_after_snap2": len(bins),
+            "snapshots": 2,
+        }
+
+
+def benchmark_codec_compare():
+    """zstd (NyFS default, level 3) vs zlib (stdlib, level 6) on the
+    benchmark_zstd corpus — the non-zstd codec comparison that
+    BENCHMARK_PLAN §2 lists as pending (BENCHMARK_RESULTS §11).
+
+    python-lz4 is NOT installed on this host, so the plan's LZ4
+    comparison is approximated with zlib, a broadly-comparable
+    general-purpose codec (installing ``lz4`` via pip would add a true
+    LZ4 row).
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "benchmark_zstd",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "benchmark_zstd.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        corpus = mod.build_corpus()
+    except ImportError as e:
+        return {"error": f"zstandard unavailable: {e}"}
+
+    import zlib
+    import zstandard as zstd
+
+    out = {}
+    total_in = sum(len(v) for v in corpus.values())
+    for name, data in corpus.items():
+        zc = zstd.ZstdCompressor(level=3)
+        zd = zstd.ZstdDecompressor()
+        z3 = zc.compress(data)
+        out[f"zstd3_{name}_ratio"] = round(len(data) / len(z3), 2)
+        out[f"zstd3_{name}_compress_mbps"] = round(
+            mod.throughput(lambda d: zc.compress(d), data, 4))
+        out[f"zstd3_{name}_decompress_mbps"] = round(
+            mod.throughput(lambda d: zd.decompress(d), z3, 4,
+                           size=len(data)))
+        zb = zlib.compress(data, 6)
+        out[f"zlib6_{name}_ratio"] = round(len(data) / len(zb), 2)
+        out[f"zlib6_{name}_compress_mbps"] = round(
+            mod.throughput(lambda d: zlib.compress(d, 6), data, 4))
+        out[f"zlib6_{name}_decompress_mbps"] = round(
+            mod.throughput(lambda d: zlib.decompress(d), zb, 4,
+                           size=len(data)))
+    zstd_out = sum(len(zstd.ZstdCompressor(level=3).compress(v))
+                   for v in corpus.values())
+    zlib_out = sum(len(zlib.compress(v, 6)) for v in corpus.values())
+    out["zstd3_overall_ratio"] = round(total_in / zstd_out, 2)
+    out["zlib6_overall_ratio"] = round(total_in / zlib_out, 2)
+    return out
+
+
+def _build_real_corpus(target_bytes: int = 16 * 1024 * 1024):
+    """Deterministic sample of REAL files from the system (/usr/share).
+
+    Subdirectories chosen for variety: zoneinfo (binary timezone data),
+    applications (.desktop text), mime (XML/globs), man (compressed
+    text), locale (compiled message catalogs), fonts (.ttf binaries).
+    Files are taken in sorted-path order per directory until the target
+    size is reached, so the selection is deterministic for a given
+    system image. Returns ([(path, bytes)], total).
+    """
+    roots = ["zoneinfo", "applications", "mime", "man", "locale", "fonts"]
+    selected = []
+    total = 0
+    for sub in roots:
+        root = os.path.join("/usr/share", sub)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirs, files in os.walk(root):
+            dirs.sort()  # deterministic traversal for a given image
+            for name in sorted(files):
+                path = os.path.join(dirpath, name)
+                try:
+                    size = os.path.getsize(path)
+                    if size < 256 or size > 4 * 1024 * 1024:
+                        continue
+                    if total + size > target_bytes:
+                        continue
+                    data = open(path, "rb").read()
+                except OSError:
+                    continue
+                selected.append((path, data))
+                total += size
+                if total >= target_bytes:
+                    return selected, total
+    return selected, total
+
+
+def benchmark_real_corpus(target_bytes: int = 16 * 1024 * 1024):
+    """End-to-end NyFS compression ratio on a REAL mixed corpus
+    (BENCHMARK_RESULTS §12).
+
+    The synthetic §7 corpus is text-heavy (6.42 : 1). Real
+    game-adjacent data — already-compressed fonts, locale catalogs,
+    compressed man pages — is the honest second data point for
+    BENCHMARK_PLAN §2.
+    """
+    try:
+        files, total = _build_real_corpus(target_bytes)
+    except Exception as e:
+        return {"error": str(e)}
+    out = {
+        "source": "/usr/share (zoneinfo, applications, mime, man,"
+                  " locale, fonts)",
+        "files": len(files),
+        "logical_bytes": total,
+    }
+
+    def pass_write_and_save(use_journal):
+        with tempfile.TemporaryDirectory() as tmp:
+            fs = NyFSFilesystem(os.path.join(tmp, "fs"))
+            fs.mkdir("/assets")
+            t0 = time.perf_counter()
+            for i, (_path, data) in enumerate(files):
+                fs.write(fs.create_file(f"/assets/real_{i}.bin"), data)
+            write_s = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            fs.save(use_journal=use_journal)
+            save_s = time.perf_counter() - t0
+            state_dir = os.path.join(tmp, "fs", "state")
+            on_disk = _state_tree_bytes(state_dir)
+            blocks_dir = os.path.join(state_dir, "blocks")
+            n_blocks = (len([n for n in os.listdir(blocks_dir)
+                             if n.endswith(".bin")])
+                        if os.path.isdir(blocks_dir) else 0)
+            fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+            ok = all(fs2.read(fs2.resolve(f"/assets/real_{i}.bin")) == data
+                     for i, (_p, data) in enumerate(files))
+            return {
+                "on_disk_bytes": on_disk,
+                "compression_ratio": round(total / on_disk, 2),
+                "write_mbps": (round(total / write_s / 1e6, 2)
+                               if write_s else None),
+                "save_seconds": round(save_s, 3),
+                "block_files": n_blocks,
+                "roundtrip_ok": ok,
+            }
+
+    out["interleaved"] = pass_write_and_save(False)
+    out["journal"] = pass_write_and_save(True)
     return out
 
 
@@ -648,14 +871,23 @@ def main():
     parser.add_argument("--nyfs-persist", action="store_true",
                         help="§5 persisted-image lifecycle")
     parser.add_argument("--save-levers", action="store_true",
-                        help="§5 save() commit-cost levers (block size, batched fsync)")
+                        help="§5 save() commit-cost levers (block size, "
+                             "batched fsync, journal)")
+    parser.add_argument("--snapshot-dedup", action="store_true",
+                        help="§5 cross-snapshot dedup measurement")
+    parser.add_argument("--codec", action="store_true",
+                        help="§2 zstd vs zlib codec comparison")
+    parser.add_argument("--real-corpus", action="store_true",
+                        help="§2 end-to-end ratio on a real /usr/share corpus")
     args = parser.parse_args()
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
-                or args.nyfs_mount or args.nyfs_persist or args.save_levers)
+                or args.nyfs_mount or args.nyfs_persist or args.save_levers
+                or args.snapshot_dedup or args.codec or args.real_corpus)
     if not selected or args.all:
         args.ipc = args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
+        args.snapshot_dedup = args.codec = args.real_corpus = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -679,6 +911,15 @@ def main():
     if args.save_levers:
         _print_section("NyFS save() commit-cost levers (§5):",
                        benchmark_save_levers())
+    if args.snapshot_dedup:
+        _print_section("NyFS cross-snapshot dedup (§5):",
+                       benchmark_snapshot_dedup())
+    if args.codec:
+        _print_section("zstd-3 vs zlib-6 codec compare (§2):",
+                       benchmark_codec_compare())
+    if args.real_corpus:
+        _print_section("NyFS real-corpus compression ratio (§2):",
+                       benchmark_real_corpus())
 
 
 if __name__ == "__main__":

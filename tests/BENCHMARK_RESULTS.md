@@ -88,21 +88,26 @@ all along.
 `python3 tests/benchmark_zstd.py`, synthetic corpus (text-like 180 KB,
 structured media-like 2 MiB, incompressible 1 MiB), levels 1–22, 1 MiB
 measurement chunks, throughput averaged over 4–8 rounds. Environment as
-in the header above.
+in the header above. **Measurement fix (2026-08-12):** decompression
+throughput is now measured against the *decompressed* output size; the
+earlier table measured it against the compressed input, understating it
+by roughly the compression ratio. The table below is a fresh corrected
+re-run (throughput numbers are load-dependent on this host; re-run for
+fresh values).
 
 | Level | Overall ratio | Compress MB/s | Decompress MB/s |
 |-------|--------------:|--------------:|----------------:|
-| 1     | 2.54 | 3,199 | 3,692 |
-| 3     | 2.54 | 3,479 | 3,313 |
-| 5     | 2.54 | 2,700 | 3,137 |
-| 7     | 3.17 | 2,095 | 2,135 |
-| 9     | 3.17 | 1,435 | 2,849 |
-| 11    | 3.17 | 2,009 | 3,024 |
-| 13    | 3.17 | 810  | 2,223 |
-| 15    | 3.17 | 864  | 2,700 |
-| 17    | 3.17 | 675  | 2,688 |
-| 19    | 3.17 | 621  | 2,696 |
-| 22    | 3.17 | 621  | 2,768 |
+| 1     | 2.54 | 2,151 | 3,462 |
+| 3     | 2.54 | 1,794 | 3,574 |
+| 5     | 2.54 | 1,673 | 2,770 |
+| 7     | 3.17 | 1,133 | 6,843 |
+| 9     | 3.17 | 878  | 7,096 |
+| 11    | 3.17 | 1,156 | 6,424 |
+| 13    | 3.17 | 501  | 5,985 |
+| 15    | 3.17 | 630  | 6,582 |
+| 17    | 3.17 | 645  | 6,840 |
+| 19    | 3.17 | 582  | 7,893 |
+| 22    | 3.17 | 488  | 7,775 |
 
 **Honest caveats:** (1) the "media" slice is a repeating structured
 pattern that only higher levels' larger search windows fully exploit
@@ -111,12 +116,12 @@ synthetic and not a prediction of real texture compression — the useful
 signal is the *shape*: overall ratio flatlines above level ~7 while
 compression cost keeps rising. (2) Incompressible data passes through at
 ratio 1.00 at every level, as expected for the NPS-004 §4.5 pass-through
-path. (3) The LZ4 fast-path comparison (ADR-0007) is not yet run —
-`python-lz4` is unavailable in this environment.
+path. (3) The plan's LZ4 fast-path comparison (ADR-0007) is approximated
+with zlib level 6 (§11) because `python-lz4` is unavailable on this host.
 
 **Observation for ADR-0007 / NPS-005 §3 (informative, not a decision):**
 on this corpus the ratio/compute knee sits around levels 3–7: level 3
-compresses at ~3.5 GB/s with the same ratio as level 1, and levels ≥ 7
+compresses at ~1.8 GB/s with the same ratio as level 1, and levels ≥ 7
 buy ~25% more ratio at 40–80% of the compression throughput. The actual
 default-level decision remains NPS-005 §3's table, pending Architecture
 Group review.
@@ -315,25 +320,139 @@ session ordering is the reliable signal; absolute numbers are not.
    unchanged (one per block file either way) and the disk serializes
    them regardless of grouping, so this matches expectation.
    `save(batched_fsync=True)` is kept (correctness-tested: roundtrip,
-   no leftover temps, same crash-atomicity) but is not a win here. The
-   remaining untested lever is a journal-style commit — an append-only
-   transaction log fsynced once per commit instead of once per block
-   file.
+   no leftover temps, same crash-atomicity) but is not a win here.
 3. **Larger blocks barely cost ratio** (6.42 → 6.51 → 6.52): small
    files are padded to full block size, but the zero padding
    compresses away, so on-disk waste stays minimal for this corpus.
    The real cost of large blocks is write amplification for small
    random writes — a 4 KiB write rebuilds a whole 1 MiB CoW block — a
    through-the-mount trade-off (ADRs decision, not measured here).
+   The journal-style commit (the remaining lever named here) is
+   measured in §9 — and it is the decisive one.
+
+## 9. Journal Commit — One Fsync per Transaction (2026-08-12)
+
+`save(use_journal=True)` appends every new block payload to
+`state/journal.bin` and fsyncs the whole transaction **once**, then does
+the atomic metadata swap (which remains the commit point; the journal is
+fsynced before it, so new metadata never references un-durable entries,
+and `load()` ignores torn tails). Measured via `--save-levers` on the
+same 17.1 MB / 185-file corpus as §7/§8 (best-of-2):
+
+| Commit mode | Save time (3 sessions) | Block files | On-disk | Ratio |
+|-------------|------------------------|-------------|---------|-------|
+| 64 KiB interleaved (baseline) | 11.1 – 15.1 s | 417 | 2,671,833 | 6.42 |
+| 64 KiB batched fsync | 11.3 – 19.2 s | 417 | 2,671,829 | 6.42 |
+| **64 KiB journal (one fsync)** | **0.20 s** (1 session, best-of-2) | 0 | 2,688,523 | 6.38 |
+| 256 KiB interleaved | 7.3 – 12.0 s | 228 | 2,631,883 | 6.51 |
+| 1 MiB interleaved | 5.6 – 21.4 s | 192 | 2,628,506 | 6.52 |
+
+**Finding: the journal is the decisive commit-cost lever — ~60–70×
+faster than interleaved** (0.20 s vs 11–15 s for 417 blocks) on the same
+host, in a completely different regime than the ±30% noise band around
+the fsync-per-block modes. The cost is tiny: the journal's per-record
+header (40 bytes/block) moves the end-to-end ratio from 6.42 to 6.38
+(~0.3%), and the journal is compacted (blocks materialized into
+`state/blocks/`, journal truncated) once it exceeds 64 MiB. Honest
+caveats: (1) the journal grows between compactions — a long-running
+daemon must either compact periodically or bound it some other way;
+(2) `gc_blocks()` does not reclaim journal space (compaction does);
+(3) this measures a cold single transaction — mixed workloads and the
+compaction pass itself are untested. On a small-file corpus the gap is
+larger still (§12: 123 s interleaved vs 2.0 s journal for 3,855 blocks).
+Whether journal commit becomes the *default* is a durability-layout
+decision for Architecture Group review, not flipped silently here.
+
+## 10. Cross-Snapshot Deduplication — CoW Block Sharing (2026-08-12)
+
+`python3 tests/benchmarks.py --snapshot-dedup` — the §7 corpus is saved,
+snapshotted, then 20% of it changes (30 text files rewritten, 5 medium
+files' first 4 KiB flipped), snapshotted and saved again. NyFS stores
+each distinct block once; snapshots reference the same immutable blocks,
+so the second snapshot costs only the *changed* blocks:
+
+| Metric | Value |
+|--------|-------|
+| Logical corpus | 17,139,978 bytes |
+| On-disk after snapshot 1 | 2,821,798 bytes (incl. snapshot metadata) |
+| On-disk after snapshot 2 | 3,171,017 bytes |
+| **New block store for snapshot 2** | **349,219 bytes** (35 new blocks) |
+| Naive independent copy | 17,139,978 bytes |
+| **Dedup factor (naive / actual)** | **~49×** |
+
+**Finding:** a snapshot chain is cheap — a 20%-churn snapshot costs
+~2% of an independent full copy, because CoW block sharing deduplicates
+by reference. This is reference sharing (identical *blocks* reused), not
+content-hash dedup of *different* files with equal bytes; that remains
+unimplemented (IMPLEMENTATION_STATUS: "Deduplication across
+snapshots" is the unchecked next item — this benchmark quantifies what
+the current design already gets for free).
+
+## 11. Codec Comparison — zstd-3 (NyFS default) vs zlib-6 (2026-08-12)
+
+`python3 tests/benchmarks.py --codec` — the plan's LZ4 comparison is
+approximated with zlib level 6 (stdlib) because `python-lz4` is not
+installed on this host (`pip install lz4` would add a true LZ4 row).
+Same `benchmark_zstd` corpus; decompress throughput measured against
+output bytes.
+
+| Slice | zstd-3 ratio | zlib-6 ratio | zstd-3 comp MB/s | zlib-6 comp MB/s | zstd-3 decomp MB/s | zlib-6 decomp MB/s |
+|-------|-------------|-------------|-----------------|-----------------|--------------------|--------------------|
+| text | 2,278 | 305 | 3,801 | 138 | 2,604 | 512 |
+| media | 7.97 | 172 | 166 | 174 | 552 | 967 |
+| incompressible | 1.00 | 1.00 | 776 | 34 | 5,831 | 1,014 |
+| **overall** | **2.54** | **3.13** | — | — | — | — |
+
+**Finding:** zlib-6 beats zstd-3 on ratio (3.13 vs 2.54) on this corpus
+(zlib's slower, more thorough search finds the structured pattern; the
+§4 sweep shows zstd needs level ≥ 7 to match it), but zstd-3 is **~23×
+faster at compressing incompressible data** (776 vs 34 MB/s — the
+workload NyFS hits at write time, when most bytes are already-
+compressed assets) and ~5.7× faster at decompression. For a
+write-time-compress, read-time-verify filesystem the speed asymmetry
+favors zstd at level 3; the ratio gap narrows at zstd level 7+.
+Informative for ADR-0007, not a decision.
+
+## 12. Real-Corpus Compression Ratio — /usr/share Sample (2026-08-12)
+
+`python3 tests/benchmarks.py --real-corpus` — a deterministic sample of
+real files from `/usr/share` (zoneinfo, applications, mime, man, locale,
+fonts; 3,778 files, 16,777,122 bytes, sorted-path order until the target
+size), written through the NyFS ops layer and committed with both
+commit modes:
+
+| Metric | Interleaved | Journal |
+|--------|-------------|---------|
+| End-to-end ratio | **1.29 : 1** | 1.27 : 1 |
+| Save time | **123.1 s** | **2.0 s** |
+| Block files | 3,855 | 0 (journal) |
+| Corpus write | ~9 MB/s | ~10 MB/s |
+| Round-trip | verified | verified |
+
+**Findings, recorded honestly:**
+1. **Real data compresses far less than the synthetic corpus** — 1.29 : 1
+   vs 6.42 : 1 (§7). Real assets are already-compressed (fonts, locale
+   catalogs, compressed man pages); this is the first honest data point
+   for the §2 question and it does NOT meet the >30% reduction
+   benchmark pattern the synthetic corpus suggested. No gate declared
+   met.
+2. **Small-file-heavy corpora amplify the fsync-per-block cost**: 3,855
+   files → 3,855 block files → 3,855 fsyncs → **123 s** to commit 16 MB
+   (≈27 ms/block, consistent with §7). Journal commit does the same
+   commit in **2.0 s (~61×)** with one fsync — the strongest
+   demonstration yet of the §9 lever.
+3. Corpus write runs at ~9 MB/s — per-file overhead dominates for
+   thousands of small files (path resolution + inode creation +
+   per-block compression), a write-path cost separate from commit cost.
 
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
 |--------------|--------|
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
-| §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratio 6.42 : 1 measured 2026-08-12, §7**; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
+| §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12) — the real-corpus number does not meet the plan's compression expectations, no gate declared met**; codec comparison zstd-3 vs zlib-6 collected (§11; LZ4 approximated with zlib — python-lz4 unavailable on this host); concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus (first §2 data point, no gate met), save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8) — block size is the lever (1 MiB saves ~40–60% at the cost of small-write amplification); batched fsync is not (noise-level, single disk); journal-style commit untested. No gate declared met |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12); journal-vs-block-size interplay and compaction cost untested. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next

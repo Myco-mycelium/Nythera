@@ -1204,6 +1204,119 @@ class TestNyFSPersistence(unittest.TestCase):
         fs2 = NyFSFilesystem.load(self.base)
         self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"A" * 20000)
 
+    def test_journal_save_load_roundtrip(self):
+        # Journal-mode commit (one fsync per transaction) must produce a
+        # loadable state with no .bin block files — payloads live in the
+        # journal until compaction.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        fs.mkdir("/games")
+        f = fs.create_file("/games/save.sav")
+        payload = b"journal-" * 5000  # 40000 bytes, 10 blocks
+        fs.write(f, payload)
+        snap = fs.create_snapshot()
+        fs.write(f, b"v2", offset=100)
+        fs.save(use_journal=True)
+        del fs
+
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        self.assertFalse(os.path.exists(blocks_dir),
+                         "journal mode must not write .bin files")
+        journal = os.path.join(self.base, "state", "journal.bin")
+        self.assertTrue(os.path.exists(journal))
+
+        fs2 = NyFSFilesystem.load(self.base)
+        restored = fs2.resolve("/games/save.sav")
+        self.assertEqual(fs2.read(restored), payload[:100] + b"v2"
+                         + payload[102:])
+        self.assertIn(snap, fs2.list_snapshots())
+        fs2.restore_snapshot(snap)
+        self.assertEqual(fs2.read(fs2.resolve("/games/save.sav")), payload)
+
+    def test_journal_crash_mid_save_leaves_old_state(self):
+        # Journal mode keeps the same crash-atomicity: the metadata swap
+        # is the commit point and happens only after the journal is
+        # fsynced, so a failure before it leaves the old state loadable.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/c.sav")
+        fs.write(f, b"journal-v1")
+        fs.save(use_journal=True)
+
+        fs.write(f, b"journal-v2")
+        with mock.patch(
+            "fuse.nyfs.os.replace",
+            side_effect=OSError("simulated crash before metadata swap"),
+        ):
+            with self.assertRaises(OSError):
+                fs.save(use_journal=True)
+
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"journal-v1")
+
+    def test_journal_torn_tail_is_ignored(self):
+        # A crash mid-append can leave a torn tail; scanning must stop
+        # at the first malformed record so load() never fabricates data
+        # from garbage.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/t.txt")
+        fs.write(f, b"good data" * 100)
+        fs.save(use_journal=True)
+        journal = os.path.join(self.base, "state", "journal.bin")
+        # Append garbage: a plausible header but a truncated payload.
+        with open(journal, "ab") as fh:
+            fh.write((1024 * 1024).to_bytes(4, "little"))
+            fh.write(b"0" * 36)  # valid-looking id
+            fh.write(b"short")    # payload cut short
+        del fs
+
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/t.txt")), b"good data" * 100)
+        # The garbage record must not be indexed.
+        self.assertNotIn("0" * 36, fs2._scan_journal())
+
+    def test_journal_compaction_materializes_and_truncates(self):
+        # Once the journal exceeds the threshold, a journal-mode save
+        # materializes referenced blocks into .bin files and truncates
+        # the journal; the state must still round-trip.
+        fs = NyFSFilesystem(self.base, block_size=4096,
+                            journal_compact_bytes=1)  # compact eagerly
+        f = fs.create_file("/c.bin")
+        fs.write(f, b"payload" * 3000)
+        fs.save(use_journal=True)
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        bins = [n for n in os.listdir(blocks_dir) if n.endswith(".bin")]
+        self.assertEqual(len(bins), len(f.blocks))
+        journal = os.path.join(self.base, "state", "journal.bin")
+        self.assertEqual(os.path.getsize(journal), 0)
+        # Re-save after compaction: blocks are on disk, journal stays
+        # empty, and the state is still loadable.
+        fs.save(use_journal=True)
+        self.assertEqual(os.path.getsize(journal), 0)
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.bin")), b"payload" * 3000)
+
+    def test_journal_blocks_not_reappended_across_saves(self):
+        # Immutable blocks already durable in the journal must not be
+        # re-appended by a later journal-mode save (checked via the
+        # scan index record count).
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/a.bin")
+        fs.write(f, b"A" * 100)  # single block
+        fs.save(use_journal=True)
+        first_count = len(fs._scan_journal())
+        self.assertEqual(first_count, 1)
+
+        fs.write(f, b"B" * 100)  # CoW: one new block
+        fs.save(use_journal=True)
+        self.assertEqual(len(fs._scan_journal()), first_count + 1)
+
+        fs.save(use_journal=True)  # no changes: nothing appended
+        self.assertEqual(len(fs._scan_journal()), first_count + 1)
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/a.bin")), b"B" * 100)
+
 
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""
