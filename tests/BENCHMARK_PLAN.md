@@ -136,6 +136,16 @@ ext4/Btrfs; this host's `/tmp` is ext4 (`/dev/sda2`), so the native
 baseline here is a real disk-backed comparison. The compression-on/off
 variant remains the unmeasured part.
 
+**2026-08-12 update (daemon compaction + mixed workload):** journal
+compaction is now exposed for daemons (`maybe_compact()` /
+`compact_journal()`, plus `NyFSMount(auto_compact=True)` background
+watcher); §13 measured a mixed write/read/commit loop — journal commits
+~3.7–4× faster (131 vs 504 ms avg) at unchanged write throughput (~1.9
+MB/s, CoW-compress-bound); §14 measured the deferred compaction pass —
+an interleaved save of referenced blocks (~27 ms/block; 11.2 s per
+417-block / 2.5 MB journal). The default flip's governance review
+package is ADR-0019 (Proposed).
+
 None of the plan's pass/fail gates are declared met on the strength of
 these runs — these numbers exist to inform implementation, not to close
 the benchmarks.

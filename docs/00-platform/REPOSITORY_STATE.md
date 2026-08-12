@@ -348,6 +348,20 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**compaction API + background watcher; ADR-0019**):
+  journal compaction is exposed to daemons as `journal_bytes()` /
+  `maybe_compact()` / `compact_journal()`, and `NyFSMount` gained an
+  opt-in `auto_compact` watcher (background thread, lower threshold)
+  so the materialize pass runs during idle intervals instead of
+  stalling a transaction. Tests 99 → **103** (public compaction API,
+  crash-mid-materialize leaves the journal intact, live-mount watcher
+  trims the journal below the save-time threshold, failed mounts leave
+  no watcher running). Benchmarks:
+  §13 mixed write/read/commit loop — journal commits ~3.7–4× faster
+  (131 vs 504 ms) at identical write throughput; §14 compaction cost —
+  the deferred pass is an interleaved save of referenced blocks
+  (~27 ms/block; 11.2 s per 417-block / 2.5 MB journal). The default
+  flip's governance review package is **ADR-0019** (Proposed).
 - 2026-08-12 (**journal commit is now the default commit mode**):
   `save()` defaults to `use_journal=True` (one fsync per transaction;
   interleaved path kept as `use_journal=False`). The full suite passes

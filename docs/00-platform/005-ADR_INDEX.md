@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.11.0
+version: 1.12.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-08-12
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -40,6 +40,7 @@ only.
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed | 2026-07-13 | — |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** | 2026-07-13 | — |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Proposed | 2026-07-13 | — |
+| ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
 
 ## ADR Statuses
 
@@ -64,6 +65,7 @@ only.
 | 1.9.0   | 2026-07-13 | Add ADR-0014 (secure boot), ADR-0015 (shared ARM translation), ADR-0016 (NyFS Linux Backend FUSE strategy) — closing three of the backlog's open architecture-decision items |
 | 1.10.0  | 2026-07-13 | Add ADR-0017 — the project's first Rejected ADR, declining a proposed NPS domain-renumbering scheme |
 | 1.11.0  | 2026-07-13 | Add ADR-0018 (hash-chained audit log), from threat model Phase 3 |
+| 1.12.0  | 2026-08-12 | Add ADR-0019 (journal commit as the default save() mode) — the Architecture Group review package for the 2026-08-12 implementer default flip |
 
 ---
 **End of Document**

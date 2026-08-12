@@ -824,6 +824,113 @@ def benchmark_real_corpus(target_bytes: int = 16 * 1024 * 1024):
     return out
 
 
+def benchmark_mixed_workload():
+    """Mixed read/write/commit loop under journal vs interleaved commit
+    (BENCHMARK_RESULTS §13).
+
+    §9 measured a single cold transaction. Real daemons commit
+    repeatedly while serving reads and writes, so this section drives a
+    deterministic loop: N files, R rounds, each round updating every
+    file (CoW), reading it back, and fsync()-committing once. Reports
+    end-to-end time, per-commit latency (avg + max), and I/O throughput
+    for both commit modes; every run reloads and compares the full
+    content before reporting (roundtrip_ok). Each mode builds its own
+    workload from the same seed so the I/O is byte-identical across
+    modes.
+    """
+    n_files, rounds, chunk = 16, 6, 16 * 1024
+    file_bytes = 64 * 1024
+
+    def run(use_journal):
+        rng = __import__("random").Random(13)
+        with tempfile.TemporaryDirectory() as tmp:
+            fs = NyFSFilesystem(os.path.join(tmp, "fs"))
+            paths = []
+            t0 = time.perf_counter()
+            for i in range(n_files):
+                p = f"/mix_{i}.bin"
+                fs.write(fs.create_file(p),
+                         bytes(rng.randrange(256) for _ in range(file_bytes)))
+                paths.append(p)
+            write_s = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
+            commits = []
+            for r in range(rounds):
+                for i, p in enumerate(paths):
+                    off = (r * chunk) % (file_bytes - chunk + 1)
+                    data = bytes(rng.randrange(256) for _ in range(chunk))
+                    fs.write(fs.resolve(p), data, offset=off)
+                    fs.read(fs.resolve(p), chunk, off)
+                c0 = time.perf_counter()
+                fs.save(use_journal=use_journal)
+                commits.append(time.perf_counter() - c0)
+            loop_s = time.perf_counter() - t0
+
+            live = {p: fs.read(fs.resolve(p)) for p in paths}
+            fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+            ok = all(fs2.read(fs2.resolve(p)) == live[p] for p in paths)
+            total_io = n_files * rounds * chunk
+            return {
+                "write_mbps": round(n_files * file_bytes / write_s / 1e6, 2),
+                "loop_seconds": round(loop_s, 3),
+                "commits": rounds,
+                "commit_ms_avg": round(sum(commits) / len(commits) * 1000, 2),
+                "commit_ms_max": round(max(commits) * 1000, 2),
+                "io_mbps": round(total_io / loop_s / 1e6, 2),
+                "roundtrip_ok": ok,
+            }
+
+    return {"interleaved": run(False), "journal": run(True)}
+
+
+def benchmark_compaction_cost():
+    """The journal compaction pass measured in isolation
+    (BENCHMARK_RESULTS §14).
+
+    Journal commits are cheap (~60–70× vs fsync-per-block, §9), but the
+    materialize pass they postpone — move referenced blocks into
+    ``state/blocks/``, truncate the journal — is a real cost a daemon
+    pays somewhere. This section measures it on the same §7 corpus:
+    build a journal without ever triggering save()-time compaction (1
+    GiB threshold), then time ``compact_journal()`` and report the
+    per-block materialize cost alongside the commit time it buys.
+    """
+    corpus, total_logical = _build_persist_corpus()
+    with tempfile.TemporaryDirectory() as tmp:
+        fs = NyFSFilesystem(os.path.join(tmp, "fs"),
+                            journal_compact_bytes=1 << 30)
+        fs.mkdir("/assets")
+        for path, body in corpus:
+            fs.write(fs.create_file(path), body)
+        t0 = time.perf_counter()
+        fs.save(use_journal=True)
+        save_s = time.perf_counter() - t0
+        journal_before = fs.journal_bytes()
+
+        t0 = time.perf_counter()
+        moved = fs.compact_journal()
+        compact_s = time.perf_counter() - t0
+
+        blocks_dir = os.path.join(tmp, "fs", "state", "blocks")
+        n_bins = len([n for n in os.listdir(blocks_dir)
+                      if n.endswith(".bin")])
+        fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+        ok = all(fs2.read(fs2.resolve(p)) == body for p, body in corpus)
+        return {
+            "logical_bytes": total_logical,
+            "journal_commit_s": round(save_s, 3),
+            "journal_bytes_before": journal_before,
+            "blocks_moved": moved,
+            "compaction_s": round(compact_s, 3),
+            "per_block_ms": (round(compact_s / moved * 1000, 2)
+                              if moved else None),
+            "bin_files_after": n_bins,
+            "journal_bytes_after": fs.journal_bytes(),
+            "roundtrip_ok": ok,
+        }
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -885,15 +992,21 @@ def main():
                         help="§2 zstd vs zlib codec comparison")
     parser.add_argument("--real-corpus", action="store_true",
                         help="§2 end-to-end ratio on a real /usr/share corpus")
+    parser.add_argument("--mixed-workload", action="store_true",
+                        help="§5 mixed read/write/commit loop, journal vs interleaved")
+    parser.add_argument("--compaction-cost", action="store_true",
+                        help="§5 journal compaction pass cost")
     args = parser.parse_args()
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
                 or args.nyfs_mount or args.nyfs_persist or args.save_levers
-                or args.snapshot_dedup or args.codec or args.real_corpus)
+                or args.snapshot_dedup or args.codec or args.real_corpus
+                or args.mixed_workload or args.compaction_cost)
     if not selected or args.all:
         args.ipc = args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
+        args.mixed_workload = args.compaction_cost = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -926,6 +1039,12 @@ def main():
     if args.real_corpus:
         _print_section("NyFS real-corpus compression ratio (§2):",
                        benchmark_real_corpus())
+    if args.mixed_workload:
+        _print_section("NyFS mixed read/write/commit loop (§13):",
+                       benchmark_mixed_workload())
+    if args.compaction_cost:
+        _print_section("NyFS journal compaction pass cost (§14):",
+                       benchmark_compaction_cost())
 
 
 if __name__ == "__main__":

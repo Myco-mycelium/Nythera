@@ -1350,6 +1350,87 @@ class TestNyFSPersistence(unittest.TestCase):
         fs2 = NyFSFilesystem.load(self.base)
         self.assertEqual(fs2.read(fs2.resolve("/a.bin")), b"B" * 100)
 
+    def test_journal_public_compaction_api(self):
+        # The daemon-facing compaction API (BENCHMARK_RESULTS §14):
+        # journal_bytes() reports the journal size, maybe_compact() is a
+        # no-op below its threshold and materializes + truncates above
+        # it, compact_journal() forces compaction. The state must
+        # round-trip after every step, and blocks on disk are never
+        # re-journaled.
+        fs = NyFSFilesystem(self.base, block_size=4096,
+                            journal_compact_bytes=1 << 30)  # never auto-compact
+        f = fs.create_file("/c.bin")
+        fs.write(f, b"J" * 9000)  # 3 blocks at 4096
+        fs.save(use_journal=True)
+        self.assertGreater(fs.journal_bytes(), 0)
+
+        # Below the (huge) default threshold: a no-op.
+        self.assertEqual(fs.maybe_compact(), 0)
+        self.assertGreater(fs.journal_bytes(), 0)
+
+        # An explicit low threshold triggers compaction.
+        moved = fs.maybe_compact(threshold=0)
+        self.assertGreaterEqual(moved, 3)
+        self.assertEqual(fs.journal_bytes(), 0)
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        bins = [n for n in os.listdir(blocks_dir) if n.endswith(".bin")]
+        self.assertEqual(len(bins), 3)
+        # Blocks are now on disk: a further journal save appends nothing
+        # and the journal stays empty.
+        fs.save(use_journal=True)
+        self.assertEqual(fs.journal_bytes(), 0)
+
+        # Forced compaction of a fresh journal (CoW orphans dropped).
+        fs.write(f, b"K" * 9000)  # CoW: 3 new blocks, old 3 orphaned
+        fs.save(use_journal=True)
+        self.assertGreater(fs.journal_bytes(), 0)
+        self.assertEqual(fs.compact_journal(), 3)
+        self.assertEqual(fs.journal_bytes(), 0)
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.bin")), b"K" * 9000)
+
+    def test_compaction_crash_mid_materialize_leaves_journal_intact(self):
+        # Compaction's crash contract: block renames happen BEFORE the
+        # journal truncate, so a crash mid-compaction (one block
+        # materialized, the rest still journal-only) must leave the
+        # journal intact and the state loadable — the truncate is the
+        # last, destructive step. (Same captured-real-replace pattern as
+        # test_batched_fsync_crash_mid_save_leaves_old_state: patching
+        # os.replace patches the SHARED os module.)
+        fs = NyFSFilesystem(self.base, block_size=4096,
+                            journal_compact_bytes=1 << 30)
+        f = fs.create_file("/c.bin")
+        fs.write(f, b"Z" * 12000)  # 3 blocks
+        fs.save(use_journal=True)
+        journal_path = os.path.join(self.base, "state", "journal.bin")
+        before = os.path.getsize(journal_path)
+        self.assertGreater(before, 0)
+
+        calls = {"n": 0}
+        real_replace = os.replace
+
+        def _fail_after_one(src, dst):
+            # First rename (one .bin materialized) succeeds; the next
+            # crashes before the journal truncate ever runs.
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise OSError("simulated crash mid-compaction")
+            return real_replace(src, dst)
+
+        with mock.patch("fuse.nyfs.os.replace",
+                        side_effect=_fail_after_one):
+            with self.assertRaises(OSError):
+                fs.compact_journal()
+
+        # The journal survived (truncate is last) and load() still
+        # reconstructs every block (one from .bin, the rest from the
+        # journal fallback).
+        self.assertEqual(os.path.getsize(journal_path), before)
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.bin")), b"Z" * 12000)
+
 
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""
@@ -1394,6 +1475,23 @@ class TestNyFSOperations(unittest.TestCase):
         mount = NyFSMount(self.fs, tempfile.mkdtemp())
         with mock.patch("fuse.nyfs._import_fusepy", return_value=None):
             self.assertFalse(mount.attach())
+
+    def test_auto_compact_failed_mount_leaves_no_watcher(self):
+        # A mount that fails must not leave the background compaction
+        # watcher orphaned (reviewer-flagged lifecycle edge: the watcher
+        # starts before the blocking FUSE loop, so the failure path must
+        # stop it before propagating the error).
+        mount = NyFSMount(self.fs, tempfile.mkdtemp())
+        with mock.patch.object(
+                mount, "_build_fuse",
+                side_effect=NyFSError(errno.ENODEV, "simulated mount failure")):
+            with self.assertRaises(NyFSError):
+                mount.mount(foreground=True, blocking=True, auto_compact=True)
+        thread = mount._compact_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive(),
+                             "failed mount left a watcher thread running")
 
 
 def _fuse_mount_available() -> bool:
@@ -1540,6 +1638,59 @@ class TestNyFSLiveMount(unittest.TestCase):
         fs2 = NyFSFilesystem.load(self.backing)
         self.assertEqual(
             fs2.read(fs2.resolve("/rand.bin")), bytes(expected[:max_written]))
+
+    def test_auto_compact_watcher_trims_journal_while_mounted(self):
+        # The background compaction watcher (NyFSMount auto_compact,
+        # BENCHMARK_RESULTS §14) trims the journal during idle periods,
+        # below the save()-time threshold, so a transaction is never the
+        # one that stalls on the materialize pass. Hard cap: 90 s.
+        signal.alarm(90)
+        try:
+            fs = NyFSFilesystem(self.backing, journal_compact_bytes=8 << 20)
+            m = NyFSMount(fs, self.mnt)
+            self.assertTrue(m.mount(
+                foreground=True, blocking=False, auto_compact=True,
+                compact_interval=0.2, compact_interval_bytes=64 * 1024))
+            self.mounts.append(m)
+            self.assertTrue(m.wait_ready(timeout=5.0))
+
+            # ~256 KiB of incompressible data + fsync: the journal grows
+            # past the watcher's 64 KiB threshold but stays far below
+            # the 8 MiB save()-time threshold, so only the watcher can
+            # trim it.
+            rng = __import__("random").Random(7)
+            payload = bytes(rng.randrange(256) for _ in range(256 * 1024))
+            path = os.path.join(self.mnt, "j.bin")
+            with open(path, "wb") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+
+            # Poll: the watcher must compact the journal to empty.
+            journal = os.path.join(self.backing, "state", "journal.bin")
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                size = (os.path.getsize(journal)
+                        if os.path.exists(journal) else 0)
+                if size == 0:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(
+                os.path.getsize(journal) if os.path.exists(journal) else 0, 0,
+                "background watcher did not trim the journal")
+            blocks_dir = os.path.join(self.backing, "state", "blocks")
+            self.assertGreater(
+                len([n for n in os.listdir(blocks_dir)
+                     if n.endswith(".bin")]), 0)
+
+            # Data intact through the mount and after reload.
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), payload)
+            m.unmount()
+            fs2 = NyFSFilesystem.load(self.backing)
+            self.assertEqual(fs2.read(fs2.resolve("/j.bin")), payload)
+        finally:
+            signal.alarm(0)
 
     def test_truncate_and_write_ordering_under_writeback_cache(self):
         # Writeback caching's classic hazard: truncate (shrink + extend)

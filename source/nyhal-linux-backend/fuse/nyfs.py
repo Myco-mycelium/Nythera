@@ -1181,6 +1181,44 @@ class NyFSFilesystem:
         self._journal_index = None
         return moved
 
+    def journal_bytes(self) -> int:
+        """Current size of the append-only journal (0 when absent)."""
+        journal = self._journal_path()
+        if not journal.exists():
+            return 0
+        try:
+            return journal.stat().st_size
+        except OSError:
+            return 0
+
+    def compact_journal(self) -> int:
+        """Force compaction: materialize referenced journal blocks into
+        ``state/blocks/`` and truncate the journal.
+
+        Safe to call at any point (also outside ``save()``, e.g. from a
+        daemon's idle loop or on unmount): the materialize-then-truncate
+        order means a crash mid-compaction leaves the journal intact and
+        the state loadable. Returns the number of block records moved
+        out of the journal.
+        """
+        with self.lock:
+            return self._materialize_journal()
+
+    def maybe_compact(self, threshold: Optional[int] = None) -> int:
+        """Compact the journal only when it exceeds ``threshold``
+        (default ``journal_compact_bytes``). Returns the number of block
+        records moved, or 0 when the journal is below the threshold or
+        empty. This is the hook a long-running daemon calls from a
+        periodic/idle timer so that compaction — which can stall a
+        transaction for the materialize pass — happens outside the
+        ``fsync`` commit path.
+        """
+        threshold = (self.journal_compact_bytes if threshold is None
+                     else threshold)
+        if self.journal_bytes() <= threshold:
+            return 0
+        return self.compact_journal()
+
     def _all_blocks(self, inodes: Dict[int, NyFSInode]):
         for inode in inodes.values():
             yield from inode.blocks
@@ -1478,6 +1516,8 @@ class NyFSMount:
         self.operations = NyFSOperations(filesystem)
         self._fusepy = None
         self._fuse = None
+        self._compact_stop: Optional[threading.Event] = None
+        self._compact_thread: Optional[threading.Thread] = None
         logger.info(f"Initialized NyFSMount at {self.mount_point}")
 
     def attach(self) -> bool:
@@ -1620,8 +1660,57 @@ class NyFSMount:
         )
         return self._fuse
 
+    def _start_compaction_watcher(self, interval: float,
+                                  threshold: Optional[int]) -> None:
+        """Start a daemon thread that periodically compacts the journal
+        outside the fsync commit path (see ``maybe_compact``).
+
+        The watcher uses a lower threshold than save()-time compaction
+        (half of ``journal_compact_bytes`` by default) so the journal is
+        preemptively trimmed during idle intervals and a transaction is
+        rarely the one that crosses the threshold and stalls on the
+        materialize pass. All work runs under the filesystem lock, so it
+        serializes safely with concurrent saves; failures are logged,
+        never fatal.
+        """
+        if self._compact_thread is not None and self._compact_thread.is_alive():
+            logger.debug("compaction watcher already running; not re-starting")
+            return
+        self._compact_stop = threading.Event()
+
+        def _loop():
+            while not self._compact_stop.wait(interval):
+                try:
+                    self.filesystem.maybe_compact(threshold=threshold)
+                except Exception as e:
+                    logger.warning("background journal compaction failed: %s", e)
+
+        self._compact_thread = threading.Thread(target=_loop, daemon=True)
+        self._compact_thread.start()
+
+    def _stop_compaction_watcher(self) -> None:
+        """Signal the background compaction watcher to stop and wait for
+        it. Safe to call when no watcher is running (e.g. from unmount
+        or a failed-mount path)."""
+        if self._compact_stop is None:
+            return
+        self._compact_stop.set()
+        if self._compact_thread is not None:
+            self._compact_thread.join(timeout=5.0)
+            if self._compact_thread.is_alive():
+                # A compaction pass can outlive the join (large journals
+                # take seconds, BENCHMARK_RESULTS §14). The thread is a
+                # daemon and exits at its next loop iteration once the
+                # current pass completes; it never blocks process exit.
+                logger.info(
+                    "compaction watcher still finishing a pass after "
+                    "unmount; it will exit at the next interval")
+
     def mount(self, foreground: bool = True, blocking: bool = True,
-              writeback_cache: bool = True, **fuse_kwargs):
+              writeback_cache: bool = True, auto_compact: bool = False,
+              compact_interval: float = 60.0,
+              compact_interval_bytes: Optional[int] = None,
+              **fuse_kwargs):
         """Mount the filesystem.
 
         Args:
@@ -1631,6 +1720,21 @@ class NyFSMount:
             writeback_cache: Negotiate big-write/writeback-cache/max-pages
                 capabilities so the kernel batches writes instead of
                 sending 4 KiB requests (default True).
+            auto_compact: Run a background journal-compaction watcher
+                while mounted (default False). The watcher calls
+                ``filesystem.maybe_compact()`` every ``compact_interval``
+                seconds so journal compaction happens during idle periods
+                rather than stalling a transaction. Without it, a
+                long-running daemon's journal grows until the next
+                save() crosses ``journal_compact_bytes`` and pays the
+                materialize cost inline.
+            compact_interval: Seconds between background compaction
+                checks (default 60).
+            compact_interval_bytes: Journal size (bytes) that triggers
+                background compaction; defaults to half of
+                ``journal_compact_bytes`` so trimming runs well before
+                the save()-time threshold (see
+                ``_start_compaction_watcher``).
             fuse_kwargs: Extra FUSE mount options forwarded to fusepy
                 (e.g. ``max_write=131072``).
 
@@ -1640,6 +1744,17 @@ class NyFSMount:
         if not self.attach():
             return False
         self._mount_error = None
+        if auto_compact:
+            # The watcher is a separate daemon thread, so it can run
+            # alongside the FUSE loop in both modes (fusepy's
+            # ``FUSE.__init__`` blocks in the event loop, so there is no
+            # "after the mount is confirmed" moment to hook inside
+            # ``_run`` — the start must happen before it). A failed
+            # mount stops it again in ``_run``'s failure path.
+            threshold = (compact_interval_bytes
+                         if compact_interval_bytes is not None
+                         else max(1, self.filesystem.journal_compact_bytes // 2))
+            self._start_compaction_watcher(compact_interval, threshold)
 
         def _run():
             logger.info("Mounting NyFS at %s (FUSE)", self.mount_point)
@@ -1653,6 +1768,10 @@ class NyFSMount:
                 # dead mount succeeded.
                 logger.error("FUSE mount failed: %s", e)
                 self._mount_error = e
+                # A failed mount must not leave an orphaned watcher
+                # thread holding the filesystem (it stops at its next
+                # loop iteration at the latest).
+                self._stop_compaction_watcher()
 
         if blocking:
             _run()
@@ -1682,6 +1801,9 @@ class NyFSMount:
 
     def unmount(self) -> None:
         """Best-effort unmount via fusepy or ``fusermount -u``."""
+        # Stop the background compaction watcher first so it cannot race
+        # the teardown (Event.wait returns immediately once set).
+        self._stop_compaction_watcher()
         if self._mount_error is not None:
             # The background mount never came up; nothing to unmount.
             return
