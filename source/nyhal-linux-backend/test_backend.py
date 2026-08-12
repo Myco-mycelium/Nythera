@@ -391,6 +391,15 @@ class TestSeccompEnforcement(unittest.TestCase):
             self._decision(policy, "openat", [0, 0, os.O_RDONLY | os.O_CLOEXEC]),
             seccomp.SECCOMP_RET_ALLOW,
         )
+        # Read-only DIRECTORY opens (ls, opendir, stat on directories) must
+        # stay allowed — O_DIRECTORY (0x10000) is a read-side flag and must
+        # never be folded into the write mask (regression guard).
+        self.assertEqual(
+            self._decision(policy, "openat",
+                           [0, 0, os.O_RDONLY | os.O_NONBLOCK |
+                            os.O_CLOEXEC | os.O_DIRECTORY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
         # O_TMPFILE creates an unnamed file — a filesystem write whatever
         # the access-mode bits say, so it is denied outright (any mode).
         for flags in (os.O_TMPFILE, os.O_TMPFILE | os.O_RDONLY,
@@ -499,6 +508,137 @@ class TestSeccompEnforcement(unittest.TestCase):
         self.assertEqual(
             seccomp.simulate(program, seccomp._SYSCALLS[arch]["openat"], arch.audit_arch, [0, 0, os.O_WRONLY]),
             seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+
+class TestDefaultDenyAllowlist(unittest.TestCase):
+    """Test the default-deny allowlist posture (build_allowlist_policy).
+
+    The filter's default action is EPERM: only the runtime baseline plus
+    granted capabilities are allowed; unknown syscalls — including ones
+    added to the kernel after compilation — are refused.
+    """
+
+    ARCH = seccomp.SyscallArch.X86_64
+
+    def _policy(self, *caps):
+        return seccomp.build_allowlist_policy(
+            {c.value for c in caps}, arch=self.ARCH
+        )
+
+    def _decision(self, policy, name, args=None):
+        program = seccomp.build_program(policy)
+        nr = seccomp._SYSCALLS[self.ARCH][name]
+        return seccomp.simulate(program, nr, self.ARCH.audit_arch, args or [])
+
+    def test_program_jumps_in_bounds(self):
+        policy = self._policy()
+        seccomp.validate_program(seccomp.build_program(policy))
+
+    def test_unknown_syscall_is_denied(self):
+        # io_uring_setup (425) is in neither the baseline nor any grant —
+        # the default action must refuse it.
+        policy = self._policy(*CapabilityManager().get_default_capabilities())
+        program = seccomp.build_program(policy)
+        decision = seccomp.simulate(program, 425, self.ARCH.audit_arch)
+        self.assertEqual(decision, seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM)
+
+    def test_baseline_runtime_allowed(self):
+        policy = self._policy()
+        for name in ("read", "write", "close", "brk", "mmap", "mprotect",
+                     "getrandom", "statx", "futex", "execve", "exit_group"):
+            self.assertEqual(self._decision(policy, name),
+                             seccomp.SECCOMP_RET_ALLOW, name)
+
+    def test_readonly_open_allowed_write_denied(self):
+        policy = self._policy()
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_RDONLY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_RDONLY | os.O_CLOEXEC]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        # Read-only directory opens must stay allowed (regression guard).
+        self.assertEqual(
+            self._decision(policy, "openat",
+                           [0, 0, os.O_RDONLY | os.O_NONBLOCK |
+                            os.O_CLOEXEC | os.O_DIRECTORY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        for flags in (os.O_WRONLY, os.O_RDWR, os.O_CREAT, os.O_APPEND,
+                      os.O_TMPFILE):
+            self.assertEqual(
+                self._decision(policy, "openat", [0, 0, flags]),
+                seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+                hex(flags),
+            )
+
+    def test_capability_gated_families(self):
+        # Without the grant, mutation/network/spawn are refused by default.
+        policy = self._policy()
+        for name in ("unlink", "mkdirat", "socket", "bind", "clone"):
+            self.assertEqual(self._decision(policy, name),
+                             seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM, name)
+
+        # With the grants, they are allowed.
+        policy = self._policy(
+            Capability.CAP_FILESYSTEM_WRITE,
+            Capability.CAP_NETWORK_SOCKET,
+            Capability.CAP_NETWORK_BIND,
+            Capability.CAP_PROCESS_SPAWN,
+        )
+        for name in ("unlink", "mkdirat", "socket", "bind", "clone"):
+            self.assertEqual(self._decision(policy, name),
+                             seccomp.SECCOMP_RET_ALLOW, name)
+        # Write capability also unlocks write-capable openat.
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_WRONLY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+
+    def test_always_deny_names_excluded_from_baseline(self):
+        # Deny-wins semantics: nothing on the always-deny list may also be
+        # allowed by the baseline (a future edit could otherwise widen it).
+        baseline = set(seccomp._BASELINE_ALLOW)
+        self.assertTrue(baseline.isdisjoint(set(seccomp._ALWAYS_DENY)))
+
+    def test_baseline_names_resolve_on_x86_64(self):
+        # Every baseline entry must resolve to a real syscall number on
+        # x86_64 — otherwise a typo'd or missing entry is silently skipped
+        # by allow() and never caught (fail-safe, but dead intent).
+        unresolved = [n for n in seccomp._BASELINE_ALLOW
+                      if seccomp._SYSCALLS[self.ARCH].get(n) is None]
+        self.assertEqual(unresolved, [])
+
+    def test_openat2_documented_gap(self):
+        # openat2 is allowed outright in allowlist mode (cBPF cannot
+        # inspect open_how behind the pointer; glibc hard-fails on EPERM
+        # instead of falling back). Documented residual gap.
+        policy = self._policy()
+        self.assertEqual(
+            self._decision(policy, "openat2", [0, 0x7F1234567890, 0]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+
+    def test_aarch64_allowlist_builds(self):
+        arch = seccomp.SyscallArch.AARCH64
+        policy = seccomp.build_allowlist_policy(
+            {c.value for c in CapabilityManager().get_default_capabilities()},
+            arch=arch,
+        )
+        program = seccomp.build_program(policy)
+        seccomp.validate_program(program)
+        self.assertEqual(
+            seccomp.simulate(program, seccomp._SYSCALLS[arch]["openat"],
+                             arch.audit_arch, [0, 0, os.O_WRONLY]),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+        self.assertEqual(
+            seccomp.simulate(program, seccomp._SYSCALLS[arch]["read"],
+                             arch.audit_arch),
+            seccomp.SECCOMP_RET_ALLOW,
         )
 
 
@@ -833,6 +973,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
+    suite.addTests(loader.loadTestsFromTestCase(TestDefaultDenyAllowlist))
     suite.addTests(loader.loadTestsFromTestCase(TestLauncherSecurity))
     suite.addTests(loader.loadTestsFromTestCase(TestBootSecurity))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPathAPI))

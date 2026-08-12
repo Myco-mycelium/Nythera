@@ -101,6 +101,7 @@ runs, so direct syscalls for ungranted operations are refused with
 - Prevention of self-issued or forged capabilities
 - Default capability set for new containers
 - Seccomp-BPF data-plane enforcement (whole-syscall denies + flag-gated `openat`/`open` write-intent denies)
+- Default-deny allowlist posture (`build_allowlist_policy`, launcher `--default-deny`): only the runtime baseline + granted capabilities are allowed; everything else is refused with `EPERM`
 
 **Example:**
 ```python
@@ -270,9 +271,14 @@ python3 nythera_backend.py container run \
   --memory 256 \
   --pids 32 \
   --capabilities CAP_FILESYSTEM_READ,CAP_NETWORK_SOCKET \
-  --no-seccomp \
+  --default-deny \
   /bin/bash
 ```
+
+(`--default-deny` switches from the default-allow deny model to the
+default-deny allowlist posture: only the runtime baseline plus granted
+capabilities are permitted. `--no-seccomp` disables enforcement entirely
+and is NOT recommended.)
 
 ### Secure Boot Status
 ```bash
@@ -339,7 +345,7 @@ Per NPS-017 §5.1, the Linux Backend is **NOT YET conformant** but provides:
 | Boot and Lifecycle | ✓ Implemented | Four-phase sequence, transition validation, Secure Boot reporting |
 
 **Outstanding Work:**
-- [ ] Default-deny seccomp allowlist posture (current model is default-allow with explicit denies)
+- [ ] Make default-deny the default posture (currently opt-in via `--default-deny`; x86_64 baseline verified, arm64 pending)
 - [ ] LSM (AppArmor/SELinux) policy generation
 - [ ] FUSE overhead benchmarking (ADR-0016; decides FUSE vs kernel-module fallback)
 - [ ] Direct syscall optimization (currently uses `unshare(1)`)

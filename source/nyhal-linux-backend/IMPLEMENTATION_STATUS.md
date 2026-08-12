@@ -68,18 +68,28 @@ Test suite: **54/54 passing** (`python3 test_backend.py`), including end-to-end 
 - ✓ Audit trail for all capability operations
 - ✓ Default capability set for new containers (includes `CAP_IPC_SEND`/`CAP_IPC_RECEIVE`)
 - ✓ Prevention of self-issued or forged capabilities
-- ✓ **Seccomp-BPF data-plane enforcement** (`backend/seccomp.py` + `backend/launcher.py`): a container's granted capability set is compiled into a classic-BPF filter (whole-syscall denies for always-dangerous and capability-gated syscalls; flag-gated denies for `openat`/`open` write intent) and installed via `prctl(PR_SET_NO_NEW_PRIVS)` + `PR_SET_SECCOMP` **inside the container's own execution context** before its command runs — closing threat-model finding **FIND-BACKEND-002** (NPS-022 §4), the most severe finding to date
-- ✓ BPF policy compiler with jump-fixup validation and a pure-Python BPF **simulator** so policies are proven by tests without touching the kernel
+- ✓ **Seccomp-BPF data-plane enforcement** (`backend/seccomp.py` + `backend/launcher.py`): a container's granted capability set is compiled into a classic-BPF filter (whole-syscall denies for always-dangerous and capability-gated syscalls; flag-gated denies for `openat`/`open` write intent) and installed via `prctl(PR_SET_NO_NEW_PRIVS)` + `PR_SET_SECCOMP` **inside the container's own execution context** before its command runs — closing threat-model finding **FIND-BACKEND-002** (NPS-022 §4), the most severe finding to date- ✓ BPF policy compiler with jump-fixup validation and a pure-Python BPF
+  **simulator** so policies are proven by tests without touching the kernel
+- ✓ **Default-deny allowlist posture** (`build_allowlist_policy` + the
+  launcher's `--default-deny` flag): an opt-in filter whose default
+  action is `EPERM` — only a runtime baseline (empirically verified on
+  x86_64 by running `/bin/echo`, `/bin/ls`, `/bin/sh`, and CPython under
+  the filter) plus capability-granted families and read-only
+  `openat`/`open` are allowed. Unknown syscalls, including ones added to
+  the kernel after compilation, are refused. Syscall numbers are
+  transcribed from the kernel's own tables (`syscall_64.tbl`,
+  `asm-generic/unistd.h`), not from memory; the arm64 baseline is a
+  conservative subset pending verification on real arm64 hardware.
 - ✓ `--strict-seccomp` launcher mode: refuse to run a container whose filter could not be installed (for hosts where enforcement is mandatory)
-- ✓ CLI: `container run --capabilities ... --no-seccomp`
+- ✓ CLI: `container run --capabilities ... --no-seccomp --default-deny`
 
-**Verified end-to-end on this host:** a read-only container's `open(...O_WRONLY)` attempt fails with `Operation not permitted` at the syscall level; `mount(2)` is denied even for fully-granted containers.
+**Verified end-to-end on this host:** a read-only container's `open(...O_WRONLY)` attempt fails with `Operation not permitted` at the syscall level; `mount(2)` is denied even for fully-granted containers — in both postures.
 
-**Known residual gap (recorded honestly, not half-enforced):** `openat2` cannot be flag-filtered from classic BPF — its flags live inside a `struct open_how` behind a pointer, which cBPF cannot dereference (masking the pointer value is nondeterministic and is deliberately not done). A write-capable `openat2` in a read-only container is therefore not blocked by this layer; the `openat`/`open` write-intent rules cover the common path and the control plane still mediates backend API operations.
+**Known residual gap (recorded honestly, not half-enforced):** `openat2` cannot be flag-filtered from classic BPF — its flags live inside a `struct open_how` behind a pointer, which cBPF cannot dereference (masking the pointer value is nondeterministic and is deliberately not done). A write-capable `openat2` in a read-only container is therefore not blocked by this layer; the `openat`/`open` write-intent rules cover the common path and the control plane still mediates backend API operations. In default-deny mode `openat2` is allowed outright for the same reason (denying it wholesale breaks glibc, which hard-fails rather than falling back to `openat`).
 
 **Outstanding Work:**
 - [ ] LSM policy generation (AppArmor/SELinux) as a second data-plane mechanism
-- [ ] Default-deny allowlist posture (the current model is default-allow with explicit denies; an allowlist is strictly stronger and is the next step)
+- [ ] Verify the default-deny baseline on real arm64 hardware (the current arm64 numbers are a conservative subset of the kernel tables)
 - [ ] Runtime policy reload for capability revocation of running containers
 
 **Conformance Status:** Partial (registry complete; data-plane enforcement via seccomp implemented and verified; default-deny posture and LSM deferred)
@@ -172,11 +182,10 @@ The Linux Backend implementation provides:
 - ✓ Clear delineation of implemented vs. deferred work
 
 The implementation is **NOT YET conformant** because:
-- Seccomp enforcement uses a default-allow deny model; a default-deny allowlist posture is the strictly-stronger follow-up
+- The default-deny allowlist posture is opt-in and its baseline is verified on x86_64 only; the default posture remains default-allow with explicit denies
 - `openat2` write-intent is not data-plane filtered (cBPF cannot inspect flags behind a pointer) — documented residual gap
 - LSM (AppArmor/SELinux) enforcement is not integrated
 - The FUSE mount requires `fusepy` + `/dev/fuse` on the host (available here; not guaranteed everywhere)
-- Performance benchmarks are not yet available (ADR-0009, ADR-0016)
 - Some optimizations (direct syscalls, network namespaces) are deferred
 
 ## Next Steps
@@ -193,9 +202,9 @@ The implementation is **NOT YET conformant** because:
 3. Add overlay filesystem for container-specific views
 
 ### Medium-term (Phase 3: Capability Enforcement Hardening)
-1. Move seccomp policy to a default-deny allowlist posture
+1. Make the default-deny allowlist posture the default (currently opt-in; x86_64 baseline verified, arm64 pending)
 2. Research and integrate LSM (AppArmor or SELinux) as a second mechanism
-3. Address the documented `openat2` residual gap (likely via the allowlist posture or an eBPF filter with pointer-safe accessors)
+3. Address the documented `openat2` residual gap (eBPF filter with pointer-safe accessors)
 4. Runtime policy reload for capability revocation
 
 ### Long-term (Phase 4: Production Readiness)
@@ -211,12 +220,12 @@ The following benchmarks are required before moving from `Experimental` to `Acce
 
 | Benchmark | Target | Status | Notes |
 |-----------|--------|--------|-------|
-| IPC Round-trip Latency | < 100µs | Pending | NPS-003 §6.1 |
-| FUSE I/O Overhead | < 20% | Pending | ADR-0016 |
-| Token-Bucket Parameters | TBD | Pending | ADR-0009 tuning |
+| IPC Round-trip Latency | < 100µs | First-pass data collected | In-process control plane: p50 92µs / p95 157µs / p99 213µs (2026-08-12). Real transport + load variants pending — target not yet judged |
+| FUSE I/O Overhead | < 20% | Proxy data only | Ops-layer vs native: 40 MB/s write / 242 MB/s read (+2,085%/+766%), dominated by the whole-file CoW/compress path. Live-mount comparison pending `/dev/fuse` |
+| Token-Bucket Parameters | TBD | First-pass data collected | Default bucket caps a client→endpoint call path at ~50 calls/s steady state — ADR-0009 defaults need revisiting; sweep + adversarial test pending |
 | Compression Ratio | > 30% | Pending | ADR-0007 |
 
-See `tests/BENCHMARK_PLAN.md` for detailed methodology.
+See `tests/BENCHMARK_PLAN.md` for methodology and `tests/BENCHMARK_RESULTS.md` for the first-pass measurements.
 
 ## References
 

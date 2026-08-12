@@ -53,6 +53,7 @@ def make_container_config(args) -> ContainerConfig:
         ),
         capabilities=capabilities,
         seccomp=not getattr(args, "no_seccomp", False),
+        default_deny=getattr(args, "default_deny", False),
     )
 
 
@@ -277,6 +278,11 @@ Examples:
         "--no-seccomp", action="store_true",
         help="Disable data-plane seccomp enforcement (NOT recommended)"
     )
+    create_parser.add_argument(
+        "--default-deny", action="store_true",
+        help="Default-deny allowlist posture: only runtime baseline + "
+        "granted capabilities allowed; everything else refused with EPERM"
+    )
     create_parser.add_argument("-r", "--run", action="store_true", help="Run after creation")
     create_parser.add_argument("command", nargs="*", help="Command to run")
     create_parser.set_defaults(func=cmd_container_create)
@@ -292,6 +298,11 @@ Examples:
     run_parser.add_argument(
         "--no-seccomp", action="store_true",
         help="Disable data-plane seccomp enforcement (NOT recommended)"
+    )
+    run_parser.add_argument(
+        "--default-deny", action="store_true",
+        help="Default-deny allowlist posture: only runtime baseline + "
+        "granted capabilities allowed; everything else refused with EPERM"
     )
     run_parser.add_argument("command", nargs="*", help="Command to run")
     run_parser.set_defaults(func=cmd_container_run)

@@ -38,7 +38,7 @@ Security notes (kept honest, per NPC-002 §5.2):
 
 Usage (invoked by container.py — not meant for humans):
 
-    python3 launcher.py --hostname NAME --policy-file PATH [--strict-seccomp] -- CMD [ARGS...]
+    python3 launcher.py --hostname NAME --policy-file PATH [--strict-seccomp] [--default-deny] -- CMD [ARGS...]
 
 References:
 - NPS-017 §4.1 (Container Primitives), §4.2 (Capability Enforcement)
@@ -64,6 +64,7 @@ from backend.seccomp import (  # noqa: E402
     SeccompPolicy,
     SyscallArch,
     build_policy,
+    build_allowlist_policy,
     build_program,
     install_filter,
 )
@@ -149,30 +150,38 @@ def harden_cgroup_mounts() -> int:
     return unmounted
 
 
-def load_policy(policy_file: str, arch: SyscallArch) -> Optional[SeccompPolicy]:
-    """Load a capability set from the policy file and build the policy."""
+def load_capabilities(policy_file: str) -> Optional[list]:
+    """Load the capability set from the policy file."""
     try:
         raw = Path(policy_file).read_text(encoding="utf-8")
         data = json.loads(raw)
-        caps = list(data.get("capabilities", []))
+        return list(data.get("capabilities", []))
     except (OSError, ValueError) as e:
         logger.error("failed to load policy file %s: %s", policy_file, e)
         return None
-    try:
-        return build_policy(caps, arch=arch)
-    except Exception as e:  # ValueError from build_policy
-        logger.error("failed to build seccomp policy: %s", e)
-        return None
 
 
-def apply_seccomp(policy_file: str, strict: bool, arch: SyscallArch) -> bool:
+def apply_seccomp(
+    policy_file: str, strict: bool, arch: SyscallArch, default_deny: bool
+) -> bool:
     """Install the container's seccomp filter in this execution context."""
     if not policy_file:
         logger.warning("no policy file provided — data-plane enforcement OFF")
         return False
 
-    policy = load_policy(policy_file, arch)
-    if policy is None:
+    caps = load_capabilities(policy_file)
+    if caps is None:
+        if strict:
+            sys.exit(4)
+        return False
+
+    try:
+        if default_deny:
+            policy = build_allowlist_policy(caps, arch=arch)
+        else:
+            policy = build_policy(caps, arch=arch)
+    except Exception as e:  # ValueError from the policy builders
+        logger.error("failed to build seccomp policy: %s", e)
         if strict:
             sys.exit(4)
         return False
@@ -208,6 +217,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--hostname", default="nythera-container")
     parser.add_argument("--policy-file", default="")
     parser.add_argument("--strict-seccomp", action="store_true")
+    parser.add_argument(
+        "--default-deny",
+        action="store_true",
+        help="Use the default-deny allowlist posture: only the runtime "
+        "baseline plus granted capabilities are allowed; everything else "
+        "is refused with EPERM (strictly stronger than the default "
+        "default-allow deny model)",
+    )
     parser.add_argument("--arch", default=SyscallArch.from_machine().value)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -229,7 +246,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError as e:
         logger.error("%s", e)
         return 2
-    apply_seccomp(args.policy_file, args.strict_seccomp, arch)
+    apply_seccomp(args.policy_file, args.strict_seccomp, arch, args.default_deny)
 
     # Step 4 — hand control to the container's real command.
     if not args.command:

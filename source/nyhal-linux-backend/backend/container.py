@@ -65,6 +65,7 @@ class ContainerConfig:
     capabilities: List[str] = field(default_factory=list)  # Nythera capabilities
     environment: Dict[str, str] = field(default_factory=dict)
     seccomp: bool = True  # data-plane enforcement (NPS-017 §4.2)
+    default_deny: bool = False  # default-deny allowlist posture (opt-in)
 
 
 class Container:
@@ -414,6 +415,8 @@ class ContainerManager:
         if container.config.seccomp:
             policy_file = self._write_policy_file(container)
             cmd += ["--policy-file", str(policy_file)]
+            if container.config.default_deny:
+                cmd += ["--default-deny"]
         cmd += ["--"]
         cmd += list(container.config.command)
         return cmd
@@ -463,7 +466,8 @@ class ContainerManager:
             f"Launching container {container.id} (hostname={container.config.hostname}, "
             f"memory={container.config.limits.memory_mb}MiB, "
             f"pids={container.config.limits.pid_limit}, "
-            f"seccomp={container.config.seccomp})"
+            f"seccomp={container.config.seccomp}, "
+            f"default_deny={container.config.default_deny})"
         )
         
         proc = subprocess.Popen(cmd, env=os.environ.copy())

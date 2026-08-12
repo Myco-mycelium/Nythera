@@ -90,8 +90,19 @@ revisiting, not whether to attempt it at all.
 
 ## Status
 
-All four benchmarks are **Not Started** — they require a working
-implementation of the subsystem being measured, which does not yet exist
-(see `REPOSITORY_STATE.md`: source code is "Not started"). This document
-should be revisited once Linux Backend implementation work (NPS-017 §6)
-produces something runnable to actually measure.
+**2026-08-12 update:** first-pass microbenchmark data now exists in
+`tests/BENCHMARK_RESULTS.md` (run via `python3 tests/benchmarks.py`):
+- §1 IPC round-trip p50/p95/p99 measured on the in-process control path
+  (real transport is deferred, so the numbers bound control-plane cost
+  only);
+- §3 data point: the default token bucket caps a single client→endpoint
+  call path at ~50 calls/s steady state, throttling legitimate traffic
+  shapes — the parameter sweep and adversarial test remain;
+- §4 proxy data: NyFS ops-layer vs native throughput, with the
+  whole-file CoW/compress path identified as the dominant cost; the
+  live FUSE-vs-ext4 comparison still requires a kernel mount.
+
+§2 (Zstd level selection) remains **Not Started**. None of the plan's
+pass/fail gates are declared met on the strength of this first pass —
+these numbers exist to inform implementation, not to close the
+benchmarks.
