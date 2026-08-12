@@ -348,6 +348,16 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**implementation-language strategy; ADR-0020**): the
+  first recorded language decision — Python for the user-space backend
+  and tooling, Rust for kernel-adjacent/hot-path/security-critical
+  components, with a versioned FFI boundary (ABI rule) and an
+  evidence-gated migration rule (no rewrite without measured
+  performance or a security finding). Proposed pending Architecture
+  Group review; index NPC-005 v1.13.0. Also closed the last §9
+  benchmark gap: journal × block-size interplay (§15) — block size is
+  an interleaved-mode lever only (save time flat 0.18–0.25 s under
+  journal; ratio 6.38 → 6.50).
 - 2026-08-12 (**compaction API + background watcher; ADR-0019**):
   journal compaction is exposed to daemons as `journal_bytes()` /
   `maybe_compact()` / `compact_journal()`, and `NyFSMount` gained an

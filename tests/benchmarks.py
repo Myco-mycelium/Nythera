@@ -931,6 +931,52 @@ def benchmark_compaction_cost():
         }
 
 
+def benchmark_journal_block_size():
+    """Journal commit vs block size (BENCHMARK_RESULTS §15).
+
+    §9 left one interplay untested: does block size still matter once
+    commit is journaled (one fsync per transaction)? For interleaved
+    commit, larger blocks cut save time by cutting the fsync count
+    (§8); journal commit fsyncs once regardless of block count, so
+    block size should move only the compression ratio (padding) and the
+    journal's byte count — not the commit latency. Same §7 corpus,
+    each config verified by a full save -> load -> read round-trip.
+    """
+    corpus, total_logical = _build_persist_corpus()
+
+    def run(block_size, use_journal):
+        with tempfile.TemporaryDirectory() as tmp:
+            fs = NyFSFilesystem(os.path.join(tmp, "fs"),
+                                block_size=block_size)
+            fs.mkdir("/assets")
+            for path, body in corpus:
+                fs.write(fs.create_file(path), body)
+            t0 = time.perf_counter()
+            fs.save(use_journal=use_journal)
+            save_s = time.perf_counter() - t0
+            state_dir = os.path.join(tmp, "fs", "state")
+            on_disk = _state_tree_bytes(state_dir)
+            journal = os.path.join(state_dir, "journal.bin")
+            j_bytes = (os.path.getsize(journal)
+                       if os.path.exists(journal) else 0)
+            fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+            ok = all(fs2.read(fs2.resolve(p)) == body for p, body in corpus)
+            return {
+                "save_s": round(save_s, 3),
+                "journal_bytes": j_bytes,
+                "on_disk_bytes": on_disk,
+                "ratio": round(total_logical / on_disk, 2),
+                "roundtrip_ok": ok,
+            }
+
+    return {
+        "64k_interleaved_ref": run(65536, False),
+        "64k_journal": run(65536, True),
+        "256k_journal": run(262144, True),
+        "1m_journal": run(1048576, True),
+    }
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -996,17 +1042,21 @@ def main():
                         help="§5 mixed read/write/commit loop, journal vs interleaved")
     parser.add_argument("--compaction-cost", action="store_true",
                         help="§5 journal compaction pass cost")
+    parser.add_argument("--journal-blocksize", action="store_true",
+                        help="§5 journal commit vs block-size interplay")
     args = parser.parse_args()
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
                 or args.nyfs_mount or args.nyfs_persist or args.save_levers
                 or args.snapshot_dedup or args.codec or args.real_corpus
-                or args.mixed_workload or args.compaction_cost)
+                or args.mixed_workload or args.compaction_cost
+                or args.journal_blocksize)
     if not selected or args.all:
         args.ipc = args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
         args.mixed_workload = args.compaction_cost = True
+        args.journal_blocksize = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1045,6 +1095,9 @@ def main():
     if args.compaction_cost:
         _print_section("NyFS journal compaction pass cost (§14):",
                        benchmark_compaction_cost())
+    if args.journal_blocksize:
+        _print_section("NyFS journal commit vs block size (§15):",
+                       benchmark_journal_block_size())
 
 
 if __name__ == "__main__":

@@ -501,6 +501,30 @@ off the transaction path (background watcher at a lower threshold,
 verified by the live-mount test); without it, a daemon pays the pass
 inline when a save crosses the 64 MiB threshold.
 
+## 15. Journal Commit × Block Size — Interplay Measured (2026-08-12)
+
+`python3 tests/benchmarks.py --journal-blocksize` — §9 left this
+interplay untested: does block size still matter once commit is
+journaled (one fsync per transaction)? Same §7 corpus, all configs
+verified by a full save → load → read round-trip:
+
+| Config | Save time | Journal bytes | On-disk | Ratio |
+|--------|-----------|---------------|---------|-------|
+| 64 KiB interleaved (reference) | 10.9 s | 0 | 2,671,822 | 6.42 |
+| 64 KiB journal | 0.23 s | 2,548,255 | 2,688,505 | 6.38 |
+| 256 KiB journal | 0.18 s | 2,537,024 | 2,640,997 | 6.49 |
+| 1 MiB journal | 0.25 s | 2,539,148 | 2,636,191 | 6.50 |
+
+**Finding: block size is an interleaved-mode lever only.** Under journal
+commit, save time is flat across 64 KiB → 1 MiB (0.18 – 0.25 s — the
+spread is noise; the journal fsyncs once regardless of block count),
+while larger blocks still improve the end-to-end ratio slightly (6.38 →
+6.50) by cutting padding. So the §8 block-size lever and the §9 journal
+lever target the same fsync count, and the journal makes the block-size
+dimension mostly moot for commit cost — block size remains relevant
+only for read/write amplification (a small random write rebuilds a
+larger CoW block).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
@@ -508,7 +532,7 @@ inline when a save crosses the 64 MiB threshold.
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12) — the real-corpus number does not meet the plan's compression expectations, no gate declared met**; codec comparison zstd-3 vs zlib-6 collected (§11; LZ4 approximated with zlib — python-lz4 unavailable on this host); concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. Journal-vs-block-size interplay still untested. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next

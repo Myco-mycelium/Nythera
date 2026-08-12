@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.12.0
+version: 1.13.0
 status: Draft
 classification: Reference
 owners:
@@ -41,6 +41,7 @@ only.
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** | 2026-07-13 | — |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Proposed | 2026-07-13 | — |
 | ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
+| ADR-0020 | Python and Rust as the implementation languages | Proposed | 2026-08-12 | — |
 
 ## ADR Statuses
 
@@ -66,6 +67,7 @@ only.
 | 1.10.0  | 2026-07-13 | Add ADR-0017 — the project's first Rejected ADR, declining a proposed NPS domain-renumbering scheme |
 | 1.11.0  | 2026-07-13 | Add ADR-0018 (hash-chained audit log), from threat model Phase 3 |
 | 1.12.0  | 2026-08-12 | Add ADR-0019 (journal commit as the default save() mode) — the Architecture Group review package for the 2026-08-12 implementer default flip |
+| 1.13.0  | 2026-08-12 | Add ADR-0020 (Python and Rust as the implementation languages) — first recorded language strategy |
 
 ---
 **End of Document**

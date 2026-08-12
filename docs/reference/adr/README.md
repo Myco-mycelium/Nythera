@@ -25,6 +25,8 @@ directory; this index tracks status only.
 | [ADR-0016](ADR-0016-nyfs-linux-backend-fuse.md) | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | [ADR-0017](ADR-0017-reject-nps-renumbering.md) | Reject domain-grouped NPS renumbering | **Rejected** |
 | [ADR-0018](ADR-0018-hash-chained-audit-log.md) | Hash-chained append-only log for capability audit records | Proposed |
+| [ADR-0019](ADR-0019-journal-commit-default.md) | Journal commit as the default NyFS save() mode | Proposed |
+| [ADR-0020](ADR-0020-implementation-languages.md) | Python and Rust as the implementation languages | Proposed |
 
 ## Blocked Statuses
 
