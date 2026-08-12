@@ -32,12 +32,21 @@ References:
 
 import enum
 import logging
+import os
+import shutil
 import signal
+import subprocess
 import sys
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Dict, List
+from pathlib import Path
+from typing import Optional, Callable, Dict, List, Tuple
+
+
+def shutil_which(name: str) -> Optional[str]:
+    """Thin wrapper so the module's imports stay flat and testable."""
+    return shutil.which(name)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +70,29 @@ class BootMilestone:
     timestamp: float = field(default_factory=time.time)
     success: bool = True
     error_message: Optional[str] = None
+
+
+@dataclass
+class SecureBootStatus:
+    """The backend's report of the host's boot-integrity posture.
+
+    Per NPS-017 §4.5 (closing FIND-BOOT-001, NPS-023 §4): a backend that
+    does not own the boot chain MUST query and report the host's Secure
+    Boot engagement status rather than leaving its presence or absence
+    silent.
+    """
+    detected: bool  # True if any determination was possible
+    enabled: Optional[bool]  # True / False / None (unknown)
+    mode: str  # human-readable description
+    source: str  # "efivars" | "mokutil" | "none"
+    error: Optional[str] = None
+
+
+# Canonical UEFI SecureBoot variable (EFI_GLOBAL_VARIABLE GUID)
+_EFI_SECUREBOOT_VAR = (
+    "/sys/firmware/efi/efivars/"
+    "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+)
 
 
 class BootSequence:
@@ -99,15 +131,51 @@ class BootSequence:
             self.phase_callbacks[phase] = []
         self.phase_callbacks[phase].append(callback)
     
+    # Legal phase transitions per NPS-001 §5 (stage order), plus restart.
+    # Per NPS-001 §5 (FIND-BOOT-002, NPS-023 §4): a stage-transition
+    # mechanism MUST validate that a requested transition is a legal next
+    # step from the current stage, rejecting out-of-order transitions at
+    # the API level itself — not merely producing the correct order
+    # because the one call path currently in use happens to be correct.
+    LEGAL_TRANSITIONS: Dict[BootPhase, List[BootPhase]] = {
+        BootPhase.UNINITIALIZED: [BootPhase.HARDWARE_INIT],
+        BootPhase.HARDWARE_INIT: [BootPhase.FIRST_PROCESS],
+        BootPhase.FIRST_PROCESS: [BootPhase.SERVICE_BRINGUP],
+        BootPhase.SERVICE_BRINGUP: [BootPhase.USABLE_SESSION],
+        BootPhase.USABLE_SESSION: [BootPhase.SHUTDOWN],
+        BootPhase.SHUTDOWN: [BootPhase.HARDWARE_INIT, BootPhase.UNINITIALIZED],
+    }
+    
     def transition_to_phase(self, phase: BootPhase, description: str = "") -> None:
-        """Transition to a new boot phase.
-        
+        """Transition to a new boot phase, validating the ordering.
+
+        Rejects any out-of-order transition with ``ValueError`` — the
+        validation lives in the API itself (NPS-001 §5, FIND-BOOT-002).
+        Re-transitioning to the *current* phase is an idempotent no-op.
+
         Args:
             phase: The new boot phase
             description: Optional description of what's happening
+
+        Raises:
+            ValueError: if the transition is not in ``LEGAL_TRANSITIONS``.
         """
         with self.lock:
             old_phase = self.current_phase
+            if phase == old_phase:
+                logger.debug(
+                    f"Already in phase {phase.value}; transition skipped (idempotent)"
+                )
+                return
+            
+            allowed = self.LEGAL_TRANSITIONS.get(old_phase, [])
+            if phase not in allowed:
+                raise ValueError(
+                    f"Invalid boot phase transition: {old_phase.value} → "
+                    f"{phase.value} (allowed from {old_phase.value}: "
+                    f"{[p.value for p in allowed]})"
+                )
+            
             self.current_phase = phase
             
             milestone = BootMilestone(
@@ -129,6 +197,103 @@ class BootSequence:
                     callback()
                 except Exception as e:
                     logger.error(f"Error in phase callback: {e}")
+    
+    def restart(self) -> None:
+        """Reset the boot sequence for a fresh boot (post-shutdown restart)."""
+        with self.lock:
+            self.current_phase = BootPhase.UNINITIALIZED
+            self.milestones.clear()
+        logger.info("Boot sequence reset for restart")
+    
+    # ------------------------------------------------------------------
+    # Secure Boot status (NPS-017 §4.5, FIND-BOOT-001)
+    # ------------------------------------------------------------------
+    
+    @staticmethod
+    def _probe_efi_vars() -> Optional[Tuple[bool, str]]:
+        """Read the UEFI SecureBoot variable, if exposed by the kernel.
+
+        Returns ``(enabled, source)`` or ``None`` when not determinable.
+        """
+        var = Path(_EFI_SECUREBOOT_VAR)
+        try:
+            if not var.exists():
+                return None
+            # Layout: 4 bytes EFI attributes + 1 byte value.
+            data = var.read_bytes()
+            if len(data) < 5:
+                return None
+            return (data[4] == 1, "efivars")
+        except OSError as e:
+            logger.debug("SecureBoot variable unreadable: %s", e)
+            return None
+    
+    @staticmethod
+    def _probe_mokutil() -> Optional[Tuple[bool, str]]:
+        """Query ``mokutil --sb-state`` as a fallback, if available."""
+        if not shutil_which("mokutil"):
+            return None
+        try:
+            result = subprocess.run(
+                ["mokutil", "--sb-state"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        stdout = (result.stdout or "").strip()
+        if "SecureBoot enabled" in stdout:
+            return (True, "mokutil")
+        if "SecureBoot disabled" in stdout:
+            return (False, "mokutil")
+        return None
+    
+    def secure_boot_status(self) -> SecureBootStatus:
+        """Report the host's Secure Boot engagement status.
+
+        Per NPS-017 §4.5: a user MUST be able to learn, from Nythera
+        itself, whether the ADR-0014 boot-integrity posture is actually
+        in effect on their running system.
+
+        The EFI variable is authoritative when present; ``mokutil`` is a
+        fallback on distros that expose it without sysfs efivars access.
+        """
+        probe = self._probe_efi_vars() or self._probe_mokutil()
+        if probe is None:
+            return SecureBootStatus(
+                detected=False,
+                enabled=None,
+                mode="Unknown — no EFI Secure Boot variable and no mokutil",
+                source="none",
+                error="boot-integrity posture could not be determined",
+            )
+        enabled, source = probe
+        mode = (
+            "UEFI Secure Boot enabled"
+            if enabled
+            else "Secure Boot disabled/absent"
+        )
+        return SecureBootStatus(detected=True, enabled=enabled, mode=mode, source=source)
+    
+    def _record_secure_boot_milestone(self) -> None:
+        """Record the Secure Boot status milestone during Hardware Init."""
+        status = self.secure_boot_status()
+        if status.detected:
+            self.record_milestone(
+                BootPhase.HARDWARE_INIT,
+                "Secure Boot Status",
+                f"{status.mode} (source: {status.source})",
+                success=True,
+            )
+        else:
+            self.record_milestone(
+                BootPhase.HARDWARE_INIT,
+                "Secure Boot Status",
+                status.mode,
+                success=False,
+                error_message=status.error,
+            )
     
     def record_milestone(
         self,
@@ -216,6 +381,9 @@ class BootSequence:
                 "Kernel Feature Detection",
                 "Detecting cgroups v2, namespaces, seccomp-bpf support"
             )
+            
+            # Report host Secure Boot posture (NPS-017 §4.5, FIND-BOOT-001)
+            self._record_secure_boot_milestone()
             
             # Initialize container manager
             from backend.container import ContainerManager
@@ -331,12 +499,20 @@ class BootSequence:
                 "Initialized"
             )
             
-            # Create a FUSE mount point
+            # Create a FUSE mount point (ADR-0016). Whether the real
+            # kernel mount is possible depends on fusepy + /dev/fuse;
+            # the storage core is usable either way.
             self.nyfs_mount = NyFSMount(self.nyfs, "/tmp/nythera-mnt")
+            fuse_available = self.nyfs_mount.attach()
             self.record_milestone(
                 BootPhase.SERVICE_BRINGUP,
                 "NyFS Mount",
-                "Prepared (FUSE integration deferred)"
+                (
+                    "FUSE mount ready (fusepy)"
+                    if fuse_available
+                    else "FUSE mount pending — fusepy not importable in this environment"
+                ),
+                success=True,
             )
             
             # Create a snapshot of the initial filesystem state
@@ -411,6 +587,8 @@ class BootSequence:
         lines = ["Boot Report", "=" * 60]
         lines.append(f"Current Phase: {self.current_phase.value}")
         lines.append(f"Milestones: {len(self.milestones)}")
+        sb = self.secure_boot_status()
+        lines.append(f"Secure Boot: {sb.mode} (source: {sb.source})")
         lines.append("")
         
         for i, milestone in enumerate(self.milestones, 1):

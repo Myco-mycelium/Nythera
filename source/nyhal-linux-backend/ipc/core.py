@@ -282,17 +282,30 @@ class IPCManager:
     def receive(self, endpoint_id: str, timeout_s: float = 5.0) -> Optional[IPCMessage]:
         """Receive a message from an endpoint per NPS-003 §3.2.
         
+        Control-plane capability check: the endpoint's owning container
+        must hold CAP_IPC_RECEIVE, mirroring the send-side check. This is
+        the control-plane half of NPS-017 §4.2 (data-plane enforcement is
+        seccomp, see ``backend/seccomp.py``).
+        
         Args:
             endpoint_id: The endpoint to receive from
             timeout_s: Maximum wait time
             
         Returns:
-            The received message, or None if timeout
+            The received message, or None if timeout or denied
         """
         endpoint = self.endpoints.get(endpoint_id)
         if endpoint is None:
             logger.error(f"Endpoint {endpoint_id} not found")
             return None
+        
+        if self.capability_manager:
+            from backend.capability import Capability
+            if not self.capability_manager.validate_operation(
+                endpoint.container_id, Capability.CAP_IPC_RECEIVE
+            ):
+                logger.warning(f"Container {endpoint.container_id} lacks CAP_IPC_RECEIVE")
+                return None
         
         message = endpoint.receive_message(timeout_s)
         if message:

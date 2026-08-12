@@ -58,7 +58,13 @@ class Capability(enum.Enum):
     CAP_TELEPHONY = "CAP_TELEPHONY"  # Make calls and send SMS
     CAP_SMS = "CAP_SMS"  # Send/receive SMS
     CAP_SENSORS = "CAP_SENSORS"  # Access device sensors
-    CAP_MEDIA_LIBRARY = "CAP_MEDIA_LIBRARY"  # Access media library
+    # CAP-MEDIA-LIBRARY was split into three finer-grained capabilities
+    # (NPS-011 v1.3.0, closing threat-model finding FIND-CAPABILITY-004:
+    # a single coarse capability could over-grant relative to a narrower
+    # Android permission request).
+    CAP_MEDIA_IMAGES = "CAP_MEDIA_IMAGES"  # Access photo/image library
+    CAP_MEDIA_VIDEO = "CAP_MEDIA_VIDEO"  # Access video library
+    CAP_MEDIA_AUDIO = "CAP_MEDIA_AUDIO"  # Access audio library
     CAP_NEAR_FIELD = "CAP_NEAR_FIELD"  # NFC communication
     CAP_BIOMETRIC = "CAP_BIOMETRIC"  # Biometric authentication
     
@@ -258,10 +264,19 @@ class CapabilityManager:
         
         Returns a minimal set of capabilities sufficient for basic operation.
         Additional capabilities must be explicitly granted.
+        
+        IPC send/receive are granted by default because the IPC subsystem
+        (NPS-017 §4.3) mediates communication through the control plane
+        (NPS-003 §5.4) and every container is expected to communicate with
+        system services. Filesystem *write* is deliberately NOT granted:
+        a default container is read-only (data-plane enforcement, NPS-017
+        §4.2), which is why the default set includes read but not write.
         """
         return {
             Capability.CAP_PROCESS_SPAWN,
             Capability.CAP_FILESYSTEM_READ,
+            Capability.CAP_IPC_SEND,
+            Capability.CAP_IPC_RECEIVE,
             Capability.CAP_SYSTEM_TIME,
             Capability.CAP_SYSTEM_INFO,
             Capability.CAP_MEMORY_ALLOCATE,

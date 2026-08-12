@@ -31,6 +31,31 @@ from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
 
 
+def parse_capabilities(value: str) -> list:
+    """Parse a comma-separated capability list, validating against the registry."""
+    names = [v.strip().upper() for v in (value or "").split(",") if v.strip()]
+    known = {c.value for c in Capability}
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        raise ValueError(f"unknown capability(ies): {', '.join(unknown)}")
+    return names
+
+
+def make_container_config(args) -> ContainerConfig:
+    """Build a ContainerConfig from parsed CLI args (shared by create/run)."""
+    capabilities = parse_capabilities(getattr(args, "capabilities", ""))
+    return ContainerConfig(
+        hostname=args.hostname,
+        command=args.command or ["/bin/sh"],
+        limits=ResourceLimits(
+            memory_mb=args.memory,
+            pid_limit=args.pids,
+        ),
+        capabilities=capabilities,
+        seccomp=not getattr(args, "no_seccomp", False),
+    )
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -64,20 +89,32 @@ def cmd_boot(args) -> int:
         return 1
 
 
+def cmd_secure_boot_status(args) -> int:
+    """Report the host's Secure Boot posture (NPS-017 §4.5, FIND-BOOT-001)."""
+    setup_logging(args.verbose)
+    
+    boot = BootSequence()
+    status = boot.secure_boot_status()
+    
+    print("Secure Boot Status")
+    print("=" * 60)
+    if status.detected:
+        print(f"  {status.mode}")
+        print(f"  Source: {status.source}")
+        return 0 if status.enabled else 1
+    else:
+        print(f"  {status.mode}")
+        print(f"  Note: {status.error}")
+        return 2
+
+
 def cmd_container_create(args) -> int:
     """Create a new container."""
     setup_logging(args.verbose)
     
     manager = ContainerManager()
     
-    config = ContainerConfig(
-        hostname=args.hostname,
-        command=args.command or ["/bin/sh"],
-        limits=ResourceLimits(
-            memory_mb=args.memory,
-            pid_limit=args.pids,
-        ),
-    )
+    config = make_container_config(args)
     
     container = manager.create(config)
     print(f"Created container: {container.id}")
@@ -97,14 +134,7 @@ def cmd_container_run(args) -> int:
     
     manager = ContainerManager()
     
-    config = ContainerConfig(
-        hostname=args.hostname,
-        command=args.command or ["/bin/sh"],
-        limits=ResourceLimits(
-            memory_mb=args.memory,
-            pid_limit=args.pids,
-        ),
-    )
+    config = make_container_config(args)
     
     container = manager.create(config)
     print(f"Running container: {container.id}")
@@ -224,6 +254,13 @@ Examples:
     )
     boot_parser.set_defaults(func=cmd_boot)
     
+    # Secure Boot status command (NPS-017 §4.5, FIND-BOOT-001)
+    sb_parser = subparsers.add_parser(
+        "secure-boot-status",
+        help="Report the host's Secure Boot engagement status"
+    )
+    sb_parser.set_defaults(func=cmd_secure_boot_status)
+    
     # Container commands
     container_parser = subparsers.add_parser("container", help="Manage containers")
     container_subparsers = container_parser.add_subparsers(dest="container_cmd")
@@ -232,6 +269,14 @@ Examples:
     create_parser.add_argument("--hostname", default="nythera-container")
     create_parser.add_argument("--memory", type=int, default=256, help="Memory limit (MiB)")
     create_parser.add_argument("--pids", type=int, default=64, help="PID limit")
+    create_parser.add_argument(
+        "--capabilities", default="",
+        help="Comma-separated Nythera capabilities to grant (default: the default set)"
+    )
+    create_parser.add_argument(
+        "--no-seccomp", action="store_true",
+        help="Disable data-plane seccomp enforcement (NOT recommended)"
+    )
     create_parser.add_argument("-r", "--run", action="store_true", help="Run after creation")
     create_parser.add_argument("command", nargs="*", help="Command to run")
     create_parser.set_defaults(func=cmd_container_create)
@@ -240,6 +285,14 @@ Examples:
     run_parser.add_argument("--hostname", default="nythera-container")
     run_parser.add_argument("--memory", type=int, default=256, help="Memory limit (MiB)")
     run_parser.add_argument("--pids", type=int, default=64, help="PID limit")
+    run_parser.add_argument(
+        "--capabilities", default="",
+        help="Comma-separated Nythera capabilities to grant (default: the default set)"
+    )
+    run_parser.add_argument(
+        "--no-seccomp", action="store_true",
+        help="Disable data-plane seccomp enforcement (NOT recommended)"
+    )
     run_parser.add_argument("command", nargs="*", help="Command to run")
     run_parser.set_defaults(func=cmd_container_run)
     

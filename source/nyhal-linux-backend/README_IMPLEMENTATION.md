@@ -15,7 +15,7 @@ ai_assisted: true
 
 This directory contains the implementation of the **Nythera Linux Backend**, a conformant implementation of the NyHAL (Nythera Kernel Abstraction Layer) contract on standard Linux systems. The backend provides a practical near-term path for running Nythera containers while the long-term NyKernel backend matures.
 
-**Status:** Experimental (Core implementation complete; performance optimization and FUSE integration in progress)
+**Status:** Experimental (Core implementation complete; data-plane security enforcement, FUSE operations, and boot hardening landed; performance optimization and conformance benchmarks pending)
 
 ## Quick Start
 
@@ -76,14 +76,23 @@ container = manager.create(config)
 exit_code = manager.start(container)
 ```
 
-### 2. Capability Enforcement (`backend/capability.py`)
+### 2. Capability Enforcement (`backend/capability.py`, `backend/seccomp.py`, `backend/launcher.py`)
 
-Implements the capability-based security model from NPS-011, ensuring containers can only access resources they've been explicitly granted.
+Implements the capability-based security model from NPS-011 with **two
+enforcement layers**: the control plane (the backend's own API) and the
+**data plane** — a seccomp-BPF filter compiled from the container's
+capability set and installed *inside the container* before its command
+runs, so direct syscalls for ungranted operations are refused with
+`EPERM` at the kernel boundary (closes threat-model finding
+`FIND-BACKEND-002`).
 
 **Key Classes:**
-- `Capability`: Enum of 23 capabilities (core, graphics, AI, Android)
+- `Capability`: Enum of capabilities (core, graphics, AI, Android; media split into images/video/audio)
 - `CapabilityManager`: Sole arbiter of capability validity
 - `CapabilityGrant`: Audit trail entry for capability operations
+- `SeccompPolicy` / `build_policy` / `build_program`: capability set → classic-BPF filter
+- `simulate`: pure-Python BPF interpreter used by the test suite to prove policy decisions
+- `install_filter`: `prctl(PR_SET_NO_NEW_PRIVS)` + `PR_SET_SECCOMP` via `ctypes`
 
 **Features:**
 - Capability grant/revoke/validate operations
@@ -91,18 +100,25 @@ Implements the capability-based security model from NPS-011, ensuring containers
 - Audit trail for all operations
 - Prevention of self-issued or forged capabilities
 - Default capability set for new containers
+- Seccomp-BPF data-plane enforcement (whole-syscall denies + flag-gated `openat`/`open` write-intent denies)
 
 **Example:**
 ```python
 from backend.capability import CapabilityManager, Capability
+from backend.seccomp import build_policy, build_program, simulate, SyscallArch
 
 manager = CapabilityManager()
 manager.initialize_container("container-001")
 manager.grant_capability("container-001", Capability.CAP_GRAPHICS_RENDER)
 
-# Validate operation
+# Validate operation (control plane)
 if manager.validate_operation("container-001", Capability.CAP_GRAPHICS_RENDER):
     print("Container can render graphics")
+
+# Build the data-plane filter for a capability set and prove a decision
+policy = build_policy({c.value for c in manager.get_default_capabilities()})
+program = build_program(policy)
+print(hex(simulate(program, 257, SyscallArch.X86_64.audit_arch, [0, 0, 1])))  # openat(O_WRONLY)
 ```
 
 ### 3. IPC Semantics (`ipc/core.py`)
@@ -140,34 +156,40 @@ msg = manager.receive("ep-service", timeout_s=5.0)
 
 ### 4. Storage Guarantees (`fuse/nyfs.py`)
 
-Implements the NyFS filesystem with copy-on-write, snapshots, checksumming, and transparent compression.
+Implements the NyFS filesystem with copy-on-write, snapshots, checksumming, transparent compression, and FUSE operations per ADR-0016.
 
 **Key Classes:**
-- `NyFSFilesystem`: Core filesystem logic
+- `NyFSFilesystem`: Core filesystem logic + path-based API (resolve, tree linking)
 - `NyFSBlock`: Compressed data block with checksum
 - `NyFSInode`: In-memory inode representation
-- `NyFSMount`: FUSE mount wrapper
+- `NyFSOperations`: FUSE operation handlers (getattr, readdir, read/write, mkdir, unlink, rename, …)
+- `NyFSMount`: FUSE mount wrapper (loads `fusepy` by path to dodge the package-name clash)
 
 **Features:**
 - Copy-on-Write (CoW) file/directory operations
-- Snapshots: create, restore, list
+- Snapshots: create, restore (restore rebinds the root inode), list
 - SHA256 checksumming for data integrity
 - Zstandard compression (ADR-0007)
-- Inode-based file management
+- Path-based inode tree with parent/child linking
+- Real FUSE mount via `fusepy` when available; honest deferral otherwise
 
 **Example:**
 ```python
-from fuse.nyfs import NyFSFilesystem
+from fuse.nyfs import NyFSFilesystem, NyFSOperations, NyFSMount
 
 fs = NyFSFilesystem("/tmp/nyfs")
 file_inode = fs.create_file("/test.txt")
-fs.write_block(file_inode.inode_number, b"Hello, NyFS!")
+fs.write(file_inode, b"Hello, NyFS!")
 
 # Create snapshot
 snap_id = fs.create_snapshot()
 
-# Read data back
-data = fs.read_block(file_inode.inode_number)
+# Read data back (path API)
+data = fs.read("/test.txt")
+
+# FUSE operations, testable without a kernel mount
+ops = NyFSOperations(fs)
+st = ops.getattr("/test.txt")
 ```
 
 ### 5. Boot and Lifecycle (`boot/lifecycle.py`)
@@ -201,7 +223,9 @@ nyhal-linux-backend/
 ├── backend/
 │   ├── __init__.py           # Backend module exports
 │   ├── container.py          # Container primitives (NPS-017 §4.1)
-│   └── capability.py         # Capability enforcement (NPS-017 §4.2)
+│   ├── capability.py         # Capability registry (NPS-017 §4.2)
+│   ├── seccomp.py            # Data-plane capability enforcement (cBPF policy + simulator)
+│   └── launcher.py           # In-namespace launcher (hostname, cgroup hardening, seccomp, exec)
 ├── ipc/
 │   ├── __init__.py           # IPC module exports
 │   └── core.py               # IPC primitives (NPS-017 §4.3)
@@ -237,15 +261,23 @@ python3 nythera_backend.py boot --no-wait  # Don't wait for shutdown
 # Create a container
 python3 nythera_backend.py container create --hostname my-container
 
-# Run a container
+# Run a container (seccomp data-plane enforcement on by default)
 python3 nythera_backend.py container run --memory 512 /bin/sh
 
-# Run with custom limits
+# Run with custom limits, capability set, and seccomp explicitly disabled
 python3 nythera_backend.py container run \
   --hostname custom \
   --memory 256 \
   --pids 32 \
+  --capabilities CAP_FILESYSTEM_READ,CAP_NETWORK_SOCKET \
+  --no-seccomp \
   /bin/bash
+```
+
+### Secure Boot Status
+```bash
+# Report the host's Secure Boot engagement (efivars + mokutil probes)
+python3 nythera_backend.py secure-boot-status
 ```
 
 ### Capability Management
@@ -300,16 +332,16 @@ Per NPS-017 §5.1, the Linux Backend is **NOT YET conformant** but provides:
 
 | Requirement | Status | Notes |
 |-------------|--------|-------|
-| Container Primitives | ✓ Implemented | State machine, namespaces, cgroups |
-| Capability Enforcement | ⚠ Partial | Registry complete; LSM/seccomp deferred |
-| IPC Semantics | ✓ Implemented | All primitives, rate limiting |
-| Storage Guarantees | ⚠ Partial | Core logic; FUSE integration deferred |
-| Boot and Lifecycle | ✓ Implemented | Four-phase sequence |
+| Container Primitives | ✓ Implemented | State machine, namespaces, cgroups, shell-free launcher |
+| Capability Enforcement | ✓ Implemented | Registry + data-plane seccomp (default-allow deny model; allowlist deferred) |
+| IPC Semantics | ✓ Implemented | All primitives, rate limiting, receive-side capability check |
+| Storage Guarantees | ✓ Implemented | Core logic + FUSE operations + fusepy mount wiring |
+| Boot and Lifecycle | ✓ Implemented | Four-phase sequence, transition validation, Secure Boot reporting |
 
 **Outstanding Work:**
-- [ ] LSM/seccomp policy generation and enforcement
-- [ ] FUSE daemon integration for NyFS
-- [ ] Performance benchmarking (IPC latency, FUSE overhead)
+- [ ] Default-deny seccomp allowlist posture (current model is default-allow with explicit denies)
+- [ ] LSM (AppArmor/SELinux) policy generation
+- [ ] FUSE overhead benchmarking (ADR-0016; decides FUSE vs kernel-module fallback)
 - [ ] Direct syscall optimization (currently uses `unshare(1)`)
 - [ ] Systemd integration
 
@@ -333,6 +365,8 @@ The following benchmarks are required before conformance (see `tests/BENCHMARK_P
 - **NPS-011**: Capability Registry
 - **NPS-003**: Inter-Process Communication and Capability Passing
 - **NPS-004**: NyFS Filesystem Core
+- **NPS-022**: Container Escape Analysis (FIND-BACKEND-002/003/004)
+- **NPS-023**: Secure Boot Threat Model (FIND-BOOT-001/002)
 
 ### Architecture Decision Records
 - **ADR-0012**: Adopt NyHAL as a pluggable kernel abstraction layer

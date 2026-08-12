@@ -10,12 +10,17 @@ References:
 - tests/BENCHMARK_PLAN.md: Benchmarking methodology
 """
 
+import errno
+import json
 import logging
+import os
+import stat as stat_module
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Add source directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,11 +31,12 @@ from backend.container import (
 from backend.capability import (
     CapabilityManager, Capability, CapabilityGrant
 )
+from backend import seccomp
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
-from fuse.nyfs import NyFSFilesystem, NyFSBlock
-from boot.lifecycle import BootSequence, BootPhase
+from fuse.nyfs import NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount
+from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
 logging.basicConfig(level=logging.WARNING)
@@ -327,6 +333,463 @@ class TestBootLifecycle(unittest.TestCase):
         self.assertTrue(boot.milestones[0].success)
 
 
+class TestSeccompEnforcement(unittest.TestCase):
+    """Test NPS-017 §4.2 data-plane enforcement (FIND-BACKEND-002).
+
+    The policy compiler and BPF simulator are tested here without ever
+    invoking the kernel; ``simulate`` evaluates the exact program that
+    would be installed in a container's execution context.
+    """
+
+    ARCH = seccomp.SyscallArch.X86_64
+
+    def _policy(self, *caps):
+        return seccomp.build_policy({c.value for c in caps}, arch=self.ARCH)
+
+    def _decision(self, policy, name, args=None):
+        program = seccomp.build_program(policy)
+        nr = seccomp._SYSCALLS[self.ARCH][name]
+        return seccomp.simulate(program, nr, self.ARCH.audit_arch, args or [])
+
+    def test_program_jumps_in_bounds(self):
+        policy = self._policy()
+        seccomp.validate_program(seccomp.build_program(policy))
+
+    def test_oversized_jump_rejected(self):
+        # A jump offset > 255 would be rejected by the kernel at prctl
+        # time; validate_program must fail loudly at compile time instead.
+        program = [(0, 0, 0, 0), (0, 300, 0, 0)]
+        with self.assertRaises(ValueError):
+            seccomp.validate_program(program)
+
+    def test_wrong_arch_is_killed(self):
+        policy = self._policy()
+        program = seccomp.build_program(policy)
+        decision = seccomp.simulate(
+            program, 0, seccomp.AUDIT_ARCH_AARCH64
+        )
+        self.assertEqual(decision, seccomp.SECCOMP_RET_KILL_PROCESS)
+
+    def test_default_container_is_read_only(self):
+        # Default capabilities grant filesystem READ, not WRITE.
+        default_caps = CapabilityManager().get_default_capabilities()
+        policy = self._policy(*default_caps)
+
+        # read-only open is fine... (openat(dirfd, path, flags, mode) —
+        # flags live in arg 2; arg 1 is the pathname pointer)
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_RDONLY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        # ...but any write-capable open is refused with EPERM.
+        for flags in (os.O_WRONLY, os.O_RDWR, os.O_CREAT, os.O_APPEND):
+            decision = self._decision(policy, "openat", [0, 0, flags])
+            self.assertEqual(decision, seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM)
+        # A read-only open carrying O_CLOEXEC (what ld.so uses at startup)
+        # must stay allowed.
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_RDONLY | os.O_CLOEXEC]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        # O_TMPFILE creates an unnamed file — a filesystem write whatever
+        # the access-mode bits say, so it is denied outright (any mode).
+        for flags in (os.O_TMPFILE, os.O_TMPFILE | os.O_RDONLY,
+                      os.O_TMPFILE | os.O_WRONLY):
+            self.assertEqual(
+                self._decision(policy, "openat", [0, 0, flags]),
+                seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+            )
+        # Filesystem-mutating syscalls are denied outright (unlink's args
+        # are irrelevant — the deny is whole-syscall).
+        self.assertEqual(
+            self._decision(policy, "unlink", [0, 0]),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+        # openat2 is NOT flag-gated: its flags live behind a pointer that
+        # classic BPF cannot dereference, and masking the pointer value is
+        # nondeterministic (documented residual gap — IMPLEMENTATION_STATUS).
+        self.assertEqual(
+            self._decision(policy, "openat2", [0, 0x7F1234567890, 0]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        # Baseline runtime syscalls stay allowed.
+        for name in ("read", "write", "close", "exit", "exit_group", "clock_gettime"):
+            self.assertEqual(
+                self._decision(policy, name), seccomp.SECCOMP_RET_ALLOW
+            )
+
+    def test_no_network_without_network_capability(self):
+        default_caps = CapabilityManager().get_default_capabilities()
+        policy = self._policy(*default_caps)
+        self.assertEqual(
+            self._decision(policy, "socket"),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+        self.assertEqual(
+            self._decision(policy, "connect"),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+    def test_network_socket_without_bind(self):
+        policy = self._policy(Capability.CAP_NETWORK_SOCKET)
+        self.assertEqual(
+            self._decision(policy, "socket"), seccomp.SECCOMP_RET_ALLOW
+        )
+        # Outbound connect allowed; inbound bind/listen still denied
+        # without CAP_NETWORK_BIND.
+        self.assertEqual(
+            self._decision(policy, "connect"), seccomp.SECCOMP_RET_ALLOW
+        )
+        self.assertEqual(
+            self._decision(policy, "bind"),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+    def test_full_network_grants_bind(self):
+        policy = self._policy(
+            Capability.CAP_NETWORK_SOCKET, Capability.CAP_NETWORK_BIND
+        )
+        self.assertEqual(
+            self._decision(policy, "bind"), seccomp.SECCOMP_RET_ALLOW
+        )
+        self.assertEqual(
+            self._decision(policy, "listen"), seccomp.SECCOMP_RET_ALLOW
+        )
+
+    def test_filesystem_write_capability_grants_mutation(self):
+        policy = self._policy(Capability.CAP_FILESYSTEM_WRITE)
+        self.assertEqual(
+            self._decision(policy, "unlink"), seccomp.SECCOMP_RET_ALLOW
+        )
+        self.assertEqual(
+            self._decision(policy, "openat", [0, 0, os.O_WRONLY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+
+    def test_process_spawn_is_capability_gated(self):
+        policy = self._policy(Capability.CAP_FILESYSTEM_READ)
+        self.assertEqual(
+            self._decision(policy, "clone"),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+        policy = self._policy(Capability.CAP_PROCESS_SPAWN)
+        self.assertEqual(
+            self._decision(policy, "clone"), seccomp.SECCOMP_RET_ALLOW
+        )
+
+    def test_dangerous_syscalls_always_denied(self):
+        # Even a fully-granted container cannot mount, load modules, or
+        # ptrace its way out of the container boundary.
+        all_caps = set(Capability)
+        policy = self._policy(*all_caps)
+        for name in ("mount", "init_module", "ptrace", "reboot", "setns"):
+            self.assertEqual(
+                self._decision(policy, name),
+                seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+            )
+
+    def test_aarch64_policy_builds(self):
+        arch = seccomp.SyscallArch.AARCH64
+        policy = seccomp.build_policy(
+            {c.value for c in CapabilityManager().get_default_capabilities()},
+            arch=arch,
+        )
+        program = seccomp.build_program(policy)
+        seccomp.validate_program(program)
+        self.assertEqual(
+            seccomp.simulate(program, seccomp._SYSCALLS[arch]["openat"], arch.audit_arch, [0, 0, os.O_WRONLY]),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+
+class TestLauncherSecurity(unittest.TestCase):
+    """Test container launch safety (FIND-BACKEND-004) and cgroup
+    hardening (FIND-BACKEND-003).
+    """
+
+    def setUp(self):
+        self.manager = ContainerManager(use_cgroups_v2=False)
+
+    def test_launch_command_has_no_shell_interpolation(self):
+        # The hostname and command are argv entries — never interpolated
+        # into a shell string (FIND-BACKEND-004).
+        config = ContainerConfig(
+            hostname="evil; rm -rf /",
+            command=["/bin/sh", "-c", "echo hi"],
+            capabilities=["CAP_FILESYSTEM_READ"],
+        )
+        container = self.manager.create(config)
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+
+        self.assertIn("launcher.py", cmd)
+        self.assertIn("--hostname", cmd)
+        self.assertEqual(cmd[cmd.index("--hostname") + 1], config.hostname)
+        # The launcher invocation itself is argv-direct — no shell wrapper
+        # that could interpret the hostname's metacharacters (the container's
+        # own command legitimately contains 'sh -c' after the second '--').
+        first_sep = cmd.index("--")
+        second_sep = cmd.index("--", first_sep + 1)
+        launcher_part = cmd[first_sep + 1:second_sep]
+        self.assertNotIn("sh", launcher_part)
+        self.assertNotIn("-c", launcher_part)
+        # The container's real command survives verbatim as separate args.
+        self.assertEqual(cmd[second_sep + 1:], config.command)
+
+    def test_policy_file_written_for_seccomp(self):
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_WRITE", "CAP_GRAPHICS_RENDER"],
+            seccomp=True,
+        )
+        container = self.manager.create(config)
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+
+        idx = cmd.index("--policy-file")
+        policy_path = Path(cmd[idx + 1])
+        self.assertTrue(policy_path.exists())
+        self.assertEqual(stat_module.S_IMODE(os.stat(policy_path).st_mode), 0o600)
+
+        data = json.loads(policy_path.read_text())
+        self.assertIn("CAP_FILESYSTEM_WRITE", data["capabilities"])
+        self.assertIn("CAP_GRAPHICS_RENDER", data["capabilities"])
+        self.manager._cleanup_policy_files()
+        self.assertFalse(policy_path.exists())
+
+    def test_no_policy_file_when_seccomp_disabled(self):
+        config = ContainerConfig(seccomp=False)
+        container = self.manager.create(config)
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+        self.assertNotIn("--policy-file", cmd)
+
+    def test_default_capabilities_used_when_unspecified(self):
+        container = self.manager.create(ContainerConfig())
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+        idx = cmd.index("--policy-file")
+        data = json.loads(Path(cmd[idx + 1]).read_text())
+        defaults = {c.value for c in CapabilityManager().get_default_capabilities()}
+        self.assertEqual(set(data["capabilities"]), defaults)
+        self.manager._cleanup_policy_files()
+
+    def test_cgroup_v1_plan_hardens_release_agent(self):
+        # FIND-BACKEND-003: the v1 plan must never leave the container
+        # cgroup able to trigger the release_agent mechanism.
+        config = ContainerConfig(limits=ResourceLimits(memory_mb=128, pid_limit=16))
+        container = self.manager.create(config)
+        plan = self.manager._cgroup_v1_plan(container)
+
+        memory_settings = None
+        for cgroup_path, settings in plan:
+            if "memory.limit_in_bytes" in settings:
+                memory_settings = settings
+        self.assertIsNotNone(memory_settings)
+        self.assertEqual(memory_settings["notify_on_release"], "0")
+
+    def test_require_cgroups_v2_refuses_v1_fallback(self):
+        with mock.patch.object(
+            ContainerManager, "_detect_cgroups_v2", return_value=False
+        ):
+            with self.assertRaises(RuntimeError):
+                ContainerManager(use_cgroups_v2=True, require_cgroups_v2=True)
+
+
+class TestBootSecurity(unittest.TestCase):
+    """Test NPS-001 §5 transition validation (FIND-BOOT-002) and NPS-017
+    §4.5 Secure Boot status reporting (FIND-BOOT-001).
+    """
+
+    def test_legal_transition_chain(self):
+        boot = BootSequence()
+        for phase in (
+            BootPhase.HARDWARE_INIT,
+            BootPhase.FIRST_PROCESS,
+            BootPhase.SERVICE_BRINGUP,
+            BootPhase.USABLE_SESSION,
+            BootPhase.SHUTDOWN,
+        ):
+            boot.transition_to_phase(phase)
+        self.assertEqual(boot.current_phase, BootPhase.SHUTDOWN)
+
+    def test_out_of_order_transition_rejected(self):
+        boot = BootSequence()
+        boot.transition_to_phase(BootPhase.HARDWARE_INIT)
+        boot.transition_to_phase(BootPhase.FIRST_PROCESS)
+        # Skipping Service Bring-up to Usable Session is out of order.
+        with self.assertRaises(ValueError):
+            boot.transition_to_phase(BootPhase.USABLE_SESSION)
+
+    def test_restart_resets_sequence(self):
+        boot = BootSequence()
+        boot.transition_to_phase(BootPhase.HARDWARE_INIT)
+        boot.restart()
+        self.assertEqual(boot.current_phase, BootPhase.UNINITIALIZED)
+        boot.transition_to_phase(BootPhase.HARDWARE_INIT)
+
+    def test_secure_boot_status_from_efivars(self):
+        boot = BootSequence()
+        with mock.patch.object(
+            BootSequence, "_probe_efi_vars", return_value=(True, "efivars")
+        ), mock.patch.object(
+            BootSequence, "_probe_mokutil", return_value=None
+        ):
+            status = boot.secure_boot_status()
+        self.assertIsInstance(status, SecureBootStatus)
+        self.assertTrue(status.detected)
+        self.assertTrue(status.enabled)
+        self.assertEqual(status.source, "efivars")
+
+    def test_secure_boot_status_unknown(self):
+        boot = BootSequence()
+        with mock.patch.object(
+            BootSequence, "_probe_efi_vars", return_value=None
+        ), mock.patch.object(
+            BootSequence, "_probe_mokutil", return_value=None
+        ):
+            status = boot.secure_boot_status()
+        self.assertFalse(status.detected)
+        self.assertIsNone(status.enabled)
+        self.assertEqual(status.source, "none")
+
+    def test_efi_var_parsing(self):
+        # 4 bytes of EFI attributes + 1 byte value (1 = enabled).
+        with mock.patch.object(Path, "exists", return_value=True), mock.patch.object(
+            Path, "read_bytes", return_value=b"\x07\x00\x00\x00\x01"
+        ):
+            result = BootSequence._probe_efi_vars()
+        self.assertEqual(result, (True, "efivars"))
+
+
+class TestNyFSPathAPI(unittest.TestCase):
+    """Test the NyFS path-based storage API (NPS-004 §4, ADR-0016)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.fs = NyFSFilesystem(self.temp_dir)
+
+    def test_tree_and_resolution(self):
+        self.fs.mkdir("/games")
+        self.fs.mkdir("/games/saves")
+        file_inode = self.fs.create_file("/games/saves/quick.sav")
+
+        self.assertEqual(self.fs.resolve("/games/saves/quick.sav").inode_number,
+                         file_inode.inode_number)
+        self.assertTrue(self.fs.resolve("/games").is_directory)
+        with self.assertRaises(NyFSError) as ctx:
+            self.fs.resolve("/nope")
+        self.assertEqual(ctx.exception.errno, errno.ENOENT)
+
+    def test_readdir_entries(self):
+        self.fs.mkdir("/a")
+        self.fs.create_file("/a/f1.txt")
+        self.fs.create_file("/a/f2.txt")
+        entries = self.fs.readdir("/a")
+        self.assertEqual(entries, [".", "..", "f1.txt", "f2.txt"])
+
+    def test_getattr_shape(self):
+        self.fs.create_file("/x.txt", mode=0o644)
+        st = self.fs.getattr("/x.txt")
+        for key in ("st_ino", "st_mode", "st_nlink", "st_size", "st_uid",
+                    "st_gid", "st_atime", "st_mtime", "st_ctime"):
+            self.assertIn(key, st)
+        self.assertEqual(st["st_mode"] & 0o7777, 0o644)
+
+    def test_offset_write_and_read(self):
+        f = self.fs.create_file("/log.txt")
+        self.fs.write(f, b"hello")
+        self.fs.write(f, b" world", offset=5)
+        self.assertEqual(self.fs.read(f), b"hello world")
+        self.assertEqual(self.fs.read(f, size=5), b"hello")
+        self.assertEqual(self.fs.read(f, size=100, offset=6), b"world")
+
+    def test_truncate(self):
+        f = self.fs.create_file("/t.txt")
+        self.fs.write(f, b"0123456789")
+        self.fs.truncate(f, 5)
+        self.assertEqual(self.fs.read(f), b"01234")
+        self.fs.truncate(f, 8)
+        self.assertEqual(self.fs.read(f), b"01234\x00\x00\x00")
+
+    def test_rename_unlink_rmdir(self):
+        self.fs.mkdir("/d")
+        self.fs.create_file("/d/f.txt")
+        self.fs.rename("/d/f.txt", "/d/g.txt")
+        self.assertEqual(self.fs.readdir("/d"), [".", "..", "g.txt"])
+
+        self.fs.unlink("/d/g.txt")
+        self.assertEqual(self.fs.readdir("/d"), [".", ".."])
+        self.fs.rmdir("/d")
+
+        self.fs.mkdir("/e")
+        self.fs.create_file("/e/f.txt")
+        with self.assertRaises(NyFSError) as ctx:
+            self.fs.rmdir("/e")
+        self.assertEqual(ctx.exception.errno, errno.ENOTEMPTY)
+
+    def test_snapshot_immutability_with_cow_write(self):
+        f = self.fs.create_file("/save.sav")
+        self.fs.write(f, b"v1")
+        snap = self.fs.create_snapshot()
+
+        # A write must not mutate the snapshot (CoW).
+        self.fs.write(f, b"v2")
+        self.assertEqual(self.fs.read(f), b"v2")
+
+        self.fs.restore_snapshot(snap)
+        restored = self.fs.resolve("/save.sav")
+        self.assertEqual(self.fs.read(restored), b"v1")
+
+    def test_checksum_detects_corruption(self):
+        f = self.fs.create_file("/c.txt")
+        self.fs.write(f, b"integrity")
+        block = f.blocks[0]
+        block.checksum = "0" * 64  # tamper
+        with self.assertRaises(ValueError):
+            self.fs.read_block(f.inode_number)
+
+
+class TestNyFSOperations(unittest.TestCase):
+    """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.fs = NyFSFilesystem(self.temp_dir)
+        self.ops = NyFSOperations(self.fs)
+
+    def test_full_operation_flow(self):
+        self.assertEqual(self.ops.mkdir("/app", 0o755), 0)
+        self.assertEqual(self.ops.mknod("/app/data.bin", 0o644, 0), 0)
+        fh = self.ops.open("/app/data.bin", os.O_WRONLY)
+        written = self.ops.write("/app/data.bin", b"payload", 0, fh)
+        self.assertEqual(written, len(b"payload"))
+        self.ops.release("/app/data.bin", fh)
+
+        st = self.ops.getattr("/app/data.bin")
+        self.assertEqual(st["st_size"], len(b"payload"))
+
+        self.assertEqual(self.ops.readdir("/app"), [".", "..", "data.bin"])
+        self.assertEqual(self.ops.read("/app/data.bin", 100, 0), b"payload")
+
+        self.assertEqual(self.ops.truncate("/app/data.bin", 3), 0)
+        self.assertEqual(self.ops.read("/app/data.bin", 100, 0), b"pay")
+
+        self.assertEqual(self.ops.rename("/app/data.bin", "/app/renamed.bin"), 0)
+        self.assertEqual(self.ops.unlink("/app/renamed.bin"), 0)
+        self.assertEqual(self.ops.rmdir("/app"), 0)
+
+    def test_missing_path_raises_errno(self):
+        with self.assertRaises(NyFSError) as ctx:
+            self.ops.getattr("/missing")
+        self.assertEqual(ctx.exception.errno, errno.ENOENT)
+
+    def test_statfs_shape(self):
+        st = self.ops.statfs("/")
+        for key in ("f_bsize", "f_blocks", "f_bfree", "f_files", "f_ffree"):
+            self.assertIn(key, st)
+
+    def test_fuse_attach_graceful_without_fusepy(self):
+        mount = NyFSMount(self.fs, tempfile.mkdtemp())
+        with mock.patch("fuse.nyfs._import_fusepy", return_value=None):
+            self.assertFalse(mount.attach())
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -369,6 +832,11 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
+    suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
+    suite.addTests(loader.loadTestsFromTestCase(TestLauncherSecurity))
+    suite.addTests(loader.loadTestsFromTestCase(TestBootSecurity))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSPathAPI))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

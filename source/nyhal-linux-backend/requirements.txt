@@ -9,8 +9,9 @@
 zstandard>=0.21.0
 
 # FUSE filesystem support (ADR-0016: NyFS via FUSE)
-# Note: pyfuse3 requires libfuse3-dev on the system
-# pyfuse3>=3.3.0  # Deferred: FUSE integration in progress
+# fusepy is loaded by file path from site-packages because this package
+# is itself named ``fuse`` and would otherwise shadow the module.
+fusepy>=3.0.1
 
 # Optional: For enhanced logging and monitoring
 python-json-logger>=2.0.0
