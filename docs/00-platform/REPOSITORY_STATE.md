@@ -238,11 +238,14 @@ measurements:
 5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
 6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016;
    determines whether the FUSE decision holds or needs a kernel-module
-   fallback). **Proxy data collected 2026-08-12** — ops-layer NyFS write
-   40.5 MB/s vs 884 MB/s native (read 242 vs 2,095 MB/s), dominated by
-   the whole-file CoW/Zstd path rather than FUSE context switches; the
-   live FUSE-vs-ext4 mount comparison still requires `/dev/fuse` +
-   per-block CoW work.
+   fallback). **Proxy data re-run 2026-08-12 after the per-block CoW
+   rewrite** (`tests/BENCHMARK_RESULTS.md` §5): streaming 1 MiB-chunk
+   writes ~162 MB/s (~4× the old whole-file 40.5 MB/s) vs 541–771 MB/s
+   native; small 4 KiB ops are now dominated by per-call block compress
+   + per-read SHA-256 verification (~3.6 MB/s write / ~2.8 MB/s read),
+   with the checksum-verification read cost recorded as the key finding
+   for Architecture Group review. The live FUSE-vs-ext4 mount
+   comparison still requires `/dev/fuse` access.
 7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
 
 Genuinely still open, not fabricable:
@@ -334,6 +337,13 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**consolidated benchmark runner + NyFS re-run**):
+  `tests/benchmarks.py` now runs all runnable plan sections in one
+  reproducible script (`--all`, `--ipc`, `--bucket`, `--zstd`, `--nyfs`,
+  importing the Zstd sweep). Proxy numbers re-run after the per-block
+  CoW rewrite: streaming writes ~162 MB/s (~4× old path), small-op
+  pattern dominated by per-call compress + per-read checksum verify
+  (recorded in `BENCHMARK_RESULTS.md` §5; no gate met).
 - 2026-08-12 (**threat model complete + benchmark data**): Phase 7
   Package Trust Model (`NPS-027`) landed, closing Milestone 12; NPS-006
   §6 amended (v1.1.0 — signature verification per NPS-026 §6, overlay/

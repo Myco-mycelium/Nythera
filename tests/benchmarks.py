@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
-"""First-pass benchmarks for the Nyrqis Linux Backend.
+"""Consolidated benchmarks for the Nyrqis Linux Backend.
 
-Implements the available subset of `tests/BENCHMARK_PLAN.md`:
+Runs every benchmark in `tests/BENCHMARK_PLAN.md` that is runnable on
+this host in one reproducible script:
 
 - §1 IPC round-trip latency (NPS-003 §3): the `call` primitive, p50/p95/p99.
+- §3 IPC token-bucket defaults (ADR-0009): sustained rate under the
+  default bucket.
+- §2 Zstd compression levels (ADR-0007): level sweep (imports the
+  standalone `benchmark_zstd.py`).
 - §4 FUSE overhead (ADR-0016): NyFS operation-handler throughput vs native
   file I/O on the same disk, as a proxy for the real FUSE-vs-ext4
-  comparison (which requires a live FUSE mount).
+  comparison (which requires a live FUSE mount). With per-block CoW
+  (2026-08-12) this reports two access patterns — 4 KiB sequential writes
+  (per-call overhead dominates) and 1 MiB-chunk streaming (per-block CoW
+  win) — plus a block-size sweep on the 4 KiB pattern.
+
+Usage:
+  python3 tests/benchmarks.py --all      # everything (default)
+  python3 tests/benchmarks.py --ipc      # §1 IPC round-trip
+  python3 tests/benchmarks.py --bucket   # §3 token-bucket defaults
+  python3 tests/benchmarks.py --zstd     # §2 Zstd level sweep
+  python3 tests/benchmarks.py --nyfs     # §4 NyFS vs native proxy
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -14,8 +29,10 @@ Honesty notes (NPC-002 §5.2):
   FUSE mount). The in-process IPC path excludes the deferred Unix-socket/
   shared-memory transport, so these numbers bound the control-plane cost,
   not the final IPC wire cost.
-- Run: `python3 tests/benchmarks.py`. Results belong in
-  `tests/BENCHMARK_RESULTS.md`, not in this file.
+- Results belong in `tests/BENCHMARK_RESULTS.md`, not in this file.
+- A full `--all` run takes roughly 1–2 minutes (the Zstd level sweep is
+  the long pole at ~30 s); use the individual flags to re-run one
+  section quickly.
 """
 
 import os
@@ -129,8 +146,40 @@ def benchmark_default_bucket(duration_s=2.0, payload_size=64):
     }
 
 
+def _nyfs_throughput(fs, total, chunk, random_offsets=False):
+    """Write ``total`` bytes in ``chunk`` pieces; return MB/s."""
+    f = fs.create_file("/bench.bin")
+    data = os.urandom(4096)
+    t0 = time.perf_counter()
+    if random_offsets:
+        # 4 KiB scatter across a 16 MiB address space (asset-like).
+        # Fixed seed (7) so runs are reproducible.
+        import random
+
+        rng = random.Random(7)
+        off = 0
+        written = 0
+        while written < total:
+            off = rng.randrange(0, 16 * 1024 * 1024, 4096)
+            fs.write(f, data, off)
+            written += len(data)
+    else:
+        off = 0
+        for _ in range(total // chunk):
+            fs.write(f, data, off)
+            off += chunk
+    elapsed = time.perf_counter() - t0
+    return round(total / elapsed / (1024 * 1024), 2) if elapsed else float("inf")
+
+
 def benchmark_nyfs_vs_native():
-    """NyFS operations-layer throughput vs native file I/O (§4 proxy)."""
+    """NyFS operations-layer throughput vs native file I/O (§4 proxy).
+
+    With per-block CoW (2026-08-12) the access pattern matters, so this
+    reports two: 4 KiB sequential writes (per-call overhead dominates —
+    each write compresses/checksums a full ``block_size`` block) and
+    1 MiB-chunk streaming (per-block CoW's write-amplification win).
+    """
     with tempfile.TemporaryDirectory() as tmp:
         # Native baseline: sequential write + read on the same disk.
         native_path = os.path.join(tmp, "native.bin")
@@ -146,26 +195,46 @@ def benchmark_nyfs_vs_native():
                 pass
         native_read_s = time.perf_counter() - t0
 
-        # NyFS through the FUSE operation handlers (same disk, CoW +
-        # Zstd compression active). NOTE: write()/read() are whole-file
-        # operations in this implementation (one merged block per inode),
-        # so each 4 KiB op compresses/decompresses the full 8 MiB buffer —
-        # the numbers below measure that path, not per-block I/O.
-        fs = NyFSFilesystem(os.path.join(tmp, "nyfs"))
-        ops = NyFSOperations(fs)
-        ops.mknod("/bench.bin", 0o644, 0)
-        fh = ops.open("/bench.bin", os.O_WRONLY)
-        t0 = time.perf_counter()
-        for _ in range(FS_TOTAL_BYTES // FS_CHUNK):
-            ops.write("/bench.bin", data, FS_CHUNK, fh)
-        nyfs_write_s = time.perf_counter() - t0
-        ops.release("/bench.bin", fh)
+        nyfs_root = os.path.join(tmp, "nyfs")
+
+        # Access pattern A: 4 KiB sequential writes (old benchmark shape).
+        fs_a = NyFSFilesystem(os.path.join(nyfs_root, "a"))
+        small_write_mbps = _nyfs_throughput(fs_a, FS_TOTAL_BYTES, FS_CHUNK)
+
+        # Access pattern B: 1 MiB-chunk streaming writes.
+        fs_b = NyFSFilesystem(os.path.join(nyfs_root, "b"))
+        stream_write_mbps = _nyfs_throughput(
+            fs_b, FS_TOTAL_BYTES, 1024 * 1024)
+
+        # Access pattern C: 4 KiB scattered writes (random offsets).
+        fs_c = NyFSFilesystem(os.path.join(nyfs_root, "c"))
+        scatter_write_mbps = _nyfs_throughput(
+            fs_c, FS_TOTAL_BYTES, FS_CHUNK, random_offsets=True)
+
+        # Sequential 8 MiB read through the operation handlers. The file
+        # is written in 1 MiB chunks (single pass per block) so the read
+        # timing measures reads, not the write path.
+        fs_d = NyFSFilesystem(os.path.join(nyfs_root, "d"))
+        f = fs_d.create_file("/bench.bin")
+        off = 0
+        for _ in range(FS_TOTAL_BYTES // (1024 * 1024)):
+            fs_d.write(f, os.urandom(1024 * 1024), off)
+            off += 1024 * 1024
         t0 = time.perf_counter()
         for i in range(FS_TOTAL_BYTES // FS_CHUNK):
-            ops.read("/bench.bin", FS_CHUNK, (i * FS_CHUNK) % FS_TOTAL_BYTES)
+            fs_d.read(f, FS_CHUNK, (i * FS_CHUNK) % FS_TOTAL_BYTES)
         nyfs_read_s = time.perf_counter() - t0
 
+        # Block-size sweep on the 4 KiB-write pattern (tuning data for
+        # the block_size default decision, not a decision itself).
+        sweep = {}
+        for bs in (4096, 16384, 65536, 262144):
+            fs_s = NyFSFilesystem(os.path.join(nyfs_root, f"s{bs}"),
+                                  block_size=bs)
+            sweep[bs] = _nyfs_throughput(fs_s, FS_TOTAL_BYTES, FS_CHUNK)
+
         # Small-file creation (many game assets, NPS-006 §5).
+        ops = NyFSOperations(fs_a)
         t0 = time.perf_counter()
         for i in range(SMALL_FILES):
             ops.mknod(f"/asset_{i}.dat", 0o644, 0)
@@ -177,35 +246,85 @@ def benchmark_nyfs_vs_native():
     return {
         "total_bytes": FS_TOTAL_BYTES,
         "small_files": SMALL_FILES,
+        "block_size": NyFSFilesystem.BLOCK_SIZE,
         "native_write_mbps": mbps(FS_TOTAL_BYTES, native_write_s),
         "native_read_mbps": mbps(FS_TOTAL_BYTES, native_read_s),
-        "nyfs_write_mbps": mbps(FS_TOTAL_BYTES, nyfs_write_s),
+        "nyfs_write_4k_mbps": small_write_mbps,
+        "nyfs_write_1m_mbps": stream_write_mbps,
+        "nyfs_write_scatter_mbps": scatter_write_mbps,
         "nyfs_read_mbps": mbps(FS_TOTAL_BYTES, nyfs_read_s),
-        "write_overhead_pct": round(
-            100 * (nyfs_write_s / native_write_s - 1), 1
-        ) if native_write_s else None,
-        "read_overhead_pct": round(
-            100 * (nyfs_read_s / native_read_s - 1), 1
-        ) if native_read_s else None,
         "small_create_per_sec": round(SMALL_FILES / small_create_s, 1),
+        "block_size_sweep_4k_mbps": sweep,
     }
 
 
+def benchmark_zstd_levels():
+    """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "benchmark_zstd",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "benchmark_zstd.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        corpus = mod.build_corpus()
+        rows = {}
+        for level in mod.LEVELS:
+            results, overall = mod.bench_level(level, corpus)
+            rows[level] = {
+                "overall_ratio": round(overall, 2),
+                "text_ratio": round(results["text"][0], 2),
+                "media_ratio": round(results["media"][0], 2),
+                "compress_mbps": round(
+                    (results["text"][1] + results["media"][1]
+                     + results["incompressible"][1]) / 3),
+                "decompress_mbps": round(
+                    (results["text"][2] + results["media"][2]
+                     + results["incompressible"][2]) / 3),
+            }
+        return rows
+    except ImportError as e:
+        return {"error": f"zstandard unavailable: {e}"}
+
+
+def _print_section(title, data):
+    print(title)
+    for k, v in data.items():
+        print(f"  {k}: {v}")
+
+
 def main():
-    print("Nyrqis Linux Backend — first-pass benchmarks")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Nyrqis Linux Backend consolidated benchmarks")
+    parser.add_argument("--all", action="store_true", help="run everything (default)")
+    parser.add_argument("--ipc", action="store_true", help="§1 IPC round-trip latency")
+    parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
+    parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
+    parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
+    args = parser.parse_args()
+
+    selected = args.ipc or args.bucket or args.zstd or args.nyfs
+    if not selected or args.all:
+        args.ipc = args.bucket = args.zstd = args.nyfs = True
+
+    print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
-    print("IPC round-trip, raised token budget (BENCHMARK_PLAN §1):")
-    ipc = benchmark_ipc_roundtrip()
-    for k, v in ipc.items():
-        print(f"  {k}: {v}")
-    print("Default token bucket sustained rate (BENCHMARK_PLAN §3 data point):")
-    bucket = benchmark_default_bucket()
-    for k, v in bucket.items():
-        print(f"  {k}: {v}")
-    print("NyFS vs native (BENCHMARK_PLAN §4 proxy; whole-file CoW/compress path):")
-    fsb = benchmark_nyfs_vs_native()
-    for k, v in fsb.items():
-        print(f"  {k}: {v}")
+    if args.ipc:
+        _print_section("IPC round-trip, raised token budget (§1):",
+                       benchmark_ipc_roundtrip())
+    if args.bucket:
+        _print_section("Default token bucket sustained rate (§3):",
+                       benchmark_default_bucket())
+    if args.zstd:
+        _print_section("Zstd level sweep (§2):", benchmark_zstd_levels())
+    if args.nyfs:
+        _print_section("NyFS vs native (§4 proxy; per-block CoW):",
+                       benchmark_nyfs_vs_native())
 
 
 if __name__ == "__main__":

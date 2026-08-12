@@ -221,7 +221,7 @@ The following benchmarks are required before moving from `Experimental` to `Acce
 | Benchmark | Target | Status | Notes |
 |-----------|--------|--------|-------|
 | IPC Round-trip Latency | < 100µs | First-pass data collected | In-process control plane: p50 92µs / p95 157µs / p99 213µs (2026-08-12). Real transport + load variants pending — target not yet judged |
-| FUSE I/O Overhead | < 20% | Proxy data only | Ops-layer vs native: 40 MB/s write / 242 MB/s read (+2,085%/+766%). The whole-file CoW/compress path that dominated those numbers has been replaced by per-block CoW (2026-08-12) — numbers need re-running. Live-mount comparison still pending `/dev/fuse` access |
+| FUSE I/O Overhead | < 20% | Proxy data only | **Re-run after per-block CoW (2026-08-12, `tests/BENCHMARK_RESULTS.md` §5):** 1 MiB-chunk streaming write ~162 MB/s (~4× the old whole-file 40.5 MB/s); 4 KiB-op pattern dominated by per-call block compress + per-read SHA-256 verification (~3.6 MB/s write / ~2.8 MB/s read vs 541–771 / 1,064–2,131 native). No gate declared met. Live-mount comparison still pending `/dev/fuse` access |
 | Token-Bucket Parameters | TBD | First-pass data collected | Default bucket caps a client→endpoint call path at ~50 calls/s steady state — ADR-0009 defaults need revisiting; sweep + adversarial test pending |
 | Compression Ratio | > 30% | Pending | ADR-0007 |
 

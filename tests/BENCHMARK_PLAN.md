@@ -90,24 +90,23 @@ revisiting, not whether to attempt it at all.
 
 ## Status
 
-**2026-08-12 update:** first-pass microbenchmark data now exists in
-`tests/BENCHMARK_RESULTS.md` (run via `python3 tests/benchmarks.py`):
+**2026-08-12 update (consolidated runner + re-run after per-block CoW):**
+`python3 tests/benchmarks.py --all` now runs every runnable plan section
+in one script (`--ipc`, `--bucket`, `--zstd`, `--nyfs`). Results in
+`tests/BENCHMARK_RESULTS.md`:
 - §1 IPC round-trip p50/p95/p99 measured on the in-process control path
   (real transport is deferred, so the numbers bound control-plane cost
   only);
 - §3 data point: the default token bucket caps a single client→endpoint
   call path at ~50 calls/s steady state, throttling legitimate traffic
   shapes — the parameter sweep and adversarial test remain;
-- §4 proxy data: NyFS ops-layer vs native throughput, with the
-  whole-file CoW/compress path identified as the dominant cost; that
-  path has since been replaced by per-block CoW (2026-08-12,
-  `fuse/nyfs.py`), so the proxy numbers need re-running; the live
-  FUSE-vs-ext4 comparison still requires a kernel mount.
+- §2 Zstd level sweep (re-confirmed; ratio flatlines above level ~7);
+- §4 proxy data re-run after the per-block CoW rewrite: streaming
+  writes ~162 MB/s (~4× the old whole-file path), small 4 KiB ops
+  dominated by per-call block compress + per-read checksum verification
+  (see `BENCHMARK_RESULTS.md` §5); the live FUSE-vs-ext4 comparison
+  still requires a kernel mount.
 
-§2 (Zstd level selection) now has first-pass data (2026-08-12,
-`tests/BENCHMARK_RESULTS.md` §2): a level sweep on a synthetic corpus —
-a real asset corpus, the LZ4 fast-path comparison, and concurrent-load
-CPU measurement remain. None of the plan's
-pass/fail gates are declared met on the strength of this first pass —
-these numbers exist to inform implementation, not to close the
-benchmarks.
+None of the plan's pass/fail gates are declared met on the strength of
+these runs — these numbers exist to inform implementation, not to close
+the benchmarks.
