@@ -84,10 +84,14 @@ requirement softened to match it. Across Phases 2–6, 29 unique findings
 have surfaced (verified by ID, not estimated) with a disposition
 each. See
 [`docs/reference/security/README.md`](docs/reference/security/README.md)
-for the full phase plan. Milestone 11's other 9 gap categories (diagrams,
-API/ABI reference, full object registry, and more) remain logged in
-priority order, not yet
-built. See
+for the full phase plan. A 2026-08-12 docs-backlog pass started Milestone
+11's gap categories: the Object Registry (`NPS-025`), Public API
+(`API-001`), ABI (`ABI-001`), and Package Format (`NPS-026`, including
+the digital-signature design closing `FIND-PACKAGE-001`) now exist as
+`Draft` documents, alongside first Tutorials/How-To guides, Mermaid
+diagrams, and refreshed indexes. Governance expansion, build
+architecture, performance budgets, and developer onboarding remain
+logged in priority order. See
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
 

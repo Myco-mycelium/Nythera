@@ -30,8 +30,16 @@ nav:
       - Requirements Database: 00-platform/009-REQUIREMENTS_DATABASE.md
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
-  - Tutorials: tutorials/README.md
-  - How-To Guides: how-to/README.md
+  - Tutorials:
+      - Index: tutorials/README.md
+      - A Tour of the Repository: tutorials/first-repository-tour.md
+      - Authoring Your First Manifest: tutorials/authoring-your-first-manifest.md
+  - How-To Guides:
+      - Index: how-to/README.md
+      - Add a New Capability: how-to/add-a-capability.md
+      - Propose an NPS or ADR: how-to/propose-a-change.md
+      - Run the Linux Backend Tests: how-to/run-linux-backend-tests.md
+      - Verify the Docs Dependency Graph: how-to/check-dependency-cycles.md
   - Reference:
       - ADRs:
           - Index: reference/adr/README.md
@@ -89,7 +97,18 @@ nav:
           - NPS-011 Capability Registry: reference/capability-registry/NPS-011-capability-registry.md
       - Requirements:
           - Ledger: reference/requirements/REQUIREMENTS.md
-      - Object Registry: reference/object-registry/README.md
+      - Object Registry:
+          - Index: reference/object-registry/README.md
+          - NPS-025 Object Registry: reference/object-registry/NPS-025-object-registry.md
+      - API:
+          - Index: reference/api/README.md
+          - API-001 Public API: reference/api/API-001-public-api.md
+      - ABI:
+          - Index: reference/abi/README.md
+          - ABI-001 Binary Compatibility: reference/abi/ABI-001-binary-compatibility.md
+      - Package Format:
+          - Index: reference/package-format/README.md
+          - NPS-026 Package Format: reference/package-format/NPS-026-package-format.md
   - Explanation:
       - Core Architecture:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md
@@ -111,7 +130,13 @@ nav:
           - Why the Assistant Suggests but Doesn't Act: explanation/ai/why-suggest-not-act.md
           - (subsystem index): explanation/ai/README.md
       - Platform: explanation/platform/README.md
-  - Diagrams: diagrams/README.md
+  - Diagrams:
+      - Index: diagrams/README.md
+      - Boot Sequence: diagrams/boot-sequence.md
+      - NyHAL Architecture: diagrams/nyhal-architecture.md
+      - Container Lifecycle: diagrams/container-lifecycle.md
+      - Capability Grant Flow: diagrams/capability-grant-flow.md
+      - Package Mount Lifecycle: diagrams/package-mount-lifecycle.md
   - Assets: assets/README.md
   - Reference Indexes:
       - NPC (Platform docs live under Platform tab): reference/npc/README.md
@@ -122,7 +147,11 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight
 
 plugins:

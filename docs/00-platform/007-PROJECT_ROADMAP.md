@@ -1,13 +1,13 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.8.0
+version: 1.9.0
 status: Draft
 classification: Informative
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-08-12
 ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NTM-000, NPC-003]
@@ -164,14 +164,15 @@ of a prior milestone by itself.
   provide at zero citation-breakage cost.
 
 **Gap categories — prioritized per the review's own "what I would focus
-on next" ordering, not yet built:**
+on next" ordering. Items 2 and 4–7 were started as `Draft` documents in
+the 2026-08-12 backlog pass; items 8–11 remain unbuilt:**
 1. [~] Security architecture and threat model (`docs/reference/security/`) — **in progress as Milestone 12**, phased; see below
-2. [ ] Complete Object Registry (`docs/reference/object-registry/`) — every object type (Workspace, Window, Application, Package, Capability, Identity, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service) with fields, lifecycle, permissions, serialization, relationships
+2. [~] Object Registry — **Draft**: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md) (Workspace, Window, Application, Package, Capability, Game, Mod, Controller, GPU, Notification, AI Conversation, Device, Service; Identity flagged pending its own NPS) with fields, lifecycle, permissions, serialization, relationships
 3. [ ] Capability Registry — ongoing by design (NPS-011 §5), not a discrete milestone item; already at 25 entries
-4. [ ] Public API specification (`docs/reference/api/`) — NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin APIs
-5. [ ] ABI specification (`docs/reference/abi/`) — calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI
-6. [ ] Architecture diagrams (`docs/diagrams/`) — boot sequence, NyHAL architecture, NyCore, object graph, capability graph, package lifecycle, runtime lifecycle, scheduler, memory manager, game package layering, AI subsystem, identity subsystem, update pipeline
-7. [ ] Package format specification, split per the review's suggestion — manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution. **Priority elevated above its list position**: M12 Phase 2's `FIND-PACKAGE-001` found `.nygi` integrity relies on checksums alone (NPS-006 §6), which don't establish publisher authenticity.
+4. [~] Public API specification — **Draft**: [`API-001`](../reference/api/API-001-public-api.md) (NyHAL, NyCore, Runtime, Package, Filesystem, Window, AI, Gaming, Plugin areas; exact signatures deferred to implementation)
+5. [~] ABI specification — **Draft**: [`ABI-001`](../reference/abi/ABI-001-binary-compatibility.md) (calling conventions, binary compatibility, symbol versioning, plugin ABI, driver ABI, runtime ABI; concrete layouts deferred)
+6. [~] Architecture diagrams — started: boot sequence, NyHAL architecture, container lifecycle, capability grant flow, package mount lifecycle under [`docs/diagrams/`](../diagrams/README.md); object graph, capability graph, scheduler, memory manager, game package layering, AI, identity, update pipeline still planned
+7. [~] Package format specification — **Draft**: [`NPS-026`](../reference/package-format/NPS-026-package-format.md) (manifest, digital signatures, compression, delta updates, integrity tree, streaming install, rollback, dependency resolution). **Priority elevated above its list position**: M12 Phase 2's `FIND-PACKAGE-001` found `.nygi` integrity relies on checksums alone (NPS-006 §6), which don't establish publisher authenticity — NPS-026's signature design is the response.
 8. [ ] Governance expansion — RFC process, release process, deprecation policy, versioning policy, branching strategy, commit conventions, ADR workflow (some of this already exists in NPC-001/003; the review's ask is to make it a dedicated, fuller treatment)
 9. [ ] Build architecture (`docs/reference/build/`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
 10. [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency, filesystem performance, gaming targets, AI inference targets (methodology already exists in `tests/BENCHMARK_PLAN.md`; the review's ask is target *numbers*, which still require real hardware and are not fabricated ahead of that)
@@ -211,6 +212,7 @@ starting from scratch. Full phase table and links:
 | 1.6.0   | 2026-07-15 | M12 Phase 4 complete (container escape analysis, NPS-022), grounded in an externally-merged Linux Backend implementation; 4 findings, 3 resolved (NPS-017 §4.1/§4.2 amendments, new REQ-NYHAL-0004), implementation flagged non-conformant against the tightened requirement |
 | 1.7.0   | 2026-07-15 | M12 Phase 5 complete (secure boot, NPS-023), first full pass on TB-BOOT; 4 findings, 2 resolved (NPS-017 §4.5, NPS-001 §5 amendments, new REQ-BOOT-0004), 1 logged as not fixable by amendment, 1 confirmed as an accepted inherent tradeoff |
 | 1.8.0   | 2026-07-15 | M12 Phase 6 complete (AI, NPS-024), first full pass on TB-AI, no implementation exists yet; 5 findings, 4 resolved (NPS-015 §5.2/§5.3/§5.4/§5.5 amendments, new REQ-AI-0003/0004), 1 confirmed bounded by existing controls |
+| 1.9.0   | 2026-08-12 | M11 backlog pass: Object Registry (NPS-025), Public API (API-001), ABI (ABI-001), Package Format (NPS-026), and first architecture diagrams + Tutorials/How-To guides landed as Drafts; gaps 8–11 (governance expansion, build architecture, performance budgets, developer onboarding) remain unbuilt |
 
 ---
 **End of Document**

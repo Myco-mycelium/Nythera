@@ -5,13 +5,13 @@ Nythera repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-07-15
+2026-08-12
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
-(`source/nyhal-linux-backend/`, 20/20 tests passing). Milestone 12 — the
+(`source/nyhal-linux-backend/`, 54/54 tests passing). Milestone 12 — the
 phased security threat model — is in progress: Phases 1–6 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
@@ -24,11 +24,16 @@ perfectly-implemented assistant following the spec as written wouldn't
 have closed the gap. Across Phases 2–6, 29 unique findings have surfaced
 and every one has a disposition — no bare observations left dangling.
 Phase 7 (Package Trust Model) is the last planned phase — see
-`docs/reference/security/README.md`. Milestone 11's remaining 9 gap
-categories (diagrams, API reference, ABI specification, full object
-registry, package format split, governance expansion, build architecture
-docs, performance budgets, developer onboarding) are still logged as a
-prioritized backlog in `007-PROJECT_ROADMAP.md` — not built yet.
+`docs/reference/security/README.md`. A docs-backlog pass (2026-08-12)
+started Milestone 11's gap categories: the Object Registry (NPS-025),
+Public API (API-001), ABI (ABI-001), and Package Format (NPS-026,
+including the digital-signature design closing `FIND-PACKAGE-001`) now
+exist as `Draft` documents; first Tutorials and How-To guides are
+published; and every stale category/reference index placeholder has been
+replaced with a real index. Still remaining from Milestone 11's
+prioritized backlog: governance expansion, build architecture docs,
+performance budgets, and developer onboarding — see
+`007-PROJECT_ROADMAP.md`.
 
 ## Governance Documents
 
@@ -67,9 +72,10 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 11 held (4 named benchmark/dependency blockers, plus
-NPS-018, NPS-019, NPS-020, NPS-021, NPS-022, NPS-023, and NPS-024 — new
-Draft documents pending Architecture Group sign-off, not benchmark-blocked).
+13 accepted, 13 held (4 named benchmark/dependency blockers, plus
+NPS-018..NPS-024 — new Draft documents pending Architecture Group
+sign-off, not benchmark-blocked — and NPS-025, NPS-026 — new Draft
+documents from the 2026-08-12 Milestone 11 backlog pass).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -95,6 +101,8 @@ Draft documents pending Architecture Group sign-off, not benchmark-blocked).
 - [x] NPS-022 Container Escape Analysis and Runtime Isolation — Draft (Threat Model Phase 4, grounded in the real Linux Backend code; found capability enforcement covers only IPC send/call, not direct syscalls — the most severe finding to date, flagged as the implementation's top priority)
 - [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
 - [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
+- [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, Identity flagged pending its own NPS)
+- [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -109,10 +117,25 @@ normative additions should cite a
 REQ ID from the start (NPC-009 §7.2).
 
 ## ABI / API References
-Not started.
+Draft: [`API-001`](../reference/api/API-001-public-api.md) (Public API —
+areas, layering, naming/versioning conventions, error model; exact
+signatures deferred to implementation) and [`ABI-001`](../reference/abi/ABI-001-binary-compatibility.md)
+(Binary Compatibility — compatibility rules, IPC wire format per NPS-003
+§9's deferral, symbol/plugin/driver/runtime/backend ABIs).
 
 ## Package Format
-Not started.
+Draft: [`NPS-026`](../reference/package-format/NPS-026-package-format.md)
+(.nypkg — signed manifest, integrity trees, compression, delta updates,
+streaming install, rollback, dependencies). This is the package-format
+NPS deferred by NPS-006 §2/§9, and the response to `FIND-PACKAGE-001`
+(checksums alone don't establish publisher authenticity).
+
+## Object Registry
+Draft: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md)
+— every object type (Workspace, Window, Application, Package,
+Capability, Game, Mod, Controller, GPU, Notification, AI Conversation,
+Device, Service; Identity flagged pending its own NPS) with fields,
+lifecycle, permissions, serialization rules, and relationships.
 
 ## Source Code
 Two things now, not one:
@@ -125,38 +148,53 @@ Two things now, not one:
 
 - `source/nyhal-linux-backend/` — a substantially fuller Linux Backend
   implementation (`backend/container.py`, `backend/capability.py`,
-  `ipc/core.py`, `fuse/nyfs.py`, `boot/lifecycle.py`), contributed
+  `backend/seccomp.py`, `backend/launcher.py`, `ipc/core.py`,
+  `fuse/nyfs.py`, `boot/lifecycle.py`), contributed
   externally (not authored in this session — merged from the remote after
   a `git push` conflict surfaced it) and **independently verified before
-  being documented here**: `python3 -m pytest test_backend.py` passes
-  20/20. Real cgroup v1/v2 detection and namespace usage confirmed by
+  being documented here**: `python3 test_backend.py` passes
+  54/54. Real cgroup v1/v2 detection and namespace usage confirmed by
   reading the code, not assumed from its own claims.
 
-  Its own `IMPLEMENTATION_STATUS.md` (`document_id: IMPL-001`) self-rates
-  as **"Experimental Backend — Core Implementation Complete,
+  Its own `IMPLEMENTATION_STATUS.md` (`document_id: IMPL-001`, v0.2.0)
+  self-rates as **"Experimental Backend — Core Implementation Complete,
   Performance/Integration Work Pending,"** explicitly **not yet
-  conformant** to NPS-017 §5: capability enforcement exists as tracked
-  state (grant/revoke/attenuate/audit, all tested) but has no seccomp/LSM
-  enforcement wired in yet; the NyFS FUSE integration is structural only
-  (no `pyfuse3`/`fusepy` daemon yet); no IPC latency, FUSE overhead, or
-  compression benchmarks exist. That self-assessment reads as accurate
-  against the code, not inflated — consistent with this project's
-  existing discipline.
+  conformant** to NPS-017 §5: data-plane enforcement exists via an
+  in-container seccomp-BPF filter (default-allow deny model; a
+  default-deny allowlist posture is the strictly-stronger follow-up),
+  `openat2` write-intent is not flag-filterable from classic BPF
+  (documented residual gap), LSM integration is deferred, and no IPC
+  latency, FUSE overhead, or compression benchmarks exist. That
+  self-assessment reads as accurate against the code, not inflated —
+  consistent with this project's existing discipline.
 
-  **Reconciled with Phase 4 of the threat model** (`NPS-022`, done this
-  session): capability *tracking* exists and is correctly implemented,
-  but enforcement covers exactly one operation class (IPC `send`/`call`,
-  2 call sites total) — direct syscalls, file/storage access, and
-  container lifecycle operations are completely unmediated by it. This
-  was confirmed by reading the code, not inferred from its own status
-  document. It's the most severe finding in the threat model to date
-  (`FIND-BACKEND-002`), and `NPS-017` §4.2 has been tightened accordingly
-  — the current implementation is now formally non-conformant against
-  that requirement, which is the honest state of things until seccomp/LSM
-  enforcement is actually wired in. Two smaller findings closed alongside
-  it: a cgroup v1 `release_agent` hardening gap (`FIND-BACKEND-003`,
-  §4.1 amended) and unsanitized shell interpolation of container-supplied
-  strings (`FIND-BACKEND-004`, a `SHOULD`-level hygiene note).
+  **Reconciled with Phases 4 and 5 of the threat model** (`NPS-022`,
+  `NPS-023`; the findings were recorded this session, and the fixes
+  landed this session too):
+  - `FIND-BACKEND-002` (the most severe finding to date — capability
+    enforcement covered only IPC `send`/`call`, leaving direct syscalls
+    unmediated) is **closed** by `backend/seccomp.py` +
+    `backend/launcher.py`: capability sets compile to a cBPF filter
+    installed inside the container before its command runs. Verified
+    end-to-end on this host — a read-only container's write-capable
+    `openat` is refused with `EPERM` at the syscall level.
+  - `FIND-BACKEND-003` (cgroup v1 `release_agent` exposure) is **closed**
+    by `notify_on_release=0` on the container's v1 cgroups plus
+    best-effort unmount of leaking cgroup mounts in the launcher.
+  - `FIND-BACKEND-004` (shell interpolation of container-supplied
+    strings) is **closed** by the shell-free launcher: hostnames and
+    commands are argv entries, and `sethostname(2)` is called directly.
+  - `FIND-BOOT-001` (zero Secure Boot status visibility) is **closed** by
+    `boot/lifecycle.py`'s efivars + mokutil probing (`secure-boot-status`).
+  - `FIND-BOOT-002` (unvalidated boot-phase transitions) is **closed** by
+    legal-transition validation in `boot/lifecycle.py`.
+  - `FIND-CAPABILITY-004` (capability granularity mismatch) was already
+    closed at the spec level by splitting `CAP-MEDIA-LIBRARY` into
+    images/video/audio; the backend's `Capability` enum now reflects it.
+  - IPC `receive` now checks the receiver holds `CAP_IPC_RECEIVE`
+    (control-plane enforcement widened beyond `send`/`call`).
+  - FUSE is no longer structural-only: `fuse/nyfs.py` gained a path API,
+    full operation handlers, and `fusepy` mount wiring (ADR-0016).
 
 ## Build System
 Not started.
@@ -188,21 +226,26 @@ Genuinely still open, not fabricable:
 
 Implementation now needs to catch up to what the threat model has already
 decided at the spec level — none of these are documentation tasks:
-13. Implement data-plane capability enforcement (seccomp/LSM) in
-    `source/nyhal-linux-backend/backend/capability.py` — `FIND-BACKEND-002`
-    (NPS-022 §4) found capability tracking exists but enforcement covers
-    only IPC send/call, leaving direct syscalls completely unmediated.
-    This is the Linux Backend's single highest-priority remaining item,
-    ahead of FUSE integration or benchmarking, since it's a security gap
-    rather than a completeness gap. `REQ-NYHAL-0004` tracks it formally.
-14. Wire the cgroup v1 `release_agent` hardening and shell-interpolation
-    hygiene fixes (`NPS-017` §4.1) into `backend/container.py`.
-15. Implement Secure Boot status reporting (`REQ-BOOT-0004`, `NPS-017`
-    §4.5) and boot-phase transition validation (`FIND-BOOT-002`, `NPS-001`
-    §5) in `boot/lifecycle.py`.
-16. Once 13–15 land, correct `IMPLEMENTATION_STATUS.md`'s own conformance
-    claims to reflect them rather than leaving it describing the
-    pre-fix state.
+- ~~Implement data-plane capability enforcement (seccomp/LSM) in
+  `source/nyhal-linux-backend/backend/capability.py` — `FIND-BACKEND-002`
+  (NPS-022 §4) found capability tracking exists but enforcement covers
+  only IPC send/call, leaving direct syscalls completely unmediated.~~
+  **Done this session** — `backend/seccomp.py` + `backend/launcher.py`
+  install an in-container cBPF filter; verified end-to-end. Follow-ups:
+  default-deny allowlist posture, LSM integration, and the documented
+  `openat2` flag-inspection gap.
+- ~~Wire the cgroup v1 `release_agent` hardening and shell-interpolation
+  hygiene fixes (`NPS-017` §4.1) into `backend/container.py`.~~ **Done
+  this session** (`notify_on_release=0`, launcher-level unmount,
+  shell-free `sethostname`).
+- ~~Implement Secure Boot status reporting (`REQ-BOOT-0004`, `NPS-017`
+  §4.5) and boot-phase transition validation (`FIND-BOOT-002`, `NPS-001`
+  §5) in `boot/lifecycle.py`.~~ **Done this session**
+  (`secure-boot-status` CLI; legal-transition validation).
+- ~~Once 13–15 land, correct `IMPLEMENTATION_STATUS.md`'s own conformance
+  claims to reflect them rather than leaving it describing the
+  pre-fix state.~~ **Done** — `IMPL-001` v0.2.0 (2026-08-12) now
+  describes the enforced state and its residual gaps.
 
 Process and tooling:
 17. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
@@ -218,12 +261,12 @@ Process and tooling:
     which don't establish publisher authenticity; an attacker can tamper
     with an image and simply recompute a valid checksum. Not fixable by a
     quick amendment; needs a real package-signing/PKI specification.
-19. Work through Milestone 11's remaining prioritized backlog
-    (`007-PROJECT_ROADMAP.md`) — architecture diagrams, API reference, ABI
-    specification, full object registry, package format split, governance
-    expansion, build architecture docs, performance budgets, developer
-    onboarding. Each is roughly the size of a prior milestone on its own;
-    not attempted in a single pass.
+19. Continue Milestone 11's remaining prioritized backlog
+    (`007-PROJECT_ROADMAP.md`) — diagrams, API reference, ABI
+    specification, object registry, and package format are now `Draft`
+    (2026-08-12 pass); governance expansion, build architecture docs,
+    performance budgets, and developer onboarding remain. Each is
+    roughly the size of a prior milestone on its own.
 20. Continue the threat model (Milestone 12, `docs/reference/security/`):
     Phase 7 (Package Trust Model, extending NPS-006, already well-motivated
     by `FIND-PACKAGE-001`) is the last planned phase.
@@ -252,6 +295,24 @@ Documentation hygiene, fixed earlier this session:
   to `Myco-mycelium/Nythera`.
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (backend hardening): Linux Backend data-plane capability
+  enforcement (seccomp-BPF installed in-container — `FIND-BACKEND-002`),
+  shell-free launcher (`FIND-BACKEND-004`), cgroup v1 release_agent
+  hardening (`FIND-BACKEND-003`), boot transition validation +
+  Secure Boot status reporting (`FIND-BOOT-001/002`), real FUSE
+  operations + fusepy wiring (ADR-0016), receive-side IPC capability
+  check, and the `CAP-MEDIA-*` enum split. 54/54 tests pass; verified
+  end-to-end container runs on this host (hostile hostname passed
+  verbatim; read-only container's write-open refused with `EPERM`).
+  Docs updated in the same pass: `IMPLEMENTATION_STATUS.md` v0.2.0,
+  `README_IMPLEMENTATION.md`, `requirements.txt`, this file.
+- 2026-08-12: replaced all remaining "Diátaxis category placeholder" and
+  "will be added as specifications are accepted" READMEs with real
+  indexes (tutorials, how-to, diagrams, assets, adr, nps, npc, abi, api,
+  package-format, object-registry, all seven explanation subsystems);
+  updated `source/README.md` (full Linux Backend) and `tests/README.md`
+  (BENCHMARK_PLAN link); added Mermaid rendering to `mkdocs.yml` for the
+  new diagrams.
 - 2026-07-13: `tools/check_depends_on_cycles.py` added and run for the
   first time, surfacing 4 real cycles across documents committed in
   earlier sessions. All fixed by removing the back-reference that closed

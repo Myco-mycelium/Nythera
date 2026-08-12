@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.18.0
+version: 1.19.0
 status: Draft
 classification: Reference
 owners:
   - Nythera Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-08-12
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -88,6 +88,8 @@ index.
 | NPS-022 | Container Escape Analysis and Runtime Isolation | security | Draft |
 | NPS-023 | Secure Boot Threat Model | security | Draft |
 | NPS-024 | AI Threat Model | security | Draft |
+| NPS-025 | Object Registry | core-architecture | Draft |
+| NPS-026 | Nythera Package Format (.nypkg) | storage | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
@@ -116,13 +118,14 @@ change process.
 
 | ID | Title | Status |
 |----|-------|--------|
-| — | — | Not started |
+| API-001 | Public API Specification | Draft |
+| ABI-001 | Binary Compatibility and Calling Conventions | Draft |
 
 ## Package Format
 
 | ID | Title | Status |
 |----|-------|--------|
-| — | Nythera Package Format (.nypkg) | Not started |
+| NPS-026 | Nythera Package Format (.nypkg) | Draft |
 
 ---
 
@@ -149,6 +152,7 @@ change process.
 | 1.16.0  | 2026-07-15 | Add NPS-022 (Threat Model Phase 4: container escape analysis, grounded in the real implementation); amend NPS-017 §4.1/§4.2 (cgroup v1 hardening, control-plane/data-plane enforcement distinction); add REQ-NYHAL-0004; implementation flagged non-conformant against the tightened §4.2 requirement |
 | 1.17.0  | 2026-07-15 | Add NPS-023 (Threat Model Phase 5: secure boot, first full pass on TB-BOOT); amend NPS-017 §4.5 (Secure Boot status reporting) and NPS-001 §5 (phase-transition order validation); add REQ-BOOT-0004; measured-boot/TPM gap logged, not resolved |
 | 1.18.0  | 2026-07-15 | Add NPS-024 (Threat Model Phase 6: AI, first full pass on TB-AI); amend NPS-015 §5.2/§5.3/§5.4 and add §5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003 and REQ-AI-0004 |
+| 1.19.0  | 2026-08-12 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); add first Tutorials and How-To guides; refresh category/reference index placeholders |
 
 ---
 **End of Document**
