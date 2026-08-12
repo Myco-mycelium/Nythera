@@ -1287,6 +1287,123 @@ class TestNyFSLiveMount(unittest.TestCase):
         m2.unmount()
 
 
+class TestNyFSSnapshotDiff(unittest.TestCase):
+    """Test snapshot diffing: added/removed/modified detection."""
+
+    def setUp(self):
+        self.fs = NyFSFilesystem(tempfile.mkdtemp())
+
+    def _diff_map(self, changes):
+        return {c["path"]: c for c in changes}
+
+    def test_diff_of_snapshot_against_itself_is_empty(self):
+        f = self.fs.create_file("/a.txt")
+        self.fs.write(f, b"data")
+        snap = self.fs.create_snapshot()
+        self.assertEqual(self.fs.diff_snapshots(snap, snap), [])
+        self.assertEqual(self.fs.diff_live(snap), [])
+
+    def test_detects_add_remove_and_modify(self):
+        a = self.fs.create_file("/a.txt")
+        b = self.fs.create_file("/b.txt")
+        self.fs.write(a, b"version-one")
+        self.fs.write(b, b"keep")
+        self.fs.mkdir("/d")
+        s1 = self.fs.create_snapshot()
+
+        # Modify a.txt (different content), drop b.txt, add c.txt.
+        self.fs.write(a, b"version-two")
+        self.fs.unlink("/b.txt")
+        c = self.fs.create_file("/c.txt")
+        self.fs.write(c, b"new")
+        s2 = self.fs.create_snapshot()
+
+        diff = self._diff_map(self.fs.diff_snapshots(s1, s2))
+        self.assertEqual(diff["/a.txt"]["change"], "modified")
+        self.assertEqual(diff["/a.txt"]["size_before"], len(b"version-one"))
+        self.assertEqual(diff["/a.txt"]["size_after"], len(b"version-two"))
+        self.assertEqual(diff["/b.txt"]["change"], "removed")
+        self.assertEqual(diff["/c.txt"]["change"], "added")
+        self.assertNotIn("/d", diff)  # unchanged directory: not reported
+        # Direction is from A to B: reversing swaps added/removed.
+        rev = self._diff_map(self.fs.diff_snapshots(s2, s1))
+        self.assertEqual(rev["/b.txt"]["change"], "added")
+        self.assertEqual(rev["/c.txt"]["change"], "removed")
+
+    def test_identical_content_is_not_reported_modified(self):
+        f = self.fs.create_file("/same.txt")
+        self.fs.write(f, b"payload" * 5000)
+        s1 = self.fs.create_snapshot()
+        # Rewriting identical bytes creates NEW blocks (different UUIDs);
+        # the diff must still see no change via checksum lists.
+        self.fs.write(f, b"payload" * 5000)
+        s2 = self.fs.create_snapshot()
+        self.assertEqual(self.fs.diff_snapshots(s1, s2), [])
+
+    def test_diff_live_reports_uncommitted_changes(self):
+        f = self.fs.create_file("/live.txt")
+        self.fs.write(f, b"before")
+        snap = self.fs.create_snapshot()
+        self.fs.write(f, b"after")
+        diff = self._diff_map(self.fs.diff_live(snap))
+        self.assertEqual(diff["/live.txt"]["change"], "modified")
+        # b"after" overwrites the first 5 of 6 bytes: size stays 6.
+        self.assertEqual(diff["/live.txt"]["size_after"], len(b"before"))
+
+    def test_diff_missing_snapshot_raises(self):
+        with self.assertRaises(ValueError):
+            self.fs.diff_snapshots("nope", "also-nope")
+        with self.assertRaises(ValueError):
+            self.fs.diff_live("nope")
+
+    def test_diff_detects_added_directory(self):
+        self.fs.create_snapshot()
+        self.fs.mkdir("/newdir")
+        snap = self.fs.create_snapshot()
+        changes = self.fs.diff_snapshots(self.fs.list_snapshots()[0], snap)
+        added = [c for c in changes if c["path"] == "/newdir"]
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0]["kind"], "directory")
+        self.assertEqual(added[0]["change"], "added")
+
+    def test_partial_vs_padded_final_block_not_reported_modified(self):
+        # Reviewer-flagged: truncate-shrink produces an unpadded partial
+        # final block; identical content across padded/partial
+        # representations must not report a change.
+        f = self.fs.create_file("/t.txt")
+        self.fs.write(f, b"hello")     # padded 64 KiB block, size 5
+        s1 = self.fs.create_snapshot()
+        self.fs.truncate(f, 5000)       # padded re-block
+        self.fs.truncate(f, 5)          # partial 5-byte block
+        s2 = self.fs.create_snapshot()
+        self.assertEqual(self.fs.diff_snapshots(s1, s2), [])
+
+    def test_legacy_block_boundaries_not_reported_modified(self):
+        # Reviewer-flagged: legacy write_block appends arbitrary-size
+        # blocks; re-blocking to one padded block with identical bytes
+        # must not report a change.
+        f = self.fs.create_file("/leg.bin")
+        payload = b"y" * 100
+        self.fs.write_block(f.inode_number, payload[:40])
+        self.fs.write_block(f.inode_number, payload[40:])
+        s1 = self.fs.create_snapshot()   # two blocks (40 + 60 bytes)
+        self.fs.write(f, payload)        # path API re-blocks to padded
+        self.fs.truncate(f, 100)         # partial 100-byte block
+        s2 = self.fs.create_snapshot()
+        self.assertEqual(self.fs.diff_snapshots(s1, s2), [])
+
+    def test_nested_paths_are_reported(self):
+        self.fs.mkdir("/games")
+        f = self.fs.create_file("/games/save.sav")
+        self.fs.write(f, b"v1")
+        s1 = self.fs.create_snapshot()
+        self.fs.write(f, b"v2")
+        s2 = self.fs.create_snapshot()
+        diff = self._diff_map(self.fs.diff_snapshots(s1, s2))
+        self.assertEqual(diff["/games/save.sav"]["change"], "modified")
+        self.assertNotIn("/games", diff)  # unchanged dir: not reported
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -1337,6 +1454,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPersistence))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSLiveMount))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

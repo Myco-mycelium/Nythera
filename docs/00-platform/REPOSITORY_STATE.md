@@ -343,6 +343,11 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**NyFS snapshot diffing**): `fuse/nyfs.py` gained
+  `diff_snapshots(a, b)` / `diff_live(snap)` — path-level added/removed/
+  modified with before/after sizes, compared via per-block checksums (no
+  decompression), so identical content is never reported as modified.
+  9 new tests (`TestNyFSSnapshotDiff`); test suite 80 → 89.
 - 2026-08-12 (**NyFS live FUSE mount verified**): `fuse/nyfs.py`'s mount
   wiring was fixed against the installed fusepy's actual API (operations
   must be callable — dispatch is `operations(op, path, *args)` — and

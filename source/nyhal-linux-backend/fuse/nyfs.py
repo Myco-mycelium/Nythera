@@ -680,6 +680,127 @@ class NyFSFilesystem:
         with self.lock:
             return list(self.snapshots.keys())
 
+    # ------------------------------------------------------------------
+    # Snapshot diffing
+    # ------------------------------------------------------------------
+
+    def _build_path_map(self, root: NyFSInode) -> Dict[str, NyFSInode]:
+        """Map absolute path -> inode for a tree, walking from its root."""
+        out: Dict[str, NyFSInode] = {}
+
+        def walk(inode: NyFSInode, path: str) -> None:
+            out[path] = inode
+            for child in inode.children.values():
+                child_path = f"/{child.name}" if path == "/" else f"{path}/{child.name}"
+                walk(child, child_path)
+
+        walk(root, "/")
+        return out
+
+    def _snapshot_path_map(self, snap_id: str) -> Dict[str, NyFSInode]:
+        snap = self.snapshots.get(snap_id)
+        if snap is None:
+            raise ValueError(f"Snapshot {snap_id} not found")
+        root = snap.get(0)
+        if root is None:
+            return {}
+        return self._build_path_map(root)
+
+    def _live_path_map(self) -> Dict[str, NyFSInode]:
+        return self._build_path_map(self.root_inode)
+
+    @staticmethod
+    def _file_signature(inode: NyFSInode):
+        """Cheap content signature: (size, per-block checksums).
+
+        Blocks are immutable and uniform ``block_size`` through the path
+        API, so two files with identical logical content have identical
+        checksum lists without decompressing anything. Returns None for
+        directories (their changes surface as child entries).
+        """
+        if inode.is_directory:
+            return None
+        return (inode.size, tuple(b.checksum for b in inode.blocks))
+
+    def _contents_equal(self, inode_a: NyFSInode, inode_b: NyFSInode) -> bool:
+        """True when two files hold identical logical bytes.
+
+        Only invoked in the ambiguous case — equal sizes with differing
+        block layouts — so the decompression cost is paid there alone.
+        """
+        if inode_a.size != inode_b.size:
+            return False
+        return self._content(inode_a) == self._content(inode_b)
+
+    def _diff_trees(self, tree_a: Dict[str, NyFSInode],
+                    tree_b: Dict[str, NyFSInode]) -> List[Dict]:
+        """Changes FROM tree_a TO tree_b, one entry per differing path."""
+        changes = []
+        for path in sorted(set(tree_a) | set(tree_b)):
+            in_a = tree_a.get(path)
+            in_b = tree_b.get(path)
+            if in_a is None:
+                changes.append({
+                    "path": path,
+                    "kind": "directory" if in_b.is_directory else "file",
+                    "change": "added",
+                    "size_before": None,
+                    "size_after": None if in_b.is_directory else in_b.size,
+                })
+            elif in_b is None:
+                changes.append({
+                    "path": path,
+                    "kind": "directory" if in_a.is_directory else "file",
+                    "change": "removed",
+                    "size_before": None if in_a.is_directory else in_a.size,
+                    "size_after": None,
+                })
+            else:
+                sig_a = self._file_signature(in_a)
+                sig_b = self._file_signature(in_b)
+                modified = sig_a != sig_b
+                if modified and sig_a is not None and sig_b is not None \
+                        and sig_a[0] == sig_b[0]:
+                    # Equal sizes but different block layouts (partial vs
+                    # padded final block after truncate, or legacy
+                    # write_block boundaries): verify the actual bytes
+                    # before declaring a change.
+                    modified = not self._contents_equal(in_a, in_b)
+                if modified:
+                    changes.append({
+                        "path": path,
+                        "kind": "directory" if in_a.is_directory else "file",
+                        "change": "modified",
+                        "size_before": None if in_a.is_directory else in_a.size,
+                        "size_after": None if in_b.is_directory else in_b.size,
+                    })
+        return changes
+
+    def diff_snapshots(self, snap_id_a: str, snap_id_b: str) -> List[Dict]:
+        """List the changes from snapshot A to snapshot B.
+
+        Returns one entry per path whose presence or content differs:
+        ``{"path", "kind", "change" (added|removed|modified),
+        "size_before", "size_after"}``. Directories appear only for
+        added/removed; their children's changes are reported as their
+        own entries. Content comparison uses per-block checksums (no
+        decompression), so identical content is never reported as
+        modified even across different writes.
+        """
+        with self.lock:
+            return self._diff_trees(self._snapshot_path_map(snap_id_a),
+                                    self._snapshot_path_map(snap_id_b))
+
+    def diff_live(self, snap_id: str) -> List[Dict]:
+        """List the changes from a snapshot to the current live state.
+
+        Same shape as ``diff_snapshots``; useful for "what changed since
+        I last saved" against a snapshot taken at that point.
+        """
+        with self.lock:
+            return self._diff_trees(self._snapshot_path_map(snap_id),
+                                    self._live_path_map())
+
     def get_inode(self, inode_number: int) -> Optional[NyFSInode]:
         with self.lock:
             return self.inodes.get(inode_number)
