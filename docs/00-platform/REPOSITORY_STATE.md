@@ -199,8 +199,32 @@ Two things now, not one:
   - FUSE is no longer structural-only: `fuse/nyfs.py` gained a path API,
     full operation handlers, and `fusepy` mount wiring (ADR-0016).
 
+  Since 2026-08-12, `backend/seccomp.py` also carries the **ADR-0020 FFI
+  loader** for the first Rust migration: it locates the Rust seccomp
+  cdylib (`$NYRQIS_RUST_LIB` → crate `target/release/` →
+  `LD_LIBRARY_PATH`), ABI-version checks it, and routes
+  `build_program`/`validate_program`/`simulate` through the FFI, falling
+  back to pure Python on any failure. `NYRQIS_RUST_FORCE=1` turns
+  failures into errors — the conformance gate CI watches.
+
 ## Build System
-Not started.
+Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
+and is the first place the Rust crate compiles (the dev host has no Rust
+toolchain):
+
+- `rust-seccomp` — builds and tests the ADR-0020 first-migration crate
+  (`source/nyhal-linux-backend/rust/seccomp`, cargo build --release +
+  cargo test).
+- `rust-seccomp-conformance` — **non-blocking** gate that forces the
+  full Python test suite through the Rust module via the FFI loader
+  (`NYRQIS_RUST_FORCE=1`); it fails while the crate is scaffold-only and
+  turns green automatically when the port lands.
+- `backend` — the pure-Python test suite (`python3 -B test_backend.py`),
+  the correctness floor.
+
+`docs.yml` (docs site build + GitHub Pages deploy) remains separate.
+
+## Documentation Site
 
 ## Documentation Site
 Structure created; MkDocs Material configured with full nav (zero warnings

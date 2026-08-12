@@ -1,0 +1,68 @@
+# Continuous integration: Python backend + Rust seccomp crate.
+#
+# - `rust-seccomp`: builds and tests the ADR-0020 first-migration crate
+#   (source/nyhal-linux-backend/rust/seccomp). The crate is a scaffold
+#   today; this job is what keeps it compiling on every push even though
+#   the dev host has no Rust toolchain.
+# - `rust-seccomp-conformance`: the port's definition of "shipped". It
+#   forces the full Python test suite through the Rust module via the FFI
+#   loader (NYRQIS_RUST_FORCE=1). It FAILS while the crate returns
+#   ERR_INTERNAL (scaffold status) and turns green automatically when the
+#   port lands — hence continue-on-error, so it never blocks a build it
+#   is supposed to watch.
+# - `backend`: the pure-Python correctness floor (the only shipped
+#   implementation until conformance passes).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  rust-seccomp:
+    name: Rust seccomp crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/seccomp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_seccomp.so
+
+  rust-seccomp-conformance:
+    name: Rust FFI conformance (ignored until the port lands)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/seccomp
+        run: cargo build --release
+      - name: Force the full Python suite through the FFI
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_RUST_LIB: rust/seccomp/target/release/libnyrqis_seccomp.so
+          NYRQIS_RUST_FORCE: "1"
+        run: python3 -B test_backend.py
+
+  backend:
+    name: Python backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -B test_backend.py

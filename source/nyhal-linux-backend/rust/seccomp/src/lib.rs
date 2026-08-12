@@ -68,3 +68,24 @@ pub extern "C" fn nyrqis_seccomp_simulate(
 /// Free a buffer returned by this module. Scaffold: no-op.
 #[no_mangle]
 pub extern "C" fn nyrqis_seccomp_free(_ptr: *mut u8) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abi_version_is_current() {
+        assert_eq!(ABI_VERSION, 0x0001_0000);
+    }
+
+    #[test]
+    fn ffi_symbols_exist() {
+        // The loader requires these entry points; presence is part of the
+        // ABI contract (rust/seccomp/README.md).
+        let _ = nyrqis_seccomp_version;
+        let _ = nyrqis_seccomp_build_program;
+        let _ = nyrqis_seccomp_validate_program;
+        let _ = nyrqis_seccomp_simulate;
+        let _ = nyrqis_seccomp_free;
+    }
+}

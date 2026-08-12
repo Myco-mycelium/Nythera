@@ -1,19 +1,21 @@
 # Rust seccomp module — FFI boundary contract and conformance plan
 
-**Status: scaffold — Python-side conformance groundwork DONE, Rust
-implementation BLOCKED on a toolchain.** As of 2026-08-12 the dev host
-has no Rust toolchain and rustup's toolchain download does not complete
-in reasonable time (three attempts: two foreground timeouts, one
-background install that produced no output). The Python side of the
-conformance plan is implemented and verified (below); the Rust crate
-itself remains a designed, unbuilt scaffold. The pure-Python
-implementation (`backend/seccomp.py`, fully tested) remains the only
-shipped implementation until the Rust module passes the conformance
-suite *through the FFI*.
+**Status: scaffold — Python-side conformance groundwork + FFI loader
+DONE, Rust implementation BLOCKED on a toolchain.** As of 2026-08-12
+the dev host has no Rust toolchain and rustup's toolchain download does
+not complete in reasonable time (several attempts). The Python side of
+the conformance plan — the wire format and the FFI loader — is
+implemented and verified (below); the Rust crate itself remains a
+designed, unbuilt scaffold. The pure-Python implementation
+(`backend/seccomp.py`, fully tested) remains the only shipped
+implementation until the Rust module passes the conformance suite
+*through the FFI* (`.github/workflows/ci.yml` runs a non-blocking
+conformance job that forces the full Python suite through the FFI on
+every push and turns green automatically once the port lands).
 
 ### Conformance groundwork done (verified on the Python side)
 
-- `SeccompPolicy.to_json()` / `policy_from_json()` — the FFI wire
+- `SeccompPolicy.to_json()` / `policy_from_json()` — the policy wire
   format, round-trip tested for both postures and both architectures
   (`test_policy_json_roundtrip`).
 - The round-trip test **found and fixed two real aarch64 syscall-table
@@ -24,6 +26,17 @@ suite *through the FFI*.
   made the wire format ambiguous.
 - `test_syscall_tables_have_unique_numbers` guards both tables against
   regressions (numbers are the FFI wire vocabulary).
+- **FFI loader implemented** in `backend/seccomp.py`:
+  `_load_rust_backend()` (search order `$NYRQIS_RUST_LIB` → the crate's
+  `target/release/` → bare name; ABI version check against
+  `MIN_RUST_ABI_VERSION`), wired into `build_program`,
+  `validate_program`, and `simulate`. On ANY load or call failure it
+  logs once and falls back to the pure-Python path; `NYRQIS_RUST_FORCE=1`
+  turns failures into `PolicyError` (the conformance gate). The wire
+  format for compiled programs is `struct sock_filter` — 8 bytes per
+  instruction (u16 code, u8 jt, u8 jf, u32 k), the exact kernel layout;
+  `_program_to_rust_bytes` / `_program_from_rust_bytes` encode/decode it
+  and are pinned by `TestRustFfILoader` (`test_wire_format_is_…`).
 
 ## Why this module first
 
@@ -44,7 +57,7 @@ entry points take and return plain data:
 
 - `nyrqis_seccomp_version() -> uint32` — module ABI version
   (semver-major * 10000 + minor * 100 + patch).
-- `nyrqis_seccomp_build_program(policy_json: *const u8, policy_len: usize, arch: u32, out: *mut *mut u8, out_len: *mut usize) -> i32` — compile a policy (JSON, the serialized form of `build_policy`'s output) into the classic-BPF instruction list. Returns 0 on success, a negative `NyrqisErr` code on failure; `out` receives an allocated byte buffer (4 bytes per instruction) the caller frees via `nyrqis_seccomp_free`.
+- `nyrqis_seccomp_build_program(policy_json: *const u8, policy_len: usize, arch: u32, out: *mut *mut u8, out_len: *mut usize) -> i32` — compile a policy (JSON, the serialized form of `build_policy`'s output) into the classic-BPF instruction list. Returns 0 on success, a negative `NyrqisErr` code on failure; `out` receives an allocated byte buffer — **8 bytes per instruction, `struct sock_filter` layout (u16 code, u8 jt, u8 jf, u32 k), the same layout the kernel consumes** — the caller frees via `nyrqis_seccomp_free`.
 - `nyrqis_seccomp_validate_program(program: *const u8, program_len: usize) -> i32` — validate jump offsets/bounds (mirror of `seccomp.validate_program`).
 - `nyrqis_seccomp_simulate(program: *const u8, program_len: usize, syscall_nr: u32, audit_arch: u32, args: *const u64, args_len: usize) -> i64` — evaluate the program against a syscall (mirror of `seccomp.simulate`); returns the `SECCOMP_RET_*` verdict or a negative error.
 - `nyrqis_seccomp_free(ptr: *mut u8)` — free a buffer returned by this module.

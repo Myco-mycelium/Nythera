@@ -6,7 +6,9 @@ description = "Nyrqis seccomp BPF policy compiler — ADR-0020 first migration (
 
 [lib]
 name = "nyrqis_seccomp"
-crate-type = ["cdylib"]
+# cdylib is the FFI artifact the Python loader dlopens; rlib is included
+# so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
 
 # Scaffold status: no logic implemented yet (see README.md). The crate
 # is not part of any build/CI until a Rust toolchain exists on the dev

@@ -1929,6 +1929,93 @@ class TestNyFSSnapshotDiff(unittest.TestCase):
         self.assertNotIn("/games", diff)  # unchanged dir: not reported
 
 
+class TestRustFfILoader(unittest.TestCase):
+    """ADR-0020 FFI loader behavior (see rust/seccomp/README.md).
+
+    These tests pin the loader's fallback contract and the wire format
+    on hosts WITHOUT the Rust crate built. When the crate lands, the CI
+    conformance job (NYRQIS_RUST_FORCE=1) becomes the real gate: every
+    seccomp test then drives the Rust module through the FFI.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        seccomp._RUST_LIB = None
+        seccomp._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        seccomp._RUST_LIB = None
+        seccomp._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        """Point the loader at a guaranteed-absent library."""
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_seccomp.so"
+
+    def test_wire_format_is_sock_filter_layout(self):
+        # ld [4] -> code 0x20, jt 0, jf 0, k 4; u16/u8/u8/u32 LE = 8 bytes.
+        packed = seccomp._program_to_rust_bytes([(0x20, 0, 0, 4)])
+        self.assertEqual(packed, b"\x20\x00\x00\x00\x04\x00\x00\x00")
+        self.assertEqual(len(packed), 8)
+
+    def test_program_wire_roundtrip(self):
+        for posture in (
+            seccomp.build_policy(set()),
+            seccomp.build_allowlist_policy(set()),
+        ):
+            program = seccomp.build_program(posture)
+            self.assertTrue(program)
+            self.assertEqual(
+                seccomp._program_from_rust_bytes(
+                    seccomp._program_to_rust_bytes(program)
+                ),
+                program,
+            )
+
+    def test_rust_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_seccomp.so"
+        self.assertEqual(
+            seccomp._rust_lib_candidates(), ["/custom/libnyrqis_seccomp.so"]
+        )
+
+    def test_absent_backend_falls_back_to_python(self):
+        self._no_backend()
+        # This test exercises the FALLBACK path, so it must not inherit
+        # NYRQIS_RUST_FORCE from the CI conformance job env (where the
+        # whole suite runs with force=1). tearDown restores the env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(seccomp._load_rust_backend())
+        policy = seccomp.build_policy(set())  # no capabilities -> write-intent denied
+        program = seccomp.build_program(policy)
+        self.assertTrue(program)
+        # Read-only openat is allowed; a write-intent openat is denied.
+        arch = policy.arch
+        nr = seccomp._SYSCALLS[arch]["openat"]
+        self.assertEqual(
+            seccomp.simulate(program, nr, arch.audit_arch, [0, 0, os.O_RDONLY]),
+            seccomp.SECCOMP_RET_ALLOW,
+        )
+        self.assertEqual(
+            seccomp.simulate(program, nr, arch.audit_arch, [0, 0, os.O_WRONLY]),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        policy = seccomp.build_policy(set())
+        with self.assertRaises(seccomp.PolicyError):
+            seccomp.build_program(policy)
+        with self.assertRaises(seccomp.PolicyError):
+            seccomp.validate_program([(0x06, 0, 0, 0x7FFF0000)])
+        with self.assertRaises(seccomp.PolicyError):
+            seccomp.simulate(
+                [(0x06, 0, 0, 0x7FFF0000)], 0, seccomp.AUDIT_ARCH_X86_64
+            )
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -1981,6 +2068,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSLiveMount))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustFfILoader))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

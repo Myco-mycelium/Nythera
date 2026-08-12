@@ -68,8 +68,11 @@ References:
 
 import ctypes
 import enum
+import json
 import logging
+import os
 import platform
+import struct
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -809,6 +812,19 @@ def build_program(policy: SeccompPolicy) -> List[Tuple[int, int, int, int]]:
     ALLOW target) and the flag rule's ``masked == 0`` branch goes to the
     ALLOW target; anything unmatched falls through to the default ERRNO.
     """
+    lib = _load_rust_backend()
+    if lib is not None:
+        try:
+            return _rust_build_program(lib, policy)
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if _force_enabled():
+                raise
+            logger.warning(
+                "seccomp: Rust build_program failed (%s: %s); using Python",
+                type(exc).__name__, exc,
+            )
+    elif _force_enabled():
+        raise PolicyError(_rust_force_error())
     policy.validate()
     a = _Assembler()
 
@@ -873,6 +889,20 @@ def validate_program(program: List[Tuple[int, int, int, int]]) -> None:
     when the launcher is not running ``--strict-seccomp``. Fail loudly
     here at compile time instead.
     """
+    lib = _load_rust_backend()
+    if lib is not None:
+        try:
+            _rust_validate_program(lib, program)
+            return
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if _force_enabled():
+                raise
+            logger.warning(
+                "seccomp: Rust validate_program failed (%s: %s); using Python",
+                type(exc).__name__, exc,
+            )
+    elif _force_enabled():
+        raise PolicyError(_rust_force_error())
     n = len(program)
     for i, (code, jt, jf, k) in enumerate(program):
         if jt > 0xFF or jf > 0xFF:
@@ -913,6 +943,19 @@ def simulate(
     Returns:
         The seccomp return action (one of ``SECCOMP_RET_*``).
     """
+    lib = _load_rust_backend()
+    if lib is not None:
+        try:
+            return _rust_simulate(lib, program, nr, arch, args)
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if _force_enabled():
+                raise
+            logger.warning(
+                "seccomp: Rust simulate failed (%s: %s); using Python",
+                type(exc).__name__, exc,
+            )
+    elif _force_enabled():
+        raise PolicyError(_rust_force_error())
     args = (args or []) + [0] * 6
     data = bytearray(64)
     data[OFF_NR:OFF_NR + 4] = (nr & 0xFFFFFFFF).to_bytes(4, "little")
@@ -961,6 +1004,196 @@ def simulate(
         else:
             raise ValueError(f"unsupported instruction 0x{code:x}")
     raise ValueError("program terminated without a RET")
+
+
+# ---------------------------------------------------------------------------
+# Rust FFI backend (ADR-0020 priority #1; see rust/seccomp/README.md)
+#
+# The seccomp policy compiler is the first ADR-0020 migration: a
+# memory-safe Rust module (rust/seccomp/) behind a versioned FFI surface
+# (the ABI rule: plain data across stable, versioned entry points, no
+# shared mutable state). This loader is the Python side of that
+# boundary. The pure-Python implementation remains the correctness
+# floor: on ANY load or call failure the loader logs once and falls back
+# to it, so the tests keep passing unchanged. Setting NYRQIS_RUST_FORCE=1
+# turns failures into PolicyError — the conformance gate that proves
+# every seccomp test drives the Rust module through the FFI.
+# ---------------------------------------------------------------------------
+
+MIN_RUST_ABI_VERSION = 0x0001_0000  # nyrqis-seccomp 1.0.0
+
+# NyrqisErr codes (negative i32) returned by the Rust module.
+RUST_ERR_POLICY_PARSE = -1
+RUST_ERR_UNSUPPORTED_ARCH = -2
+RUST_ERR_INVALID_PROGRAM = -3
+RUST_ERR_INTERNAL = -4
+
+_RUST_LIB: Optional[ctypes.CDLL] = None
+_RUST_LIB_CHECKED = False
+
+
+def _rust_lib_candidates() -> List[str]:
+    """Search order for the Rust cdylib: $NYRQIS_RUST_LIB, the crate's
+    ``target/release/``, then a bare name (honors ``LD_LIBRARY_PATH``)."""
+    override = os.environ.get("NYRQIS_RUST_LIB")
+    if override:
+        return [override]
+    here = os.path.dirname(os.path.abspath(__file__))
+    crate_target = os.path.join(
+        here, "..", "rust", "seccomp", "target", "release",
+        "libnyrqis_seccomp.so",
+    )
+    return [crate_target, "libnyrqis_seccomp.so"]
+
+
+def _force_enabled() -> bool:
+    return os.environ.get("NYRQIS_RUST_FORCE") in ("1", "true", "yes")
+
+
+def _rust_force_error() -> str:
+    return (
+        "NYRQIS_RUST_FORCE=1 but the Rust seccomp backend is not available "
+        "(searched: " + ", ".join(_rust_lib_candidates()) + ")"
+    )
+
+
+def _raise_rust_error(code: int, context: str) -> None:
+    """Map a negative NyrqisErr code to the Python exception the
+    pure-Python path would raise for the same condition."""
+    if code == RUST_ERR_POLICY_PARSE:
+        raise PolicyError(f"{context}: Rust backend: policy parse error")
+    if code == RUST_ERR_UNSUPPORTED_ARCH:
+        raise PolicyError(f"{context}: Rust backend: unsupported architecture")
+    if code == RUST_ERR_INVALID_PROGRAM:
+        raise ValueError(f"{context}: Rust backend: invalid program")
+    raise PolicyError(f"{context}: Rust backend: internal error (code {code})")
+
+
+def _load_rust_backend() -> Optional[ctypes.CDLL]:
+    """Locate and load the Rust seccomp cdylib, or return None.
+
+    The result is cached. A library whose ABI version is below
+    ``MIN_RUST_ABI_VERSION`` is skipped. Never raises: a miss simply
+    means "use the pure-Python path".
+    """
+    global _RUST_LIB, _RUST_LIB_CHECKED
+    if _RUST_LIB_CHECKED:
+        return _RUST_LIB
+    _RUST_LIB_CHECKED = True
+    for path in _rust_lib_candidates():
+        try:
+            lib = ctypes.CDLL(path)
+        except OSError:
+            continue
+        try:
+            lib.nyrqis_seccomp_version.restype = ctypes.c_uint32
+            version = lib.nyrqis_seccomp_version()
+        except AttributeError:
+            logger.warning(
+                "seccomp: %s has no nyrqis_seccomp_version symbol; skipping", path
+            )
+            continue
+        if version < MIN_RUST_ABI_VERSION:
+            logger.warning(
+                "seccomp: %s ABI %#x is below required %#x; skipping",
+                path, version, MIN_RUST_ABI_VERSION,
+            )
+            continue
+        lib.nyrqis_seccomp_build_program.restype = ctypes.c_int
+        lib.nyrqis_seccomp_build_program.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t),
+        ]
+        lib.nyrqis_seccomp_validate_program.restype = ctypes.c_int
+        lib.nyrqis_seccomp_validate_program.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t,
+        ]
+        lib.nyrqis_seccomp_simulate.restype = ctypes.c_int64
+        lib.nyrqis_seccomp_simulate.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint64), ctypes.c_size_t,
+        ]
+        lib.nyrqis_seccomp_free.argtypes = [ctypes.c_void_p]
+        _RUST_LIB = lib
+        logger.info("seccomp: using Rust backend (%s)", path)
+        return lib
+    return None
+
+
+def _program_to_rust_bytes(
+    program: List[Tuple[int, int, int, int]],
+) -> bytes:
+    """Encode (code, jt, jf, k) tuples as ``struct sock_filter`` records
+    (8 bytes each: u16 code, u8 jt, u8 jf, u32 k — the kernel layout)."""
+    out = bytearray()
+    for code, jt, jf, k in program:
+        out += struct.pack("<HBBI", code, jt, jf, k)
+    return bytes(out)
+
+
+def _program_from_rust_bytes(buf: bytes) -> List[Tuple[int, int, int, int]]:
+    """Decode the Rust backend's ``sock_filter`` wire format back into
+    (code, jt, jf, k) tuples."""
+    insn_size = struct.calcsize("<HBBI")
+    if len(buf) % insn_size:
+        raise PolicyError(
+            f"Rust backend returned {len(buf)} bytes "
+            f"(not a multiple of {insn_size})"
+        )
+    return [
+        tuple(struct.unpack_from("<HBBI", buf, off))
+        for off in range(0, len(buf), insn_size)
+    ]
+
+
+def _rust_build_program(
+    lib: ctypes.CDLL, policy: SeccompPolicy
+) -> List[Tuple[int, int, int, int]]:
+    """Compile via the Rust module: policy JSON (the shared wire format)
+    + audit arch in, ``sock_filter`` byte buffer out."""
+    payload = json.dumps(policy.to_json()).encode("utf-8")
+    arch = ctypes.c_uint32(policy.arch.audit_arch)
+    out = ctypes.c_void_p()
+    out_len = ctypes.c_size_t()
+    rc = lib.nyrqis_seccomp_build_program(
+        payload, len(payload), arch, ctypes.byref(out), ctypes.byref(out_len)
+    )
+    if rc != 0:
+        _raise_rust_error(rc, "build_program")
+    try:
+        program = _program_from_rust_bytes(ctypes.string_at(out, out_len.value))
+    finally:
+        lib.nyrqis_seccomp_free(out)
+    # Routes through the Rust validator too (lib is loaded).
+    validate_program(program)
+    return program
+
+
+def _rust_validate_program(
+    lib: ctypes.CDLL, program: List[Tuple[int, int, int, int]]
+) -> None:
+    buf = _program_to_rust_bytes(program)
+    rc = lib.nyrqis_seccomp_validate_program(buf, len(buf))
+    if rc != 0:
+        _raise_rust_error(rc, "validate_program")
+
+
+def _rust_simulate(
+    lib: ctypes.CDLL,
+    program: List[Tuple[int, int, int, int]],
+    nr: int,
+    arch: int,
+    args: Optional[List[int]],
+) -> int:
+    buf = _program_to_rust_bytes(program)
+    arg_arr = (ctypes.c_uint64 * 6)(*((list(args or []) + [0] * 6)[:6]))
+    verdict = lib.nyrqis_seccomp_simulate(
+        buf, len(buf), ctypes.c_uint32(nr), ctypes.c_uint32(arch), arg_arr, 6
+    )
+    if verdict < 0:
+        _raise_rust_error(int(verdict), "simulate")
+    return int(verdict)
 
 
 # ---------------------------------------------------------------------------
