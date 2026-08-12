@@ -4,9 +4,14 @@ NyFS FUSE Filesystem Implementation
 
 Implements the NyFS filesystem as a user-space FUSE daemon per ADR-0016,
 providing the guarantees of NPS-004 §4:
-- Copy-on-Write (CoW): writes never mutate existing blocks — a write
-  appends a new block and swaps the inode's block list, so snapshots
-  (which deep-copy the inode table) remain immutable point-in-time views.
+- Copy-on-Write (CoW): writes never mutate existing blocks. File content
+  is stored as a list of fixed-size (``BLOCK_SIZE``, 64 KiB by default)
+  blocks; a write rewrites only the blocks it touches — the merge-and-
+  recompress-the-whole-file path was replaced after first-pass
+  benchmarking showed it dominated NyFS overhead (40.5 vs 884 MB/s
+  write; ``tests/BENCHMARK_RESULTS.md`` §3). Old blocks live on in any
+  snapshot taken before the write, so snapshots (which deep-copy the
+  inode table) remain immutable point-in-time views.
 - Snapshots: immutable point-in-time copies of filesystem state.
 - Checksumming: every block carries a SHA256 of its uncompressed data,
   verified on read.
@@ -66,6 +71,12 @@ class NyFSBlock:
     Per NPS-004 §4, all blocks are checksummed for integrity and
     compressed with Zstandard (ADR-0007). Blocks are immutable once
     written — CoW never mutates them.
+
+    Through the path API every block is exactly ``block_size`` bytes,
+    even for a short file (the final block is zero-padded; reads clamp
+    to the logical size so padding never leaks). The legacy
+    ``write_block`` may append arbitrary-size blocks; ``write``/``read``
+    re-block such inodes on first use.
     """
 
     block_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -139,16 +150,29 @@ class NyFSFilesystem:
     Implements the storage guarantees from NPS-004 §4: copy-on-write,
     snapshots, checksumming, and transparent compression, behind a
     path-based API usable both directly and from FUSE operations.
+
+    File content is stored as fixed-size blocks (``block_size``, default
+    64 KiB). A write rebuilds only the blocks it overlaps, so its
+    compress cost is bounded by the bytes written, not the file size.
     """
 
-    def __init__(self, base_path: str):
+    BLOCK_SIZE = 65536  # default CoW block size, in bytes
+
+    def __init__(self, base_path: str, block_size: int = BLOCK_SIZE):
         """Initialize the NyFS filesystem.
 
         Args:
             base_path: Path to the backing storage directory
+            block_size: Fixed block size in bytes for CoW extents
+                (default 64 KiB). A write rewrites only the blocks it
+                touches, so this bounds the per-write compress cost.
         """
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
+
+        if block_size <= 0:
+            raise ValueError(f"block_size must be positive, got {block_size}")
+        self.block_size = block_size
 
         self.inode_counter = 1
         self.root_inode = self._create_inode(0, "/", stat.S_IFDIR | 0o755, is_directory=True)
@@ -295,69 +319,203 @@ class NyFSFilesystem:
     # Data operations (CoW + checksum + compression)
     # ------------------------------------------------------------------
 
+    def _decompress_verified(self, block: NyFSBlock) -> bytes:
+        """Decompress a block and verify its checksum (NPS-004 §4.3)."""
+        data = block.decompress()
+        computed = hashlib.sha256(data).hexdigest()
+        if computed != block.checksum:
+            logger.error(
+                f"Checksum mismatch for block {block.block_id}: "
+                f"expected {block.checksum}, got {computed}"
+            )
+            raise ValueError("Block checksum verification failed")
+        return data
+
     def _content(self, inode: NyFSInode) -> bytes:
-        return b"".join(b.decompress() for b in inode.blocks)
+        data = b"".join(self._decompress_verified(b) for b in inode.blocks)
+        # Blocks are fixed-size and the final block is padded to
+        # ``block_size``; the file's logical size is ``inode.size``, so
+        # clamp to it rather than exposing trailing padding.
+        return data[:inode.size]
+
+    def _make_block(self, data: bytes) -> NyFSBlock:
+        """Create a checksummed, compressed CoW block (level 3, ADR-0007)."""
+        block = NyFSBlock(data=data, compression_level=3)
+        block.compute_checksum()
+        block.compress()
+        return block
+
+    def _normalize_blocks(self, inode: NyFSInode) -> None:
+        """Re-block an inode to uniform ``block_size`` blocks in place.
+
+        The path API (read/write/truncate) assumes every block is exactly
+        ``block_size`` bytes so that block ``i`` covers ``[i*bs, (i+1)*bs)``.
+        The legacy ``write_block`` appends arbitrary-size blocks, so an
+        inode touched by it can violate the invariant; re-blocking from
+        the logical content restores it (a no-op for uniform-size files).
+        """
+        if all(len(b.decompress()) == self.block_size for b in inode.blocks):
+            return
+        content = self._content(inode)
+        inode.blocks = [
+            self._make_block(content[i:i + self.block_size])
+            for i in range(0, len(content), self.block_size)
+        ]
+
+    def _coalesce_blocks(self, blocks: List[NyFSBlock], size: int) -> List[NyFSBlock]:
+        """Merge the surviving tail of ``blocks`` into ``size`` bytes of
+        CoW blocks, preserving untouched leading blocks by reference.
+
+        Only the last (possibly partial) block is re-written; every block
+        fully below ``size`` is carried over untouched — that is the
+        per-block CoW guarantee that replaces whole-file recompression.
+
+        Block starts are tracked by cumulative data length (a final
+        block may be partial after a previous truncate), never assumed
+        to be ``i * block_size``.
+        """
+        keep, tail, tail_start = [], [], None
+        start = 0
+        for block in blocks:
+            block_len = len(self._decompress_verified(block))
+            if start + block_len <= size:
+                keep.append(block)
+            else:
+                tail.append(block)
+                if tail_start is None:
+                    tail_start = start
+            start += block_len
+        if not tail:
+            return keep
+        tail_data = b"".join(self._decompress_verified(b) for b in tail)
+        merged = tail_data[:size - tail_start]
+        if merged:
+            keep.append(self._make_block(merged))
+        return keep
 
     def read(self, inode_or_path, size: int = -1, offset: int = 0) -> bytes:
-        """Read ``size`` bytes starting at ``offset`` (size -1 = to EOF)."""
+        """Read ``size`` bytes starting at ``offset`` (size -1 = to EOF).
+
+        Reads are block-aware: only the blocks overlapping the requested
+        range are decompressed, not the whole file.
+        """
         with self.lock:
             inode = self._as_inode(inode_or_path)
             if inode.is_directory:
                 raise NyFSError(errno.EISDIR, "cannot read a directory")
-            data = self._content(inode)
-            if offset >= len(data):
+            self._normalize_blocks(inode)
+            if offset >= inode.size:
+                inode.atime = time.time()
                 return b""
-            data = data[offset:]
-            if size is not None and size >= 0:
-                data = data[:size]
+            if size is None or size < 0:
+                size = inode.size - offset
+            size = min(size, inode.size - offset)
+            if size <= 0:
+                inode.atime = time.time()
+                return b""
+
+            first = offset // self.block_size
+            last = (offset + size - 1) // self.block_size
+            pieces = []
+            for i in range(first, last + 1):
+                if i >= len(inode.blocks):
+                    break
+                pieces.append(self._decompress_verified(inode.blocks[i]))
+            data = b"".join(pieces)
+            rel = offset - first * self.block_size
+            data = data[rel:rel + size]
             inode.atime = time.time()
             return data
 
     def write(self, inode_or_path, data: bytes, offset: int = 0) -> int:
-        """Write ``data`` at ``offset`` with copy-on-write semantics.
+        """Write ``data`` at ``offset`` with per-block copy-on-write.
 
-        CoW: the existing block list is never mutated; a new block
-        holding the merged content is appended and the inode's block list
-        is replaced. Old blocks live on in any snapshot taken before the
-        write (NPS-004 §4, NPS-006 §4 overlay model).
+        CoW (NPS-004 §4.1): existing blocks are never mutated. Only the
+        blocks overlapping ``[offset, offset + len(data))`` are replaced
+        with new blocks; untouched blocks are carried over by reference,
+        so a write's compress cost is bounded by the bytes written rather
+        than the file size. Blocks are always ``block_size`` bytes, so a
+        block that ends beyond EOF is rebuilt at full size and the file's
+        logical size (``inode.size``) is what read/getattr expose — a
+        short final write never leaks trailing zero padding. A gap past
+        EOF is zero-filled. Old blocks live on in any snapshot taken
+        before the write.
         """
         with self.lock:
             inode = self._as_inode(inode_or_path)
             if inode.is_directory:
                 raise NyFSError(errno.EISDIR, "cannot write a directory")
-            current = self._content(inode)
-            if offset > len(current):
-                current = current + b"\x00" * (offset - len(current))
-            merged = current[:offset] + data + current[offset + len(data):]
+            self._normalize_blocks(inode)
+            bs = self.block_size
+            end = offset + len(data)
+            n = max(len(inode.blocks), (end + bs - 1) // bs)
+            final_size = max(inode.size, end)
 
-            block = NyFSBlock(data=merged, compression_level=3)
-            block.compute_checksum()
-            block.compress()
-            inode.blocks = [block]  # CoW: swap, never mutate
-            inode.size = len(merged)
+            new_blocks: List[NyFSBlock] = []
+            for i in range(n):
+                b_start = i * bs
+                b_end = b_start + bs
+                if b_end <= offset or b_start >= end:
+                    # Not touched by this write: carry the block over by
+                    # reference, or zero-fill a gap block that lies
+                    # between the existing content and a past-EOF write.
+                    if i < len(inode.blocks):
+                        new_blocks.append(inode.blocks[i])
+                    elif final_size > b_start:
+                        # Gap block between existing content and a
+                        # past-EOF write (or beyond EOF entirely).
+                        new_blocks.append(self._make_block(b"\x00" * bs))
+                    continue
+
+                old = (self._decompress_verified(inode.blocks[i])
+                       if i < len(inode.blocks) else b"")
+                merged = bytearray(bs)
+                merged[:len(old)] = old[:bs]
+                w_start = max(offset, b_start)
+                w_end = min(end, b_end)
+                merged[w_start - b_start:w_end - b_start] = \
+                    data[w_start - offset:w_end - offset]
+                new_blocks.append(self._make_block(bytes(merged)))
+
+            inode.blocks = new_blocks  # CoW: swap, never mutate
+            inode.size = final_size
             inode.mtime = time.time()
             return len(data)
 
     def truncate(self, inode_or_path, length: int) -> None:
-        """Truncate a file to ``length`` bytes (CoW, see write)."""
+        """Truncate a file to ``length`` bytes (per-block CoW, see write).
+
+        Shortening rewrites only the tail block straddling ``length``;
+        leading blocks are carried over untouched. Extending zero-fills
+        the gap with new blocks.
+        """
         with self.lock:
             inode = self._as_inode(inode_or_path)
             if inode.is_directory:
                 raise NyFSError(errno.EISDIR, "cannot truncate a directory")
-            current = self._content(inode)
-            if length < len(current):
-                merged = current[:length]
+            if length == inode.size:
+                return
+            bs = self.block_size
+            if length < inode.size:
+                inode.blocks = self._coalesce_blocks(inode.blocks, length)
             else:
-                merged = current + b"\x00" * (length - len(current))
-            block = NyFSBlock(data=merged, compression_level=3)
-            block.compute_checksum()
-            block.compress()
-            inode.blocks = [block]
-            inode.size = len(merged)
+                # Extension: preserve existing content, zero-fill the gap,
+                # and re-block at full ``block_size`` (same convention as
+                # write) so reads see real zeroes and no padding leaks.
+                content = self._content(inode) + b"\x00" * (length - inode.size)
+                inode.blocks = [
+                    self._make_block(content[i:i + bs])
+                    for i in range(0, length, bs)
+                ]
+            inode.size = length
             inode.mtime = time.time()
 
     # Legacy block-level API (kept for compatibility)
     def write_block(self, inode_number: int, data: bytes, compress: bool = True) -> NyFSBlock:
+        # Legacy compatibility API: appends a block of ``data``'s size
+        # (arbitrary, not ``block_size``). Mixing this with the path API
+        # is supported via ``_normalize_blocks`` re-blocking, but for new
+        # code prefer ``write`` which maintains uniform blocks.
         with self.lock:
             inode = self.inodes.get(inode_number)
             if inode is None:

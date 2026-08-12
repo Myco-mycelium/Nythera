@@ -99,8 +99,10 @@ revisiting, not whether to attempt it at all.
   call path at ~50 calls/s steady state, throttling legitimate traffic
   shapes — the parameter sweep and adversarial test remain;
 - §4 proxy data: NyFS ops-layer vs native throughput, with the
-  whole-file CoW/compress path identified as the dominant cost; the
-  live FUSE-vs-ext4 comparison still requires a kernel mount.
+  whole-file CoW/compress path identified as the dominant cost; that
+  path has since been replaced by per-block CoW (2026-08-12,
+  `fuse/nyfs.py`), so the proxy numbers need re-running; the live
+  FUSE-vs-ext4 comparison still requires a kernel mount.
 
 §2 (Zstd level selection) now has first-pass data (2026-08-12,
 `tests/BENCHMARK_RESULTS.md` §2): a level sweep on a synthetic corpus —

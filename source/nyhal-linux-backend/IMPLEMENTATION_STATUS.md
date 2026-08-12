@@ -1,7 +1,7 @@
 ---
 title: Nyrqis Linux Backend Implementation Status
 document_id: IMPL-001
-version: 0.2.0
+version: 0.3.0
 status: In Progress
 classification: Technical
 created: 2026-07-15
@@ -24,10 +24,10 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Container Primitives | `backend/container.py`, `backend/launcher.py` | ✓ Implemented | Process/namespace isolation, cgroups v1/v2, shell-free launcher, cgroup v1 hardening |
 | Capability Enforcement | `backend/capability.py`, `backend/seccomp.py`, `backend/launcher.py` | ✓ Implemented | Registry + data-plane seccomp-BPF enforcement in-container (FIND-BACKEND-002) |
 | IPC Semantics | `ipc/core.py` | ✓ Implemented | send/receive/call/notify primitives, receive-side capability check, token-bucket rate limiting |
-| Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, CoW, snapshots, checksumming, compression, FUSE operations + fusepy wiring (ADR-0016) |
+| Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **54/54 passing** (`python3 test_backend.py`), including end-to-end container launches verified on this host.
+Test suite: **71/71 passing** (`python3 test_backend.py`), including end-to-end container launches verified on this host.
 
 ## Detailed Implementation Status
 
@@ -125,7 +125,7 @@ Test suite: **54/54 passing** (`python3 test_backend.py`), including end-to-end 
 **Implemented Features:**
 - ✓ `NyFSFilesystem` core with inode management and a **path-based API** (`resolve`/`resolve_parent`, real parent/child tree linking, mkdir/mknod/unlink/rmdir/rename)
 - ✓ `NyFSBlock` with compression and checksumming
-- ✓ Copy-on-Write (CoW) file/directory operations
+- ✓ **Per-block Copy-on-Write (CoW)** (2026-08-12): file content is stored as fixed-size blocks (`block_size`, 64 KiB default; configurable per filesystem instance). A write rebuilds only the blocks it overlaps — untouched blocks are carried over by reference — so per-write compress cost is bounded by bytes written, not file size. This replaces the earlier single-block-per-file implementation, whose whole-file recompress on every write was the dominant cost in the first-pass NyFS benchmark (40.5 vs 884 MB/s write). Reads are block-aware (only overlapping blocks decompressed) and verify each block's checksum on every read (NPS-004 §4.3); truncation preserves leading blocks and only rewrites the boundary block; past-EOF writes zero-fill gap blocks and expose no trailing padding.
 - ✓ Snapshots: create, restore, list — restore rebinds the root inode so path lookups reach the restored tree (snapshot immutability verified by test)
 - ✓ SHA256 checksumming for data integrity
 - ✓ Zstandard compression (with fallback if unavailable)
@@ -221,7 +221,7 @@ The following benchmarks are required before moving from `Experimental` to `Acce
 | Benchmark | Target | Status | Notes |
 |-----------|--------|--------|-------|
 | IPC Round-trip Latency | < 100µs | First-pass data collected | In-process control plane: p50 92µs / p95 157µs / p99 213µs (2026-08-12). Real transport + load variants pending — target not yet judged |
-| FUSE I/O Overhead | < 20% | Proxy data only | Ops-layer vs native: 40 MB/s write / 242 MB/s read (+2,085%/+766%), dominated by the whole-file CoW/compress path. Live-mount comparison pending `/dev/fuse` |
+| FUSE I/O Overhead | < 20% | Proxy data only | Ops-layer vs native: 40 MB/s write / 242 MB/s read (+2,085%/+766%). The whole-file CoW/compress path that dominated those numbers has been replaced by per-block CoW (2026-08-12) — numbers need re-running. Live-mount comparison still pending `/dev/fuse` access |
 | Token-Bucket Parameters | TBD | First-pass data collected | Default bucket caps a client→endpoint call path at ~50 calls/s steady state — ADR-0009 defaults need revisiting; sweep + adversarial test pending |
 | Compression Ratio | > 30% | Pending | ADR-0007 |
 

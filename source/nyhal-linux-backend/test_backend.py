@@ -884,6 +884,108 @@ class TestNyFSPathAPI(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.fs.read_block(f.inode_number)
 
+    def test_checksum_detects_corruption_on_path_read(self):
+        # NPS-004 4.3: silent corruption must be detected on read, not
+        # only via the legacy read_block API.
+        f = self.fs.create_file("/c2.txt")
+        self.fs.write(f, b"integrity")
+        f.blocks[0].checksum = "0" * 64  # tamper
+        with self.assertRaises(ValueError):
+            self.fs.read(f)
+
+    def test_multi_block_write_splits_into_fixed_blocks(self):
+        bs = self.fs.block_size
+        f = self.fs.create_file("/big.bin")
+        payload = b"x" * (2 * bs + 100)  # spans 3 blocks
+        self.fs.write(f, payload)
+
+        self.assertEqual(len(f.blocks), 3)
+        self.assertEqual(f.size, len(payload))
+        # Every block is exactly block_size bytes (no padding leaks).
+        self.assertTrue(all(len(b.decompress()) == bs for b in f.blocks))
+        self.assertEqual(self.fs.read(f), payload)
+
+    def test_partial_write_rewrites_only_touched_blocks(self):
+        # Per-block CoW: a write in the middle of a multi-block file must
+        # carry untouched blocks over by reference (no whole-file
+        # recompression) — the benchmark-identified cost driver.
+        bs = self.fs.block_size
+        f = self.fs.create_file("/cow.bin")
+        self.fs.write(f, b"A" * (3 * bs))
+        before = list(f.blocks)
+
+        # Overwrite a single byte inside block 1.
+        self.fs.write(f, b"X", offset=bs + 10)
+
+        self.assertEqual(len(f.blocks), 3)
+        # Blocks 0 and 2 are untouched, carried over by reference.
+        self.assertIs(f.blocks[0], before[0])
+        self.assertIs(f.blocks[2], before[2])
+        # Block 1 was rebuilt (new object, new data).
+        self.assertIsNot(f.blocks[1], before[1])
+        data = self.fs.read(f)
+        self.assertEqual(data[bs + 10:bs + 11], b"X")
+        self.assertEqual(data[:bs], b"A" * bs)
+
+    def test_boundary_spanning_writes_truncate_and_extend(self):
+        # Regression: writes that straddle a block boundary, truncation
+        # to a boundary, append at that boundary, and zero-extension must
+        # all compose without losing or misplacing bytes.
+        fs = NyFSFilesystem(self.temp_dir, block_size=4096)
+        f = fs.create_file("/boundary.bin")
+
+        fs.write(f, b"A" * 4090)
+        fs.write(f, b"XY" * 10, offset=4088)  # spans blocks 0/1
+        exp = b"A" * 4088 + b"XY" * 10
+        self.assertEqual(fs.read(f), exp)
+
+        fs.truncate(f, 4096)
+        self.assertEqual(fs.read(f), exp[:4096])
+
+        fs.write(f, b"TAIL", offset=4096)
+        self.assertEqual(fs.read(f), exp[:4096] + b"TAIL")
+        self.assertEqual(fs.read(f, 100, 4088), exp[4088:4096] + b"TAIL")
+
+        fs.truncate(f, 5000)
+        # exp[:4096] + TAIL is 4100 bytes; 5000 - 4100 = 900 zero bytes.
+        self.assertEqual(fs.read(f), exp[:4096] + b"TAIL" + b"\x00" * 900)
+
+    def test_legacy_write_block_mixes_with_path_api(self):
+        # The legacy write_block appends arbitrary-size blocks; the path
+        # API must re-block (normalize) before operating on such an inode
+        # so block-indexed reads/writes stay aligned.
+        f = self.fs.create_file("/legacy.bin")
+        self.fs.write_block(f.inode_number, b"AB")   # 2-byte block
+        self.fs.write_block(f.inode_number, b"CDE")  # 3-byte block
+        self.assertEqual(self.fs.read(f), b"ABCDE")
+        self.fs.write(f, b"XY", offset=2)
+        self.assertEqual(self.fs.read(f), b"ABXYE")
+        self.assertEqual(self.fs.read(f, 3, 2), b"XYE")
+
+    def test_past_eof_write_zero_fills_gap_blocks(self):
+        fs = NyFSFilesystem(self.temp_dir, block_size=4096)
+        f = fs.create_file("/sparse.bin")
+        fs.write(f, b"X" * 10, offset=5000)
+        data = fs.read(f)
+        self.assertEqual(len(data), 5010)
+        self.assertEqual(data[:100], b"\x00" * 100)
+        self.assertEqual(data[-10:], b"X" * 10)
+
+    def test_snapshot_keeps_old_blocks_after_multi_block_write(self):
+        bs = self.fs.block_size
+        f = self.fs.create_file("/snap.bin")
+        self.fs.write(f, b"B" * (2 * bs))
+        snap = self.fs.create_snapshot()
+
+        self.fs.write(f, b"C" * (2 * bs))
+        self.assertEqual(self.fs.read(f), b"C" * (2 * bs))
+
+        self.fs.restore_snapshot(snap)
+        # Restore swaps the inode table, so re-resolve the path rather
+        # than holding a pre-restore inode reference.
+        restored = self.fs.resolve("/snap.bin")
+        self.assertEqual(self.fs.read(restored), b"B" * (2 * bs))
+
 
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""

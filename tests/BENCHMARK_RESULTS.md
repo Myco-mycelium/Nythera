@@ -70,15 +70,18 @@ disk/tmpdir. Small-file creation: 1,000 files via `mknod`.
 | NyFS read | 242 MB/s (+766%) |
 | Small-file create | ~29,400 files/s |
 
-**Structural note (why the overhead is what it is):** this implementation
-stores each inode's content as a single merged block, so every 4 KiB
-write merges + recompresses the full 8 MiB buffer and every read
-decompresses it. The overhead measured here is therefore dominated by the
-whole-file CoW/compress path, not by FUSE context switches. The plan's
-actual question — FUSE-vs-ext4 with a live kernel mount — is **still
-pending**: it requires `fusepy` + `/dev/fuse`, and the per-block CoW
-rewrite is prerequisite work before those numbers mean anything for
-gaming workloads (NPS-006 §5).
+**Structural note (why the overhead is what it is):** when these numbers
+were collected, the implementation stored each inode's content as a
+single merged block, so every 4 KiB write merged + recompressed the full
+8 MiB buffer and every read decompressed it. That whole-file
+CoW/compress path was therefore the dominant cost, not FUSE context
+switches. **Per-block CoW landed 2026-08-12** (`fuse/nyfs.py` — fixed
+64 KiB blocks; a write rebuilds only the blocks it overlaps), so these
+proxy numbers are now **superseded and must be re-run** before they are
+quoted again. The plan's actual question — FUSE-vs-ext4 with a live
+kernel mount — is **still pending**: it requires `fusepy` + `/dev/fuse`
+access (not available in this environment), and remains the prerequisite
+for judging the FUSE decision for gaming workloads (NPS-006 §5).
 
 ## 4. Zstd Compression-Level Sweep (BENCHMARK_PLAN §2)
 
@@ -125,7 +128,7 @@ Group review.
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data collected (ops-layer vs native); live-mount comparison pending `/dev/fuse` + per-block CoW work |
+| §4 FUSE overhead | Proxy data collected (ops-layer vs native) but **superseded by the per-block CoW rewrite (2026-08-12)** — needs re-running; live-mount comparison pending `/dev/fuse` access |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next
