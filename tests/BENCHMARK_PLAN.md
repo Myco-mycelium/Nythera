@@ -124,7 +124,9 @@ measured (`--save-levers`, §8–9): 1 MiB blocks cut save ~40–60% for the
 (6.52 — zero padding compresses away); batched fsync is a wash on a
 single disk (fsync count unchanged); **journal commit (`save(use_journal=
 True)`, one fsync per transaction) is decisive — ~60–70× faster** (0.20 s
-vs 11–15 s, §9; ~61× on a 3,855-file real corpus, §12). The §2 data
+vs 11–15 s, §9; ~61× on a 3,855-file real corpus, §12) and became the
+default commit mode on 2026-08-12 (suite green under the flipped
+default; interleaved kept as `use_journal=False`, pinned by §7/§10/§12). The §2 data
 points also grew: a real-corpus sample from `/usr/share` gives **1.29 : 1**
 end-to-end (§12 — below the synthetic corpus's 6.42 : 1, no gate met),
 and the plan's LZ4 comparison is approximated with zlib-6 (§11,

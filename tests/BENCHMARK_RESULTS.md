@@ -360,8 +360,11 @@ daemon must either compact periodically or bound it some other way;
 (3) this measures a cold single transaction — mixed workloads and the
 compaction pass itself are untested. On a small-file corpus the gap is
 larger still (§12: 123 s interleaved vs 2.0 s journal for 3,855 blocks).
-Whether journal commit becomes the *default* is a durability-layout
-decision for Architecture Group review, not flipped silently here.
+**Status: journal commit became the default (`use_journal=True`) on
+2026-08-12** per implementer decision, with the full suite (99/99)
+green under the flipped default; the interleaved path remains available
+as `use_journal=False` and is what §7/§10/§12 pin for their recorded
+numbers. Architecture Group review remains the formal governance step.
 
 ## 10. Cross-Snapshot Deduplication — CoW Block Sharing (2026-08-12)
 

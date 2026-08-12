@@ -872,7 +872,7 @@ class NyFSFilesystem:
             ],
         }
 
-    def save(self, batched_fsync: bool = False, use_journal: bool = False,
+    def save(self, batched_fsync: bool = False, use_journal: bool = True,
              compact_threshold: Optional[int] = None) -> None:
         """Persist the current filesystem state atomically.
 
@@ -898,8 +898,8 @@ class NyFSFilesystem:
         unchanged, so the gain — if any — comes from kernel write
         coalescing; measured in ``tests/BENCHMARK_RESULTS.md`` §8.
 
-        ``use_journal`` replaces the per-block fsyncs with an
-        append-only journal (``state/journal.bin``): every new block
+        ``use_journal`` (the default) replaces the per-block fsyncs with
+        an append-only journal (``state/journal.bin``): every new block
         payload is appended to the journal and the whole transaction is
         fsynced ONCE, then the metadata swap becomes the commit point.
         The crash-consistency guarantee is unchanged — the journal is
@@ -908,8 +908,13 @@ class NyFSFilesystem:
         mid-append) is ignored by ``load()``. The journal is compacted
         (materialize referenced blocks into ``state/blocks/``, truncate)
         once it exceeds ``journal_compact_bytes``. Journal commit is the
-        design lever the §8 batched-fsync finding named as remaining;
-        measured in ``tests/BENCHMARK_RESULTS.md`` §9.
+        decisive commit-cost lever (BENCHMARK_RESULTS.md §9: ~60–70×
+        faster than fsync-per-block at ~0.3% on-disk overhead); it
+        became the default on 2026-08-12 per implementer decision, with
+        Architecture Group review still the formal governance step.
+        ``use_journal=False`` restores the per-block interleaved path
+        (``batched_fsync=True`` groups the fsyncs; both are kept for
+        compatibility and benchmarking).
         """
         with self.lock:
             blocks_dir = self._blocks_dir()

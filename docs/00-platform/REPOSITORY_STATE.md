@@ -348,6 +348,16 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**journal commit is now the default commit mode**):
+  `save()` defaults to `use_journal=True` (one fsync per transaction;
+  interleaved path kept as `use_journal=False`). The full suite passes
+  99/99 with the default flipped, including the live FUSE mount
+  durability test (the fsync handler now commits via the journal, and
+  the test asserts a non-empty journal). Benchmark sections that
+  document the interleaved durability baseline (§7 persist, §10 dedup,
+  §12 real corpus) pin `use_journal=False` explicitly so their recorded
+  numbers stay reproducible. Implementer decision 2026-08-12;
+  Architecture Group review is the formal governance step.
 - 2026-08-12 (**journal commit + benchmark followups**): `save()` gained
   `use_journal=True` — an append-only journal (`state/journal.bin`)
   fsynced once per transaction before the atomic metadata swap, with

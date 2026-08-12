@@ -489,13 +489,16 @@ def benchmark_nyfs_persisted():
             fs.write(fs.create_file(path), body)
         write_s = time.perf_counter() - t0
 
-        # Commit.
+        # Commit. Pinned to the interleaved path (use_journal=False) so
+        # this section keeps measuring the fsync-per-block durability
+        # contract baseline documented in §7; journal commit (the
+        # default) is measured separately in §9.
         t0 = time.perf_counter()
-        fs.save()
+        fs.save(use_journal=False)
         save_s = time.perf_counter() - t0
         # Re-save of an unchanged state (immutable-block skip path).
         t0 = time.perf_counter()
-        fs.save()
+        fs.save(use_journal=False)
         resave_s = time.perf_counter() - t0
         # End-to-end on-disk footprint: block store + inode tables + any
         # snapshot/metadata files under the state tree.
@@ -640,7 +643,10 @@ def benchmark_snapshot_dedup():
         for path, body in corpus:
             fs.write(fs.create_file(path), body)
         snap1 = fs.create_snapshot()
-        fs.save()
+        # Pinned to interleaved so the block-store growth metric is the
+        # .bin-file delta documented in §10 (journal mode holds payloads
+        # in the journal until compaction).
+        fs.save(use_journal=False)
         state_dir = os.path.join(tmp, "fs", "state")
         after_snap1 = _state_tree_bytes(state_dir)
 
@@ -654,7 +660,7 @@ def benchmark_snapshot_dedup():
             head = fs.read(med, 4096, 0)
             fs.write(med, bytes(b ^ 0xFF for b in head), 0)
         snap2 = fs.create_snapshot()
-        fs.save()
+        fs.save(use_journal=False)
         after_snap2 = _state_tree_bytes(state_dir)
         bins = [n for n in os.listdir(os.path.join(state_dir, "blocks"))
                 if n.endswith(".bin")]

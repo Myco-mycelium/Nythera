@@ -1075,10 +1075,13 @@ class TestNyFSPersistence(unittest.TestCase):
         self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"committed-v1")
 
     def test_tampered_block_file_detected_on_read(self):
+        # Interleaved save materializes .bin files, which is what this
+        # on-disk tamper scenario exercises (journal mode keeps payloads
+        # in the journal until compaction).
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/t.bin")
         fs.write(f, b"integrity-check")
-        fs.save()
+        fs.save(use_journal=False)
         block_id = f.blocks[0].block_id
         del fs
 
@@ -1093,19 +1096,30 @@ class TestNyFSPersistence(unittest.TestCase):
 
     def test_resave_is_idempotent(self):
         # Blocks are immutable (CoW), so re-saving an unchanged
-        # filesystem must not rewrite any block file (reviewer-flagged:
+        # filesystem must not rewrite anything (reviewer-flagged:
         # random-UUID block IDs could otherwise churn the block store).
+        # Journal mode (the default) appends no records on an unchanged
+        # re-save; the interleaved path leaves block-file mtimes alone.
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/idem.bin")
         fs.write(f, b"data" * 5000)
+        fs.save()  # journal mode (default)
+        before = len(fs._scan_journal())
+        self.assertGreater(before, 0)
+        time.sleep(0.01)
         fs.save()
+        self.assertEqual(len(fs._scan_journal()), before)
+
+        # Interleaved path: materialize to .bin, then confirm no block
+        # file is rewritten by a further interleaved re-save.
+        fs.save(use_journal=False)
         blocks_dir = os.path.join(self.base, "state", "blocks")
         first = {
             p: os.path.getmtime(os.path.join(blocks_dir, p))
             for p in os.listdir(blocks_dir)
         }
         time.sleep(0.01)
-        fs.save()
+        fs.save(use_journal=False)
         second = os.listdir(blocks_dir)
         self.assertEqual(sorted(first), sorted(second))
         for name in second:
@@ -1115,13 +1129,16 @@ class TestNyFSPersistence(unittest.TestCase):
             )
 
     def test_gc_removes_orphaned_blocks(self):
+        # gc_blocks reclaims .bin files, so this scenario uses the
+        # interleaved (materialized) path; journal garbage is reclaimed
+        # by compaction instead.
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/g.bin")
         fs.write(f, b"a" * 100)
         old_id = f.blocks[0].block_id
         snap = fs.create_snapshot()   # pins the 'a' block
         fs.write(f, b"b" * 100)       # CoW: new block for the live state
-        fs.save()
+        fs.save(use_journal=False)
         # With the snapshot holding the old block, gc removes nothing yet.
         self.assertEqual(fs.gc_blocks(), 0)
         # Dropping the snapshot orphans the old block; gc reclaims it.
@@ -1155,50 +1172,66 @@ class TestNyFSPersistence(unittest.TestCase):
         self.assertEqual(fs2.read(fs2.resolve("/games/save.sav")), payload)
 
     def test_batched_fsync_leaves_no_temp_files(self):
-        # The grouped path publishes every temp via rename; none may be
-        # left behind, and the blocks dir holds exactly the live blocks.
+        # The grouped (interleaved, non-journal) path publishes every
+        # temp via rename; none may be left behind, and the blocks dir
+        # holds exactly the live blocks.
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/t.bin")
         fs.write(f, b"data" * 3000)
-        fs.save(batched_fsync=True)
+        fs.save(batched_fsync=True, use_journal=False)
         blocks_dir = os.path.join(self.base, "state", "blocks")
         names = os.listdir(blocks_dir)
         self.assertEqual([n for n in names if n.endswith(".tmp")], [])
         self.assertEqual(len(names), len(f.blocks))
         # Re-save with the grouped path is a no-op on block files too.
         before = sorted(names)
-        fs.save(batched_fsync=True)
+        fs.save(batched_fsync=True, use_journal=False)
         self.assertEqual(sorted(os.listdir(blocks_dir)), before)
 
     def test_batched_fsync_crash_mid_save_leaves_old_state(self):
-        # Same crash-atomicity contract as the default path: a failure
-        # before the metadata swap leaves the previous committed state
-        # loadable, even though the grouped path delays renames. The
-        # crash is injected mid rename-phase (some new block files
-        # renamed, others still temps) — the strongest ordering claim:
-        # partially-published blocks must stay invisible because the old
-        # metadata references only old, present blocks.
+        # Crash-atomicity on the interleaved batched (grouped-rename)
+        # path: a failure mid rename-phase — some new block files
+        # published, others still temps — must leave the previous
+        # committed state loadable, because the old metadata references
+        # only old, present blocks. Pinned to use_journal=False: the
+        # grouped rename phase exists only on the interleaved path, and
+        # journal mode is the default (2026-08-12).
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/c.sav")
         fs.write(f, b"A" * 20000)  # 5 blocks
-        fs.save()
+        fs.save(use_journal=False)
 
         fs.write(f, b"B" * 20000)  # 5 new CoW blocks
         calls = {"n": 0}
+        # mock.patch replaces os.replace on the SHARED os module, so the
+        # side-effect function must call a pre-captured reference or it
+        # would re-enter the mock (and the real rename would never run).
+        real_replace = os.replace
 
         def _fail_after_two_renames(src, dst):
-            # Real os.replace for the first two (fuse.nyfs.os.replace is
-            # the mocked one), then crash: blocks 1-2 published, the rest
-            # stuck as temps, metadata never swapped.
+            # Real rename for the first two calls (block files 1-2 get
+            # published), then crash: the rest stay temps and the
+            # metadata is never swapped.
             calls["n"] += 1
             if calls["n"] > 2:
                 raise OSError("simulated crash mid rename-phase")
-            return os.replace(src, dst)
+            return real_replace(src, dst)
 
         with mock.patch("fuse.nyfs.os.replace",
                         side_effect=_fail_after_two_renames):
             with self.assertRaises(OSError):
-                fs.save(batched_fsync=True)
+                fs.save(batched_fsync=True, use_journal=False)
+
+        # The crash must have been genuinely mid rename-phase, not a
+        # failed metadata swap: two of the five new CoW blocks were
+        # published as .bin, the other three remain stuck as temps, and
+        # the commit-point rename never ran. (Self-guard: if the save
+        # path were reordered to swap metadata first, this assertion and
+        # the reload check below would both fail.)
+        self.assertEqual(calls["n"], 3)
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        temps = [n for n in os.listdir(blocks_dir) if n.endswith(".tmp")]
+        self.assertEqual(len(temps), 3)
 
         del fs
         fs2 = NyFSFilesystem.load(self.base)
@@ -1439,7 +1472,12 @@ class TestNyFSLiveMount(unittest.TestCase):
         # The FUSE fsync handler must have committed on-disk state.
         state = os.path.join(self.backing, "state")
         self.assertTrue(os.path.exists(os.path.join(state, "metadata.json")))
-        self.assertGreater(len(os.listdir(os.path.join(state, "blocks"))), 0)
+        # Journal commit is the default: block payloads live in
+        # state/journal.bin (compacted to state/blocks/ only past the
+        # threshold), so the journal must be non-empty after fsync.
+        journal = os.path.join(state, "journal.bin")
+        self.assertTrue(os.path.exists(journal))
+        self.assertGreater(os.path.getsize(journal), 0)
 
         # CoW snapshot, overwrite through the mount, commit again.
         snap = fs.create_snapshot()
