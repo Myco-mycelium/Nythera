@@ -46,11 +46,15 @@ replaced case-for-case (`Nythera` → `Nyrqis`, `nythera` → `nyrqis`,
   (Nyrqis HAL), `nyctr`, `nyfs`, `nygi`, `nypkg`, `NyKernel`, and the
   `source/nyhal-linux-backend/` directory. This was a conscious decision:
   the `Ny` prefix is a brand fragment, not the conflicting name itself.
-- **The repository name and GitHub URL.** The local directory (`Nythera/`)
-  and the GitHub repository (`Myco-mycelium/Nythera`) keep the old name
-  for now. The only remaining occurrences of the old name in the tree
-  (outside the rebrand records themselves — this notice and the CR-0035 /
-  Repository State entries) are exactly these URL references:
+- **The repository name and GitHub URL.** The GitHub repository
+  (`Myco-mycelium/Nythera`) keeps the old name for now — renaming it is a
+  manual step pending a maintainer (see "How to complete the rename
+  later"). The local directory was renamed to `Nyrqis/` on 2026-08-12.
+  The only remaining occurrences of the old name in the tree (outside the
+  rebrand records themselves — this notice, the CR-0035 / Repository
+  State entries, and the changelog naming note) are exactly these URL
+  references, deliberately left pointing at the current repository name
+  because GitHub redirects renamed repositories automatically:
   - `mkdocs.yml` — `repo_url`
   - `docs/implementation_plan.md` — footnotes 1–5
   - `docs/tutorials/first-repository-tour.md` — the `git clone` URL
@@ -62,20 +66,50 @@ replaced case-for-case (`Nythera` → `Nyrqis`, `nythera` → `nyrqis`,
 
 ## How to complete the rename later
 
-When the repository itself is renamed:
+Status as of 2026-08-12: the code, docs, and local directory are renamed;
+**the GitHub repository rename is the one remaining step** and needs a
+maintainer with admin access (not possible from this environment — no
+`gh` CLI / credentials):
 
-1. Rename the GitHub repository `Myco-mycelium/Nythera` →
-   `Myco-mycelium/Nyrqis`.
-2. Update the three URL references listed above.
-3. Rename the local checkout directory and update any scripts that
-   hard-code its path.
-4. Delete `site/` and rebuild the documentation.
-5. Add a follow-up entry to this notice recording the completion.
+1. **Rename the GitHub repository** (Settings → General → Repository
+   name): `Myco-mycelium/Nythera` → `Myco-mycelium/Nyrqis`. GitHub
+   redirects the old URLs automatically.
+2. **Update the three URL references** listed above to
+   `Myco-mycelium/Nyrqis` (links keep working before and after the rename
+   via redirect, so this is safe to do at any point).
+3. **Rename the local checkout directory** — **done 2026-08-12** (no
+   tracked file hard-codes the path; verified by grep).
+4. **Rebuild the documentation site** — **done 2026-08-12** (`site/` is
+   git-ignored; regenerated with the new branding via `mkdocs build`).
+5. **Add a follow-up entry to this notice** recording the completion.
+
+## Name review (2026-08-12)
+
+Desk-check performed before committing to the new name; not legal advice.
+
+- **`Nyrqis` collision check — clear.** No operating system, Linux
+  distribution, software project, company, domain, or registered
+  trademark was found under the exact name `Nyrqis`. The only trace is a
+  minor fictional location ("Nyrqis Sanctuary") inside a hobbyist fantasy
+  setting on World Anvil — no practical or legal conflict. The name is
+  highly distinctive.
+- **What the old name collided with.** `Nythera` is an established
+  commercial name in tabletop gaming (the *Nythera* campaign for
+  Malifaux / Through the Breach, published by Wyrd Miniatures) and a
+  well-known game character (Artix Entertainment), plus assorted
+  hobbyist projects — the collision this rebrand avoids.
+- **`Ny` prefix risk — low.** Keeping the prefix in internal
+  architectural component names (`NyHAL`, `NyFS`, `NyKernel`, `nygi`)
+  is standard practice for OS architecture naming (compare `nt`/`sys`/
+  `vfs`) and reads as descriptive, not a consumer-facing brand; a user
+  encountering `NyFS` will not confuse it with a tabletop RPG supplement
+  or game character.
 
 ## Verification
 
 - `grep -ri nythera` over git-tracked files returns only the three
   intentional GitHub URL references above, plus the rebrand records
-  themselves (this notice and the CR-0035 / Repository State entries).
+  themselves (this notice, the CR-0035 / Repository State entries, and
+  the changelog naming note).
 - Backend tests: `python3 test_backend.py` — all pass.
 - `mkdocs build --strict` — zero warnings.

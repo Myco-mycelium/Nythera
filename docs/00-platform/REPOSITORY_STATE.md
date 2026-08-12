@@ -307,7 +307,15 @@ Documentation hygiene, fixed earlier this session:
   (`Myco-mycelium/Nythera`) keep the old name for now — the three URL
   references are the only remaining occurrences, documented in
   `REBRAND_NOTICE.md` (CR-0035). New commits are authored `Nyrqis
-  Bootstrap <bootstrap@nyrqis.local>`.
+  Bootstrap <bootstrap@nyrqis.local>`. Name review (2026-08-12, recorded
+  in `REBRAND_NOTICE.md`): `Nyrqis` shows no collisions (OS, software,
+  trademark, domain) beyond a minor fictional location; the `Ny` prefix
+  is low-risk as an internal architecture convention. The local directory
+  is renamed to `Nyrqis/`; the GitHub repository rename
+  (`Myco-mycelium/Nythera` → `Nyrqis`) is the one remaining manual step
+  (needs a maintainer — no `gh`/credentials here); the three URL
+  references are deliberately left pointing at the current repo name
+  because GitHub redirects renamed repositories automatically.
 - 2026-08-12 (backend hardening): Linux Backend data-plane capability
   enforcement (seccomp-BPF installed in-container — `FIND-BACKEND-002`),
   shell-free launcher (`FIND-BACKEND-004`), cgroup v1 release_agent
