@@ -220,7 +220,16 @@ numbers exist yet — see `tests/BENCHMARK_PLAN.md` for methodology):
 Genuinely still open, not fabricable:
 8. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.
 9. Choose a real license (`LICENSE` is still the Milestone 1 placeholder — "no rights granted... until a formal license is adopted"). This is a legal/business decision for the repository owner, not one to pick unilaterally on their behalf.
-10. Enable GitHub Pages with source "GitHub Actions" (Settings → Pages) so `.github/workflows/docs.yml`'s deploy step has somewhere to publish to — the workflow runs regardless, but won't be visibly served until this is set.
+10. ~~Enable GitHub Pages with source "GitHub Actions" (Settings → Pages)
+    so `.github/workflows/docs.yml`'s deploy step has somewhere to publish
+    to — the workflow runs regardless, but won't be visibly served until
+    this is set.~~ **Done 2026-08-12** — Pages is enabled with source
+    `GitHub Actions` on `main`; the site is served at
+    `https://myco-mycelium.github.io/Nythera/` (the URL will move to
+    `.../Nyrqis` when the repository is renamed per `REBRAND_NOTICE.md`).
+    The first deploy that ran before Pages was enabled failed only at the
+    `actions/deploy-pages` step; the push carrying this status update
+    re-triggers the workflow, which should deploy cleanly.
 11. Revisit `NPC-008`'s "claim an Unassigned slot without a vote" design once the project has more than one active contributor — `FIND-CAPABILITY-005` (NPS-021 §5.4) flagged this as a soft privilege path, recorded against the governance document rather than given a runtime fix that wouldn't be the right tool for it.
 12. Design a measured-boot/TPM attestation story once a concrete need justifies it (`FIND-BOOT-003`, NPS-023 §4) — not fixable by a quick amendment, same category as the package-signing gap.
 
