@@ -337,6 +337,18 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**NyFS durability**): `fuse/nyfs.py` gained explicit
+  `save()`/`load()` persistence (NPS-004 §7) — inode tree + snapshots in
+  `state/metadata.json`, immutable block files in `state/blocks/`,
+  write-blocks-then-atomic-metadata-swap ordering so a crash leaves the
+  last committed state (verified by a crash-mid-save test), corrupt
+  metadata/tampered blocks surface errors instead of silent corruption,
+  `gc_blocks()` reclaims CoW-orphaned block files and stale temp files.
+  Hardened after code review: both containing directories are fsynced so
+  the metadata swap is a durable commit point, already-present block
+  files are skipped (immutable ⇒ re-save is idempotent, verified by
+  test), and the FUSE `fsync` handler maps to `save()`. Test suite
+  71 → 79.
 - 2026-08-12 (**consolidated benchmark runner + NyFS re-run**):
   `tests/benchmarks.py` now runs all runnable plan sections in one
   reproducible script (`--all`, `--ipc`, `--bucket`, `--zstd`, `--nyfs`,

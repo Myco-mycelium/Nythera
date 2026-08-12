@@ -24,10 +24,10 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Container Primitives | `backend/container.py`, `backend/launcher.py` | ✓ Implemented | Process/namespace isolation, cgroups v1/v2, shell-free launcher, cgroup v1 hardening |
 | Capability Enforcement | `backend/capability.py`, `backend/seccomp.py`, `backend/launcher.py` | ✓ Implemented | Registry + data-plane seccomp-BPF enforcement in-container (FIND-BACKEND-002) |
 | IPC Semantics | `ipc/core.py` | ✓ Implemented | send/receive/call/notify primitives, receive-side capability check, token-bucket rate limiting |
-| Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, FUSE operations + fusepy wiring (ADR-0016) |
+| Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **71/71 passing** (`python3 test_backend.py`), including end-to-end container launches verified on this host.
+Test suite: **79/79 passing** (`python3 test_backend.py`), including end-to-end container launches verified on this host.
 
 ## Detailed Implementation Status
 
@@ -126,6 +126,7 @@ Test suite: **71/71 passing** (`python3 test_backend.py`), including end-to-end 
 - ✓ `NyFSFilesystem` core with inode management and a **path-based API** (`resolve`/`resolve_parent`, real parent/child tree linking, mkdir/mknod/unlink/rmdir/rename)
 - ✓ `NyFSBlock` with compression and checksumming
 - ✓ **Per-block Copy-on-Write (CoW)** (2026-08-12): file content is stored as fixed-size blocks (`block_size`, 64 KiB default; configurable per filesystem instance). A write rebuilds only the blocks it overlaps — untouched blocks are carried over by reference — so per-write compress cost is bounded by bytes written, not file size. This replaces the earlier single-block-per-file implementation, whose whole-file recompress on every write was the dominant cost in the first-pass NyFS benchmark (40.5 vs 884 MB/s write). Reads are block-aware (only overlapping blocks decompressed) and verify each block's checksum on every read (NPS-004 §4.3); truncation preserves leading blocks and only rewrites the boundary block; past-EOF writes zero-fill gap blocks and expose no trailing padding.
+- ✓ **Durability** (2026-08-12, NPS-004 §7): `save()` persists the filesystem to `state/metadata.json` (inode tree + block refs + snapshots) and `state/blocks/` (one immutable file per block, written temp + fsync + rename). Blocks are immutable, so files already on disk are skipped (re-save is idempotent) and only new blocks are written; both containing directories are fsynced, so the commit point (the atomic metadata swap — write temp + fsync + rename) is durable on real hardware. A crash at any point leaves either the old or the new consistent state — never a mixed one. `load()` reconstructs a filesystem (missing/corrupt metadata raises rather than fabricating state; tampered block files are caught by the per-read checksum). `gc_blocks()` reclaims block files orphaned by CoW plus stale temp files. Save is explicit (the durability contract; a mounted daemon calls it at transaction boundaries via the FUSE `fsync` handler) — no implicit save on teardown, so a crash never surprises by writing state the caller didn't commit.
 - ✓ Snapshots: create, restore, list — restore rebinds the root inode so path lookups reach the restored tree (snapshot immutability verified by test)
 - ✓ SHA256 checksumming for data integrity
 - ✓ Zstandard compression (with fallback if unavailable)

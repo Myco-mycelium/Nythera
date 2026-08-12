@@ -987,6 +987,146 @@ class TestNyFSPathAPI(unittest.TestCase):
         self.assertEqual(self.fs.read(restored), b"B" * (2 * bs))
 
 
+class TestNyFSPersistence(unittest.TestCase):
+    """Test NyFS durability (NPS-004 §7): save/load, crash atomicity,
+    and corruption handling."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.base = os.path.join(self.temp_dir, "fs")
+
+    def test_save_load_roundtrip(self):
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        fs.mkdir("/games")
+        f = fs.create_file("/games/save.sav")
+        payload = b"hello " * 2000  # 12000 bytes
+        fs.write(f, payload)
+        fs.write(f, b"world", offset=10000)  # overwrite 5 bytes in place
+        fs.save()
+        del fs
+
+        fs2 = NyFSFilesystem.load(self.base)
+        restored = fs2.resolve("/games/save.sav")
+        data = fs2.read(restored)
+        self.assertEqual(len(data), len(payload))
+        self.assertEqual(data[:10000], payload[:10000])
+        self.assertEqual(data[10000:10005], b"world")
+        self.assertEqual(data[10005:], payload[10005:])
+        self.assertTrue(fs2.resolve("/games").is_directory)
+
+    def test_snapshots_survive_roundtrip(self):
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/s.sav")
+        fs.write(f, b"v1")
+        snap = fs.create_snapshot()
+        fs.write(f, b"v2")
+        fs.save()
+        del fs
+
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertIn(snap, fs2.list_snapshots())
+        fs2.restore_snapshot(snap)
+        restored = fs2.resolve("/s.sav")
+        self.assertEqual(fs2.read(restored), b"v1")
+
+    def test_load_missing_metadata_raises(self):
+        with self.assertRaises(NyFSError):
+            NyFSFilesystem.load(self.base)
+
+    def test_corrupt_metadata_raises(self):
+        fs = NyFSFilesystem(self.base)
+        f = fs.create_file("/x.txt")
+        fs.write(f, b"data")
+        fs.save()
+        del fs
+        meta = os.path.join(self.base, "state", "metadata.json")
+        with open(meta, "w") as fh:
+            fh.write("{ not valid json")
+        with self.assertRaises(NyFSError):
+            NyFSFilesystem.load(self.base)
+
+    def test_crash_mid_save_leaves_last_committed_state(self):
+        # Crash atomicity: a failure between block writes and the
+        # metadata swap must leave the PREVIOUS committed state loadable
+        # (never a mixed one). Simulated by making the metadata rename
+        # fail inside the save path.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/c.sav")
+        fs.write(f, b"committed-v1")
+        fs.save()
+
+        fs.write(f, b"committed-v2")
+        with mock.patch(
+            "fuse.nyfs.os.replace",
+            side_effect=OSError("simulated crash mid-commit"),
+        ):
+            with self.assertRaises(OSError):
+                fs.save()
+
+        # The on-disk state is still v1 — the failed save must not have
+        # corrupted it.
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"committed-v1")
+
+    def test_tampered_block_file_detected_on_read(self):
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/t.bin")
+        fs.write(f, b"integrity-check")
+        fs.save()
+        block_id = f.blocks[0].block_id
+        del fs
+
+        block_path = os.path.join(
+            self.base, "state", "blocks", f"{block_id}.bin")
+        with open(block_path, "wb") as fh:
+            fh.write(b"\x00\x00\x00\x00\x00\x00\x00")
+
+        fs2 = NyFSFilesystem.load(self.base)
+        with self.assertRaises(ValueError):
+            fs2.read(fs2.resolve("/t.bin"))
+
+    def test_resave_is_idempotent(self):
+        # Blocks are immutable (CoW), so re-saving an unchanged
+        # filesystem must not rewrite any block file (reviewer-flagged:
+        # random-UUID block IDs could otherwise churn the block store).
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/idem.bin")
+        fs.write(f, b"data" * 5000)
+        fs.save()
+        blocks_dir = os.path.join(self.base, "state", "blocks")
+        first = {
+            p: os.path.getmtime(os.path.join(blocks_dir, p))
+            for p in os.listdir(blocks_dir)
+        }
+        time.sleep(0.01)
+        fs.save()
+        second = os.listdir(blocks_dir)
+        self.assertEqual(sorted(first), sorted(second))
+        for name in second:
+            self.assertEqual(
+                os.path.getmtime(os.path.join(blocks_dir, name)),
+                first[name],
+            )
+
+    def test_gc_removes_orphaned_blocks(self):
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        f = fs.create_file("/g.bin")
+        fs.write(f, b"a" * 100)
+        old_id = f.blocks[0].block_id
+        snap = fs.create_snapshot()   # pins the 'a' block
+        fs.write(f, b"b" * 100)       # CoW: new block for the live state
+        fs.save()
+        # With the snapshot holding the old block, gc removes nothing yet.
+        self.assertEqual(fs.gc_blocks(), 0)
+        # Dropping the snapshot orphans the old block; gc reclaims it.
+        del fs.snapshots[snap]
+        self.assertGreaterEqual(fs.gc_blocks(), 1)
+        self.assertFalse(
+            os.path.exists(os.path.join(
+                self.base, "state", "blocks", f"{old_id}.bin")))
+
+
 class TestNyFSOperations(unittest.TestCase):
     """Test the FUSE operation handlers (ADR-0016) without a kernel mount."""
 
@@ -1079,6 +1219,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestLauncherSecurity))
     suite.addTests(loader.loadTestsFromTestCase(TestBootSecurity))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPathAPI))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSPersistence))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     

@@ -37,6 +37,7 @@ References:
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import site
@@ -154,9 +155,22 @@ class NyFSFilesystem:
     File content is stored as fixed-size blocks (``block_size``, default
     64 KiB). A write rebuilds only the blocks it overlaps, so its
     compress cost is bounded by the bytes written, not the file size.
+
+    Durability (NPS-004 §7): ``save()`` persists the filesystem to
+    ``<base_path>/state/metadata.json`` (inode tree + block references)
+    and ``<base_path>/state/blocks/`` (one immutable file per block). The
+    commit sequence is: write new block files, fsync them, then
+    atomically swap the metadata file (write-temp + fsync + rename), so
+    a crash at any point leaves either the old or the new consistent
+    state — never a mixed one. ``save()`` is explicit — a mounted daemon
+    calls it at transaction boundaries (the FUSE ``fsync`` handler is
+    the natural hook) — and ``load()`` reconstructs a filesystem from a
+    previously saved state.
     """
 
     BLOCK_SIZE = 65536  # default CoW block size, in bytes
+    STATE_DIR = "state"  # subdirectory holding metadata + block files
+    METADATA_FILE = "metadata.json"
 
     def __init__(self, base_path: str, block_size: int = BLOCK_SIZE):
         """Initialize the NyFS filesystem.
@@ -354,7 +368,16 @@ class NyFSFilesystem:
         inode touched by it can violate the invariant; re-blocking from
         the logical content restores it (a no-op for uniform-size files).
         """
-        if all(len(b.decompress()) == self.block_size for b in inode.blocks):
+        try:
+            uniform = all(
+                len(b.decompress()) == self.block_size
+                for b in inode.blocks
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Cannot read block data (corrupt or unreadable): {e}"
+            ) from e
+        if uniform:
             return
         content = self._content(inode)
         inode.blocks = [
@@ -676,6 +699,278 @@ class NyFSFilesystem:
                 "is_directory": inode.is_directory,
             }
 
+    # ------------------------------------------------------------------
+    # Durability (NPS-004 §7): explicit save/load with atomic metadata
+    # ------------------------------------------------------------------
+
+    def _state_dir(self) -> Path:
+        return self.base_path / self.STATE_DIR
+
+    def _blocks_dir(self) -> Path:
+        return self._state_dir() / "blocks"
+
+    def _serialize_inode(self, inode: NyFSInode) -> Dict:
+        """Serialize one inode (and, recursively, its children)."""
+        return {
+            "inode_number": inode.inode_number,
+            "name": inode.name,
+            "mode": inode.mode,
+            "uid": inode.uid,
+            "gid": inode.gid,
+            "size": inode.size,
+            "atime": inode.atime,
+            "mtime": inode.mtime,
+            "ctime": inode.ctime,
+            "is_directory": inode.is_directory,
+            "blocks": [
+                {
+                    "id": b.block_id,
+                    "checksum": b.checksum,
+                    "compression_level": b.compression_level,
+                }
+                for b in inode.blocks
+            ],
+            "children": [
+                self._serialize_inode(c)
+                for c in inode.children.values()
+            ],
+        }
+
+    def save(self) -> None:
+        """Persist the current filesystem state atomically.
+
+        Blocks are immutable (CoW), so files already on disk are skipped
+        and only new blocks are written (temp + rename, so a
+        partially-written block file is never visible), flushed, and
+        fsynced before the metadata file is atomically swapped (write
+        temp + fsync + rename). Both containing directories are fsynced
+        so the commit point itself is durable. If a crash interrupts the
+        sequence, the old metadata — which references only old,
+        already-present blocks — is still the one on disk, so the
+        mountable state is always consistent (NPS-004 §7.1). Orphaned
+        block files from superseded versions are left in place (CoW
+        history); ``gc_blocks`` can reclaim them.
+        """
+        with self.lock:
+            blocks_dir = self._blocks_dir()
+            blocks_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. Persist every block referenced by the live state (and
+            #    snapshots, which share block IDs with the tree).
+            live_blocks = {
+                b.block_id for b in self._all_blocks(self.inodes)
+            }
+            for snap in self.snapshots.values():
+                live_blocks |= {
+                    b.block_id for b in self._all_blocks(snap)
+                }
+            for block_id in live_blocks:
+                block = self._find_block(block_id)
+                if block is None:
+                    continue
+                tmp = blocks_dir / f".{block_id}.tmp"
+                target = blocks_dir / f"{block_id}.bin"
+                if target.exists():
+                    # Blocks are immutable (CoW), so a file already on
+                    # disk for this ID was written by a previous save of
+                    # the exact same content — re-saving is a no-op.
+                    continue
+                with open(tmp, "wb") as fh:
+                    fh.write(block.compressed_data or block.data or b"")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, target)
+
+            # Fsync the block directory so the new block files are
+            # durable before the metadata swap becomes the commit point.
+            self._fsync_dir(blocks_dir)
+
+            # 2. Serialize the metadata (tree + snapshots).
+            metadata = {
+                "format": "nyfs-state",
+                "version": 1,
+                "block_size": self.block_size,
+                "inode_counter": self.inode_counter,
+                "tree": self._serialize_inode(self.root_inode),
+                "snapshots": {
+                    snap_id: self._serialize_snapshot(snap)
+                    for snap_id, snap in self.snapshots.items()
+                },
+            }
+
+            # 3. Atomically swap the metadata file.
+            state_dir = self._state_dir()
+            state_dir.mkdir(parents=True, exist_ok=True)
+            tmp_meta = state_dir / f".{self.METADATA_FILE}.tmp"
+            with open(tmp_meta, "w") as fh:
+                json.dump(metadata, fh, indent=1, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_meta, state_dir / self.METADATA_FILE)
+            # Fsync the state directory so the metadata rename itself is
+            # durable — the commit point.
+            self._fsync_dir(state_dir)
+            logger.info(
+                f"Saved NyFS state: {len(live_blocks)} blocks, "
+                f"{len(self.inodes)} inodes"
+            )
+
+    @staticmethod
+    def _fsync_dir(path: Path) -> None:
+        """Fsync a directory so its entry changes are durable.
+
+        Some filesystems (e.g. certain network mounts) do not support
+        directory fsync; such failures are logged and ignored rather than
+        failing the save.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            logger.warning("directory fsync of %s failed: %s", path, e)
+
+    def _all_blocks(self, inodes: Dict[int, NyFSInode]):
+        for inode in inodes.values():
+            yield from inode.blocks
+
+    def _find_block(self, block_id: str) -> Optional[NyFSBlock]:
+        for inode in self.inodes.values():
+            for block in inode.blocks:
+                if block.block_id == block_id:
+                    return block
+        for snap in self.snapshots.values():
+            for inode in snap.values():
+                for block in inode.blocks:
+                    if block.block_id == block_id:
+                        return block
+        return None
+
+    def _serialize_snapshot(self, inodes: Dict[int, NyFSInode]) -> Dict:
+        """Serialize a snapshot (a deep-copied inode table) from its root."""
+        root = inodes.get(0)
+        if root is None:
+            return {"tree": None}
+        return {"tree": self._serialize_inode(root)}
+
+    @classmethod
+    def load(cls, base_path: str) -> "NyFSFilesystem":
+        """Load a filesystem previously persisted with ``save()``.
+
+        Raises ``NyFSError`` if no valid metadata exists (never silently
+        fabricates an empty filesystem). Block data is read from
+        ``state/blocks/`` by ID; checksums are verified lazily on read.
+        """
+        fs = cls(base_path)
+        state_dir = fs._state_dir()
+        meta_path = state_dir / cls.METADATA_FILE
+        if not meta_path.exists():
+            raise NyFSError(
+                errno.ENOENT,
+                f"no saved NyFS state at {meta_path} (nothing to load)",
+            )
+        try:
+            with open(meta_path) as fh:
+                metadata = json.load(fh)
+        except (json.JSONDecodeError, OSError) as e:
+            raise NyFSError(errno.EIO, f"corrupt NyFS metadata: {e}") from e
+
+        if metadata.get("format") != "nyfs-state":
+            raise NyFSError(errno.EIO, "unrecognized NyFS state format")
+
+        def _load_block(meta: Dict) -> NyFSBlock:
+            block_id = meta["id"]
+            path = fs._blocks_dir() / f"{block_id}.bin"
+            try:
+                payload = path.read_bytes()
+            except OSError as e:
+                raise NyFSError(
+                    errno.EIO, f"missing block file {path.name}: {e}") from e
+            block = NyFSBlock(block_id=block_id,
+                              checksum=meta.get("checksum", ""),
+                              compression_level=meta.get("compression_level", 3))
+            block.compressed_data = payload
+            return block
+
+        def _deserialize(node: Dict, parent: Optional[NyFSInode]) -> NyFSInode:
+            inode = NyFSInode(
+                inode_number=node["inode_number"],
+                name=node["name"],
+                mode=node["mode"],
+                uid=node.get("uid", 0),
+                gid=node.get("gid", 0),
+                size=node.get("size", 0),
+                atime=node.get("atime", 0.0),
+                mtime=node.get("mtime", 0.0),
+                ctime=node.get("ctime", 0.0),
+                is_directory=node.get("is_directory", False),
+            )
+            inode.blocks = [_load_block(b) for b in node.get("blocks", [])]
+            inode.parent = parent
+            for child_node in node.get("children", []):
+                child = _deserialize(child_node, inode)
+                inode.children[child.name] = child
+            return inode
+
+        fs.block_size = metadata["block_size"]
+        fs.inode_counter = metadata["inode_counter"]
+        fs.root_inode = _deserialize(metadata["tree"], None)
+
+        # Rebuild the inode table by walking the tree.
+        fs.inodes = {}
+        stack = [fs.root_inode]
+        while stack:
+            inode = stack.pop()
+            fs.inodes[inode.inode_number] = inode
+            stack.extend(inode.children.values())
+
+        # Rebuild snapshots.
+        fs.snapshots = {}
+        for snap_id, snap_data in metadata.get("snapshots", {}).items():
+            if snap_data.get("tree") is None:
+                continue
+            snap_root = _deserialize(snap_data["tree"], None)
+            snap_inodes = {}
+            stack = [snap_root]
+            while stack:
+                inode = stack.pop()
+                snap_inodes[inode.inode_number] = inode
+                stack.extend(inode.children.values())
+            fs.snapshots[snap_id] = snap_inodes
+
+        logger.info(
+            f"Loaded NyFS state from {meta_path}: "
+            f"{len(fs.inodes)} inodes, {len(fs.snapshots)} snapshots"
+        )
+        return fs
+
+    def gc_blocks(self) -> int:
+        """Delete block files no longer referenced by any inode or
+        snapshot. Returns the number of files removed. Orphaned blocks
+        are the only files a crash can leave behind, so this is safe to
+        run after a successful ``save()``.
+        """
+        blocks_dir = self._blocks_dir()
+        if not blocks_dir.exists():
+            return 0
+        referenced = {
+            b.block_id for b in self._all_blocks(self.inodes)
+        }
+        for snap in self.snapshots.values():
+            referenced |= {b.block_id for b in self._all_blocks(snap)}
+        removed = 0
+        for path in blocks_dir.glob("*.bin"):
+            if path.stem not in referenced:
+                path.unlink()
+                removed += 1
+        # Stale temp files from an interrupted save are never referenced
+        # and never become visible; clean them up too.
+        for path in blocks_dir.glob(".*.tmp"):
+            path.unlink()
+            removed += 1
+        return removed
 
 class NyFSOperations:
     """FUSE operation handlers backed by a ``NyFSFilesystem``.
@@ -715,6 +1010,14 @@ class NyFSOperations:
 
     def truncate(self, path, length, fh=None):
         self.fs.truncate(path, length)
+        return 0
+
+    def fsync(self, path, datasync, fh=None):
+        """FUSE fsync hook: persist the filesystem at a transaction
+        boundary (NPS-004 §7). ``save()`` is the durability contract, and
+        this is the natural place a mounted daemon commits.
+        """
+        self.fs.save()
         return 0
 
     def mkdir(self, path, mode):
