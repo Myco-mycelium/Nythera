@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-08-12
 updated: 2026-08-12
 ai_assisted: true
@@ -156,7 +156,7 @@ suggested for implementation and not yet normatively required.
 
 | | |
 |---|---|
-| **Purpose** | A graphics adapter and the feature set Nythera can use with it (NPS-013). |
+| **Purpose** | A graphics adapter and the feature set Nyrqis can use with it (NPS-013). |
 | **Key fields** | `id`, `adapter`, `vulkan-version`, `features` (HDR, VRR, ray tracing, upscaling — per NPS-013), `driver` (ref) |
 | **Lifecycle** | Enumerated at boot; updated as drivers change; the GPU command submission path is a kernel-space fast path (NPS-001 §3) that **MUST** validate command buffers and enforce submission timeouts. |
 | **Permissions** | Containers with rendering access submit command buffers through the validated fast path (SURFACE-GPU-0001, NPS-019 §3). |

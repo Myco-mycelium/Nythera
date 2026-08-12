@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test Suite for the Nythera Linux Backend
+Test Suite for the Nyrqis Linux Backend
 
 Tests the implementation of NPS-017 §4 (Backend Requirements).
 Covers container primitives, capability enforcement, IPC, storage, and boot.

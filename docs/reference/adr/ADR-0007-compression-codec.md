@@ -3,7 +3,7 @@ title: Adopt Zstandard as the Default Compression Codec
 document_id: ADR-0007
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -13,7 +13,7 @@ depends_on: [NTM-000, NPC-001, ADR-0002]
 # ADR-0007 — Zstandard as the Default Compression Codec
 
 ## Context
-ADR-0002 commits Nythera to a filesystem with built-in, transparent
+ADR-0002 commits Nyrqis to a filesystem with built-in, transparent
 compression, but does not select a codec. The original design discussion
 raised LZ4, Zstandard, and Oodle as candidates. A codec decision is a
 prerequisite for both NPS-004 (filesystem core) and NPS-006 (game image

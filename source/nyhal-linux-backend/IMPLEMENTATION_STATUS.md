@@ -1,5 +1,5 @@
 ---
-title: Nythera Linux Backend Implementation Status
+title: Nyrqis Linux Backend Implementation Status
 document_id: IMPL-001
 version: 0.2.0
 status: In Progress
@@ -9,11 +9,11 @@ updated: 2026-08-12
 ai_assisted: true
 ---
 
-# Nythera Linux Backend Implementation Status
+# Nyrqis Linux Backend Implementation Status
 
 ## Overview
 
-This document tracks the implementation status of the Nythera Linux Backend, which implements the NyHAL (Nythera Kernel Abstraction Layer) contract on standard Linux systems. The implementation is guided by NPS-017 §4 (Backend Requirements) and aims to provide a conformant backend per NPS-017 §5.
+This document tracks the implementation status of the Nyrqis Linux Backend, which implements the NyHAL (Nyrqis Kernel Abstraction Layer) contract on standard Linux systems. The implementation is guided by NPS-017 §4 (Backend Requirements) and aims to provide a conformant backend per NPS-017 §5.
 
 ## Implementation Scope
 
@@ -170,7 +170,7 @@ Test suite: **54/54 passing** (`python3 test_backend.py`), including end-to-end 
 
 Per NPS-017 §5.1:
 
-> A backend **MUST NOT** be presented as Nythera-conformant unless it satisfies §4 in full; partial conformance **MUST** be documented as such.
+> A backend **MUST NOT** be presented as Nyrqis-conformant unless it satisfies §4 in full; partial conformance **MUST** be documented as such.
 
 **Current Status:** **Experimental Backend — Core Implementation Complete, Performance/Integration Work Pending**
 

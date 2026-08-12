@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: security
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -19,7 +19,7 @@ depends_on: [NTM-000, NPC-001, NPC-009, ADR-0004, ADR-0006, NPS-002, NPS-003, NP
 ## 1. Status of This Document
 
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It is
-**Phase 1** of the Nythera threat model, defining the methodology and
+**Phase 1** of the Nyrqis threat model, defining the methodology and
 trust boundary map that every later phase (attack surface enumeration,
 STRIDE analysis, privilege escalation analysis, container escape
 analysis, secure boot, AI, and package trust models) is built against.
@@ -39,7 +39,7 @@ in a threat-model document as an unaddressed observation.
 
 ## 3. Framework: STRIDE
 
-Nythera uses **STRIDE** for structured threat identification. Each trust
+Nyrqis uses **STRIDE** for structured threat identification. Each trust
 boundary (§4) is analyzed for:
 
 | Category | Question asked |
@@ -59,7 +59,7 @@ testable obligation results.
 
 ## 4. Trust Boundaries
 
-Nythera's trust boundaries, derived from decisions already made rather
+Nyrqis's trust boundaries, derived from decisions already made rather
 than invented fresh for this document:
 
 | ID | Boundary | Crossed by | Governing spec |

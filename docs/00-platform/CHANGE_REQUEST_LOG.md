@@ -1,7 +1,7 @@
 # Change Request Log
 
 Every architectural change gets an entry here, per the workflow established
-during repository bootstrap. This is the engineering history of Nythera,
+during repository bootstrap. This is the engineering history of Nyrqis,
 independent of chat or discussion history.
 
 | ID | Description | Status | Linked ADR |
@@ -11,7 +11,7 @@ independent of chat or discussion history.
 | CR-0003 | Distribute games as mounted disk images with writable overlay | Accepted | ADR-0003 |
 | CR-0004 | Containerize all application classes (native/Windows/Android) | Accepted | ADR-0004 |
 | CR-0005 | Windows compatibility via translation layer, not full emulation | Accepted | ADR-0005 |
-| CR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Accepted | ADR-0006 |
+| CR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted | ADR-0006 |
 | CR-0007 | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked | ADR-0007 |
 | CR-0008 | Accept NPC-001, NPC-002, NPC-003 as binding governance (Milestone 2 review) | Accepted | — |
 | CR-0009 | Establish NPC-008 Subsystem Owners as the canonical ownership list | Accepted | — |
@@ -40,6 +40,7 @@ independent of chat or discussion history.
 | CR-0032 | Threat model Phase 5: NPS-023 secure boot threat model, first full pass on TB-BOOT; amend NPS-017 Sec 4.5 (Secure Boot status reporting) and NPS-001 Sec 5 (phase-transition validation); add REQ-BOOT-0004; log measured-boot/TPM gap as not fixable by amendment | Accepted | — |
 | CR-0033 | Threat model Phase 6: NPS-024 AI threat model, first full pass on TB-AI; amend NPS-015 Sec 5.2/5.3/5.4 and add Sec 5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003/0004 | Accepted | — |
 | CR-0034 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); publish first Tutorials and How-To guides; refresh all stale category/reference index placeholders and add Mermaid diagrams (boot, NyHAL, container lifecycle, capability grant, package mount) | Accepted | — |
+| CR-0035 | Rebrand the project from Nythera to Nyrqis (name collision avoidance): rename all docs, code identifiers, env vars, temp-file prefixes, LICENSE placeholder, and the two affected file names; retain the Ny prefix (now denotes Nyrqis); keep the repository directory and GitHub URL (Myco-mycelium/Nythera) unchanged for now; switch new-commit identity to Nyrqis Bootstrap. Recorded in REBRAND_NOTICE.md | Accepted | — |
 
 ## How to Add an Entry
 

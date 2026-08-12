@@ -14,5 +14,5 @@ optional cloud synchronization).
 - [ADR-0011 — AI assistant containerization](../../reference/adr/ADR-0011-ai-assistant-containerization.md)
 
 Note: this page explains AI *inside the shipped operating system* (NTM-000
-§9). AI used to *build* Nythera itself is governed by
+§9). AI used to *build* Nyrqis itself is governed by
 [NPC-002 — AI Collaboration Protocol](../../00-platform/002-AI_COLLABORATION_PROTOCOL.md).

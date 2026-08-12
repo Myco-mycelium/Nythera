@@ -5,7 +5,7 @@ version: 1.1.0
 status: Accepted
 classification: Normative
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -22,7 +22,7 @@ This document is **normative**. The key words **MUST**, **MUST NOT**,
 RFC 2119. Sections marked *(Informative)* are explanatory and impose no
 requirements.
 
-This Constitution translates the principles of NTM-000 (The Nythera Manifest)
+This Constitution translates the principles of NTM-000 (The Nyrqis Manifest)
 into enforceable engineering rules. Where this document and the Manifest
 appear to conflict, the Manifest's philosophy governs and this document
 **MUST** be revised.
@@ -41,7 +41,7 @@ contain, and what guarantees the platform makes to its users and developers.
 ## 3. Governing Bodies
 
 ### 3.1 Architecture Group
-The Architecture Group **MUST** approve any Nythera Platform Change (NPC) or
+The Architecture Group **MUST** approve any Nyrqis Platform Change (NPC) or
 Architecture Decision Record (ADR) that alters a cross-cutting subsystem
 (kernel, filesystem, security model, package format, UI shell).
 
@@ -53,7 +53,7 @@ whenever a new subsystem is introduced (e.g. a new top-level `subsystem`
 value used in an NPS front-matter block).
 
 ### 3.3 Contributors
-Any contributor **MAY** propose a Nythera Proposal for Specification (NPS) or
+Any contributor **MAY** propose a Nyrqis Proposal for Specification (NPS) or
 an ADR. Proposals **MUST** follow the process in Section 6.
 
 ---
@@ -96,7 +96,7 @@ Architecture Group review recorded in its revision history.
 1. A contributor opens an NPS or ADR describing the problem, the proposed
    change, and the alternatives considered.
 2. The proposal **MUST** state which Manifest principles it advances and
-   confirm it does not violate Section 5 of NTM-000 ("What Nythera Will
+   confirm it does not violate Section 5 of NTM-000 ("What Nyrqis Will
    Never Become").
 3. Subsystem owners affected by the change **MUST** be tagged for review.
 4. The Architecture Group records a decision of `Accepted`, `Rejected`, or
@@ -130,7 +130,7 @@ migration guide under `docs/how-to/`.
 release cycle.
 
 8.2. The package format (`docs/reference/package-format/`) **MUST** remain
-readable by all future Nythera releases within the same MAJOR version.
+readable by all future Nyrqis releases within the same MAJOR version.
 
 8.3. Windows (.exe/.msi) and Android (.apk) compatibility layers **MAY**
 evolve independently of the native ABI, provided native application

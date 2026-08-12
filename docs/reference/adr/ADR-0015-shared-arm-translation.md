@@ -3,7 +3,7 @@ title: Shared Dynamic Binary Translation Approach for ARM/x86 Compatibility
 document_id: ADR-0015
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true

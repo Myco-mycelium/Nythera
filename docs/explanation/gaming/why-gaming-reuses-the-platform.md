@@ -19,7 +19,7 @@ Nothing in this milestone gets a carve-out. Controllers deliver input
 through the exact same `CAP-INPUT` capability and IPC path as a keyboard
 (NPS-012 §3.2). Graphics features are exposed as ordinary Vulkan
 capabilities an application queries (NPS-013 §3.1) rather than a
-Nythera-specific "gaming API" layered on top. Even the Emulator Hub — the
+Nyrqis-specific "gaming API" layered on top. Even the Emulator Hub — the
 part of the design most tempted toward a shortcut, since ROM libraries are
 exactly the kind of loose file collection the rest of the platform tries
 to move away from — still runs each emulator in its own container with

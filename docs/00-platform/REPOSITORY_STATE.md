@@ -1,7 +1,7 @@
 # Repository State
 
 This file is the canonical, human-readable snapshot of what exists in the
-Nythera repository. Update it in the same commit as any document or code
+Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
@@ -37,7 +37,7 @@ performance budgets, and developer onboarding — see
 
 ## Governance Documents
 
-- [x] NTM-000 The Nythera Manifest — Accepted
+- [x] NTM-000 The Nyrqis Manifest — Accepted
 - [x] NPC-001 Project Constitution — Accepted
 - [x] NPC-002 AI Collaboration Protocol — Accepted
 - [x] NPC-003 Engineering Handbook — Accepted
@@ -82,7 +82,7 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 - [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
-- [x] NPS-006 Nythera Game/Application Image Format (.nygi) and Overlay — Accepted
+- [x] NPS-006 Nyrqis Game/Application Image Format (.nygi) and Overlay — Accepted
 - [x] NPS-007 Windows Compatibility Runtime — Accepted (ARM translation approach now decided via ADR-0015; performance validation still pending benchmark data)
 - [x] NPS-008 Android Compatibility Runtime — Accepted (ARM translation approach now decided via ADR-0015; performance validation still pending benchmark data)
 - [x] NPS-009 Adaptive UI Shell — Accepted (VR resolved: explicitly deferred to a future milestone, not an open mode definition)
@@ -292,9 +292,22 @@ Documentation hygiene, fixed earlier this session:
   Affected all 13 `Accepted` NPS documents from that review; fixed and
   verified via `mkdocs build --strict` and a repo-wide grep, now clean.
 - `mkdocs.yml`'s `repo_url` was still the bootstrap placeholder; corrected
-  to `Myco-mycelium/Nythera`.
+  to the canonical GitHub repository `Myco-mycelium/Nythera` (the
+  repository name is intentionally unchanged by the 2026-08-12 rebrand —
+  see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**rebrand**): project name changed from **Nythera** to
+  **Nyrqis** everywhere (docs, code identifiers, `NYTHERA_LOG_LEVEL` →
+  `NYRQIS_LOG_LEVEL`, `nythera-policy-` → `nyrqis-policy-`, LICENSE
+  placeholder, `nythera_backend.py` → `nyrqis_backend.py`,
+  `000-THE_NYTHERA_MANIFEST.md` → `000-THE_NYRQIS_MANIFEST.md`). The `Ny`
+  prefix is retained (now denotes Nyrqis: `nyhal`, `nyctr`, `nyfs`,
+  `nygi`, `nypkg`). The repository directory and GitHub URL
+  (`Myco-mycelium/Nythera`) keep the old name for now — the three URL
+  references are the only remaining occurrences, documented in
+  `REBRAND_NOTICE.md` (CR-0035). New commits are authored `Nyrqis
+  Bootstrap <bootstrap@nyrqis.local>`.
 - 2026-08-12 (backend hardening): Linux Backend data-plane capability
   enforcement (seccomp-BPF installed in-container — `FIND-BACKEND-002`),
   shell-free launcher (`FIND-BACKEND-004`), cgroup v1 release_agent

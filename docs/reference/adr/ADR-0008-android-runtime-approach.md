@@ -3,7 +3,7 @@ title: Adopt an AOSP-Based Container Runtime for Android Compatibility
 document_id: ADR-0008
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -13,7 +13,7 @@ depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006]
 # ADR-0008 — AOSP-Based Container Runtime for Android Compatibility
 
 ## Context
-Nythera commits to running `.apk` applications (NTM-000, original design
+Nyrqis commits to running `.apk` applications (NTM-000, original design
 discussion). As with Windows compatibility (ADR-0005), the choice is
 between full emulation of an Android device and a lighter-weight
 compatibility layer built from Android's own open-source components.
@@ -25,7 +25,7 @@ Waydroid/Anbox — running inside the container model defined in ADR-0004,
 rather than a full Android device emulator (e.g. QEMU-based Android
 emulation). Google Play Services is treated as an **optional, user-supplied
 component**, not a bundled dependency, consistent with keeping the default
-platform free of closed-source requirements (NTM-000 §5, "What Nythera Will
+platform free of closed-source requirements (NTM-000 §5, "What Nyrqis Will
 Never Become" — vendor lock-in).
 
 On x86 hardware, ARM-compiled APKs require instruction translation, the

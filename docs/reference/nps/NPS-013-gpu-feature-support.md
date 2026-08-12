@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: gaming
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -31,8 +31,8 @@ or controller input (NPS-012).
 ## 3. Feature Exposure Model
 
 3.1. GPU features **MUST** be exposed to applications as queryable Vulkan
-capabilities/extensions, consistent with ADR-0010 — Nythera **MUST NOT**
-introduce a parallel, Nythera-specific feature-query API that duplicates
+capabilities/extensions, consistent with ADR-0010 — Nyrqis **MUST NOT**
+introduce a parallel, Nyrqis-specific feature-query API that duplicates
 what Vulkan already provides.
 
 3.2. An application **MUST** be able to query supported features (HDR,
@@ -42,7 +42,7 @@ failing to launch.
 
 ## 4. High Dynamic Range (HDR)
 
-4.1. Nythera **MUST** support HDR output on displays and GPUs that
+4.1. Nyrqis **MUST** support HDR output on displays and GPUs that
 support it, exposed through the corresponding Vulkan color-space
 extensions.
 
@@ -53,7 +53,7 @@ multi-window desktop presentation.
 
 ## 5. Variable Refresh Rate (VRR)
 
-5.1. Nythera **MUST** support VRR (e.g. FreeSync/G-Sync-class protocols)
+5.1. Nyrqis **MUST** support VRR (e.g. FreeSync/G-Sync-class protocols)
 end-to-end from application frame submission through display output, on
 hardware that supports it.
 
@@ -65,7 +65,7 @@ subject to user override (NPS-009 §4.2).
 ## 6. Ray Tracing
 
 6.1. Ray tracing support **MUST** be exposed through standard Vulkan
-ray-tracing extensions; Nythera **MUST NOT** require application-specific
+ray-tracing extensions; Nyrqis **MUST NOT** require application-specific
 integration work beyond what those extensions already demand.
 
 6.2. Ray tracing availability **MUST** be one of the features covered by
@@ -75,7 +75,7 @@ rather than being blocked from launch.
 
 ## 7. Upscaling (FSR, XeSS, and Similar)
 
-7.1. Nythera **SHOULD** provide a vendor-neutral upscaling integration
+7.1. Nyrqis **SHOULD** provide a vendor-neutral upscaling integration
 point so applications can request upscaling without hard-coding a specific
 vendor technology (FSR, XeSS, or others), consistent with NTM-000 §4
 ("Compatibility") and avoiding vendor lock-in per NTM-000 §5.

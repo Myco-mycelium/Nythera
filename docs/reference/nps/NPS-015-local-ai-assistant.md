@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: ai
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-15
 ai_assisted: true
@@ -27,7 +27,7 @@ NTM-000 §9 and NPC-001 §11 (AI boundaries) at the specification level.
 This specification covers the local AI assistant's functional scope,
 container placement, the suggest-vs-act boundary, offline operation
 requirements, and disableability. It does not cover the AI Collaboration
-Protocol (NPC-002), which governs AI used to build Nythera itself, not the
+Protocol (NPC-002), which governs AI used to build Nyrqis itself, not the
 assistant shipped inside it.
 
 ## 3. Functional Scope

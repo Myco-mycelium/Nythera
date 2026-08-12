@@ -1,12 +1,12 @@
 ---
-title: Nythera Game/Application Image Format (.nygi) and Overlay
+title: Nyrqis Game/Application Image Format (.nygi) and Overlay
 document_id: NPS-006
 version: 1.0.1
 status: Accepted
 classification: Normative
 subsystem: storage
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -14,7 +14,7 @@ review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0003, ADR-0007, NPS-004, NPS-005]
 ---
 
-# NPS-006 — Nythera Game/Application Image Format (.nygi) and Overlay
+# NPS-006 — Nyrqis Game/Application Image Format (.nygi) and Overlay
 
 ## 1. Status of This Document
 
@@ -88,7 +88,7 @@ Per the original design's four-step model, a `.nygi` image **MUST** follow:
 
 ## 6. Verification
 
-6.1. Nythera **MUST** be able to verify a `.nygi` image's integrity against
+6.1. Nyrqis **MUST** be able to verify a `.nygi` image's integrity against
 its manifest checksums (§3.1) without fully decompressing the image,
 supporting the "faster verification" goal from the original design
 discussion.
@@ -107,7 +107,7 @@ choice, per NPC-001 §10 and to avoid accidental save-data loss — satisfying
 
 Per ADR-0003 and the original architecture discussion: multiplayer titles
 relying on kernel-level anti-cheat drivers may be unsupported without
-vendor cooperation, since Nythera's containerization model (ADR-0004) and
+vendor cooperation, since Nyrqis's containerization model (ADR-0004) and
 hybrid microkernel boundary (ADR-0006) do not grant the kind of
 system-wide kernel access such anti-cheat software typically expects. This
 limitation **MUST** be documented in user-facing compatibility information

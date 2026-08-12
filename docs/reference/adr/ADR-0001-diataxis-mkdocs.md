@@ -3,7 +3,7 @@ title: Adopt Diátaxis + MkDocs Material for Documentation
 document_id: ADR-0001
 version: 1.0.0
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -13,13 +13,13 @@ depends_on: [NPC-001]
 # ADR-0001 — Adopt Diátaxis + MkDocs Material
 
 ## Context
-Nythera's documentation will grow across many subsystems over many years,
+Nyrqis's documentation will grow across many subsystems over many years,
 authored by both humans and AI assistants. Without a structural convention,
 large documentation sets tend to collapse into an unsorted pile of files
 mixing tutorials, reference material, and design rationale.
 
 ## Decision
-Nythera adopts the Diátaxis framework (tutorials / how-to / reference /
+Nyrqis adopts the Diátaxis framework (tutorials / how-to / reference /
 explanation) for `docs/`, rendered with MkDocs Material as the documentation
 site generator.
 

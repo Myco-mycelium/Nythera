@@ -13,7 +13,7 @@ it exists.
 
 ## Background: what a manifest is
 
-Every Nythera application runs inside a **container** (ADR-0004) — an
+Every Nyrqis application runs inside a **container** (ADR-0004) — an
 isolated execution boundary with an explicit, user-visible permission set
 (NPC-001 §9.1). A **container manifest** is the declarative description of
 what a container asks for: which capabilities, and which resource limits
@@ -116,7 +116,7 @@ probably shouldn't be in the manifest.
 You wrote a manifest, validated it against the capability registry,
 traced it through the container lifecycle, and connected it to the audit
 and prompting behavior the platform guarantees. You now understand the
-single most important security idea in Nythera: **applications are not
+single most important security idea in Nyrqis: **applications are not
 granted trust; they are granted capabilities, one registry entry at a
 time** (NPS-011 §1).
 

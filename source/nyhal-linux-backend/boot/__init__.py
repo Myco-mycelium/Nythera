@@ -1,13 +1,13 @@
 """
-Boot and Lifecycle Management for the Nythera Linux Backend
+Boot and Lifecycle Management for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.5 (Boot and Lifecycle) and NPS-001 §5 (Boot Milestones).
 Manages the initialization sequence, service bring-up, and graceful shutdown
-of the Nythera Linux Backend.
+of the Nyrqis Linux Backend.
 
 Boot Milestones (per NPS-001 §5):
 1. Hardware/Host Initialization: Set up kernel interfaces, cgroups, namespaces
-2. Trusted First Process: Launch the initial Nythera service container
+2. Trusted First Process: Launch the initial Nyrqis service container
 3. Service Bring-up: Initialize IPC, filesystem, capability systems
 4. Usable Session: Containers can be created and run
 

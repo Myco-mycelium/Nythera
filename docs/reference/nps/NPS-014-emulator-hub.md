@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: gaming
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -32,7 +32,7 @@ remains out of scope for platform-level specification.
 
 ## 3. Legal Responsibility Model
 
-3.1. Nythera **MUST NOT** bundle, distribute, or facilitate acquisition of
+3.1. Nyrqis **MUST NOT** bundle, distribute, or facilitate acquisition of
 copyrighted ROM or BIOS files. The Emulator Hub is an organizational and
 execution feature only.
 
@@ -89,7 +89,7 @@ this requirement and **MUST NOT** claim full functionality is available
 without user-supplied firmware.
 
 6.2. BIOS files, like ROMs, are subject to the same legal-responsibility
-framing in §3.2 and **MUST NOT** be bundled by Nythera.
+framing in §3.2 and **MUST NOT** be bundled by Nyrqis.
 
 ## 7. Relationship to `.nygi` Images
 

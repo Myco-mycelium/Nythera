@@ -1,11 +1,11 @@
 ---
-title: The Nythera Manifest
+title: The Nyrqis Manifest
 document_id: NTM-000
 version: 1.0.0
 status: Accepted
 classification: Foundational
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -13,7 +13,7 @@ review_cycle: Permanent
 depends_on: []
 ---
 
-# The Nythera Manifest
+# The Nyrqis Manifest
 
 > *Build a platform worthy of the decades ahead.*
 
@@ -21,11 +21,11 @@ depends_on: []
 
 ## 1. Purpose
 
-Nythera exists to advance personal computing by creating a secure, high-performance,
+Nyrqis exists to advance personal computing by creating a secure, high-performance,
 developer-friendly operating system that respects its users, embraces openness in its
 architecture, and remains adaptable to future technologies.
 
-Nythera is not built to imitate existing operating systems. It is built to explore
+Nyrqis is not built to imitate existing operating systems. It is built to explore
 better ways of computing while remaining practical enough to become a real platform.
 
 ---
@@ -47,7 +47,7 @@ We envision an operating system where:
 
 ## 3. Mission
 
-Nythera will provide a unified computing platform capable of supporting personal
+Nyrqis will provide a unified computing platform capable of supporting personal
 computing, professional work, software development, scientific research, creative
 production, gaming, education, and enterprise deployment — without fragmenting into
 multiple incompatible operating systems.
@@ -83,7 +83,7 @@ The platform should explain its behavior whenever practical. Users should
 understand why decisions are made.
 
 ### Compatibility
-Existing software ecosystems matter. Nythera should welcome developers and users
+Existing software ecosystems matter. Nyrqis should welcome developers and users
 while encouraging long-term migration toward native applications.
 
 ### Longevity
@@ -92,9 +92,9 @@ hardware but for the computing landscape ten or twenty years into the future.
 
 ---
 
-## 5. What Nythera Will Never Become
+## 5. What Nyrqis Will Never Become
 
-Nythera will never intentionally become:
+Nyrqis will never intentionally become:
 
 - an advertising platform,
 - a telemetry-first platform,
@@ -117,7 +117,7 @@ platform itself.
 
 ## 7. Community
 
-Nythera welcomes contributors who value thoughtful engineering, respectful
+Nyrqis welcomes contributors who value thoughtful engineering, respectful
 collaboration, evidence-based decisions, long-term thinking, and technical
 excellence.
 
@@ -149,7 +149,7 @@ functional without AI.
 
 ## 10. The Promise
 
-Every release of Nythera should leave the platform more understandable, more
+Every release of Nyrqis should leave the platform more understandable, more
 secure, more reliable, more maintainable, and more capable than the release
 before it.
 
@@ -157,12 +157,12 @@ before it.
 
 ## Closing Statement
 
-Nythera is built with the belief that operating systems can still improve. The
+Nyrqis is built with the belief that operating systems can still improve. The
 goal is not merely to create another operating system. The goal is to build a
 platform that engineers are proud to create, developers enjoy building for, and
 users trust with their work.
 
-This manifesto serves as the enduring philosophy of the Nythera project. Future
+This manifesto serves as the enduring philosophy of the Nyrqis project. Future
 designs, specifications, and implementations should remain faithful to its
 principles.
 

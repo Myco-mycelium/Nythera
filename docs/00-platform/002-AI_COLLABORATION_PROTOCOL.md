@@ -5,7 +5,7 @@ version: 1.0.1
 status: Accepted
 classification: Normative
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -20,14 +20,14 @@ depends_on: [NTM-000, NPC-001]
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 governs how AI tools (including large language models such as Claude) **MAY**
 be used to draft specifications, generate code, or assist engineering work on
-the Nythera project itself. It is distinct from NTM-000 §9, which governs
+the Nyrqis project itself. It is distinct from NTM-000 §9, which governs
 AI *inside the shipped operating system*.
 
 ---
 
 ## 2. Purpose *(Informative)*
 
-Nythera is expected to be built with significant AI assistance. Without clear
+Nyrqis is expected to be built with significant AI assistance. Without clear
 rules, AI-generated content can silently introduce architectural drift,
 unverified technical claims, or license contamination. This protocol exists
 to make AI collaboration productive and auditable rather than forbidden.

@@ -3,7 +3,7 @@ title: Games Distributed as Mounted Disk Images with Writable Overlay
 document_id: ADR-0003
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true

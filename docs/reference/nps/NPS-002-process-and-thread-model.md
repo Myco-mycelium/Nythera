@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -20,7 +20,7 @@ depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, NPS-001]
 
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 defines how processes, threads, and containers relate to one another in
-Nythera, and how this maps onto the containerized execution model of
+Nyrqis, and how this maps onto the containerized execution model of
 ADR-0004.
 
 ## 2. Scope
@@ -87,7 +87,7 @@ IPC (see NPS-003).
 ## 6. Thread Model
 
 6.1. Threads within a process **MUST** share the process's address space
-and capability set; Nythera **MUST NOT** support per-thread capability
+and capability set; Nyrqis **MUST NOT** support per-thread capability
 subsets in v1 — this **MAY** be revisited in a future MAJOR revision if a
 concrete need is demonstrated.
 

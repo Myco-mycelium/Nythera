@@ -5,7 +5,7 @@ architecture decision (ADR).*
 
 ## When you need this
 
-You want to change how Nythera works — a new subsystem, a new contract, a
+You want to change how Nyrqis works — a new subsystem, a new contract, a
 new architectural decision. Both proposal types follow the same process
 (NPC-001 §6); they differ in what they record (NPS = "here is how X works,"
 ADR = "here is the decision to do X and why").
@@ -23,7 +23,7 @@ for a short, clean example).
 ### 2. State which Manifest principles it advances
 
 The proposal MUST state which NTM-000 §4 principles it strengthens and
-confirm it does not violate NTM-000 §5 ("What Nythera Will Never Become")
+confirm it does not violate NTM-000 §5 ("What Nyrqis Will Never Become")
 (NPC-001 §6.2). If you can't articulate either one, that's a signal the
 proposal isn't ready.
 

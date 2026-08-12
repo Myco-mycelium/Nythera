@@ -12,7 +12,7 @@ directory; this index tracks status only.
 | [ADR-0003](ADR-0003-game-disk-images.md) | Games distributed as mounted disk images with writable overlay | Accepted |
 | [ADR-0004](ADR-0004-containerized-execution.md) | Containerized execution model for all application classes | Accepted |
 | [ADR-0005](ADR-0005-windows-compat-layer.md) | Windows compatibility via translation layer, not full emulation | Accepted |
-| [ADR-0006](ADR-0006-hybrid-microkernel.md) | Adopt a hybrid microkernel as the Nythera kernel base | Accepted |
+| [ADR-0006](ADR-0006-hybrid-microkernel.md) | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
 | [ADR-0007](ADR-0007-compression-codec.md) | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked |
 | [ADR-0008](ADR-0008-android-runtime-approach.md) | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
 | [ADR-0009](ADR-0009-ipc-rate-limiting.md) | Per-container token-bucket rate limiting for IPC | Proposed — benchmark-blocked |

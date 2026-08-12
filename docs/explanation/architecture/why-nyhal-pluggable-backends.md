@@ -6,7 +6,7 @@ the original kernel design.)*
 
 ## The Problem
 
-ADR-0006 committed Nythera to a hybrid microkernel, and every specification
+ADR-0006 committed Nyrqis to a hybrid microkernel, and every specification
 since — process model, IPC, storage, containers, capabilities — was written
 against that target. That's the right long-term architecture, but it has a
 real practical cost: a from-scratch kernel is a multi-year effort, and a
@@ -24,7 +24,7 @@ provides it" (a backend), and makes NyKernel one backend among several
 rather than the only possible foundation.
 
 The Linux Backend isn't a retreat from ADR-0006 — it's a way to have a
-runnable, testable Nythera almost immediately, built on namespaces,
+runnable, testable Nyrqis almost immediately, built on namespaces,
 cgroups, and seccomp/LSM to satisfy the exact same container and
 capability contracts NPS-002 and NPS-010 already defined. The NyKernel
 Backend remains the reference target; NPS-001 didn't get rewritten, it got

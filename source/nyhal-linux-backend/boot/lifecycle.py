@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Boot Lifecycle Management for the Nythera Linux Backend
+Boot Lifecycle Management for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.5 (Boot and Lifecycle) and NPS-001 §5 (Boot Milestones).
-Manages the initialization and shutdown of the Nythera Linux Backend system.
+Manages the initialization and shutdown of the Nyrqis Linux Backend system.
 
 Boot Sequence (per NPS-001 §5):
 1. Hardware/Host Initialization
@@ -12,8 +12,8 @@ Boot Sequence (per NPS-001 §5):
    - Set up IPC infrastructure
 
 2. Trusted First Process
-   - Create and launch the initial Nythera service container
-   - This process acts as the system init for Nythera
+   - Create and launch the initial Nyrqis service container
+   - This process acts as the system init for Nyrqis
 
 3. Service Bring-up
    - Initialize filesystem (NyFS FUSE daemon)
@@ -96,7 +96,7 @@ _EFI_SECUREBOOT_VAR = (
 
 
 class BootSequence:
-    """Manages the boot sequence of the Nythera Linux Backend.
+    """Manages the boot sequence of the Nyrqis Linux Backend.
     
     Implements NPS-001 §5 (Boot Milestones) and NPS-017 §4.5 (Boot and Lifecycle).
     """
@@ -252,7 +252,7 @@ class BootSequence:
     def secure_boot_status(self) -> SecureBootStatus:
         """Report the host's Secure Boot engagement status.
 
-        Per NPS-017 §4.5: a user MUST be able to learn, from Nythera
+        Per NPS-017 §4.5: a user MUST be able to learn, from Nyrqis
         itself, whether the ADR-0014 boot-integrity posture is actually
         in effect on their running system.
 
@@ -334,7 +334,7 @@ class BootSequence:
             True if boot succeeded, False otherwise
         """
         logger.info("=" * 60)
-        logger.info("Nythera Linux Backend Boot Sequence")
+        logger.info("Nyrqis Linux Backend Boot Sequence")
         logger.info("=" * 60)
         
         try:
@@ -426,7 +426,7 @@ class BootSequence:
     def _phase_first_process(self) -> bool:
         """Phase 2: Trusted First Process.
         
-        - Create and launch the initial Nythera service container
+        - Create and launch the initial Nyrqis service container
         """
         self.transition_to_phase(
             BootPhase.FIRST_PROCESS,
@@ -438,9 +438,9 @@ class BootSequence:
             
             # Create the first process container
             config = ContainerConfig(
-                name="nythera-init",
-                hostname="nythera-init",
-                command=["/bin/sh", "-c", "echo 'Nythera init process running'; sleep infinity"],
+                name="nyrqis-init",
+                hostname="nyrqis-init",
+                command=["/bin/sh", "-c", "echo 'Nyrqis init process running'; sleep infinity"],
                 limits=ResourceLimits(memory_mb=512, pid_limit=128),
             )
             
@@ -502,7 +502,7 @@ class BootSequence:
             # Create a FUSE mount point (ADR-0016). Whether the real
             # kernel mount is possible depends on fusepy + /dev/fuse;
             # the storage core is usable either way.
-            self.nyfs_mount = NyFSMount(self.nyfs, "/tmp/nythera-mnt")
+            self.nyfs_mount = NyFSMount(self.nyfs, "/tmp/nyrqis-mnt")
             fuse_available = self.nyfs_mount.attach()
             self.record_milestone(
                 BootPhase.SERVICE_BRINGUP,
@@ -548,7 +548,7 @@ class BootSequence:
             self.record_milestone(
                 BootPhase.USABLE_SESSION,
                 "System Ready",
-                "Nythera Linux Backend is operational"
+                "Nyrqis Linux Backend is operational"
             )
             return True
         except Exception as e:
@@ -562,10 +562,10 @@ class BootSequence:
             return False
     
     def shutdown(self) -> None:
-        """Gracefully shut down the Nythera Linux Backend."""
+        """Gracefully shut down the Nyrqis Linux Backend."""
         self.transition_to_phase(BootPhase.SHUTDOWN, "Initiating shutdown")
         
-        logger.info("Shutting down Nythera Linux Backend...")
+        logger.info("Shutting down Nyrqis Linux Backend...")
         
         try:
             # Terminate the first process
@@ -575,7 +575,7 @@ class BootSequence:
             
             # Clean up containers
             for container in self.container_manager.list_containers():
-                if container.id != "nythera-init":
+                if container.id != "nyrqis-init":
                     self.container_manager.terminate(container)
             
             logger.info("Shutdown complete")

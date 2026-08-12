@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IPC Core Implementation for the Nythera Linux Backend
+IPC Core Implementation for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.3 (IPC Semantics) and NPS-003 (IPC and Capability Passing).
 Provides the four core IPC primitives:

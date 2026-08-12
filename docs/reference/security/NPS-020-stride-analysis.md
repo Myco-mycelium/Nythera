@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: security
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -89,7 +89,7 @@ Surfaces: `SURFACE-WIN-*`, `SURFACE-AND-*`, `SURFACE-NET-*`, `SURFACE-SYNC-0001`
 | `FIND-COMPAT-001` | `TB-COMPAT-RUNTIME` | Tampering / Elevation | A malformed `.exe`/`.msi` or `.apk` could exploit a parsing bug in the translation layer itself (Win32 API translation, DirectX-to-Vulkan translation, the AOSP container runtime) — legacy-compatibility code has a well-documented history of parser vulnerabilities (see e.g. Wine/Proton's own CVE history as a reasonable proxy for this class of risk). | High / Medium | Container isolation (ADR-0004) limits blast radius to the compat-runtime container itself, not the whole system | Open — inherent to the approach, mitigated by containment rather than eliminated |
 | `FIND-NETWORK-001` | `TB-NETWORK` | Tampering / Information Disclosure | Neither NPS-011 (capability registry) nor NPS-016 (cloud sync) specifies that `CAP-NETWORK`/`CAP-CLOUD-SYNC` traffic must be encrypted in transit for *general* application network access — NPS-016 §7.1 requires it for sync specifically, but general `CAP-NETWORK` use by an arbitrary application has no such requirement. | Medium / Medium | NPS-016 §7.1 (sync-specific only) | **Open — spec gap, narrower than it looks: general app network traffic encryption is an application-layer concern (e.g. HTTPS) outside the OS's control in most cases, but the OS should not actively prevent or complicate TLS use; no finding requires immediate action beyond noting the boundary** |
 | `FIND-PACKAGE-001` | `TB-PACKAGE` | Spoofing / Tampering | `NPS-006` §3.1 specifies a manifest with **checksums** for integrity verification, but checksums alone don't establish *authenticity* — an attacker who tampers with a `.nygi` image can simply recompute the checksum for their modified content. There is no package-signing / publisher-identity specification anywhere in the current document set. | **High / High** | NPS-006 §6 (checksum verification only — verifies integrity against self-consistency, not against a trusted publisher) | **Open — significant spec gap, see §9** |
-| `FIND-EMU-001` | `TB-EMULATOR` | Tampering / Elevation | User-supplied ROM/BIOS files are exactly the kind of legacy, adversarial-input-prone format (emulator cores are frequently older C codebases) that historically produces memory-corruption vulnerabilities in the emulator itself. | High / Medium | NPS-014 §5.1 (each emulator runs in its own container), §5.2 (scoped capabilities only) | Mitigated by containment (same pattern as `FIND-COMPAT-001`) — acceptable given NPS-014 §3's framing that Nythera doesn't control the emulator cores' own code quality |
+| `FIND-EMU-001` | `TB-EMULATOR` | Tampering / Elevation | User-supplied ROM/BIOS files are exactly the kind of legacy, adversarial-input-prone format (emulator cores are frequently older C codebases) that historically produces memory-corruption vulnerabilities in the emulator itself. | High / Medium | NPS-014 §5.1 (each emulator runs in its own container), §5.2 (scoped capabilities only) | Mitigated by containment (same pattern as `FIND-COMPAT-001`) — acceptable given NPS-014 §3's framing that Nyrqis doesn't control the emulator cores' own code quality |
 
 ## 9. High-Severity Findings Requiring a Tracked Follow-Up
 

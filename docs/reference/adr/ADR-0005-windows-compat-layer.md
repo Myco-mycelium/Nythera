@@ -3,7 +3,7 @@ title: Windows Compatibility via Translation Layer, Not Full Emulation
 document_id: ADR-0005
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -13,7 +13,7 @@ depends_on: [NTM-000, NPC-001, ADR-0004]
 # ADR-0005 — Windows Compatibility via Translation Layer
 
 ## Context
-Nythera aims to run `.exe`/`.msi` applications without requiring a full
+Nyrqis aims to run `.exe`/`.msi` applications without requiring a full
 Windows kernel or VM. Full emulation is costly in performance and
 maintenance; API-level translation (in the spirit of Wine/Proton) is a
 proven, lighter-weight approach.

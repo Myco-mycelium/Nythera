@@ -3,7 +3,7 @@ title: Adopt Vulkan as the Native Graphics API Foundation
 document_id: ADR-0010
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -15,14 +15,14 @@ depends_on: [NTM-000, NPC-001, ADR-0005, ADR-0006, NPS-001, NPS-007]
 ## Context
 NPS-007 §4 already commits to DirectX-to-Vulkan translation for Windows
 compatibility, and NPS-001 §3 already reserves a kernel-space GPU command
-submission fast path. Neither document establishes what native Nythera
+submission fast path. Neither document establishes what native Nyrqis
 applications and games render through. Without a decision, native
 graphics work has no target API, and the gaming features listed in the
 original design discussion — HDR, VRR, ray tracing, upscaling (FSR/XeSS) —
 have no common foundation to sit on.
 
 ## Decision (Proposed)
-Adopt **Vulkan** as the native graphics API for Nythera. Native
+Adopt **Vulkan** as the native graphics API for Nyrqis. Native
 applications and games target Vulkan directly; the Windows compatibility
 runtime's DirectX-to-Vulkan translation (NPS-007 §4) becomes a specific
 case of a single underlying graphics foundation rather than a parallel
@@ -31,7 +31,7 @@ graphics stack. The kernel-space GPU command submission fast path (NPS-001
 
 This choice is consistent with NTM-000 §4 ("Simplicity"): one native
 graphics API, with translation layers built to target it, rather than
-maintaining a Nythera-specific graphics API that Windows translation would
+maintaining a Nyrqis-specific graphics API that Windows translation would
 then need to target as a second step.
 
 ## Alternatives Considered

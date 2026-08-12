@@ -3,7 +3,7 @@ title: Adopt UEFI Secure Boot with User-Enrollable Keys
 document_id: ADR-0014
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -25,8 +25,8 @@ Adopt standard **UEFI Secure Boot**, verified by the boot loader (NPS-001
 keys** — the same general model used by shim-based Linux distributions:
 a small, minimal first-stage loader signed by a widely-trusted CA (for
 out-of-the-box compatibility with default-enabled Secure Boot on consumer
-hardware), which then verifies the actual Nythera boot loader and kernel
-against Nythera's own key, and additionally supports the user enrolling
+hardware), which then verifies the actual Nyrqis boot loader and kernel
+against Nyrqis's own key, and additionally supports the user enrolling
 their own Machine Owner Key (MOK)-style key for custom or self-built
 kernels/backends (relevant given ADR-0012's pluggable NyHAL backends).
 
@@ -48,7 +48,7 @@ kernels/backends (relevant given ADR-0012's pluggable NyHAL backends).
   integrity requirement without a concrete mechanism, and would require
   users to manually disable a security feature enabled by default on most
   consumer hardware just to boot at all, creating unnecessary friction.
-- **Secure Boot with Nythera-only keys, no user enrollment** — rejected;
+- **Secure Boot with Nyrqis-only keys, no user enrollment** — rejected;
   directly conflicts with NPC-001 §10 (User Ownership) and would make the
   Experimental Backend (NPS-017 §6) effectively unusable without disabling
   platform security wholesale.
@@ -59,7 +59,7 @@ kernels/backends (relevant given ADR-0012's pluggable NyHAL backends).
 
 ## Consequences
 - NPS-001 §5 Stage 2 (Boot Loader) MUST be updated in a future revision to
-  reference this specific verification chain (shim-equivalent + Nythera
+  reference this specific verification chain (shim-equivalent + Nyrqis
   key + optional user-enrolled MOK) rather than the current generic
   "checksum, and signature where secure boot is enabled" language.
 - Key management tooling (enrolling, revoking, rotating keys) becomes a

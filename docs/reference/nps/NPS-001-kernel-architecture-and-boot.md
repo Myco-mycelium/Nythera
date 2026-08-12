@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-15
 ai_assisted: true
@@ -20,7 +20,7 @@ depends_on: [NTM-000, NPC-001, ADR-0006]
 
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 defines the kernel-space/user-space boundary and the boot sequence for
-Nythera, implementing the decision recorded in ADR-0006.
+Nyrqis, implementing the decision recorded in ADR-0006.
 
 ## 2. Scope
 
@@ -68,7 +68,7 @@ power management, update agent), and all applications regardless of class.
 
 The boot sequence **MUST** proceed through the following stages in order:
 
-1. **Firmware Handoff** — UEFI (or equivalent) hands control to the Nythera
+1. **Firmware Handoff** — UEFI (or equivalent) hands control to the Nyrqis
    boot loader.
 2. **Boot Loader** — verifies kernel image integrity (checksum, and
    signature where secure boot is enabled), loads the kernel and an initial
@@ -123,7 +123,7 @@ NPS.
 - ~~Secure boot / signature verification key management is out of
   scope for this document~~ — resolved by ADR-0014: standard UEFI Secure
   Boot with a shim-equivalent first-stage loader, verified against a
-  Nythera key, with user-enrollable keys supported for self-built kernels
+  Nyrqis key, with user-enrollable keys supported for self-built kernels
   or Experimental Backend (NPS-017 §6) use. Exact interaction with NyHAL
   backend selection remains open pending backend implementation.
 

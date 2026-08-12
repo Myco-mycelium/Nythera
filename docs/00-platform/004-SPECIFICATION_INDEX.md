@@ -5,7 +5,7 @@ version: 1.19.0
 status: Draft
 classification: Reference
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-08-12
 ai_assisted: true
@@ -16,14 +16,14 @@ depends_on: [NPC-001]
 # NPC-004 — Specification Index
 
 This document is the master index of every canonical document in the
-Nythera repository. It **MUST** be updated in the same commit that adds,
+Nyrqis repository. It **MUST** be updated in the same commit that adds,
 accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 
 ## 00 — Platform (Foundational)
 
 | ID | Title | Status | Version |
 |----|-------|--------|---------|
-| NTM-000 | The Nythera Manifest | Accepted | 1.0.0 |
+| NTM-000 | The Nyrqis Manifest | Accepted | 1.0.0 |
 | NPC-001 | Project Constitution | Accepted | 1.1.0 |
 | NPC-002 | AI Collaboration Protocol | Accepted | 1.0.1 |
 | NPC-003 | Engineering Handbook | Accepted | 1.0.1 |
@@ -43,7 +43,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0003 | Games distributed as mounted disk images with writable overlay | Accepted |
 | ADR-0004 | Containerized execution model for all application classes | Accepted |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted |
-| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Accepted |
+| ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — benchmark-blocked |
@@ -60,7 +60,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
 
-## Nythera Proposals for Specification (NPS)
+## Nyrqis Proposals for Specification (NPS)
 
 | ID | Title | Subsystem | Status |
 |----|-------|-----------|--------|
@@ -69,7 +69,7 @@ index.
 | NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft — benchmark-blocked (§6.1) |
 | NPS-004 | NyFS Filesystem Core | storage | Accepted |
 | NPS-005 | Transparent Compression Policy | storage | Draft — blocked on ADR-0007 |
-| NPS-006 | Nythera Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
+| NPS-006 | Nyrqis Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
 | NPS-007 | Windows Compatibility Runtime | runtime | Accepted |
 | NPS-008 | Android Compatibility Runtime | runtime | Accepted |
 | NPS-009 | Adaptive UI Shell | runtime | Accepted |
@@ -89,7 +89,7 @@ index.
 | NPS-023 | Secure Boot Threat Model | security | Draft |
 | NPS-024 | AI Threat Model | security | Draft |
 | NPS-025 | Object Registry | core-architecture | Draft |
-| NPS-026 | Nythera Package Format (.nypkg) | storage | Draft |
+| NPS-026 | Nyrqis Package Format (.nypkg) | storage | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
@@ -125,7 +125,7 @@ change process.
 
 | ID | Title | Status |
 |----|-------|--------|
-| NPS-026 | Nythera Package Format (.nypkg) | Draft |
+| NPS-026 | Nyrqis Package Format (.nypkg) | Draft |
 
 ---
 

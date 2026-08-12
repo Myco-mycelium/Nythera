@@ -6,7 +6,7 @@ decision records live under `docs/reference/`.
 
 | Topic | Document |
 |-------|----------|
-| Why a hybrid microkernel, and what it costs | [Why Nythera Uses a Hybrid Microkernel](why-hybrid-microkernel.md) |
+| Why a hybrid microkernel, and what it costs | [Why Nyrqis Uses a Hybrid Microkernel](why-hybrid-microkernel.md) |
 | Why the kernel is one NyHAL backend among several | [Why NyHAL Pluggable Backends](why-nyhal-pluggable-backends.md) |
 
 ## Governing Specifications

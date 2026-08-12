@@ -5,7 +5,7 @@ version: 1.0.0
 status: Draft
 classification: Normative
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true

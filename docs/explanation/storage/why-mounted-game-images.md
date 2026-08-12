@@ -20,7 +20,7 @@ directory tree.
 
 ## The Choice
 
-Nythera treats a game the way a physical disc always implicitly did: as a
+Nyrqis treats a game the way a physical disc always implicitly did: as a
 single, verifiable, read-only unit (`.nygi`, NPS-006), mounted at launch and
 unmounted at close. But unlike a real disc, every image is paired with a
 writable copy-on-write overlay (NPS-004 §4.1) that absorbs saves, mods, and
@@ -52,7 +52,7 @@ install time.
   copy files to a folder."
 - A real, acknowledged limitation: kernel-level anti-cheat systems that
   expect deep system access don't have an obvious place to live in this
-  model, and Nythera does not currently claim to solve that (NPS-006 §8).
+  model, and Nyrqis does not currently claim to solve that (NPS-006 §8).
 
 ## Alternatives We Considered
 

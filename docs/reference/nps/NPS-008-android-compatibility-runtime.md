@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -20,7 +20,7 @@ depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0008, NPS-002, NPS-003]
 
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
 implements ADR-0008 (AOSP-based container runtime), defining how `.apk`
-applications are installed, executed, and windowed within Nythera.
+applications are installed, executed, and windowed within Nyrqis.
 
 ## 2. Scope
 
@@ -35,7 +35,7 @@ ADR-0008.
 
 3.1. Each installed Android application **MUST** run inside its own
 container, per NPS-002 §4 and ADR-0004 — mirroring Android's own
-per-application process model, which maps naturally onto Nythera's
+per-application process model, which maps naturally onto Nyrqis's
 container boundary.
 
 3.2. The AOSP runtime components (Android system services required for app
@@ -58,17 +58,17 @@ defined in NPS-006 §6.
 ## 5. Permission-to-Capability Mapping
 
 5.1. Android's permission model (camera, microphone, storage, location,
-etc.) **MUST** be mapped onto Nythera's capability model (NPC-001 §9.3);
+etc.) **MUST** be mapped onto Nyrqis's capability model (NPC-001 §9.3);
 an Android app's manifest-declared permissions **MUST** translate directly
 into the capability set requested for its container.
 
-5.2. An Android permission with no corresponding Nythera capability
+5.2. An Android permission with no corresponding Nyrqis capability
 **MUST NOT** be silently granted; it MUST either map to a defined
 capability or be denied, and this mapping gap MUST be tracked in the
 capability registry (Milestone M6) as new capability classes are defined.
 
 5.3. Runtime permission prompts (Android's request-at-use-time model)
-**SHOULD** be presented through Nythera's native permission UI rather than
+**SHOULD** be presented through Nyrqis's native permission UI rather than
 an emulated Android permission dialog, so the user experience is
 consistent across application classes, per NTM-000 §4 ("Transparency").
 
@@ -99,7 +99,7 @@ validation remains open pending benchmark data (ADR-0015
 
 ## 8. Google Play Services *(Informative)*
 
-Per ADR-0008, Google Play Services is not bundled by default. Nythera MAY
+Per ADR-0008, Google Play Services is not bundled by default. Nyrqis MAY
 support user-supplied Play Services components or open-source
 alternatives (e.g. microG-style replacements) as an optional installation,
 but this runtime MUST function for permission-compliant, Play-Services-free

@@ -1,4 +1,4 @@
-# A Tour of the Nythera Repository
+# A Tour of the Nyrqis Repository
 
 *Tutorial — works today. You don't need anything installed except `git`
 and a text editor.*
@@ -13,15 +13,15 @@ This is the map you'll want before reading anything else in the project.
 
 ```bash
 git clone https://github.com/Myco-mycelium/Nythera.git
-cd Nythera
+cd Nyrqis
 ```
 
 ## Step 2 — Read the Manifest first
 
-The file `docs/00-platform/000-THE_NYTHERA_MANIFEST.md` (NTM-000) is the
+The file `docs/00-platform/000-THE_NYRQIS_MANIFEST.md` (NTM-000) is the
 philosophy document. It's short, it doesn't change, and every other
 document in the project is supposed to be consistent with it. Read §4
-(Principles) and §5 (What Nythera Will Never Become) — you'll see phrases
+(Principles) and §5 (What Nyrqis Will Never Become) — you'll see phrases
 from those sections quoted all over the rest of the docs.
 
 ## Step 3 — Understand the layout
@@ -103,9 +103,9 @@ python3 tools/check_depends_on_cycles.py   # expect "No cycles found"
 
 ## What just happened
 
-You now know the four things every Nythera contributor needs to find fast:
+You now know the four things every Nyrqis contributor needs to find fast:
 
-1. **The philosophy** — `docs/00-platform/000-THE_NYTHERA_MANIFEST.md`
+1. **The philosophy** — `docs/00-platform/000-THE_NYRQIS_MANIFEST.md`
 2. **The rules** — `docs/00-platform/001-PROJECT_CONSTITUTION.md` and the
    rest of `00-platform/`
 3. **The specs** — `docs/00-platform/004-SPECIFICATION_INDEX.md` is the

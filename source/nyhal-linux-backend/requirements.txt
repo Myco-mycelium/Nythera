@@ -1,4 +1,4 @@
-# Nythera Linux Backend Requirements
+# Nyrqis Linux Backend Requirements
 # 
 # Core dependencies for the NyHAL Linux Backend implementation.
 # References:

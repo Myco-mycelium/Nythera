@@ -5,7 +5,7 @@ version: 1.9.0
 status: Draft
 classification: Informative
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-08-12
 ai_assisted: true
@@ -33,7 +33,7 @@ see "Milestone 12" section below and
 ## Roadmap
 
 ### M1 — Repository Bootstrap
-- [x] NTM-000 The Nythera Manifest
+- [x] NTM-000 The Nyrqis Manifest
 - [x] NPC-001 Project Constitution (Draft)
 - [x] NPC-002 AI Collaboration Protocol (Draft)
 - [x] NPC-003 Engineering Handbook (Draft)

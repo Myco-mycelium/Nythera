@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Capability Management for the Nythera Linux Backend
+Capability Management for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.2 (Capability Enforcement) and NPS-011 (Capability Registry).
-Manages the assignment, validation, and enforcement of Nythera capabilities for containers.
+Manages the assignment, validation, and enforcement of Nyrqis capabilities for containers.
 
 The backend acts as the sole arbiter of capability validity, preventing containers
 from self-issuing or forging access beyond their granted capability set.
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class Capability(enum.Enum):
-    """Nythera capabilities from NPS-011 Capability Registry.
+    """Nyrqis capabilities from NPS-011 Capability Registry.
     
     Each capability grants a specific privilege or access right to a container.
     Capabilities are the sole mechanism for authorization; no implicit elevated
@@ -235,7 +235,7 @@ class CapabilityManager:
     def get_audit_trail(self, container_id: str) -> List[CapabilityGrant]:
         """Get the audit trail of capability grants for a container.
         
-        Per NPS-011 and the transparency requirements of the Nythera Manifest,
+        Per NPS-011 and the transparency requirements of the Nyrqis Manifest,
         all capability operations are logged for audit and debugging.
         
         Args:

@@ -3,7 +3,7 @@ title: Adopt an EEVDF-Derived Scheduler with a Real-Time Priority Class
 document_id: ADR-0013
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -63,7 +63,7 @@ delivery per NPS-012 §6.1, audio, and frame pacing per NPS-002 §6.2).
   resource-limit grant mechanism, which itself is only partially specified
   (NPS-010 §9 already flags default CPU/memory limits as open).
 - This decision MUST be revisited if benchmarking reveals EEVDF's
-  properties don't hold up under Nythera's actual container/IPC load
+  properties don't hold up under Nyrqis's actual container/IPC load
   patterns (NPS-003's IPC-heavy design is somewhat different from a
   typical Linux workload EEVDF was tuned against).
 

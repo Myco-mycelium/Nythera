@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: security
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-15
 updated: 2026-07-15
 ai_assisted: true
@@ -42,14 +42,14 @@ booted, rather than owning its own boot chain.
 
 ## 3. The Architectural Question: Who Verifies What, on Which Backend
 
-`ADR-0014` was written describing a boot chain — shim, Nythera key,
-user-enrolled MOK — that verifies "the Nythera boot loader and kernel."
-That framing fits the **NyKernel Backend** (`NPS-001`, where Nythera owns
+`ADR-0014` was written describing a boot chain — shim, Nyrqis key,
+user-enrolled MOK — that verifies "the Nyrqis boot loader and kernel."
+That framing fits the **NyKernel Backend** (`NPS-001`, where Nyrqis owns
 the whole boot sequence from firmware handoff) directly. It does not fit
 the **Linux Backend** the same way: on Linux, UEFI Secure Boot
 verification of the boot loader and kernel is performed by the host
 Linux distribution's own chain (shim → GRUB → kernel), entirely *before*
-any Nythera code runs. The Linux Backend's `BootSequence` class
+any Nyrqis code runs. The Linux Backend's `BootSequence` class
 (`boot/lifecycle.py`) starts at what NPS-001 §5 would call Stage 5
 (Service Bring-Up) — hardware/kernel-feature detection, container
 manager initialization, capability manager initialization — not Stages
@@ -59,9 +59,9 @@ This is architecturally fine — it's a natural consequence of `ADR-0012`'s
 whole premise, that a backend provides native mechanisms for what NyCore
 requires rather than reimplementing them. But it produces a real gap:
 **nothing checks or reports whether the host's own Secure Boot chain was
-actually engaged.** A user could be running Nythera's Linux Backend on a
+actually engaged.** A user could be running Nyrqis's Linux Backend on a
 system with Secure Boot disabled, or on a system where it was bypassed,
-and receive no indication of that from Nythera at all.
+and receive no indication of that from Nyrqis at all.
 
 ## 4. Findings
 
@@ -76,7 +76,7 @@ system's Secure Boot chain is engaged.
 **Why this matters:** NTM-000 §4 ("Transparency") and NPC-001 §9.1
 require the platform explain its security posture to the user, not just
 enforce it silently where it happens to be enforced. A user has no way to
-learn, from Nythera itself, that they're running without the boot
+learn, from Nyrqis itself, that they're running without the boot
 integrity guarantee `ADR-0014` describes as the platform's default
 posture.
 
@@ -144,7 +144,7 @@ authenticates key enrollment via physical presence at a one-time
 interactive boot-time prompt — not a password, not a signature, just
 "someone is standing at the machine during this reboot." This is a
 well-understood, inherent property of the shim/MOK design used broadly
-across Linux distributions, not a Nythera-specific weakness.
+across Linux distributions, not a Nyrqis-specific weakness.
 
 **Severity: N/A — accepted, not a new risk.** This matches the "Physical
 attacker" profile in NPS-018 §5 directly: physical access during an

@@ -1,5 +1,5 @@
 ---
-title: Nythera Linux Backend Implementation Changelog
+title: Nyrqis Linux Backend Implementation Changelog
 document_id: CHANGELOG-IMPL-001
 version: 0.1.0
 status: In Progress
@@ -9,7 +9,12 @@ updated: 2026-07-15
 ai_assisted: true
 ---
 
-# Nythera Linux Backend Implementation Changelog
+# Nyrqis Linux Backend Implementation Changelog
+
+> **Naming note (2026-08-12):** this changelog was originally kept under the
+> project name *Nythera*. On 2026-08-12 the project was renamed to *Nyrqis*
+> (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
+> before that date refer to the same project under its former name.
 
 ## [0.1.0] — 2026-07-15
 
@@ -70,8 +75,8 @@ This release provides a complete, structurally-sound implementation of the NyHAL
   - Boot report generation
 
 ##### CLI and Tools
-- **`nythera_backend.py`** — Command-line interface
-  - `boot` command: Start the Nythera system
+- **`nyrqis_backend.py`** — Command-line interface
+  - `boot` command: Start the Nyrqis system
   - `container create/run` commands: Manage containers
   - `capability list/grant` commands: Manage capabilities
   - `ipc endpoint create` command: Create IPC endpoints
@@ -111,7 +116,7 @@ This release provides a complete, structurally-sound implementation of the NyHAL
   - sphinx (documentation)
 
 - **`docs/implementation_plan.md`** — Design and implementation plan
-  - Overview of Nythera vision and principles
+  - Overview of Nyrqis vision and principles
   - NyHAL backend requirements
   - Implementation strategy for each requirement
   - Key dependencies and challenges
@@ -194,7 +199,7 @@ See `tests/BENCHMARK_PLAN.md` for methodology.
 
 ## References
 
-### Nythera Specifications
+### Nyrqis Specifications
 - NPS-017: NyHAL Kernel Abstraction Layer and Backend Contract
 - NPS-001: Kernel Architecture and Boot (NyKernel Backend)
 - NPS-010: Container Runtime
@@ -207,10 +212,10 @@ See `tests/BENCHMARK_PLAN.md` for methodology.
 - ADR-0016: NyFS Linux Backend implemented as a user-space FUSE filesystem
 - ADR-0009: Per-container token-bucket rate limiting for IPC
 - ADR-0007: Adopt Zstandard as the default compression codec
-- ADR-0006: Adopt a hybrid microkernel as the Nythera kernel base
+- ADR-0006: Adopt a hybrid microkernel as the Nyrqis kernel base
 
 ### Other Resources
-- NTM-000: The Nythera Manifest
+- NTM-000: The Nyrqis Manifest
 - tests/BENCHMARK_PLAN.md: Benchmarking methodology
 - REPOSITORY_STATE.md: Project status tracking
 

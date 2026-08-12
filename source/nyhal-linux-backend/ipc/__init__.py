@@ -1,5 +1,5 @@
 """
-Inter-Process Communication (IPC) for the Nythera Linux Backend
+Inter-Process Communication (IPC) for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.3 (IPC Semantics) and NPS-003 (IPC and Capability Passing).
 Provides the send/receive/call/notify primitives with capability transfer and

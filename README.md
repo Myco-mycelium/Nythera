@@ -1,19 +1,19 @@
-# Nythera
+# Nyrqis
 
 > Build a platform worthy of the decades ahead.
 
-Nythera is a from-scratch operating system project targeting native
+Nyrqis is a from-scratch operating system project targeting native
 performance across desktops, laptops, tablets, phones, handhelds, and
 consoles, with compatibility layers for Windows (`.exe`/`.msi`) and Android
 (`.apk`) applications, and a first-class gaming subsystem built on
 compressed, mountable game disk images.
 
-This repository is the canonical source of truth for Nythera's design,
+This repository is the canonical source of truth for Nyrqis's design,
 governance, and (eventually) implementation.
 
 ## Start Here
 
-1. **[The Nythera Manifest](docs/00-platform/000-THE_NYTHERA_MANIFEST.md)** —
+1. **[The Nyrqis Manifest](docs/00-platform/000-THE_NYRQIS_MANIFEST.md)** —
    why this project exists and what it will never become.
 2. **[Project Constitution](docs/00-platform/001-PROJECT_CONSTITUTION.md)** —
    the enforceable rules that govern the platform.
@@ -38,7 +38,7 @@ Documentation follows the [Diátaxis](https://diataxis.fr/) framework under
 ## Repository Layout
 
 ```
-Nythera/
+Nyrqis/
 ├── docs/            # All documentation (Diátaxis)
 ├── source/          # Kernel, subsystems, runtime code
 ├── tools/           # Build tooling, CLI utilities

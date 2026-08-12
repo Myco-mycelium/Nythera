@@ -5,7 +5,7 @@ version: 1.11.0
 status: Draft
 classification: Reference
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -27,7 +27,7 @@ only.
 | ADR-0003 | Games distributed as mounted disk images with writable overlay | Accepted | 2026-07-13 | — |
 | ADR-0004 | Containerized execution model for all application classes | Accepted | 2026-07-13 | — |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted | 2026-07-13 | — |
-| ADR-0006 | Adopt a hybrid microkernel as the Nythera kernel base | Accepted | 2026-07-13 | — |
+| ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted | 2026-07-13 | — |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed | 2026-07-12 | — |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted | 2026-07-13 | — |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed | 2026-07-12 | — |

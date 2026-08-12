@@ -1,5 +1,5 @@
 """
-NyFS FUSE Implementation for the Nythera Linux Backend
+NyFS FUSE Implementation for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.4 (Storage Guarantees) via a user-space FUSE filesystem.
 Provides the copy-on-write, snapshot, checksum, and transparent-compression

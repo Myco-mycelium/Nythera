@@ -14,7 +14,7 @@ execution — is trusted by default rather than by decision.
 
 ## The Choice
 
-Nythera inverts this. Every container starts with nothing (NPS-010 §4.2)
+Nyrqis inverts this. Every container starts with nothing (NPS-010 §4.2)
 and is evaluated against an explicit manifest before anything is granted.
 The capability registry (NPS-011) is not a list of "sensitive things to
 watch out for" — it's the complete list of everything any container is

@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -58,7 +58,7 @@ considered feature-complete for Milestone M5:
 | Graphics | DirectX-to-Vulkan command translation, sufficient to run unmodified DirectX 11/12 titles at acceptable performance (exact target deferred to §8). |
 | .NET Compatibility | A .NET runtime compatible with common .NET Framework and .NET (Core) application binaries. |
 | Input | DirectInput and XInput translated to the native input subsystem, preserving controller support goals from NTM-000. |
-| Registry | A virtualized registry (§5) — Nythera MUST NOT expose or depend on a real Windows registry. |
+| Registry | A virtualized registry (§5) — Nyrqis MUST NOT expose or depend on a real Windows registry. |
 
 ## 5. Registry Virtualization
 

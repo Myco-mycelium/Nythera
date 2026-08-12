@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: ai
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -98,7 +98,7 @@ subsystem since ADR-0004.
 
 ## 8. Third-Party Sync Backends
 
-8.1. Nythera **SHOULD NOT** hard-depend on a single, Nythera-operated
+8.1. Nyrqis **SHOULD NOT** hard-depend on a single, Nyrqis-operated
 cloud service for sync to function, consistent with NTM-000 §5's
 rejection of vendor lock-in; the sync mechanism **SHOULD** be
 backend-agnostic where practical (e.g. user-configurable endpoint), though

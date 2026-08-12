@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -32,7 +32,7 @@ Milestone M6 capability registry).
 
 ## 3. IPC Primitives
 
-Nythera **MUST** provide the following kernel-mediated primitives:
+Nyrqis **MUST** provide the following kernel-mediated primitives:
 
 | Primitive | Semantics |
 |-----------|-----------|

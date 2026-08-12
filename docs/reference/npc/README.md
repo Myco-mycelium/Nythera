@@ -1,4 +1,4 @@
-# Nythera Platform Constitutions (NPC)
+# Nyrqis Platform Constitutions (NPC)
 
 NPC documents are the enforceable governance layer of the project (NPC-001
 §4: *Platform Constitution — enforceable governance rules*). Their
@@ -17,8 +17,8 @@ Manifest (NTM-000); this page is an index of that series.
 | [NPC-008](../../00-platform/SUBSYSTEM_OWNERS.md) | Subsystem Owners | Draft |
 | [NPC-009](../../00-platform/009-REQUIREMENTS_DATABASE.md) | Requirements Database | Draft |
 
-The foundational philosophy document, [NTM-000 — The Nythera
-Manifest](../../00-platform/000-THE_NYTHERA_MANIFEST.md), governs the whole
+The foundational philosophy document, [NTM-000 — The Nyrqis
+Manifest](../../00-platform/000-THE_NYRQIS_MANIFEST.md), governs the whole
 series. Where any NPC document and the Manifest appear to conflict, the
 Manifest's philosophy governs and the NPC document MUST be revised
 (NPC-001 §1).

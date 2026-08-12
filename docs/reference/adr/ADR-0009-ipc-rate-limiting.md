@@ -3,7 +3,7 @@ title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true

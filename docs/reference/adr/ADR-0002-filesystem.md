@@ -3,7 +3,7 @@ title: Adopt Copy-on-Write Filesystem with Built-in Compression
 document_id: ADR-0002
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -13,7 +13,7 @@ depends_on: [NTM-000, NPC-001]
 # ADR-0002 — Copy-on-Write Filesystem with Built-in Compression
 
 ## Context
-Nythera's design calls for transparent application/game compression,
+Nyrqis's design calls for transparent application/game compression,
 snapshots, deduplication, and integrity checks (NTM-000 vision;
 "Filesystem" discussion). Legacy filesystems (NTFS, ext4) do not provide
 these natively, requiring bolt-on user-space tooling that is harder to make
@@ -21,7 +21,7 @@ reliable.
 
 ## Decision (Proposed)
 Adopt a copy-on-write filesystem model, drawing on Btrfs/ZFS concepts, as the
-default Nythera filesystem (working name: **NyFS**), providing:
+default Nyrqis filesystem (working name: **NyFS**), providing:
 
 - Transparent per-file/per-extent compression (Zstd default, LZ4 for
   latency-sensitive paths).

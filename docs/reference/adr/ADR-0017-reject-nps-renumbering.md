@@ -3,7 +3,7 @@ title: Reject Domain-Grouped NPS Renumbering
 document_id: ADR-0017
 version: 1.0.0
 status: Rejected
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true

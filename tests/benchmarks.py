@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""First-pass benchmarks for the Nythera Linux Backend.
+"""First-pass benchmarks for the Nyrqis Linux Backend.
 
 Implements the available subset of `tests/BENCHMARK_PLAN.md`:
 
@@ -192,7 +192,7 @@ def benchmark_nyfs_vs_native():
 
 
 def main():
-    print("Nythera Linux Backend — first-pass benchmarks")
+    print("Nyrqis Linux Backend — first-pass benchmarks")
     print("=" * 60)
     print("IPC round-trip, raised token budget (BENCHMARK_PLAN §1):")
     ipc = benchmark_ipc_roundtrip()

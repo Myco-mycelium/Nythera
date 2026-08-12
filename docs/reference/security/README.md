@@ -1,6 +1,6 @@
 # Threat Model
 
-The Nythera threat model is built in phases, tracked in
+The Nyrqis threat model is built in phases, tracked in
 [`007-PROJECT_ROADMAP.md`](../../00-platform/007-PROJECT_ROADMAP.md)
 Milestone 12. Each phase produces one or more documents; later phases
 depend on earlier ones and are not started out of order.

@@ -1,19 +1,19 @@
 ---
-title: Adopt a Hybrid Microkernel as the Nythera Kernel Base
+title: Adopt a Hybrid Microkernel as the Nyrqis Kernel Base
 document_id: ADR-0006
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0004]
 ---
 
-# ADR-0006 — Hybrid Microkernel as the Nythera Kernel Base
+# ADR-0006 — Hybrid Microkernel as the Nyrqis Kernel Base
 
 ## Context
-Nythera must run on hardware ranging from phones to gaming desktops, support
+Nyrqis must run on hardware ranging from phones to gaming desktops, support
 containerized execution for every application class (ADR-0004), and remain
 maintainable for decades (NTM-000 §4, "Longevity"). The kernel architecture
 choice shapes nearly every subsystem that follows, so it must be decided

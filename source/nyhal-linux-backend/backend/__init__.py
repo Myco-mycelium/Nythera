@@ -1,5 +1,5 @@
 """
-Nythera Linux Backend (NyHAL Implementation)
+Nyrqis Linux Backend (NyHAL Implementation)
 
 This module implements the NyHAL backend contract (NPS-017 §4) for Linux systems.
 It provides container primitives, capability enforcement, IPC semantics, storage

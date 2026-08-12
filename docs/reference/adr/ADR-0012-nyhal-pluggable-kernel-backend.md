@@ -3,7 +3,7 @@ title: Adopt NyHAL as a Pluggable Kernel Abstraction Layer
 document_id: ADR-0012
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -13,7 +13,7 @@ depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002, NPS-003]
 # ADR-0012 — NyHAL as a Pluggable Kernel Abstraction Layer
 
 ## Context
-ADR-0006 commits Nythera to a hybrid microkernel design (NyKernel) as the
+ADR-0006 commits Nyrqis to a hybrid microkernel design (NyKernel) as the
 long-term target. Building a kernel from scratch, however, is a multi-year
 effort, and NTM-000 §4 ("Longevity") explicitly asks that decisions be
 evaluated not just architecturally but against what keeps the platform
@@ -27,7 +27,7 @@ This means the rest of the OS does not actually need to know which kernel
 provides those guarantees, only that they hold.
 
 ## Decision (Proposed)
-Introduce **NyHAL** (Nythera Hardware Abstraction Layer) as a stable
+Introduce **NyHAL** (Nyrqis Hardware Abstraction Layer) as a stable
 interface boundary beneath the rest of the operating system, with kernel
 functionality provided by swappable backends:
 

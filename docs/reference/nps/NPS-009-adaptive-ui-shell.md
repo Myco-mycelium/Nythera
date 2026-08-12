@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: runtime
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -19,7 +19,7 @@ depends_on: [NTM-000, NPC-001, NPS-001, NPS-007, NPS-008]
 ## 1. Status of This Document
 
 This document is **normative**. RFC 2119 terms apply as in NPC-001. It
-defines how Nythera selects and presents a device-appropriate interface,
+defines how Nyrqis selects and presents a device-appropriate interface,
 implementing the "Performance Modes" concept from the original design
 discussion and referenced in NPS-001 §5 (Stage 5, Service Bring-Up).
 
@@ -33,7 +33,7 @@ already covered for Android apps in NPS-008 §6.
 
 ## 3. Device Modes
 
-Nythera **MUST** support at least the following modes:
+Nyrqis **MUST** support at least the following modes:
 
 | Mode | Primary Input | Typical Hardware |
 |------|----------------|-------------------|

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nyctr — Nythera container primitive, proof-of-concept spike.
+nyctr — Nyrqis container primitive, proof-of-concept spike.
 
 Implements: a small slice of NPS-017 §4.1 (Container Primitives) for the
 Linux Backend (ADR-0012), demonstrating that NPS-002's process-isolation
@@ -117,7 +117,7 @@ def run_container(command: list[str], hostname: str, memory_mb: int, pid_limit: 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    parser.add_argument("--hostname", default="nythera-poc", help="UTS namespace hostname")
+    parser.add_argument("--hostname", default="nyrqis-poc", help="UTS namespace hostname")
     parser.add_argument("--memory-mb", type=int, default=64, help="cgroup memory limit (MiB)")
     parser.add_argument("--pid-limit", type=int, default=32, help="cgroup pids.max")
     parser.add_argument("command", nargs=argparse.REMAINDER,

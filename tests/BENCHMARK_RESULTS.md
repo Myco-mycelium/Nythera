@@ -1,4 +1,4 @@
-# Nythera Benchmark Results — First Pass
+# Nyrqis Benchmark Results — First Pass
 
 **Date:** 2026-08-12
 **Environment:** Linux 6.14.0-37-generic, x86_64, glibc 2.39, Python 3.12.3

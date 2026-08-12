@@ -3,7 +3,7 @@ title: Containerized Execution Model for All Application Classes
 document_id: ADR-0004
 version: 1.0.1
 status: Accepted
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true

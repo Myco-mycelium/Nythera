@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: security
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Container Management for the Nythera Linux Backend
+Container Management for the Nyrqis Linux Backend
 
 Implements NPS-017 §4.1 (Container Primitives) and NPS-010 (Container Lifecycle).
 Extends the proof-of-concept in poc-container/nyctr.py with:
@@ -59,17 +59,17 @@ class ResourceLimits:
 class ContainerConfig:
     """Configuration for a new container."""
     name: Optional[str] = None
-    hostname: str = "nythera-container"
+    hostname: str = "nyrqis-container"
     command: List[str] = field(default_factory=lambda: ["/bin/sh"])
     limits: ResourceLimits = field(default_factory=ResourceLimits)
-    capabilities: List[str] = field(default_factory=list)  # Nythera capabilities
+    capabilities: List[str] = field(default_factory=list)  # Nyrqis capabilities
     environment: Dict[str, str] = field(default_factory=dict)
     seccomp: bool = True  # data-plane enforcement (NPS-017 §4.2)
     default_deny: bool = False  # default-deny allowlist posture (opt-in)
 
 
 class Container:
-    """Represents a single Nythera container instance.
+    """Represents a single Nyrqis container instance.
     
     Implements the container state machine from NPS-010 §4.
     """
@@ -127,7 +127,7 @@ class Container:
 
 
 class ContainerManager:
-    """Manages the lifecycle of multiple Nythera containers.
+    """Manages the lifecycle of multiple Nyrqis containers.
     
     Implements NPS-017 §4.1 (Container Primitives) on the Linux Backend.
     """
@@ -369,7 +369,7 @@ class ContainerManager:
     def _setup_cgroups_v2(self, container: Container) -> None:
         """Set up cgroups v2 resource limits (unified hierarchy)."""
         limits = container.config.limits
-        cgroup_path = self.cgroup_root / "nythera" / container.id
+        cgroup_path = self.cgroup_root / "nyrqis" / container.id
         
         try:
             cgroup_path.mkdir(parents=True, exist_ok=True)
@@ -432,7 +432,7 @@ class ContainerManager:
             from backend.capability import CapabilityManager
             caps = [c.value for c in CapabilityManager().get_default_capabilities()]
         
-        fd, path = tempfile.mkstemp(prefix="nythera-policy-", suffix=".json")
+        fd, path = tempfile.mkstemp(prefix="nyrqis-policy-", suffix=".json")
         os.close(fd)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"capabilities": sorted(set(caps))}, fh)
@@ -525,8 +525,8 @@ def main():
     
     # Create and run a simple test container
     config = ContainerConfig(
-        hostname="nythera-test",
-        command=["sh", "-c", "echo 'Hello from Nythera!'; sleep 2"],
+        hostname="nyrqis-test",
+        command=["sh", "-c", "echo 'Hello from Nyrqis!'; sleep 2"],
         limits=ResourceLimits(memory_mb=128, pid_limit=32),
     )
     

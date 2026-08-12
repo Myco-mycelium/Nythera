@@ -1,9 +1,9 @@
-# Contributing to Nythera
+# Contributing to Nyrqis
 
-Nythera is governed by a small set of foundational documents. Read them
+Nyrqis is governed by a small set of foundational documents. Read them
 before contributing:
 
-1. [NTM-000 The Nythera Manifest](docs/00-platform/000-THE_NYTHERA_MANIFEST.md)
+1. [NTM-000 The Nyrqis Manifest](docs/00-platform/000-THE_NYRQIS_MANIFEST.md)
 2. [NPC-001 Project Constitution](docs/00-platform/001-PROJECT_CONSTITUTION.md)
 3. [NPC-002 AI Collaboration Protocol](docs/00-platform/002-AI_COLLABORATION_PROTOCOL.md) (if using AI assistance)
 4. [NPC-003 Engineering Handbook](docs/00-platform/003-ENGINEERING_HANDBOOK.md)

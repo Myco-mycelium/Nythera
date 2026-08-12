@@ -1,12 +1,12 @@
 ---
-title: Nythera Package Format (.nypkg)
+title: Nyrqis Package Format (.nypkg)
 document_id: NPS-026
 version: 1.0.0
 status: Draft
 classification: Normative
 subsystem: storage
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-08-12
 updated: 2026-08-12
 ai_assisted: true
@@ -14,7 +14,7 @@ review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, ADR-0004, NPS-004, NPS-005, NPS-006, NPS-010]
 ---
 
-# NPS-026 — Nythera Package Format (.nypkg)
+# NPS-026 — Nyrqis Package Format (.nypkg)
 
 ## 1. Status of This Document
 
@@ -100,7 +100,7 @@ are verified through the same path.
 ## 7. Integrity Tree
 
 7.1. Each content image **MUST** carry a hash tree (Merkle) over its
-files, extending NPS-006 §6.1's verification guarantee: Nythera **MUST**
+files, extending NPS-006 §6.1's verification guarantee: Nyrqis **MUST**
 be able to verify an image against its integrity tree without fully
 decompressing it.
 

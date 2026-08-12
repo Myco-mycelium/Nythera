@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-15
 ai_assisted: true
@@ -127,13 +127,13 @@ Where a backend does not itself own the boot chain covered by `ADR-0014`
 operating system), it **MUST** query and report the host's own Secure
 Boot engagement status as part of reaching a usable session, rather than
 leaving its presence or absence silent. A user **MUST** be able to learn,
-from Nythera itself, whether the boot integrity guarantee `ADR-0014`
+from Nyrqis itself, whether the boot integrity guarantee `ADR-0014`
 describes as the platform's default posture is actually in effect on
 their running system (per the threat model, `FIND-BOOT-001`, NPS-023 §4).
 
 ## 5. Backend Conformance
 
-5.1. A backend **MUST NOT** be presented as Nythera-conformant unless it
+5.1. A backend **MUST NOT** be presented as Nyrqis-conformant unless it
 satisfies §4 in full; partial conformance **MUST** be documented as such
 (e.g. "Experimental Backend — storage guarantees not yet implemented") and
 **MUST NOT** be silently assumed complete.

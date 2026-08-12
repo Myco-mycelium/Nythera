@@ -1,11 +1,11 @@
-# Why Nythera Uses a Hybrid Microkernel
+# Why Nyrqis Uses a Hybrid Microkernel
 
 *(Explanation — see NPS-001, NPS-002, NPS-003 for the normative specs, and
 ADR-0006 for the formal decision record.)*
 
 ## The Problem
 
-Nythera needs to satisfy two goals that usually pull against each other:
+Nyrqis needs to satisfy two goals that usually pull against each other:
 
 - **Reliability and security** (NTM-000 §4) — a fault in one driver or
   service shouldn't be able to take down the whole system, and every

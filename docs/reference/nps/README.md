@@ -1,4 +1,4 @@
-# Nythera Proposals for Specification (NPS)
+# Nyrqis Proposals for Specification (NPS)
 
 An NPS is a technical specification document — see NPC-001 §4 and §6 for
 the document class definition and change process. Most NPS records live in
@@ -13,7 +13,7 @@ status as NPS documents.
 | [NPS-003](NPS-003-ipc-and-capability-passing.md) | Inter-Process Communication and Capability Passing | core-architecture | Draft — benchmark-blocked (§6.1) |
 | [NPS-004](NPS-004-nyfs-filesystem-core.md) | NyFS Filesystem Core | storage | Accepted |
 | [NPS-005](NPS-005-transparent-compression-policy.md) | Transparent Compression Policy | storage | Draft — blocked on ADR-0007 |
-| [NPS-006](NPS-006-game-image-format.md) | Nythera Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
+| [NPS-006](NPS-006-game-image-format.md) | Nyrqis Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
 | [NPS-007](NPS-007-windows-compatibility-runtime.md) | Windows Compatibility Runtime | runtime | Accepted |
 | [NPS-008](NPS-008-android-compatibility-runtime.md) | Android Compatibility Runtime | runtime | Accepted |
 | [NPS-009](NPS-009-adaptive-ui-shell.md) | Adaptive UI Shell | runtime | Accepted |
@@ -33,7 +33,7 @@ status as NPS documents.
 | [NPS-023](../security/NPS-023-secure-boot-threat-model.md) | Secure Boot Threat Model | security | Draft (Threat Model Phase 5) |
 | [NPS-024](../security/NPS-024-ai-threat-model.md) | AI Threat Model | security | Draft (Threat Model Phase 6) |
 | [NPS-025](../object-registry/NPS-025-object-registry.md) | Object Registry | core-architecture | Draft (lives in `reference/object-registry/`) |
-| [NPS-026](../package-format/NPS-026-package-format.md) | Nythera Package Format (.nypkg) | storage | Draft (lives in `reference/package-format/`) |
+| [NPS-026](../package-format/NPS-026-package-format.md) | Nyrqis Package Format (.nypkg) | storage | Draft (lives in `reference/package-format/`) |
 
 ## Status Conventions
 

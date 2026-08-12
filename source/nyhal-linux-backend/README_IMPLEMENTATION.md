@@ -1,5 +1,5 @@
 ---
-title: Nythera Linux Backend — Implementation Guide
+title: Nyrqis Linux Backend — Implementation Guide
 document_id: IMPL-README-001
 version: 0.1.0
 status: In Progress
@@ -9,11 +9,11 @@ updated: 2026-07-15
 ai_assisted: true
 ---
 
-# Nythera Linux Backend — Implementation Guide
+# Nyrqis Linux Backend — Implementation Guide
 
 ## Overview
 
-This directory contains the implementation of the **Nythera Linux Backend**, a conformant implementation of the NyHAL (Nythera Kernel Abstraction Layer) contract on standard Linux systems. The backend provides a practical near-term path for running Nythera containers while the long-term NyKernel backend matures.
+This directory contains the implementation of the **Nyrqis Linux Backend**, a conformant implementation of the NyHAL (Nyrqis Kernel Abstraction Layer) contract on standard Linux systems. The backend provides a practical near-term path for running Nyrqis containers while the long-term NyKernel backend matures.
 
 **Status:** Experimental (Core implementation complete; data-plane security enforcement, FUSE operations, and boot hardening landed; performance optimization and conformance benchmarks pending)
 
@@ -32,14 +32,14 @@ python3 test_backend.py
 ### Running the Backend
 
 ```bash
-# Boot the Nythera system
-python3 nythera_backend.py boot
+# Boot the Nyrqis system
+python3 nyrqis_backend.py boot
 
 # In another terminal, create and run a container
-python3 nythera_backend.py container run /bin/sh
+python3 nyrqis_backend.py container run /bin/sh
 
 # List available capabilities
-python3 nythera_backend.py capability list
+python3 nyrqis_backend.py capability list
 ```
 
 ## Architecture
@@ -240,7 +240,7 @@ nyhal-linux-backend/
 │   ├── nyctr.py
 │   ├── test_nyctr.sh
 │   └── README.md
-├── nythera_backend.py        # CLI entry point
+├── nyrqis_backend.py        # CLI entry point
 ├── test_backend.py           # Test suite
 ├── requirements.txt          # Python dependencies
 ├── IMPLEMENTATION_STATUS.md  # Detailed status report
@@ -249,24 +249,24 @@ nyhal-linux-backend/
 
 ## Command-Line Interface
 
-The `nythera_backend.py` script provides a CLI for managing the backend:
+The `nyrqis_backend.py` script provides a CLI for managing the backend:
 
 ### Boot the System
 ```bash
-python3 nythera_backend.py boot
-python3 nythera_backend.py boot --no-wait  # Don't wait for shutdown
+python3 nyrqis_backend.py boot
+python3 nyrqis_backend.py boot --no-wait  # Don't wait for shutdown
 ```
 
 ### Container Management
 ```bash
 # Create a container
-python3 nythera_backend.py container create --hostname my-container
+python3 nyrqis_backend.py container create --hostname my-container
 
 # Run a container (seccomp data-plane enforcement on by default)
-python3 nythera_backend.py container run --memory 512 /bin/sh
+python3 nyrqis_backend.py container run --memory 512 /bin/sh
 
 # Run with custom limits, capability set, and seccomp explicitly disabled
-python3 nythera_backend.py container run \
+python3 nyrqis_backend.py container run \
   --hostname custom \
   --memory 256 \
   --pids 32 \
@@ -283,31 +283,31 @@ and is NOT recommended.)
 ### Secure Boot Status
 ```bash
 # Report the host's Secure Boot engagement (efivars + mokutil probes)
-python3 nythera_backend.py secure-boot-status
+python3 nyrqis_backend.py secure-boot-status
 ```
 
 ### Capability Management
 ```bash
 # List all capabilities
-python3 nythera_backend.py capability list
+python3 nyrqis_backend.py capability list
 
 # Grant a capability
-python3 nythera_backend.py capability grant container-001 CAP_GRAPHICS_RENDER
+python3 nyrqis_backend.py capability grant container-001 CAP_GRAPHICS_RENDER
 ```
 
 ### IPC Management
 ```bash
 # Create an IPC endpoint
-python3 nythera_backend.py ipc endpoint create container-001 --endpoint-id ep-service
+python3 nyrqis_backend.py ipc endpoint create container-001 --endpoint-id ep-service
 ```
 
 ### Filesystem Management
 ```bash
 # Create a NyFS filesystem
-python3 nythera_backend.py filesystem create /tmp/nyfs
+python3 nyrqis_backend.py filesystem create /tmp/nyfs
 
 # List snapshots
-python3 nythera_backend.py filesystem snapshot list /tmp/nyfs
+python3 nyrqis_backend.py filesystem snapshot list /tmp/nyfs
 ```
 
 ## Testing
@@ -364,7 +364,7 @@ The following benchmarks are required before conformance (see `tests/BENCHMARK_P
 
 ## References
 
-### Nythera Specifications
+### Nyrqis Specifications
 - **NPS-017**: NyHAL Kernel Abstraction Layer and Backend Contract
 - **NPS-001**: Kernel Architecture and Boot (NyKernel Backend)
 - **NPS-010**: Container Runtime
@@ -379,10 +379,10 @@ The following benchmarks are required before conformance (see `tests/BENCHMARK_P
 - **ADR-0016**: NyFS Linux Backend implemented as a user-space FUSE filesystem
 - **ADR-0009**: Per-container token-bucket rate limiting for IPC
 - **ADR-0007**: Adopt Zstandard as the default compression codec
-- **ADR-0006**: Adopt a hybrid microkernel as the Nythera kernel base
+- **ADR-0006**: Adopt a hybrid microkernel as the Nyrqis kernel base
 
 ### Other Resources
-- **NTM-000**: The Nythera Manifest
+- **NTM-000**: The Nyrqis Manifest
 - **tests/BENCHMARK_PLAN.md**: Benchmarking methodology
 - **REPOSITORY_STATE.md**: Project status tracking
 
@@ -398,7 +398,7 @@ When contributing to the Linux Backend:
 
 ## License
 
-The Nythera project is licensed under the terms specified in the repository's LICENSE file.
+The Nyrqis project is licensed under the terms specified in the repository's LICENSE file.
 
 ---
 

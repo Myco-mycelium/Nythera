@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-launcher — In-Namespace Container Launcher for the Nythera Linux Backend
+launcher — In-Namespace Container Launcher for the Nyrqis Linux Backend
 
 This process is the *first thing that runs inside a container's new
 namespaces*. ``backend/container.py`` spawns it via ``unshare(1)`` and it:
@@ -69,7 +69,7 @@ from backend.seccomp import (  # noqa: E402
     install_filter,
 )
 
-logger = logging.getLogger("nythera.launcher")
+logger = logging.getLogger("nyrqis.launcher")
 
 PR_SET_HOSTNAME = 10  # prctl(PR_SET_HOSTNAME) — used when sethostname(2) is blocked
 
@@ -213,8 +213,8 @@ def apply_seccomp(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Nythera container launcher (internal)")
-    parser.add_argument("--hostname", default="nythera-container")
+    parser = argparse.ArgumentParser(description="Nyrqis container launcher (internal)")
+    parser.add_argument("--hostname", default="nyrqis-container")
     parser.add_argument("--policy-file", default="")
     parser.add_argument("--strict-seccomp", action="store_true")
     parser.add_argument(
@@ -230,7 +230,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(
-        level=os.environ.get("NYTHERA_LOG_LEVEL", "INFO"),
+        level=os.environ.get("NYRQIS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 

@@ -1,12 +1,12 @@
-# Nythera Linux Backend: Design and Implementation Plan
+# Nyrqis Linux Backend: Design and Implementation Plan
 
 ## 1. Introduction
 
-This document outlines the design and implementation plan for the Nythera Linux Backend, a critical component of the NyHAL abstraction layer. The goal is to provide a conformant implementation of the NyHAL contract on a standard Linux host, serving as a practical near-term target for the Nythera operating system [^1]. This plan is informed by the Nythera Manifest [^2], the NyHAL Kernel Abstraction specification (NPS-017) [^3], and the NyFS Linux Backend FUSE Architecture Decision Record (ADR-0016) [^4].
+This document outlines the design and implementation plan for the Nyrqis Linux Backend, a critical component of the NyHAL abstraction layer. The goal is to provide a conformant implementation of the NyHAL contract on a standard Linux host, serving as a practical near-term target for the Nyrqis operating system [^1]. This plan is informed by the Nyrqis Manifest [^2], the NyHAL Kernel Abstraction specification (NPS-017) [^3], and the NyFS Linux Backend FUSE Architecture Decision Record (ADR-0016) [^4].
 
-## 2. Nythera Vision and Principles
+## 2. Nyrqis Vision and Principles
 
-Nythera aims to advance personal computing by creating a secure, high-performance, and developer-friendly operating system. Its core principles include simplicity, performance, reliability, security, user ownership, transparency, compatibility, and longevity [^2]. The Linux Backend implementation will adhere to these principles, prioritizing architectural integrity and maintainability.
+Nyrqis aims to advance personal computing by creating a secure, high-performance, and developer-friendly operating system. Its core principles include simplicity, performance, reliability, security, user ownership, transparency, compatibility, and longevity [^2]. The Linux Backend implementation will adhere to these principles, prioritizing architectural integrity and maintainability.
 
 ## 3. NyHAL Linux Backend Requirements (NPS-017 §4)
 
@@ -42,12 +42,12 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ### 4.2. Capability Enforcement
 
-*   **Linux Security Modules (LSMs)**: Leverage existing LSMs like AppArmor or SELinux to define and enforce security policies for containers. This will involve generating appropriate policy files based on the capabilities assigned to each Nythera container.
+*   **Linux Security Modules (LSMs)**: Leverage existing LSMs like AppArmor or SELinux to define and enforce security policies for containers. This will involve generating appropriate policy files based on the capabilities assigned to each Nyrqis container.
 *   **Seccomp-bpf**: Utilize `seccomp-bpf` filters to restrict the syscalls available to containers, further limiting their attack surface and enforcing capability boundaries. This will require careful crafting of seccomp profiles.
 
 ### 4.3. IPC Semantics
 
-*   **Custom IPC Mechanism**: Design a custom IPC mechanism, likely based on Unix domain sockets or a shared memory approach, to implement the `send`/`receive`/`call`/`notify` primitives. This will allow for efficient and secure communication between Nythera components.
+*   **Custom IPC Mechanism**: Design a custom IPC mechanism, likely based on Unix domain sockets or a shared memory approach, to implement the `send`/`receive`/`call`/`notify` primitives. This will allow for efficient and secure communication between Nyrqis components.
 *   **Capability Transfer and Attenuation**: Integrate capability transfer and attenuation directly into the IPC mechanism, ensuring that capabilities are correctly validated and restricted when passed between processes.
 *   **Token-Bucket Rate Limiting**: Implement token-bucket rate limiting for IPC channels as specified in ADR-0009, preventing resource exhaustion and denial-of-service attacks.
 
@@ -60,9 +60,9 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ### 4.5. Boot and Lifecycle
 
-*   **Host Integration**: Develop a service (e.g., a systemd unit) that manages the Nythera Linux Backend, ensuring it starts at boot and properly initializes the necessary namespaces, cgroups, and FUSE mounts.
-*   **Trusted First Process**: Establish a trusted first process within the Nythera environment, responsible for launching subsequent containers and enforcing initial security policies.
-*   **Service Bring-up**: Define a clear sequence for bringing up Nythera services and applications, ensuring dependencies are met and resources are correctly allocated.
+*   **Host Integration**: Develop a service (e.g., a systemd unit) that manages the Nyrqis Linux Backend, ensuring it starts at boot and properly initializes the necessary namespaces, cgroups, and FUSE mounts.
+*   **Trusted First Process**: Establish a trusted first process within the Nyrqis environment, responsible for launching subsequent containers and enforcing initial security policies.
+*   **Service Bring-up**: Define a clear sequence for bringing up Nyrqis services and applications, ensuring dependencies are met and resources are correctly allocated.
 
 ## 5. Key Dependencies and Challenges
 
@@ -73,7 +73,7 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ## 6. High-Level Implementation Roadmap
 
-This roadmap aligns with the existing Nythera project milestones where applicable and focuses on iterative development.
+This roadmap aligns with the existing Nyrqis project milestones where applicable and focuses on iterative development.
 
 1.  **Phase 1: Core Container Primitives (Extension of PoC)**
     *   Refactor `nyctr.py` to use direct `clone()`/`unshare()` syscalls.
@@ -103,8 +103,8 @@ This roadmap aligns with the existing Nythera project milestones where applicabl
 
 ## References
 
-[^1]: Myco-mycelium. (2026). *ADR-0012: Adopt NyHAL as a pluggable kernel abstraction layer*. Nythera GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md`
-[^2]: Myco-mycelium. (2026). *NTM-000: The Nythera Manifest*. Nythera GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/00-platform/000-THE_NYTHERA_MANIFEST.md`
-[^3]: Myco-mycelium. (2026). *NPS-017: NyHAL — Kernel Abstraction Layer and Backend Contract*. Nythera GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/nps/NPS-017-nyhal-kernel-abstraction.md`
-[^4]: Myco-mycelium. (2026). *ADR-0016: NyFS Linux Backend implemented as a user-space FUSE filesystem*. Nythera GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0016-nyfs-linux-backend-fuse.md`
-[^5]: Myco-mycelium. (2026). *nyctr.py*. Nythera GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/source/nyhal-linux-backend/poc-container/nyctr.py`
+[^1]: Myco-mycelium. (2026). *ADR-0012: Adopt NyHAL as a pluggable kernel abstraction layer*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md`
+[^2]: Myco-mycelium. (2026). *NTM-000: The Nyrqis Manifest*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/00-platform/000-THE_NYRQIS_MANIFEST.md`
+[^3]: Myco-mycelium. (2026). *NPS-017: NyHAL — Kernel Abstraction Layer and Backend Contract*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/nps/NPS-017-nyhal-kernel-abstraction.md`
+[^4]: Myco-mycelium. (2026). *ADR-0016: NyFS Linux Backend implemented as a user-space FUSE filesystem*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0016-nyfs-linux-backend-fuse.md`
+[^5]: Myco-mycelium. (2026). *nyctr.py*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/source/nyhal-linux-backend/poc-container/nyctr.py`

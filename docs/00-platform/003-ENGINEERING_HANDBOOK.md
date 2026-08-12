@@ -5,7 +5,7 @@ version: 1.0.1
 status: Accepted
 classification: Normative
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-12
 ai_assisted: true
@@ -25,7 +25,7 @@ standards, and contribution mechanics. RFC 2119 terms apply as in NPC-001.
 ## 2. Repository Layout
 
 ```
-Nythera/
+Nyrqis/
 ├── docs/
 │   ├── 00-platform/        # Foundational governance docs (this series)
 │   ├── explanation/        # Diátaxis: understanding-oriented
@@ -52,14 +52,14 @@ tooling (CI, doc site generation) depends on this layout.
 
 ## 3. Diátaxis Usage *(Informative)*
 
-- **Tutorials** teach a newcomer by doing (e.g. "Build your first Nythera
+- **Tutorials** teach a newcomer by doing (e.g. "Build your first Nyrqis
   package"). They **MUST** assume no prior knowledge.
 - **How-to guides** solve a specific task for someone who already knows the
   basics (e.g. "How to add a new capability to the registry").
 - **Reference** documents facts precisely and completely (ABI layouts, API
   signatures, package format fields). Reference docs **SHOULD** contain
   minimal prose.
-- **Explanation** documents provide context and reasoning ("Why Nythera uses
+- **Explanation** documents provide context and reasoning ("Why Nyrqis uses
   image-based game installation").
 
 A change that adds a new subsystem **SHOULD** eventually populate all four

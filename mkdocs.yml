@@ -1,5 +1,5 @@
-site_name: Nythera
-site_description: Documentation for the Nythera operating system project
+site_name: Nyrqis
+site_description: Documentation for the Nyrqis operating system project
 repo_url: https://github.com/Myco-mycelium/Nythera
 docs_dir: docs
 
@@ -16,9 +16,9 @@ theme:
     - content.code.copy
 
 nav:
-  - Home: 00-platform/000-THE_NYTHERA_MANIFEST.md
+  - Home: 00-platform/000-THE_NYRQIS_MANIFEST.md
   - Platform:
-      - Manifest: 00-platform/000-THE_NYTHERA_MANIFEST.md
+      - Manifest: 00-platform/000-THE_NYRQIS_MANIFEST.md
       - Constitution: 00-platform/001-PROJECT_CONSTITUTION.md
       - AI Collaboration Protocol: 00-platform/002-AI_COLLABORATION_PROTOCOL.md
       - Engineering Handbook: 00-platform/003-ENGINEERING_HANDBOOK.md
@@ -30,6 +30,7 @@ nav:
       - Requirements Database: 00-platform/009-REQUIREMENTS_DATABASE.md
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
+      - Rebrand Notice: 00-platform/REBRAND_NOTICE.md
   - Tutorials:
       - Index: tutorials/README.md
       - A Tour of the Repository: tutorials/first-repository-tour.md

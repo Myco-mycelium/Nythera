@@ -42,9 +42,9 @@ only touches the first, and only a slice of it:
 
 - **No capability enforcement** (NPS-017 §4.2 / NPS-011). There is no
   seccomp or LSM policy here — this script does not implement or even
-  attempt Nythera's capability model. A process inside this "container"
+  attempt Nyrqis's capability model. A process inside this "container"
   has whatever access the unprivileged user namespace + cgroup grants it,
-  which is a Linux security boundary, not a Nythera one.
+  which is a Linux security boundary, not a Nyrqis one.
 - **No IPC** (NPS-017 §4.3 / NPS-003). There is no `send`/`receive`/`call`
   primitive, no endpoint model, no capability-transfer semantics.
 - **No storage integration** (NPS-017 §4.4 / NPS-004, NPS-006). The mount

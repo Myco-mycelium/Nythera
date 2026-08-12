@@ -1,4 +1,4 @@
-# Nythera Requirements Database
+# Nyrqis Requirements Database
 
 Governed by [`NPC-009`](../../00-platform/009-REQUIREMENTS_DATABASE.md).
 This is a **seed set**, not full coverage — per NPC-009 §7.3, retroactively
@@ -26,7 +26,7 @@ than introducing anything new (NPC-009 §7.1).
 | REQ-IMAGE-0002 | Uninstalling a `.nygi`-packaged application SHALL retain its writable overlay by default, offered for deletion as a separate explicit user choice. | NPS-006 §7.1 | Verified | — | — |
 | REQ-WINCOMPAT-0001 | Each Windows-compatibility container SHALL receive its own isolated virtual registry namespace. | NPS-007 §5.1 | Verified | — | — |
 | REQ-ANDROIDCOMPAT-0001 | Installing an `.apk` SHALL produce a `.nygi` image identically to any other application. | NPS-008 §4.1 | Verified | — | — |
-| REQ-ANDROIDCOMPAT-0002 | An Android permission with no corresponding Nythera capability SHALL NOT be silently granted. | NPS-008 §5.2 | Verified | — | — |
+| REQ-ANDROIDCOMPAT-0002 | An Android permission with no corresponding Nyrqis capability SHALL NOT be silently granted. | NPS-008 §5.2 | Verified | — | — |
 | REQ-UI-0001 | A user SHALL be able to override the automatically-detected device UI mode manually. | NPS-009 §4.2 | Verified | — | — |
 | REQ-SEC-0001 | A container's capability set SHALL be fixed at the end of manifest evaluation for its initial grant; capabilities SHALL NOT be added afterward except through the explicit, auditable capability-registry request path. | NPS-010 §5.1 | Verified | — | — |
 | REQ-SEC-0002 | Every capability grant and revocation SHALL be recorded in a form a user can inspect. | NPS-010 §8.1 | Verified | — | — |

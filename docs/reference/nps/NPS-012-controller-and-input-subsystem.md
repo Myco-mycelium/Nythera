@@ -6,7 +6,7 @@ status: Accepted
 classification: Normative
 subsystem: gaming
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-12
 updated: 2026-07-13
 ai_assisted: true
@@ -32,7 +32,7 @@ model, or rendering (see NPS-013 for GPU/display features).
 
 ## 3. Native Controller Support
 
-3.1. Nythera **MUST** natively recognize, without requiring third-party
+3.1. Nyrqis **MUST** natively recognize, without requiring third-party
 drivers, at minimum: Xbox controllers, PlayStation controllers, and
 Nintendo Switch-style controllers, connected via USB or Bluetooth
 (`CAP-USB` / `CAP-BLUETOOTH`, per NPS-011 §3).
@@ -49,7 +49,7 @@ per-vendor detection logic for common features.
 
 ## 4. Steam Input Compatibility
 
-4.1. Nythera **MUST** support Steam Input as a compatibility path for
+4.1. Nyrqis **MUST** support Steam Input as a compatibility path for
 titles that expect it, consistent with the Windows compatibility runtime's
 goal of running unmodified titles (NPS-007).
 
@@ -63,7 +63,7 @@ consistent with NPC-001 §9.2's "no implicit elevated privileges" rule.
 this specification. Rather than leave VR input capability undefined
 indefinitely, it is formally deferred to a future Milestone (tentatively
 M9) once a concrete VR integration is scoped end-to-end (input, rendering
-via NPS-013, and the UI-mode question raised in NPS-009 §8). Nythera v1
+via NPS-013, and the UI-mode question raised in NPS-009 §8). Nyrqis v1
 **MUST NOT** claim VR support; this is a scope boundary, not an
 oversight.
 

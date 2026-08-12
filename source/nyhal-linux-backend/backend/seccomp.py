@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-seccomp — Data-Plane Capability Enforcement for the Nythera Linux Backend
+seccomp — Data-Plane Capability Enforcement for the Nyrqis Linux Backend
 
 Implements the *data-plane* half of NPS-017 §4.2 (Capability Enforcement):
 

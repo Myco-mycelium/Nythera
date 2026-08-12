@@ -3,7 +3,7 @@ title: NyFS Linux Backend Implemented as a User-Space FUSE Filesystem
 document_id: ADR-0016
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -17,7 +17,7 @@ NPS-017 §8 left NyFS's Linux Backend implementation strategy — FUSE,
 kernel module, or user-space daemon with a VFS shim — as an open question.
 This blocks concrete implementation work on the Linux Backend (NPS-017
 §6), which ADR-0012 identified as the practical near-term path to a
-runnable Nythera.
+runnable Nyrqis.
 
 ## Decision (Proposed)
 Implement NyFS's Linux Backend as a **user-space filesystem via FUSE**

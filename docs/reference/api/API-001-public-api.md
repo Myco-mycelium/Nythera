@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-08-12
 updated: 2026-08-12
 ai_assisted: true
@@ -18,7 +18,7 @@ depends_on: [NTM-000, NPC-001, NPS-003, NPS-004, NPS-006, NPS-007, NPS-008, NPS-
 
 ## 1. Status of This Document
 
-This document is **normative** for the *shape* of Nythera's public API: the
+This document is **normative** for the *shape* of Nyrqis's public API: the
 areas it is divided into, the layering rules, the naming and versioning
 conventions, and the error model. It is a `Draft`: exact function
 signatures, data structures, and constants are deliberately **not**
@@ -30,7 +30,7 @@ specification).
 
 ## 2. Purpose *(Informative)*
 
-Every application on Nythera — native, Windows-compat, or Android-compat —
+Every application on Nyrqis — native, Windows-compat, or Android-compat —
 interacts with the platform through one public API surface. That surface
 is what `NySDK` (NPS-017 §3) exposes to developers, and it **MUST** be
 identical regardless of which NyHAL backend is underneath (NPS-017 §7.1).

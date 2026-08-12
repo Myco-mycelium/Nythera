@@ -1,4 +1,4 @@
-# Nythera Benchmark Plan
+# Nyrqis Benchmark Plan
 
 This document defines **methodology**, not results. Per NPC-002 §5.2,
 performance and compatibility claims MUST NOT be published in `Accepted`

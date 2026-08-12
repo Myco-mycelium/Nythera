@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-08-12
 updated: 2026-08-12
 ai_assisted: true
@@ -18,7 +18,7 @@ depends_on: [NTM-000, NPC-001, NPS-003, NPS-017]
 
 ## 1. Status of This Document
 
-This document is **normative** for the *rules* that govern Nythera's
+This document is **normative** for the *rules* that govern Nyrqis's
 binary-level contracts, and **normative** that the areas in §4 exist. It
 is a `Draft`: concrete layouts — exact message header bytes, register
 conventions, symbol mangling — are deferred to implementation work, which
@@ -30,7 +30,7 @@ category 5 (ABI specification).
 
 ## 2. Purpose *(Informative)*
 
-Nythera promises applications built against NySDK run unmodified across
+Nyrqis promises applications built against NySDK run unmodified across
 every conformant backend (NPS-017 §7.1), and promises binary stability
 within an ABI MAJOR version (NPC-001 §8.1). Neither promise can be kept
 without an explicit ABI: a compiled application and the platform must
@@ -56,7 +56,7 @@ translation ABIs independently, provided native guarantees are unaffected
 ## 4. ABI Areas
 
 ### 4.1 Calling Conventions
-The native Nythera calling convention — register usage, stack layout,
+The native Nyrqis calling convention — register usage, stack layout,
 argument passing, return values — **MUST** be defined before any native
 code is shipped, and **MUST** be identical across all backends for the
 same architecture (an application's own code cannot depend on which

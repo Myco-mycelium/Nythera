@@ -3,7 +3,7 @@ title: Hash-Chained Append-Only Log for Capability Audit Records
 document_id: ADR-0018
 version: 1.0.0
 status: Proposed
-owners: [Nythera Architecture]
+owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true

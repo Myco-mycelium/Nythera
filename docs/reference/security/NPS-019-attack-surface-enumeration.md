@@ -6,7 +6,7 @@ status: Draft
 classification: Normative
 subsystem: security
 owners:
-  - Nythera Architecture
+  - Nyrqis Architecture
 created: 2026-07-13
 updated: 2026-07-13
 ai_assisted: true
@@ -60,7 +60,7 @@ NPS-018 §4.
 | `SURFACE-AI-0002` | AI-suggested-action presentation and user confirmation flow | `TB-AI` | The suggestion content itself, and whether the confirmation UI can be spoofed or the boundary between "suggest" and "act" bypassed | NPS-015 §5 | Pending Phase 2 |
 | `SURFACE-BOOT-0001` | Boot loader signature verification chain | `TB-BOOT` | Boot images, both legitimate updates and potentially tampered ones | NPS-001 §5 (Stage 2), ADR-0014 | Pending Phase 2 |
 | `SURFACE-BOOT-0002` | Secure Boot key enrollment (user-enrolled MOK-equivalent) | `TB-BOOT` | User action, but relevant if the enrollment flow itself can be tricked | ADR-0014 | Pending Phase 2 |
-| `SURFACE-BACKEND-0001` | NyHAL backend's native enforcement of a NyCore guarantee (e.g. Linux seccomp/LSM policy standing in for Nythera's capability model) | `TB-BACKEND` | Any gap between what NyCore assumes is enforced and what the backend's native mechanism actually enforces | NPS-017 §4, §5 | Pending Phase 2 |
+| `SURFACE-BACKEND-0001` | NyHAL backend's native enforcement of a NyCore guarantee (e.g. Linux seccomp/LSM policy standing in for Nyrqis's capability model) | `TB-BACKEND` | Any gap between what NyCore assumes is enforced and what the backend's native mechanism actually enforces | NPS-017 §4, §5 | Pending Phase 2 |
 
 ## 4. Coverage Note
 

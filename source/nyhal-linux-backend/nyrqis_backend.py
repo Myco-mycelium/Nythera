@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Nythera Linux Backend CLI
+Nyrqis Linux Backend CLI
 
-Main entry point for the Nythera Linux Backend implementation.
+Main entry point for the Nyrqis Linux Backend implementation.
 Provides commands for:
-- boot: Start the Nythera system
+- boot: Start the Nyrqis system
 - container: Manage containers
 - capability: Manage capabilities
 - ipc: Manage IPC endpoints
@@ -150,7 +150,7 @@ def cmd_capability_list(args) -> int:
     """List all available capabilities."""
     setup_logging(args.verbose)
     
-    print("Available Nythera Capabilities:")
+    print("Available Nyrqis Capabilities:")
     print("=" * 60)
     
     for cap in Capability:
@@ -227,11 +227,11 @@ def cmd_filesystem_snapshot_list(args) -> int:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Nythera Linux Backend CLI",
+        description="Nyrqis Linux Backend CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s boot                                # Start the Nythera system
+  %(prog)s boot                                # Start the Nyrqis system
   %(prog)s container run --memory 256 /bin/sh  # Run a container
   %(prog)s capability list                     # List capabilities
   %(prog)s filesystem create /tmp/nyfs         # Create a filesystem
@@ -247,7 +247,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
     
     # Boot command
-    boot_parser = subparsers.add_parser("boot", help="Start the Nythera system")
+    boot_parser = subparsers.add_parser("boot", help="Start the Nyrqis system")
     boot_parser.add_argument(
         "--no-wait",
         action="store_true",
@@ -267,12 +267,12 @@ Examples:
     container_subparsers = container_parser.add_subparsers(dest="container_cmd")
     
     create_parser = container_subparsers.add_parser("create", help="Create a container")
-    create_parser.add_argument("--hostname", default="nythera-container")
+    create_parser.add_argument("--hostname", default="nyrqis-container")
     create_parser.add_argument("--memory", type=int, default=256, help="Memory limit (MiB)")
     create_parser.add_argument("--pids", type=int, default=64, help="PID limit")
     create_parser.add_argument(
         "--capabilities", default="",
-        help="Comma-separated Nythera capabilities to grant (default: the default set)"
+        help="Comma-separated Nyrqis capabilities to grant (default: the default set)"
     )
     create_parser.add_argument(
         "--no-seccomp", action="store_true",
@@ -288,12 +288,12 @@ Examples:
     create_parser.set_defaults(func=cmd_container_create)
     
     run_parser = container_subparsers.add_parser("run", help="Create and run a container")
-    run_parser.add_argument("--hostname", default="nythera-container")
+    run_parser.add_argument("--hostname", default="nyrqis-container")
     run_parser.add_argument("--memory", type=int, default=256, help="Memory limit (MiB)")
     run_parser.add_argument("--pids", type=int, default=64, help="PID limit")
     run_parser.add_argument(
         "--capabilities", default="",
-        help="Comma-separated Nythera capabilities to grant (default: the default set)"
+        help="Comma-separated Nyrqis capabilities to grant (default: the default set)"
     )
     run_parser.add_argument(
         "--no-seccomp", action="store_true",
