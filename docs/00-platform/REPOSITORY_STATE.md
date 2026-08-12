@@ -316,6 +316,10 @@ Documentation hygiene, fixed earlier this session:
   (needs a maintainer — no `gh`/credentials here); the three URL
   references are deliberately left pointing at the current repo name
   because GitHub redirects renamed repositories automatically.
+  Registry-level trademark check (2026-08-12): no registered/pending/
+  dead trademark for `Nyrqis` or variants (`Nyrquis`/`Nyrqys`) in any
+  class across USPTO, EUIPO/TMView, and WIPO — recorded in
+  `REBRAND_NOTICE.md`.
 - 2026-08-12 (backend hardening): Linux Backend data-plane capability
   enforcement (seccomp-BPF installed in-container — `FIND-BACKEND-002`),
   shell-free launcher (`FIND-BACKEND-004`), cgroup v1 release_agent

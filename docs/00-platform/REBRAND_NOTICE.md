@@ -93,6 +93,12 @@ Desk-check performed before committing to the new name; not legal advice.
   minor fictional location ("Nyrqis Sanctuary") inside a hobbyist fantasy
   setting on World Anvil — no practical or legal conflict. The name is
   highly distinctive.
+- **Registry-level check — clear.** A follow-up search of official
+  trademark registries (USPTO Trademark Search, EUIPO/TMView, WIPO
+  Global Brand Database) found **no registered, pending, or dead/cancelled**
+  trademark for `Nyrqis` or the near variants `Nyrquis`/`Nyrqys` in any
+  class — including software/operating systems, games, and books. The
+  name is unencumbered across the major IP offices.
 - **What the old name collided with.** `Nythera` is an established
   commercial name in tabletop gaming (the *Nythera* campaign for
   Malifaux / Through the Breach, published by Wyrd Miniatures) and a
