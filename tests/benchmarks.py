@@ -305,10 +305,11 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
     - Reads run with the kernel page cache + readahead active (real
       users get the same), which batches 4 KiB user reads into larger
       daemon requests.
-    - The kernel's write batching to the daemon is reported explicitly:
-      on this host it is 4 KiB regardless of mount options (fusepy does
-      not negotiate writeback caching), so each 4 KiB write request
-      rebuilds a full ``block_size`` CoW block in the daemon.
+    - The kernel's write batching to the daemon is reported explicitly.
+      NyFS negotiates FUSE_CAP_BIG_WRITES + FUSE_CAP_WRITEBACK_CACHE +
+      FUSE_CAP_MAX_PAGES in the INIT handshake (``NyFSMount``
+      ``writeback_cache=True``, the default), so writes batch at 128 KiB
+      instead of the 4 KiB pages a stock fusepy mount gets.
     """
     if not _fuse_mount_available():
         return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}

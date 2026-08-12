@@ -251,7 +251,12 @@ measurements:
    kernel's 4 KiB write batching × 64 KiB CoW blocks (256 requests per
    1 MiB write), reads ~25–37 MB/s (readahead-batched); durability and
    CoW snapshots verified end-to-end through the kernel path
-   (`TestNyFSLiveMount`). No gate declared met.
+   (`TestNyFSLiveMount`). **The write-batching limit was then fixed
+   2026-08-12** by negotiating `FUSE_CAP_BIG_WRITES` +
+   `FUSE_CAP_WRITEBACK_CACHE` + `FUSE_CAP_MAX_PAGES` in the INIT
+   handshake (`NyFSMount` `writeback_cache=True`, default): writes now
+   batch at 128 KiB and stream at ~40–46 MB/s (~25×). No gate declared
+   met.
 7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
 
 Genuinely still open, not fabricable:
@@ -343,6 +348,19 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**NyFS FUSE write-batching fixed**): `NyFSMount` now
+  negotiates `FUSE_CAP_BIG_WRITES` + `FUSE_CAP_WRITEBACK_CACHE` +
+  `FUSE_CAP_MAX_PAGES` in the FUSE INIT handshake (`writeback_cache=True`,
+  default) — fusepy never registers `init` and drops the connection
+  pointer, so stock mounts got page-granular 4 KiB write requests. Fix:
+  expose `init` on the operations adapter and override fusepy's `FUSE`
+  class to set `fuse_conn_info.want`/`max_pages` (ctypes, libfuse 2.9
+  layout). Kernel writes now batch at 128 KiB (8 requests per 1 MiB vs
+  256); streaming writes ~40–46 MB/s vs ~1.8 MB/s (~25×), recorded in
+  `BENCHMARK_RESULTS.md` §6. Correctness under writeback caching pinned
+  by `test_random_overwrites_through_mount_with_writeback_cache` and
+  `test_truncate_and_write_ordering_under_writeback_cache`; test suite
+  89 → 91.
 - 2026-08-12 (**NyFS snapshot diffing**): `fuse/nyfs.py` gained
   `diff_snapshots(a, b)` / `diff_live(snap)` — path-level added/removed/
   modified with before/after sizes, compared via per-block checksums (no

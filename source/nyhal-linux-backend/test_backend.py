@@ -1286,6 +1286,75 @@ class TestNyFSLiveMount(unittest.TestCase):
             self.assertEqual(fh.read(), payload)
         m2.unmount()
 
+    def test_random_overwrites_through_mount_with_writeback_cache(self):
+        # Writeback caching lets the kernel batch and reorder dirty-page
+        # writes; overlapping random writes must still land correctly
+        # after fsync (deterministic seed, ~600 KiB of writes).
+        fs = NyFSFilesystem(self.backing)
+        self._mount(fs)
+        path = os.path.join(self.mnt, "rand.bin")
+        rng = __import__("random").Random(20260812)
+        expected = bytearray(4 * 1024 * 1024)
+        max_written = 0
+        with open(path, "wb") as fh:
+            for _ in range(150):
+                off = rng.randrange(0, len(expected) - 4096, 4096)
+                size = rng.randrange(1, 4096)
+                chunk = bytes(rng.randrange(256) for _ in range(size))
+                fh.seek(off)
+                fh.write(chunk)
+                expected[off:off + size] = chunk
+                max_written = max(max_written, off + size)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # The file is as large as the furthest write end (never-written
+        # zero regions beyond it are not part of the file).
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), bytes(expected[:max_written]))
+        # The on-disk committed state matches after reload too.
+        fs.save()
+        fs2 = NyFSFilesystem.load(self.backing)
+        self.assertEqual(
+            fs2.read(fs2.resolve("/rand.bin")), bytes(expected[:max_written]))
+
+    def test_truncate_and_write_ordering_under_writeback_cache(self):
+        # Writeback caching's classic hazard: truncate (shrink + extend)
+        # interleaved with writes around dirty pages. Both orderings
+        # must survive fsync and reload.
+        fs = NyFSFilesystem(self.backing)
+        self._mount(fs)
+        path = os.path.join(self.mnt, "trunc.bin")
+
+        # Shrink, then write straddling the new EOF boundary.
+        with open(path, "wb") as fh:
+            fh.write(b"A" * (128 * 1024))
+        os.truncate(path, 4096)
+        with open(path, "r+b") as fh:
+            fh.seek(4090)
+            fh.write(b"XY" * 5)  # ends 10 bytes past the truncated size
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), b"A" * 4090 + b"XY" * 5)
+
+        # Extend via truncate, then write into the zero gap.
+        os.truncate(path, 8 * 1024)
+        with open(path, "r+b") as fh:
+            fh.seek(6000)
+            fh.write(b"GAP")
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(path, "rb") as fh:
+            d = fh.read()
+        self.assertEqual(d[:4100], b"A" * 4090 + b"XY" * 5)
+        self.assertEqual(d[6000:6003], b"GAP")
+        self.assertEqual(len(d), 8 * 1024)
+
+        # Committed state matches after reload.
+        fs.save()
+        fs2 = NyFSFilesystem.load(self.backing)
+        self.assertEqual(fs2.read(fs2.resolve("/trunc.bin")), d)
+
 
 class TestNyFSSnapshotDiff(unittest.TestCase):
     """Test snapshot diffing: added/removed/modified detection."""

@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **89/89 passing** (`python3 test_backend.py`), including end-to-end container launches and a live FUSE mount verified on this host.
+Test suite: **91/91 passing** (`python3 test_backend.py`), including end-to-end container launches and a live FUSE mount verified on this host.
 
 ## Detailed Implementation Status
 
@@ -135,7 +135,7 @@ Test suite: **89/89 passing** (`python3 test_backend.py`), including end-to-end 
 - ✓ **Real FUSE mount wiring** (`NyFSMount`): loads `fusepy` by file path from site-packages (this package is itself named `fuse`, which would otherwise shadow the third-party module), and mounts via fusepy's `FUSE` class with a callable operations adapter (fusepy dispatches `operations(op, path, *args)` and probes handlers with `getattr`; `FUSE.__init__` runs the event loop — there is no `main()` — so non-blocking mounts run it in a daemon thread). Mount options (`max_write`, etc.) forward to fusepy via `mount(**kwargs)`. Best-effort unmount via `fusermount -u`. Graceful, honestly-reported deferral when `fusepy` or `/dev/fuse` is unavailable
 
 **Outstanding Work:**
-- [ ] Address the live-mount write-batching finding (kernel sends 4 KiB writes; each rebuilds a 64 KiB CoW block — see `tests/BENCHMARK_RESULTS.md` §6; potentially fixable by negotiating writeback caching at the mount layer, not by NyFS itself)
+- [x] ~~Address the live-mount write-batching finding~~ — **fixed 2026-08-12** by negotiating `FUSE_CAP_BIG_WRITES` + `FUSE_CAP_WRITEBACK_CACHE` + `FUSE_CAP_MAX_PAGES` in the INIT handshake (`NyFSMount(writeback_cache=True)`, the default): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25× the 4 KiB-batched baseline); correctness under writeback caching verified by a seeded random-overwrite test through the mount (see `tests/BENCHMARK_RESULTS.md` §6)
 - [ ] Kernel-module fallback (deferred per ADR-0016)
 - [ ] Overlay filesystem for container-specific views
 - [ ] Deduplication across snapshots
@@ -201,8 +201,11 @@ The implementation is **NOT YET conformant** because:
 ### Short-term (Phase 2: NyFS FUSE Backend)
 1. ~~Benchmark FUSE overhead (ADR-0016)~~ — **first-pass live-mount data
    collected 2026-08-12** (`tests/BENCHMARK_RESULTS.md` §6); the
-   write-batching finding decides the follow-up: negotiate writeback
-   caching at the mount layer or revisit the 64 KiB block default
+   write-batching finding was **fixed 2026-08-12** by negotiating
+   writeback caching in the INIT handshake (~25× streaming-write
+   improvement, `tests/BENCHMARK_RESULTS.md` §6); the remaining
+   small-write cost (per-call block compress + checksum) and the 64 KiB
+   block-size tradeoff stay open questions
 2. ~~Test CoW and snapshot functionality through a live mount~~ — **done
    2026-08-12**: `TestNyFSLiveMount` in `test_backend.py` verifies
    fsync→save durability, snapshot round-trip, and re-mount through the
@@ -229,7 +232,7 @@ The following benchmarks are required before moving from `Experimental` to `Acce
 | Benchmark | Target | Status | Notes |
 |-----------|--------|--------|-------|
 | IPC Round-trip Latency | < 100µs | First-pass data collected | In-process control plane: p50 92µs / p95 157µs / p99 213µs (2026-08-12). Real transport + load variants pending — target not yet judged |
-| FUSE I/O Overhead | < 20% | Proxy + live-mount first-pass data | **§5 (ops-layer, per-block CoW):** 1 MiB-chunk streaming write ~162 MB/s (~4× the old whole-file 40.5 MB/s); 4 KiB-op pattern dominated by per-call block compress + per-read SHA-256 verification (~3.6 MB/s write / ~2.8 MB/s read vs 541–771 / 1,064–2,131 native). **§6 (live mount, 2026-08-12):** real kernel mount works end-to-end (durability + snapshots verified through the kernel path); writes ~1.8–2.2 MB/s, bounded by the kernel's 4 KiB write batching × 64 KiB CoW blocks, reads ~25–37 MB/s (readahead-batched). No gate declared met |
+| FUSE I/O Overhead | < 20% | Proxy + live-mount first-pass data | **§5 (ops-layer, per-block CoW):** 1 MiB-chunk streaming write ~162 MB/s (~4× the old whole-file 40.5 MB/s); 4 KiB-op pattern dominated by per-call block compress + per-read SHA-256 verification (~3.6 MB/s write / ~2.8 MB/s read vs 541–771 / 1,064–2,131 native). **§6 (live mount, 2026-08-12):** real kernel mount verified end-to-end; the kernel's 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True) — writes batch at 128 KiB and stream at ~40–46 MB/s (~25×), reads ~26–46 MB/s. No gate declared met |
 | Token-Bucket Parameters | TBD | First-pass data collected | Default bucket caps a client→endpoint call path at ~50 calls/s steady state — ADR-0009 defaults need revisiting; sweep + adversarial test pending |
 | Compression Ratio | > 30% | Pending | ADR-0007 |
 

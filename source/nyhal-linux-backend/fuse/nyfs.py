@@ -35,6 +35,7 @@ References:
 - ADR-0007: Adopt Zstandard as the default compression codec
 """
 
+import ctypes
 import errno
 import hashlib
 import json
@@ -1165,6 +1166,37 @@ class NyFSOperations:
         return self.fs.statfs()
 
 
+class _FuseConnInfo(ctypes.Structure):
+    """``struct fuse_conn_info`` from libfuse 2.9's ``fuse_common.h``.
+
+    Used only to negotiate FUSE capabilities during the INIT handshake
+    (fusepy passes the connection pointer to ``init`` but never touches
+    it). The layout is version-sensitive — verified against the
+    ``libfuse.so.2`` this host links; fusepy resolves ``libfuse.so.2``.
+    """
+
+    _fields_ = [
+        ("proto_major", ctypes.c_uint),
+        ("proto_minor", ctypes.c_uint),
+        ("async_read", ctypes.c_uint),
+        ("max_write", ctypes.c_uint),
+        ("max_readahead", ctypes.c_uint),
+        ("capable", ctypes.c_uint),
+        ("want", ctypes.c_uint),
+        ("max_pages", ctypes.c_uint),
+        ("max_background", ctypes.c_uint),
+        ("congestion_threshold", ctypes.c_uint),
+        ("time_gran", ctypes.c_uint),
+        ("reserved", ctypes.c_uint * 22),
+    ]
+
+
+# FUSE_CAP_* capability flags, from the kernel UAPI ``linux/fuse.h``.
+_FUSE_CAP_BIG_WRITES = 1 << 5        # writes larger than one page
+_FUSE_CAP_WRITEBACK_CACHE = 1 << 16  # page-cache writeback batching
+_FUSE_CAP_MAX_PAGES = 1 << 22        # honor conn->max_pages
+
+
 def _import_fusepy():
     """Import the third-party ``fuse`` module (fusepy) by file path.
 
@@ -1226,7 +1258,8 @@ class NyFSMount:
             logger.info("fusepy loaded; NyFS mount available")
         return self._fusepy is not None
 
-    def _build_fuse(self, foreground: bool = True, **fuse_kwargs):
+    def _build_fuse(self, foreground: bool = True, writeback_cache: bool = True,
+                    **fuse_kwargs):
         """Construct the fusepy FUSE object for this mount.
 
         NOTE: fusepy runs the FUSE event loop inside ``FUSE.__init__``
@@ -1237,6 +1270,14 @@ class NyFSMount:
         ``fuse_kwargs`` are forwarded to fusepy as FUSE mount options
         (e.g. ``max_write=131072``); they are appended to the ``-o``
         string.
+
+        ``writeback_cache`` negotiates FUSE_CAP_BIG_WRITES +
+        FUSE_CAP_WRITEBACK_CACHE + FUSE_CAP_MAX_PAGES in the INIT
+        handshake so the kernel batches writes into multi-page requests
+        instead of 4 KiB ones (see BENCHMARK_RESULTS.md §6). Requests
+        measure 128 KiB on this host — the cap is kernel/libfuse
+        determined (raising max_write breaks the handshake, so the
+        observed cap stands).
         """
         fuse_mod = self._fusepy or _import_fusepy()
         if fuse_mod is None:
@@ -1271,11 +1312,69 @@ class NyFSMount:
                 except NyFSError as e:
                     raise fuse_mod.FuseOSError(e.errno)
 
+            def init(self, path):
+                # Presence marker so fusepy registers the ``init`` C
+                # callback; the actual fuse_conn_info negotiation happens
+                # in the FUSE subclass's ``init`` override below.
+                return 0
+
         fuse_cls = getattr(fuse_mod, "FUSE", None) or getattr(
             fuse_mod, "Fuse", None)
         if fuse_cls is None:
             raise NyFSError(errno.ENODEV, "fusepy has no FUSE class")
-        self._fuse = fuse_cls(
+
+        class _NyFUSE(fuse_cls):
+            """FUSE subclass that negotiates write-batching capabilities
+            in the INIT handshake.
+
+            fusepy drops the connection pointer in its stock ``init``,
+            which is why default mounts get page-sized (4 KiB) write
+            requests: without FUSE_CAP_BIG_WRITES +
+            FUSE_CAP_WRITEBACK_CACHE the kernel submits one page per
+            write. Overriding ``init`` lets us request multi-page
+            writes. Disabled via ``writeback_cache=False``.
+            """
+
+            def init(self, conn):
+                if not writeback_cache:
+                    return 0
+                try:
+                    info = ctypes.cast(
+                        conn, ctypes.POINTER(_FuseConnInfo)).contents
+                    # Layout sanity gate: the FUSE protocol major is 7.
+                    # Anything else means the ctypes layout does not
+                    # match this host's libfuse.so — skip negotiation
+                    # rather than silently write at the wrong offsets.
+                    if info.proto_major != 7:
+                        logger.warning(
+                            "FUSE INIT negotiation skipped: unexpected "
+                            "proto_major=%s (ctypes layout mismatch?) ",
+                            info.proto_major)
+                        return 0
+                    desired = (_FUSE_CAP_BIG_WRITES
+                               | _FUSE_CAP_WRITEBACK_CACHE
+                               | _FUSE_CAP_MAX_PAGES)
+                    # Only request capabilities the kernel advertises.
+                    info.want |= desired & info.capable
+                    # Raise the per-request page cap. (Raising max_write
+                    # as well breaks the INIT handshake on this libfuse
+                    # with EINVAL; the observed request cap is
+                    # kernel/libfuse-determined at 128 KiB regardless.)
+                    info.max_pages = 256
+                    logger.info(
+                        "FUSE INIT negotiated: proto %s.%s, "
+                        "capable=0x%x, want=0x%x, max_pages=%s",
+                        info.proto_major, info.proto_minor,
+                        info.capable, info.want, info.max_pages)
+                except Exception as e:
+                    # Negotiation failure must not prevent mounting;
+                    # fall back to kernel defaults (4 KiB writes).
+                    logger.warning(
+                        "FUSE INIT negotiation failed (%s); "
+                        "falling back to kernel write defaults", e)
+                return 0
+
+        self._fuse = _NyFUSE(
             _Adapter(self.operations),
             str(self.mount_point),
             foreground=foreground,
@@ -1286,13 +1385,16 @@ class NyFSMount:
         return self._fuse
 
     def mount(self, foreground: bool = True, blocking: bool = True,
-              **fuse_kwargs):
+              writeback_cache: bool = True, **fuse_kwargs):
         """Mount the filesystem.
 
         Args:
             foreground: Run in the foreground (default True for a daemon).
                 False lets fusepy daemonize (fork into the background).
             blocking: Block until unmounted (True) or run in a thread.
+            writeback_cache: Negotiate big-write/writeback-cache/max-pages
+                capabilities so the kernel batches writes instead of
+                sending 4 KiB requests (default True).
             fuse_kwargs: Extra FUSE mount options forwarded to fusepy
                 (e.g. ``max_write=131072``).
 
@@ -1306,7 +1408,9 @@ class NyFSMount:
         def _run():
             logger.info("Mounting NyFS at %s (FUSE)", self.mount_point)
             try:
-                self._build_fuse(foreground=foreground, **fuse_kwargs)
+                self._build_fuse(foreground=foreground,
+                                 writeback_cache=writeback_cache,
+                                 **fuse_kwargs)
             except Exception as e:
                 # Surface background mount failures: ``wait_ready()``
                 # re-raises this instead of letting the caller believe a
