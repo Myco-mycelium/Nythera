@@ -1,11 +1,11 @@
 ---
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
-version: 1.0.0
+version: 1.1.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-08-12
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-002, NPS-003]
 ---
@@ -64,5 +64,27 @@ defined backpressure error rather than succeeding unbounded.
 - Exact default refill rate and burst capacity require benchmarking before
   this ADR can move past Proposed, per NPC-002 §5.2.
 
+## Benchmark Data (2026-08-12)
+
+First-pass measurements from `tests/BENCHMARK_RESULTS.md` (Linux 6.14,
+x86_64, Python 3.12; methodology in `tests/benchmarks.py`):
+
+- The default `TokenBucket(bucket_size=100, tokens_per_second=50)`
+  sustains only **~99.5 calls/s** on a single client→endpoint call path
+  (199 successful round-trips in 2 s) and throttles **~18,875 calls/s**
+  when the client sends at full speed (throttled `call`s return `None`;
+  they do not block or raise).
+- Steady-state refill therefore caps legitimate traffic at ~50 calls/s —
+  orders of magnitude below what input delivery, audio, and controller
+  paths (NPS-012 §6) would need.
+
+This confirms the flooding concern the mechanism exists to address, and
+also demonstrates the default parameters are **too low** for this
+workload shape. The plan's legitimate-traffic baseline and
+adversarial-flooding sweep are still needed before concrete defaults are
+proposed; this ADR stays `Proposed` pending that sweep and Architecture
+Group review.
+
 ## Status
-Proposed — pending benchmark data and Architecture Group review.
+Proposed — first-pass benchmark data collected (2026-08-12); parameter
+sweep and Architecture Group review pending.

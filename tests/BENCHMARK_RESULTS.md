@@ -92,3 +92,15 @@ gaming workloads (NPS-006 §5).
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next
 implementation steps, not to close the benchmarks.
+
+## Where these numbers landed (2026-08-12)
+
+- **NPS-003 §6.1** (v1.2.0): benchmark note added — the <100 µs target is
+  met at the median (p50 92 µs) and exceeded at the tail (p95/p99); the
+  document remains `Draft` because the real transport is pending.
+- **ADR-0009** (v1.1.0): benchmark-data section added — default bucket
+  parameters shown to throttle this workload shape; status stays
+  `Proposed` pending the parameter sweep and Architecture Group review.
+- **NPS-010 §9** (v1.2.0): status note updated with the ADR-0009 data.
+- **NPC-004 / NPC-007 / REPOSITORY_STATE.md**: statuses and checklist
+  items reconciled to "first-pass data collected" — no gate declared met.

@@ -11,7 +11,7 @@ change, per NPC-001 §6.5 and NPC-003 §6.2.
 Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
-(`source/nyhal-linux-backend/`, 54/54 tests passing). Milestone 12 — the
+(`source/nyhal-linux-backend/`, 64/64 tests passing). Milestone 12 — the
 phased security threat model — is in progress: Phases 1–6 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
@@ -60,7 +60,7 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
 - [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, blocked on compression-level benchmark data
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, blocked on default bucket-parameter benchmark data
+- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, first-pass bucket-parameter data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md`); parameter sweep + Architecture Group review pending
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
@@ -79,7 +79,7 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
-- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003
+- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass latency data (p50 92 µs vs <100 µs target — tail exceeds; real transport pending)
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
 - [x] NPS-006 Nyrqis Game/Application Image Format (.nygi) and Overlay — Accepted
@@ -207,14 +207,33 @@ builds and deploys to GitHub Pages on push to `main`. Version pinned via
 breaking, currently-unsuitable-for-production changes in MkDocs 2.0.
 
 ## Next Actions
-Benchmark-gated (unblocks the 3 ADRs + 4 NPS documents held above; no
-numbers exist yet — see `tests/BENCHMARK_PLAN.md` for methodology):
-1. Benchmark IPC round-trip latency (unblocks NPS-003, transitively NPS-010's remaining path once ADR-0009 also clears).
-2. Benchmark default IPC token-bucket parameters (unblocks ADR-0009, then NPS-010 §7.1).
+Benchmark-gated (unblocks the 3 ADRs + 4 NPS documents held above).
+First-pass data for three of the seven items landed 2026-08-12
+(`tests/BENCHMARK_RESULTS.md`); the remaining items still have no
+measurements:
+1. ~~Benchmark IPC round-trip latency (unblocks NPS-003, transitively
+   NPS-010's remaining path once ADR-0009 also clears).~~ **First-pass
+   data collected 2026-08-12** — p50 92 µs / p95 157 µs / p99 213 µs,
+   in-process only (transport deferred); §6.1's <100 µs gate is met at
+   the median, exceeded at the tail, and cannot be judged closed until
+   the real transport exists.
+2. ~~Benchmark default IPC token-bucket parameters (unblocks ADR-0009,
+   then NPS-010 §7.1).~~ **First-pass data collected 2026-08-12** — the
+   default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s
+   on a client→endpoint path and throttles ~18.9k calls/s at full speed;
+   the defaults are demonstrably too low for this workload shape.
+   Parameter sweep, adversarial test, and Architecture Group review
+   still pending.
 3. Benchmark Zstd compression levels, install size vs. load time (unblocks ADR-0007, then NPS-005).
 4. Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning (unblocks ADR-0013 in full; algorithm family is already decided).
 5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
-6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016; determines whether the FUSE decision holds or needs a kernel-module fallback).
+6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016;
+   determines whether the FUSE decision holds or needs a kernel-module
+   fallback). **Proxy data collected 2026-08-12** — ops-layer NyFS write
+   40.5 MB/s vs 884 MB/s native (read 242 vs 2,095 MB/s), dominated by
+   the whole-file CoW/Zstd path rather than FUSE context switches; the
+   live FUSE-vs-ext4 mount comparison still requires `/dev/fuse` +
+   per-block CoW work.
 7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
 
 Genuinely still open, not fabricable:

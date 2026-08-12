@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.19.0
+version: 1.20.0
 status: Draft
 classification: Reference
 owners:
@@ -27,10 +27,10 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | NPC-001 | Project Constitution | Accepted | 1.1.0 |
 | NPC-002 | AI Collaboration Protocol | Accepted | 1.0.1 |
 | NPC-003 | Engineering Handbook | Accepted | 1.0.1 |
-| NPC-004 | Specification Index (this document) | Draft | 1.3.0 |
+| NPC-004 | Specification Index (this document) | Draft | 1.20.0 |
 | NPC-005 | ADR Index | Draft | 1.2.0 |
 | NPC-006 | Glossary | Draft | 1.0.0 |
-| NPC-007 | Project Roadmap | Draft | 1.1.0 |
+| NPC-007 | Project Roadmap | Draft | 1.10.0 |
 | NPC-008 | Subsystem Owners | Draft | 1.0.0 |
 | NPC-009 | Requirements Database | Draft | 1.0.0 |
 
@@ -46,7 +46,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
-| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — benchmark-blocked |
+| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — first-pass data collected |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted |
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
@@ -66,7 +66,7 @@ index.
 |----|-------|-----------|--------|
 | NPS-001 | Kernel Architecture and Boot (NyKernel Backend) | core-architecture | Accepted |
 | NPS-002 | Process and Thread Model | core-architecture | Draft — benchmark-blocked (§9) |
-| NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft — benchmark-blocked (§6.1) |
+| NPS-003 | Inter-Process Communication and Capability Passing | core-architecture | Draft — first-pass data collected; transport pending (§6.1) |
 | NPS-004 | NyFS Filesystem Core | storage | Accepted |
 | NPS-005 | Transparent Compression Policy | storage | Draft — blocked on ADR-0007 |
 | NPS-006 | Nyrqis Game/Application Image Format (.nygi) and Overlay | storage | Accepted |
@@ -153,6 +153,7 @@ change process.
 | 1.17.0  | 2026-07-15 | Add NPS-023 (Threat Model Phase 5: secure boot, first full pass on TB-BOOT); amend NPS-017 §4.5 (Secure Boot status reporting) and NPS-001 §5 (phase-transition order validation); add REQ-BOOT-0004; measured-boot/TPM gap logged, not resolved |
 | 1.18.0  | 2026-07-15 | Add NPS-024 (Threat Model Phase 6: AI, first full pass on TB-AI); amend NPS-015 §5.2/§5.3/§5.4 and add §5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003 and REQ-AI-0004 |
 | 1.19.0  | 2026-08-12 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); add first Tutorials and How-To guides; refresh category/reference index placeholders |
+| 1.20.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): NPS-003 §6.1 latency and ADR-0009 token-bucket statuses updated to reflect data collected — gates not declared met |
 
 ---
 **End of Document**

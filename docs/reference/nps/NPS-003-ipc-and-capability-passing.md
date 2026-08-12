@@ -1,14 +1,14 @@
 ---
 title: Inter-Process Communication and Capability Passing
 document_id: NPS-003
-version: 1.1.0
+version: 1.2.0
 status: Draft
 classification: Normative
 subsystem: core-architecture
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-13
+updated: 2026-08-12
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-001, NPS-002]
@@ -95,6 +95,17 @@ round-trip latency **MUST** be treated as a first-class performance metric
 and **MUST** be benchmarked before this document exits Draft status, per
 NPC-002 §5.2.
 
+> **Benchmark note (2026-08-12):** first-pass measurement of `call`
+> (in-process `IPCManager`, 64-byte payloads, 20,000 iterations,
+> warmup 200) recorded in `tests/BENCHMARK_RESULTS.md`: **p50 92 µs,
+> p95 157 µs, p99 213 µs, mean 104 µs**. The <100 µs target is met at
+> the median but exceeded at the tail, and — because the backend
+> transport layer (Unix-domain socket / shared memory, deferred) does
+> not exist yet — these numbers bound the in-process control-plane cost
+> only. This document therefore remains `Draft`: the gate cannot be
+> judged met until the real transport is measured under the plan's load
+> variants.
+
 6.2. Shared-memory bulk transfer (§3.1) **SHOULD** avoid unnecessary data
 copies between sender and receiver address spaces where the underlying
 hardware and memory manager (NPS-001 §3) support zero-copy mapping.
@@ -133,6 +144,7 @@ security specifications.
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.1.0   | 2026-07-13 | Add shared-memory zeroing requirement to §3.1, closing threat model finding FIND-CONTAINER-003 (NPS-020) |
+| 1.2.0   | 2026-08-12 | §6.1: record first-pass IPC latency measurements (`tests/BENCHMARK_RESULTS.md`); document remains Draft — median meets the <100 µs target, tail exceeds, real transport pending |
 
 ---
 **End of Document**

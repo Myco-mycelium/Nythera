@@ -1,7 +1,7 @@
 ---
 title: Project Roadmap
 document_id: NPC-007
-version: 1.9.0
+version: 1.10.0
 status: Draft
 classification: Informative
 owners:
@@ -58,7 +58,7 @@ see "Milestone 12" section below and
 - [x] NPS-003 Inter-Process Communication and Capability Passing (Draft)
 - [ ] Architecture Group review to move ADR-0006 and NPS-001..003 to Accepted
 - [ ] Scheduler algorithm decision (NPS-001 §7 open question)
-- [ ] IPC round-trip latency benchmark (NPS-003 §6.1)
+- [~] IPC round-trip latency benchmark — first-pass data collected 2026-08-12 (in-process only; real transport pending, NPS-003 §6.1 remains Draft)
 
 ### M4 — Storage
 - [x] Finalize ADR-0002 (filesystem) into NPS specifications (NPS-004, Draft)
@@ -80,7 +80,7 @@ see "Milestone 12" section below and
 - [x] Container runtime NPS (NPS-010, Draft — lifecycle, capability assignment, revocation, resource limits)
 - [x] IPC rate-limiting mechanism decision (ADR-0009 — per-container token buckets)
 - [x] Capability registry populated (NPS-011, Draft — 14 capabilities registered, closing the gap NPC-001 §9.3 has referenced since Milestone 1)
-- [ ] Benchmark default IPC token-bucket parameters before ADR-0009 exits Proposed
+- [~] Benchmark default IPC token-bucket parameters — first-pass data collected 2026-08-12 (defaults shown to throttle this workload shape; sweep + Architecture Group review still pending)
 - [ ] Expand Android permission mapping (NPS-011 §6) incrementally
 - [ ] Architecture Group review to move ADR-0009 and NPS-010/011 to Accepted
 
@@ -125,7 +125,7 @@ honestly be resolved and naming what couldn't, per NPC-001 §5's rule that
 - [x] Keep ADR-0007, ADR-0009, ADR-0013 at `Proposed` — each explicitly benchmark/tuning-blocked in its own text, not a review oversight
 - [x] Keep NPS-002, NPS-003 at `Draft` — each self-blocks on benchmark data in its own normative text (§9, §6.1 respectively)
 - [x] Keep NPS-005, NPS-010 at `Draft` — each transitively blocked on an ADR (0007, 0009) that isn't Accepted yet, with an explicit status note added explaining why
-- [ ] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land
+- [~] Re-review ADR-0007, ADR-0009, ADR-0013, NPS-002, NPS-003, NPS-005, NPS-010 once their respective benchmarks land — first-pass data landed for ADR-0009 / NPS-003 (2026-08-12); ADR-0007, ADR-0013, NPS-002, NPS-005 still unmeasured; Architecture Group review pending
 
 ### M10 — Backlog Closure Pass
 A follow-up pass working through Milestone 9's remaining `Next Actions`
@@ -142,7 +142,7 @@ benchmarking or real contributors.
 - [x] `requirements-docs.txt`: pin `mkdocs-material` to the 9.x line given the Material team's own public warning about breaking, production-unready changes in MkDocs 2.0
 - [ ] Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` — requires actual contributors, intentionally not fabricated
 - [x] Begin Linux Backend implementation work (NPS-017 §6) — see the Cross-Cutting NyHAL section above; first spike done, §4.2–§4.5 remain unstarted
-- [ ] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` once something exists to measure
+- [~] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` — first pass run 2026-08-12: IPC latency, token-bucket defaults, and the NyFS ops-layer proxy measured (`tests/BENCHMARK_RESULTS.md`); Zstd levels, EEVDF tuning, live FUSE-mount comparison, and hash-chain still pending
 
 ### M11 — Response to External Repository Review
 An external review of the repository (2026-07-13) rated it 8.6/10 and
@@ -213,6 +213,7 @@ starting from scratch. Full phase table and links:
 | 1.7.0   | 2026-07-15 | M12 Phase 5 complete (secure boot, NPS-023), first full pass on TB-BOOT; 4 findings, 2 resolved (NPS-017 §4.5, NPS-001 §5 amendments, new REQ-BOOT-0004), 1 logged as not fixable by amendment, 1 confirmed as an accepted inherent tradeoff |
 | 1.8.0   | 2026-07-15 | M12 Phase 6 complete (AI, NPS-024), first full pass on TB-AI, no implementation exists yet; 5 findings, 4 resolved (NPS-015 §5.2/§5.3/§5.4/§5.5 amendments, new REQ-AI-0003/0004), 1 confirmed bounded by existing controls |
 | 1.9.0   | 2026-08-12 | M11 backlog pass: Object Registry (NPS-025), Public API (API-001), ABI (ABI-001), Package Format (NPS-026), and first architecture diagrams + Tutorials/How-To guides landed as Drafts; gaps 8–11 (governance expansion, build architecture, performance budgets, developer onboarding) remain unbuilt |
+| 1.10.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): IPC latency (NPS-003 §6.1), token-bucket defaults (ADR-0009), NyFS ops-layer proxy (ADR-0016) — data collected, gates not declared met |
 
 ---
 **End of Document**
