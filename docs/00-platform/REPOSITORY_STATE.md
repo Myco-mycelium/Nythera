@@ -60,7 +60,7 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0004 Containerized execution model — Accepted
 - [x] ADR-0005 Windows compatibility translation layer — Accepted
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
-- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, first-pass level-sweep data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md` §2); default-level decision pending Architecture Group review
+- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, first-pass level-sweep data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md` §2) plus an end-to-end NyFS compression ratio of 6.42 : 1 on a synthetic corpus (2026-08-12, §7, `--nyfs-persist`); default-level decision pending Architecture Group review
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
 - [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, first-pass bucket-parameter data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md`); parameter sweep + Architecture Group review pending
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted

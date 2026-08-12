@@ -140,7 +140,7 @@ Test suite: **91/91 passing** (`python3 test_backend.py`), including end-to-end 
 - [ ] Overlay filesystem for container-specific views
 - [ ] Deduplication across snapshots
 
-**Conformance Status:** Partial (core logic + FUSE operations implemented; live mount requires host `fusepy` + `/dev/fuse`, benchmarks pending)
+**Conformance Status:** Partial (core logic + FUSE operations implemented; live mount requires host `fusepy` + `/dev/fuse` — present on this host, and live-mount (§6) + persisted-image (§7) benchmarks were recorded 2026-08-12, see `tests/BENCHMARK_RESULTS.md`)
 
 ### 5. Boot and Lifecycle (NPS-017 §4.5, NPS-001 §5)
 

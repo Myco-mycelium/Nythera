@@ -19,6 +19,10 @@ this host in one reproducible script:
   through a REAL kernel FUSE mount (fusepy + /dev/fuse + fusermount;
   skipped when absent) vs native I/O, and reports how the kernel batches
   write requests to the daemon.
+- §5 (persisted image, 2026-08-12): ``--nyfs-persist`` builds a
+  deterministic mixed asset corpus, saves it to disk (durability,
+  NPS-004 §7), reloads it, and measures the loaded-image read patterns
+  plus the end-to-end storage compression ratio.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -27,6 +31,7 @@ Usage:
   python3 tests/benchmarks.py --zstd      # §2 Zstd level sweep
   python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
   python3 tests/benchmarks.py --nyfs-mount  # §4 live-mount FUSE vs native
+  python3 tests/benchmarks.py --nyfs-persist  # §5 persisted-image lifecycle
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -300,8 +305,9 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
     First-pass, environment-gated (skipped when fusepy, /dev/fuse, or
     fusermount is unavailable). Honesty caveats:
     - The native baseline is the same ``tempfile`` location as the
-      backing store (tmpfs on this host) — RAM-backed, so it is far
-      faster than a disk-backed fs would be.
+      backing store (ext4 on this host, ``/dev/sda2``) — a real
+      disk-backed comparison; hot data lands in the page cache, as it
+      would for any disk-backed filesystem.
     - Reads run with the kernel page cache + readahead active (real
       users get the same), which batches 4 KiB user reads into larger
       daemon requests.
@@ -389,6 +395,117 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
             pass
 
 
+def benchmark_nyfs_persisted():
+    """Persisted-image lifecycle: save/load, ratio, loaded-image reads.
+
+    Builds a deterministic mixed asset corpus (compressible text-like,
+    incompressible binary, and large streaming files — seed 11), writes
+    it through the NyFS ops layer, ``save()``s it to disk (NPS-004 §7
+    durability), reloads with ``load()``, and measures:
+    - commit cost: save() time and on-disk block-store size;
+    - end-to-end storage compression ratio (logical / on-disk bytes) —
+      a first-pass data point for BENCHMARK_PLAN §2's "compression
+      ratio > 30%" question, on a synthetic corpus (the plan's real
+      asset corpus remains unmeasured);
+    - loaded-image reads: sequential streaming of large files and
+      small-file random access — the "installed once, read many times"
+      shape that matters for gaming loads (NPS-006 §5).
+    """
+    import random
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rng = random.Random(11)
+        corpus = []
+        # ~150 small text-like files (compressible).
+        for i in range(150):
+            n = rng.randint(10, 200)
+            body = ("The quick brown fox jumps over the lazy dog. " * n).encode()
+            corpus.append((f"/assets/text_{i}.txt", body))
+        # 30 medium files: mixed compressibility.
+        for i in range(30):
+            size = rng.randint(64_000, 200_000)
+            if i % 3 == 0:
+                body = rng.randbytes(size)  # pseudo-random, incompressible
+            elif i % 3 == 1:
+                body = (b"level-data-v1;" * (size // 13 + 1))[:size]
+            else:
+                body = rng.randbytes(size)
+            corpus.append((f"/assets/med_{i}.bin", body))
+        # 5 large streaming files (~1-4 MiB, compressible).
+        for i in range(5):
+            n = rng.randint(1, 4)
+            body = (b"stream-chunk;" * (1024 * 1024 // 13)) * n
+            corpus.append((f"/assets/big_{i}.dat", body))
+
+        total_logical = sum(len(b) for _, b in corpus)
+        fs = NyFSFilesystem(os.path.join(tmp, "fs"))
+        fs.mkdir("/assets")
+
+        # Write the corpus.
+        t0 = time.perf_counter()
+        for path, body in corpus:
+            fs.write(fs.create_file(path), body)
+        write_s = time.perf_counter() - t0
+
+        # Commit.
+        t0 = time.perf_counter()
+        fs.save()
+        save_s = time.perf_counter() - t0
+        # Re-save of an unchanged state (immutable-block skip path).
+        t0 = time.perf_counter()
+        fs.save()
+        resave_s = time.perf_counter() - t0
+        # End-to-end on-disk footprint: block store + inode tables + any
+        # snapshot/metadata files under the state tree.
+        state_dir = os.path.join(tmp, "fs", "state")
+        on_disk = 0
+        for root, _dirs, files in os.walk(state_dir):
+            for name in files:
+                on_disk += os.path.getsize(os.path.join(root, name))
+
+        # Reload.
+        t0 = time.perf_counter()
+        fs2 = NyFSFilesystem.load(os.path.join(tmp, "fs"))
+        load_s = time.perf_counter() - t0
+
+        # Loaded-image reads: sequential streaming of the large files.
+        big_total = sum(len(b) for p, b in corpus if len(b) >= 1024 * 1024)
+        t0 = time.perf_counter()
+        for path, body in corpus:
+            if len(body) < 1024 * 1024:
+                continue
+            f = fs2.resolve(path)
+            for off in range(0, len(body), 65536):
+                fs2.read(f, 65536, off)
+        stream_s = time.perf_counter() - t0
+
+        # Loaded-image reads: small-file random access (asset catalog).
+        small = [(p, b) for p, b in corpus if len(b) < 64_000]
+        t0 = time.perf_counter()
+        for _ in range(3):
+            for path, body in small:
+                f = fs2.resolve(path)
+                fs2.read(f, min(4096, len(body)), 0)
+        small_s = time.perf_counter() - t0
+
+        def mbps(bytes_, seconds):
+            return round(bytes_ / seconds / (1024 * 1024), 2) if seconds else float("inf")
+
+        return {
+            "files": len(corpus),
+            "logical_bytes": total_logical,
+            "on_disk_bytes": on_disk,
+            "compression_ratio": round(total_logical / on_disk, 2),
+            "write_corpus_mbps": mbps(total_logical, write_s),
+            "save_seconds": round(save_s, 3),
+            "resave_seconds": round(resave_s, 3),
+            "load_seconds": round(load_s, 3),
+            "loaded_stream_read_mbps": mbps(big_total, stream_s),
+            "loaded_small_reads_per_sec": round(
+                len(small) * 3 / small_s, 1),
+        }
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -439,11 +556,15 @@ def main():
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
     parser.add_argument("--nyfs-mount", action="store_true",
                         help="§4 live-mount FUSE vs native")
+    parser.add_argument("--nyfs-persist", action="store_true",
+                        help="§5 persisted-image lifecycle")
     args = parser.parse_args()
 
-    selected = args.ipc or args.bucket or args.zstd or args.nyfs or args.nyfs_mount
+    selected = (args.ipc or args.bucket or args.zstd or args.nyfs
+                or args.nyfs_mount or args.nyfs_persist)
     if not selected or args.all:
-        args.ipc = args.bucket = args.zstd = args.nyfs = args.nyfs_mount = True
+        args.ipc = args.bucket = args.zstd = args.nyfs = True
+        args.nyfs_mount = args.nyfs_persist = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -461,6 +582,9 @@ def main():
     if args.nyfs_mount:
         _print_section("NyFS live FUSE mount vs native (§4):",
                        benchmark_nyfs_mount())
+    if args.nyfs_persist:
+        _print_section("NyFS persisted-image lifecycle (§5):",
+                       benchmark_nyfs_persisted())
 
 
 if __name__ == "__main__":

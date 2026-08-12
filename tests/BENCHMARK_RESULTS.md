@@ -178,11 +178,11 @@ larger writes, not small scattered I/O.
 `python3 tests/benchmarks.py --nyfs-mount` — NyFS mounted through the
 real kernel FUSE path (fusepy + `/dev/fuse` + `fusermount3`, available on
 this host) and driven with ordinary `open`/`write`/`read` syscalls,
-16 MiB dataset, vs native I/O into a directory on the same tmpfs. First
-pass, environment-gated (the section is skipped where the pieces are
-missing); no gate declared met.
+16 MiB dataset, vs native I/O into a directory on the same filesystem.
+First pass, environment-gated (the section is skipped where the pieces
+are missing); no gate declared met.
 
-| Access pattern | FUSE | Native (tmpfs) |
+| Access pattern | FUSE | Native (ext4, page-cache) |
 |----------------|-----:|---------------:|
 | 1 MiB-chunk streaming write | ~40–46 MB/s | 740–1,357 MB/s |
 | 4 KiB sequential write | ~2.2 MB/s | 356–687 MB/s |
@@ -216,10 +216,12 @@ includes 150 seeded overlapping random writes through the mount,
 `fsync(2)`, read-back, and reload-from-disk verification — all match
 (`test_random_overwrites_through_mount_with_writeback_cache`).
 
-**Honest caveats:** (1) the native baseline is tmpfs (RAM-backed) on the
-same path as the backing store — far faster than a disk-backed fs, so
-the raw ratios are not the ext4 comparison. (2) Reads run with the
-kernel page cache + readahead active (as real users get). (3) These are
+**Honest caveats:** (1) the native baseline is the same ext4 filesystem
+(`/dev/sda2`) as the backing store, with normal page-cache writeback —
+its GB/s-level write/read numbers reflect buffered I/O and the page
+cache, not fsync'd or cold reads, so they are an upper-bound comparison
+rather than a disk-throughput claim. (2) FUSE reads run with the kernel
+page cache + readahead active (as real users get). (3) These are
 environment numbers; the remaining write gap vs the ops layer is the
 128 KiB request round-trips + per-block compression, not the 4 KiB
 batching that previously dominated.
@@ -231,14 +233,60 @@ snapshot cycle through the kernel path — multi-block write, `fsync(2)`
 unmount, reload from disk with snapshot restore, re-mount and read-back
 — all correct (`TestNyFSLiveMount`, in `test_backend.py`).
 
+## 7. Persisted NyFS Image — Save/Load, Ratio, Loaded-Image Reads (2026-08-12)
+
+`python3 tests/benchmarks.py --nyfs-persist` — a deterministic mixed
+asset corpus (185 files, 17.1 MB logical: compressible text-like,
+incompressible binaries, and large streaming files; seed 11, so the
+exact byte image reproduces across runs) is written through the NyFS
+ops layer, committed with `save()` (NPS-004 §7), reloaded with
+`load()`, and read back in the "installed once, read many times" shape
+that matters for gaming loads (NPS-006 §5).
+
+| Metric | Value |
+|--------|-------|
+| Corpus | 185 files, 17,139,978 bytes logical |
+| On-disk state tree (blocks + inode tables + metadata) | 2,671,850 bytes |
+| **End-to-end compression ratio** | **6.42 : 1** (≈84% reduction) |
+| Corpus write (ops layer) | ~97 MB/s |
+| **save() commit** | **10.9 s** (≈27 ms per block file) |
+| Re-save of unchanged state (immutable-block skip path) | 0.15 s |
+| load() | 0.04 s |
+| Loaded-image streaming read (large files, warm cache) | ~21 MB/s |
+| Loaded-image small-file random read (warm cache) | ~3,000 reads/s |
+
+**Findings, recorded honestly:**
+1. **The §2 "compression ratio > 30%" question gets its first data
+   point: 6.42 : 1 end-to-end** on a synthetic mixed corpus (the whole
+   NyFS state tree — block store including per-block overhead, inode
+   tables, and snapshot/metadata files — at level-3 Zstd). This is NOT
+   the plan's real asset corpus (real textures/media and
+   already-compressed formats are unmeasured), so no gate is declared
+   met — but the compressible text-like assets clearly dominate the
+   ratio.
+2. **save() is fsync-bound.** ~27 ms per block file on ext4 (temp write
+   + fsync + rename), so committing a 17.1 MB corpus takes ~10.9 s.
+   This is the durability contract's real cost (each block file fsynced
+   before the atomic metadata swap). Re-saving an unchanged state is
+   0.15 s (immutable-block skip path — measured by the benchmark
+   itself), and load() is 0.04 s. The levers for commit cost are larger
+   blocks (fewer fsyncs), group/batched fsync, or a journal-style
+   commit — design questions, not fixed here.
+3. Loaded-image reads: streaming large files at ~21 MB/s (per-read
+   SHA-256 verification dominates, as in §5), small-file random access
+   at ~3,000 reads/s (path resolution + per-block verify per read).
+   Both shapes run warm from the page cache (the same process wrote and
+   saved the corpus just before) — these are hot-path numbers, not
+   cold-read numbers.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
 |--------------|--------|
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
-| §2 Zstd level selection | First-pass data collected (synthetic corpus; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
+| §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratio 6.42 : 1 measured 2026-08-12, §7**; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
-| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. No gate declared met |
+| §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus (first §2 data point, no gate met), save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. No gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next

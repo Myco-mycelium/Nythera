@@ -106,17 +106,22 @@ in one script (`--ipc`, `--bucket`, `--zstd`, `--nyfs`). Results in
   dominated by per-call block compress + per-read checksum verification
   (see `BENCHMARK_RESULTS.md` §5).
 
-**2026-08-12 update (live FUSE mount measured):** this host turned out
-to have fusepy + `/dev/fuse` all along, so the plan's "kernel mount"
-comparison was actually measured (`python3 tests/benchmarks.py
---nyfs-mount`, results in `BENCHMARK_RESULTS.md` §6): through the real
-kernel FUSE path, writes land at ~1.8–2.2 MB/s because the kernel splits
-every write syscall into 4 KiB requests (256 per 1 MiB), each of which
-rebuilds a full 64 KiB CoW block in the daemon; reads batch at 128 KiB
-(readahead) and run at ~25–37 MB/s. The §4 method's native baseline is
-ext4/Btrfs; the first-pass baseline here was the same tmpfs as the
-backing store, so the ext4 comparison (and the compression-on/off
-variant) remains the unmeasured part.
+**2026-08-12 update (live FUSE mount + persisted image measured):** this
+host turned out to have fusepy + `/dev/fuse` all along, so the plan's
+"kernel mount" comparison was actually measured (`python3 tests/benchmarks.py
+--nyfs-mount`, results in `BENCHMARK_RESULTS.md` §6). First pass, stock
+fusepy mounts got page-granular 4 KiB write requests (256 per 1 MiB,
+~1.8–2.2 MB/s); that limit was then **fixed** by negotiating
+`FUSE_CAP_BIG_WRITES` + `FUSE_CAP_WRITEBACK_CACHE` + `FUSE_CAP_MAX_PAGES`
+in the INIT handshake (`NyFSMount(writeback_cache=True)`, the default) —
+writes now batch at 128 KiB and stream at ~40–46 MB/s; reads batch at
+128 KiB (readahead) and run at ~25–37 MB/s. `--nyfs-persist` added the
+save/load lifecycle (`BENCHMARK_RESULTS.md` §7): 6.42 : 1 end-to-end
+compression ratio on a synthetic corpus, and an fsync-bound save()
+(~27 ms per block file). The §4 method's native baseline is ext4/Btrfs;
+this host's `/tmp` is ext4 (`/dev/sda2`), so the native baseline here is
+a real disk-backed comparison. The compression-on/off variant remains
+the unmeasured part.
 
 None of the plan's pass/fail gates are declared met on the strength of
 these runs — these numbers exist to inform implementation, not to close
