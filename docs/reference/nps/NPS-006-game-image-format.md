@@ -1,17 +1,17 @@
 ---
 title: Nyrqis Game/Application Image Format (.nygi) and Overlay
 document_id: NPS-006
-version: 1.0.1
+version: 1.1.0
 status: Accepted
 classification: Normative
 subsystem: storage
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-08-12
 ai_assisted: true
 review_cycle: As needed
-depends_on: [NTM-000, NPC-001, ADR-0003, ADR-0007, NPS-004, NPS-005]
+depends_on: [NTM-000, NPC-001, ADR-0003, ADR-0007, ADR-0018, NPS-004, NPS-005]
 ---
 
 # NPS-006 — Nyrqis Game/Application Image Format (.nygi) and Overlay
@@ -96,6 +96,32 @@ discussion.
 6.2. A failed verification **MUST** be reported to the user before launch
 rather than allowed to fail silently mid-session.
 
+6.3. Verification **MUST** also establish **authenticity**, not just
+checksum-based self-consistency: every `.nygi` image **MUST** be verified
+against the publisher signature path defined in NPS-026 §6 (signature
+covering the manifest and the content integrity trees), and a signature
+failure **MUST** be treated as a verification failure under §6.2.
+
+    *Status note (threat model Phase 7, NPS-027):* this subsection
+    normatively references `NPS-026`, which is currently `Draft` — the
+    same precedent as `NPS-010` §9's reference to the then-`Proposed`
+    `ADR-0009`. It exists so that the `Accepted` governing spec cannot
+    silently remain checksum-only while the signature design is pending
+    (`FIND-PACKAGE-002`).
+
+6.4. Verification **MUST** distinguish base-image content from overlay
+content (§4) and **MUST** report the provenance of any file in the
+combined view. An unsigned overlay entry **MAY** shadow a signed base
+file only for content classes the platform policy designates as
+user-modifiable (saves, configuration, mods); shadowing of executable or
+integrity-critical publisher content **MUST** be surfaced as a provenance
+difference, not silently merged (`FIND-PACKAGE-004`).
+
+6.5. Every verification, install, and uninstall event **MUST** be
+recorded in the tamper-evident audit log (`ADR-0018`) with package
+identity, publisher, version, and verification result
+(`FIND-PACKAGE-005`).
+
 ## 7. Uninstall
 
 7.1. Uninstalling MUST remove the base image; the overlay **MUST** be
@@ -127,6 +153,7 @@ rather than omitted.
 |---------|------------|---------------|
 | 1.0.0   | 2026-07-12 | Initial draft |
 | 1.0.1   | 2026-07-12 | Architecture Group review completed (Milestone 9). Status: Draft → Accepted. |
+| 1.1.0   | 2026-08-12 | §6: add signature-based authenticity verification per NPS-026 §6 (6.3), overlay/base provenance distinction (6.4), and audit-log recording of package events (6.5) — closing threat model Phase 7 findings FIND-PACKAGE-002/004/005 (NPS-027) |
 
 ---
 **End of Document**

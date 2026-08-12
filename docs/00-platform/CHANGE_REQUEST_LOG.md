@@ -41,6 +41,7 @@ independent of chat or discussion history.
 | CR-0033 | Threat model Phase 6: NPS-024 AI threat model, first full pass on TB-AI; amend NPS-015 Sec 5.2/5.3/5.4 and add Sec 5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003/0004 | Accepted | — |
 | CR-0034 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); publish first Tutorials and How-To guides; refresh all stale category/reference index placeholders and add Mermaid diagrams (boot, NyHAL, container lifecycle, capability grant, package mount) | Accepted | — |
 | CR-0035 | Rebrand the project from Nythera to Nyrqis (name collision avoidance): rename all docs, code identifiers, env vars, temp-file prefixes, LICENSE placeholder, and the two affected file names; retain the Ny prefix (now denotes Nyrqis); keep the repository directory and GitHub URL (Myco-mycelium/Nythera) unchanged for now; switch new-commit identity to Nyrqis Bootstrap. Recorded in REBRAND_NOTICE.md | Accepted | — |
+| CR-0036 | Threat model Phase 7 — Package Trust Model (NPS-027): disposition of FIND-PACKAGE-001, 4 new TB-PACKAGE findings closed by NPS-006 §6 amendment (signature verification per NPS-026 §6, overlay/base provenance, package-event audit) + REQ-SEC-0003..0006; first-pass Zstd level-sweep benchmark recorded (tests/BENCHMARK_RESULTS.md §2) | Accepted | — |
 
 ## How to Add an Entry
 

@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.20.0
+version: 1.21.0
 status: Draft
 classification: Reference
 owners:
@@ -44,7 +44,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0004 | Containerized execution model for all application classes | Accepted |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted |
 | ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
-| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked |
+| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — first-pass data collected |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
 | ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — first-pass data collected |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted |
@@ -90,8 +90,9 @@ index.
 | NPS-024 | AI Threat Model | security | Draft |
 | NPS-025 | Object Registry | core-architecture | Draft |
 | NPS-026 | Nyrqis Package Format (.nypkg) | storage | Draft |
+| NPS-027 | Package Trust Model | security | Draft |
 
-Following the Milestone 9 Architecture Group review, 13 of 17 NPS documents
+Following the Milestone 9 Architecture Group review, 13 of 27 NPS documents
 and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
 `Proposed` for a specific, named reason (a pending benchmark or a
 dependency on another document that is itself benchmark-blocked) rather
@@ -154,6 +155,7 @@ change process.
 | 1.18.0  | 2026-07-15 | Add NPS-024 (Threat Model Phase 6: AI, first full pass on TB-AI); amend NPS-015 §5.2/§5.3/§5.4 and add §5.5 (unspoofable confirmation UI, corrected file-search capability, persistence-mechanism exclusion, suggestion audit log); add REQ-AI-0003 and REQ-AI-0004 |
 | 1.19.0  | 2026-08-12 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); add first Tutorials and How-To guides; refresh category/reference index placeholders |
 | 1.20.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): NPS-003 §6.1 latency and ADR-0009 token-bucket statuses updated to reflect data collected — gates not declared met |
+| 1.21.0  | 2026-08-12 | Add NPS-027 (Threat Model Phase 7 — Package Trust Model, completing Milestone 12); ADR-0007 status reflects first-pass Zstd data collected |
 
 ---
 **End of Document**

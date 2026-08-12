@@ -12,19 +12,21 @@ Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
 (`source/nyhal-linux-backend/`, 64/64 tests passing). Milestone 12 — the
-phased security threat model — is in progress: Phases 1–6 are done
+phased security threat model — is **complete**: Phases 1–7 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
-container escape analysis, `NPS-023` secure boot, `NPS-024` AI). Phase 4
+container escape analysis, `NPS-023` secure boot, `NPS-024` AI,
+`NPS-027` package trust). Phase 4
 found the most severe issue in the threat model to date (capability
 enforcement covers IPC only, not direct syscalls); Phase 6 found the
 suggest-vs-act boundary NPC-001 §11.1 depends on has no requirement that
 its confirmation UI actually be unspoofable — meaning even a
 perfectly-implemented assistant following the spec as written wouldn't
-have closed the gap. Across Phases 2–6, 29 unique findings have surfaced
-and every one has a disposition — no bare observations left dangling.
-Phase 7 (Package Trust Model) is the last planned phase — see
-`docs/reference/security/README.md`. A docs-backlog pass (2026-08-12)
+have closed the gap. Across all seven phases, every finding recorded has
+a disposition — no bare observations left dangling. Phase 7 (Package
+Trust Model, `NPS-027`) landed 2026-08-12, completing the threat model
+(see `docs/reference/security/README.md`). A docs-backlog pass
+(2026-08-12)
 started Milestone 11's gap categories: the Object Registry (NPS-025),
 Public API (API-001), ABI (ABI-001), and Package Format (NPS-026,
 including the digital-signature design closing `FIND-PACKAGE-001`) now
@@ -58,7 +60,7 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0004 Containerized execution model — Accepted
 - [x] ADR-0005 Windows compatibility translation layer — Accepted
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
-- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, blocked on compression-level benchmark data
+- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, first-pass level-sweep data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md` §2); default-level decision pending Architecture Group review
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
 - [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, first-pass bucket-parameter data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md`); parameter sweep + Architecture Group review pending
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
@@ -72,9 +74,9 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 
 ## Specifications (NPS)
-13 accepted, 13 held (4 named benchmark/dependency blockers, plus
-NPS-018..NPS-024 — new Draft documents pending Architecture Group
-sign-off, not benchmark-blocked — and NPS-025, NPS-026 — new Draft
+13 accepted, 14 held (4 named benchmark/dependency blockers, plus
+NPS-018..NPS-024 and NPS-027 — threat-model phase documents, Draft
+pending Architecture Group sign-off — and NPS-025, NPS-026 — Draft
 documents from the 2026-08-12 Milestone 11 backlog pass).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
@@ -103,10 +105,11 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 - [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
 - [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, Identity flagged pending its own NPS)
 - [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2)
+- [x] NPS-027 Package Trust Model — Draft (Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006)
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
-32 requirements across all 17 domain prefixes. Nearly all traced to
+40 requirements across all 17 domain prefixes. Nearly all traced to
 `Accepted` specs; two (`REQ-IPC-0003`, `REQ-IPC-0004`) trace to
 still-`Draft` NPS-003, called out explicitly rather than silently
 overstating coverage quality. One entry (`REQ-NYHAL-0003`) marked
@@ -208,7 +211,7 @@ breaking, currently-unsuitable-for-production changes in MkDocs 2.0.
 
 ## Next Actions
 Benchmark-gated (unblocks the 3 ADRs + 4 NPS documents held above).
-First-pass data for three of the seven items landed 2026-08-12
+First-pass data for four of the seven items landed 2026-08-12
 (`tests/BENCHMARK_RESULTS.md`); the remaining items still have no
 measurements:
 1. ~~Benchmark IPC round-trip latency (unblocks NPS-003, transitively
@@ -224,7 +227,13 @@ measurements:
    the defaults are demonstrably too low for this workload shape.
    Parameter sweep, adversarial test, and Architecture Group review
    still pending.
-3. Benchmark Zstd compression levels, install size vs. load time (unblocks ADR-0007, then NPS-005).
+3. ~~Benchmark Zstd compression levels, install size vs. load time
+   (unblocks ADR-0007, then NPS-005).~~ **First-pass data collected
+   2026-08-12** — level sweep on a synthetic corpus (overall ratio 2.54
+   at levels 1–5 vs 3.17 at ≥7; compression 0.6–3.5 GB/s); a real asset
+   corpus, the LZ4 fast-path comparison, and concurrent-load CPU
+   measurement remain, and the default-level decision belongs to
+   Architecture Group review.
 4. Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning (unblocks ADR-0013 in full; algorithm family is already decided).
 5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
 6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016;
@@ -325,6 +334,12 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**threat model complete + benchmark data**): Phase 7
+  Package Trust Model (`NPS-027`) landed, closing Milestone 12; NPS-006
+  §6 amended (v1.1.0 — signature verification per NPS-026 §6, overlay/
+  base provenance, package-event audit); REQ-SEC-0003..0006 added (ledger
+  now 40 requirements); first-pass Zstd level-sweep data recorded in
+  `tests/BENCHMARK_RESULTS.md` §2 (ratio/compute knee at levels 3–7).
 - 2026-08-12 (**rebrand**): project name changed from **Nythera** to
   **Nyrqis** everywhere (docs, code identifiers, `NYTHERA_LOG_LEVEL` →
   `NYRQIS_LOG_LEVEL`, `nythera-policy-` → `nyrqis-policy-`, LICENSE

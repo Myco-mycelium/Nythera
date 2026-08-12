@@ -102,7 +102,10 @@ revisiting, not whether to attempt it at all.
   whole-file CoW/compress path identified as the dominant cost; the
   live FUSE-vs-ext4 comparison still requires a kernel mount.
 
-§2 (Zstd level selection) remains **Not Started**. None of the plan's
+§2 (Zstd level selection) now has first-pass data (2026-08-12,
+`tests/BENCHMARK_RESULTS.md` §2): a level sweep on a synthetic corpus —
+a real asset corpus, the LZ4 fast-path comparison, and concurrent-load
+CPU measurement remain. None of the plan's
 pass/fail gates are declared met on the strength of this first pass —
 these numbers exist to inform implementation, not to close the
 benchmarks.

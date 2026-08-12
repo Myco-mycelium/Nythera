@@ -80,12 +80,50 @@ pending**: it requires `fusepy` + `/dev/fuse`, and the per-block CoW
 rewrite is prerequisite work before those numbers mean anything for
 gaming workloads (NPS-006 §5).
 
+## 4. Zstd Compression-Level Sweep (BENCHMARK_PLAN §2)
+
+`python3 tests/benchmark_zstd.py`, synthetic corpus (text-like 180 KB,
+structured media-like 2 MiB, incompressible 1 MiB), levels 1–22, 1 MiB
+measurement chunks, throughput averaged over 4–8 rounds. Environment as
+in the header above.
+
+| Level | Overall ratio | Compress MB/s | Decompress MB/s |
+|-------|--------------:|--------------:|----------------:|
+| 1     | 2.54 | 3,199 | 3,692 |
+| 3     | 2.54 | 3,479 | 3,313 |
+| 5     | 2.54 | 2,700 | 3,137 |
+| 7     | 3.17 | 2,095 | 2,135 |
+| 9     | 3.17 | 1,435 | 2,849 |
+| 11    | 3.17 | 2,009 | 3,024 |
+| 13    | 3.17 | 810  | 2,223 |
+| 15    | 3.17 | 864  | 2,700 |
+| 17    | 3.17 | 675  | 2,688 |
+| 19    | 3.17 | 621  | 2,696 |
+| 22    | 3.17 | 621  | 2,768 |
+
+**Honest caveats:** (1) the "media" slice is a repeating structured
+pattern that only higher levels' larger search windows fully exploit
+(reaching ~4,000× on that slice at level 17+), so the absolute ratios are
+synthetic and not a prediction of real texture compression — the useful
+signal is the *shape*: overall ratio flatlines above level ~7 while
+compression cost keeps rising. (2) Incompressible data passes through at
+ratio 1.00 at every level, as expected for the NPS-004 §4.5 pass-through
+path. (3) The LZ4 fast-path comparison (ADR-0007) is not yet run —
+`python-lz4` is unavailable in this environment.
+
+**Observation for ADR-0007 / NPS-005 §3 (informative, not a decision):**
+on this corpus the ratio/compute knee sits around levels 3–7: level 3
+compresses at ~3.5 GB/s with the same ratio as level 1, and levels ≥ 7
+buy ~25% more ratio at 40–80% of the compression throughput. The actual
+default-level decision remains NPS-005 §3's table, pending Architecture
+Group review.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
 |--------------|--------|
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
-| §2 Zstd level selection | Not started |
+| §2 Zstd level selection | First-pass data collected (synthetic corpus; real asset corpus, LZ4 comparison, and concurrent-load CPU measurement pending) |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
 | §4 FUSE overhead | Proxy data collected (ops-layer vs native); live-mount comparison pending `/dev/fuse` + per-block CoW work |
 
