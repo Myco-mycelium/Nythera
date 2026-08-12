@@ -16,7 +16,7 @@ theme:
     - content.code.copy
 
 nav:
-  - Home: 00-platform/000-THE_NYRQIS_MANIFEST.md
+  - Home: index.md
   - Platform:
       - Manifest: 00-platform/000-THE_NYRQIS_MANIFEST.md
       - Constitution: 00-platform/001-PROJECT_CONSTITUTION.md
