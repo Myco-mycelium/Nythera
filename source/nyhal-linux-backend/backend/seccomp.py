@@ -271,9 +271,9 @@ _SYSCALLS: Dict[SyscallArch, Dict[str, int]] = {
         "execve": 221, "exit": 93, "kill": 129, "uname": 160,
         "getcwd": 17, "chdir": 49, "fchdir": 50, "getpid": 172,
         "getppid": 173, "gettid": 178, "futex": 98, "clock_gettime": 113,
-        "exit_group": 94, "getdents64": 61, "readlink": 76,
+        "exit_group": 94, "getdents64": 61,
         "readlinkat": 78, "statfs": 43, "fstatfs": 44, "newfstatat": 79,
-        "fstat": 80, "access": 48, "faccessat": 49, "faccessat2": 439,
+        "fstat": 80, "faccessat": 48, "faccessat2": 439,
         "lseek": 62, "pread64": 67, "pwrite64": 68, "readv": 65,
         "writev": 66, "preadv": 69, "pwritev": 70, "preadv2": 286,
         "pwritev2": 287, "dup": 23,
@@ -311,6 +311,13 @@ _SYSCALLS: Dict[SyscallArch, Dict[str, int]] = {
         "getrandom": 278, "memfd_create": 279, "execveat": 281,
         "copy_file_range": 285, "close_range": 436, "futex_waitv": 449,
         "mseal": 462,
+        # NOTE (verified against /usr/include/asm-generic/unistd.h,
+        # 2026-08-12): arm64 has no readlink or access syscall, and
+        # faccessat is 48, not 49. Earlier entries "readlink": 76,
+        # "access": 48, and "faccessat": 49 collided with splice/chdir
+        # and silently aliased the two in the allowlist; found by the
+        # policy-JSON round-trip conformance test + the unique-numbers
+        # guard test.
         # capability-gated: process spawn
         "clone": 220, "clone3": 435,  # arm64 has no fork/vfork
         # capability-gated: filesystem mutation (*at forms only)
@@ -568,6 +575,54 @@ class SeccompPolicy:
             raise PolicyError(
                 f"syscalls listed in both deny and allow: {sorted(overlap)}"
             )
+
+    def to_json(self) -> Dict:
+        """Serialize the policy to the ADR-0020 FFI wire format (seccomp
+        Rust module conformance step 0).
+
+        Rule sets are carried as RESOLVED syscall numbers — the names are
+        architecture-specific and the Rust side owns the same tables, so
+        the number is the shared vocabulary; flag rules are
+        ``[nr, arg_index, mask]`` triples. The Rust ``build_program``
+        consumes exactly this shape.
+        """
+        return {
+            "arch": self.arch.value,
+            "default_action": self.default_action,
+            "deny": self.denied_numbers,
+            "deny_flags": [list(r) for r in self.flag_rule_numbers],
+            "allow": self.allowed_numbers,
+            "allow_flags": [list(r) for r in self.allow_flag_rule_numbers],
+        }
+
+
+def policy_from_json(data: Dict) -> SeccompPolicy:
+    """Rebuild a ``SeccompPolicy`` from ``SeccompPolicy.to_json()``
+    output (round-trip helper: serializer conformance test + the Rust-FFI
+    loader's differential checks). Valid policies survive the round-trip
+    exactly: every name used by ``build_policy``/``build_allowlist_policy``
+    resolves on its arch, so numbers map back to the same names.
+    """
+    arch = SyscallArch(data["arch"])
+    policy = SeccompPolicy(arch=arch, default_action=data["default_action"])
+    nr_to_name = {v: k for k, v in _SYSCALLS[arch].items()}
+
+    def _names(nums: List[int]) -> Set[str]:
+        return {nr_to_name[n] for n in nums if n in nr_to_name}
+
+    def _flag_rules(triples) -> Dict[str, Tuple[int, int]]:
+        out = {}
+        for nr, arg_index, mask in triples:
+            name = nr_to_name.get(nr)
+            if name is not None:
+                out[name] = (arg_index, mask)
+        return out
+
+    policy.deny_syscalls |= _names(data.get("deny", []))
+    policy.deny_if_any_flags.update(_flag_rules(data.get("deny_flags", [])))
+    policy.allow_syscalls |= _names(data.get("allow", []))
+    policy.allow_if_no_flags.update(_flag_rules(data.get("allow_flags", [])))
+    return policy
 
 
 def build_policy(
@@ -965,6 +1020,7 @@ def os_strerror(err: int) -> str:
 __all__ = [
     "SeccompPolicy", "build_policy", "build_allowlist_policy",
     "build_program", "simulate", "install_filter", "validate_program",
-    "SyscallArch", "SECCOMP_RET_ALLOW", "SECCOMP_RET_ERRNO",
-    "SECCOMP_RET_KILL_PROCESS", "EPERM", "OPEN_WRITE_MASK",
+    "policy_from_json", "SyscallArch", "SECCOMP_RET_ALLOW",
+    "SECCOMP_RET_ERRNO", "SECCOMP_RET_KILL_PROCESS", "EPERM",
+    "OPEN_WRITE_MASK",
 ]

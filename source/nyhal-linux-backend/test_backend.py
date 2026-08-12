@@ -646,6 +646,44 @@ class TestDefaultDenyAllowlist(unittest.TestCase):
             seccomp.SECCOMP_RET_ALLOW,
         )
 
+    def test_syscall_tables_have_unique_numbers(self):
+        # Syscall numbers are the FFI wire vocabulary (ADR-0020 seccomp
+        # conformance): a collision makes the policy<->JSON round-trip
+        # ambiguous and silently aliases two syscalls in a compiled
+        # filter. Two real aarch64 collisions were found and fixed
+        # 2026-08-12 (readlink/splice 76, access/faccessat 48); this
+        # guard keeps the tables collision-free.
+        for arch in seccomp.SyscallArch:
+            nums = [n for n in seccomp._SYSCALLS[arch].values() if n >= 0]
+            self.assertEqual(
+                len(nums), len(set(nums)),
+                f"duplicate syscall numbers in the {arch.value} table")
+
+    def test_policy_json_roundtrip(self):
+        # ADR-0020 seccomp conformance step 0: the policy <-> JSON wire
+        # format (the FFI boundary's shared vocabulary) must round-trip
+        # exactly for both postures and both architectures — including
+        # producing byte-identical compiled programs.
+        caps = {
+            Capability.CAP_FILESYSTEM_READ.value,
+            Capability.CAP_NETWORK_SOCKET.value,
+            Capability.CAP_PROCESS_SPAWN.value,
+        }
+        for arch in (seccomp.SyscallArch.X86_64, seccomp.SyscallArch.AARCH64):
+            for builder in (seccomp.build_policy, seccomp.build_allowlist_policy):
+                policy = builder(caps, arch=arch)
+                back = seccomp.policy_from_json(policy.to_json())
+                self.assertEqual(back.arch, policy.arch)
+                self.assertEqual(back.default_action, policy.default_action)
+                self.assertEqual(back.deny_syscalls, policy.deny_syscalls)
+                self.assertEqual(back.allow_syscalls, policy.allow_syscalls)
+                self.assertEqual(back.deny_if_any_flags,
+                                 policy.deny_if_any_flags)
+                self.assertEqual(back.allow_if_no_flags,
+                                 policy.allow_if_no_flags)
+                self.assertEqual(seccomp.build_program(back),
+                                 seccomp.build_program(policy))
+
 
 class TestLauncherSecurity(unittest.TestCase):
     """Test container launch safety (FIND-BACKEND-004) and cgroup
@@ -1350,6 +1388,23 @@ class TestNyFSPersistence(unittest.TestCase):
         fs2 = NyFSFilesystem.load(self.base)
         self.assertEqual(fs2.read(fs2.resolve("/a.bin")), b"B" * 100)
 
+    def test_dirty_flag_tracking(self):
+        # DAEMON_LIFECYCLE dirty gate: True while in-memory state
+        # differs from the last commit, False after save/load.
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        self.assertFalse(fs.dirty)
+        f = fs.create_file("/d.txt")
+        self.assertTrue(fs.dirty)
+        fs.write(f, b"x")
+        self.assertTrue(fs.dirty)
+        fs.save()
+        self.assertFalse(fs.dirty)
+        fs.write(f, b"y", offset=1)
+        self.assertTrue(fs.dirty)
+        del fs
+        fs2 = NyFSFilesystem.load(self.base)
+        self.assertFalse(fs2.dirty)
+
     def test_journal_public_compaction_api(self):
         # The daemon-facing compaction API (BENCHMARK_RESULTS §14):
         # journal_bytes() reports the journal size, maybe_compact() is a
@@ -1475,6 +1530,32 @@ class TestNyFSOperations(unittest.TestCase):
         mount = NyFSMount(self.fs, tempfile.mkdtemp())
         with mock.patch("fuse.nyfs._import_fusepy", return_value=None):
             self.assertFalse(mount.attach())
+
+    def test_shutdown_commits_dirty_state(self):
+        # DAEMON_LIFECYCLE shutdown contract: an orderly shutdown
+        # commits uncommitted state (dirty gate) before unmounting.
+        mount = NyFSMount(self.fs, tempfile.mkdtemp())
+        self.fs.create_file("/x.txt")
+        self.assertTrue(self.fs.dirty)
+        mount.shutdown()
+        self.assertFalse(self.fs.dirty)
+        meta = os.path.join(self.fs.base_path, "state", "metadata.json")
+        self.assertTrue(os.path.exists(meta))
+
+    def test_auto_compact_is_the_mount_default(self):
+        # DAEMON_LIFECYCLE recommendation, now implemented: the
+        # background compaction watcher runs without the caller passing
+        # auto_compact (default True).
+        mount = NyFSMount(self.fs, tempfile.mkdtemp())
+        with mock.patch.object(mount, "_build_fuse", return_value=None):
+            self.assertTrue(mount.mount(foreground=True, blocking=False))
+        self.assertIsNotNone(mount._compact_stop,
+                             "watcher should be running by default")
+        mount.unmount()
+        thread = mount._compact_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
 
     def test_auto_compact_failed_mount_leaves_no_watcher(self):
         # A mount that fails must not leave the background compaction

@@ -348,6 +348,21 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-12 (**seccomp conformance groundwork + daemon lifecycle implemented**):
+  the ADR-0020 seccomp wire format is implemented and verified
+  (`SeccompPolicy.to_json()` / `policy_from_json()`, round-trip tests)
+  and the round-trip **found and fixed two real aarch64 syscall-table
+  bugs** (`readlink: 76` → splice alias; `faccessat: 49` → should be
+  48; verified against `/usr/include/asm-generic/unistd.h`), with a
+  unique-numbers guard test. The Rust implementation itself stays
+  blocked: rustup's toolchain download does not complete on this host
+  (three attempts, 2026-08-12) — documented in `rust/README.md` and
+  `rust/seccomp/README.md`. **Daemon lifecycle (DAEMON_LIFECYCLE.md)
+  partially implemented:** dirty-flag tracking, `NyFSMount.shutdown()`
+  (dirty-gated final commit → unmount), SIGINT/SIGTERM handlers in
+  blocking mode, and `auto_compact` is now the mount default — items 1–2
+  of the spec's §4 gate done; AG tuning review (item 3) pending.
+  Tests 103 → **108**.
 - 2026-08-12 (**first ADR-0020 migration scaffold + daemon lifecycle + consolidated session**):
   the seccomp policy compiler is scaffolded at
   `source/nyhal-linux-backend/rust/seccomp/` — FFI boundary contract,

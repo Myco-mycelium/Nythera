@@ -1,11 +1,29 @@
 # Rust seccomp module — FFI boundary contract and conformance plan
 
-**Status: scaffold.** This module is the first ADR-0020 migration. No
-Rust toolchain exists on the dev host yet, so the crate is a designed,
-unbuilt scaffold. The pure-Python implementation
-(`backend/seccomp.py`, 970 lines, fully tested) remains the only
+**Status: scaffold — Python-side conformance groundwork DONE, Rust
+implementation BLOCKED on a toolchain.** As of 2026-08-12 the dev host
+has no Rust toolchain and rustup's toolchain download does not complete
+in reasonable time (three attempts: two foreground timeouts, one
+background install that produced no output). The Python side of the
+conformance plan is implemented and verified (below); the Rust crate
+itself remains a designed, unbuilt scaffold. The pure-Python
+implementation (`backend/seccomp.py`, fully tested) remains the only
 shipped implementation until the Rust module passes the conformance
 suite *through the FFI*.
+
+### Conformance groundwork done (verified on the Python side)
+
+- `SeccompPolicy.to_json()` / `policy_from_json()` — the FFI wire
+  format, round-trip tested for both postures and both architectures
+  (`test_policy_json_roundtrip`).
+- The round-trip test **found and fixed two real aarch64 syscall-table
+  bugs** (verified against `/usr/include/asm-generic/unistd.h`):
+  `readlink: 76` (no readlink on arm64; 76 is splice) and
+  `faccessat: 49` (should be 48; `access: 48` doesn't exist on arm64).
+  The collisions silently aliased syscalls in compiled filters and
+  made the wire format ambiguous.
+- `test_syscall_tables_have_unique_numbers` guards both tables against
+  regressions (numbers are the FFI wire vocabulary).
 
 ## Why this module first
 
@@ -62,10 +80,9 @@ through the FFI.
 
 ## Conformance test plan (runs when a toolchain exists)
 
-0. **Prerequisite (Python side):** implement the policy → JSON
-   serializer (`build_policy`/`build_allowlist_policy` currently
-   return policy objects, not JSON) and round-trip it in the existing
-   test suite. The FFI contract above depends on it.
+0. **Prerequisite (Python side):** policy → JSON serializer + round-trip
+   — **DONE (2026-08-12)**: `to_json()`/`policy_from_json()` shipped and
+   tested; aarch64 table bugs found by it fixed.
 1. `cargo build --release` → produces `libnyrqis_seccomp.so`.
 2. Copy the cdylib to a known path; run the existing
    `python3 test_backend.py TestSeccompEnforcement` +

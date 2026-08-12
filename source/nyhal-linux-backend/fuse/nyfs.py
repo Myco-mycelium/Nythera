@@ -210,8 +210,23 @@ class NyFSFilesystem:
         # and a lazily-built scan cache.
         self._journal_ids: set = set()
         self._journal_index = None
+        # Dirty tracking (DAEMON_LIFECYCLE.md §2): True when in-memory
+        # state has diverged from the last committed state. Set by every
+        # mutating operation, cleared by save() — the shutdown contract
+        # uses it to decide whether a final commit is needed.
+        self._dirty = False
 
         logger.info(f"Initialized NyFS filesystem at {self.base_path}")
+
+    def _mark_dirty(self) -> None:
+        """Record that in-memory state differs from the last save."""
+        self._dirty = True
+
+    @property
+    def dirty(self) -> bool:
+        """True when a save() is needed to commit current state (the
+        daemon shutdown contract's final-commit gate)."""
+        return self._dirty
 
     # ------------------------------------------------------------------
     # Path resolution
@@ -285,6 +300,7 @@ class NyFSFilesystem:
             parent, name = self.resolve_parent(path)
             inode = self._new_inode(name, mode)
             self._link(parent, inode)
+            self._mark_dirty()
             logger.info(f"Created file {path} (ino={inode.inode_number})")
             return inode
 
@@ -294,6 +310,7 @@ class NyFSFilesystem:
             parent, name = self.resolve_parent(path)
             inode = self._new_inode(name, stat.S_IFDIR | mode, is_directory=True)
             self._link(parent, inode)
+            self._mark_dirty()
             logger.info(f"Created directory {path} (ino={inode.inode_number})")
             return inode
 
@@ -315,6 +332,7 @@ class NyFSFilesystem:
                 raise NyFSError(errno.EISDIR, f"{path} is a directory")
             self._unlink(parent, name)
             self.inodes.pop(child.inode_number, None)
+            self._mark_dirty()
 
     def rmdir(self, path: str) -> None:
         """Remove an empty directory."""
@@ -329,6 +347,7 @@ class NyFSFilesystem:
                 raise NyFSError(errno.ENOTEMPTY, f"{path} not empty")
             self._unlink(parent, name)
             self.inodes.pop(child.inode_number, None)
+            self._mark_dirty()
 
     def rename(self, old_path: str, new_path: str) -> None:
         """Move ``old_path`` to ``new_path``."""
@@ -343,6 +362,7 @@ class NyFSFilesystem:
             self._unlink(old_parent, old_name)
             child.name = new_name
             self._link(new_parent, child)
+            self._mark_dirty()
 
     # ------------------------------------------------------------------
     # Data operations (CoW + checksum + compression)
@@ -518,6 +538,7 @@ class NyFSFilesystem:
             inode.blocks = new_blocks  # CoW: swap, never mutate
             inode.size = final_size
             inode.mtime = time.time()
+            self._mark_dirty()
             return len(data)
 
     def truncate(self, inode_or_path, length: int) -> None:
@@ -547,6 +568,7 @@ class NyFSFilesystem:
                 ]
             inode.size = length
             inode.mtime = time.time()
+            self._mark_dirty()
 
     # Legacy block-level API (kept for compatibility)
     def write_block(self, inode_number: int, data: bytes, compress: bool = True) -> NyFSBlock:
@@ -565,6 +587,7 @@ class NyFSFilesystem:
             inode.blocks.append(block)
             inode.size += len(data)
             inode.mtime = time.time()
+            self._mark_dirty()
             return block
 
     def read_block(self, inode_number: int, block_index: int = 0) -> bytes:
@@ -676,6 +699,7 @@ class NyFSFilesystem:
         with self.lock:
             import copy
             self.snapshots[snapshot_id] = copy.deepcopy(self.inodes)
+            self._mark_dirty()
         logger.info(f"Created snapshot {snapshot_id} with {len(self.inodes)} inodes")
         return snapshot_id
 
@@ -689,6 +713,7 @@ class NyFSFilesystem:
             # must be rebound to the restored root or path lookups keep
             # reaching the pre-restore tree.
             self.root_inode = self.inodes[0]
+            self._mark_dirty()
         logger.info(f"Restored filesystem to snapshot {snapshot_id}")
 
     def list_snapshots(self) -> List[str]:
@@ -1009,6 +1034,8 @@ class NyFSFilesystem:
                              else self.journal_compact_bytes)
                 if journal.exists() and journal.stat().st_size > threshold:
                     self._materialize_journal()
+            # Committed: in-memory state now matches the on-disk state.
+            self._dirty = False
             logger.info(
                 f"Saved NyFS state: {len(live_blocks)} blocks, "
                 f"{len(self.inodes)} inodes"
@@ -1707,9 +1734,10 @@ class NyFSMount:
                     "unmount; it will exit at the next interval")
 
     def mount(self, foreground: bool = True, blocking: bool = True,
-              writeback_cache: bool = True, auto_compact: bool = False,
+              writeback_cache: bool = True, auto_compact: bool = True,
               compact_interval: float = 60.0,
               compact_interval_bytes: Optional[int] = None,
+              handle_signals: bool = True,
               **fuse_kwargs):
         """Mount the filesystem.
 
@@ -1721,13 +1749,16 @@ class NyFSMount:
                 capabilities so the kernel batches writes instead of
                 sending 4 KiB requests (default True).
             auto_compact: Run a background journal-compaction watcher
-                while mounted (default False). The watcher calls
-                ``filesystem.maybe_compact()`` every ``compact_interval``
-                seconds so journal compaction happens during idle periods
-                rather than stalling a transaction. Without it, a
-                long-running daemon's journal grows until the next
-                save() crosses ``journal_compact_bytes`` and pays the
-                materialize cost inline.
+                while mounted (default True, per DAEMON_LIFECYCLE.md).
+                The watcher calls ``filesystem.maybe_compact()`` every
+                ``compact_interval`` seconds so journal compaction
+                happens during idle periods rather than stalling a
+                transaction. Without it, a long-running daemon's
+                journal grows until the next save() crosses
+                ``journal_compact_bytes`` and pays the materialize cost
+                inline. Architecture Group tuning review of the
+                interval/threshold defaults is still pending
+                (ADR-0019 open question 1).
             compact_interval: Seconds between background compaction
                 checks (default 60).
             compact_interval_bytes: Journal size (bytes) that triggers
@@ -1735,6 +1766,11 @@ class NyFSMount:
                 ``journal_compact_bytes`` so trimming runs well before
                 the save()-time threshold (see
                 ``_start_compaction_watcher``).
+            handle_signals: In blocking mode, install SIGINT/SIGTERM
+                handlers that run the orderly shutdown contract
+                (DAEMON_LIFECYCLE.md §2): stop the watcher, commit
+                uncommitted state (dirty-flag gate), unmount, then
+                exit 0 (default True).
             fuse_kwargs: Extra FUSE mount options forwarded to fusepy
                 (e.g. ``max_write=131072``).
 
@@ -1774,6 +1810,8 @@ class NyFSMount:
                 self._stop_compaction_watcher()
 
         if blocking:
+            if handle_signals:
+                self._install_signal_handlers()
             _run()
             if self._mount_error is not None:
                 raise self._mount_error
@@ -1781,6 +1819,58 @@ class NyFSMount:
             self._thread = threading.Thread(target=_run, daemon=True)
             self._thread.start()
         return True
+
+    def _install_signal_handlers(self) -> None:
+        """Install SIGINT/SIGTERM handlers running the orderly shutdown
+        contract (DAEMON_LIFECYCLE.md §2). Only valid from the main
+        thread; silently skipped otherwise (tests mount non-blocking
+        from threads and are unaffected).
+
+        Pragmatism note: the handler runs Python-level work (watcher
+        stop, final save, unmount). CPython executes it in the main
+        thread between bytecodes, which is reliable in practice for
+        this daemon; strict POSIX async-signal-safety (a self-pipe + a
+        main-loop check) is recorded as future work in
+        DAEMON_LIFECYCLE.md.
+        """
+        import signal as _signal
+
+        def _on_signal(signum, frame):
+            logger.info("received signal %s — orderly shutdown", signum)
+            self.shutdown()
+            # The FUSE loop may not observe the unmount; a daemon exits
+            # here. The final save above is fsynced, so this is a clean
+            # commit point.
+            os._exit(0)
+
+        try:
+            _signal.signal(_signal.SIGINT, _on_signal)
+            _signal.signal(_signal.SIGTERM, _on_signal)
+        except (ValueError, OSError) as e:
+            # ValueError: not the main thread; OSError: unsupported.
+            logger.debug("signal handlers not installed: %s", e)
+
+    def shutdown(self) -> None:
+        """Orderly shutdown (DAEMON_LIFECYCLE.md §2): stop the
+        compaction watcher, commit uncommitted state (gated on the
+        filesystem's dirty flag), then unmount. Best-effort — every
+        step is guarded and logged, never raised — so it is safe to
+        call from a signal handler.
+        """
+        try:
+            self._stop_compaction_watcher()
+        except Exception as e:
+            logger.warning("shutdown: watcher stop failed: %s", e)
+        try:
+            if self.filesystem.dirty:
+                logger.info("shutdown: committing uncommitted state")
+                self.filesystem.save()
+        except Exception as e:
+            logger.warning("shutdown: final save failed: %s", e)
+        try:
+            self.unmount()
+        except Exception as e:
+            logger.warning("shutdown: unmount failed: %s", e)
 
     def wait_ready(self, timeout: float = 10.0) -> bool:
         """Wait until the background mount is live (or has failed).
