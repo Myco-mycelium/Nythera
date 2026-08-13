@@ -10,6 +10,7 @@ References:
 - tests/BENCHMARK_PLAN.md: Benchmarking methodology
 """
 
+import ctypes
 import errno
 import json
 import logging
