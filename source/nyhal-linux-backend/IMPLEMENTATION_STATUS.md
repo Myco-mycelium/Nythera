@@ -1,7 +1,7 @@
 ---
 title: Nyrqis Linux Backend Implementation Status
 document_id: IMPL-001
-version: 0.6.0
+version: 0.7.0
 status: In Progress
 classification: Technical
 created: 2026-07-15
@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **125/125 passing** (`python3 test_backend.py` — the 113 tests plus 12 new: a seeded Rust↔Python differential test, skipped on hosts without the crate, and the syscalls-loader tests), including end-to-end container launches and a live FUSE mount verified on this host. **ADR-0020 migration #1 (seccomp) IMPLEMENTED 2026-08-13:** the Rust policy compiler (`rust/seccomp/`) compiles policies to classic BPF, validates programs, and simulates verdicts; CI builds and unit-tests it on every push, its golden programs are **byte-identical** to the pure-Python compiler's, and the forced-mode conformance gate (`NYRQIS_RUST_FORCE=1`, CI `rust-seccomp-conformance`) runs the full suite through the FFI and is **green and a required, blocking job** — a semantic regression in the Rust compiler now fails the build. **Migration #2 (syscalls) IMPLEMENTED 2026-08-13:** `rust/syscalls/` ships `sethostname`/`prctl`/`unshare` wrappers (0 or -errno) behind the versioned FFI surface; `backend/rust_syscalls.py` is the shared loader (search order, ABI check, ctypes fallback, `NYRQIS_RUST_FORCE=1`) wired into `launcher.py`'s `set_hostname` (FIND-BACKEND-004). `clone` is deliberately deferred — the child entry point is a design decision for the direct-syscall launcher transition, which is the next step (`container.py` still uses `unshare(1)`). **Daemon lifecycle implemented per `DAEMON_LIFECYCLE.md`:** dirty-flag tracking, `NyFSMount.shutdown()` (dirty-gated final commit → unmount), SIGINT/SIGTERM handlers in blocking mode, and `auto_compact` is now the mount default (AG tuning review still pending per ADR-0019 open question 1). **Language strategy (ADR-0020 v2.0.0, Accepted 2026-08-13):** the canonical matrix is Rust-first for NyHAL and compiled-language-only below the platform boundary — this Python backend is the *reference implementation* for platform-critical paths (seccomp enforcement, FUSE ops, container launch, IPC core), which under the **platform-boundary rule** must not depend on the Python interpreter in their shipped form; the **rust/seccomp** (#1) and **rust/syscalls** (#2) modules are **implemented and CI-verified** (details above), while tests, benchmarks, and tooling stay Python (above the boundary).
+Test suite: **150/150 passing** (`python3 test_backend.py` — 144 run + 6 skipped on hosts without the Rust crates: a seeded seccomp differential test and the syscalls conformance class; both RUN in CI where the crates are built), including end-to-end container launches (both the direct-syscall and legacy paths, hostile hostnames verified verbatim) and a live FUSE mount verified on this host. **ADR-0020 migration #1 (seccomp) IMPLEMENTED 2026-08-13:** the Rust policy compiler (`rust/seccomp/`) compiles policies to classic BPF, validates programs, and simulates verdicts; CI builds and unit-tests it on every push, its golden programs are **byte-identical** to the pure-Python compiler's, and the forced-mode conformance gate (`NYRQIS_RUST_FORCE=1`, CI `rust-seccomp-conformance`) runs the full suite through the FFI and is **green and a required, blocking job** — a semantic regression in the Rust compiler now fails the build. **Migration #2 (syscalls) IMPLEMENTED 2026-08-13, INCLUDING the direct-syscall launcher:** `rust/syscalls/` (ABI 1.1.0) ships `sethostname`/`prctl`/`unshare`/`mount`/`mount_proc` wrappers (0 or -errno) behind the versioned FFI surface; `backend/rust_syscalls.py` is the shared loader (search order, ABI check, ctypes fallback, `NYRQIS_RUST_FORCE=1`) wired into `launcher.py`'s `set_hostname` (FIND-BACKEND-004) and into `container.py`'s **direct-syscall launcher** (implementation_plan.md §4.1): the manager forks a namespace-setup child that performs the `unshare(2)` dance (`CLONE_NEWUSER` + root maps → `NEWNS|NEWUTS|NEWIPC` → `NEWPID`), the container's PID-1 mounts a hardened procfs via the no-arg `mount_proc` FFI (post-fork, pre-exec — zero Python allocation) and execs the launcher, and the setup child relays the container PID through a pipe and exits with its status so `wait()` keeps Popen-compatible semantics. The caller's uid/gid are captured before `CLONE_NEWUSER` (inside the unmapped namespace `getuid()` reports 65534 — the classic map-write failure). `unshare(1)` remains only as an opt-in legacy path (`use_direct_syscalls=False`). `clone` is deliberately deferred — `fork(2)` is the child-creation primitive here (a raw `clone(2)` FFI would need a Rust child entry point, future work). The `rust-syscalls-conformance` CI gate runs the syscalls-facing test classes forced through the FFI and is **required and blocking**. **Daemon lifecycle implemented per `DAEMON_LIFECYCLE.md`:** dirty-flag tracking, `NyFSMount.shutdown()` (dirty-gated final commit → unmount), SIGINT/SIGTERM handlers in blocking mode, and `auto_compact` is now the mount default (AG tuning review still pending per ADR-0019 open question 1). **Language strategy (ADR-0020 v2.0.0, Accepted 2026-08-13):** the canonical matrix is Rust-first for NyHAL and compiled-language-only below the platform boundary — this Python backend is the *reference implementation* for platform-critical paths (seccomp enforcement, FUSE ops, container launch, IPC core), which under the **platform-boundary rule** must not depend on the Python interpreter in their shipped form; the **rust/seccomp** (#1) and **rust/syscalls** (#2) modules are **implemented and CI-verified** (details above), while tests, benchmarks, and tooling stay Python (above the boundary).
 
 ## Detailed Implementation Status
 
@@ -42,14 +42,15 @@ Test suite: **125/125 passing** (`python3 test_backend.py` — the 113 tests plu
 - ✓ Cgroups v2 support with v1 fallback and a `require_cgroups_v2` hard-require option
 - ✓ Process suspension/resumption via SIGSTOP/SIGCONT
 - ✓ Graceful shutdown with SIGTERM → SIGKILL escalation
-- ✓ Namespace isolation (user, PID, mount, UTS, IPC) via `unshare(1)` with the backend's real command exec'd through the in-namespace launcher
+- ✓ Namespace isolation (user, PID, mount, UTS, IPC) via **direct `unshare(2)` syscalls** (implementation_plan.md §4.1 — the default launch path; see `_spawn_direct`) or the legacy `unshare(1)` subprocess (`use_direct_syscalls=False`), with the backend's real command exec'd through the in-namespace launcher
+- ✓ **Direct-syscall launcher** — the manager forks a namespace-setup child (the manager must not enter the namespaces itself) which performs `unshare(CLONE_NEWUSER)` + root uid/gid maps, `unshare(NEWNS|NEWUTS|NEWIPC)`, `unshare(CLONE_NEWPID)`, then forks the container's PID-1; PID-1 mounts a hardened procfs (nosuid/nodev/noexec, the `--mount-proc` equivalent) via the Rust `mount_proc` FFI and execs the launcher. The setup child relays the container PID through a pipe and exits with its status (or dies by its signal), so `wait()` keeps Popen-compatible semantics (exit code, or `-signum`)
 - ✓ **Real PID tracking** of the container's root process (the container is launched directly, not via a shell or background job)
-- ✓ **Shell-free hostname setting** — `sethostname(2)` via `ctypes` inside the new UTS namespace; container-supplied hostnames are argv entries, never interpolated into a shell string (closes threat-model finding **FIND-BACKEND-004**, NPS-022 §4)
+- ✓ **Shell-free hostname setting** — `sethostname(2)` via the Rust syscalls module (ctypes fallback) inside the new UTS namespace; container-supplied hostnames are argv entries, never interpolated into a shell string (closes threat-model finding **FIND-BACKEND-004**, NPS-022 §4; verified with the hostile hostname `evil; rm -rf /` on the direct path)
 - ✓ **Cgroup v1 `release_agent` hardening** — the backend writes `notify_on_release=0` on the container's v1 cgroups and the launcher best-effort unmounts any cgroup filesystems leaking into the mount namespace (closes **FIND-BACKEND-003**, NPS-022 §4 / NPS-017 §4.1)
 - ✓ Per-container seccomp policy files written with `0600` permissions and cleaned up after launch
 
 **Outstanding Work:**
-- [ ] Direct `clone()`/`unshare()` syscall wrappers (currently uses `unshare(1)`)
+- [ ] Direct `clone(2)` FFI with a Rust child entry point (deferred by design — `fork(2)` is the current child-creation primitive; a raw `clone(2)` would need a Rust child entry point, no Python between fork and exec)
 - [ ] Cgroup freezer integration for suspension
 - [ ] Network namespace support
 - [ ] Benchmark IPC round-trip latency (NPS-003 §6.1)
@@ -188,12 +189,12 @@ The implementation is **NOT YET conformant** because:
 - `openat2` write-intent is not data-plane filtered (cBPF cannot inspect flags behind a pointer) — documented residual gap
 - LSM (AppArmor/SELinux) enforcement is not integrated
 - The FUSE mount requires `fusepy` + `/dev/fuse` on the host (present here — live mount verified 2026-08-12 — but not guaranteed everywhere)
-- Some optimizations (direct syscalls, network namespaces) are deferred
+- The direct-syscall launcher is the default path but `unshare(1)` remains available as an opt-in legacy path; a fully Rust-native child entry point (no Python between fork and exec) is future work; network namespaces are deferred
 
 ## Next Steps
 
 ### Immediate (Phase 1: Core Container Primitives)
-1. Refactor container primitives to use direct `clone()`/`unshare()` syscalls
+1. ✓ Direct `unshare(2)`/`fork(2)` container launch (implementation_plan.md §4.1) — landed 2026-08-13; `clone(2)` FFI with a Rust child entry point remains future work
 2. Implement cgroup freezer for suspension
 3. Add network namespace support
 4. Run IPC latency benchmarks (NPS-003 §6.1)

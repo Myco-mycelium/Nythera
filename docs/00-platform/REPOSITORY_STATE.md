@@ -385,9 +385,26 @@ Documentation hygiene, fixed earlier this session:
   `backend/rust_syscalls.py` (the shared syscalls loader with ctypes
   fallback and force mode) is wired into `launcher.set_hostname`. The
   dev host still has no Rust toolchain — CI is the compiler. Test
-  suite: 125/125 (113 + 12 new). The direct-syscall launcher transition
-  (`unshare(1)` → `unshare(2)`/`clone`, `implementation_plan.md` §4.1)
-  is the recorded next step.
+  suite: 125/125 (113 + 12 new).
+- 2026-08-13 (**direct-syscall launcher landed, ADR-0020 priority #2**):
+  `container.py` now launches containers by default via direct
+  `unshare(2)`/`fork(2)` syscalls (`_spawn_direct`): the manager forks a
+  namespace-setup child that performs `unshare(CLONE_NEWUSER)` + root
+  uid/gid maps (ids captured BEFORE the unshare — the classic 65534
+  map-write failure), `unshare(NEWNS|NEWUTS|NEWIPC)`, `unshare(CLONE_NEWPID)`,
+  then forks the container's PID-1 which mounts a hardened procfs via
+  the new no-arg `mount_proc` FFI (post-fork, pre-exec — zero Python
+  allocation) and execs the launcher. The setup child relays the
+  container PID through a pipe and exits with its status (or dies by
+  its signal), so `wait()` keeps Popen-compatible semantics. `rust/syscalls`
+  is now ABI 1.1.0 (`sethostname`/`prctl`/`unshare`/`mount`/`mount_proc`);
+  `unshare(1)` remains an opt-in legacy path (`use_direct_syscalls=False`).
+  CI gains the required `rust-syscalls-conformance` gate (syscalls-facing
+  test classes forced through the FFI). Verified on this host: hostile
+  hostname `evil; rm -rf /` passed verbatim (FIND-BACKEND-004), PID-1 in
+  the new PID namespace, seccomp filter active, suspend/resume/terminate
+  lifecycle, legacy path still works. Test suite: **150/150 (144 run + 6
+  skipped without the Rust crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the
   acceptance text is recorded in the ADR's Status section — the PAT can

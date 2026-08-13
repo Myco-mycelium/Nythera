@@ -21,6 +21,7 @@ import enum
 import json
 import logging
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+from backend import rust_syscalls  # ADR-0020 priority #2 FFI loader
+
 logger = logging.getLogger(__name__)
+
+# Namespace setup timeout: the direct path blocks on a pipe until the
+# forked child reports the container's PID; a hung kernel call would
+# otherwise block the manager forever, so the read is bounded.
+_DIRECT_LAUNCH_TIMEOUT_S = 30.0
 
 
 class ContainerState(enum.Enum):
@@ -84,6 +92,11 @@ class Container:
         self.started_at: Optional[float] = None
         self.terminated_at: Optional[float] = None
         self.exit_code: Optional[int] = None
+        # Legacy path: the unshare(1) Popen. Direct path: the forked
+        # namespace-setup child that wait() reaps (its exit status is the
+        # container's exit status). Exactly one of the two is set.
+        self._proc: Optional[subprocess.Popen] = None
+        self._direct_launcher_pid: Optional[int] = None
         
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -132,7 +145,12 @@ class ContainerManager:
     Implements NPS-017 §4.1 (Container Primitives) on the Linux Backend.
     """
     
-    def __init__(self, use_cgroups_v2: bool = True, require_cgroups_v2: bool = False):
+    def __init__(
+        self,
+        use_cgroups_v2: bool = True,
+        require_cgroups_v2: bool = False,
+        use_direct_syscalls: bool = True,
+    ):
         """Initialize the container manager.
         
         Args:
@@ -141,8 +159,15 @@ class ContainerManager:
                 cgroup v1 path when v2 was expected — per NPS-017 §4.1
                 ("a backend SHOULD prefer failing container creation over
                 silently falling back to an unhardened v1 path").
+            use_direct_syscalls: If True (default), launch containers with
+                direct ``unshare(2)``/``fork(2)`` syscalls via the
+                ``rust_syscalls`` module (ADR-0020 priority #2, the
+                direct-syscall launcher transition of
+                ``docs/implementation_plan.md`` §4.1). If False, retain
+                the legacy ``unshare(1)`` subprocess path.
         """
         self.containers: Dict[str, Container] = {}
+        self.use_direct_syscalls = use_direct_syscalls
         self.use_cgroups_v2 = use_cgroups_v2 and self._detect_cgroups_v2()
         if require_cgroups_v2 and not self.use_cgroups_v2:
             raise RuntimeError(
@@ -226,7 +251,12 @@ class ContainerManager:
         """Wait for a spawned container to exit and return its exit code.
         
         Transitions the container to TERMINATED when the process ends.
+        Works for both launch paths: the legacy ``unshare(1)`` Popen and
+        the direct-syscall launcher (whose reaped child carries the
+        container's exit status).
         """
+        if container._direct_launcher_pid is not None:
+            return self._wait_direct(container, timeout_s)
         proc = getattr(container, "_proc", None)
         if proc is None:
             raise ValueError(f"Container {container.id} was never spawned")
@@ -234,6 +264,41 @@ class ContainerManager:
             exit_code = proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             raise TimeoutError(f"Container {container.id} did not exit within timeout")
+        container.exit_code = exit_code
+        container.transition_to(ContainerState.TERMINATED)
+        return exit_code
+
+    def _wait_direct(
+        self, container: Container, timeout_s: Optional[float]
+    ) -> int:
+        """Reap the direct-syscall launcher child and decode its status.
+
+        The launcher child exits with the container's exit status (or
+        dies by the container's signal, matching Popen semantics: a
+        signaled container returns ``-signum``).
+        """
+        pid = container._direct_launcher_pid
+        deadline = None if timeout_s is None else time.time() + timeout_s
+        while True:
+            try:
+                wpid, status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                raise ValueError(
+                    f"Container {container.id} (pid {pid}) already reaped"
+                )
+            if wpid == pid:
+                break
+            if deadline is not None and time.time() >= deadline:
+                raise TimeoutError(
+                    f"Container {container.id} did not exit within timeout"
+                )
+            time.sleep(0.05)
+        if os.WIFEXITED(status):
+            exit_code = os.WEXITSTATUS(status)
+        elif os.WIFSIGNALED(status):
+            exit_code = -os.WTERMSIG(status)
+        else:
+            exit_code = 1
         container.exit_code = exit_code
         container.transition_to(ContainerState.TERMINATED)
         return exit_code
@@ -394,12 +459,32 @@ class ContainerManager:
         except Exception as e:
             logger.error(f"Failed to set cgroups v2 limits: {e}")
     
-    def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:
-        """Build the unshare(1) command that hands control to the launcher.
-        
-        The container's hostname and command are passed as separate argv
+    def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
+        """The launcher invocation the container runs: the argv handed to
+        ``launcher.py`` inside the new namespaces (shared by both launch
+        paths). The container's hostname and command are separate argv
         entries — never interpolated into a shell string — closing the
-        shell-interpolation hygiene finding FIND-BACKEND-004 (NPS-022 §4).
+        shell-interpolation hygiene finding FIND-BACKEND-004 (NPS-022
+        §4). The trailing ``--`` separates the launcher's own options
+        from the container command (argparse REMAINDER).
+        """
+        argv = [
+            sys.executable, str(launcher),
+            "--hostname", container.config.hostname,
+        ]
+        if container.config.seccomp:
+            policy_file = self._write_policy_file(container)
+            argv += ["--policy-file", str(policy_file)]
+            if container.config.default_deny:
+                argv += ["--default-deny"]
+        argv += ["--"]
+        argv += list(container.config.command)
+        return argv
+
+    def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:
+        """Build the legacy ``unshare(1)`` command (the opt-in path when
+        ``use_direct_syscalls=False``). The launcher argv it carries is
+        the same ``_launcher_args`` used by the direct path.
         """
         cmd = [
             "unshare",
@@ -409,16 +494,8 @@ class ContainerManager:
             "--mount",  # Mount namespace
             "--ipc",  # IPC namespace
             "--",
-            sys.executable, str(launcher),
-            "--hostname", container.config.hostname,
         ]
-        if container.config.seccomp:
-            policy_file = self._write_policy_file(container)
-            cmd += ["--policy-file", str(policy_file)]
-            if container.config.default_deny:
-                cmd += ["--default-deny"]
-        cmd += ["--"]
-        cmd += list(container.config.command)
+        cmd += self._launcher_args(container, launcher)
         return cmd
     
     def _write_policy_file(self, container: Container) -> str:
@@ -449,13 +526,22 @@ class ContainerManager:
                 logger.warning(f"Failed to remove policy file {path}: {e}")
         self._policy_files.clear()
     
-    def _spawn(self, container: Container) -> subprocess.Popen:
+    def _spawn(self, container: Container):
         """Spawn the container's main process in isolated namespaces.
 
         The container's real command runs via ``backend/launcher.py``,
         which sets the hostname (no shell), hardens cgroup mounts, and
-        installs the container's seccomp filter before exec'ing.
+        installs the container's seccomp filter before exec'ing. The
+        direct path forks a namespace-setup child that performs the
+        ``unshare(2)`` dance and execs the launcher; the legacy path
+        shells out to ``unshare(1)``.
         """
+        if self.use_direct_syscalls:
+            return self._spawn_direct(container)
+        return self._spawn_unshare(container)
+
+    def _spawn_unshare(self, container: Container) -> subprocess.Popen:
+        """Legacy path: spawn via the ``unshare(1)`` subprocess."""
         if shutil.which("unshare") is None:
             raise RuntimeError("unshare(1) not found — required for namespace isolation")
         
@@ -467,13 +553,110 @@ class ContainerManager:
             f"memory={container.config.limits.memory_mb}MiB, "
             f"pids={container.config.limits.pid_limit}, "
             f"seccomp={container.config.seccomp}, "
-            f"default_deny={container.config.default_deny})"
+            f"default_deny={container.config.default_deny}, direct_syscalls=False)"
         )
         
         proc = subprocess.Popen(cmd, env=os.environ.copy())
         container.pid = proc.pid
         container._proc = proc
         return proc
+
+    def _spawn_direct(self, container: Container):
+        """Direct-syscall launch (ADR-0020 priority #2, plan §4.1).
+
+        ``unshare(2)`` moves the *calling* process into the new
+        namespaces, so the manager must never call it itself. Instead the
+        manager forks a namespace-setup child which performs the same
+        sequence ``unshare(1)`` used to, then forks the container's PID-1:
+
+        1. ``unshare(CLONE_NEWUSER)`` + write the root uid/gid maps
+           (``--map-root-user`` equivalent).
+        2. ``unshare(CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC)``.
+        3. ``unshare(CLONE_NEWPID)`` — affects only the *next* fork, so
+           the child forks again.
+        4. PID-1 mounts a hardened procfs (``mount_proc``, the
+           ``--mount-proc`` equivalent) and execs the launcher.
+
+        The setup child relays the container's PID through a pipe, waits
+        for it, and exits with its exit status (or dies by its signal),
+        so ``wait()`` reaps the setup child and decodes the container's
+        status exactly as the Popen path does. ``container.pid`` is the
+        container's PID-1 (what suspend/resume/terminate/cgroup-attach
+        must signal), ``container._direct_launcher_pid`` is the setup
+        child (what ``wait()`` reaps).
+
+        Fork-safety note: between ``fork`` and ``exec`` the child runs
+        only the syscall wrappers and plain file writes — no logging, no
+        Python allocation beyond the FFI call itself. The Rust backend
+        is pre-loaded here so the child never dlopens. Spawn from a
+        quiescent manager (no other threads holding locks), matching the
+        fork rule Python's own ``subprocess`` documents.
+        """
+        launcher = Path(__file__).resolve().parent / "launcher.py"
+        launcher_argv = self._launcher_args(container, launcher)
+
+        # Pre-load so the forked child never calls dlopen between fork
+        # and exec (the loader cache is inherited by the child).
+        rust_syscalls._load_rust_backend()
+
+        logger.info(
+            f"Launching container {container.id} (hostname={container.config.hostname}, "
+            f"memory={container.config.limits.memory_mb}MiB, "
+            f"pids={container.config.limits.pid_limit}, "
+            f"seccomp={container.config.seccomp}, "
+            f"default_deny={container.config.default_deny}, direct_syscalls=True)"
+        )
+
+        read_fd, write_fd = os.pipe()
+        try:
+            launcher_pid = os.fork()
+        except OSError:
+            os.close(read_fd)
+            os.close(write_fd)
+            raise
+        if launcher_pid == 0:
+            # Namespace-setup child: never returns; exits via os._exit.
+            os.close(read_fd)
+            try:
+                _direct_launch_child(write_fd, launcher_argv)
+            except BaseException:
+                os._exit(125)
+        os.close(write_fd)
+
+        # Bounded read: the setup child writes the container PID (or an
+        # ERR: marker) and closes the pipe before waiting for PID-1.
+        data = b""
+        try:
+            ready, _, _ = select.select([read_fd], [], [], _DIRECT_LAUNCH_TIMEOUT_S)
+            if ready:
+                data = os.read(read_fd, 4096)
+        finally:
+            os.close(read_fd)
+
+        if data.startswith(b"ERR:") or not data:
+            # The setup child already exited (it reports failures before
+            # dying); kill is a no-op on a zombie and waitpid reaps it.
+            try:
+                os.kill(launcher_pid, 9)
+            except OSError:
+                pass
+            try:
+                os.waitpid(launcher_pid, 0)
+            except ChildProcessError:
+                pass
+            if data.startswith(b"ERR:"):
+                raise RuntimeError(
+                    "direct-syscall launcher failed: "
+                    f"{data[4:].decode('utf-8', 'replace')}"
+                )
+            raise RuntimeError(
+                "direct-syscall launcher died during namespace setup "
+                "(no PID reported)"
+            )
+
+        container.pid = int(data.decode())
+        container._direct_launcher_pid = launcher_pid
+        return None
     
     def _attach_to_cgroups(self, container: Container) -> None:
         """Move the container's main process into its cgroups.
@@ -515,6 +698,143 @@ class ContainerManager:
     def get_container(self, container_id: str) -> Optional[Container]:
         """Get a container by ID."""
         return self.containers.get(container_id)
+
+
+def _write_root_maps(uid: Optional[int] = None, gid: Optional[int] = None) -> None:
+    """Write the ``--map-root-user`` uid/gid maps for this process.
+
+    Must run in the process that created the user namespace (a
+    namespace's creator may write its own maps). ``setgroups`` is set to
+    ``deny`` first so the ``gid_map`` write is permitted; the file may
+    not exist on kernels without the knob, so its write is best-effort.
+    ``uid_map``/``gid_map`` then map the caller to root inside the
+    namespace (``0 <uid> 1``). Plain file writes (open/write/close
+    syscalls) — safe between fork and exec.
+
+    ``uid``/``gid`` MUST be captured BEFORE ``unshare(CLONE_NEWUSER)``:
+    inside the new (still unmapped) namespace, ``getuid()`` reports the
+    overflow uid 65534 (nobody), so reading them here would map the
+    wrong id and the kernel would refuse it with EPERM.
+    """
+    if uid is None or gid is None:
+        uid = os.getuid()
+        gid = os.getgid()
+    for path, content in (
+        ("/proc/self/setgroups", b"deny\n"),
+        ("/proc/self/uid_map", f"0 {uid} 1\n".encode()),
+        ("/proc/self/gid_map", f"0 {gid} 1\n".encode()),
+    ):
+        try:
+            fd = os.open(path, os.O_WRONLY)
+        except OSError:
+            continue  # e.g. the setgroups knob is absent on older kernels
+        try:
+            os.write(fd, content)
+        finally:
+            os.close(fd)
+
+
+def _direct_launch_child(write_fd: int, launcher_argv: List[str]) -> None:
+    """The manager's forked namespace-setup child (direct-syscall path).
+
+    Performs the ``unshare(2)`` dance ``unshare(1)`` used to do, forks
+    the container's PID-1, relays its PID to the manager through
+    ``write_fd``, then waits for it and exits with its status (or dies
+    by its signal). Never returns on success. All failure exits use
+    ``os._exit``: between fork and exec the child must not run Python's
+    cleanup machinery, and any error is reported to the manager as an
+    ``ERR:`` pipe message rather than an exception (the manager reaps
+    the child and raises).
+
+    ``launcher_argv`` is the argv handed to ``os.execv`` (Python
+    interpreter + launcher.py + container command) — built by the
+    manager before forking so the child does no allocation here.
+    """
+    def _fail(msg: str) -> None:
+        try:
+            os.write(write_fd, b"ERR:" + msg.encode("utf-8", "replace"))
+        except OSError:
+            pass
+        os._exit(1)
+
+    # The caller's real uid/gid MUST be captured before entering the new
+    # user namespace: afterwards getuid() reports 65534 (unmapped), and
+    # the kernel refuses to map an id that is not the caller's own.
+    uid = os.getuid()
+    gid = os.getgid()
+
+    # 1. User namespace, then the root maps (--map-root-user equivalent).
+    try:
+        rust_syscalls.unshare(rust_syscalls.CLONE_NEWUSER)
+    except OSError as e:
+        _fail(f"unshare(CLONE_NEWUSER): {e}")
+    try:
+        _write_root_maps(uid, gid)
+    except OSError as e:
+        _fail(f"root map write: {e}")
+
+    # 2. Mount/UTS/IPC namespaces (now permitted: full caps in the new
+    #    user namespace).
+    try:
+        rust_syscalls.unshare(
+            rust_syscalls.CLONE_NEWNS
+            | rust_syscalls.CLONE_NEWUTS
+            | rust_syscalls.CLONE_NEWIPC
+        )
+    except OSError as e:
+        _fail(f"unshare(NS|UTS|IPC): {e}")
+
+    # 3. PID namespace — affects only the NEXT fork, so we fork again.
+    try:
+        rust_syscalls.unshare(rust_syscalls.CLONE_NEWPID)
+    except OSError as e:
+        _fail(f"unshare(CLONE_NEWPID): {e}")
+
+    # 4. PID-1: harden against losing the manager mid-setup, mount a
+    #    fresh procfs, then exec the launcher.
+    pid1 = os.fork()
+    if pid1 == 0:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+        # PR_SET_PDEATHSIG (1) = SIGKILL (9): if the setup child dies
+        # before PID-1 exits (manager timeout path, manager crash), the
+        # container is killed instead of orphaned. Cleared on exec, so
+        # the residual window is only between this fork and the launcher
+        # exec — documented in IMPLEMENTATION_STATUS.
+        try:
+            rust_syscalls.prctl(1, 9)
+        except OSError:
+            pass
+        rc = rust_syscalls.mount_proc()
+        if rc != 0:
+            err = -rc
+            detail = (
+                os.strerror(err) if 1 <= err <= 4095 else f"rc {rc}"
+            )
+            os.write(2, f"nyrqis launcher: mount proc failed: {detail}\n".encode())
+            os._exit(125)
+        try:
+            os.execv(launcher_argv[0], launcher_argv)
+        except OSError as e:
+            os.write(2, f"nyrqis launcher: exec failed: {e}\n".encode())
+            os._exit(126)
+
+    # Setup child: relay PID-1, wait for it, exit with its status.
+    try:
+        os.write(write_fd, str(pid1).encode())
+        os.close(write_fd)
+    except OSError:
+        os._exit(1)
+    _, status = os.waitpid(pid1, 0)
+    if os.WIFEXITED(status):
+        os._exit(os.WEXITSTATUS(status))
+    if os.WIFSIGNALED(status):
+        # Die by the same signal so the manager's waitpid observes
+        # WIFSIGNALED, matching Popen's negative-returncode semantics.
+        os.kill(os.getpid(), os.WTERMSIG(status))
+    os._exit(1)
 
 
 def main():

@@ -1,16 +1,22 @@
-# Continuous integration: Python backend + Rust seccomp crate.
+# Continuous integration: Python backend + the ADR-0020 Rust crates.
 #
-# - `rust-seccomp`: builds and tests the ADR-0020 first-migration crate
-#   (source/nyhal-linux-backend/rust/seccomp). The crate is a scaffold
-#   today; this job is what keeps it compiling on every push even though
-#   the dev host has no Rust toolchain.
-# - `rust-seccomp-conformance`: the port's definition of "shipped". It
-#   forces the full Python test suite through the Rust module via the FFI
-#   loader (NYRQIS_RUST_FORCE=1). The port landed 2026-08-13 and the gate
-#   is GREEN, so it is a required, blocking job — a semantic regression
-#   in the Rust compiler now fails the build.
-# - `backend`: the pure-Python correctness floor (the only shipped
-#   implementation until conformance passes).
+# - `rust-seccomp`: builds and tests the first-migration crate
+#   (source/nyhal-linux-backend/rust/seccomp) on every push; the dev host
+#   has no Rust toolchain, so this job IS the compiler.
+# - `rust-seccomp-conformance`: the seccomp port's definition of
+#   "shipped": it forces the full Python test suite through the Rust
+#   seccomp module via the FFI loader (NYRQIS_RUST_FORCE=1). The port
+#   landed 2026-08-13 and the gate is GREEN, so it is a required,
+#   blocking job.
+# - `rust-syscalls`: builds and tests the second-migration crate
+#   (sethostname/prctl/unshare/mount — the direct-syscall launcher
+#   primitives, implementation_plan.md §4.1).
+# - `rust-syscalls-conformance`: the syscalls port's gate. It runs the
+#   syscalls-facing test classes with NYRQIS_RUST_FORCE=1 and the crate
+#   built, so every syscall call in those tests drives the Rust module.
+#   (It runs only those classes, not the full suite: forcing the syscalls
+#   lib would make the SEPARATE seccomp loader fail its own force check.)
+# - `backend`: the pure-Python correctness floor.
 
 name: ci
 
@@ -65,6 +71,27 @@ jobs:
           NYRQIS_RUST_LIB: rust/seccomp/target/release/libnyrqis_seccomp.so
           NYRQIS_RUST_FORCE: "1"
         run: python3 -B test_backend.py
+
+  rust-syscalls-conformance:
+    name: Rust syscalls FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/syscalls
+        run: cargo build --release
+      - name: Force the syscalls test classes through the FFI
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_RUST_LIB: rust/syscalls/target/release/libnyrqis_syscalls.so
+          NYRQIS_RUST_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestRustSyscallsLoader
+          test_backend.TestRustSyscallsConformance
+          test_backend.TestDirectSyscallLaunch
+          test_backend.TestLauncherSecurity
 
   backend:
     name: Python backend tests

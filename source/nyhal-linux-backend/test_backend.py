@@ -776,6 +776,264 @@ class TestLauncherSecurity(unittest.TestCase):
                 ContainerManager(use_cgroups_v2=True, require_cgroups_v2=True)
 
 
+class TestDirectSyscallLaunch(unittest.TestCase):
+    """Test the direct-syscall launcher (implementation_plan.md §4.1,
+    ADR-0020 priority #2): the manager forks a namespace-setup child
+    which performs the unshare(2) dance, relays the container's PID
+    through a pipe, and is reaped by wait() with Popen-compatible exit
+    semantics. The fork/pipe/select boundaries are mocked here; the real
+    syscalls are exercised by the host smoke test and CI.
+    """
+
+    def setUp(self):
+        self.manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True
+        )
+
+    def _spawn_with_pipe(self, data=b"4242", fork_returns=777):
+        """Drive _spawn_direct with a mocked pipe/fork/read."""
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.os.fork", return_value=fork_returns), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([3], [], [])), \
+                mock.patch("backend.container.os.read", return_value=data) as read:
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False,
+            ))
+            self.manager._spawn_direct(container)
+        return container, read
+
+    def test_direct_spawn_relays_container_pid(self):
+        container, _ = self._spawn_with_pipe()
+        # The manager records the container's PID-1 (the grandchild) as
+        # container.pid and the setup child as the reaped launcher pid.
+        self.assertEqual(container.pid, 4242)
+        self.assertEqual(container._direct_launcher_pid, 777)
+        self.assertIsNone(container._proc)
+
+    def test_direct_spawn_err_marker_raises(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self._spawn_with_pipe(data=b"ERR:unshare(CLONE_NEWUSER): boom")
+        self.assertIn("unshare(CLONE_NEWUSER)", str(cm.exception))
+
+    def test_direct_spawn_empty_read_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._spawn_with_pipe(data=b"")
+
+    def test_direct_spawn_reaps_failed_child(self):
+        # The manager must reap the setup child even on the failure path
+        # (no zombie), then raise.
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.os.fork", return_value=777), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([], [], [])), \
+                mock.patch("backend.container.os.read") as read, \
+                mock.patch("backend.container.os.waitpid") as waitpid:
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False,
+            ))
+            with self.assertRaises(RuntimeError):
+                self.manager._spawn_direct(container)
+        read.assert_not_called()
+        waitpid.assert_called_once_with(777, 0)
+
+    def test_launcher_args_no_shell_interpolation(self):
+        # FIND-BACKEND-004 holds on the shared _launcher_args builder used
+        # by the direct path (not just the legacy unshare(1) command).
+        config = ContainerConfig(
+            hostname="evil; rm -rf /",
+            command=["/bin/sh", "-c", "echo hi"],
+            capabilities=["CAP_FILESYSTEM_READ"],
+        )
+        container = self.manager.create(config)
+        argv = self.manager._launcher_args(container, Path("launcher.py"))
+        self.assertIn("launcher.py", argv)
+        self.assertEqual(argv[argv.index("--hostname") + 1], config.hostname)
+        launcher_part = argv[:argv.index("--")]
+        self.assertNotIn("sh", launcher_part)
+        self.assertNotIn("-c", launcher_part)
+        self.assertEqual(argv[argv.index("--") + 1:], config.command)
+
+    def test_launcher_args_matches_legacy_launcher_section(self):
+        # Both launch paths must hand the container the exact same argv.
+        config = ContainerConfig(
+            command=["/bin/echo", "hi"], seccomp=False,
+        )
+        container = self.manager.create(config)
+        legacy = self.manager._build_launch_command(container, Path("launcher.py"))
+        direct = self.manager._launcher_args(container, Path("launcher.py"))
+        first_sep = legacy.index("--")
+        self.assertEqual(legacy[first_sep + 1:], direct)
+
+    def test_wait_direct_reaps_and_maps_exit_code(self):
+        container = self.manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 4242
+        container._direct_launcher_pid = 777
+        with mock.patch("backend.container.os.waitpid",
+                        return_value=(777, 7 << 8)):
+            code = self.manager.wait(container)
+        self.assertEqual(code, 7)
+        self.assertEqual(container.state, ContainerState.TERMINATED)
+        self.assertEqual(container.exit_code, 7)
+
+    def test_wait_direct_signal_maps_to_negative(self):
+        # WIFSIGNALED(SIGTERM) -> -15, matching Popen semantics.
+        container = self.manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 4242
+        container._direct_launcher_pid = 777
+        # Linux wait status encoding for "killed by SIGTERM": the low
+        # bits carry the signal number.
+        status = 15
+        with mock.patch("backend.container.os.waitpid",
+                        return_value=(777, status)):
+            code = self.manager.wait(container)
+        self.assertEqual(code, -15)
+        self.assertEqual(container.state, ContainerState.TERMINATED)
+
+    def test_wait_direct_timeout(self):
+        container = self.manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 4242
+        container._direct_launcher_pid = 777
+        with mock.patch("backend.container.os.waitpid",
+                        return_value=(0, 0)):
+            with self.assertRaises(TimeoutError):
+                self.manager.wait(container, timeout_s=0.1)
+        self.assertEqual(container.state, ContainerState.RUNNING)
+
+    def test_wait_legacy_still_uses_popen(self):
+        # The unshare(1) opt-in path keeps Popen-based wait semantics.
+        manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=False
+        )
+        container = manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 99
+        fake_proc = mock.Mock()
+        fake_proc.wait.return_value = 3
+        container._proc = fake_proc
+        self.assertEqual(manager.wait(container), 3)
+        fake_proc.wait.assert_called_once_with(timeout=None)
+
+    def test_direct_child_reports_errors_through_pipe(self):
+        # The namespace-setup child reports failures as ERR: pipe messages
+        # and exits without touching Python cleanup machinery. os._exit is
+        # mocked so every fall-through point is patched too (the child
+        # would otherwise continue into real syscalls).
+        import backend.container as container_mod
+        with mock.patch("backend.container.rust_syscalls.unshare",
+                        side_effect=OSError(errno.EPERM, "denied")), \
+                mock.patch("backend.container._write_root_maps"), \
+                mock.patch("backend.container.os.write") as write, \
+                mock.patch("backend.container.os.fork", return_value=1), \
+                mock.patch("backend.container.os.waitpid",
+                           return_value=(1, 0)), \
+                mock.patch("backend.container.os._exit") as exit_: 
+            container_mod._direct_launch_child(4, ["/bin/true"])
+        self.assertTrue(
+            any(c.args[1].startswith(b"ERR:") for c in write.call_args_list)
+        )
+        exit_.assert_called()
+
+    def test_direct_child_setup_sequence_uses_clone_new_flags(self):
+        # The setup child's unshare sequence: NEWUSER, then NS|UTS|IPC,
+        # then NEWPID (which affects only the next fork). It relays the
+        # grandchild PID, waits for it, and exits with its status.
+        import backend.container as container_mod
+        calls = []
+        with mock.patch(
+            "backend.container.rust_syscalls.unshare",
+            side_effect=lambda flags: calls.append(flags) or None,
+        ), mock.patch(
+            "backend.container._write_root_maps"
+        ) as maps, mock.patch(
+            "backend.container.os.fork", return_value=4242
+        ), mock.patch(
+            "backend.container.os.write"
+        ) as write, mock.patch(
+            "backend.container.os.close"
+        ), mock.patch(
+            "backend.container.os.waitpid", return_value=(4242, 7 << 8)
+        ), mock.patch(
+            "backend.container.os._exit"
+        ) as exit_:
+            container_mod._direct_launch_child(4, ["/bin/true"])
+        self.assertEqual(calls, [
+            rust_syscalls.CLONE_NEWUSER,
+            rust_syscalls.CLONE_NEWNS | rust_syscalls.CLONE_NEWUTS
+            | rust_syscalls.CLONE_NEWIPC,
+            rust_syscalls.CLONE_NEWPID,
+        ])
+        maps.assert_called_once()
+        # The grandchild's PID is relayed, and the setup child exits
+        # with the grandchild's exit status. (os._exit is mocked so the
+        # fall-through final os._exit(1) is also observed — assert_any_call
+        # pins the exit-status propagation.)
+        write.assert_any_call(4, b"4242")
+        exit_.assert_any_call(7)
+
+    def test_direct_child_grandchild_mounts_proc_and_execs(self):
+        # The PID-1 grandchild (os.fork returns 0) hardens against
+        # losing the setup child, mounts a fresh procfs, and execs the
+        # launcher argv.
+        import backend.container as container_mod
+        launcher_argv = ["/usr/bin/python3", "launcher.py", "--"]
+        with mock.patch(
+            "backend.container.rust_syscalls.unshare"
+        ), mock.patch(
+            "backend.container._write_root_maps"
+        ), mock.patch(
+            "backend.container.os.fork", return_value=0
+        ), mock.patch(
+            "backend.container.os.close"
+        ), mock.patch(
+            "backend.container.rust_syscalls.prctl"
+        ) as prctl, mock.patch(
+            "backend.container.rust_syscalls.mount_proc", return_value=0
+        ) as mount_proc, mock.patch(
+            "backend.container.os.execv"
+        ) as execv, mock.patch(
+            "backend.container.os.waitpid", return_value=(0, 0)
+        ), mock.patch(
+            "backend.container.os.write"
+        ), mock.patch(
+            "backend.container.os._exit"
+        ):
+            container_mod._direct_launch_child(4, launcher_argv)
+        prctl.assert_called_once_with(1, 9)  # PR_SET_PDEATHSIG, SIGKILL
+        mount_proc.assert_called_once_with()
+        execv.assert_called_once_with(launcher_argv[0], launcher_argv)
+
+    def test_write_root_maps_contents(self):
+        # --map-root-user equivalent: setgroups deny, then uid/gid maps
+        # mapping the caller to root.
+        import backend.container as container_mod
+        written = {}
+
+        def fake_open(path, flags):
+            return path  # use the path as the fd handle
+
+        def fake_write(fd, content):
+            written[fd] = content
+            return len(content)
+
+        with mock.patch("backend.container.os.open",
+                        side_effect=fake_open), \
+                mock.patch("backend.container.os.write",
+                           side_effect=fake_write), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.os.getuid", return_value=1000), \
+                mock.patch("backend.container.os.getgid", return_value=1000):
+            container_mod._write_root_maps()
+        self.assertEqual(written["/proc/self/setgroups"], b"deny\n")
+        self.assertEqual(written["/proc/self/uid_map"], b"0 1000 1\n")
+        self.assertEqual(written["/proc/self/gid_map"], b"0 1000 1\n")
+
+
 class TestBootSecurity(unittest.TestCase):
     """Test NPS-001 §5 transition validation (FIND-BOOT-002) and NPS-017
     §4.5 Secure Boot status reporting (FIND-BOOT-001).
@@ -2209,6 +2467,143 @@ class TestRustSyscallsLoader(unittest.TestCase):
                 rust_syscalls.unshare(0x20000)
         self.assertEqual(cm.exception.errno, errno.EPERM)
 
+    def test_clone_new_flag_constants_are_stable_uapi(self):
+        # The direct-syscall launcher's namespace mask is the Linux UAPI
+        # contract (the Rust crate consumes the same bits via unshare(2));
+        # pin them so a transcription slip is caught at the boundary.
+        self.assertEqual(rust_syscalls.CLONE_NEWNS, 0x0002_0000)
+        self.assertEqual(rust_syscalls.CLONE_NEWUTS, 0x0400_0000)
+        self.assertEqual(rust_syscalls.CLONE_NEWIPC, 0x0800_0000)
+        self.assertEqual(rust_syscalls.CLONE_NEWUSER, 0x1000_0000)
+        self.assertEqual(rust_syscalls.CLONE_NEWPID, 0x2000_0000)
+
+    def test_mount_proc_routes_through_ffi_when_loaded(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_mount_proc.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            self.assertEqual(rust_syscalls.mount_proc(), 0)
+        fake.nyrqis_syscalls_mount_proc.assert_called_once_with()
+
+    def test_mount_proc_negative_rc_returned(self):
+        # mount_proc returns 0 or -errno (no OSError): the caller (the
+        # container PID-1) inspects the rc and exits 125 on failure.
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_mount_proc.return_value = -errno.EPERM
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            self.assertEqual(rust_syscalls.mount_proc(), -errno.EPERM)
+
+    def test_mount_proc_ctypes_fallback_when_no_backend(self):
+        # No crate: mount_proc must fall back to ctypes libc.mount with
+        # the hardened flag set and proc paths.
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(rust_syscalls._load_rust_backend())
+        fake_libc = mock.Mock()
+        fake_libc.mount.return_value = 0
+        with mock.patch(
+            "backend.rust_syscalls.ctypes.CDLL", return_value=fake_libc
+        ):
+            self.assertEqual(rust_syscalls.mount_proc(), 0)
+        args = fake_libc.mount.call_args.args
+        self.assertEqual(args[:3], (b"proc", b"/proc", b"proc"))
+        self.assertEqual(args[3], rust_syscalls.MS_PROC_MOUNT)
+
+    def test_mount_routes_through_ffi_when_loaded(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_mount.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            self.assertEqual(
+                rust_syscalls.mount(b"src", b"/mnt", b"ext4", 0), 0
+            )
+        args = fake.nyrqis_syscalls_mount.call_args.args
+        # The path args cross the boundary as buffer addresses (the FFI
+        # takes caller-owned buffers); the flags and data must arrive as
+        # the plain integers/pointers the loader passed.
+        self.assertEqual(args[3], 0)  # flags
+        self.assertIsNone(args[4])  # data defaults to NULL
+
+    def test_mount_ctypes_fallback_when_no_backend(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(rust_syscalls._load_rust_backend())
+        fake_libc = mock.Mock()
+        fake_libc.mount.return_value = 0
+        with mock.patch(
+            "backend.rust_syscalls.ctypes.CDLL", return_value=fake_libc
+        ):
+            self.assertEqual(
+                rust_syscalls.mount(b"proc", b"/proc", b"proc", 0), 0
+            )
+        self.assertEqual(fake_libc.mount.call_args.args[:3],
+                         (b"proc", b"/proc", b"proc"))
+
+
+class TestRustSyscallsConformance(unittest.TestCase):
+    """Real-FFI conformance for the syscalls module (the direct-syscall
+    launcher's primitives). Skips on hosts without the crate; the CI
+    ``rust-syscalls-conformance`` job builds it and sets
+    ``NYRQIS_RUST_LIB`` so these drive the actual Rust module. This is
+    the syscalls analogue of ``TestRustFfILoader``'s differential test:
+    the pure-Python ctypes floor and the Rust module must agree on the
+    -errno contract, ABI version, and flag vocabulary.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = rust_syscalls._load_rust_backend()
+
+    def _skip_unless_lib(self):
+        if self.lib is None:
+            self.skipTest("Rust syscalls backend not built on this host")
+
+    def test_abi_version_meets_contract(self):
+        self._skip_unless_lib()
+        version = self.lib.nyrqis_syscalls_version()
+        self.assertGreaterEqual(version, rust_syscalls.MIN_RUST_ABI_VERSION)
+
+    def test_unshare_invalid_flags_raises_einval(self):
+        self._skip_unless_lib()
+        # unshare(0xFFFFFFFF) -> EINVAL through the Rust module, surfaced
+        # as OSError by the loader (the ctypes floor raises the same).
+        with self.assertRaises(OSError) as cm:
+            rust_syscalls.unshare(0xFFFF_FFFF)
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_prctl_get_name_roundtrip(self):
+        self._skip_unless_lib()
+        # PR_GET_NAME (15) writes the calling thread's name — a safe,
+        # deterministic read that exercises the variadic prctl wrapper.
+        buf = ctypes.create_string_buffer(16)
+        rc = rust_syscalls.prctl(15, ctypes.addressof(buf), 0, 0, 0)
+        self.assertEqual(rc, 0)
+        self.assertGreater(len(buf.value), 0)
+
+    def test_mount_missing_target_returns_negative_rc(self):
+        self._skip_unless_lib()
+        # A mount whose target does not exist fails with -ENOENT (or
+        # -EPERM/-EACCES on some kernels) — proving the wrapper reaches
+        # the kernel and returns the -errno convention without side
+        # effects.
+        rc = rust_syscalls.mount(
+            b"proc", b"/nonexistent-nyrqis-conformance", b"proc", 0
+        )
+        self.assertLess(rc, 0)
+        self.assertIn(-rc, (errno.ENOENT, errno.EPERM, errno.EACCES))
+
+    def test_mount_proc_returns_negative_rc_when_unprivileged(self):
+        self._skip_unless_lib()
+        # mount_proc on a host where the caller lacks CAP_SYS_ADMIN fails
+        # with a negative errno and never crashes (the CI runner is
+        # unprivileged).
+        rc = rust_syscalls.mount_proc()
+        self.assertLess(rc, 0)
+
 
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
@@ -2264,6 +2659,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestRustFfILoader))
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestDirectSyscallLaunch))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

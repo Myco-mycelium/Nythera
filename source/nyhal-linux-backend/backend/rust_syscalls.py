@@ -3,11 +3,10 @@
 rust_syscalls — FFI loader + wiring for the Nyrqis syscalls module
 (ADR-0020 migration priority #2; see rust/syscalls/README.md).
 
-Shared by ``backend/launcher.py`` (``sethostname`` / ``prctl`` — wired
-today) and, in the direct-syscall launcher transition
-(``docs/implementation_plan.md`` §4.1), ``backend/container.py``
-(``unshare`` — the container launch path still uses ``unshare(1)`` until
-that transition lands).
+Shared by ``backend/launcher.py`` (``sethostname`` / ``prctl``) and
+``backend/container.py`` (``unshare`` / ``mount`` — the direct-syscall
+launcher, ``docs/implementation_plan.md`` §4.1, landed 2026-08-13:
+``unshare(1)`` is retained only as an opt-in legacy path).
 
 Contract, mirroring ``backend/seccomp.py``'s loader:
 
@@ -34,7 +33,24 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-MIN_RUST_ABI_VERSION = 0x0001_0000  # nyrqis-syscalls 1.0.0
+MIN_RUST_ABI_VERSION = 0x0001_0100  # nyrqis-syscalls 1.1.0 (mount added)
+
+# CLONE_NEW* flags (the direct-syscall launcher's namespace mask). These
+# are the stable Linux UAPI bit values; the Rust crate consumes them as
+# the ``unshare`` flags argument. CLONE_NEWPID only affects the caller's
+# children, which is why the launcher forks after unsharing it.
+CLONE_NEWNS = 0x0002_0000
+CLONE_NEWUTS = 0x0400_0000
+CLONE_NEWIPC = 0x0800_0000
+CLONE_NEWUSER = 0x1000_0000
+CLONE_NEWPID = 0x2000_0000
+
+# MS_* flags for the container's procfs mount (hardened like
+# unshare(1)'s --mount-proc: nosuid, nodev, noexec).
+MS_NOSUID = 0x2
+MS_NODEV = 0x4
+MS_NOEXEC = 0x8
+MS_PROC_MOUNT = MS_NOSUID | MS_NODEV | MS_NOEXEC
 
 # Module internal error codes (negative i32). -4096 is outside the errno
 # range by design (see module docstring).
@@ -126,6 +142,13 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
         ]
         lib.nyrqis_syscalls_unshare.restype = ctypes.c_int
         lib.nyrqis_syscalls_unshare.argtypes = [ctypes.c_uint64]
+        lib.nyrqis_syscalls_mount.restype = ctypes.c_int
+        lib.nyrqis_syscalls_mount.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint64, ctypes.c_void_p,
+        ]
+        lib.nyrqis_syscalls_mount_proc.restype = ctypes.c_int
+        lib.nyrqis_syscalls_mount_proc.argtypes = []
         _RUST_LIB = lib
         logger.info("syscalls: using Rust backend (%s)", path)
         return lib
@@ -157,6 +180,36 @@ def _rust_unshare(lib: ctypes.CDLL, flags: int) -> int:
     """unshare(2) via the Rust module: 0 or -errno."""
     rc = lib.nyrqis_syscalls_unshare(flags)
     return int(rc)
+
+
+def _rust_mount(
+    lib: ctypes.CDLL, source: bytes, target: bytes, fstype: bytes,
+    flags: int, data: Optional[bytes] = None,
+) -> int:
+    """mount(2) via the Rust module: 0 or -errno."""
+    src = ctypes.create_string_buffer(source, len(source) + 1)
+    tgt = ctypes.create_string_buffer(target, len(target) + 1)
+    fst = ctypes.create_string_buffer(fstype, len(fstype) + 1)
+    data_buf = None
+    data_ptr = None
+    if data is not None:
+        data_buf = ctypes.create_string_buffer(data, len(data) + 1)
+        data_ptr = ctypes.cast(data_buf, ctypes.c_void_p)
+    rc = lib.nyrqis_syscalls_mount(
+        ctypes.cast(src, ctypes.c_void_p),
+        ctypes.cast(tgt, ctypes.c_void_p),
+        ctypes.cast(fst, ctypes.c_void_p),
+        flags,
+        data_ptr,
+    )
+    return int(rc)
+
+
+def _rust_mount_proc(lib: ctypes.CDLL) -> int:
+    """mount("proc", "/proc", ...) via the Rust module: 0 or -errno.
+    No-arg on purpose: called in the container child between fork and
+    exec, where no Python allocation may happen."""
+    return int(lib.nyrqis_syscalls_mount_proc())
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +251,19 @@ def _ctypes_unshare(flags: int) -> None:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err))
 
+
+def _ctypes_mount_proc() -> int:
+    """mount("proc", "/proc", "proc", MS_PROC_MOUNT, NULL) via ctypes:
+    0 or -errno."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mount.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.c_ulong, ctypes.c_void_p,
+    ]
+    libc.mount.restype = ctypes.c_int
+    if libc.mount(b"proc", b"/proc", b"proc", MS_PROC_MOUNT, None) == 0:
+        return 0
+    return -ctypes.get_errno()
 
 # ---------------------------------------------------------------------------
 # Public surface (FFI first, ctypes fallback, force-aware)
@@ -276,6 +342,76 @@ def unshare(flags: int) -> None:
     _ctypes_unshare(flags)
 
 
+def mount(
+    source: bytes, target: bytes, fstype: bytes,
+    flags: int = MS_PROC_MOUNT, data: Optional[bytes] = None,
+) -> int:
+    """mount(2): 0 on success or -errno. Rust FFI when the module is
+    loaded; ctypes otherwise. See ``sethostname`` for the force rules.
+    ``data`` is passed through untouched (NULL when omitted)."""
+    lib = _load_rust_backend()
+    if lib is not None:
+        try:
+            return _rust_mount(lib, source, target, fstype, flags, data)
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if _force_enabled():
+                raise
+            logger.warning(
+                "syscalls: Rust mount failed (%s: %s); using ctypes",
+                type(exc).__name__, exc,
+            )
+    elif _force_enabled():
+        raise RuntimeError(_rust_force_error())
+    return _ctypes_mount_generic(source, target, fstype, flags, data)
+
+
+def mount_proc() -> int:
+    """Mount a fresh procfs at /proc (the container init's view of its
+    PID namespace — unshare(1)'s --mount-proc equivalent): 0 or -errno.
+    Rust FFI when the module is loaded; ctypes otherwise. The generic
+    ``mount`` also routes here for the exact proc mount; this entry
+    exists so the container child (post-fork, pre-exec) calls the
+    no-argument path that performs zero Python allocation."""
+    lib = _load_rust_backend()
+    if lib is not None:
+        try:
+            return _rust_mount_proc(lib)
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if _force_enabled():
+                raise
+            logger.warning(
+                "syscalls: Rust mount_proc failed (%s: %s); using ctypes",
+                type(exc).__name__, exc,
+            )
+    elif _force_enabled():
+        raise RuntimeError(_rust_force_error())
+    return _ctypes_mount_proc()
+
+
+def _ctypes_mount_generic(
+    source: bytes, target: bytes, fstype: bytes, flags: int,
+    data: Optional[bytes],
+) -> int:
+    """Generic mount(2) via ctypes: 0 or -errno."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mount.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+        ctypes.c_ulong, ctypes.c_void_p,
+    ]
+    libc.mount.restype = ctypes.c_int
+    # A raw bytes object must never be passed to ctypes.cast directly
+    # (TypeError); keep a real buffer alive so the pointer stays valid
+    # across the call (same class of bug as the prctl fallback fix).
+    data_buf = None
+    data_ptr = None
+    if data is not None:
+        data_buf = ctypes.create_string_buffer(data, len(data) + 1)
+        data_ptr = ctypes.cast(data_buf, ctypes.c_void_p)
+    if libc.mount(source, target, fstype, flags, data_ptr) == 0:
+        return 0
+    return -ctypes.get_errno()
+
+
 def set_hostname(hostname: str) -> bool:
     """Set the UTS hostname without any shell involvement.
 
@@ -317,8 +453,16 @@ def set_hostname(hostname: str) -> bool:
 __all__ = [
     "MIN_RUST_ABI_VERSION",
     "PR_SET_HOSTNAME",
+    "CLONE_NEWNS",
+    "CLONE_NEWUTS",
+    "CLONE_NEWIPC",
+    "CLONE_NEWUSER",
+    "CLONE_NEWPID",
+    "MS_PROC_MOUNT",
     "set_hostname",
     "sethostname",
     "prctl",
     "unshare",
+    "mount",
+    "mount_proc",
 ]
