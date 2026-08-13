@@ -1,0 +1,15 @@
+[package]
+name = "nyrqis-syscalls"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis direct syscall wrappers (clone/unshare/sethostname/prctl) — ADR-0020 migration priority #2 (scaffold)"
+
+[lib]
+name = "nyrqis_syscalls"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+# Scaffold status: no logic implemented yet (see README.md). The crate
+# is built by CI (`.github/workflows/ci.yml`) so it keeps compiling even
+# though the dev host has no Rust toolchain.

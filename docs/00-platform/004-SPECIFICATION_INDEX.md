@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.21.0
+version: 1.22.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-08-13
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -56,6 +56,8 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Proposed |
+| ADR-0019 | Journal commit as the default NyFS save() mode | Proposed |
+| ADR-0020 | Implementation languages and the platform boundary | **Accepted** |
 
 See `docs/reference/adr/` for full records and NPC-005 for the governing
 index.
@@ -93,11 +95,12 @@ index.
 | NPS-027 | Package Trust Model | security | Draft |
 
 Following the Milestone 9 Architecture Group review, 13 of 27 NPS documents
-and 10 of 13 ADRs are `Accepted`. The remainder are held at `Draft`/
-`Proposed` for a specific, named reason (a pending benchmark or a
-dependency on another document that is itself benchmark-blocked) rather
-than incompleteness — see each document's Open Questions / Status section,
-and `REPOSITORY_STATE.md` for the consolidated list.
+and 11 of 20 ADRs are `Accepted` (1 rejected; 8 held at `Proposed`). The
+remainder are held at `Draft`/`Proposed` for a specific, named reason (a
+pending benchmark or a dependency on another document that is itself
+benchmark-blocked) rather than incompleteness — see each document's Open
+Questions / Status section, and `REPOSITORY_STATE.md` for the consolidated
+list.
 
 ADR-0017 is the project's first `Rejected` ADR — a proposal to renumber
 NPS identifiers into domain-grouped ranges was considered and declined;

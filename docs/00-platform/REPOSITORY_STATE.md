@@ -51,7 +51,7 @@ performance budgets, and developer onboarding — see
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-10 accepted, 9 held (4 named benchmark blockers plus 5 decisions pending
+11 accepted, 8 held (4 named benchmark blockers plus 4 decisions pending
 Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
@@ -73,7 +73,7 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 - [ ] ADR-0019 Journal commit as the default NyFS save() mode — **Proposed**, review package for the 2026-08-12 implementer default flip; daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answers its open question 1, AG tuning review pending
-- [ ] ADR-0020 Implementation languages and the platform boundary — **Proposed** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); pending Architecture Group acceptance per NPC-001 §6.4
+- [x] ADR-0020 Implementation languages and the platform boundary — **Accepted** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); Architecture Group acceptance recorded in issue #2 (closing the issue itself is a manual step — the PAT cannot comment/close issues)
 
 ## Specifications (NPS)
 13 accepted, 14 held (4 named benchmark/dependency blockers, plus
@@ -372,6 +372,23 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
+  ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the
+  acceptance text is recorded in the ADR's Status section — the PAT can
+  create issues but not comment/close them, so closing #2 is a manual
+  step). **Migration priority #2 scaffolded**: `rust/syscalls/`
+  (clone/unshare/sethostname/prctl FFI wrappers behind ABI-001, stub
+  entry points returning ERR_INTERNAL, conformance plan; CI builds it).
+  **Real CI bug fixed**: the `backend` job was red since 2026-08-12 —
+  `test_auto_compact_is_the_mount_default` and
+  `test_auto_compact_failed_mount_leaves_no_watcher` mocked `_build_fuse`
+  but not `attach()`, so they failed on CI (no fusepy) while passing on
+  this host (fusepy present); both now mock `attach()`, verified by
+  re-running the suite under a no-fusepy pre-import patch — 113/113,
+  4 live-mount tests correctly skipped. The rust-seccomp job (crate
+  build + tests) has been green in CI all along — the crate compiles.
+  **Consolidated session §17** (2026-08-13): every recorded finding
+  reproduced for a second session.
 - 2026-08-13 (**ADR-0020 governance + terminology + plan reconciliation**):
   AG review opened as **issue #2** (mirroring #1 for ADR-0019): ADR-0020
   remains `Proposed` until Architecture Group acceptance per NPC-001 §6.4.

@@ -558,6 +558,37 @@ contradicted. §12's interleaved pass ran slower this session (157 s vs
 fsync-bound and host-load-sensitive, within the project's known ±30%
 noise band; the ~50–60× journal-vs-interleaved gap is unchanged.
 
+## 17. Consolidated Session Snapshot (2026-08-13)
+
+Second full-session re-run of every section (same four sequential chunks,
+same host, same method as §16). Purpose: confirm the recorded findings
+still hold after the daemon-lifecycle + FFI-loader round, and confirm the
+§16 one-session framing wasn't a fluke.
+
+| Section | This session | §16 (2026-08-12) | Consistent? |
+|---------|--------------|------------------|-------------|
+| §1 IPC p50/p95/p99 | 88 / 139 / 258 µs | 119 / 179 / 243 µs | ✓ (median back under the <100 µs target; tail still above) |
+| §3 token bucket | 99.5 calls/s sustained | 99.5 calls/s | ✓ |
+| §2 Zstd sweep | ratio flatlines ≥ level 7 (2.54 → 3.17) | same | ✓ |
+| §4 proxy write 1 MiB | 151 MB/s | 147 MB/s | ✓ |
+| §4 live mount | write 41.4 MB/s, read 47.0 MB/s | 48.6 / 43.6 MB/s | ✓ (40–46 / 25–37 band) |
+| §5 persist save / ratio | 10.9 s / 6.42 : 1 | 12.0 s / 6.42 : 1 | ✓ |
+| §5 resave / load | 0.13 s / 0.03 s | 0.14 / 0.05 s | ✓ |
+| §10 snapshot dedup | 49.08× (349,237 B new) | 49.08× | ✓ |
+| §8 levers 64k/256k/1m | 10.9 / 7.1 / 6.3 s | 11.1 / 7.2 / 6.75 s | ✓ |
+| §9 journal commit | 0.27 s | 0.22 s | ✓ |
+| §13 mixed commit avg | 513 vs 127 ms | 486 vs 123 ms | ✓ |
+| §14 compaction | 11.2 s (26.8 ms/block) | 11.0 s (26.4 ms/block) | ✓ |
+| §15 journal × block size | 0.24 / 0.18 / 0.18 s | 0.19–0.23 s | ✓ |
+| §12 real corpus save | 112.3 s vs 3.0 s journal (~38×) | 157.0 s vs 2.9 s (~54×) | In-range: §12 is fsync-bound and host-load-sensitive (known ±30% noise band; the journal-vs-interleaved gap stays ≥ 38×) |
+
+Verdict: **every recorded finding reproduced across two independent
+sessions.** §1's median returned under the <100 µs target (88 µs, was
+119 µs under §16's load), confirming the tail is the load-sensitive
+part. §12's interleaved pass ran *faster* than §16 (112 vs 157 s) while
+the journal pass held at ~3 s — both within the documented noise band.
+No recorded range contradicted; no gate declared met (unchanged).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

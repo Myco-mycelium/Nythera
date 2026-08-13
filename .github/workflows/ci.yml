@@ -37,6 +37,20 @@ jobs:
       - name: cdylib artifact present
         run: test -s target/release/libnyrqis_seccomp.so
 
+  rust-syscalls:
+    name: Rust syscalls crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/syscalls
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_syscalls.so
+
   rust-seccomp-conformance:
     name: Rust FFI conformance (ignored until the port lands)
     runs-on: ubuntu-latest

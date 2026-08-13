@@ -17,7 +17,7 @@ matrix and the three normative rules.
 | Component | Status | Evidence gate (Migration rule) |
 |-----------|--------|--------------------------------|
 | `seccomp/` policy compiler (BPF generate/validate/simulate) | **Scaffold; Python-side conformance groundwork + FFI loader DONE, Rust implementation blocked on a toolchain** (rustup download does not complete on this host — 2026-08-12). CI (`.github/workflows/ci.yml`) builds the crate on every push; a non-blocking conformance job forces the full Python suite through the FFI and turns green when the port lands | Security posture (memory-safe policy compiler, ADR-0020 priority #1) |
-| syscall wrappers (`clone`/`unshare`, …) | Not started | ADR-0020 priority #2 (implementation_plan.md) |
+| `syscalls/` (clone/unshare/sethostname/prctl) | **Scaffold** (FFI boundary contract + stub entry points; built by CI on every push — 2026-08-13) | ADR-0020 priority #2 (implementation_plan.md §4.1) |
 | NyFS checksum/compression hot path | Not started | ADR-0020 priority #3 — gated on §4/§5 measured bottleneck |**Honesty note:** nothing in this directory compiles locally yet — there
 is no Rust toolchain on the current dev host (rustup's toolchain download
 has not completed in several attempts). The crate is a scaffold

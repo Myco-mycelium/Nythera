@@ -1545,9 +1545,12 @@ class TestNyFSOperations(unittest.TestCase):
     def test_auto_compact_is_the_mount_default(self):
         # DAEMON_LIFECYCLE recommendation, now implemented: the
         # background compaction watcher runs without the caller passing
-        # auto_compact (default True).
+        # auto_compact (default True). attach() is mocked because these
+        # tests exercise the watcher lifecycle, not the fusepy attach
+        # path (which is environment-dependent — no fusepy on CI).
         mount = NyFSMount(self.fs, tempfile.mkdtemp())
-        with mock.patch.object(mount, "_build_fuse", return_value=None):
+        with mock.patch.object(mount, "attach", return_value=True), \
+             mock.patch.object(mount, "_build_fuse", return_value=None):
             self.assertTrue(mount.mount(foreground=True, blocking=False))
         self.assertIsNotNone(mount._compact_stop,
                              "watcher should be running by default")
@@ -1561,9 +1564,11 @@ class TestNyFSOperations(unittest.TestCase):
         # A mount that fails must not leave the background compaction
         # watcher orphaned (reviewer-flagged lifecycle edge: the watcher
         # starts before the blocking FUSE loop, so the failure path must
-        # stop it before propagating the error).
+        # stop it before propagating the error). attach() is mocked for
+        # the same environment-independence reason as above.
         mount = NyFSMount(self.fs, tempfile.mkdtemp())
-        with mock.patch.object(
+        with mock.patch.object(mount, "attach", return_value=True), \
+             mock.patch.object(
                 mount, "_build_fuse",
                 side_effect=NyFSError(errno.ENODEV, "simulated mount failure")):
             with self.assertRaises(NyFSError):

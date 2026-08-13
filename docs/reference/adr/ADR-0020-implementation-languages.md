@@ -2,7 +2,7 @@
 title: Implementation Languages and the Platform Boundary
 document_id: ADR-0020
 version: 2.0.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-12
 updated: 2026-08-13
@@ -11,6 +11,15 @@ depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0016, ABI-001]
 ---
 
 # ADR-0020 — Implementation Languages and the Platform Boundary
+
+## Status
+Accepted — 2026-08-13, following Architecture Group review (issue #2,
+per NPC-001 §6.4). The three open questions were resolved: the
+platform-boundary rule is normative (not a guideline); the Python Linux
+backend's platform-critical modules carry the migration obligation
+(evidence-gated via the Migration rule); Python remains the reference
+implementation language during development. The canonical matrix and
+the platform-boundary principle are binding.
 
 ## Context
 
@@ -215,11 +224,10 @@ Negative:
   not have justified a rewrite.
 
 Affected owners **MUST** be tagged for review: kernel (NyKernel
-backend), Linux backend, NyFS storage, and ABI ownership. Architecture
-Group acceptance is required before this ADR is binding (NPC-001 §6.4);
-until then the current de facto state (Python everywhere in the Linux
-backend) remains unchanged, with the migration queue below as the
-accepted plan.
+backend), Linux backend, NyFS storage, and ABI ownership. **Accepted
+2026-08-13** (Architecture Group, issue #2) — the matrix and the
+platform-boundary rule are binding; the migration queue below is the
+agreed plan.
 
 ## Manifest Alignment
 
@@ -241,8 +249,10 @@ platform-boundary rule's obligation. In order:
    well-bounded, pure function — the natural first Rust module;
    scaffold, wire format, FFI loader, and CI conformance gate in
    place).
-2. **Direct syscall wrappers** (`clone`, `unshare`, namespace setup)
-   per `docs/implementation_plan.md` (NyHAL = Rust-first).
+2. **Direct syscall wrappers** (`clone`, `unshare`, `sethostname`,
+   `prctl`, namespace setup) per `docs/implementation_plan.md`
+   (NyHAL = Rust-first; scaffold at
+   `source/nyhal-linux-backend/rust/syscalls/`, built by CI).
 3. **NyFS checksum + compression + FUSE hot paths** (storage = Rust),
    using the existing §4/§5/§6 benchmark data to set the extraction
    boundary.

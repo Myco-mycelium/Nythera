@@ -1,7 +1,7 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.14.0
+version: 1.15.0
 status: Draft
 classification: Reference
 owners:
@@ -41,7 +41,7 @@ only.
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** | 2026-07-13 | — |
 | ADR-0018 | Hash-chained append-only log for capability audit records | Proposed | 2026-07-13 | — |
 | ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
-| ADR-0020 | Implementation languages and the platform boundary | Proposed | 2026-08-13 | ADR-0020 v1 superseded by v2 (Python and Rust, 2026-08-12) |
+| ADR-0020 | Implementation languages and the platform boundary | **Accepted** | 2026-08-13 | ADR-0020 v1 superseded by v2 (Python and Rust, 2026-08-12) |
 
 ## ADR Statuses
 
@@ -69,6 +69,7 @@ only.
 | 1.12.0  | 2026-08-12 | Add ADR-0019 (journal commit as the default save() mode) — the Architecture Group review package for the 2026-08-12 implementer default flip |
 | 1.13.0  | 2026-08-12 | Add ADR-0020 (Python and Rust as the implementation languages) — first recorded language strategy |
 | 1.14.0  | 2026-08-13 | ADR-0020 v2.0.0 — canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle (platform-critical execution paths must not depend on the Python interpreter) |
+| 1.15.0  | 2026-08-13 | ADR-0020 **Accepted** by Architecture Group (issue #2) — matrix and boundary rule binding |
 
 ---
 **End of Document**

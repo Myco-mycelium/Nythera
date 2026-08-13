@@ -53,8 +53,8 @@ without an ADR.
 Open `docs/00-platform/004-SPECIFICATION_INDEX.md` (NPC-004). This is the
 master index of every canonical document in the project: the Manifest
 (NTM-000), the governance documents (NPC-001..009), every Architecture
-Decision Record (ADR-0001..0018), and every specification
-(NPS-001..024). If you ever wonder "is there a document about X?", this
+Decision Record (ADR-0001..0020), and every specification
+(NPS-001..027). If you ever wonder "is there a document about X?", this
 is the first place to look.
 
 Two other indices are worth knowing:
@@ -89,7 +89,10 @@ If you want to see it run (needs Python 3.12+):
 ```bash
 cd source/nyhal-linux-backend
 python3 -m pip install -r requirements.txt
-python3 -m pytest test_backend.py          # expect 20/20 passing
+python3 -B test_backend.py                 # expect 113/113 passing
+
+(The suite is unittest-based; the exact test count is recorded in
+`IMPLEMENTATION_STATUS.md`.)
 ```
 
 ## Step 7 — Check the tooling
