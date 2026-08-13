@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-This document outlines the design and implementation plan for the Nyrqis Linux Backend, a critical component of the NyHAL abstraction layer. The goal is to provide a conformant implementation of the NyHAL contract on a standard Linux host, serving as a practical near-term target for the Nyrqis operating system [^1]. This plan is informed by the Nyrqis Manifest [^2], the NyHAL Kernel Abstraction specification (NPS-017) [^3], and the NyFS Linux Backend FUSE Architecture Decision Record (ADR-0016) [^4].
+This document outlines the design and implementation plan for the Nyrqis Linux Backend, a critical component of the NyHAL abstraction layer. The goal is to provide a conformant implementation of the NyHAL contract on a standard Linux host, serving as a practical near-term target for the Nyrqis operating system [^1]. This plan is informed by the Nyrqis Manifest [^2], the NyHAL Kernel Abstraction specification (NPS-017) [^3], the NyFS Linux Backend FUSE Architecture Decision Record (ADR-0016) [^4], and the implementation-language strategy (ADR-0020) [^6].
 
 ## 2. Nyrqis Vision and Principles
 
@@ -36,7 +36,7 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ### 4.1. Container Primitives
 
-*   **Transition from `unshare(1)` to direct syscalls**: While `unshare(1)` was useful for the PoC, a production-ready backend will require direct `clone()` and `unshare()` syscalls for finer control and reduced overhead. This will involve using Python's `ctypes` or a dedicated C/Rust component for syscall wrappers.
+*   **Transition from `unshare(1)` to direct syscalls**: While `unshare(1)` was useful for the PoC, a production-ready backend will require direct `clone()` and `unshare()` syscalls for finer control and reduced overhead. Per ADR-0020 (canonical language matrix), NyHAL is **Rust-first** and these syscall wrappers are a platform-critical execution path — so they are implemented as a Rust module behind the versioned FFI boundary (ABI-001), not via Python's `ctypes`. This is ADR-0020 migration priority #2.
 *   **Cgroups v2**: Prioritize cgroups v2 for resource management, as it offers a more unified and hierarchical control mechanism compared to cgroups v1. This will require detecting cgroups v2 availability and falling back to v1 if necessary.
 *   **Process Management**: Implement robust mechanisms for container creation, suspension (e.g., via `SIGSTOP`/`SIGCONT` or cgroup freezer), and graceful teardown, ensuring proper cleanup of resources.
 
@@ -67,7 +67,7 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 ## 5. Key Dependencies and Challenges
 
 *   **Linux Kernel Features**: Reliance on specific Linux kernel versions for cgroups v2, user namespaces, and advanced seccomp-bpf features.
-*   **FUSE Library**: Integration with a robust FUSE library (e.g., `fuse-python` or a custom C/Rust implementation).
+*   **FUSE Library**: Integration with a robust FUSE library. The current reference implementation uses `fusepy` in the Python backend; per ADR-0020 the shipped FUSE operations path is a platform-critical execution path and must not depend on the Python interpreter — the production implementation is a Rust (or C, where the host requires it) module behind the versioned FFI boundary (ABI-001), gated on the migration rule's evidence (ADR-0016 FUSE-overhead benchmark data).
 *   **Performance Benchmarking**: Thorough benchmarking will be required, especially for FUSE overhead and IPC latency, to ensure the system meets performance targets [^4].
 *   **Security Policy Generation**: Developing tools or processes to automatically generate and manage LSM and seccomp policies based on container capabilities.
 
@@ -108,3 +108,4 @@ This roadmap aligns with the existing Nyrqis project milestones where applicable
 [^3]: Myco-mycelium. (2026). *NPS-017: NyHAL — Kernel Abstraction Layer and Backend Contract*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/nps/NPS-017-nyhal-kernel-abstraction.md`
 [^4]: Myco-mycelium. (2026). *ADR-0016: NyFS Linux Backend implemented as a user-space FUSE filesystem*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0016-nyfs-linux-backend-fuse.md`
 [^5]: Myco-mycelium. (2026). *nyctr.py*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/source/nyhal-linux-backend/poc-container/nyctr.py`
+[^6]: Myco-mycelium. (2026). *ADR-0020: Implementation Languages and the Platform Boundary*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0020-implementation-languages.md`

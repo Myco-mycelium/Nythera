@@ -1,13 +1,13 @@
 ---
 title: Glossary
 document_id: NPC-006
-version: 1.1.0
+version: 1.2.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-08-13
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000]
@@ -42,6 +42,8 @@ factual; design rationale belongs in `docs/explanation/`, not here.
 | **NySDK** | The developer-facing SDK exposing the public API (API-001) to applications, above NyRuntime. |
 | **.nypkg** | Working extension for the Nyrqis Package Format — the signed, installable unit processed by the installer (NPS-026). |
 | **Object Registry** | The canonical catalogue of platform object types with fields, lifecycle, permissions, serialization, and relationships (NPS-025). |
+| **Platform Boundary** | The line between the *shipped platform* (kernel, bootloader, HAL, core, runtime, UI, shell, game, AI, package management, storage, networking, security) and everything that builds, tests, automates, administers, or researches it. Above the boundary, Python is unrestricted; below it, execution paths are compiled (ADR-0020). |
+| **Platform-Critical Execution Path** | Any code the shipped platform runs as part of a user-visible or security-relevant operation — syscall handling, seccomp enforcement, FUSE operations, IPC transport, container launch, boot sequencing. Such paths **MUST NOT** depend on the Python interpreter (ADR-0020). |
 | **REQ** | A Requirement — an individually-testable, traceable obligation (NPC-009), e.g. `REQ-IPC-0003`. |
 
 ## Revision History
@@ -50,6 +52,7 @@ factual; design rationale belongs in `docs/explanation/`, not here.
 |---------|------------|----------------|
 | 1.0.0   | 2026-07-12 | Initial glossary at bootstrap |
 | 1.1.0   | 2026-08-12 | Add terms in canonical use since bootstrap: Backend, NyCore, NyHAL, NyKernel, NyRuntime, NySDK, .nypkg, Object Registry, REQ |
+| 1.2.0   | 2026-08-13 | Add Platform Boundary and Platform-Critical Execution Path (ADR-0020 v2.0.0 terminology) |
 
 ---
 **End of Document**

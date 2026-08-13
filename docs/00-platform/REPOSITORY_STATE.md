@@ -372,6 +372,15 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-13 (**ADR-0020 governance + terminology + plan reconciliation**):
+  AG review opened as **issue #2** (mirroring #1 for ADR-0019): ADR-0020
+  remains `Proposed` until Architecture Group acceptance per NPC-001 §6.4.
+  Glossary (NPC-006) v1.2.0 gained **Platform Boundary** and
+  **Platform-Critical Execution Path** entries. `docs/implementation_plan.md`
+  reconciled: the two stale language signals — Python `ctypes` syscall
+  wrappers and the `fusepy` FUSE path — are now marked Rust-first
+  platform-critical paths behind ABI-001, with ADR-0020 added to its
+  citations.
 - 2026-08-13 (**ADR-0020 v2.0.0 — canonical language matrix + platform-boundary principle**):
   the recorded language strategy moved from "Python + Rust by component
   class" to the canonical matrix — Rust, C++, and C as the platform
