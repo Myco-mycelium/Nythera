@@ -682,7 +682,7 @@ mod tests {
         );
         assert_eq!(
             simulate(&bytes, 64, AUDIT_ARCH_AARCH64, &[]).unwrap(),
-            SECCOMP_RET_ERRNO | EPERM // write is NOT in the baseline -> denied
+            SECCOMP_RET_ALLOW // write IS in the baseline allowlist
         );
     }
 
@@ -704,14 +704,18 @@ mod tests {
     }
 
     #[test]
-    fn error_unknown_arch_is_policy_parse() {
+    fn error_unknown_arch_is_unsupported() {
+        // An unrecognized "arch" value means the policy cannot be
+        // compiled for any architecture this module knows — mapped to
+        // ERR_UNSUPPORTED_ARCH (-2), which the Python side raises as
+        // PolicyError (same as its own unknown-arch path).
         let json = b"{\"arch\":\"mips\",\"default_action\":2147418112,\"deny\":[],\"deny_flags\":[],\"allow\":[],\"allow_flags\":[]}";
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = unsafe {
             nyrqis_seccomp_build_program(json.as_ptr(), json.len(), AUDIT_ARCH_X86_64, &mut out, &mut out_len)
         };
-        assert_eq!(rc, ERR_POLICY_PARSE);
+        assert_eq!(rc, ERR_UNSUPPORTED_ARCH);
     }
 
     #[test]

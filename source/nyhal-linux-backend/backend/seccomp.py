@@ -1198,6 +1198,16 @@ def _rust_build_program(
 def _rust_validate_program(
     lib: ctypes.CDLL, program: List[Tuple[int, int, int, int]]
 ) -> None:
+    # The wire format stores jt/jf as single bytes, so the pure path's
+    # 8-bit width check must happen here before packing — a jt/jf > 255
+    # could otherwise never reach the Rust validator (and would surface
+    # as a struct.error instead of the ValueError the pure path raises).
+    for i, (code, jt, jf, k) in enumerate(program):
+        if jt > 0xFF or jf > 0xFF:
+            raise ValueError(
+                f"jump offset exceeds 8-bit BPF limit at instruction {i}: "
+                f"jt={jt} jf={jf}"
+            )
     buf = _program_to_rust_bytes(program)
     rc = lib.nyrqis_seccomp_validate_program(buf, len(buf))
     if rc != 0:
