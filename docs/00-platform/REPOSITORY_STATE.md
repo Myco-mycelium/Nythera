@@ -372,6 +372,22 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-08-13 (**ADR-0020 migrations #1 and #2 implemented**): the
+  `rust/seccomp` crate (policy compiler / validator / simulator) and the
+  `rust/syscalls` crate (`sethostname`/`prctl`/`unshare` wrappers;
+  `clone` deferred pending the direct-syscall child-entry-point design)
+  are implemented, CI-built and unit-tested on every push, and held
+  equal to the pure-Python implementations by golden byte-identical
+  tests plus a seeded differential test
+  (`test_rust_and_python_agree_differentially`). The forced-mode seccomp
+  conformance gate (`NYRQIS_RUST_FORCE=1`, CI
+  `rust-seccomp-conformance`) is **green and now a required job**;
+  `backend/rust_syscalls.py` (the shared syscalls loader with ctypes
+  fallback and force mode) is wired into `launcher.set_hostname`. The
+  dev host still has no Rust toolchain — CI is the compiler. Test
+  suite: 125/125 (113 + 12 new). The direct-syscall launcher transition
+  (`unshare(1)` → `unshare(2)`/`clone`, `implementation_plan.md` §4.1)
+  is the recorded next step.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the
   acceptance text is recorded in the ADR's Status section — the PAT can

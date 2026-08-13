@@ -68,47 +68,21 @@ from backend.seccomp import (  # noqa: E402
     build_program,
     install_filter,
 )
+from backend import rust_syscalls  # noqa: E402 - ADR-0020 priority #2 FFI loader
 
 logger = logging.getLogger("nyrqis.launcher")
-
-PR_SET_HOSTNAME = 10  # prctl(PR_SET_HOSTNAME) — used when sethostname(2) is blocked
 
 
 def set_hostname(hostname: str) -> bool:
     """Set the UTS hostname without any shell involvement.
 
-    Uses ``sethostname(2)`` via ``ctypes``; falls back to
-    ``prctl(PR_SET_HOSTNAME)`` (equivalent effect within a UTS namespace).
+    Routed through the Rust syscalls module (ADR-0020 priority #2) when
+    the FFI library is loaded; falls back to the ``ctypes``
+    ``sethostname(2)`` / ``prctl(PR_SET_HOSTNAME)`` path otherwise
+    (equivalent effect within a UTS namespace). FIND-BACKEND-004: the
+    hostname is an argv entry, never shell-interpolated.
     """
-    if not hostname:
-        return True
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.sethostname.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
-    libc.sethostname.restype = ctypes.c_int
-    encoded = hostname.encode("utf-8", "replace")
-    if libc.sethostname(encoded, len(encoded)) == 0:
-        logger.info("hostname set to %r", hostname)
-        return True
-    err = ctypes.get_errno()
-    logger.warning("sethostname(%r) failed: errno=%d (%s)", hostname, err, os.strerror(err))
-
-    # Fallback: prctl(PR_SET_HOSTNAME, name) writes the same UTS
-    # namespace hostname. arg2 carries the name pointer.
-    libc.prctl.argtypes = [
-        ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
-        ctypes.c_ulong, ctypes.c_ulong,
-    ]
-    libc.prctl.restype = ctypes.c_int
-    addr = ctypes.cast(encoded, ctypes.c_void_p).value or 0
-    if libc.prctl(PR_SET_HOSTNAME, addr, 0, 0, 0) == 0:
-        logger.info("hostname set to %r (prctl fallback)", hostname)
-        return True
-    err = ctypes.get_errno()
-    logger.warning(
-        "prctl(PR_SET_HOSTNAME) fallback failed: errno=%d (%s)",
-        err, os.strerror(err),
-    )
-    return False
+    return rust_syscalls.set_hostname(hostname)
 
 
 def harden_cgroup_mounts() -> int:

@@ -14,6 +14,7 @@ import errno
 import json
 import logging
 import os
+import random
 import shutil
 import signal
 import stat as stat_module
@@ -35,6 +36,7 @@ from backend.capability import (
     CapabilityManager, Capability, CapabilityGrant
 )
 from backend import seccomp
+from backend import rust_syscalls
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
@@ -2020,6 +2022,193 @@ class TestRustFfILoader(unittest.TestCase):
                 [(0x06, 0, 0, 0x7FFF0000)], 0, seccomp.AUDIT_ARCH_X86_64
             )
 
+    def test_rust_and_python_agree_differentially(self):
+        """Seeded differential: the Rust module and the pure-Python
+        compiler must produce byte-identical programs and identical
+        verdicts for identical inputs.
+
+        Runs only where the Rust cdylib is actually built (the CI
+        conformance job builds it and sets NYRQIS_RUST_LIB); hosts
+        without the crate skip it. This is the strongest "ported"
+        signal short of the forced-mode gate itself.
+        """
+        lib = seccomp._load_rust_backend()
+        if lib is None:
+            self.skipTest("Rust seccomp backend not built on this host")
+        rng = random.Random(20260813)
+        cap_sets = [
+            set(),
+            {Capability.CAP_FILESYSTEM_WRITE.value},
+            {
+                Capability.CAP_NETWORK_SOCKET.value,
+                Capability.CAP_NETWORK_BIND.value,
+            },
+            {Capability.CAP_PROCESS_SPAWN.value},
+            {c.value for c in Capability},
+        ]
+        for arch in (seccomp.SyscallArch.X86_64, seccomp.SyscallArch.AARCH64):
+            for build in (seccomp.build_policy, seccomp.build_allowlist_policy):
+                for caps in cap_sets:
+                    policy = build(caps, arch=arch)
+                    label = f"{build.__name__} {arch.value} {sorted(caps)}"
+                    rust_prog = seccomp._rust_build_program(lib, policy)
+                    py_prog = seccomp._build_program_python(policy)
+                    self.assertEqual(rust_prog, py_prog, f"program mismatch: {label}")
+                    table = seccomp._SYSCALLS[arch]
+                    names = [n for n, v in table.items() if v is not None and v >= 0]
+                    for _ in range(15):
+                        name = rng.choice(names)
+                        nr = table[name]
+                        args = [rng.getrandbits(64) for _ in range(6)]
+                        rv = seccomp._rust_simulate(
+                            lib, rust_prog, nr, arch.audit_arch, args
+                        )
+                        pv = seccomp._simulate_python(
+                            py_prog, nr, arch.audit_arch, args
+                        )
+                        self.assertEqual(
+                            rv, pv, f"verdict mismatch: {label} {name} nr={nr} args={args}"
+                        )
+
+
+class TestRustSyscallsLoader(unittest.TestCase):
+    """ADR-0020 priority #2 FFI loader behavior (see
+    rust/syscalls/README.md): the fallback contract and error mapping
+    for the syscalls module. Like TestRustFfILoader, these pin the
+    loader on hosts WITHOUT the crate built; when the crate lands, the
+    CI conformance job (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        rust_syscalls._RUST_LIB = None
+        rust_syscalls._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        rust_syscalls._RUST_LIB = None
+        rust_syscalls._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        """Point the loader at a guaranteed-absent library."""
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_syscalls.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_syscalls.so"
+        self.assertEqual(
+            rust_syscalls._rust_lib_candidates(),
+            ["/custom/libnyrqis_syscalls.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            rust_syscalls._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            rust_syscalls._raise_rust_error(-4096, "test")
+
+    def test_absent_backend_falls_back_to_ctypes_hostname(self):
+        self._no_backend()
+        # This test exercises the FALLBACK path, so it must not inherit
+        # NYRQIS_RUST_FORCE from the CI conformance job env. tearDown
+        # restores the env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(rust_syscalls._load_rust_backend())
+        fake_libc = mock.Mock()
+        fake_libc.sethostname.return_value = 0
+        with mock.patch(
+            "backend.rust_syscalls.ctypes.CDLL", return_value=fake_libc
+        ):
+            self.assertTrue(rust_syscalls.set_hostname("test-host"))
+        fake_libc.sethostname.assert_called_once()
+        self.assertEqual(fake_libc.sethostname.call_args.args[0], b"test-host")
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            rust_syscalls.set_hostname("test-host")
+
+    def test_ffi_routing_with_fake_lib(self):
+        # With a lib loaded, set_hostname must drive the FFI entry point
+        # and never touch ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_version.return_value = rust_syscalls.MIN_RUST_ABI_VERSION
+        fake.nyrqis_syscalls_sethostname.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ), mock.patch("backend.rust_syscalls.ctypes.CDLL") as cdll_mock:
+            self.assertTrue(rust_syscalls.set_hostname("ffi-host"))
+        fake.nyrqis_syscalls_sethostname.assert_called_once()
+        cdll_mock.assert_not_called()
+
+    def test_ctypes_prctl_fallback_after_sethostname_failure(self):
+        # No crate: sethostname(2) fails, so set_hostname must reach the
+        # prctl(PR_SET_HOSTNAME) fallback with a real buffer address
+        # (regression pin: ctypes.cast on a raw bytes object raises).
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        # Prime the loader cache BEFORE mocking ctypes.CDLL, so the mock
+        # (which fakes libc, not the Rust loader) is never seen by it.
+        self.assertIsNone(rust_syscalls._load_rust_backend())
+        fake_libc = mock.Mock()
+        fake_libc.sethostname.return_value = -1  # syscall fails
+        fake_libc.prctl.return_value = 0  # fallback succeeds
+        with mock.patch(
+            "backend.rust_syscalls.ctypes.CDLL", return_value=fake_libc
+        ), mock.patch(
+            "backend.rust_syscalls.ctypes.get_errno", return_value=errno.EPERM
+        ):
+            self.assertTrue(rust_syscalls.set_hostname("fallback-host"))
+        self.assertEqual(fake_libc.prctl.call_args.args[0], rust_syscalls.PR_SET_HOSTNAME)
+        self.assertNotEqual(fake_libc.prctl.call_args.args[1], 0)  # buffer address
+
+    def test_ffi_prctl_fallback_when_sethostname_fails(self):
+        # Crate loaded: FFI sethostname returns -EPERM (kernel answer),
+        # so set_hostname falls through to prctl — also through the FFI.
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_sethostname.return_value = -errno.EPERM
+        fake.nyrqis_syscalls_prctl.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            self.assertTrue(rust_syscalls.set_hostname("ffi-fallback-host"))
+        prctl_args = fake.nyrqis_syscalls_prctl.call_args.args
+        self.assertEqual(prctl_args[0], rust_syscalls.PR_SET_HOSTNAME)
+        self.assertNotEqual(prctl_args[1], 0)  # buffer address, not a stray cast
+
+    def test_prctl_routes_through_ffi_when_loaded(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_prctl.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            self.assertEqual(rust_syscalls.prctl(10, 0x1234), 0)
+        fake.nyrqis_syscalls_prctl.assert_called_once_with(10, 0x1234, 0, 0, 0)
+
+    def test_unshare_routes_through_ffi_when_loaded(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_unshare.return_value = 0
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            rust_syscalls.unshare(0x20000)  # CLONE_NEWNS — must not raise
+        fake.nyrqis_syscalls_unshare.assert_called_once_with(0x20000)
+
+    def test_unshare_negative_rc_becomes_oserror(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_unshare.return_value = -errno.EPERM
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            with self.assertRaises(OSError) as cm:
+                rust_syscalls.unshare(0x20000)
+        self.assertEqual(cm.exception.errno, errno.EPERM)
+
 
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
@@ -2074,6 +2263,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestRustFfILoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsLoader))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

@@ -2,14 +2,20 @@
 name = "nyrqis-seccomp"
 version = "0.1.0"
 edition = "2021"
-description = "Nyrqis seccomp BPF policy compiler — ADR-0020 first migration (scaffold)"
+description = "Nyrqis seccomp BPF policy compiler (classic BPF) — ADR-0020 first migration"
 
 [lib]
 name = "nyrqis_seccomp"
-# cdylib is the FFI artifact the Python loader dlopens; rlib is included
-# so `cargo test` can link the crate's unit tests.
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
 crate-type = ["cdylib", "rlib"]
 
-# Scaffold status: no logic implemented yet (see README.md). The crate
-# is not part of any build/CI until a Rust toolchain exists on the dev
-# host and the conformance plan in README.md has been executed.
+[dependencies]
+# libc is used only for the FFI buffer allocator (malloc/free), so the
+# `out` buffers returned by build_program are freed by libc::free on the
+# Python side's matching nyrqis_seccomp_free call — no length metadata
+# crosses the boundary. serde_json parses the policy wire format (the
+# JSON emitted by backend/seccomp.py's SeccompPolicy.to_json()).
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

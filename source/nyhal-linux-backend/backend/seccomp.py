@@ -825,6 +825,16 @@ def build_program(policy: SeccompPolicy) -> List[Tuple[int, int, int, int]]:
             )
     elif _force_enabled():
         raise PolicyError(_rust_force_error())
+    return _build_program_python(policy)
+
+
+def _build_program_python(policy: SeccompPolicy) -> List[Tuple[int, int, int, int]]:
+    """The pure-Python compiler — the correctness floor the Rust module
+    is held equal to (differential test + conformance suite).
+
+    Routes through the Rust validator at the end, exactly as the FFI
+    path does, so both paths get the same bounds check.
+    """
     policy.validate()
     a = _Assembler()
 
@@ -903,6 +913,11 @@ def validate_program(program: List[Tuple[int, int, int, int]]) -> None:
             )
     elif _force_enabled():
         raise PolicyError(_rust_force_error())
+    return _validate_program_python(program)
+
+
+def _validate_program_python(program: List[Tuple[int, int, int, int]]) -> None:
+    """Pure-Python validator (the correctness floor)."""
     n = len(program)
     for i, (code, jt, jf, k) in enumerate(program):
         if jt > 0xFF or jf > 0xFF:
@@ -956,6 +971,16 @@ def simulate(
             )
     elif _force_enabled():
         raise PolicyError(_rust_force_error())
+    return _simulate_python(program, nr, arch, args)
+
+
+def _simulate_python(
+    program: List[Tuple[int, int, int, int]],
+    nr: int,
+    arch: int,
+    args: Optional[List[int]] = None,
+) -> int:
+    """Pure-Python BPF interpreter (the correctness floor)."""
     args = (args or []) + [0] * 6
     data = bytearray(64)
     data[OFF_NR:OFF_NR + 4] = (nr & 0xFFFFFFFF).to_bytes(4, "little")
