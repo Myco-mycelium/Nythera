@@ -225,7 +225,12 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
     let data = std::slice::from_raw_parts(buf, buf_len as usize);
     let mut pos = 0usize;
 
-    let take = |pos: &mut usize, n: usize, data: &[u8]| -> Option<&[u8]> {
+    // NOTE: `data` is the FIRST parameter of the closures whose output
+    // borrows from it — closure output-lifetime elision binds to the
+    // first input reference, so putting `&mut pos` first would tie the
+    // returned slice to `pos` instead of `data` (E0621: "lifetime may
+    // not live long enough").
+    let take = |data: &[u8], pos: &mut usize, n: usize| -> Option<&[u8]> {
         if *pos + n > data.len() {
             return None;
         }
@@ -234,50 +239,50 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
         Some(s)
     };
     let take_u32 = |pos: &mut usize, data: &[u8]| -> Option<u32> {
-        take(pos, 4, data).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        take(data, pos, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
-    let take_str = |pos: &mut usize, data: &[u8]| -> Option<(&[u8], u32)> {
+    let take_str = |data: &[u8], pos: &mut usize| -> Option<(&[u8], u32)> {
         let len = take_u32(pos, data)?;
         if len as usize > MAX_FIELD_BYTES {
             return None;
         }
-        let s = take(pos, len as usize, data)?;
+        let s = take(data, pos, len as usize)?;
         Some((s, len))
     };
 
-    if take(&mut pos, 4, data) != Some(MAGIC) {
+    if take(data, &mut pos, 4) != Some(MAGIC) {
         return ERR_INVALID_WIRE;
     }
-    if take(&mut pos, 1, data) != Some(&[WIRE_VERSION]) {
+    if take(data, &mut pos, 1) != Some(&[WIRE_VERSION]) {
         return ERR_INVALID_WIRE;
     }
-    let message_type = unwrap_wire!(take(&mut pos, 1, data))[0];
+    let message_type = unwrap_wire!(take(data, &mut pos, 1))[0];
     if message_type > 4 {
         return ERR_INVALID_WIRE;
     }
-    let ts_bytes = unwrap_wire!(take(&mut pos, 8, data));
+    let ts_bytes = unwrap_wire!(take(data, &mut pos, 8));
     let timestamp = f64::from_le_bytes([
         ts_bytes[0], ts_bytes[1], ts_bytes[2], ts_bytes[3],
         ts_bytes[4], ts_bytes[5], ts_bytes[6], ts_bytes[7],
     ]);
-    let (message_id, message_id_len) = unwrap_wire!(take_str(&mut pos, data));
-    let (sender_id, sender_id_len) = unwrap_wire!(take_str(&mut pos, data));
-    let (receiver_id, receiver_id_len) = unwrap_wire!(take_str(&mut pos, data));
-    let (reply_to, reply_to_len) = unwrap_wire!(take_str(&mut pos, data));
+    let (message_id, message_id_len) = unwrap_wire!(take_str(data, &mut pos));
+    let (sender_id, sender_id_len) = unwrap_wire!(take_str(data, &mut pos));
+    let (receiver_id, receiver_id_len) = unwrap_wire!(take_str(data, &mut pos));
+    let (reply_to, reply_to_len) = unwrap_wire!(take_str(data, &mut pos));
     let (payload, payload_len) = {
         let len = unwrap_wire!(take_u32(&mut pos, data));
         if len as usize > MAX_WIRE_BYTES {
             return ERR_INVALID_WIRE;
         }
-        (unwrap_wire!(take(&mut pos, len as usize, data)), len)
+        (unwrap_wire!(take(data, &mut pos, len as usize)), len)
     };
     let (caps_flat, caps_flat_len) = {
         let len = unwrap_wire!(take_u32(&mut pos, data));
-        (unwrap_wire!(take(&mut pos, len as usize, data)), len)
+        (unwrap_wire!(take(data, &mut pos, len as usize)), len)
     };
     let (metadata, metadata_len) = {
         let len = unwrap_wire!(take_u32(&mut pos, data));
-        (unwrap_wire!(take(&mut pos, len as usize, data)), len)
+        (unwrap_wire!(take(data, &mut pos, len as usize)), len)
     };
 
     // Exact consumption: a trailing byte is a malformed message.
