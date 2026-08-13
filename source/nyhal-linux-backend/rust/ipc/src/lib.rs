@@ -225,31 +225,31 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
     let data = std::slice::from_raw_parts(buf, buf_len as usize);
     let mut pos = 0usize;
 
-    // NOTE: the closures whose output borrows from `data` carry NO
-    // return-type annotation — an annotated `Option<&[u8]>` gets a
-    // fresh elided lifetime unrelated to `data` (E0621: "lifetime may
-    // not live long enough"; closures do not share fn-item output
-    // elision), while inference binds the output to `data`'s lifetime
-    // exactly.
-    let take = |data: &[u8], pos: &mut usize, n: usize| {
+    // NOTE: these are nested `fn` items, not closures — a closure
+    // returning a slice obtained by REBORROWING an argument cannot
+    // relate the output region to the input region (E0621: "lifetime
+    // may not live long enough"): the intermediate borrow gets a fresh
+    // region the closure signature cannot name. A fn item's explicit
+    // `'a` binds the output to `data`'s lifetime exactly.
+    fn take<'a>(data: &'a [u8], pos: &mut usize, n: usize) -> Option<&'a [u8]> {
         if *pos + n > data.len() {
             return None;
         }
         let s = &data[*pos..*pos + n];
         *pos += n;
         Some(s)
-    };
-    let take_u32 = |pos: &mut usize, data: &[u8]| -> Option<u32> {
+    }
+    fn take_u32(pos: &mut usize, data: &[u8]) -> Option<u32> {
         take(data, pos, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    };
-    let take_str = |data: &[u8], pos: &mut usize| {
+    }
+    fn take_str<'a>(data: &'a [u8], pos: &mut usize) -> Option<(&'a [u8], u32)> {
         let len = take_u32(pos, data)?;
         if len as usize > MAX_FIELD_BYTES {
             return None;
         }
         let s = take(data, pos, len as usize)?;
         Some((s, len))
-    };
+    }
 
     if take(data, &mut pos, 4) != Some(MAGIC) {
         return ERR_INVALID_WIRE;
