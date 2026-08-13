@@ -20,6 +20,7 @@ References:
 """
 
 import enum
+import json
 import logging
 import queue
 import threading
@@ -27,6 +28,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
+
+from . import ipc_codec  # ADR-0020 priority #4 FFI loader (wire codec)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,13 @@ class IPCMessageType(enum.Enum):
     CALL = "call"  # Synchronous request
     REPLY = "reply"  # Reply to call
     NOTIFY = "notify"  # Lightweight notification
+
+
+# The wire's message_type is the enum's ordinal (NPS-003 §3 order:
+# send, receive, call, reply, notify). These tables keep the enum and
+# the wire format in lockstep; the codec validates the range.
+_TYPE_INDEX = {t: i for i, t in enumerate(IPCMessageType)}
+_INDEX_TYPE = {i: t for i, t in enumerate(IPCMessageType)}
 
 
 @dataclass
@@ -65,6 +75,44 @@ class IPCMessage:
             f"sender={self.sender_id}, receiver={self.receiver_id}, "
             f"payload_size={len(self.payload)}, caps={len(self.capabilities)})"
         )
+
+    def to_wire(self) -> bytes:
+        """Serialize this message to the canonical wire format (the
+        transport boundary extracted in ADR-0020 priority #4). Routed
+        through ``ipc_codec``: the Rust codec when loaded, the
+        byte-identical ``struct`` floor otherwise. ``metadata`` is
+        serialized with ``json.dumps(sort_keys=True)`` so identical
+        dicts produce identical wire bytes on both paths."""
+        return ipc_codec.encode(
+            _TYPE_INDEX[self.message_type],
+            self.timestamp,
+            self.message_id,
+            self.sender_id,
+            self.receiver_id,
+            self.reply_to,
+            self.payload,
+            self.capabilities,
+            json.dumps(self.metadata, sort_keys=True).encode("utf-8"),
+        )
+
+    @classmethod
+    def from_wire(cls, buf: bytes) -> "IPCMessage":
+        """Parse a wire buffer back into a message (the inverse of
+        ``to_wire``). Raises ``ValueError`` on a malformed buffer."""
+        fields = ipc_codec.decode(buf)
+        message = cls(
+            message_id=fields["message_id"].decode("utf-8"),
+            message_type=_INDEX_TYPE[fields["message_type"]],
+            sender_id=fields["sender_id"].decode("utf-8"),
+            receiver_id=fields["receiver_id"].decode("utf-8"),
+            payload=fields["payload"],
+            capabilities=ipc_codec.split_caps_flat(fields["caps_flat"]),
+            metadata=json.loads(fields["metadata"].decode("utf-8")),
+            timestamp=fields["timestamp"],
+        )
+        if fields["reply_to"]:
+            message.reply_to = fields["reply_to"].decode("utf-8")
+        return message
 
 
 @dataclass

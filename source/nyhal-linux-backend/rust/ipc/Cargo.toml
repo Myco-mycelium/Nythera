@@ -1,0 +1,20 @@
+[package]
+name = "nyrqis-ipc"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis IPC message wire codec (binary framing) — ADR-0020 migration priority #4"
+
+[lib]
+name = "nyrqis_ipc"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `libc` is the crate's only dependency: the seccomp/nyfs ownership
+# contract (output buffers are libc::malloc'd here and freed by the
+# caller through nyrqis_ipc_free) and the -errno constants. The wire
+# format itself is hand-rolled (fixed-length header + length-prefixed
+# fields) — no framing/JSON/network dependencies, so the parsing trust
+# boundary is fully ours.
+libc = "0.2"

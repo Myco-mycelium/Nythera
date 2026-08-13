@@ -20,6 +20,7 @@ import random
 import shutil
 import signal
 import stat as stat_module
+import struct
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,7 @@ from fuse.nyfs import (
     NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount, _import_fusepy
 )
 from fuse import nyfs_codec
+from ipc import ipc_codec
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -2693,6 +2695,193 @@ class TestNyFSCodecLoader(unittest.TestCase):
         self.assertIn("checksum", str(cm.exception).lower())
 
 
+def _wire_message_cases():
+    """The message set the IPC codec differential tests run: all five
+    types, absent/present reply_to, empty and large payloads, empty and
+    multi-capability transfers, plain and nested metadata."""
+    return [
+        # (type_index, message_id, sender, receiver, reply_to, payload, caps, metadata)
+        (0, "m-empty", "c-a", "c-b", None, b"", [], {}),
+        (0, "m-payload", "c-a", "c-b", None, b"hello wire", [], {}),
+        (1, "m-recv", "c-a", "c-b", None, b"", [], {}),
+        (2, "m-call", "c-a", "c-b", None, b"request", ["CAP_IPC_SEND"], {"k": 1}),
+        (3, "m-reply", "c-a", "c-b", "m-call", b"response", [], {}),
+        (4, "m-notify", "c-a", "c-b", None, b"", [], {"evt": "respawn"}),
+        (0, "m-multi", "c-a", "c-b", "m-parent", b"x" * 4096,
+         ["CAP_IPC_SEND", "CAP_IPC_RECEIVE", "CAP_IPC_CALL"],
+         {"nested": {"deep": [1, 2, 3]}}),
+        (2, "m-big", "container-alpha", "container-beta", None,
+         b"payload-bytes;" * 4096, [], {"blob": "\u00e9\u00fc"}),
+    ]
+
+
+class TestIPCWireLoader(unittest.TestCase):
+    """ADR-0020 priority #4 FFI loader behavior (see rust/ipc/README.md):
+    the fallback contract and error mapping for the IPC wire codec
+    module. Like the seccomp/syscalls/nyfs loader tests, these pin the
+    loader on hosts WITHOUT the crate built; when the crate lands, the
+    CI conformance job (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        ipc_codec._RUST_LIB = None
+        ipc_codec._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        ipc_codec._RUST_LIB = None
+        ipc_codec._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_ipc.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_ipc.so"
+        self.assertEqual(
+            ipc_codec._rust_lib_candidates(),
+            ["/custom/libnyrqis_ipc.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            ipc_codec._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_invalid_wire_is_valueerror(self):
+        with self.assertRaises(ValueError) as cm:
+            ipc_codec._raise_rust_error(ipc_codec.RUST_ERR_INVALID_WIRE, "t")
+        self.assertIn("wire format", str(cm.exception))
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            ipc_codec._raise_rust_error(ipc_codec.RUST_ERR_INTERNAL, "test")
+
+    def test_floor_encode_is_byte_identical(self):
+        # The canonical layout, pinned byte-for-byte (the Rust encoder
+        # must match this exactly — see encode_layout_is_canonical in the
+        # crate's tests).
+        wire = ipc_codec._py_encode(
+            2, 1234.5, b"id1", b"s1", b"r1", b"", b"hello", b"", b"{}"
+        )
+        self.assertEqual(wire[:4], b"NYRQ")
+        self.assertEqual(wire[4], 1)
+        self.assertEqual(wire[5], 2)
+        self.assertEqual(wire[6:14], struct.pack("<d", 1234.5))
+        self.assertEqual(wire[14:18], struct.pack("<I", 3))
+        self.assertEqual(wire[18:21], b"id1")
+        self.assertEqual(wire[21:25], struct.pack("<I", 2))
+        self.assertEqual(wire[25:27], b"s1")
+        self.assertEqual(wire[27:31], struct.pack("<I", 2))
+        self.assertEqual(wire[31:33], b"r1")
+        self.assertEqual(wire[33:37], struct.pack("<I", 0))
+        self.assertEqual(wire[37:41], struct.pack("<I", 5))
+        self.assertEqual(wire[41:46], b"hello")
+        self.assertEqual(wire[46:50], struct.pack("<I", 0))
+        self.assertEqual(wire[50:54], struct.pack("<I", 2))
+        self.assertEqual(wire[54:56], b"{}")
+        self.assertEqual(len(wire), 56)
+
+    def test_absent_backend_falls_back_to_struct_floor(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(ipc_codec._load_rust_backend())
+        wire = ipc_codec.encode(0, 1.5, "mid", "cs", "cr", None, b"p", [], b"{}")
+        fields = ipc_codec.decode(wire)
+        self.assertEqual(fields["message_id"], b"mid")
+        self.assertEqual(fields["payload"], b"p")
+        self.assertEqual(fields["timestamp"], 1.5)
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            ipc_codec.encode(0, 1.0, "m", "s", "r", None, b"", [], b"{}")
+
+    def test_ffi_routing_with_fake_lib(self):
+        # With a lib loaded, encode must drive the FFI entry point with
+        # the expected arguments and never touch ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_ipc_version.return_value = ipc_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_ipc_encode.return_value = ipc_codec.RUST_ERR_INTERNAL
+        # FORCE mode: a Rust failure must surface, not fall back (in
+        # normal mode the -4096 would correctly fall back to the floor).
+        with mock.patch.object(
+            ipc_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch("ipc.ipc_codec.ctypes.CDLL") as cdll_mock, mock.patch.dict(
+            os.environ, {"NYRQIS_RUST_FORCE": "1"}
+        ):
+            with self.assertRaises(RuntimeError):
+                ipc_codec.encode(2, 7.5, "mid", "s1", "r1", "call-id",
+                                 b"payload", ["CAP_IPC_SEND"], b"{}")
+        fake.nyrqis_ipc_encode.assert_called_once()
+        cdll_mock.assert_not_called()
+        args = fake.nyrqis_ipc_encode.call_args.args
+        self.assertEqual(args[0], 2)  # message_type
+        self.assertEqual(args[1], 7.5)  # timestamp
+
+    def test_rust_call_failure_falls_back_in_normal_mode(self):
+        # NORMAL-mode path: a Rust routing failure must not break
+        # non-force users. Must not inherit NYRQIS_RUST_FORCE from a gate
+        # env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        fake = mock.Mock()
+        fake.nyrqis_ipc_version.return_value = ipc_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_ipc_encode.side_effect = OSError("boom")
+        with mock.patch.object(
+            ipc_codec, "_load_rust_backend", return_value=fake
+        ):
+            wire = ipc_codec.encode(0, 1.0, "m", "s", "r", None, b"p", [], b"{}")
+        self.assertEqual(ipc_codec.decode(wire)["message_id"], b"m")
+
+    def test_force_mode_raises_on_rust_call_failure(self):
+        fake = mock.Mock()
+        fake.nyrqis_ipc_version.return_value = ipc_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_ipc_encode.side_effect = OSError("boom")
+        with mock.patch.object(
+            ipc_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch.dict(os.environ, {"NYRQIS_RUST_FORCE": "1"}):
+            with self.assertRaises(OSError):
+                ipc_codec.encode(0, 1.0, "m", "s", "r", None, b"p", [], b"{}")
+
+    def test_floor_decode_rejects_malformed(self):
+        wire = ipc_codec._py_encode(0, 1.0, b"m", b"s", b"r", b"", b"p", b"", b"{}")
+        for bad in (
+            wire[:3],                                        # truncated header
+            b"X" + wire[1:],                                 # bad magic
+            wire[:4] + bytes([2]) + wire[5:],                 # wrong version
+            wire[:-1],                                       # truncated tail
+            wire + b"\x00",                                  # trailing garbage
+        ):
+            with self.assertRaises(ValueError):
+                ipc_codec._py_decode(bad)
+
+    def test_caps_flat_roundtrip(self):
+        caps = ["CAP_IPC_SEND", "CAP_IPC_RECEIVE"]
+        self.assertEqual(ipc_codec.split_caps_flat(ipc_codec.build_caps_flat(caps)), caps)
+        self.assertEqual(ipc_codec.split_caps_flat(b""), [])
+
+    def test_message_to_wire_from_wire_roundtrip(self):
+        # The core wiring: a real IPCMessage through to_wire/from_wire on
+        # the floor path (byte-identical to the Rust path — verified in
+        # the conformance class).
+        message = IPCMessage(
+            message_type=IPCMessageType.CALL,
+            sender_id="c-a", receiver_id="c-b",
+            payload=b"roundtrip", capabilities=["CAP_IPC_SEND"],
+            metadata={"n": 1}, reply_to=None,
+        )
+        restored = IPCMessage.from_wire(message.to_wire())
+        self.assertEqual(restored.message_type, message.message_type)
+        self.assertEqual(restored.sender_id, message.sender_id)
+        self.assertEqual(restored.receiver_id, message.receiver_id)
+        self.assertEqual(restored.payload, message.payload)
+        self.assertEqual(restored.capabilities, message.capabilities)
+        self.assertEqual(restored.metadata, message.metadata)
+
+
 class TestRustSyscallsConformance(unittest.TestCase):
     """Real-FFI conformance for the syscalls module (the direct-syscall
     launcher's primitives). Skips on hosts without the crate; the CI
@@ -2816,6 +3005,102 @@ class TestNyFSCodecConformance(unittest.TestCase):
         self.assertLess(len(compressed), len(data))
 
 
+class TestIPCCodecConformance(unittest.TestCase):
+    """Real-FFI conformance for the IPC wire codec (ADR-0020 priority
+    #4). Skips on hosts without the crate; the CI
+    ``rust-ipc-conformance`` job builds it and sets ``NYRQIS_RUST_LIB``
+    so these drive the actual Rust module. The differential core: the
+    Rust module and the pure-Python floor must agree byte-for-byte on
+    the wire format and field-for-field on decoding, across the message
+    corpus, and must reject the same malformed inputs.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = ipc_codec._load_rust_backend()
+
+    def _skip_unless_lib(self):
+        if self.lib is None:
+            self.skipTest("Rust IPC wire codec not built on this host")
+
+    def test_abi_version_meets_contract(self):
+        self._skip_unless_lib()
+        self.assertGreaterEqual(
+            self.lib.nyrqis_ipc_version(), ipc_codec.MIN_RUST_ABI_VERSION
+        )
+
+    def test_encode_matches_python_floor_byte_identical(self):
+        self._skip_unless_lib()
+        for case in _wire_message_cases():
+            mtype, mid, sender, receiver, reply, payload, caps, meta = case
+            ts = 1234.5
+            kwargs = dict(
+                message_type=mtype, timestamp=ts,
+                message_id=mid, sender_id=sender, receiver_id=receiver,
+                reply_to=reply, payload=payload, capabilities=caps,
+                metadata_blob=json.dumps(meta, sort_keys=True).encode(),
+            )
+            rust_wire = ipc_codec.encode(**kwargs)  # drives the Rust module
+            py_wire = ipc_codec._py_encode(
+                mtype, ts,
+                mid.encode(), sender.encode(), receiver.encode(),
+                (reply or "").encode(), payload,
+                ipc_codec.build_caps_flat(caps),
+                json.dumps(meta, sort_keys=True).encode(),
+            )
+            self.assertEqual(
+                rust_wire, py_wire,
+                f"Rust wire diverges from floor for {mid}",
+            )
+
+    def test_decode_matches_python_floor(self):
+        self._skip_unless_lib()
+        for case in _wire_message_cases():
+            mtype, mid, sender, receiver, reply, payload, caps, meta = case
+            wire = ipc_codec._py_encode(
+                mtype, 1234.5,
+                mid.encode(), sender.encode(), receiver.encode(),
+                (reply or "").encode(), payload,
+                ipc_codec.build_caps_flat(caps),
+                json.dumps(meta, sort_keys=True).encode(),
+            )
+            rust_fields = ipc_codec.decode(wire)   # drives the Rust module
+            py_fields = ipc_codec._py_decode(wire)
+            self.assertEqual(rust_fields, py_fields, f"decode diverges for {mid}")
+            self.assertEqual(rust_fields["message_id"], mid.encode())
+            self.assertEqual(rust_fields["timestamp"], 1234.5)
+
+    def test_roundtrip_preserves_message_through_core(self):
+        self._skip_unless_lib()
+        for case in _wire_message_cases():
+            mtype, mid, sender, receiver, reply, payload, caps, meta = case
+            message = IPCMessage(
+                message_type=list(IPCMessageType)[mtype],
+                message_id=mid, sender_id=sender, receiver_id=receiver,
+                reply_to=reply, payload=payload, capabilities=caps,
+                metadata=meta,
+            )
+            restored = IPCMessage.from_wire(message.to_wire())
+            self.assertEqual(restored.message_type, message.message_type)
+            self.assertEqual(restored.payload, payload)
+            self.assertEqual(restored.capabilities, caps)
+            self.assertEqual(restored.metadata, meta)
+            self.assertEqual(restored.reply_to, reply)
+
+    def test_rust_decode_rejects_malformed_like_floor(self):
+        self._skip_unless_lib()
+        wire = ipc_codec._py_encode(0, 1.0, b"m", b"s", b"r", b"", b"p", b"", b"{}")
+        for bad in (
+            wire[:3],
+            b"X" + wire[1:],
+            wire[:4] + bytes([2]) + wire[5:],
+            wire[:-1],
+            wire + b"\x00",
+        ):
+            with self.assertRaises(ValueError):
+                ipc_codec.decode(bad)
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -2874,6 +3159,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestIPCWireLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

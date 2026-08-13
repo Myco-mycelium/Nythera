@@ -260,7 +260,10 @@ platform-boundary rule's obligation. In order:
    themselves remain Python in the reference backend, wired to the
    codec through `fuse/nyfs_codec.py`).
 4. **IPC core transport** (networking = Rust), after the Python IPC
-   semantics are stable and benchmarked.
+   semantics are stable and benchmarked. **IMPLEMENTED 2026-08-13**
+   (the message wire codec — binary framing — shipped in
+   `rust/ipc/`, wired as `IPCMessage.to_wire()`/`from_wire()`; the
+   in-process `IPCManager` transport semantics are unchanged).
 5. **Container primitives and launcher** (NyCore/NyHAL = Rust),
    incrementally, keeping the Python reference implementation green
    throughout.
@@ -289,5 +292,9 @@ platform-boundary rule's obligation. In order:
 - `source/nyhal-linux-backend/rust/nyfs/` — migration #3:
   **IMPLEMENTED 2026-08-13** (SHA-256 checksum + Zstandard block codec,
   ABI 1.0.0; loader `fuse/nyfs_codec.py`; conformance gate green and
-  required). The dev host still has no Rust toolchain — CI builds and
-  tests every crate on each push.
+  required).
+- `source/nyhal-linux-backend/rust/ipc/` — migration #4:
+  **IMPLEMENTED 2026-08-13** (IPC message wire codec, ABI 1.0.0,
+  dependency-free; loader `ipc/ipc_codec.py`; conformance gate green
+  and required). The dev host still has no Rust toolchain — CI builds
+  and tests every crate on each push.
