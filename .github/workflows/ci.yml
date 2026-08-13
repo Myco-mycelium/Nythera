@@ -6,10 +6,9 @@
 #   the dev host has no Rust toolchain.
 # - `rust-seccomp-conformance`: the port's definition of "shipped". It
 #   forces the full Python test suite through the Rust module via the FFI
-#   loader (NYRQIS_RUST_FORCE=1). It FAILS while the crate returns
-#   ERR_INTERNAL (scaffold status) and turns green automatically when the
-#   port lands — hence continue-on-error, so it never blocks a build it
-#   is supposed to watch.
+#   loader (NYRQIS_RUST_FORCE=1). The port landed 2026-08-13 and the gate
+#   is GREEN, so it is a required, blocking job — a semantic regression
+#   in the Rust compiler now fails the build.
 # - `backend`: the pure-Python correctness floor (the only shipped
 #   implementation until conformance passes).
 
@@ -52,9 +51,8 @@ jobs:
         run: test -s target/release/libnyrqis_syscalls.so
 
   rust-seccomp-conformance:
-    name: Rust FFI conformance (ignored until the port lands)
+    name: Rust FFI conformance (required gate)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

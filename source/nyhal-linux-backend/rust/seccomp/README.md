@@ -31,10 +31,9 @@ wrapper, tracked by the syscalls module's `prctl` primitive).
    `rust-seccomp-conformance` job builds the crate and runs the full
    Python test suite with `NYRQIS_RUST_FORCE=1` and
    `NYRQIS_RUST_LIB` set to the built cdylib — every seccomp test then
-   drives this module through the FFI. The job goes green with this
-   implementation; once the push's CI run confirms it, the follow-up
-   commit removes the `continue-on-error` scaffold accommodation and
-   makes it a required, blocking gate.
+   drives this module through the FFI. The job is green and is a
+   **required, blocking gate** (the `continue-on-error` scaffold
+   accommodation was removed when the port verified green).
 4. **Error contract.** `NyrqisErr` codes (-1 policy parse, -2
    unsupported arch, -3 invalid program, -4 internal) map back to the
    same `PolicyError`/`ValueError` the pure-Python path raises.
