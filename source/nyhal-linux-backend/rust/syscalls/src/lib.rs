@@ -219,14 +219,20 @@ mod tests {
 
     #[test]
     fn prctl_get_name_roundtrip() {
-        // PR_GET_NAME (15) writes the calling thread's name into the
+        // PR_GET_NAME (16) writes the calling thread's name into the
         // caller buffer — a safe, unprivileged, deterministic read that
         // exercises the full wrapper path (variadic libc call + errno
-        // contract). Any name is acceptable; the call must succeed.
+        // contract). Any name is acceptable; the call must succeed and
+        // must actually WRITE it (15 is PR_SET_NAME: passing an empty
+        // buffer succeeds and writes nothing, which would make the
+        // "contains a NUL" assertion pass trivially).
         let mut buf = [0i8; 16];
-        let rc = unsafe { nyrqis_syscalls_prctl(15, buf.as_mut_ptr() as u64, 0, 0, 0) };
+        let rc = unsafe { nyrqis_syscalls_prctl(16, buf.as_mut_ptr() as u64, 0, 0, 0) };
         assert_eq!(rc, 0);
-        // The buffer must contain at least a terminating NUL.
+        // The thread name is a NUL-terminated string; the first byte
+        // must be non-NUL, proving the kernel wrote into the buffer.
+        assert_ne!(buf[0], 0, "PR_GET_NAME wrote nothing");
+        // And the rest is NUL-terminated.
         assert!(buf.iter().any(|&b| b == 0));
     }
 

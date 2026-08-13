@@ -2578,10 +2578,13 @@ class TestRustSyscallsConformance(unittest.TestCase):
 
     def test_prctl_get_name_roundtrip(self):
         self._skip_unless_lib()
-        # PR_GET_NAME (15) writes the calling thread's name — a safe,
+        # PR_GET_NAME (16) writes the calling thread's name — a safe,
         # deterministic read that exercises the variadic prctl wrapper.
+        # (15 is PR_SET_NAME: calling it with an empty buffer would
+        # succeed and write nothing, which is exactly the failure this
+        # test must not make.)
         buf = ctypes.create_string_buffer(16)
-        rc = rust_syscalls.prctl(15, ctypes.addressof(buf), 0, 0, 0)
+        rc = rust_syscalls.prctl(16, ctypes.addressof(buf), 0, 0, 0)
         self.assertEqual(rc, 0)
         self.assertGreater(len(buf.value), 0)
 
