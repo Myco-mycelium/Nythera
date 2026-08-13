@@ -1,11 +1,16 @@
 # Rust Migration Workspace (ADR-0020)
 
 First ADR-0020 migration landing pad for the Linux backend. Per
-**ADR-0020** (Python and Rust as the Nyrqis implementation languages),
-kernel-adjacent, hot-path, and security-critical components migrate to
-Rust behind a versioned FFI boundary; user-space orchestration stays
-Python. See `docs/reference/adr/ADR-0020-implementation-languages.md`
-for the full strategy and the ABI rule.
+**ADR-0020** (Implementation Languages and the Platform Boundary), the
+canonical language matrix assigns the platform layers — including
+NyHAL (Rust-first), security services, storage, and networking — to
+compiled languages, and the platform-boundary principle rules that
+**platform-critical execution paths must not depend on the Python
+interpreter**; Python remains the unrestricted language for tooling
+above the boundary. Migrations land behind a versioned FFI boundary
+(ABI-001); user-space tooling, tests, and benchmarks stay Python. See
+`docs/reference/adr/ADR-0020-implementation-languages.md` for the full
+matrix and the three normative rules.
 
 ## Status
 
@@ -25,4 +30,8 @@ verified (serializer + round-trip + syscall-table fixes in
 contract). The Rust implementation itself remains to be written and
 built once a toolchain exists. The pure-Python implementation remains
 the only shipped implementation until the first Rust module passes its
-conformance suite through the FFI.
+conformance suite through the FFI. This is the concrete application of
+ADR-0020's **platform-boundary rule**: the seccomp enforcement path
+below it is platform-critical and must not depend on the interpreter
+in its shipped form — the Python implementation remains the reference
+behavior while the Rust module behind the FFI is built.

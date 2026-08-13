@@ -1,16 +1,16 @@
 ---
-title: Python and Rust as the Nyrqis Implementation Languages
+title: Implementation Languages and the Platform Boundary
 document_id: ADR-0020
-version: 1.0.0
+version: 2.0.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0006, ADR-0012, ADR-0016, ABI-001]
 ---
 
-# ADR-0020 — Python and Rust as the Nyrqis Implementation Languages
+# ADR-0020 — Implementation Languages and the Platform Boundary
 
 ## Context
 
@@ -18,150 +18,254 @@ Nyrqis spans components with very different requirements: a hybrid
 microkernel (ADR-0006), kernel-abstraction backends (ADR-0012), a
 user-space NyFS FUSE implementation (ADR-0016), a Windows/Android
 compatibility story (ADR-0005, ADR-0008), an ABI contract (ABI-001),
-and the tooling around all of it. No document currently records the
-implementation-language strategy. The only written signals are
-scattered: `docs/implementation_plan.md` notes the Linux-backend PoC is
-Python and that production syscall/FUSE hot paths will need
-"`ctypes` or a dedicated C/Rust component"; `sdk/README.md` anticipates
-language bindings.
+and the tooling around all of it.
 
-This gap has real costs. Without a recorded strategy, component teams
-pick languages inconsistently, the FFI surface grows unplanned and
-unversioned (fighting ABI-001), and new kernel-adjacent code may be
-written in memory-unsafe languages that contradict the safety posture
-of ADR-0006's hybrid-microkernel decision. The decision below is a
-strategy, not a prohibition: it names two primary languages, assigns
-each to a component class, and sets the rules for the boundary between
-them.
+Version 1.0.0 of this ADR (2026-08-12) recorded a two-primary-language
+strategy: **Python** for the user-space service and rapid-iteration
+layer, **Rust** for kernel-adjacent, hot-path, and security-critical
+components, with C permitted only at the FFI edge. That decision is
+now superseded by the canonical language list (2026-08-13): Nyrqis
+speaks **Rust, C++, and C** as its platform languages — C++ is a
+first-class primary for NyHAL-adjacent layers (UI, Shell, Game), notan FFI-edge exception — and **Python's role is bounded by the platform
+boundary**, not by component class. This revision records the canonical
+matrix — with the one reconciliation noted below — and elevates the
+boundary rule to a normative engineering principle.
 
 ## Decision (Proposed)
 
-Nyrqis implements its components in **two primary languages**, chosen
-by component class:
+Nyrqis implements its components per the canonical language matrix
+below. Two views of the same decision are recorded, because the
+canonical list itself provides both: the **layer map** (which layer
+owns which language) and the **component map** (which additionally
+states Python's role per component). Where the two views disagree, the
+component map is canonical — specifically **NyHAL is Rust-first**
+(resolved 2026-08-13; the layer map's "C++ / C" row for NyHAL is
+superseded). The same rule resolves the bootloader's row ordering (the
+layer map lists "C / Rust"; the component map, canonical here, lists
+"Rust/C" — both are the same language set, ordered by the component
+map).
 
-1. **Python** is the language for the **user-space service and
-   rapid-iteration layer**: the NyHAL Linux-backend user-space stack
-   (container primitives, capability enforcement, seccomp policy
-   *compilation*, IPC orchestration, NyFS FUSE operations), build and
-   test tooling, CI, and SDK bindings. This is the current de facto
-   standard (the entire `source/nyhal-linux-backend/` tree is Python,
-   103/103 tests green) and it is retained deliberately: fast
-   iteration, a deep standard library, and a first-pass benchmarking
-   workflow that has driven real decisions (BENCHMARK_RESULTS §1–§14).
+### Canonical language matrix — layer view
 
-2. **Rust** is the language for **kernel-adjacent, hot-path, and
-   security-critical components**: the NyKernel itself (ADR-0006), the
-   NyKernel backend of NyHAL (ADR-0012), direct syscall wrappers
-   (`clone()`, `unshare()`, … where the plan's `ctypes` fallback is
-   insufficient), the seccomp BPF *generation and installation* path,
-   the NyFS block-store/checksum/compression hot path where measured
-   performance requires it, and the bootloader/secure-boot chain
-   (ADR-0014). Rationale: memory safety without a GC, deterministic
-   performance, and alignment with the microkernel's security posture.
-   Rust is chosen over the plan's generic "C/Rust" for new code; C
-   **MAY** remain only at the FFI edge or where a component already
-   exists, and only with explicit review.
+| Nyrqis layer                 | Primary language     | Secondary / supporting                       |
+| ---------------------------- | -------------------- | -------------------------------------------- |
+| **NyHAL**                    | **Rust**             | C/C++ where hardware integration requires it |
+| **NyCore**                   | Rust                 | C++                                          |
+| **NyRuntime**                | Rust                 | C++                                          |
+| **NySDK**                    | Rust + C++           | C# bindings                                  |
+| **NyUI**                     | C++ + declarative UI | Rust                                         |
+| **NyShell**                  | C++                  | Rust                                         |
+| **NyGame**                   | C++ + Rust           | C                                            |
+| **NyAI**                     | Rust                 | Python for tooling/research                  |
+| **NyPackage**                | Rust                 | —                                            |
+| **NyVault / storage**        | Rust                 | C/C++ where hardware integration requires it |
+| **Networking**               | Rust                 | C                                            |
+| **Security services**        | Rust                 | C                                            |
+| **Build tools**              | Rust                 | Python                                       |
+| **Testing**                  | Rust                 | Python                                       |
+| **Developer tools / automation** | Rust             | Python                                       |
+| **Bootloader / lowest-level**| Rust / C             | Assembly where absolutely necessary          |
+| **Linux kernel**             | C                    | —                                            |
 
-Two rules govern the boundary (these are the normative part):
+### Canonical language matrix — component view (Python roles)
 
-- **ABI rule**: the boundary between Python and Rust **MUST** be a
-  versioned FFI/ABI surface (Python `ctypes`/`cffi` ↔ Rust `cdylib`
-  entry points) governed by ABI-001. The Python layer **MUST NOT**
-  reach into Rust internals, and **MUST NOT** share mutable state
-  across the boundary — only data crossing stable, versioned entry
-  points.
-- **Migration rule**: an existing, working Python component
-  **SHOULD NOT** be rewritten in Rust for style. A rewrite **MUST** be
-  justified by measured performance data or a security finding
-  (NPC-002 §5.2 — no fabricated numbers; a claim without a benchmark
-  stays pending data). This keeps the transition evidence-driven and
-  prevents churn of a tested, working backend.
+| Component            | Primary    | Python role                          |
+| -------------------- | ---------- | ------------------------------------ |
+| Bootloader           | Rust/C     | None                                 |
+| Linux kernel         | C          | None                                 |
+| **NyHAL**            | Rust/C/C++ | None                                 |
+| **NyCore**           | Rust       | Limited tooling                      |
+| **NyRuntime**        | Rust       | Limited tooling                      |
+| **NyUI**             | C++/Rust   | **High** — UI tooling                |
+| **NyShell**          | C++/Rust   | Medium — automation/extensions       |
+| **NyForge**          | Rust/C++   | **Very High**                        |
+| **NySDK**            | Rust/C++   | **High** — Python SDK                |
+| **NyGame**           | C++/Rust   | **High** — asset/build/modding tools |
+| **NyAI**             | Rust       | **Very High**                        |
+| **NyPackage**        | Rust       | High — package tooling               |
+| **NyVault**          | Rust       | Medium — administration/tools        |
+| **Networking**       | Rust/C     | Medium — diagnostics/tools           |
+| **Security tooling** | Rust       | **High** — auditing/analysis         |
+| **Build system**     | Rust       | **Very High**                        |
+| **Testing**          | Rust       | **Very High**                        |
+| **Developer tools**  | Rust       | **Very High**                        |
+| Documentation        | —          | **Very High**                        |
+| CI/CD automation     | —          | **Very High**                        |
+| Research/prototyping | —          | **Very High**                        |
+
+### The platform-boundary principle (normative)
+
+The engineering principle this ADR establishes:
+
+> Python may be used extensively **above the platform boundary**, but
+> **platform-critical execution paths must not depend on the Python
+> interpreter**.
+
+For the purposes of this ADR:
+
+- The **platform boundary** separates the *shipped platform* (kernel,
+  bootloader, HAL, core, runtime, UI, shell, game, AI, package
+  management, storage, networking, security) from everything that
+  *builds, tests, automates, administers, or researches* it. Tools,
+  build systems, test harnesses, CI/CD, documentation pipelines,
+  SDK bindings, diagnostics, and research/prototyping sit **above** the
+  boundary.
+- A **platform-critical execution path** is any code the shipped
+  platform runs as part of a user-visible or security-relevant
+  operation: syscall handling, seccomp enforcement, FUSE operations,
+  IPC transport, container launch, boot sequencing — anything an
+  application or the security model depends on.
+- Python's component-map roles above — tooling, automation, research,
+  SDK bindings, administration — are all **above the boundary**.
+  **None** of the platform layers (below the boundary) lists Python as
+  a primary or secondary execution language.
+
+### Boundary rules (normative)
+
+1. **Platform-boundary rule (new):** platform-critical execution paths
+   **MUST NOT** depend on the Python interpreter. The shipped platform
+   is implemented in Rust, C++, and C per the matrix. Python **MAY**
+   be used freely above the boundary, including for tools that *build,
+   test, package, or administer* the platform.
+2. **ABI rule (unchanged):** the boundary between language runtimes
+   **MUST** be a versioned FFI/ABI surface (Python `ctypes`/`cffi` ↔
+   Rust `cdylib`, C++ ↔ Rust `extern "C"`, …) governed by ABI-001. No
+   shared mutable state across the boundary — only data crossing
+   stable, versioned entry points.
+3. **Migration rule (updated):** an existing, working Python component
+   **SHOULD NOT** be rewritten for style alone; a rewrite **MUST** be
+   justified by measured performance data, a security finding
+   (NPC-002 §5.2 — no fabricated numbers), **or by this ADR's
+   platform-boundary rule** (the component is a platform-critical
+   execution path that must not depend on the interpreter). The
+   conformance bar is unchanged: the migrated component's existing test
+   suite must pass through the FFI.
+
+## What this means for the current Linux backend
+
+`source/nyhal-linux-backend/` is today an **all-Python** implementation
+of NyHAL's Linux contract — and its core components are platform-critical
+execution paths: seccomp-BPF enforcement (`backend/seccomp.py`), FUSE
+operations (`fuse/nyfs.py`), container launch and namespacing
+(`backend/container.py`, `backend/launcher.py`), and the IPC core
+(`ipc/core.py`). Under the platform-boundary rule, the **shipped** form
+of those paths must not depend on the Python interpreter.
+
+The current implementation is a research and prototype implementation —
+legitimate under the matrix (research/prototyping is a very-high Python
+role) — but it is **not** the shipped form of the platform. The path to
+conformance is the ADR-0020 migration queue below, not a rewrite of
+everything at once: the Python implementation remains the reference
+behavior, the test suite and benchmarks stay Python (above the
+boundary), and each platform-critical module migrates to Rust (or
+C/C++) behind ABI-001 with its existing suite forced through the FFI.
+The seccomp policy compiler — the first migration — already has its
+scaffold, wire format, FFI loader, and conformance gate in place
+(`source/nyhal-linux-backend/rust/seccomp/`).
 
 ## Alternatives Considered
 
 - **All-Rust** — rejected as the immediate strategy: it would discard
   the working, tested Python backend and slow iteration while the
   product needs velocity; it remains available for greenfield
-  components where the language class rules above already point to
-  Rust anyway.
+  components where the matrix already points to Rust anyway.
 - **All-Python** — rejected: cannot satisfy the kernel, boot, and
-  hot-path requirements, and would conflict with the Manifest's
-  Performance principle (NTM-000 §4).
-- **C/C++ as the primary systems language** — rejected for new
-  kernel-adjacent code: manual memory management contradicts the
-  safety posture ADR-0006 established for the microkernel, and the
-  plan's own "C/Rust" framing is satisfied by Rust. C remains an
-  allowed FFI-edge exception under the ABI rule.
-- **Go** — rejected: GC pauses and runtime footprint are unsuitable
-  for kernel-adjacent and boot code; it is not needed as a third
-  language for tooling Python already covers.
+  hot-path requirements, would conflict with the Manifest's Performance
+  principle (NTM-000 §4), and would violate the platform-boundary rule
+  this ADR establishes.
+- **Python as the user-space service language (v1.0.0 of this ADR)** —
+  rejected in this revision: the user-space *platform services* (UI,
+  Shell, Game, storage, networking, security) are as platform-critical
+  as kernel-adjacent code, so they follow the same rule — compiled
+  implementation, Python allowed only for their tooling.
+- **C++ as the single systems language** — rejected for the
+  security-critical core: manual memory management contradicts the
+  safety posture ADR-0006 established for the microkernel. C++ is a
+  primary *where the matrix says so* (UI, Shell, Game, SDK), not a
+  default.
+- **Go** — rejected: GC pauses and runtime footprint are unsuitable for
+  kernel-adjacent and boot code; it is not needed as a third language
+  for tooling Python already covers above the boundary.
 - **Zig** — deferred: interesting for kernel work, but Rust already
-  covers the memory-safe-systems niche with a far larger ecosystem,
-  and adding a third systems language would split the small
-  kernel-team effort.
+  covers the memory-safe-systems niche with a far larger ecosystem.
 
 ## Consequences
 
 Positive:
-- One documented strategy ends ad-hoc language drift and gives
-  reviewers a rule to enforce.
-- The tested Python backend is preserved; Rust brings memory safety to
-  the security-critical core consistent with ADR-0006.
+- The canonical matrix ends ad-hoc language drift and gives reviewers a
+  single table to enforce against.
+- The platform-boundary principle makes Python's role explicit and
+  stable: above the boundary it is unrestricted and welcome; below it,
+  execution paths are compiled. No more per-team interpretation.
+- The tested Python backend is preserved as the reference
+  implementation; Rust/C++ bring memory safety and performance to the
+  security-critical core consistent with ADR-0006.
 - The versioned FFI boundary (ABI rule) gives an incremental,
-  evidence-driven migration path from Python to Rust instead of a
-  rewrite.
+  evidence-driven migration path instead of a rewrite.
 
 Negative:
-- A two-language tax: two toolchains, FFI ceremony, and build-system
-  integration. This is accepted as the cost of matching the language
-  to the component class.
-- The FFI boundary is a new trust surface that ABI-001 **MUST**
-  cover (data layout, versioning, error marshalling).
-- The migration rule bounds, but cannot eliminate, the risk of
-  premature rewrites — review gates on evidence.
+- A multi-language tax: three platform languages plus Python, FFI
+  ceremony, and build-system integration. Accepted as the cost of
+  matching the language to the layer.
+- The FFI boundary is a new trust surface that ABI-001 **MUST** cover
+  (data layout, versioning, error marshalling).
+- The current Python backend's platform-critical modules carry a
+  **migration obligation** (the boundary rule), which is a real,
+  scheduled engineering cost — even where performance data alone would
+  not have justified a rewrite.
 
 Affected owners **MUST** be tagged for review: kernel (NyKernel
-backend), Linux backend, NyFS storage, and ABI ownership.
-Architecture Group acceptance is required before this ADR is binding
-(NPC-001 §6.4); until then the current de facto state (Python
-everywhere) remains unchanged.
+backend), Linux backend, NyFS storage, and ABI ownership. Architecture
+Group acceptance is required before this ADR is binding (NPC-001 §6.4);
+until then the current de facto state (Python everywhere in the Linux
+backend) remains unchanged, with the migration queue below as the
+accepted plan.
 
 ## Manifest Alignment
 
-Advances NTM-000 §4 principles: **Performance** (Rust for hot paths),
-**Security** (memory-safe systems code in the kernel/security core),
-**Longevity** (a small, documented two-language strategy instead of
-unplanned sprawl), **Simplicity** (two languages with a clear boundary
-rule, not one language per team). Does not violate NTM-000 §5 ("What
-Nyrqis Will Never Become") — nothing in that section concerns
-implementation language.
+Advances NTM-000 §4 principles: **Performance** (Rust/C++ for hot
+paths), **Security** (memory-safe systems code in the kernel/security
+core), **Longevity** (a small, documented matrix instead of unplanned
+sprawl), **Simplicity** (a boundary rule that removes interpretation,
+not one language per team). Does not violate NTM-000 §5 ("What Nyrqis
+Will Never Become") — nothing in that section concerns implementation
+language.
 
 ## Transition Priorities (initial)
 
-These are the first candidates for the Python → Rust migration, in
-order, each gated on the Migration rule's evidence requirement:
+Each item is gated on the Migration rule's evidence requirement and the
+platform-boundary rule's obligation. In order:
 
-1. Seccomp BPF generation and installation (security-critical; the
-   policy compiler is already a well-bounded, pure function — the
-   natural first Rust module).
-2. Direct syscall wrappers (`clone`, `unshare`, namespace setup) per
-   `docs/implementation_plan.md`.
-3. NyFS checksum + compression hot path, only if the existing §4/§5
-   benchmark data (small-op cost dominated by per-call block
-   compression + per-read checksum verification) shows the Python path
-   is a measured bottleneck.
-4. NyKernel bootstrap and its NyHAL backend (with the NyKernel
+1. **Seccomp BPF generation and installation** (security services =
+   Rust; security-critical; the policy compiler is already a
+   well-bounded, pure function — the natural first Rust module;
+   scaffold, wire format, FFI loader, and CI conformance gate in
+   place).
+2. **Direct syscall wrappers** (`clone`, `unshare`, namespace setup)
+   per `docs/implementation_plan.md` (NyHAL = Rust-first).
+3. **NyFS checksum + compression + FUSE hot paths** (storage = Rust),
+   using the existing §4/§5/§6 benchmark data to set the extraction
+   boundary.
+4. **IPC core transport** (networking = Rust), after the Python IPC
+   semantics are stable and benchmarked.
+5. **Container primitives and launcher** (NyCore/NyHAL = Rust),
+   incrementally, keeping the Python reference implementation green
+   throughout.
+6. **NyKernel bootstrap and its NyHAL backend** (with the NyKernel
    project itself).
 
 ## References
 
+- The canonical language list (layer map + component map), recorded
+  2026-08-13 — the authoritative source this revision implements
+  verbatim.
 - `docs/implementation_plan.md` — existing C/Rust + Python signals.
 - ABI-001 — the boundary contract the ABI rule extends.
 - ADR-0006 (hybrid microkernel), ADR-0012 (NyHAL), ADR-0016 (NyFS
   Linux backend FUSE) — the decisions whose components this strategy
   assigns languages to.
-- `source/nyhal-linux-backend/` — the current Python implementation
-  this strategy preserves.
+- `source/nyhal-linux-backend/` — the current Python reference
+  implementation.
 - `source/nyhal-linux-backend/rust/seccomp/` — the first migration's
-  scaffold (FFI boundary contract + conformance plan; unbuilt — no
-  Rust toolchain on the dev host).
+  scaffold (FFI boundary contract + conformance plan; unbuilt — no Rust
+  toolchain on the dev host; CI builds the crate on every push).

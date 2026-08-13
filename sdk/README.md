@@ -12,17 +12,25 @@ category) and the corresponding implementation work — see
 
 ## Language strategy
 
-Nyrqis's implementation languages are decided by component class, not
-by team preference — see
+Nyrqis's implementation languages are decided by the canonical
+language matrix and the platform-boundary principle, not by team
+preference — see
 [ADR-0020](../docs/reference/adr/ADR-0020-implementation-languages.md)
 and the
 [language guide](../docs/how-to/choose-an-implementation-language.md).
-For this directory, the plan follows from that decision:
+The matrix gives **NySDK a Rust + C++ primary** with **C# bindings** as
+secondary, and a **High Python role** — the Python SDK is the
+above-the-boundary developer surface. For this directory, the plan
+follows from that decision:
 
-- **Bindings are Python-first** — the platform's user-space services
-  and the public API are Python, so the primary developer SDK is
-  Python, with the Rust core behind the versioned FFI boundary
-  (ABI-001).
+- **The SDK core is Rust + C++** — the platform's services (storage,
+  networking, security, …) are compiled per the matrix, so the SDK's
+  primary implementation is Rust + C++, exposed behind the versioned
+  FFI boundary (ABI-001).
+- **The Python SDK is the first-class above-the-boundary binding** —
+  Python is unrestricted for tooling and bindings, so the primary
+  *developer* SDK language is Python (ctypes/cffi over the Rust/C++
+  core), with **C# bindings** following per the matrix.
 - **Rust bindings arrive with the first shipped Rust module** (the
   seccomp policy compiler, `source/nyhal-linux-backend/rust/seccomp/`,
   is the first migration) and expose the same functionality the

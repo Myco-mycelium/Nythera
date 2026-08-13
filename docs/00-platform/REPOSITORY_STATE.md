@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-08-12
+2026-08-13
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -51,7 +51,7 @@ performance budgets, and developer onboarding — see
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-10 accepted, 7 held (named blockers below; 4 are new decisions pending
+10 accepted, 9 held (4 named benchmark blockers plus 5 decisions pending
 Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
@@ -72,6 +72,8 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Proposed**, initial strategy decided; kernel-module fallback blocked on FUSE-overhead benchmark data
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
+- [ ] ADR-0019 Journal commit as the default NyFS save() mode — **Proposed**, review package for the 2026-08-12 implementer default flip; daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answers its open question 1, AG tuning review pending
+- [ ] ADR-0020 Implementation languages and the platform boundary — **Proposed** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); pending Architecture Group acceptance per NPC-001 §6.4
 
 ## Specifications (NPS)
 13 accepted, 14 held (4 named benchmark/dependency blockers, plus
@@ -225,8 +227,6 @@ toolchain):
 `docs.yml` (docs site build + GitHub Pages deploy) remains separate.
 
 ## Documentation Site
-
-## Documentation Site
 Structure created; MkDocs Material configured with full nav (zero warnings
 under `mkdocs build --strict`); CI workflow (`.github/workflows/docs.yml`)
 builds and deploys to GitHub Pages on push to `main`. Version pinned via
@@ -372,7 +372,21 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
-- 2026-08-12 (**seccomp conformance groundwork + daemon lifecycle implemented**):
+- 2026-08-13 (**ADR-0020 v2.0.0 — canonical language matrix + platform-boundary principle**):
+  the recorded language strategy moved from "Python + Rust by component
+  class" to the canonical matrix — Rust, C++, and C as the platform
+  languages (NyHAL **Rust-first**; C++ primary for NyUI/NyShell/NyGame;
+  C where hardware requires), Python unrestricted **above the platform
+  boundary** (tooling, SDK bindings, tests, CI, research) and barred as
+  an execution language for platform-critical paths. New normative
+  rule: **platform-critical execution paths must not depend on the
+  Python interpreter** — the all-Python Linux backend is now explicitly
+  the *reference implementation* whose platform-critical modules
+  (seccomp enforcement, FUSE ops, container launch, IPC core) carry a
+  migration obligation to the rust/seccomp queue. Docs reconciled in
+  the same pass: how-to language guide (boundary-first), sdk/README
+  (Rust + C++ core, Python SDK binding), rust/README, IMPLEMENTATION_STATUS
+  (113/113), NPC-005 v1.14.0, mkdocs nav.
   the ADR-0020 seccomp wire format is implemented and verified
   (`SeccompPolicy.to_json()` / `policy_from_json()`, round-trip tests)
   and the round-trip **found and fixed two real aarch64 syscall-table
