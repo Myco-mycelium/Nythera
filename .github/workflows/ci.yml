@@ -4,9 +4,12 @@
 #   (source/nyhal-linux-backend/rust/seccomp) on every push; the dev host
 #   has no Rust toolchain, so this job IS the compiler.
 # - `rust-seccomp-conformance`: the seccomp port's definition of
-#   "shipped": it forces the full Python test suite through the Rust
-#   seccomp module via the FFI loader (NYRQIS_RUST_FORCE=1). The port
-#   landed 2026-08-13 and the gate is GREEN, so it is a required,
+#   "shipped": it forces the seccomp-facing test classes through the
+#   Rust seccomp module via the FFI loader (NYRQIS_RUST_FORCE=1). It
+#   runs only those classes, not the full suite — forcing one module's
+#   lib would make the OTHER modules' loaders (syscalls, NyFS codec)
+#   fail their own force checks on the classes that depend on them. The
+#   port landed 2026-08-13 and the gate is GREEN, so it is a required,
 #   blocking job.
 # - `rust-syscalls`: builds and tests the second-migration crate
 #   (sethostname/prctl/unshare/mount — the direct-syscall launcher
@@ -72,12 +75,16 @@ jobs:
       - name: Build the crate
         working-directory: source/nyhal-linux-backend/rust/seccomp
         run: cargo build --release
-      - name: Force the full Python suite through the FFI
+      - name: Force the seccomp test classes through the FFI
         working-directory: source/nyhal-linux-backend
         env:
           NYRQIS_RUST_LIB: rust/seccomp/target/release/libnyrqis_seccomp.so
           NYRQIS_RUST_FORCE: "1"
-        run: python3 -B test_backend.py
+        run: >
+          python3 -B -m unittest
+          test_backend.TestSeccompEnforcement
+          test_backend.TestDefaultDenyAllowlist
+          test_backend.TestRustFfILoader
 
   rust-syscalls-conformance:
     name: Rust syscalls FFI conformance (required gate)

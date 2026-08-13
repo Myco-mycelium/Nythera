@@ -28,12 +28,18 @@ wrapper, tracked by the syscalls module's `prctl` primitive).
    verdict-for-verdict. Runs wherever the crate is built (the CI
    conformance job); skipped on hosts without it.
 3. **Forced-mode conformance gate.** The CI
-   `rust-seccomp-conformance` job builds the crate and runs the full
-   Python test suite with `NYRQIS_RUST_FORCE=1` and
-   `NYRQIS_RUST_LIB` set to the built cdylib — every seccomp test then
-   drives this module through the FFI. The job is green and is a
-   **required, blocking gate** (the `continue-on-error` scaffold
-   accommodation was removed when the port verified green).
+   `rust-seccomp-conformance` job builds the crate and runs the
+   seccomp-facing test classes (`TestSeccompEnforcement`,
+   `TestDefaultDenyAllowlist`, `TestRustFfILoader`) with
+   `NYRQIS_RUST_FORCE=1` and `NYRQIS_RUST_LIB` set to the built cdylib
+   — every seccomp call in those tests then drives this module through
+   the FFI. (It runs only those classes, not the full suite: forcing
+   the seccomp lib would make the OTHER modules' loaders — syscalls,
+   NyFS codec — fail their own force checks on the classes that depend
+   on them; each ADR-0020 migration's gate is scoped to its own
+   classes.) The job is green and is a **required, blocking gate** (the
+   `continue-on-error` scaffold accommodation was removed when the port
+   verified green).
 4. **Error contract.** `NyrqisErr` codes (-1 policy parse, -2
    unsupported arch, -3 invalid program, -4 internal) map back to the
    same `PolicyError`/`ValueError` the pure-Python path raises.

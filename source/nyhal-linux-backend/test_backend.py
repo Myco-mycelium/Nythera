@@ -2640,7 +2640,9 @@ class TestNyFSCodecLoader(unittest.TestCase):
 
     def test_rust_call_failure_falls_back_in_normal_mode(self):
         # A Rust-side routing failure must NOT break non-force users: the
-        # Python floor answers.
+        # Python floor answers. This is the NORMAL-mode path, so it must
+        # not inherit NYRQIS_RUST_FORCE from a CI conformance gate env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
         fake = mock.Mock()
         fake.nyrqis_nyfs_version.return_value = nyfs_codec.MIN_RUST_ABI_VERSION
         fake.nyrqis_nyfs_sha256.side_effect = OSError("boom")

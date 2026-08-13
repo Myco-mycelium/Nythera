@@ -184,7 +184,10 @@ mod tests {
         // The contract maps -errno -> OSError; internal codes must never
         // collide with a real errno (1..=4095).
         for code in [ERR_INTERNAL, ERR_CHECKSUM] {
-            assert!(!(1..=4095).contains(&(-code)), "code {-code} collides with errno range");
+            assert!(
+                !(1..=4095).contains(&(-code)),
+                "code {code} collides with errno range"
+            );
         }
         assert_eq!(ERR_INVALID_ARGS, -libc::EINVAL);
         assert_eq!(ERR_TOO_LARGE, -libc::EFBIG);
@@ -343,7 +346,8 @@ mod tests {
         // Flip bytes in the middle of the frame: decode must fail with a
         // negative code (never a crash, never 0).
         if compressed.len() > 8 {
-            compressed[compressed.len() / 2] ^= 0xff;
+            let mid = compressed.len() / 2;
+            compressed[mid] ^= 0xff;
         }
         let digest = digest_of(&data);
         let mut dec_ptr: *mut c_uchar = std::ptr::null_mut();
