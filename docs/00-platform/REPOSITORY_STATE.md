@@ -421,7 +421,7 @@ Documentation hygiene, fixed earlier this session:
   differential test (Rust ≡ pure-Python floor on checksums,
   roundtrips, and integrity failures) runs forced through the FFI.
 - 2026-08-13 (**ADR-0020 migration #4: IPC wire codec in Rust**):
-  `rust/ipc/` (ABI 1.0.0, dependency-free) ships the binary message
+  `rust/ipc/` (ABI 1.0.0, `libc` the only dependency) ships the binary message
   framing a cross-process transport will carry (NPS-003 §3) — a
   canonical length-prefixed format pinned byte-for-byte. `ipc/ipc_codec.py`
   is the loader (ABI gate, `struct` floor, `NYRQIS_RUST_FORCE=1`;

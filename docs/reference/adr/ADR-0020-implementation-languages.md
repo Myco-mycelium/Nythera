@@ -295,6 +295,6 @@ platform-boundary rule's obligation. In order:
   required).
 - `source/nyhal-linux-backend/rust/ipc/` — migration #4:
   **IMPLEMENTED 2026-08-13** (IPC message wire codec, ABI 1.0.0,
-  dependency-free; loader `ipc/ipc_codec.py`; conformance gate green
+  `libc` the only dependency; loader `ipc/ipc_codec.py`; conformance gate green
   and required). The dev host still has no Rust toolchain — CI builds
   and tests every crate on each push.
