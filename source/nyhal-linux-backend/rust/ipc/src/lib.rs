@@ -225,12 +225,13 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
     let data = std::slice::from_raw_parts(buf, buf_len as usize);
     let mut pos = 0usize;
 
-    // NOTE: `data` is the FIRST parameter of the closures whose output
-    // borrows from it — closure output-lifetime elision binds to the
-    // first input reference, so putting `&mut pos` first would tie the
-    // returned slice to `pos` instead of `data` (E0621: "lifetime may
-    // not live long enough").
-    let take = |data: &[u8], pos: &mut usize, n: usize| -> Option<&[u8]> {
+    // NOTE: the closures whose output borrows from `data` carry NO
+    // return-type annotation — an annotated `Option<&[u8]>` gets a
+    // fresh elided lifetime unrelated to `data` (E0621: "lifetime may
+    // not live long enough"; closures do not share fn-item output
+    // elision), while inference binds the output to `data`'s lifetime
+    // exactly.
+    let take = |data: &[u8], pos: &mut usize, n: usize| {
         if *pos + n > data.len() {
             return None;
         }
@@ -241,7 +242,7 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
     let take_u32 = |pos: &mut usize, data: &[u8]| -> Option<u32> {
         take(data, pos, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
-    let take_str = |data: &[u8], pos: &mut usize| -> Option<(&[u8], u32)> {
+    let take_str = |data: &[u8], pos: &mut usize| {
         let len = take_u32(pos, data)?;
         if len as usize > MAX_FIELD_BYTES {
             return None;
@@ -524,7 +525,7 @@ mod tests {
     fn encode_decode_roundtrip_preserves_fields() {
         let caps = {
             let mut f = Vec::new();
-            for cap in [b"CAP_IPC_SEND".as_slice(), b"CAP_IPC_RECEIVE"] {
+            for cap in [b"CAP_IPC_SEND".as_slice(), b"CAP_IPC_RECEIVE".as_slice()] {
                 f.extend_from_slice(&(cap.len() as u32).to_le_bytes());
                 f.extend_from_slice(cap);
             }
