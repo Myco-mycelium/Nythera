@@ -37,7 +37,6 @@ References:
 
 import ctypes
 import errno
-import hashlib
 import json
 import logging
 import os
@@ -51,6 +50,8 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, Tuple, List
+
+from . import nyfs_codec  # ADR-0020 priority #3 FFI loader (Rust codec)
 
 logger = logging.getLogger(__name__)
 
@@ -91,35 +92,28 @@ class NyFSBlock:
 
     def compute_checksum(self) -> str:
         """Compute SHA256 checksum of the uncompressed data."""
-        self.checksum = hashlib.sha256(self.data).hexdigest()
+        self.checksum = nyfs_codec.checksum(self.data)
         return self.checksum
 
     def compress(self) -> None:
-        """Compress the data using Zstandard (ADR-0007)."""
-        try:
-            import zstandard as zstd
-
-            cctx = zstd.ZstdCompressor(level=self.compression_level)
-            self.compressed_data = cctx.compress(self.data)
-            logger.debug(
-                f"Compressed block {self.block_id[:8]}: "
-                f"{len(self.data)} -> {len(self.compressed_data)} bytes"
-            )
-        except ImportError:
-            logger.warning("zstandard not available; storing uncompressed")
-            self.compressed_data = self.data
+        """Compress the data using Zstandard (ADR-0007), routed through
+        the NyFS codec module (Rust FFI when available; the ``zstandard``
+        module otherwise; data stored uncompressed when neither exists)."""
+        self.compressed_data = nyfs_codec.compress(
+            self.data, self.compression_level
+        )
+        logger.debug(
+            f"Compressed block {self.block_id[:8]}: "
+            f"{len(self.data)} -> {len(self.compressed_data)} bytes"
+        )
 
     def decompress(self) -> bytes:
-        """Decompress the data."""
+        """Decompress the data, verifying its checksum (NPS-004 §4.3)."""
         if self.compressed_data is None:
             return self.data
-        try:
-            import zstandard as zstd
-
-            dctx = zstd.ZstdDecompressor()
-            return dctx.decompress(self.compressed_data)
-        except ImportError:
-            return self.compressed_data
+        return nyfs_codec.decompress_verify(
+            self.compressed_data, self.checksum
+        )
 
 
 @dataclass
@@ -369,16 +363,19 @@ class NyFSFilesystem:
     # ------------------------------------------------------------------
 
     def _decompress_verified(self, block: NyFSBlock) -> bytes:
-        """Decompress a block and verify its checksum (NPS-004 §4.3)."""
-        data = block.decompress()
-        computed = hashlib.sha256(data).hexdigest()
-        if computed != block.checksum:
+        """Decompress a block and verify its checksum (NPS-004 §4.3).
+
+        ``NyFSBlock.decompress`` routes through the codec module, whose
+        ``decompress_verify`` performs the verification in one step (Rust
+        FFI when available) and raises ``ValueError`` on a mismatch.
+        """
+        try:
+            return block.decompress()
+        except ValueError as e:
             logger.error(
-                f"Checksum mismatch for block {block.block_id}: "
-                f"expected {block.checksum}, got {computed}"
+                f"Checksum mismatch for block {block.block_id}: {e}"
             )
-            raise ValueError("Block checksum verification failed")
-        return data
+            raise
 
     def _content(self, inode: NyFSInode) -> bytes:
         data = b"".join(self._decompress_verified(b) for b in inode.blocks)
@@ -597,16 +594,7 @@ class NyFSFilesystem:
                 raise ValueError(f"Inode {inode_number} not found")
             if block_index >= len(inode.blocks):
                 raise IndexError(f"Block {block_index} not found in inode {inode_number}")
-            block = inode.blocks[block_index]
-            data = block.decompress()
-            computed = hashlib.sha256(data).hexdigest()
-            if computed != block.checksum:
-                logger.error(
-                    f"Checksum mismatch for block {block.block_id}: "
-                    f"expected {block.checksum}, got {computed}"
-                )
-                raise ValueError("Block checksum verification failed")
-            return data
+            return self._decompress_verified(inode.blocks[block_index])
 
     def _as_inode(self, inode_or_path) -> NyFSInode:
         if isinstance(inode_or_path, NyFSInode):

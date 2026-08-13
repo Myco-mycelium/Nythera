@@ -89,7 +89,7 @@ If you want to see it run (needs Python 3.12+):
 ```bash
 cd source/nyhal-linux-backend
 python3 -m pip install -r requirements.txt
-python3 -B test_backend.py                 # expect 150/150 passing
+python3 -B test_backend.py                 # expect 167/167 passing
 
 (The suite is unittest-based; the exact test count is recorded in
 `IMPLEMENTATION_STATUS.md`.)

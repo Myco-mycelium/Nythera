@@ -1,0 +1,28 @@
+[package]
+name = "nyrqis-nyfs"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis NyFS block codec (SHA-256 checksum + Zstandard) — ADR-0020 migration priority #3"
+
+[lib]
+name = "nyrqis_nyfs"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The two hot-path primitives of NyFS storage (ADR-0020 priority #3):
+# - sha2: the per-block integrity checksum (NPS-004 §4) — every block
+#   carries a SHA-256 of its UNCOMPRESSED data, verified on read. The
+#   read-path benchmark (BENCHMARK_RESULTS.md §5) shows verification
+#   dominates NyFS read cost, so it moves into this module.
+# - zstd: the transparent-compression codec mandated by ADR-0007
+#   (default level 3, 1-22). zstd-sys builds the vendored C library
+#   with cc; no system zstd required.
+# libc is used only for the FFI output-buffer allocator (malloc/free):
+# buffers returned by zstd_compress/zstd_decompress_verify are freed by
+# the matching nyrqis_nyfs_free on the Python side — no allocator
+# mismatch (the same ownership contract as nyrqis_seccomp).
+libc = "0.2"
+sha2 = "0.10"
+zstd = "0.13"

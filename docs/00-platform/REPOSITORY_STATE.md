@@ -403,8 +403,24 @@ Documentation hygiene, fixed earlier this session:
   test classes forced through the FFI). Verified on this host: hostile
   hostname `evil; rm -rf /` passed verbatim (FIND-BACKEND-004), PID-1 in
   the new PID namespace, seccomp filter active, suspend/resume/terminate
-  lifecycle, legacy path still works. Test suite: **150/150 (144 run + 6
-  skipped without the Rust crates)**.
+  lifecycle, legacy path still works. Test suite: **167/167 (156 run + 11
+  skipped without the Rust crates: the seccomp differential, the
+  syscalls conformance, and the NyFS codec conformance classes — all RUN
+  in CI where the crates are built)**.
+- 2026-08-13 (**ADR-0020 migration #3: NyFS block codec in Rust**):
+  `rust/nyfs/` (ABI 1.0.0) ships the storage hot paths — SHA-256
+  per-block checksum (NPS-004 §4) and Zstandard compress +
+  decompress-with-verify (ADR-0007) — behind the versioned FFI surface.
+  `fuse/nyfs_codec.py` is the loader (search order, ABI check,
+  hashlib/zstandard fallbacks, `NYRQIS_RUST_FORCE=1`; `-4097` checksum
+  mismatch maps to the floor's `ValueError`); `NyFSBlock` routes
+  `compute_checksum`/`compress`/`decompress` (now verified on read,
+  NPS-004 §4.3) through it. Extraction boundary set by the §5 benchmark
+  evidence (read-path verification dominates NyFS read cost). New CI
+  jobs: `rust-nyfs` (build + unit tests) and the required
+  `rust-nyfs-conformance` gate — the differential test (Rust ≡
+  pure-Python floor on checksums, roundtrips, and integrity failures)
+  runs forced through the FFI.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the
   acceptance text is recorded in the ADR's Status section — the PAT can

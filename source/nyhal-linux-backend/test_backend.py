@@ -12,6 +12,7 @@ References:
 
 import ctypes
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -44,6 +45,7 @@ from ipc.core import (
 from fuse.nyfs import (
     NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount, _import_fusepy
 )
+from fuse import nyfs_codec
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -2545,6 +2547,150 @@ class TestRustSyscallsLoader(unittest.TestCase):
                          (b"proc", b"/proc", b"proc"))
 
 
+def _codec_corpora():
+    """The corpus set the codec differential tests run: empty, tiny,
+    block-sized compressible, zeroes, incompressible random, and mixed."""
+    return [
+        b"",
+        b"a",
+        b"compressible-data;" * 4096,  # 64 KiB text-like
+        b"\x00" * 65536,               # 64 KiB zeroes (very compressible)
+        os.urandom(4096),               # incompressible
+        b"mixed-data-" * 1000 + os.urandom(64),
+    ]
+
+
+class TestNyFSCodecLoader(unittest.TestCase):
+    """ADR-0020 priority #3 FFI loader behavior (see
+    rust/nyfs/README.md): the fallback contract and error mapping for
+    the NyFS block codec module. Like TestRustSyscallsLoader, these pin
+    the loader on hosts WITHOUT the crate built; when the crate lands,
+    the CI conformance job (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        nyfs_codec._RUST_LIB = None
+        nyfs_codec._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        nyfs_codec._RUST_LIB = None
+        nyfs_codec._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        """Point the loader at a guaranteed-absent library."""
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_nyfs.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_nyfs.so"
+        self.assertEqual(
+            nyfs_codec._rust_lib_candidates(),
+            ["/custom/libnyrqis_nyfs.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            nyfs_codec._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_checksum_is_valueerror(self):
+        with self.assertRaises(ValueError) as cm:
+            nyfs_codec._raise_rust_error(nyfs_codec.RUST_ERR_CHECKSUM, "test")
+        self.assertIn("checksum", str(cm.exception).lower())
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            nyfs_codec._raise_rust_error(nyfs_codec.RUST_ERR_INTERNAL, "test")
+
+    def test_absent_backend_falls_back_to_hashlib_checksum(self):
+        self._no_backend()
+        # This test exercises the FALLBACK path, so it must not inherit
+        # NYRQIS_RUST_FORCE from the CI conformance job env. tearDown
+        # restores the env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(nyfs_codec._load_rust_backend())
+        self.assertEqual(
+            nyfs_codec.checksum(b"abc"),
+            hashlib.sha256(b"abc").hexdigest(),
+        )
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            nyfs_codec.checksum(b"abc")
+
+    def test_ffi_routing_with_fake_lib(self):
+        # With a lib loaded, checksum must drive the FFI entry point and
+        # never touch ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_nyfs_version.return_value = nyfs_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_nyfs_sha256.return_value = 0
+        with mock.patch.object(
+            nyfs_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch("fuse.nyfs_codec.ctypes.CDLL") as cdll_mock:
+            digest = nyfs_codec.checksum(b"ffi-data")
+        fake.nyrqis_nyfs_sha256.assert_called_once()
+        cdll_mock.assert_not_called()
+        # A zero-filled digest buffer hex-encodes to 64 zero chars.
+        self.assertEqual(digest, "00" * 32)
+
+    def test_rust_call_failure_falls_back_in_normal_mode(self):
+        # A Rust-side routing failure must NOT break non-force users: the
+        # Python floor answers.
+        fake = mock.Mock()
+        fake.nyrqis_nyfs_version.return_value = nyfs_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_nyfs_sha256.side_effect = OSError("boom")
+        with mock.patch.object(
+            nyfs_codec, "_load_rust_backend", return_value=fake
+        ):
+            digest = nyfs_codec.checksum(b"abc")
+        self.assertEqual(digest, hashlib.sha256(b"abc").hexdigest())
+
+    def test_force_mode_raises_on_rust_call_failure(self):
+        fake = mock.Mock()
+        fake.nyrqis_nyfs_version.return_value = nyfs_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_nyfs_sha256.side_effect = OSError("boom")
+        with mock.patch.object(
+            nyfs_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch.dict(os.environ, {"NYRQIS_RUST_FORCE": "1"}):
+            with self.assertRaises(OSError):
+                nyfs_codec.checksum(b"abc")
+
+    def test_compress_fallback_without_zstandard_stores_raw(self):
+        # The floor stores data uncompressed when zstandard is absent
+        # (identical to NyFSBlock.compress's ImportError path).
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(nyfs_codec._load_rust_backend())
+        with mock.patch.dict(sys.modules, {"zstandard": None}):
+            self.assertEqual(nyfs_codec.compress(b"raw-data"), b"raw-data")
+
+    def test_decompress_verify_fallback_roundtrip(self):
+        # The floor path (zstandard or uncompressed) must roundtrip and
+        # verify, whatever the host's module availability.
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(nyfs_codec._load_rust_backend())
+        data = b"roundtrip-data;" * 16
+        compressed = nyfs_codec.compress(data)
+        digest = hashlib.sha256(data).hexdigest()
+        self.assertEqual(nyfs_codec.decompress_verify(compressed, digest), data)
+
+    def test_decompress_verify_fallback_mismatch_raises_valueerror(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(nyfs_codec._load_rust_backend())
+        data = b"real-data;" * 16
+        compressed = nyfs_codec.compress(data)
+        with self.assertRaises(ValueError) as cm:
+            nyfs_codec.decompress_verify(compressed, "ab" * 32)
+        self.assertIn("checksum", str(cm.exception).lower())
+
+
 class TestRustSyscallsConformance(unittest.TestCase):
     """Real-FFI conformance for the syscalls module (the direct-syscall
     launcher's primitives). Skips on hosts without the crate; the CI
@@ -2609,6 +2755,65 @@ class TestRustSyscallsConformance(unittest.TestCase):
         self.assertLess(rc, 0)
 
 
+class TestNyFSCodecConformance(unittest.TestCase):
+    """Real-FFI conformance for the NyFS block codec (ADR-0020
+    priority #3). Skips on hosts without the crate; the CI
+    ``rust-nyfs-conformance`` job builds it and sets ``NYRQIS_RUST_LIB``
+    so these drive the actual Rust module. The differential core: the
+    Rust module and the pure-Python floor (hashlib/zstandard) must
+    agree on every corpus — checksums byte-identical, roundtrips
+    byte-identical, and integrity failures surfaced as the same
+    ``ValueError`` the floor raises.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = nyfs_codec._load_rust_backend()
+
+    def _skip_unless_lib(self):
+        if self.lib is None:
+            self.skipTest("Rust NyFS codec backend not built on this host")
+
+    def test_abi_version_meets_contract(self):
+        self._skip_unless_lib()
+        version = self.lib.nyrqis_nyfs_version()
+        self.assertGreaterEqual(version, nyfs_codec.MIN_RUST_ABI_VERSION)
+
+    def test_sha256_matches_python_hashlib(self):
+        self._skip_unless_lib()
+        for data in _codec_corpora():
+            self.assertEqual(
+                nyfs_codec.checksum(data),
+                hashlib.sha256(data).hexdigest(),
+                f"Rust checksum diverges for {len(data)}-byte corpus",
+            )
+
+    def test_compress_decompress_roundtrip_matches_python(self):
+        self._skip_unless_lib()
+        for data in _codec_corpora():
+            compressed = nyfs_codec.compress(data, 3)
+            digest = hashlib.sha256(data).hexdigest()
+            self.assertEqual(
+                nyfs_codec.decompress_verify(compressed, digest),
+                data,
+                f"Rust roundtrip lost data for {len(data)}-byte corpus",
+            )
+
+    def test_decompress_verify_rejects_wrong_checksum(self):
+        self._skip_unless_lib()
+        data = b"integrity-check;" * 1024
+        compressed = nyfs_codec.compress(data, 3)
+        with self.assertRaises(ValueError) as cm:
+            nyfs_codec.decompress_verify(compressed, "ab" * 32)
+        self.assertIn("checksum", str(cm.exception).lower())
+
+    def test_compress_level_3_shrinks_compressible(self):
+        self._skip_unless_lib()
+        data = b"compressible-data;" * 4096  # 64 KiB text-like
+        compressed = nyfs_codec.compress(data, 3)
+        self.assertLess(len(compressed), len(data))
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -2665,6 +2870,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestDirectSyscallLaunch))
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

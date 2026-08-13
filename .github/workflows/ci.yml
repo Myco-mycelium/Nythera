@@ -16,6 +16,13 @@
 #   built, so every syscall call in those tests drives the Rust module.
 #   (It runs only those classes, not the full suite: forcing the syscalls
 #   lib would make the SEPARATE seccomp loader fail its own force check.)
+# - `rust-nyfs`: builds and tests the third-migration crate
+#   (SHA-256 checksum + Zstandard — the NyFS storage hot paths,
+#   ADR-0020 priority #3).
+# - `rust-nyfs-conformance`: the NyFS codec port's gate — the
+#   differential test (Rust ≡ pure-Python floor on checksums,
+#   roundtrips, and integrity failures) runs with the crate built and
+#   NYRQIS_RUST_FORCE=1.
 # - `backend`: the pure-Python correctness floor.
 
 name: ci
@@ -92,6 +99,39 @@ jobs:
           test_backend.TestRustSyscallsConformance
           test_backend.TestDirectSyscallLaunch
           test_backend.TestLauncherSecurity
+
+  rust-nyfs:
+    name: Rust NyFS codec crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/nyfs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_nyfs.so
+
+  rust-nyfs-conformance:
+    name: Rust NyFS codec FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/nyfs
+        run: cargo build --release
+      - name: Force the NyFS codec test classes through the FFI
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_RUST_LIB: rust/nyfs/target/release/libnyrqis_nyfs.so
+          NYRQIS_RUST_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestNyFSCodecLoader
+          test_backend.TestNyFSCodecConformance
 
   backend:
     name: Python backend tests

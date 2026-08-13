@@ -255,7 +255,10 @@ platform-boundary rule's obligation. In order:
    `source/nyhal-linux-backend/rust/syscalls/`, built by CI).
 3. **NyFS checksum + compression + FUSE hot paths** (storage = Rust),
    using the existing §4/§5/§6 benchmark data to set the extraction
-   boundary.
+   boundary. **IMPLEMENTED 2026-08-13** (the block codec — SHA-256 +
+   Zstandard — shipped in `rust/nyfs/`; the FUSE operation handlers
+   themselves remain Python in the reference backend, wired to the
+   codec through `fuse/nyfs_codec.py`).
 4. **IPC core transport** (networking = Rust), after the Python IPC
    semantics are stable and benchmarked.
 5. **Container primitives and launcher** (NyCore/NyHAL = Rust),
@@ -276,6 +279,15 @@ platform-boundary rule's obligation. In order:
   assigns languages to.
 - `source/nyhal-linux-backend/` — the current Python reference
   implementation.
-- `source/nyhal-linux-backend/rust/seccomp/` — the first migration's
-  scaffold (FFI boundary contract + conformance plan; unbuilt — no Rust
-  toolchain on the dev host; CI builds the crate on every push).
+- `source/nyhal-linux-backend/rust/seccomp/` — migration #1:
+  **IMPLEMENTED 2026-08-13** (compiler + golden tests + forced-mode
+  conformance gate green and required).
+- `source/nyhal-linux-backend/rust/syscalls/` — migration #2:
+  **IMPLEMENTED 2026-08-13** (sethostname/prctl/unshare/mount/mount_proc,
+  ABI 1.1.0; the direct-syscall launcher in `backend/container.py`;
+  conformance gate green and required).
+- `source/nyhal-linux-backend/rust/nyfs/` — migration #3:
+  **IMPLEMENTED 2026-08-13** (SHA-256 checksum + Zstandard block codec,
+  ABI 1.0.0; loader `fuse/nyfs_codec.py`; conformance gate green and
+  required). The dev host still has no Rust toolchain — CI builds and
+  tests every crate on each push.
