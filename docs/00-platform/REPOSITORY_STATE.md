@@ -430,6 +430,23 @@ Documentation hygiene, fixed earlier this session:
   + unit tests) and the required `rust-ipc-conformance` gate — Rust ≡
   Python floor, byte-identical wire and field-for-field decode, same
   malformed-input rejection.
+- 2026-08-13 (**ADR-0020 migration #5: container launch-plan
+  primitives in Rust**): `rust/container/` (ABI 1.0.0, `libc` the only
+  dependency) ships the pure launch-plan computations the manager
+  makes per launch — the launcher argv (FIND-BACKEND-004), the cgroup
+  v1/v2 resource plan (FIND-BACKEND-003: `notify_on_release=0`), the
+  `--map-root-user` uid/gid maps, and the NPS-010 §4 state machine.
+  `backend/container_codec.py` is the loader (search order, ABI gate,
+  byte-identical `struct` floor, `NYRQIS_RUST_FORCE=1`; `-4097`
+  malformed flat → the floor's `ValueError`, `-4098` invalid
+  transition → `False`), wired into `transition_to`,
+  `_launcher_args`, `_cgroup_v1_plan`, `_setup_cgroups_v2`, and the
+  direct-syscall child's root maps. New CI jobs: `rust-container`
+  (build + unit tests) and the required `rust-container-conformance`
+  gate — the container-facing classes, including the end-to-end
+  launch tests that route through the codec, forced through the FFI.
+  Test suite: **205/205 (182 run + 23 skipped without the Rust
+  crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the
   acceptance text is recorded in the ADR's Status section — the PAT can

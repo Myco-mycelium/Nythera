@@ -266,7 +266,11 @@ platform-boundary rule's obligation. In order:
    in-process `IPCManager` transport semantics are unchanged).
 5. **Container primitives and launcher** (NyCore/NyHAL = Rust),
    incrementally, keeping the Python reference implementation green
-   throughout.
+   throughout. **IMPLEMENTED 2026-08-13** (the launch-plan
+   primitives — launcher argv, cgroup v1/v2 plan, uid/gid root maps,
+   NPS-010 §4 state machine — shipped in `rust/container/`; the
+   launcher itself and the syscall dance remain Python (plus
+   `rust/syscalls/`) in the reference backend).
 6. **NyKernel bootstrap and its NyHAL backend** (with the NyKernel
    project itself).
 
@@ -296,5 +300,11 @@ platform-boundary rule's obligation. In order:
 - `source/nyhal-linux-backend/rust/ipc/` — migration #4:
   **IMPLEMENTED 2026-08-13** (IPC message wire codec, ABI 1.0.0,
   `libc` the only dependency; loader `ipc/ipc_codec.py`; conformance gate green
-  and required). The dev host still has no Rust toolchain — CI builds
-  and tests every crate on each push.
+  and required).
+- `source/nyhal-linux-backend/rust/container/` — migration #5:
+  **IMPLEMENTED 2026-08-13** (container launch-plan primitives —
+  launcher argv, cgroup v1/v2 plan, uid/gid root maps, NPS-010 §4
+  state machine — ABI 1.0.0, `libc` the only dependency; loader
+  `backend/container_codec.py`; conformance gate green and required).
+  The dev host still has no Rust toolchain — CI builds and tests every
+  crate on each push.

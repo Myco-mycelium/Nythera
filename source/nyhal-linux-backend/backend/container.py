@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
 from backend import rust_syscalls  # ADR-0020 priority #2 FFI loader
+from backend import container_codec  # ADR-0020 priority #5 FFI loader
 
 logger = logging.getLogger(__name__)
 
@@ -120,14 +121,14 @@ class Container:
         - SUSPENDED → RUNNING (resume)
         - {RUNNING, SUSPENDED} → TERMINATED (stop)
         """
-        valid_transitions = {
-            ContainerState.CREATED: [ContainerState.RUNNING],
-            ContainerState.RUNNING: [ContainerState.SUSPENDED, ContainerState.TERMINATED],
-            ContainerState.SUSPENDED: [ContainerState.RUNNING, ContainerState.TERMINATED],
-            ContainerState.TERMINATED: [],
-        }
-        
-        if new_state not in valid_transitions.get(self.state, []):
+        # NPS-010 §4 state machine, enforced through the Rust
+        # launch-plan primitives (ADR-0020 priority #5): the crate's
+        # transition_valid answers 0 (legal), -4098 (disallowed pair) or
+        # -22 (out-of-range state); the loader maps -4098 to False. The
+        # pure-Python floor in container_codec is byte-identical.
+        if not container_codec.transition_valid(
+            self.state.value, new_state.value
+        ):
             raise ValueError(
                 f"Invalid state transition: {self.state.value} → {new_state.value}"
             )
@@ -390,26 +391,17 @@ class ContainerManager:
         
         Returns a list of ``(cgroup_path, {file: content})`` pairs without
         touching the filesystem, so the hardening intent is testable even
-        where /sys/fs/cgroup is not writable.
+        where /sys/fs/cgroup is not writable. The plan is computed by the
+        Rust launch-plan primitives (ADR-0020 priority #5); the pure-Python
+        floor in container_codec is byte-identical.
         """
         limits = container.config.limits
-        mem_path = Path("/sys/fs/cgroup/memory") / container.id
-        pids_path = Path("/sys/fs/cgroup/pids") / container.id
-        return [
-            (
-                mem_path,
-                {
-                    "memory.limit_in_bytes": str(limits.memory_mb * 1024 * 1024),
-                    # FIND-BACKEND-003 hardening: never allow this cgroup to
-                    # trigger the v1 release_agent mechanism.
-                    "notify_on_release": "0",
-                },
-            ),
-            (
-                pids_path,
-                {"pids.max": str(limits.pid_limit)},
-            ),
-        ]
+        plan = container_codec.cgroup_plan(
+            container.id,
+            limits.memory_mb, limits.pid_limit,
+            limits.cpu_quota_us, limits.cpu_period_us,
+        )
+        return [(Path(path), pairs) for path, pairs in plan["v1"]]
     
     def _setup_cgroups_v1(self, container: Container) -> None:
         """Set up cgroups v1 resource limits, with release_agent hardening.
@@ -432,28 +424,24 @@ class ContainerManager:
                 logger.error(f"Failed to set up cgroup {cgroup_path}: {e}")
     
     def _setup_cgroups_v2(self, container: Container) -> None:
-        """Set up cgroups v2 resource limits (unified hierarchy)."""
+        """Set up cgroups v2 resource limits (unified hierarchy). The
+        settings (memory.max / pids.max / cpu.max) come from the Rust
+        launch-plan primitives (ADR-0020 priority #5); the pure-Python
+        floor in container_codec is byte-identical."""
         limits = container.config.limits
         cgroup_path = self.cgroup_root / "nyrqis" / container.id
         
         try:
             cgroup_path.mkdir(parents=True, exist_ok=True)
             
-            # Memory limit
-            (cgroup_path / "memory.max").write_text(
-                str(limits.memory_mb * 1024 * 1024)
+            plan = container_codec.cgroup_plan(
+                container.id,
+                limits.memory_mb, limits.pid_limit,
+                limits.cpu_quota_us, limits.cpu_period_us,
             )
-            logger.debug(f"Set memory limit: {limits.memory_mb} MiB")
-            
-            # PID limit
-            (cgroup_path / "pids.max").write_text(str(limits.pid_limit))
-            logger.debug(f"Set PID limit: {limits.pid_limit}")
-            
-            # CPU limits (if specified)
-            if limits.cpu_quota_us:
-                cpu_max = f"{limits.cpu_quota_us} {limits.cpu_period_us}"
-                (cgroup_path / "cpu.max").write_text(cpu_max)
-                logger.debug(f"Set CPU limit: {cpu_max}")
+            for filename, content in plan["v2"]:
+                (cgroup_path / filename).write_text(content)
+                logger.debug(f"Set {filename}: {content}")
             
             container.cgroup_paths.append(str(cgroup_path))
         except Exception as e:
@@ -466,20 +454,18 @@ class ContainerManager:
         entries — never interpolated into a shell string — closing the
         shell-interpolation hygiene finding FIND-BACKEND-004 (NPS-022
         §4). The trailing ``--`` separates the launcher's own options
-        from the container command (argparse REMAINDER).
+        from the container command (argparse REMAINDER). The argv is
+        built by the Rust launch-plan primitives (ADR-0020 priority
+        #5); the pure-Python floor in container_codec is byte-identical.
         """
-        argv = [
-            sys.executable, str(launcher),
-            "--hostname", container.config.hostname,
-        ]
+        policy_path = ""
         if container.config.seccomp:
-            policy_file = self._write_policy_file(container)
-            argv += ["--policy-file", str(policy_file)]
-            if container.config.default_deny:
-                argv += ["--default-deny"]
-        argv += ["--"]
-        argv += list(container.config.command)
-        return argv
+            policy_path = str(self._write_policy_file(container))
+        return container_codec.launcher_argv(
+            sys.executable, str(launcher), container.config.hostname,
+            policy_path, container.config.default_deny,
+            list(container.config.command),
+        )
 
     def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:
         """Build the legacy ``unshare(1)`` command (the opt-in path when
@@ -596,8 +582,11 @@ class ContainerManager:
         launcher_argv = self._launcher_args(container, launcher)
 
         # Pre-load so the forked child never calls dlopen between fork
-        # and exec (the loader cache is inherited by the child).
+        # and exec (the loader cache is inherited by the child). The
+        # container codec too: the child's _write_root_maps routes the
+        # uid/gid map contents through it.
         rust_syscalls._load_rust_backend()
+        container_codec._load_rust_backend()
 
         logger.info(
             f"Launching container {container.id} (hostname={container.config.hostname}, "
@@ -709,7 +698,10 @@ def _write_root_maps(uid: Optional[int] = None, gid: Optional[int] = None) -> No
     not exist on kernels without the knob, so its write is best-effort.
     ``uid_map``/``gid_map`` then map the caller to root inside the
     namespace (``0 <uid> 1``). Plain file writes (open/write/close
-    syscalls) — safe between fork and exec.
+    syscalls) — safe between fork and exec. The map contents come from
+    the Rust launch-plan primitives (ADR-0020 priority #5), pre-loaded
+    by the manager before forking (never dlopen'd in the child); the
+    pure-Python floor in container_codec is byte-identical.
 
     ``uid``/``gid`` MUST be captured BEFORE ``unshare(CLONE_NEWUSER)``:
     inside the new (still unmapped) namespace, ``getuid()`` reports the
@@ -719,10 +711,11 @@ def _write_root_maps(uid: Optional[int] = None, gid: Optional[int] = None) -> No
     if uid is None or gid is None:
         uid = os.getuid()
         gid = os.getgid()
+    setgroups, uid_map, gid_map = container_codec.root_maps(uid, gid)
     for path, content in (
-        ("/proc/self/setgroups", b"deny\n"),
-        ("/proc/self/uid_map", f"0 {uid} 1\n".encode()),
-        ("/proc/self/gid_map", f"0 {gid} 1\n".encode()),
+        ("/proc/self/setgroups", setgroups),
+        ("/proc/self/uid_map", uid_map),
+        ("/proc/self/gid_map", gid_map),
     ):
         try:
             fd = os.open(path, os.O_WRONLY)

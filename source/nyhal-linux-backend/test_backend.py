@@ -40,6 +40,7 @@ from backend.capability import (
 )
 from backend import seccomp
 from backend import rust_syscalls
+from backend import container_codec
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
@@ -3101,6 +3102,355 @@ class TestIPCCodecConformance(unittest.TestCase):
                 ipc_codec.decode(bad)
 
 
+def _container_plan_cases():
+    """The container-launch config set the codec differential tests
+    run: seccomp on/off, default-deny on/off, hostile hostnames, empty
+    and multi-entry commands, CPU quota on/off.
+
+    Returns (hostname, command, policy_path, default_deny, memory_mb,
+    pid_limit, cpu_quota_us, cpu_period_us).
+    """
+    return [
+        ("ctr-1", ["/bin/sh"], "", False, 128, 16, None, 100000),
+        ("evil; rm -rf /", ["/bin/sh", "-c", "echo hi"], "", False,
+         256, 32, None, 100000),
+        ("nyrqis-test", ["/bin/echo", "hi"], "/tmp/pol.json", True,
+         512, 64, 50000, 100000),
+        ("\u00fcnicode-h\u00f6st", [], "/tmp/p.json", False,
+         64, 8, 100000, 100000),
+        ("c5", ["a", "b c", ""], "", True, 1024, 128, None, 100000),
+        ("c6", ["/bin/true"], "/tmp/x.json", False, 256, 16, 0, 100000),
+    ]
+
+
+class TestContainerPrimitivesLoader(unittest.TestCase):
+    """ADR-0020 priority #5 FFI loader behavior (see
+    rust/container/README.md): the fallback contract and error mapping
+    for the container launch-plan primitives. Like the
+    seccomp/syscalls/nyfs/ipc loader tests, these pin the loader on
+    hosts WITHOUT the crate built; when the crate lands, the CI
+    conformance job (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    PY = "/usr/bin/python3"
+    LAUNCHER = "/opt/nyrqis/launcher.py"
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        container_codec._RUST_LIB = None
+        container_codec._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        container_codec._RUST_LIB = None
+        container_codec._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_container.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_container.so"
+        self.assertEqual(
+            container_codec._rust_lib_candidates(),
+            ["/custom/libnyrqis_container.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            container_codec._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_invalid_wire_is_valueerror(self):
+        with self.assertRaises(ValueError) as cm:
+            container_codec._raise_rust_error(
+                container_codec.RUST_ERR_INVALID_WIRE, "t")
+        self.assertIn("flat buffer", str(cm.exception))
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            container_codec._raise_rust_error(
+                container_codec.RUST_ERR_INTERNAL, "test")
+
+    def test_floor_launcher_argv_is_byte_identical(self):
+        # The canonical layout, pinned byte-for-byte (the Rust encoder
+        # must match this exactly — see launcher_argv_layout_is_canonical
+        # in the crate's tests).
+        flat = container_codec.build_command_flat(["/bin/sh"])
+        wire = container_codec._py_launcher_argv(
+            self.PY.encode(), self.LAUNCHER.encode(), b"ctr-1",
+            b"", 0, flat,
+        )
+        self.assertEqual(wire[:4], b"NYRQ")
+        self.assertEqual(wire[4], 1)
+        self.assertEqual(wire[5:9], struct.pack("<I", 6))
+        pos = 9
+        for expected in (self.PY.encode(), self.LAUNCHER.encode(),
+                         b"--hostname", b"ctr-1", b"--", b"/bin/sh"):
+            (length,) = struct.unpack_from("<I", wire, pos)
+            pos += 4
+            self.assertEqual(wire[pos:pos + length], expected)
+            pos += length
+        self.assertEqual(pos, len(wire))
+
+    def test_floor_cgroup_plan_is_byte_identical(self):
+        wire = container_codec._py_cgroup_plan(b"ctr-1", 128, 16, None, 100000)
+        self.assertEqual(wire[:4], b"NYRQ")
+        self.assertEqual(wire[4], 1)
+        self.assertEqual(wire[5:9], struct.pack("<I", 2))
+        pos = 9
+        (path_len,) = struct.unpack_from("<I", wire, pos)
+        pos += 4
+        self.assertEqual(wire[pos:pos + path_len], b"/sys/fs/cgroup/memory/ctr-1")
+        pos += path_len
+        self.assertEqual(
+            struct.unpack_from("<I", wire, pos)[0], 2)
+        pos += 4
+        (klen,) = struct.unpack_from("<I", wire, pos)
+        pos += 4
+        self.assertEqual(wire[pos:pos + klen], b"memory.limit_in_bytes")
+        pos += klen
+        (vlen,) = struct.unpack_from("<I", wire, pos)
+        pos += 4
+        self.assertEqual(wire[pos:pos + vlen], b"134217728")
+
+    def test_floor_root_maps_is_byte_identical(self):
+        wire = container_codec._py_root_maps(1000, 1000)
+        self.assertEqual(wire[:4], b"NYRQ")
+        pos = 5
+        for expected in (b"deny\n", b"0 1000 1\n", b"0 1000 1\n"):
+            (length,) = struct.unpack_from("<I", wire, pos)
+            pos += 4
+            self.assertEqual(wire[pos:pos + length], expected)
+            pos += length
+        self.assertEqual(pos, len(wire))
+
+    def test_floor_transition_valid_matches_nps010(self):
+        legal = [("created", "running"), ("running", "suspended"),
+                 ("running", "terminated"), ("suspended", "running"),
+                 ("suspended", "terminated")]
+        for f, t in legal:
+            self.assertTrue(
+                container_codec._py_transition_valid(f, t), f"{f}->{t}")
+        for f, t in [("running", "created"), ("created", "suspended"),
+                     ("terminated", "created"), ("running", "running")]:
+            self.assertFalse(
+                container_codec._py_transition_valid(f, t), f"{f}->{t}")
+        with self.assertRaises(ValueError):
+            container_codec._py_transition_valid("nonexistent", "running")
+
+    def test_absent_backend_falls_back_to_floor(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(container_codec._load_rust_backend())
+        argv = container_codec.launcher_argv(
+            self.PY, self.LAUNCHER, "ctr-1", "", False, ["/bin/sh"])
+        self.assertEqual(
+            argv,
+            [self.PY, self.LAUNCHER, "--hostname", "ctr-1", "--", "/bin/sh"],
+        )
+        plan = container_codec.cgroup_plan("ctr-1", 128, 16)
+        self.assertEqual(plan["v1"][0][0], "/sys/fs/cgroup/memory/ctr-1")
+        self.assertEqual(plan["v2"], [("memory.max", "134217728"),
+                                       ("pids.max", "16")])
+        maps = container_codec.root_maps(1000, 1000)
+        self.assertEqual(maps, (b"deny\n", b"0 1000 1\n", b"0 1000 1\n"))
+        self.assertTrue(container_codec.transition_valid("created", "running"))
+        self.assertFalse(container_codec.transition_valid("running", "created"))
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            container_codec.launcher_argv(
+                self.PY, self.LAUNCHER, "h", "", False, [])
+        with self.assertRaises(RuntimeError):
+            container_codec.transition_valid("created", "running")
+
+    def test_ffi_routing_with_fake_lib(self):
+        # With a lib loaded, launcher_argv must drive the FFI entry
+        # point with the expected arguments and never touch
+        # ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_container_version.return_value = \
+            container_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_container_launcher_argv.return_value = \
+            container_codec.RUST_ERR_INTERNAL
+        with mock.patch.object(
+            container_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch("backend.container_codec.ctypes.CDLL") as cdll_mock, \
+                mock.patch.dict(os.environ, {"NYRQIS_RUST_FORCE": "1"}):
+            with self.assertRaises(RuntimeError):
+                container_codec.launcher_argv(
+                    self.PY, self.LAUNCHER, "h", "/tmp/p.json", True,
+                    ["/bin/sh"])
+        fake.nyrqis_container_launcher_argv.assert_called_once()
+        cdll_mock.assert_not_called()
+        args = fake.nyrqis_container_launcher_argv.call_args.args
+        self.assertEqual(args[8], 1)  # default_deny
+
+    def test_ffi_transition_valid_with_fake_lib(self):
+        fake = mock.Mock()
+        fake.nyrqis_container_version.return_value = \
+            container_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_container_transition_valid.return_value = \
+            container_codec.RUST_ERR_INVALID_TRANSITION
+        with mock.patch.object(
+            container_codec, "_load_rust_backend", return_value=fake
+        ):
+            self.assertFalse(
+                container_codec.transition_valid("created", "suspended"))
+        fake.nyrqis_container_transition_valid.assert_called_once_with(0, 2)
+
+    def test_rust_call_failure_falls_back_in_normal_mode(self):
+        # NORMAL-mode path: a Rust routing failure must not break
+        # non-force users. Must not inherit NYRQIS_RUST_FORCE from a gate
+        # env.
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        fake = mock.Mock()
+        fake.nyrqis_container_version.return_value = \
+            container_codec.MIN_RUST_ABI_VERSION
+        fake.nyrqis_container_launcher_argv.side_effect = OSError("boom")
+        with mock.patch.object(
+            container_codec, "_load_rust_backend", return_value=fake
+        ):
+            argv = container_codec.launcher_argv(
+                self.PY, self.LAUNCHER, "h", "", False, [])
+        self.assertEqual(
+            argv, [self.PY, self.LAUNCHER, "--hostname", "h", "--"])
+
+
+class TestContainerPrimitivesConformance(unittest.TestCase):
+    """Real-FFI conformance for the container launch-plan primitives
+    (ADR-0020 priority #5). Skips on hosts without the crate; the CI
+    ``rust-container-conformance`` job builds it and sets
+    ``NYRQIS_RUST_LIB`` so these drive the actual Rust module. The
+    differential core: the Rust module and the pure-Python floor must
+    agree byte-for-byte on the launcher argv, cgroup plan, and root map
+    wires across the config corpus, and agree on the NPS-010 §4 state
+    machine.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = container_codec._load_rust_backend()
+
+    def _skip_unless_lib(self):
+        if self.lib is None:
+            self.skipTest("Rust container launch-plan not built on this host")
+
+    def test_abi_version_meets_contract(self):
+        self._skip_unless_lib()
+        self.assertGreaterEqual(
+            self.lib.nyrqis_container_version(),
+            container_codec.MIN_RUST_ABI_VERSION,
+        )
+
+    def test_launcher_argv_matches_python_floor_byte_identical(self):
+        self._skip_unless_lib()
+        py = TestContainerPrimitivesLoader.PY
+        launcher = TestContainerPrimitivesLoader.LAUNCHER
+        for host, command, policy, deny, _, _, _, _ in _container_plan_cases():
+            flat = container_codec.build_command_flat(command)
+            rust_wire = container_codec._rust_launcher_argv(
+                self.lib,
+                py.encode(), launcher.encode(), host.encode(),
+                policy.encode(), int(deny), flat,
+            )
+            py_wire = container_codec._py_launcher_argv(
+                py.encode(), launcher.encode(), host.encode(),
+                policy.encode(), int(deny), flat,
+            )
+            self.assertEqual(
+                rust_wire, py_wire,
+                f"launcher argv wire diverges from floor for {host}",
+            )
+            # And the public surface decodes both identically.
+            self.assertEqual(
+                container_codec.launcher_argv(
+                    py, launcher, host, policy, deny, command),
+                container_codec._decode_launcher_argv(py_wire),
+            )
+
+    def test_cgroup_plan_matches_python_floor_byte_identical(self):
+        self._skip_unless_lib()
+        for host, _, _, _, mem, pids, quota, period in _container_plan_cases():
+            cid = f"id-{host[:6]}"
+            rust_wire = container_codec._rust_cgroup_plan(
+                self.lib, cid.encode(), mem, pids, quota, period)
+            py_wire = container_codec._py_cgroup_plan(
+                cid.encode(), mem, pids, quota, period)
+            self.assertEqual(
+                rust_wire, py_wire,
+                f"cgroup plan wire diverges from floor for {host}",
+            )
+            self.assertEqual(
+                container_codec.cgroup_plan(cid, mem, pids, quota, period),
+                container_codec._decode_cgroup_plan(py_wire),
+            )
+
+    def test_root_maps_matches_python_floor_byte_identical(self):
+        self._skip_unless_lib()
+        for uid, gid in ((0, 0), (1000, 1000), (65534, 65534), (2 ** 32 - 1, 1)):
+            rust_wire = container_codec._rust_root_maps(self.lib, uid, gid)
+            py_wire = container_codec._py_root_maps(uid, gid)
+            self.assertEqual(
+                rust_wire, py_wire,
+                f"root maps diverge from floor for uid={uid} gid={gid}",
+            )
+            self.assertEqual(
+                container_codec.root_maps(uid, gid),
+                container_codec._decode_root_maps(py_wire),
+            )
+
+    def test_transition_valid_matches_python_floor(self):
+        self._skip_unless_lib()
+        states = ["created", "running", "suspended", "terminated"]
+        for f in states:
+            for t in states:
+                rust_ans = container_codec.transition_valid(f, t)
+                py_ans = container_codec._py_transition_valid(f, t)
+                self.assertEqual(
+                    rust_ans, py_ans,
+                    f"transition_valid diverges from floor for {f}->{t}",
+                )
+
+    def test_launcher_args_wiring_through_manager(self):
+        self._skip_unless_lib()
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(
+            hostname="evil; rm -rf /",
+            command=["/bin/sh", "-c", "echo hi"],
+            capabilities=["CAP_FILESYSTEM_READ"],
+        )
+        container = manager.create(config)
+        argv = manager._launcher_args(container, Path("launcher.py"))
+        self.assertEqual(argv[argv.index("--hostname") + 1],
+                         config.hostname)
+        launcher_part = argv[:argv.index("--")]
+        self.assertNotIn("sh", launcher_part)
+        self.assertNotIn("-c", launcher_part)
+        self.assertEqual(argv[argv.index("--") + 1:], config.command)
+        manager._cleanup_policy_files()
+
+    def test_cgroup_v1_plan_wiring_through_manager(self):
+        self._skip_unless_lib()
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(
+            limits=ResourceLimits(memory_mb=128, pid_limit=16))
+        container = manager.create(config)
+        plan = manager._cgroup_v1_plan(container)
+        memory_settings = None
+        for cgroup_path, settings in plan:
+            if "memory.limit_in_bytes" in settings:
+                memory_settings = settings
+        self.assertIsNotNone(memory_settings)
+        self.assertEqual(memory_settings["memory.limit_in_bytes"],
+                         "134217728")
+        self.assertEqual(memory_settings["notify_on_release"], "0")
+
+
 class TestConformance(unittest.TestCase):
     """Test overall conformance to NPS-017 §5."""
     
@@ -3161,6 +3511,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCWireLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

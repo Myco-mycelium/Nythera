@@ -1,0 +1,18 @@
+[package]
+name = "nyrqis-container"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis container launch-plan primitives — ADR-0020 migration priority #5"
+
+[lib]
+name = "nyrqis_container"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `libc` is the crate's only dependency: the seccomp/syscalls/nyfs/ipc
+# ownership contract (output buffers are libc::malloc'd here and freed
+# by the caller through nyrqis_container_free) and the -errno constants
+# (EINVAL for out-of-range state indices, EFBIG for oversized inputs).
+libc = "0.2"
