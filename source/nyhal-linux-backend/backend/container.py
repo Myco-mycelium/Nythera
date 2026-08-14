@@ -160,6 +160,7 @@ class ContainerManager:
         require_cgroups_v2: bool = False,
         use_direct_syscalls: bool = True,
         ipc_registry: Optional[ContainerIpcRegistry] = None,
+        capability_manager: Optional["CapabilityManager"] = None,
     ):
         """Initialize the container manager.
         
@@ -184,9 +185,19 @@ class ContainerManager:
                 container terminates. Pass the same object as the
                 ``IPCDatagramServer``'s ``pid_registry`` to authenticate
                 container senders with no manual bookkeeping.
+            capability_manager: If given, the control-plane capability
+                registry (``backend.capability.CapabilityManager``) is
+                kept in sync automatically per NPS-010 §5: each
+                container is initialized with its default capability
+                set at spawn (so it can authenticate with CAP_IPC_SEND
+                at the transport server and call capability-gated
+                services) and its grants are revoked when it
+                terminates. Pass the same object as the
+                ``IPCDatagramServer``'s ``capability_manager``.
         """
         self.containers: Dict[str, Container] = {}
         self.ipc_registry = ipc_registry
+        self.capability_manager = capability_manager
         self.use_direct_syscalls = use_direct_syscalls
         self.use_cgroups_v2 = use_cgroups_v2 and self._detect_cgroups_v2()
         if require_cgroups_v2 and not self.use_cgroups_v2:
@@ -259,10 +270,12 @@ class ContainerManager:
             self._setup_cgroups(container)
             self._spawn(container)  # sets container.pid
             self._ipc_register(container)
+            self._cap_initialize(container)
             self._attach_to_cgroups(container)
         except Exception as e:
             logger.error(f"Error starting container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
+            self._cap_reset(container)
             self._ipc_unregister(container)
             raise
         
@@ -288,6 +301,7 @@ class ContainerManager:
             raise TimeoutError(f"Container {container.id} did not exit within timeout")
         container.exit_code = exit_code
         container.transition_to(ContainerState.TERMINATED)
+        self._cap_reset(container)
         self._ipc_unregister(container)
         return exit_code
 
@@ -324,6 +338,7 @@ class ContainerManager:
             exit_code = 1
         container.exit_code = exit_code
         container.transition_to(ContainerState.TERMINATED)
+        self._cap_reset(container)
         self._ipc_unregister(container)
         return exit_code
     
@@ -479,6 +494,7 @@ class ContainerManager:
         
         if container.pid is None:
             container.transition_to(ContainerState.TERMINATED)
+            self._cap_reset(container)  # idempotent; no registry entry to drop
             return
         
         try:
@@ -515,13 +531,45 @@ class ContainerManager:
                 logger.warning(f"Force-killed container {container.id} (PID {container.pid})")
             
             container.transition_to(ContainerState.TERMINATED)
+            self._cap_reset(container)
             self._ipc_unregister(container)
             logger.info(f"Terminated container {container.id}")
         except OSError as e:
             logger.error(f"Error terminating container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
+            self._cap_reset(container)
             self._ipc_unregister(container)
     
+    def _cap_initialize(self, container: Container) -> None:
+        """Initialize the container's control-plane capability grants.
+
+        Per NPS-010 §5, capabilities are assigned when a container is
+        created and the backend is the sole arbiter (NPS-017 §4.2). The
+        container's id receives its default set at spawn — the defaults
+        include CAP_IPC_SEND (the transport server's check) and
+        CAP_SYSTEM_INFO (the status service's check) — so a spawned
+        container is immediately able to authenticate and call
+        capability-gated services. Unlike the pid-based sender
+        registry, this is not launch-path-dependent: grants are keyed
+        by container id, so both the direct-syscall and legacy paths
+        initialize.
+
+        Note: ``initialize_container`` resets any pre-existing grants
+        for the id before granting the defaults — pre-spawn grants via
+        ``grant_capability`` are superseded at spawn (the standard
+        flow is defaults at spawn, extras granted afterwards).
+        """
+        if self.capability_manager is None:
+            return
+        self.capability_manager.initialize_container(container.id)
+
+    def _cap_reset(self, container: Container) -> None:
+        """Revoke the container's capability grants on termination
+        (NPS-010 §5), idempotent."""
+        if self.capability_manager is None:
+            return
+        self.capability_manager.reset_container(container.id)
+
     def _ipc_register(self, container: Container) -> None:
         """Register a spawned container in the transport sender registry.
 

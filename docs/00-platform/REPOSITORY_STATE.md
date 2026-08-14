@@ -446,6 +446,19 @@ Documentation hygiene, fixed earlier this session:
   container→service e2e now runs with the auto-registry end-to-end;
   `TestContainerIpcRegistry` (6 tests) pins the registry and manager
   hooks. Suite 251 → 257 (231 run + 26 skipped).
+- 2026-08-14 (**runnable status-service daemon + auto capability
+  lifecycle**): `nyrqis_backend.py service serve` runs a
+  `StatusServiceHost` daemon — the container manager, transport sender
+  registry, capability manager, server, and service share state, so a
+  container spawned against the daemon is automatically registered AND
+  granted (defaults at spawn, revoked on terminate — NPS-010 §5;
+  `ContainerManager` gains `capability_manager=` mirroring the
+  ipc-registry hooks) and can call the status service with zero manual
+  bookkeeping. SIGINT/SIGTERM shut it down cleanly. The status e2e
+  now proves the whole chain automatically; new
+  `TestContainerCapabilityLifecycle` (6) + `TestStatusServiceHost` (4,
+  incl. a real CLI subprocess that binds 0700 and exits 0 on SIGTERM).
+  Suite 265 → 275 (249 run + 26 skipped).
 - 2026-08-14 (**first real backend service on the transport**):
   `ipc/service.py` (`BackendStatusService`) is a container-facing
   CALL/REPLY service attached to an `IPCDatagramServer`: `ping`

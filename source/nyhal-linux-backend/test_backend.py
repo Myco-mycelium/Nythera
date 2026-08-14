@@ -56,6 +56,7 @@ from ipc import transport_codec
 from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
+import nyrqis_backend
 
 
 logging.basicConfig(level=logging.WARNING)
@@ -294,6 +295,105 @@ class TestContainerFreezer(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait()
+
+
+class TestContainerCapabilityLifecycle(unittest.TestCase):
+    """Control-plane capability lifecycle (NPS-010 §5): each spawned
+    container is initialized with its default grants (so it can
+    authenticate at the transport server with CAP_IPC_SEND and call
+    capability-gated services), and its grants are revoked when it
+    terminates — mirroring the ipc registry hooks, keyed by container
+    id (not pid), so both launch paths initialize.
+    """
+
+    def _manager(self, caps):
+        return ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True,
+            capability_manager=caps)
+
+    def test_spawn_initializes_default_grants(self):
+        caps = CapabilityManager()
+        manager = self._manager(caps)
+        container = manager.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        with mock.patch.object(manager, "_spawn") as spawn, \
+                mock.patch.object(manager, "_setup_cgroups"), \
+                mock.patch.object(manager, "_attach_to_cgroups"):
+            manager.spawn(container)
+        spawn.assert_called_once()
+        self.assertTrue(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+        self.assertTrue(caps.has_capability(
+            container.id, Capability.CAP_SYSTEM_INFO))
+
+    def test_spawn_failure_revokes_grants(self):
+        caps = CapabilityManager()
+        manager = self._manager(caps)
+        container = manager.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        with mock.patch.object(
+            manager, "_spawn", side_effect=RuntimeError("boom")
+        ), mock.patch.object(manager, "_setup_cgroups"), \
+                mock.patch.object(manager, "_attach_to_cgroups"):
+            with self.assertRaises(RuntimeError):
+                manager.spawn(container)
+        self.assertFalse(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+
+    def test_terminate_revokes_grants(self):
+        caps = CapabilityManager()
+        manager = self._manager(caps)
+        container = manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 4242
+        manager._cap_initialize(container)
+        self.assertTrue(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+        with mock.patch("backend.container.os.kill"), \
+                mock.patch.object(container, "is_running", return_value=False):
+            manager.terminate(container)
+        self.assertFalse(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+
+    def test_wait_legacy_path_revokes_grants(self):
+        caps = CapabilityManager()
+        manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=False,
+            capability_manager=caps)
+        container = manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 99
+        manager._cap_initialize(container)
+        fake_proc = mock.Mock()
+        fake_proc.wait.return_value = 3
+        container._proc = fake_proc
+        self.assertEqual(manager.wait(container), 3)
+        self.assertFalse(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+
+    def test_wait_direct_path_revokes_grants(self):
+        caps = CapabilityManager()
+        manager = self._manager(caps)
+        container = manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = 4242
+        container._direct_launcher_pid = 777
+        manager._cap_initialize(container)
+        with mock.patch("backend.container.os.waitpid",
+                        return_value=(777, 0)):
+            manager.wait(container)
+        self.assertFalse(caps.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+
+    def test_no_capability_manager_is_noop(self):
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        manager._cap_initialize(container)  # must not raise
+        manager._cap_reset(container)
+        with mock.patch.object(manager, "_spawn"), \
+                mock.patch.object(manager, "_setup_cgroups"), \
+                mock.patch.object(manager, "_attach_to_cgroups"):
+            manager.spawn(container)
 
 
 class TestCapabilityEnforcement(unittest.TestCase):
@@ -797,6 +897,112 @@ class TestBackendStatusService(unittest.TestCase):
             stop.set()
             client.close()
             server.close()
+
+
+class TestStatusServiceHost(unittest.TestCase):
+    """The runnable status-service daemon (`nyrqis_backend.py`
+    `StatusServiceHost`): serves ping/status over a real socket with the
+    trust chain wired, stops cleanly (socket released), a container
+    spawned through the host's manager is automatically granted, the
+    CLI `service serve` subcommand wires the host, and a REAL
+    subprocess binds the socket and exits 0 on SIGTERM.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.sock = os.path.join(self.tmp, "status.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    def _host(self):
+        return nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9")
+
+    def test_host_serves_status_service(self):
+        host = self._host()
+        host.start()
+        try:
+            # The operator's control-plane bookkeeping: the caller must
+            # be resolvable (registered pid) and hold CAP_IPC_SEND
+            # (server) + CAP_SYSTEM_INFO (status) — the same grants a
+            # container spawned through the host's manager gets
+            # automatically.
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            client = IPCClient("cli", self.cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "status"}', timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["container"], "cli")
+                self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
+                self.assertEqual(resp["backend_version"], "9.9.9")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+        self.assertFalse(os.path.exists(self.sock))
+
+    def test_host_manager_auto_wires_grants(self):
+        # A container spawned through the host's manager is granted its
+        # default capabilities automatically (NPS-010 §5) — the pieces
+        # the daemon must own share state.
+        host = self._host()
+        container = host.container_manager.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        with mock.patch.object(host.container_manager, "_spawn"), \
+                mock.patch.object(host.container_manager, "_setup_cgroups"), \
+                mock.patch.object(host.container_manager, "_attach_to_cgroups"):
+            host.container_manager.spawn(container)
+        self.assertTrue(host.capability_manager.has_capability(
+            container.id, Capability.CAP_IPC_SEND))
+        self.assertTrue(host.capability_manager.has_capability(
+            container.id, Capability.CAP_SYSTEM_INFO))
+        host.stop()
+
+    def test_cli_service_serve_wires_host(self):
+        with mock.patch.object(nyrqis_backend, "StatusServiceHost") as Host, \
+                mock.patch.object(
+                    nyrqis_backend.sys, "argv",
+                    ["nyrqis_backend.py", "service", "serve",
+                     "--socket", self.sock],
+                ):
+            rc = nyrqis_backend.main()
+        self.assertEqual(rc, 0)
+        Host.assert_called_once_with(
+            socket_path=self.sock, backend_version=None)
+        Host.return_value.serve_until_signal.assert_called_once()
+
+    def test_cli_service_serve_real_subprocess(self):
+        # A REAL `nyrqis_backend.py service serve` process binds the
+        # socket (0700, like the endpoint primitive) and shuts down
+        # cleanly (exit 0) on SIGTERM.
+        backend = str(Path(nyrqis_backend.__file__).resolve())
+        proc = subprocess.Popen(
+            [sys.executable, backend, "service", "serve",
+             "--socket", self.sock],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not os.path.exists(self.sock):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(self.sock),
+                "service daemon never bound the socket",
+            )
+            self.assertEqual(
+                stat_module.S_IMODE(os.stat(self.sock).st_mode), 0o700)
+            proc.send_signal(signal.SIGTERM)
+            out, err = proc.communicate(timeout=15)
+            self.assertEqual(proc.returncode, 0, out + err)
+            self.assertIn("Status service listening", out)
+            self.assertIn("Status service stopped", out)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        self.assertFalse(os.path.exists(self.sock))
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -1919,10 +2125,12 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
         ipc_manager = IPCManager()
         ipc_manager.create_endpoint("container-svc", "ep-svc")
         ipc_registry = ContainerIpcRegistry()
-        # Control-plane grants: defaults include CAP_IPC_SEND (server
-        # check) and CAP_SYSTEM_INFO (status check).
+        # The control-plane manager is shared by the server AND the
+        # container manager: the container is granted its defaults
+        # (CAP_IPC_SEND for the server check, CAP_SYSTEM_INFO for the
+        # status check) AUTOMATICALLY at spawn — no manual
+        # initialize_container.
         caps = CapabilityManager()
-        caps.initialize_container("container-cli")
         server = IPCDatagramServer(
             ipc_manager, "ep-svc", svc_path,
             pid_registry=ipc_registry, capability_manager=caps)
@@ -1947,7 +2155,7 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
         )
         ctr_manager = ContainerManager(
             use_cgroups_v2=False, use_direct_syscalls=True,
-            ipc_registry=ipc_registry)
+            ipc_registry=ipc_registry, capability_manager=caps)
         container = ctr_manager.create(ContainerConfig(
             name="container-cli",
             command=[sys.executable, "-c", script, backend_dir,
@@ -4793,6 +5001,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCTransport))
     suite.addTests(loader.loadTestsFromTestCase(TestBackendStatusService))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerCapabilityLifecycle))
+    suite.addTests(loader.loadTestsFromTestCase(TestStatusServiceHost))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))

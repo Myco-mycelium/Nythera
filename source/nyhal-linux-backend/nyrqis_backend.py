@@ -17,9 +17,12 @@ References:
 
 import argparse
 import logging
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 # Add source directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -27,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from backend.container import ContainerManager, ContainerConfig, ResourceLimits
 from backend.capability import CapabilityManager, Capability
 from ipc.core import IPCManager
+from ipc.transport import IPCDatagramServer
+from ipc.registry import ContainerIpcRegistry
+from ipc.service import BackendStatusService
 from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
 
@@ -179,6 +185,103 @@ def cmd_capability_grant(args) -> int:
         return 1
 
 
+class StatusServiceHost:
+    """A runnable status-service daemon: the transport server serving
+    the BackendStatusService with auto-maintained sender identity and
+    control-plane capability grants (plan §4.3, §4.5).
+
+    Owns the pieces that must share state for the trust chain to work:
+
+    - ``ipc_registry`` — the pid → container mapping the server
+      authenticates against, kept in sync by ``container_manager``.
+    - ``capability_manager`` — the control-plane grants the server
+      (CAP_IPC_SEND) and the service (CAP_SYSTEM_INFO) enforce, kept in
+      sync by ``container_manager`` (each spawned container is
+      initialized with its default grants at spawn, revoked on
+      termination — NPS-010 §5).
+    - ``container_manager`` — the manager an operator uses to spawn
+      containers against this daemon; those containers are
+      automatically authenticated AND granted, so they can call the
+      status service with zero manual bookkeeping.
+    """
+
+    def __init__(self, socket_path: str,
+                 backend_version: Optional[str] = None) -> None:
+        if not socket_path:
+            raise ValueError("socket_path is required")
+        self.socket_path = socket_path
+        self.ipc_manager = IPCManager()
+        self.ipc_manager.create_endpoint("container-svc", "ep-svc")
+        self.ipc_registry = ContainerIpcRegistry()
+        self.capability_manager = CapabilityManager()
+        self.container_manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True,
+            ipc_registry=self.ipc_registry,
+            capability_manager=self.capability_manager,
+        )
+        self.server = IPCDatagramServer(
+            self.ipc_manager, "ep-svc", socket_path,
+            pid_registry=self.ipc_registry,
+            capability_manager=self.capability_manager,
+        )
+        self.service = BackendStatusService(
+            capability_manager=self.capability_manager,
+            backend_version=backend_version,
+        )
+        self.service.attach(self.server)
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> "StatusServiceHost":
+        """Bind the socket and start the serve loop thread."""
+        self.server.bind()
+        self._thread = threading.Thread(
+            target=self.server.serve, args=(self._stop,), daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        """Signal the serve loop, let it exit cleanly, then release the
+        socket (the loop polls at 0.2s, so the join is quick and the
+        thread never receives on a closed fd)."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self.server.close()
+
+    def serve_until_signal(self) -> None:
+        """Serve until SIGINT/SIGTERM, then stop cleanly (the CLI
+        path; signal handlers must run in the main thread)."""
+        def _handler(signum, frame):  # noqa: ARG001 - signal handler signature
+            self._stop.set()
+
+        old = {}
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                old[sig] = signal.signal(sig, _handler)
+            self.start()
+            print(f"Status service listening on {self.socket_path}")
+            print("Press Ctrl+C to stop.")
+            while not self._stop.is_set():
+                self._stop.wait(0.5)
+        finally:
+            for sig, prev in old.items():
+                signal.signal(sig, prev)
+            self.stop()
+            print("Status service stopped.")
+
+
+def cmd_service_serve(args) -> int:
+    """Serve the container-facing status service until interrupted."""
+    setup_logging(args.verbose)
+    host = StatusServiceHost(
+        socket_path=args.socket,
+        backend_version=args.backend_version or None,
+    )
+    host.serve_until_signal()
+    return 0
+
+
 def cmd_ipc_endpoint_create(args) -> int:
     """Create an IPC endpoint."""
     setup_logging(args.verbose)
@@ -235,6 +338,7 @@ Examples:
   %(prog)s container run --memory 256 /bin/sh  # Run a container
   %(prog)s capability list                     # List capabilities
   %(prog)s filesystem create /tmp/nyfs         # Create a filesystem
+  %(prog)s service serve --socket /tmp/nyrqis-status.sock  # Run the status service daemon
         """
     )
     
@@ -319,6 +423,24 @@ Examples:
     grant_parser.add_argument("capability", help="Capability name")
     grant_parser.set_defaults(func=cmd_capability_grant)
     
+    # Service commands
+    service_parser = subparsers.add_parser(
+        "service", help="Run backend services (the container-facing daemon)")
+    service_subparsers = service_parser.add_subparsers(dest="service_cmd")
+
+    serve_parser = service_subparsers.add_parser(
+        "serve", help="Serve the container-facing status service")
+    serve_parser.add_argument(
+        "--socket", default="/tmp/nyrqis-status.sock",
+        help="Unix datagram socket path (default: /tmp/nyrqis-status.sock)"
+    )
+    serve_parser.add_argument(
+        "--backend-version", default="",
+        help="Version the status service reports (default: the backend "
+        "package version)"
+    )
+    serve_parser.set_defaults(func=cmd_service_serve)
+
     # IPC commands
     ipc_parser = subparsers.add_parser("ipc", help="Manage IPC")
     ipc_subparsers = ipc_parser.add_subparsers(dest="ipc_cmd")
