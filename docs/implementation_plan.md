@@ -48,7 +48,7 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ### 4.3. IPC Semantics
 
-*   **Custom IPC Mechanism**: Design a custom IPC mechanism, likely based on Unix domain sockets or a shared memory approach, to implement the `send`/`receive`/`call`/`notify` primitives. This will allow for efficient and secure communication between Nyrqis components.
+*   **Custom IPC Mechanism**: Design a custom IPC mechanism, likely based on Unix domain sockets or a shared memory approach, to implement the `send`/`receive`/`call`/`notify` primitives. This will allow for efficient and secure communication between Nyrqis components. **Unix-domain datagram transport — LANDED 2026-08-14** (`ipc/transport.py`): `IPCMessage`s move between processes over `AF_UNIX SOCK_DGRAM` sockets framed by the wire codec (ADR-0020 migration #4), with **kernel `SCM_CREDENTIALS` sender authentication** — the backend maps the attached pid to a container, so forged/unknown senders and senders lacking `CAP_IPC_SEND` are dropped before delivery (verified with a real cross-process exchange). `CALL`/`REPLY` works over sockets via `metadata['reply_path']` correlation. A shared-memory transport remains an alternative/complement (deferred).
 *   **Capability Transfer and Attenuation**: Integrate capability transfer and attenuation directly into the IPC mechanism, ensuring that capabilities are correctly validated and restricted when passed between processes.
 *   **Token-Bucket Rate Limiting**: Implement token-bucket rate limiting for IPC channels as specified in ADR-0009, preventing resource exhaustion and denial-of-service attacks.
 

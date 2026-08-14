@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.5.0] — 2026-08-14
+
+### Unix-Domain Datagram IPC Transport
+
+#### Added
+
+- **`ipc/transport.py`** — the inter-process channel for NPS-017 §4.3 (plan §4.3), activating the ADR-0020 migration #4 wire codec as a real transport
+  - `UnixDatagramEndpoint` — one `AF_UNIX SOCK_DGRAM` socket bound to a path (0700, path-length guarded), with `SO_PASSCRED` on the receiver and the sender's real `SCM_CREDENTIALS` attached on send
+  - `IPCDatagramServer` — serves one endpoint path: parses the wire (malformed datagrams dropped at the trust boundary), authenticates the sender via the kernel-attached `(pid, uid, gid)` mapped to a container, **drops forged `sender_id`s, unknown pids, and senders lacking `CAP_IPC_SEND`** before delivery, then enqueues through the endpoint's token bucket (ADR-0009) or dispatches `CALL`s to an `on_call` handler with direct reply
+  - `IPCClient` — the caller side: `send`/`notify`/`call`/`receive` over the socket; `CALL` carries the reply path in `metadata['reply_path']`, replies are correlated by `reply_to` (the client-side trust anchor)
+  - `SO_PEERCRED` does NOT work on datagram sockets (returns `(0,-1,-1)` — verified on this host), so `SCM_CREDENTIALS` is the mechanism; an unprivileged sender cannot forge credentials (the kernel refuses a non-matching `ucred` with EPERM)
+- **`test_backend.py`** — `TestIPCTransport` (9 tests): authenticated same-process send/receive, unknown-sender drop, forged-sender drop, malformed-wire drop, `CAP_IPC_SEND` denial, in-process CALL/REPLY, **a real cross-process CALL/REPLY with kernel-pid authentication**, inbound ADR-0009 rate limiting, and the socket-path guard. Suite **229 → 238**
+
+#### Changed
+
+- `IMPLEMENTATION_STATUS` 0.14.0; `implementation_plan.md` §4.3 records the landed transport (shared-memory remains deferred)
+
 ## [0.4.0] — 2026-08-14
 
 ### Loopback Up in Network Containers

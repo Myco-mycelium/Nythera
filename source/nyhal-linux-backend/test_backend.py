@@ -44,6 +44,9 @@ from backend import container_codec
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
+from ipc.transport import (
+    IPCTransportError, UnixDatagramEndpoint, IPCDatagramServer, IPCClient
+)
 from fuse.nyfs import (
     NyFSFilesystem, NyFSBlock, NyFSOperations, NyFSError, NyFSMount, _import_fusepy
 )
@@ -432,6 +435,216 @@ class TestIPCSemantics(unittest.TestCase):
         # Wait for refill
         time.sleep(0.6)  # Should get at least 1 token
         self.assertTrue(bucket.try_consume())
+
+
+class TestIPCTransport(unittest.TestCase):
+    """Test the Unix-domain datagram IPC transport (NPS-017 §4.3, plan
+    §4.3): wire-codec framing, kernel SCM_CREDENTIALS sender
+    authentication (unknown/forged senders dropped), capability
+    enforcement, ADR-0009 rate limiting on the inbound path, and the
+    CALL/REPLY pattern — including a real cross-process exchange.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _paths(self, name):
+        return (
+            os.path.join(self.tmp, f"{name}-svc.sock"),
+            os.path.join(self.tmp, f"{name}-cli.sock"),
+        )
+
+    def _server(self, endpoint_id="ep-svc", pid_registry=None,
+                capability_manager=None, on_call=None):
+        svc_path, _ = self._paths("t")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", endpoint_id)
+        server = IPCDatagramServer(
+            manager, endpoint_id, svc_path,
+            pid_registry=pid_registry, capability_manager=capability_manager,
+            on_call=on_call,
+        )
+        return manager, server
+
+    def test_send_receive_authenticated_same_process(self):
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"})
+        server.bind()
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-A", cli_path).bind()
+        try:
+            client.send(server.endpoint.path, b"hello")
+            self.assertIsNotNone(server.serve_once(timeout=2.0))
+            msg = manager.receive("ep-svc", timeout_s=1.0)
+            self.assertIsNotNone(msg)
+            self.assertEqual(msg.payload, b"hello")
+            self.assertEqual(msg.sender_id, "container-A")
+        finally:
+            client.close()
+            server.close()
+
+    def test_unknown_sender_dropped(self):
+        manager, server = self._server(pid_registry={})  # no mapping
+        server.bind()
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-A", cli_path).bind()
+        try:
+            client.send(server.endpoint.path, b"anon")
+            self.assertIsNone(server.serve_once(timeout=2.0))
+            self.assertEqual(manager.receive("ep-svc", timeout_s=0.1), None)
+        finally:
+            client.close()
+            server.close()
+
+    def test_forged_sender_dropped(self):
+        # The wire claims "container-evil" but SCM_CREDENTIALS
+        # authenticates this process as "container-A".
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"})
+        server.bind()
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-evil", cli_path).bind()
+        try:
+            client.send(server.endpoint.path, b"spoof")
+            self.assertIsNone(server.serve_once(timeout=2.0))
+            self.assertEqual(manager.receive("ep-svc", timeout_s=0.1), None)
+        finally:
+            client.close()
+            server.close()
+
+    def test_malformed_wire_dropped(self):
+        manager, server = self._server(pid_registry={os.getpid(): "container-A"})
+        server.bind()
+        try:
+            server.endpoint.send(b"\x00\xff not an IPCMessage", server.endpoint.path)
+            self.assertIsNone(server.serve_once(timeout=2.0))
+            self.assertEqual(manager.receive("ep-svc", timeout_s=0.1), None)
+        finally:
+            server.close()
+
+    def test_sender_without_cap_denied(self):
+        caps = mock.Mock()
+        caps.validate_operation.return_value = False  # no CAP_IPC_SEND
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"},
+            capability_manager=caps,
+        )
+        server.bind()
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-A", cli_path).bind()
+        try:
+            client.send(server.endpoint.path, b"denied")
+            self.assertIsNone(server.serve_once(timeout=2.0))
+            self.assertEqual(manager.receive("ep-svc", timeout_s=0.1), None)
+        finally:
+            client.close()
+            server.close()
+
+    def test_call_reply_in_process(self):
+        import threading
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"})
+        server.bind()
+
+        def handler(msg, sender, sender_path):
+            server.reply(sender_path, msg.message_id, b"pong")
+
+        server.on_call = handler
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-A", cli_path).bind()
+        try:
+            reply = client.call(server.endpoint.path, b"ping", timeout_s=5.0)
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply.payload, b"pong")
+            self.assertEqual(reply.message_type, IPCMessageType.REPLY)
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_cross_process_call_authenticated(self):
+        # A REAL second process (not a thread): its pid is registered as
+        # container-cli, the kernel's SCM_CREDENTIALS authenticate it at
+        # the server, and the CALL/REPLY round-trips over the socket.
+        import threading
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        svc_path, cli_path = self._paths("xp")
+        results = {}
+        server = IPCDatagramServer(manager, "ep-svc", svc_path)
+        server.bind()
+
+        def handler(msg, sender, sender_path):
+            results["sender"] = sender
+            server.reply(sender_path, msg.message_id, b"pong")
+
+        server.on_call = handler
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+
+        backend_dir = str(Path(__file__).resolve().parent)
+        ready_path = os.path.join(self.tmp, "xp-ready")
+        script = (
+            "import os, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(sys.argv[4]) and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('container-cli', sys.argv[2]).bind()\n"
+            "r = c.call(sys.argv[3], b'ping', timeout_s=10)\n"
+            "print('REPLY:' + (r.payload.decode() if r else 'NONE'))\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, backend_dir,
+             cli_path, svc_path, ready_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            # Register the child's pid BEFORE it may send (the child
+            # waits on the ready marker, so there is no TOCTOU window).
+            server.pid_registry = {proc.pid: "container-cli"}
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            out, err = proc.communicate(timeout=20)
+        finally:
+            stop.set()
+            server.close()
+            try:
+                os.unlink(ready_path)
+            except OSError:
+                pass
+        self.assertIn("REPLY:pong", out, err)
+        # The handler saw the authenticated container, not the wire claim.
+        self.assertEqual(results.get("sender"), "container-cli")
+
+    def test_inbound_rate_limited(self):
+        # ADR-0009 applies to the transport inbound path: once the
+        # endpoint's bucket is empty, further datagrams are dropped.
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"})
+        server.bind()
+        manager.get_endpoint("ep-svc").rate_limit = TokenBucket(
+            bucket_size=3, tokens_per_second=0.1)
+        _, cli_path = self._paths("t")
+        client = IPCClient("container-A", cli_path).bind()
+        try:
+            for _ in range(6):
+                client.send(server.endpoint.path, b"x")
+            delivered = 0
+            for _ in range(6):
+                if server.serve_once(timeout=2.0) is not None:
+                    delivered += 1
+            self.assertEqual(delivered, 3)
+        finally:
+            client.close()
+            server.close()
+
+    def test_socket_path_length_guard(self):
+        with self.assertRaises(IPCTransportError):
+            UnixDatagramEndpoint("x" * 200)
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -3955,6 +4168,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkNamespaceIsolation))
     suite.addTests(loader.loadTestsFromTestCase(TestCapabilityEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
+    suite.addTests(loader.loadTestsFromTestCase(TestIPCTransport))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
