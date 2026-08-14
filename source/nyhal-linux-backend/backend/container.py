@@ -35,6 +35,7 @@ from typing import Optional, Dict, List, Tuple
 
 from backend import rust_syscalls  # ADR-0020 priority #2 FFI loader
 from backend import container_codec  # ADR-0020 priority #5 FFI loader
+from ipc.registry import ContainerIpcRegistry  # transport sender auth
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,7 @@ class ContainerManager:
         use_cgroups_v2: bool = True,
         require_cgroups_v2: bool = False,
         use_direct_syscalls: bool = True,
+        ipc_registry: Optional[ContainerIpcRegistry] = None,
     ):
         """Initialize the container manager.
         
@@ -173,8 +175,18 @@ class ContainerManager:
                 direct-syscall launcher transition of
                 ``docs/implementation_plan.md`` §4.1). If False, retain
                 the legacy ``unshare(1)`` subprocess path.
+            ipc_registry: If given, the transport's sender registry
+                (``ipc.registry.ContainerIpcRegistry``) is kept in sync
+                automatically: each direct-syscall container's host pid
+                is registered at spawn (its command is exec'd as PID-1,
+                so ``container.pid`` IS the pid the kernel attaches to
+                the container's datagrams) and unregistered when the
+                container terminates. Pass the same object as the
+                ``IPCDatagramServer``'s ``pid_registry`` to authenticate
+                container senders with no manual bookkeeping.
         """
         self.containers: Dict[str, Container] = {}
+        self.ipc_registry = ipc_registry
         self.use_direct_syscalls = use_direct_syscalls
         self.use_cgroups_v2 = use_cgroups_v2 and self._detect_cgroups_v2()
         if require_cgroups_v2 and not self.use_cgroups_v2:
@@ -246,10 +258,12 @@ class ContainerManager:
         try:
             self._setup_cgroups(container)
             self._spawn(container)  # sets container.pid
+            self._ipc_register(container)
             self._attach_to_cgroups(container)
         except Exception as e:
             logger.error(f"Error starting container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
+            self._ipc_unregister(container)
             raise
         
         logger.info(f"Container {container.id} running (pid={container.pid})")
@@ -274,6 +288,7 @@ class ContainerManager:
             raise TimeoutError(f"Container {container.id} did not exit within timeout")
         container.exit_code = exit_code
         container.transition_to(ContainerState.TERMINATED)
+        self._ipc_unregister(container)
         return exit_code
 
     def _wait_direct(
@@ -309,6 +324,7 @@ class ContainerManager:
             exit_code = 1
         container.exit_code = exit_code
         container.transition_to(ContainerState.TERMINATED)
+        self._ipc_unregister(container)
         return exit_code
     
     def _freeze_control(
@@ -499,11 +515,37 @@ class ContainerManager:
                 logger.warning(f"Force-killed container {container.id} (PID {container.pid})")
             
             container.transition_to(ContainerState.TERMINATED)
+            self._ipc_unregister(container)
             logger.info(f"Terminated container {container.id}")
         except OSError as e:
             logger.error(f"Error terminating container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
+            self._ipc_unregister(container)
     
+    def _ipc_register(self, container: Container) -> None:
+        """Register a spawned container in the transport sender registry.
+
+        Direct-syscall path only: the container's command is exec'd as
+        its PID-1, so ``container.pid`` (the host-visible pid) is exactly
+        the pid the kernel attaches to the container's datagrams
+        (``SCM_CREDENTIALS`` reports the global pid — probe-verified
+        2026-08-14). The legacy ``unshare(1)`` path is NOT tracked: the
+        command runs as a grandchild with a different pid, and its
+        datagrams fail closed (dropped as unknown) unless the service
+        supplies its own mapping — documented in ``ipc/registry.py``.
+        """
+        if self.ipc_registry is None or container._direct_launcher_pid is None:
+            return
+        if container.pid is not None:
+            self.ipc_registry.register(container.pid, container.id)
+
+    def _ipc_unregister(self, container: Container) -> None:
+        """Drop the container's pid from the transport sender registry
+        when it terminates (idempotent)."""
+        if self.ipc_registry is None:
+            return
+        self.ipc_registry.unregister(container.pid)
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         

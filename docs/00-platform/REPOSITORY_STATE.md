@@ -434,6 +434,18 @@ Documentation hygiene, fixed earlier this session:
   + unit tests) and the required `rust-ipc-conformance` gate — Rust ≡
   Python floor, byte-identical wire and field-for-field decode, same
   malformed-input rejection.
+- 2026-08-14 (**auto-maintained container sender registry**):
+  `ipc/registry.py` (`ContainerIpcRegistry`) is the pid → container_id
+  mapping the transport server authenticates against, kept in sync by
+  the backend: `ContainerManager(ipc_registry=...)` registers each
+  direct-syscall container's host pid at spawn (its command is exec'd
+  as PID-1, so `container.pid` IS the kernel-attached sender pid) and
+  drops it on terminate/wait. The legacy `unshare(1)` path is
+  deliberately untracked (the command runs as a grandchild with a
+  different pid; its datagrams fail closed — documented). The
+  container→service e2e now runs with the auto-registry end-to-end;
+  `TestContainerIpcRegistry` (6 tests) pins the registry and manager
+  hooks. Suite 251 → 257 (231 run + 26 skipped).
 - 2026-08-14 (**ADR-0020 migration #6: IPC transport hot path**):
   `rust/transport/` (ABI 1.0.0, `libc` the only dependency) ships the
   per-message syscall half of the Unix-domain datagram transport —
@@ -465,7 +477,7 @@ Documentation hygiene, fixed earlier this session:
   (build + unit tests) and the required `rust-container-conformance`
   gate — the container-facing classes, including the end-to-end
   launch tests that route through the codec, forced through the FFI.
-  Test suite: **251/251 (225 run + 26 skipped without the Rust
+  Test suite: **257/257 (231 run + 26 skipped without the Rust
   crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the

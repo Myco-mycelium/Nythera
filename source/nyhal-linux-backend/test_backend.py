@@ -53,6 +53,7 @@ from fuse.nyfs import (
 from fuse import nyfs_codec
 from ipc import ipc_codec
 from ipc import transport_codec
+from ipc.registry import ContainerIpcRegistry
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -1671,8 +1672,11 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
         # launch) runs an IPCClient that calls a backend service over
         # the datagram transport. The kernel's SCM_CREDENTIALS
         # authenticate the container (via its host-visible pid) at the
-        # server, the seccomp filter permits the socket family (network
-        # caps granted) and the marker write (filesystem cap), and the
+        # server through the AUTO-maintained registry (the manager
+        # registers the pid at spawn — before the ready marker lets the
+        # container send, so no TOCTOU — and drops it on terminate),
+        # the seccomp filter permits the socket family (network caps
+        # granted) and the marker write (filesystem cap), and the
         # CALL/REPLY round-trips through the wire codec.
         import threading
         base = tempfile.mkdtemp(prefix="nyrqis-ipc-e2e-")
@@ -1684,7 +1688,9 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
         ipc_manager = IPCManager()
         ipc_manager.create_endpoint("container-svc", "ep-svc")
         results = {}
-        server = IPCDatagramServer(ipc_manager, "ep-svc", svc_path)
+        ipc_registry = ContainerIpcRegistry()
+        server = IPCDatagramServer(
+            ipc_manager, "ep-svc", svc_path, pid_registry=ipc_registry)
         server.bind()
 
         def handler(msg, sender, sender_path):
@@ -1709,8 +1715,12 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
             "(r.payload.decode() if r else 'NONE'))\n"
         )
         ctr_manager = ContainerManager(
-            use_cgroups_v2=False, use_direct_syscalls=True)
+            use_cgroups_v2=False, use_direct_syscalls=True,
+            ipc_registry=ipc_registry)
         container = ctr_manager.create(ContainerConfig(
+            # The registry authenticates by container id — the client's
+            # sender_id must match it.
+            name="container-cli",
             command=[sys.executable, "-c", script, backend_dir,
                      cli_path, svc_path, ready_path, marker],
             seccomp=True,
@@ -1721,9 +1731,6 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
         ))
         ctr_manager.spawn(container)
         try:
-            # Register the container's host-visible pid BEFORE it may
-            # send (it waits on the ready marker — no TOCTOU).
-            server.pid_registry = {container.pid: "container-cli"}
             with open(ready_path, "w") as fh:
                 fh.write("go")
             deadline = time.time() + 20.0
@@ -4236,6 +4243,106 @@ class TestConformance(unittest.TestCase):
         self.assertEqual(boot.current_phase, BootPhase.UNINITIALIZED)
 
 
+class TestContainerIpcRegistry(unittest.TestCase):
+    """The auto-maintained pid → container registry for transport
+    sender authentication (``ipc/registry.py``): the manager registers
+    direct-syscall containers at spawn and drops them on terminate, and
+    the transport server resolves senders through it with no manual
+    bookkeeping. The container→service e2e
+    (``test_container_ipc_call_service``) proves the whole chain.
+    """
+
+    def test_register_resolve_callable_and_len(self):
+        r = ContainerIpcRegistry()
+        self.assertEqual(len(r), 0)
+        r.register(100, "ctr-a")
+        r.register(200, "ctr-b")
+        self.assertEqual(r.resolve(100), "ctr-a")
+        self.assertEqual(r(200), "ctr-b")  # callable → server pid_registry
+        self.assertIsNone(r.resolve(300))
+        self.assertIn(100, r)
+        self.assertEqual(len(r), 2)
+        r.unregister(100)
+        self.assertIsNone(r.resolve(100))
+        self.assertEqual(len(r), 1)
+
+    def test_unregister_missing_is_idempotent(self):
+        r = ContainerIpcRegistry()
+        r.register(1, "x")
+        r.unregister(999)  # never registered
+        r.unregister(None)  # container never spawned
+        self.assertEqual(len(r), 1)
+        r.unregister(1)
+        self.assertEqual(len(r), 0)
+
+    def test_server_authenticates_via_registry(self):
+        registry = ContainerIpcRegistry()
+        registry.register(1234, "ctr-a")
+        server = IPCDatagramServer(
+            IPCManager(), "ep-svc", "/tmp/nyrqis-registry-test.sock",
+            pid_registry=registry)
+        self.assertEqual(server._resolve_sender(1234), "ctr-a")
+        self.assertIsNone(server._resolve_sender(9999))
+
+    def test_spawn_registers_direct_path_and_terminate_unregisters(self):
+        registry = ContainerIpcRegistry()
+        m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=True,
+                             ipc_registry=registry)
+        c = m.create(ContainerConfig(name="ctr-1", command=["/bin/true"]))
+
+        def fake_spawn(container):
+            container.pid = 4242
+            container._direct_launcher_pid = 4241
+
+        with mock.patch.object(m, "_setup_cgroups"), \
+             mock.patch.object(m, "_spawn", side_effect=fake_spawn), \
+             mock.patch.object(m, "_attach_to_cgroups"):
+            m.spawn(c)
+        self.assertEqual(registry.resolve(4242), "ctr-1")
+        self.assertEqual(len(registry), 1)
+
+        with mock.patch.object(c, "is_running", return_value=False), \
+             mock.patch("backend.container.os.kill"), \
+             mock.patch.object(m, "_freeze_control", return_value=None):
+            m.terminate(c)
+        self.assertIsNone(registry.resolve(4242))
+        self.assertEqual(len(registry), 0)
+
+    def test_spawn_does_not_register_legacy_path(self):
+        # The legacy unshare(1) path is not tracked: the command runs as
+        # a grandchild with a different pid, so its datagrams fail
+        # closed (documented in ipc/registry.py).
+        registry = ContainerIpcRegistry()
+        m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=False,
+                             ipc_registry=registry)
+        c = m.create(ContainerConfig(name="ctr-legacy", command=["/bin/true"]))
+
+        def fake_spawn(container):
+            container.pid = 9999  # the unshare(1) Popen pid
+
+        with mock.patch.object(m, "_setup_cgroups"), \
+             mock.patch.object(m, "_spawn", side_effect=fake_spawn), \
+             mock.patch.object(m, "_attach_to_cgroups"):
+            m.spawn(c)
+        self.assertEqual(len(registry), 0)
+        self.assertIsNone(registry.resolve(9999))
+
+    def test_wait_unregisters_on_popen_path(self):
+        registry = ContainerIpcRegistry()
+        m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=False,
+                             ipc_registry=registry)
+        c = m.create(ContainerConfig(name="ctr-w", command=["/bin/true"]))
+        c.transition_to(ContainerState.RUNNING)
+        c.pid = 7777
+        registry.register(7777, "ctr-w")
+        proc = mock.Mock()
+        proc.wait.return_value = 0
+        c._proc = proc
+        code = m.wait(c)
+        self.assertEqual(code, 0)
+        self.assertIsNone(registry.resolve(7777))
+
+
 class TestTransportRustLoader(unittest.TestCase):
     """ADR-0020 priority #6 FFI loader behavior (see rust/transport/):
     the fallback contract and error mapping for the Rust IPC transport
@@ -4475,6 +4582,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportRustLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerIpcRegistry))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
     

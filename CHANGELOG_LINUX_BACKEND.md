@@ -16,6 +16,16 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.9.0] — 2026-08-14
+
+### Auto-Maintained Container Sender Registry
+
+#### Added
+
+- **`ipc/registry.py`** — `ContainerIpcRegistry`: the pid → container_id mapping the `IPCDatagramServer` authenticates against (callable, slots directly into `pid_registry`). `register`/`unregister`/`resolve`/`__call__`/`__len__`/`__contains__`, with the exactness contract documented: the mapping is exact for the direct-syscall path (the command is exec'd as PID-1, so `container.pid` IS the kernel-attached sender pid); the legacy `unshare(1)` path is not tracked and its datagrams fail closed.
+- **`backend/container.py`** — `ContainerManager(ipc_registry=...)`: registers each direct-syscall container's pid at spawn as early as possible after the pid is known (the e2e's ready-marker handshake guarantees no TOCTOU there; a datagram arriving before registration fails closed, never misattributed) and unregisters on terminate/wait paths.
+- **`test_backend.py`** — `TestContainerIpcRegistry` (6 tests: registry semantics incl. the callable, server resolution, spawn-register/terminate-unregister, legacy-path-not-tracked, wait-unregister) and the container→service e2e (`test_container_ipc_call_service`) now uses the **auto-registry** end-to-end — no manual `pid_registry` bookkeeping. Suite **251 → 257** (231 run + 26 skipped).
+
 ## [0.8.0] — 2026-08-14
 
 ### Rust IPC Transport Hot Path (ADR-0020 migration #6)
