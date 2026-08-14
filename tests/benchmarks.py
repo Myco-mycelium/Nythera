@@ -71,10 +71,19 @@ Honesty notes (NPC-002 §5.2):
   the long pole at ~30 s, and `--nyfs-mount` adds ~15–20 s where the
   host supports a live FUSE mount); use the individual flags to re-run
   one section quickly.
+- The live-mount benchmark runs in an isolated child process (2026-08-14,
+  §19 incident fix): a wedged kernel FUSE request puts a process in
+  un-interruptible D-state that in-process watchdogs cannot clear, so
+  the parent enforces a timeout, kills the child group, and lazily
+  unmounts — the runner survives and reports the section as skipped.
+  A truly wedged child (D-state) may require root or a reboot to clear.
 """
 
+import json
 import os
+import signal
 import statistics
+import subprocess
 import sys
 import tempfile
 import threading
@@ -326,26 +335,18 @@ class _CountingOps(NyFSOperations):
         return super().write(path, data, offset, fh)
 
 
-def benchmark_nyfs_mount(total=16 * 1024 * 1024):
-    """Through a REAL FUSE mount vs native I/O on the same tmp dir (§4).
+def _nyfs_mount_worker(total=16 * 1024 * 1024):
+    """The live-mount benchmark itself — run in an isolated child
+    process by ``benchmark_nyfs_mount`` (never call directly).
 
-    First-pass, environment-gated (skipped when fusepy, /dev/fuse, or
-    fusermount is unavailable). Honesty caveats:
-    - The native baseline is the same ``tempfile`` location as the
-      backing store (ext4 on this host, ``/dev/sda2``) — a real
-      disk-backed comparison; hot data lands in the page cache, as it
-      would for any disk-backed filesystem.
-    - Reads run with the kernel page cache + readahead active (real
-      users get the same), which batches 4 KiB user reads into larger
-      daemon requests.
-    - The kernel's write batching to the daemon is reported explicitly.
-      NyFS negotiates FUSE_CAP_BIG_WRITES + FUSE_CAP_WRITEBACK_CACHE +
-      FUSE_CAP_MAX_PAGES in the INIT handshake (``NyFSMount``
-      ``writeback_cache=True``, the default), so writes batch at 128 KiB
-      instead of the 4 KiB pages a stock fusepy mount gets.
+    The parent passes a fresh mountpoint via ``NYRQIS_BENCH_MNT`` and
+    enforces a timeout; a wedged kernel FUSE request leaves the process
+    in un-interruptible D-state that neither SIGKILL nor an in-process
+    ``os._exit(99)`` can clear (exit_group blocks on the stuck thread),
+    so the only safe containment is a killable child. The in-process
+    watchdog remains as a first line of defence for slow-but-not-wedged
+    mounts; the parent's timeout is the real guard.
     """
-    if not _fuse_mount_available():
-        return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}
     from fuse.nyfs import NyFSMount
 
     def mbps(bytes_, seconds):
@@ -371,19 +372,17 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
                 read += chunk
             return mbps(size, time.perf_counter() - t0)
 
-    base = tempfile.mkdtemp()
-    mnt = os.path.join(tempfile.mkdtemp(), "mnt")
+    mnt = os.environ["NYRQIS_BENCH_MNT"]
+    base = os.path.dirname(mnt)  # the parent's isolated mkdtemp dir
+    total = int(os.environ.get("NYRQIS_BENCH_TOTAL", total))
     native_dir = os.path.join(base, "native")
-    os.makedirs(native_dir)
+    os.makedirs(native_dir, exist_ok=True)
     fs = NyFSFilesystem(os.path.join(base, "fs"))
     ops = _CountingOps(fs)
     m = NyFSMount(fs, mnt)
     m.operations = ops
-    # Watchdog: a hung kernel FUSE request must not hang the runner.
-    # Cancelled in the finally below — an un-cancelled timer would fire
-    # os._exit(99) 60 s later even when the benchmark finished or was
-    # skipped, killing any further sections in the same process (found
-    # by the 2026-08-12 consolidated-session run).
+    # First-line watchdog only — see module docstring note; the parent's
+    # timeout is what actually contains a D-state wedge.
     watchdog = threading.Timer(60.0, lambda: os._exit(99))
     watchdog.start()
     try:
@@ -420,12 +419,96 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024):
         except Exception:
             pass
         try:
-            import subprocess
-
             subprocess.run(["fusermount3", "-u", mnt],
                            capture_output=True, timeout=5)
         except Exception:
             pass
+
+
+def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
+    """Through a REAL FUSE mount vs native I/O on the same tmp dir (§4).
+
+    First-pass, environment-gated (skipped when fusepy, /dev/fuse, or
+    fusermount is unavailable). Honesty caveats:
+    - The native baseline is the same ``tempfile`` location as the
+      backing store (ext4 on this host, ``/dev/sda2``) — a real
+      disk-backed comparison; hot data lands in the page cache, as it
+      would for any disk-backed filesystem.
+    - Reads run with the kernel page cache + readahead active (real
+      users get the same), which batches 4 KiB user reads into larger
+      daemon requests.
+    - The kernel's write batching to the daemon is reported explicitly.
+      NyFS negotiates FUSE_CAP_BIG_WRITES + FUSE_CAP_WRITEBACK_CACHE +
+      FUSE_CAP_MAX_PAGES in the INIT handshake (``NyFSMount``
+      ``writeback_cache=True``, the default), so writes batch at 128 KiB
+      instead of the 4 KiB pages a stock fusepy mount gets.
+    - **The mount runs in an isolated child process** (2026-08-14,
+      §19 incident fix): the parent enforces ``timeout_s`` and, on a
+      wedged kernel FUSE request, kills the child group and lazily
+      unmounts instead of hanging the whole run. A truly wedged child
+      (D-state) may survive SIGKILL — it then needs root
+      (``echo 1 > /sys/fs/fuse/connections/N/abort``) or a reboot —
+      but the runner always survives and reports the section as
+      skipped. See BENCHMARK_RESULTS.md §19 incident note.
+    """
+    if not _fuse_mount_available():
+        return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}
+
+    # Parent creates the mountpoint so it can lazily unmount a wedged
+    # child's mount even if the child is unkillable.
+    base = tempfile.mkdtemp(prefix="nyrqis-bench-§4-")
+    mnt = os.path.join(base, "mnt")
+    os.makedirs(mnt, exist_ok=True)
+    env = dict(os.environ)
+    env["NYRQIS_BENCH_MNT"] = mnt
+    env["NYRQIS_BENCH_TOTAL"] = str(total)
+    proc = subprocess.Popen(
+        [sys.executable, "-B", os.path.abspath(__file__),
+         "--nyfs-mount-child"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        # Wedged mount: contain it. SIGTERM first (a merely-slow child
+        # exits), then SIGKILL to the whole group, then lazy-unmount so
+        # the mount doesn't linger in the namespace. A D-state child
+        # survives both — documented, needs root/reboot — but the
+        # runner returns and the consolidated run continues.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                subprocess.run(["fusermount3", "-uz", mnt],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+            try:  # best-effort reap (a D-state child ignores SIGKILL)
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        return {
+            "skipped": "live mount timed out after %ss (wedged FUSE "
+                       "request); child %s may require root abort or "
+                       "reboot to clear" % (timeout_s, proc.pid),
+        }
+    try:
+        result = json.loads(out.decode().strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {
+            "skipped": "live-mount child failed (rc=%s): %s"
+                       % (proc.returncode, err.decode()[:300]),
+        }
+    return result
 
 
 def _state_tree_bytes(state_dir) -> int:
@@ -1134,7 +1217,17 @@ def main():
                         help="§5 journal commit vs block-size interplay")
     parser.add_argument("--container", action="store_true",
                         help="§18 container launch-plan primitives")
+    parser.add_argument("--nyfs-mount-child", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.nyfs_mount_child:
+        # Internal: run the live-mount benchmark in this process and
+        # emit its result as a single JSON line for the parent
+        # (``benchmark_nyfs_mount``). Mountpoint comes from
+        # ``NYRQIS_BENCH_MNT``. Never run by hand.
+        print(json.dumps(_nyfs_mount_worker()))
+        return
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
                 or args.nyfs_mount or args.nyfs_persist or args.save_levers

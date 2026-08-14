@@ -685,9 +685,23 @@ the mounts but the connections persist while the fds are open, and
 SIGKILL cannot take D-state tasks. Recovery requires root
 (`echo 1 > /sys/fs/fuse/connections/N/abort`) or a reboot. This is a
 **benchmark-harness robustness gap, not a NyFS/backend defect** — §6
-passed cleanly in §16 and §17 — and the fix (a `fork()`-isolated
-mount with a parent-side watchdog that can kill the child, or a
-mount-in-subprocess timeout) is recorded as future work.
+passed cleanly in §16 and §17. **Fixed and validated 2026-08-14:** the
+live-mount benchmark now runs in an isolated child process — the
+parent (`benchmark_nyfs_mount`) creates the mountpoint, spawns
+`--nyfs-mount-child`, enforces a 150 s timeout, SIGTERM→SIGKILLs the
+child process group on a wedge, and lazily unmounts the child's mount
+— so a wedged mount can no longer hang a consolidated run (the
+section reports as skipped instead of hanging). A D-state child that
+survives SIGKILL still needs root/reboot to clear, but it is now
+contained to one child rather than piling up across re-runs. **The fix
+was exercised live on this host:** a fresh `--nyfs-mount` run through
+the new harness timed out at 150 s and the parent returned the skipped
+result cleanly (runner survived) — which also confirms the §6 wedge
+is now **host-state-contaminated** (five D-state children hold
+`/dev/fuse` connections; even a brand-new mount wedges), so §6 cannot
+be re-measured here until root clears the connections
+(`echo 1 > /sys/fs/fuse/connections/{52,53,74,75,76,77}/abort`) or the
+host is rebooted. §6's last verified numbers remain §16/§17's.
 
 ## Status vs BENCHMARK_PLAN
 
