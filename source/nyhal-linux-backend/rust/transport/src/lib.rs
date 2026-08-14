@@ -1,13 +1,14 @@
 //! Nyrqis IPC Unix-domain datagram transport hot path — ADR-0020
 //! migration priority #6.
 //!
-//! **Implemented 2026-08-14.** The send/receive half of the cross-process
-//! IPC transport (`ipc/transport.py`): moving wire frames and
-//! kernel-attached identity across a process boundary. The wire bytes
-//! themselves are opaque here — the codec crate (migration #4,
-//! `rust/ipc`) already owns framing and parsing (the trust boundary);
-//! this crate owns the syscall path: one `sendto` per outbound frame,
-//! one `poll`+`recvmsg` per inbound frame, and the `SCM_CREDENTIALS`
+//! **Implemented 2026-08-14 (FFI surface v2 2026-08-14).** The
+//! send/receive half of the cross-process IPC transport
+//! (`ipc/transport.py`): moving wire frames and kernel-attached
+//! identity across a process boundary. The wire bytes themselves are
+//! opaque here — the codec crate (migration #4, `rust/ipc`) already
+//! owns framing and parsing (the trust boundary); this crate owns the
+//! syscall path: one `sendto` per outbound frame, one
+//! `poll`+`recvmsg` per inbound frame, and the `SCM_CREDENTIALS`
 //! ancillary-data parse that yields the sender's real `(pid, uid, gid)`
 //! (the transport's honest trust anchor — the receiver sets
 //! `SO_PASSCRED` at bind on the Python side and the kernel attaches the
@@ -15,19 +16,32 @@
 //! verified on this host 2026-08-14: a sender in a new pid+user
 //! namespace presents its host pid, not its namespace-local one).
 //!
+//! **FFI surface v2 (ABI 2.0.0): caller-supplied output buffers.** The
+//! v1 surface malloc'd the output wire buffer and a sender-path C
+//! string on every receive and freed them through
+//! `nyrqis_transport_free` on the Python side — measured slower than
+//! the Python floor (BENCHMARK_RESULTS.md §20: +23 µs per raw round
+//! trip isolated, p50 32.50 µs Rust vs 9.06 µs floor). v2 removes the
+//! allocation entirely: `nyrqis_transport_recv` `recvmsg`s **directly
+//! into the caller's buffer** (the `iovec` points at the caller-owned
+//! wire buffer — zero intermediate copy), writes the sender path into
+//! the caller's path buffer, and returns lengths/creds through out
+//! params. The Python caller owns two reusable buffers per endpoint and
+//! reuses them across calls, so the hot path does zero allocations and
+//! zero `free`s. The v1 `nyrqis_transport_free` contract is gone (the
+//! symbol no longer exists).
+//!
 //! Why the hot path is here: the reference (Python) transport measured
 //! p50 188.79 µs per CALL/REPLY over the wire (BENCHMARK_RESULTS.md
-//! §20) vs 87.28 µs in-process — the gap is the two process hops of
-//! Python per-message overhead around the syscalls. This crate removes
-//! the Python recvmsg/CMSG parse and sendto framing from the measured
-//! path; the benchmark is re-run with the crate active to quantify the
-//! delta on the NPS-003 §6.1 (<100 µs) close path.
+//! §20, pre-crate) vs 87.28 µs in-process — the gap is the two process
+//! hops of Python per-message overhead around the syscalls. This crate
+//! removes the Python recvmsg/CMSG parse and sendto framing from the
+//! measured path; the benchmark re-run with the crate active quantifies
+//! the delta on the NPS-003 §6.1 (<100 µs) close path.
 //!
 //! FFI surface (the ABI rule of ADR-0020 / ABI-001): versioned,
 //! plain-data entry points, no shared mutable state, no pointers into
-//! Python objects. Output buffers are `libc::malloc`'d here and freed
-//! by the caller through `nyrqis_transport_free` (the same ownership
-//! contract as the seccomp/nyfs/ipc crates).
+//! Python objects. The caller owns every buffer the module writes to.
 //!
 //! Return convention: **0 on success or a negative value** — `-errno`
 //! for real failures, `ERR_INTERNAL` (-4096) for module failures. The
@@ -42,10 +56,11 @@
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::os::raw::c_uchar;
-use std::ptr;
 
 /// Module ABI version (semver-major*10000 + minor*100 + patch).
-pub const ABI_VERSION: u32 = 0x0001_0000;
+/// 2.0.0: caller-supplied output buffers (no malloc/free on the hot
+/// path; the v1 `nyrqis_transport_free` contract was removed).
+pub const ABI_VERSION: u32 = 0x0002_0000;
 
 // NyrqisErr codes (negative i32 returns). ERR_INTERNAL is OUTSIDE the
 // errno range (1..=4095) by contract: -errno maps to OSError on the
@@ -61,8 +76,6 @@ const MAX_SUN_PATH: usize = 107;
 /// Offset of `sun_path` in `sockaddr_un` (2 on Linux: family then path,
 /// no padding).
 const SUN_PATH_OFFSET: usize = std::mem::size_of::<libc::sa_family_t>();
-/// Inbound frame cap (the Python floor's recv buffer size).
-const RECV_BUF: usize = 64 * 1024;
 /// Ancillary buffer: room for one `ucred` (CMSG_SPACE(12) ≈ 32) with
 /// headroom, aligned for `cmsghdr`.
 const CMSG_BUF: usize = 64;
@@ -85,48 +98,6 @@ fn pack_sun_path(path: &[u8]) -> Result<libc::sockaddr_un, i32> {
         sun.sun_path[i] = *b as c_char;
     }
     Ok(sun)
-}
-
-/// Malloc a copy of `src` into `*out` and set `*out_len`. Zero-length
-/// `src` yields a null pointer and length 0.
-fn publish_bytes(
-    src: &[u8],
-    out_ptr: *mut *mut c_uchar,
-    out_len: *mut usize,
-) -> i32 {
-    if src.is_empty() {
-        unsafe {
-            *out_ptr = ptr::null_mut();
-            *out_len = 0;
-        }
-        return 0;
-    }
-    let buf = unsafe { libc::malloc(src.len()) as *mut c_uchar };
-    if buf.is_null() {
-        return -libc::ENOMEM;
-    }
-    unsafe {
-        ptr::copy_nonoverlapping(src.as_ptr(), buf, src.len());
-        *out_ptr = buf;
-        *out_len = src.len();
-    }
-    0
-}
-
-/// Malloc a NUL-terminated C string copy of `src` (always at least the
-/// empty string) into `*out`.
-fn publish_cstr(src: &[u8], out_ptr: *mut *mut c_char) -> i32 {
-    let len = src.len() + 1;
-    let buf = unsafe { libc::malloc(len) as *mut c_char };
-    if buf.is_null() {
-        return -libc::ENOMEM;
-    }
-    unsafe {
-        ptr::copy_nonoverlapping(src.as_ptr() as *const c_char, buf, src.len());
-        *buf.add(src.len()) = 0;
-        *out_ptr = buf;
-    }
-    0
 }
 
 /// Report the module ABI version.
@@ -182,39 +153,49 @@ pub unsafe extern "C" fn nyrqis_transport_send(
 
 /// Receive one wire frame from the bound socket `fd` with `timeout_ms`
 /// (negative = block until data). Never blocks past the timeout (poll
-/// first, `MSG_DONTWAIT` recvmsg). On success writes the malloc'd frame
-/// bytes (freed via `nyrqis_transport_free`), the kernel-attached
-/// sender `(pid, uid, gid)`, and the sender's bound path (malloc'd C
-/// string, always non-null on success). No data within the timeout
-/// returns 0 with `*out_wire_len = 0`. Returns 0, -errno, or
-/// `ERR_INVALID_ARGS`.
+/// first, `MSG_DONTWAIT` recvmsg).
+///
+/// **Caller-supplied buffers (FFI surface v2):** `wire_buf`/`wire_cap`
+/// is the caller's reusable wire buffer — the `recvmsg` iovec points
+/// DIRECTLY at it, so the kernel writes the frame with zero
+/// intermediate copies and zero allocations. `path_buf`/`path_cap` is
+/// the caller's reusable sender-path buffer. On success (data), the
+/// frame length and NUL-terminated sender path length are written
+/// through `out_wire_len`/`out_path_len`; `*out_pid/uid/gid` carry the
+/// kernel-attached credentials. No data within the timeout returns 0
+/// with `*out_wire_len = 0` (and `*out_path_len = 0`). Returns 0,
+/// -errno, or `ERR_INVALID_ARGS`.
 #[no_mangle]
 pub unsafe extern "C" fn nyrqis_transport_recv(
     fd: c_int,
     timeout_ms: i64,
-    out_wire: *mut *mut c_uchar,
+    wire_buf: *mut c_uchar,
+    wire_cap: usize,
     out_wire_len: *mut usize,
+    path_buf: *mut c_char,
+    path_cap: usize,
+    out_path_len: *mut usize,
     out_pid: *mut i32,
     out_uid: *mut i32,
     out_gid: *mut i32,
-    out_sender_path: *mut *mut c_char,
 ) -> i32 {
     if fd < 0
-        || out_wire.is_null()
+        || wire_buf.is_null()
+        || wire_cap == 0
         || out_wire_len.is_null()
+        || path_buf.is_null()
+        || path_cap == 0
         || out_pid.is_null()
         || out_uid.is_null()
         || out_gid.is_null()
-        || out_sender_path.is_null()
     {
         return ERR_INVALID_ARGS;
     }
-    *out_wire = ptr::null_mut();
     *out_wire_len = 0;
+    *out_path_len = 0;
     *out_pid = 0;
     *out_uid = -1;
     *out_gid = -1;
-    *out_sender_path = ptr::null_mut();
 
     let ms: c_int = if timeout_ms < 0 {
         -1
@@ -234,17 +215,17 @@ pub unsafe extern "C" fn nyrqis_transport_recv(
         return 0; // timeout — no data
     }
 
-    // recvmsg into an aligned control buffer (the kernel writes
-    // cmsghdr, which needs 8-byte alignment) and a captured source
-    // address.
+    // recvmsg into the CALLER's wire buffer (the iovec points directly
+    // at it — zero intermediate copy) and an aligned control buffer
+    // (the kernel writes cmsghdr, which needs 8-byte alignment), with
+    // a captured source address for the sender path.
     #[repr(C, align(16))]
     struct Aligned([u8; CMSG_BUF]);
     let mut ctrl = Aligned([0u8; CMSG_BUF]);
-    let mut data_buf = [0u8; RECV_BUF];
     let mut src: libc::sockaddr_un = std::mem::zeroed();
     let mut iov = libc::iovec {
-        iov_base: data_buf.as_mut_ptr() as *mut c_void,
-        iov_len: data_buf.len(),
+        iov_base: wire_buf as *mut c_void,
+        iov_len: wire_cap,
     };
     let mut msg: libc::msghdr = std::mem::zeroed();
     msg.msg_name = &mut src as *mut libc::sockaddr_un as *mut c_void;
@@ -266,6 +247,7 @@ pub unsafe extern "C" fn nyrqis_transport_recv(
         return 0; // no data (defensive — UDS datagrams cannot EOF)
     }
     let n = n as usize;
+    *out_wire_len = n;
 
     // Kernel-attached credentials from the SCM_CREDENTIALS ancillary.
     let mut pid: i32 = 0;
@@ -283,11 +265,14 @@ pub unsafe extern "C" fn nyrqis_transport_recv(
         }
         cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
     }
+    *out_pid = pid;
+    *out_uid = uid;
+    *out_gid = gid;
 
-    // Sender's bound path from the captured source address. Note:
-    // `sun_path` is `[c_char]` (i8 on Linux) — cast each byte to u8
-    // (the loader returns the path as UTF-8 bytes).
-    let mut sender_path: Vec<u8> = Vec::new();
+    // Sender's bound path from the captured source address, written
+    // into the CALLER's path buffer (NUL-terminated, truncated to
+    // path_cap-1). Note: `sun_path` is `[c_char]` (i8 on Linux) — cast
+    // each byte to u8 (the loader reads the path as UTF-8 bytes).
     if msg.msg_namelen > SUN_PATH_OFFSET as libc::socklen_t {
         let avail = (msg.msg_namelen - SUN_PATH_OFFSET as libc::socklen_t) as usize;
         let path_bytes = &src.sun_path[..avail.min(MAX_SUN_PATH + 1)];
@@ -295,40 +280,24 @@ pub unsafe extern "C" fn nyrqis_transport_recv(
         while end > 0 && path_bytes[end - 1] == 0 {
             end -= 1;
         }
-        sender_path.extend(path_bytes[..end].iter().map(|&b| b as u8));
-    }
-
-    let pub_rc = publish_bytes(&data_buf[..n], out_wire, out_wire_len);
-    if pub_rc != 0 {
-        return pub_rc; // -ENOMEM from publish_bytes itself
-    }
-    let pub_rc = publish_cstr(&sender_path, out_sender_path);
-    if pub_rc != 0 {
-        if !(*out_wire).is_null() {
-            libc::free(*out_wire as *mut c_void);
-            *out_wire = ptr::null_mut();
-            *out_wire_len = 0;
+        let copy = end.min(path_cap - 1);
+        for i in 0..copy {
+            *path_buf.add(i) = path_bytes[i];
         }
-        return pub_rc;
+        *path_buf.add(copy) = 0;
+        *out_path_len = copy;
     }
-    *out_pid = pid;
-    *out_uid = uid;
-    *out_gid = gid;
     0
-}
-
-/// Free an output buffer previously returned by this module.
-#[no_mangle]
-pub unsafe extern "C" fn nyrqis_transport_free(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        libc::free(ptr);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::ptr;
+
+    const TEST_WIRE_CAP: usize = 64 * 1024;
+    const TEST_PATH_CAP: usize = MAX_SUN_PATH + 1;
 
     fn bind_socket(path: &CStr) -> c_int {
         let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
@@ -394,7 +363,26 @@ mod tests {
                 -1,
                 10,
                 ptr::null_mut(),
+                TEST_WIRE_CAP,
                 ptr::null_mut(),
+                ptr::null_mut(),
+                TEST_PATH_CAP,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, ERR_INVALID_ARGS);
+        let rc = unsafe {
+            nyrqis_transport_recv(
+                3,
+                10,
+                ptr::null_mut(),
+                0, // zero wire_cap — invalid
+                ptr::null_mut(),
+                ptr::null_mut(),
+                TEST_PATH_CAP,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -423,36 +411,39 @@ mod tests {
         };
         assert_eq!(rc, 0, "send failed");
 
-        let mut out_wire: *mut c_uchar = ptr::null_mut();
-        let mut out_len: usize = 0;
+        let mut wire_buf = [0u8; TEST_WIRE_CAP];
+        let mut path_buf = [0i8; TEST_PATH_CAP];
+        let mut wire_len: usize = 0;
+        let mut path_len: usize = 0;
         let mut pid: i32 = 0;
         let mut uid: i32 = 0;
         let mut gid: i32 = 0;
-        let mut out_path: *mut c_char = ptr::null_mut();
         let rc = unsafe {
             nyrqis_transport_recv(
                 recv_fd,
                 2000,
-                &mut out_wire,
-                &mut out_len,
+                wire_buf.as_mut_ptr(),
+                TEST_WIRE_CAP,
+                &mut wire_len,
+                path_buf.as_mut_ptr(),
+                TEST_PATH_CAP,
+                &mut path_len,
                 &mut pid,
                 &mut uid,
                 &mut gid,
-                &mut out_path,
             )
         };
         assert_eq!(rc, 0, "recv failed");
-        assert_eq!(out_len, wire.len());
-        assert_eq!(unsafe { std::slice::from_raw_parts(out_wire, out_len) }, wire);
+        assert_eq!(wire_len, wire.len());
+        assert_eq!(&wire_buf[..wire_len], wire);
         assert_eq!(pid, unsafe { libc::getpid() });
         assert_eq!(uid, unsafe { libc::getuid() } as i32);
         assert_eq!(gid, unsafe { libc::getgid() } as i32);
-        let got_path = unsafe { CStr::from_ptr(out_path) }.to_bytes().to_vec();
+        assert_eq!(path_len, send_path.to_bytes().len());
+        let got_path: Vec<u8> = path_buf[..path_len].iter().map(|&b| b as u8).collect();
         assert_eq!(got_path, send_path.to_bytes());
 
         unsafe {
-            nyrqis_transport_free(out_wire as *mut c_void);
-            nyrqis_transport_free(out_path as *mut c_void);
             libc::close(recv_fd);
             libc::close(send_fd);
             libc::unlink(recv_path.as_ptr());
@@ -466,27 +457,31 @@ mod tests {
         let recv_fd = bind_socket(&recv_path);
         enable_passcred(recv_fd);
 
-        let mut out_wire: *mut c_uchar = ptr::null_mut();
-        let mut out_len: usize = 1;
+        let mut wire_buf = [0u8; TEST_WIRE_CAP];
+        let mut path_buf = [0i8; TEST_PATH_CAP];
+        let mut wire_len: usize = 1;
+        let mut path_len: usize = 1;
         let mut pid: i32 = 0;
         let mut uid: i32 = 0;
         let mut gid: i32 = 0;
-        let mut out_path: *mut c_char = ptr::null_mut();
         let rc = unsafe {
             nyrqis_transport_recv(
                 recv_fd,
                 20,
-                &mut out_wire,
-                &mut out_len,
+                wire_buf.as_mut_ptr(),
+                TEST_WIRE_CAP,
+                &mut wire_len,
+                path_buf.as_mut_ptr(),
+                TEST_PATH_CAP,
+                &mut path_len,
                 &mut pid,
                 &mut uid,
                 &mut gid,
-                &mut out_path,
             )
         };
         assert_eq!(rc, 0);
-        assert_eq!(out_len, 0);
-        assert!(out_wire.is_null());
+        assert_eq!(wire_len, 0);
+        assert_eq!(path_len, 0);
 
         unsafe {
             libc::close(recv_fd);

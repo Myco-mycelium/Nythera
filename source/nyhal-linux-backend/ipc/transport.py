@@ -73,6 +73,7 @@ References:
 - ADR-0009: per-container token-bucket rate limiting
 """
 
+import ctypes
 import logging
 import os
 import socket
@@ -139,6 +140,12 @@ class UnixDatagramEndpoint:
             )
         self.path = path
         self._sock: Optional[socket.socket] = None
+        # Reusable receive buffers for the Rust transport hot path
+        # (FFI surface v2 — caller-supplied, no per-call allocation).
+        # Allocated lazily on first Rust recv so floor-only hosts (no
+        # crate) don't pay 128 KiB per endpoint.
+        self._recv_wire: Optional[ctypes.Array] = None
+        self._recv_path: Optional[ctypes.Array] = None
 
     def bind(self) -> "UnixDatagramEndpoint":
         """Bind the socket to ``self.path`` (idempotent) with the
@@ -210,7 +217,20 @@ class UnixDatagramEndpoint:
         try:
             try:
                 timeout_ms = -1 if timeout is None else max(0, int(timeout * 1000))
-                got = transport_codec.recv(self._sock.fileno(), timeout_ms)
+                # Only floor-only hosts (no crate) skip the buffer
+                # allocation; once the Rust backend is present the
+                # endpoint owns one pair for its lifetime.
+                if self._recv_wire is None:
+                    if not transport_codec.available():
+                        raise transport_codec.BackendUnavailable()
+                    self._recv_wire = ctypes.create_string_buffer(
+                        transport_codec.RECV_WIRE_SIZE)
+                    self._recv_path = ctypes.create_string_buffer(
+                        transport_codec.RECV_PATH_SIZE)
+                got = transport_codec.recv(
+                    self._sock.fileno(), timeout_ms,
+                    self._recv_wire, self._recv_path,
+                )
             except transport_codec.BackendUnavailable:
                 got = _RUST_FLOOR  # no crate built — use the Python floor
             if got is not _RUST_FLOOR:

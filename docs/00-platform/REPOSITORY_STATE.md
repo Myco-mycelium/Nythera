@@ -247,13 +247,16 @@ measurements:
    at the median over the real transport. The Rust transport hot path
    (ADR-0020 migration #6, rust/transport) shipped the same day as the
    documented close path. **Delta measured 2026-08-14 (same-session
-   A/B, BENCHMARK_RESULTS.md §20): the current Rust FFI surface is
-   SLOWER than the floor at the median (p50 ~426 µs Rust vs ~231 µs
-   floor; +23 µs per raw round trip isolated — per-recv malloc of the
-   wire + sender-path buffers and per-message copies). The migration
-   stands on the boundary rule + the byte-identical conformance gate;
-   the §6.1 performance close is a second-pass FFI surface
-   (caller-supplied/pooled buffers). NPS-003 stays Draft, gate open.**
+   A/B, BENCHMARK_RESULTS.md §20): the v1 FFI surface (per-recv
+   malloc) was SLOWER than the floor (wire p50 ~426 µs Rust vs ~231 µs
+   floor). FFI surface v2 (ABI 2.0.0, same day) removes the
+   allocation — recv writes directly into the caller's reusable
+   buffer, send is zero-copy — and measured wire p50 307–357 µs
+   (~28% under v1, ~1.6× the ~200 µs floor) with the residual being
+   the ctypes boundary tax, not a bug. The migration stands on the
+   boundary rule + the byte-identical conformance gate; NPS-003 stays
+   Draft, gate open (closing it needs the serving loop behind the
+   boundary — the NyRuntime direction).**
 2. ~~Benchmark default IPC token-bucket parameters (unblocks ADR-0009,
    then NPS-010 §7.1).~~ **First-pass data collected 2026-08-12** — the
    default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s
@@ -488,7 +491,8 @@ Documentation hygiene, fixed earlier this session:
   install steps in `packaging/README.md`; new `TestSystemdUnit` (3
   tests: daemon wiring, `systemd-analyze verify` on systemd hosts,
   unprivileged posture) — hermetic (reads the unit, installs nothing).
-  Suite 295 → 298 (272 run + 26 skipped).
+  Suite 295 → 299 (273 run + 26 skipped; the v2 transport conformance
+  adds the embedded-NUL binary-payload regression test).
   (269 run + 26 skipped).
 - 2026-08-14 (**runnable status-service daemon + auto capability
   lifecycle**): `nyrqis_backend.py service serve` runs a
@@ -533,12 +537,13 @@ Documentation hygiene, fixed earlier this session:
   so the separate ipc-codec loader's force check stays honest). Suite
   239 → 251 (225 run + 26 skipped without the Rust crates). The crate
   is the documented close path for the NPS-003 §6.1 latency gate.
-  **Delta measured 2026-08-14 (same-session A/B, §20): the current
-  FFI surface is slower than the floor at the median (p50 ~426 µs vs
-  ~231 µs; +23 µs/round-trip isolated — per-recv malloc + copies), so
-  the §6.1 performance close is a second-pass FFI surface
-  (caller-supplied/pooled output buffers), not this crate as-is; the
-  migration stands on the boundary rule + byte-identical conformance.**
+  **FFI surface v2 (ABI 2.0.0, 2026-08-14): caller-supplied buffers —
+  recv recvmsgs directly into the caller's reusable wire buffer (zero
+  malloc/free, `nyrqis_transport_free` gone), send is zero-copy;
+  measured wire p50 307–357 µs (~28% under v1's ~426 µs, ~1.6× the
+  ~200 µs floor) with the residual the ctypes boundary tax. Gate
+  stays open; the migration stands on the boundary rule +
+  byte-identical conformance.**
 - 2026-08-13 (**ADR-0020 migration #5: container launch-plan
   primitives in Rust**): `rust/container/` (ABI 1.0.0, `libc` the only
   dependency) ships the pure launch-plan computations the manager

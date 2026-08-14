@@ -16,6 +16,25 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.2] — 2026-08-14
+
+### Rust IPC transport FFI surface v2 (ABI 2.0.0) — caller-supplied buffers
+
+#### Changed
+
+- **`rust/transport` (ABI 2.0.0)** — `nyrqis_transport_recv` now `recvmsg`s DIRECTLY into the caller's reusable wire buffer (the `iovec` points at it — zero intermediate copy, zero malloc, zero free) and writes the sender path into the caller's path buffer; `nyrqis_transport_send` passes the immutable wire bytes by pointer (`c_char_p` — no per-call `create_string_buffer` copy). The v1 `nyrqis_transport_free` ownership contract is removed (the symbol is gone).
+- **`ipc/transport_codec.py`** — loader updated to ABI 2.0.0: `recv(fd, timeout_ms, wire_buf, path_buf)` takes the caller's buffers (scratch buffers allocated only when omitted); `send` is zero-copy. `RECV_WIRE_SIZE`/`RECV_PATH_SIZE` exported (64 KiB / 108).
+- **`ipc/transport.py`** — `UnixDatagramEndpoint` owns one reusable buffer pair per socket (created at bind, reused for the endpoint's lifetime), so the hot path does zero allocations.
+- **`test_backend.py`** — the fake-lib recv routing test updated to the v2 signature (no free call; caller buffers); the crate's unit tests rewritten for the caller-buffer contract (round-trip, timeout, invalid-args).
+
+#### Measured (documented honestly, NPC-002 §5.2)
+
+- **The allocation removal was the right lever**: isolated same-process round trip p50 32.50 → 24.33 µs (floor 9.1–9.5 µs); wire-level p50 ~426 → 307–357 µs across four runs (floor 195–231 µs same-session), a ~28% improvement. **The NPS-003 §6.1 gate is still NOT met** — v2 remains ~1.6× the floor at the wire median; the residual is the ctypes boundary tax (eleven marshalled args per recv call, per-send path encode, the unavoidable copy into immutable Python bytes), the honest floor of any compiled transport driven from Python. NPS-003 stays Draft; closing the gate needs the serving loop itself behind the boundary (the NyRuntime direction), documented in BENCHMARK_RESULTS.md §20.
+
+#### Fixed
+
+- **Docs** — `IMPLEMENTATION_STATUS`, `BENCHMARK_RESULTS.md` §20, `REPOSITORY_STATE`.
+
 ## [0.13.1] — 2026-08-14
 
 ### Host Integration (plan §4.5) + First Rust-Transport Benchmark Data
@@ -24,6 +43,7 @@ ai_assisted: true
 
 - **`packaging/systemd/nyrqis-backend.service`** — runs the backend daemon at boot (`nyrqis_backend.py service serve --socket /run/nyrqis/status.sock`): unprivileged by design (`DynamicUser=true` + `NoNewPrivileges=true` — the daemon launches containers through unprivileged user namespaces and must not run as root), `Restart=on-failure`, `PrivateTmp`/`ProtectHome`/`ProtectSystem` hardening, install steps in `packaging/README.md`.
 - **`test_backend.py`** — `TestSystemdUnit` (3 tests): the unit wires the actual daemon subcommand, passes `systemd-analyze verify` when systemd is present (skipped otherwise), and runs unprivileged. Hermetic — reads the unit file, installs nothing on the host. Suite **295 → 298** (272 run + 26 skipped).
+- **`test_backend.py`** (0.13.2) — the transport conformance class adds `test_binary_payload_with_embedded_nul_bytes` (the zero-copy `c_char_p` send must pass embedded `\x00` bytes in real binary wire frames); the fake-lib recv test asserts the v2 no-free contract directly. Suite **298 → 299** (273 run + 26 skipped).
 
 #### Measured (documented honestly, NPC-002 §5.2 — no fabricated numbers)
 

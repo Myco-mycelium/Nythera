@@ -38,16 +38,26 @@ kernel-attached identity across the process boundary.
 ## FFI surface (the ABI rule of ADR-0020 / ABI-001)
 
 Versioned, plain-data entry points, no shared mutable state, no
-pointers into Python objects. Output buffers (frame bytes, sender path)
-are `libc::malloc`'d by the crate and freed by the caller through
-`nyrqis_transport_free` (the seccomp/nyfs/ipc ownership contract).
+pointers into Python objects.
+
+**FFI surface v2 (ABI 2.0.0, 2026-08-14): caller-supplied output
+buffers.** The v1 surface (`nyrqis_transport_free` ownership contract)
+was measured slower than the Python floor (BENCHMARK_RESULTS.md §20:
++23 µs per raw round trip isolated — per-recv `libc::malloc` of the
+wire buffer AND a sender-path C string, plus per-message copies). v2
+removes the allocation entirely: `nyrqis_transport_recv` `recvmsg`s
+**directly into the caller's wire buffer** (the `iovec` points at it —
+zero intermediate copy) and writes the sender path into the caller's
+path buffer; lengths/creds return through out params. The Python
+caller (`UnixDatagramEndpoint`) owns one reusable buffer pair per
+endpoint, so the hot path does zero allocations and zero frees. The
+`nyrqis_transport_free` symbol is GONE.
 
 | Entry point | Args | Returns |
 |-------------|------|---------|
-| `nyrqis_transport_version` | — | u32 ABI version (0x0001_0000) |
+| `nyrqis_transport_version` | — | u32 ABI version (0x0002_0000) |
 | `nyrqis_transport_send` | fd, wire*, wire_len, peer_path* | 0, -errno, or internal |
-| `nyrqis_transport_recv` | fd, timeout_ms, wire**, wire_len*, pid*, uid*, gid*, sender_path** | 0, -errno, or internal (0 with len 0 = timeout) |
-| `nyrqis_transport_free` | ptr | — |
+| `nyrqis_transport_recv` | fd, timeout_ms, wire_buf*, wire_cap, out_wire_len*, path_buf*, path_cap, out_path_len*, pid*, uid*, gid* | 0, -errno, or internal (0 with *out_wire_len == 0 = timeout) |
 
 **Error contract** (`NyrqisErr` codes, negative i32):
 

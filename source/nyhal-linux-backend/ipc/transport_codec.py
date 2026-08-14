@@ -15,7 +15,7 @@ Contract, mirroring the seccomp/syscalls/nyfs/ipc/container loaders:
 
 - Search order for the Rust cdylib: ``$NYRQIS_RUST_LIB``, the crate's
   ``target/release/``, then a bare name (honors ``LD_LIBRARY_PATH``).
-- ABI-version check against ``MIN_RUST_ABI_VERSION``.
+- ABI-version check against ``MIN_RUST_ABI_VERSION`` (2.0.0).
 - On load failure, the routing helpers raise ``BackendUnavailable`` and
   the caller (``ipc/transport.py``) falls back to the Python floor —
   unless ``NYRQIS_RUST_FORCE=1``, which turns routing failures into
@@ -27,14 +27,24 @@ Contract, mirroring the seccomp/syscalls/nyfs/ipc/container loaders:
   ``-errno → OSError`` mapping can never misreport it; the loader maps
   ``-4096`` → ``RuntimeError``.
 
+**FFI surface v2 (ABI 2.0.0): caller-supplied output buffers.** The v1
+surface malloc'd the output wire buffer and a sender-path C string on
+every receive and freed them here through ``nyrqis_transport_free`` —
+measured slower than the Python floor (BENCHMARK_RESULTS.md §20: +23 µs
+per raw round trip isolated). v2 removes the allocation entirely:
+``recv(fd, timeout_ms, wire_buf, path_buf)`` takes the CALLER's reusable
+buffers, the Rust module ``recvmsg``s directly into ``wire_buf`` (zero
+intermediate copy) and writes the sender path into ``path_buf``, and
+lengths/creds come back through out params. ``UnixDatagramEndpoint``
+owns one pair of buffers per endpoint and reuses them across calls, so
+the hot path does zero allocations and zero frees.
+
 Timeout semantics: ``recv(fd, timeout_ms)`` returns ``None`` when the
 timeout elapsed with no data (negative ``timeout_ms`` = block until
 data); the crate ``poll``s first and ``recvmsg``s with ``MSG_DONTWAIT``,
 so it never blocks past the timeout and is safe on both blocking and
-non-blocking fds. Output buffers (frame bytes, sender path) are
-``libc::malloc``'d by the crate and freed here through
-``nyrqis_transport_free`` — never leaked, and the sender path is always
-a real C string (``None`` on the Python side only when it is absent).
+non-blocking fds. A zero-length frame length (``out_wire_len == 0``) is
+the wire-level timeout signal.
 """
 
 import ctypes
@@ -44,10 +54,17 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_RUST_ABI_VERSION = 0x0001_0000  # nyrqis-transport 1.0.0
+MIN_RUST_ABI_VERSION = 0x0002_0000  # nyrqis-transport 2.0.0
 
 # Module internal error codes (negative i32), outside the errno range.
 RUST_ERR_INTERNAL = -4096  # module failure (→ RuntimeError)
+
+# Caller-supplied buffer sizes (the caller owns these and reuses them):
+# the wire buffer must hold a full frame (the Python floor's recv
+# buffer is 64 KiB) and the path buffer one sun_path (108 bytes incl.
+# NUL). These must match the crate's expectations (64 KiB / 108).
+RECV_WIRE_SIZE = 64 * 1024
+RECV_PATH_SIZE = 108
 
 _RUST_LIB: Optional[ctypes.CDLL] = None
 _RUST_LIB_CHECKED = False
@@ -129,22 +146,24 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
         lib.nyrqis_transport_send.restype = ctypes.c_int
         lib.nyrqis_transport_send.argtypes = [
             ctypes.c_int,
-            ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.c_char_p, ctypes.c_size_t,  # zero-copy wire bytes
             ctypes.c_char_p,
         ]
         lib.nyrqis_transport_recv.restype = ctypes.c_int
         lib.nyrqis_transport_recv.argtypes = [
             ctypes.c_int, ctypes.c_int64,
-            # out_wire is *mut *mut u8 — POINTER(POINTER(c_ubyte)), NOT
-            # POINTER(c_void_p): ctypes enforces nested pointer types
-            # exactly (the CI conformance gate caught this mismatch).
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
-            ctypes.POINTER(ctypes.c_size_t),
+            # Caller-supplied output buffers (FFI surface v2): the
+            # wire/path buffers are owned and reused by the caller —
+            # the Rust module recvmsgs DIRECTLY into the wire buffer and
+            # writes the sender path into the path buffer; lengths come
+            # back through the size_t out params. No malloc/free.
+            ctypes.c_void_p, ctypes.c_size_t,  # wire_buf, wire_cap
+            ctypes.POINTER(ctypes.c_size_t),   # out_wire_len
+            ctypes.c_void_p, ctypes.c_size_t,  # path_buf, path_cap
+            ctypes.POINTER(ctypes.c_size_t),   # out_path_len
             ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
-            ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_char_p),
+            ctypes.POINTER(ctypes.c_int),
         ]
-        lib.nyrqis_transport_free.restype = None
-        lib.nyrqis_transport_free.argtypes = [ctypes.c_void_p]
         _RUST_LIB = lib
         logger.info("ipc transport: using Rust backend (%s)", path)
         return lib
@@ -169,9 +188,11 @@ def send(fd: int, wire: bytes, peer_path: str) -> None:
         if force_enabled():
             raise RuntimeError(_rust_force_error())
         raise BackendUnavailable()
-    buf = ctypes.create_string_buffer(wire, len(wire))
+    # Zero-copy send: c_char_p passes the immutable bytes buffer's
+    # address directly (no per-call create_string_buffer copy); the
+    # Rust side reads exactly wire_len bytes and copies nothing.
     rc = lib.nyrqis_transport_send(
-        fd, ctypes.cast(buf, ctypes.c_void_p), len(wire),
+        fd, wire, len(wire),
         peer_path.encode("utf-8"),
     )
     if rc != 0:
@@ -179,50 +200,57 @@ def send(fd: int, wire: bytes, peer_path: str) -> None:
 
 
 def recv(
-    fd: int, timeout_ms: int
+    fd: int, timeout_ms: int,
+    wire_buf: Optional[ctypes.Array] = None,
+    path_buf: Optional[ctypes.Array] = None,
 ) -> Optional[Tuple[bytes, int, int, int, str]]:
-    """Route one inbound frame through the Rust transport.
+    """Route one inbound frame through the Rust transport, writing the
+    frame into the CALLER's ``wire_buf`` and the sender path into the
+    caller's ``path_buf`` (both created once and reused — the hot path
+    does zero allocations). When buffers are omitted (defensive/test
+    callers) scratch buffers are allocated.
 
     Returns ``(wire, pid, uid, gid, sender_path)`` on data, ``None`` on
     timeout. Raises ``BackendUnavailable`` (fall back to the floor) when
     the backend is absent and not forced; ``RuntimeError`` in force
-    mode; ``OSError``/``RuntimeError`` on a Rust failure. Freed output
-    buffers are always reclaimed.
+    mode; ``OSError``/``RuntimeError`` on a Rust failure.
     """
     lib = _load_rust_backend()
     if lib is None:
         if force_enabled():
             raise RuntimeError(_rust_force_error())
         raise BackendUnavailable()
-    out_wire = ctypes.POINTER(ctypes.c_ubyte)()
-    out_len = ctypes.c_size_t()
+    if wire_buf is None or path_buf is None:
+        wire_buf = ctypes.create_string_buffer(RECV_WIRE_SIZE)
+        path_buf = ctypes.create_string_buffer(RECV_PATH_SIZE)
+    out_wire_len = ctypes.c_size_t()
+    out_path_len = ctypes.c_size_t()
     out_pid = ctypes.c_int()
     out_uid = ctypes.c_int()
     out_gid = ctypes.c_int()
-    out_path = ctypes.c_char_p()
     rc = lib.nyrqis_transport_recv(
         fd, timeout_ms,
-        ctypes.byref(out_wire), ctypes.byref(out_len),
-        ctypes.byref(out_pid), ctypes.byref(out_uid),
-        ctypes.byref(out_gid), ctypes.byref(out_path),
+        ctypes.cast(wire_buf, ctypes.c_void_p), len(wire_buf),
+        ctypes.byref(out_wire_len),
+        ctypes.cast(path_buf, ctypes.c_void_p), len(path_buf),
+        ctypes.byref(out_path_len),
+        ctypes.byref(out_pid), ctypes.byref(out_uid), ctypes.byref(out_gid),
     )
     if rc != 0:
         _raise_rust_error(rc, "receive")
-    if out_len.value == 0:
+    if out_wire_len.value == 0:
         return None  # timeout — no data
-    try:
-        wire = ctypes.string_at(out_wire, out_len.value)
-        sender_path = out_path.value.decode("utf-8") if out_path.value else ""
-        return wire, out_pid.value, out_uid.value, out_gid.value, sender_path
-    finally:
-        lib.nyrqis_transport_free(ctypes.cast(out_wire, ctypes.c_void_p))
-        if out_path.value is not None:
-            lib.nyrqis_transport_free(ctypes.cast(out_path, ctypes.c_void_p))
+    wire = ctypes.string_at(wire_buf, out_wire_len.value)
+    sender_path = ctypes.string_at(path_buf, out_path_len.value).decode(
+        "utf-8") if out_path_len.value else ""
+    return wire, out_pid.value, out_uid.value, out_gid.value, sender_path
 
 
 __all__ = [
     "MIN_RUST_ABI_VERSION",
     "RUST_ERR_INTERNAL",
+    "RECV_WIRE_SIZE",
+    "RECV_PATH_SIZE",
     "BackendUnavailable",
     "force_enabled",
     "available",

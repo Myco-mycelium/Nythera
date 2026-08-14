@@ -5522,37 +5522,47 @@ class TestTransportRustLoader(unittest.TestCase):
         self.assertEqual(args[3], b"/tmp/dst.sock")  # peer path
 
     def test_ffi_recv_routing_with_fake_lib(self):
-        # recv must drive the FFI entry point, translate the written
-        # outputs into the floor's tuple, and free both buffers.
+        # recv must drive the FFI entry point with the caller's reusable
+        # buffers and translate the written outputs into the floor's
+        # tuple — no allocation, no free (FFI surface v2).
         fake = mock.Mock()
         payload = b"recv-frame"
+        wire_buf = ctypes.create_string_buffer(transport_codec.RECV_WIRE_SIZE)
+        path_buf = ctypes.create_string_buffer(transport_codec.RECV_PATH_SIZE)
 
-        def fake_recv(fd, ms, ow, ol, op, ou, og, osp):
+        def fake_recv(fd, ms, wbuf, wcap, olen, pbuf, pcap, oplen,
+                      op, ou, og):
             # The byref'd outputs arrive as CArgObjects; write through
-            # them with cast (verified: cast works on CArgObject).
-            fake._buf = ctypes.create_string_buffer(payload, len(payload))
-            ctypes.cast(ol, ctypes.POINTER(ctypes.c_size_t))[0] = len(payload)
-            ctypes.cast(ow, ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)))[0] = (
-                ctypes.cast(fake._buf, ctypes.POINTER(ctypes.c_ubyte)))
+            # them with cast (verified: cast works on CArgObject). The
+            # caller's buffers are passed by address (c_void_p).
+            ctypes.memmove(wbuf, payload, len(payload))
+            ctypes.cast(olen, ctypes.POINTER(ctypes.c_size_t))[0] = len(payload)
+            ctypes.memmove(pbuf, b"/tmp/sender.sock", len(b"/tmp/sender.sock"))
+            ctypes.cast(oplen, ctypes.POINTER(ctypes.c_size_t))[0] = (
+                len(b"/tmp/sender.sock"))
             ctypes.cast(op, ctypes.POINTER(ctypes.c_int))[0] = os.getpid()
             ctypes.cast(ou, ctypes.POINTER(ctypes.c_int))[0] = os.getuid()
             ctypes.cast(og, ctypes.POINTER(ctypes.c_int))[0] = os.getgid()
-            ctypes.cast(osp, ctypes.POINTER(ctypes.c_char_p))[0] = (
-                ctypes.c_char_p(b"/tmp/sender.sock"))
             return 0
 
         fake.nyrqis_transport_recv.side_effect = fake_recv
         with mock.patch.object(
             transport_codec, "_load_rust_backend", return_value=fake
         ), mock.patch("ipc.transport_codec.ctypes.CDLL") as cdll_mock:
-            result = transport_codec.recv(7, 250)
+            result = transport_codec.recv(7, 250, wire_buf, path_buf)
         self.assertEqual(
             result,
             (payload, os.getpid(), os.getuid(), os.getgid(), "/tmp/sender.sock"),
         )
         fake.nyrqis_transport_recv.assert_called_once()
         cdll_mock.assert_not_called()
-        self.assertEqual(fake.nyrqis_transport_free.call_count, 2)
+        # The v2 surface never allocates or frees — the caller owns the
+        # buffers (Mock auto-creates the attr, so assert call_count 0).
+        self.assertEqual(fake.nyrqis_transport_free.call_count, 0)
+        args = fake.nyrqis_transport_recv.call_args.args
+        self.assertEqual(args[0], 7)  # fd
+        self.assertEqual(args[3], transport_codec.RECV_WIRE_SIZE)  # wire_cap
+        self.assertEqual(args[6], transport_codec.RECV_PATH_SIZE)  # path_cap
 
     def test_force_mode_raises_on_rust_call_failure(self):
         fake = mock.Mock()
@@ -5617,6 +5627,32 @@ class TestTransportConformance(unittest.TestCase):
                 self.assertIsNone(ep.receive(timeout=0.02))
             finally:
                 ep.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_binary_payload_with_embedded_nul_bytes(self):
+        # The zero-copy send passes the immutable bytes buffer by
+        # pointer (c_char_p) and the Rust side reads exactly wire_len
+        # bytes — embedded NULs MUST survive end-to-end (real IPC wire
+        # frames are binary and contain them). This is the regression
+        # guard for the v2 send path.
+        base = tempfile.mkdtemp(prefix="nyrqis-rust-transport-")
+        try:
+            a = UnixDatagramEndpoint(os.path.join(base, "a.sock")).bind()
+            b = UnixDatagramEndpoint(os.path.join(base, "b.sock")).bind()
+            try:
+                payload = b"NYRQ\x00\x01\x00frame\x00\x00tail"
+                self.assertIn(b"\x00", payload)  # guard: must contain NULs
+                a.send(payload, b.path)
+                got = b.receive(timeout=2.0)
+                self.assertIsNotNone(got)
+                data, pid, uid, gid, sender_path = got
+                self.assertEqual(data, payload)
+                self.assertEqual(pid, os.getpid())
+                self.assertEqual(sender_path, a.path)
+            finally:
+                a.close()
+                b.close()
         finally:
             shutil.rmtree(base, ignore_errors=True)
 

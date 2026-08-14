@@ -756,28 +756,54 @@ comparison is made within it, not against the earlier number:
 | mean | 240.06 µs | 242.38 µs | 462.63 µs | 475.54 µs |
 | min | 145.94 µs | 145.19 µs | 236.83 µs | 238.22 µs |
 
-**Honest verdict (NPC-002 §5.2 — no fabricated numbers): the current
-Rust FFI surface is SLOWER than the Python floor at the median (~1.8×
-over the wire, ~195 µs added at p50), so it does NOT close the NPS-003
+**Honest verdict (NPC-002 §5.2 — no fabricated numbers): the v1 Rust
+FFI surface was SLOWER than the Python floor at the median (~1.8×
+over the wire, ~195 µs added at p50), so it did NOT close the NPS-003
 §6.1 gate.** An isolated same-process send/recv microbenchmark (no
-CALL/REPLY structure, no token bucket, no serving thread) localizes
-the overhead to the FFI boundary itself: floor p50 9.06 µs vs Rust
+CALL/REPLY structure, no token bucket, no serving thread) localized
+the overhead to the FFI boundary itself: floor p50 9.06 µs vs v1 Rust
 p50 32.50 µs per round trip (~23 µs of pure boundary cost). Cause: the
-current surface mallocs the output wire buffer AND a sender-path C
-string on every receive (`publish_bytes`/`publish_cstr`), copies the
-wire on send (`create_string_buffer`) and on receive (`string_at`),
-and frees twice through `nyrqis_transport_free` — ~2-3 allocations
-and several copies per message, i.e. exactly the per-message Python
-overhead the migration exists to remove. The migration itself is NOT
-in question — ADR-0020's platform-boundary rule requires a compiled
-transport (the shipped platform must not depend on the Python
-interpreter), and the FFI conformance gate proves the Rust path is
-byte-identical to the floor. What the data changes is the close-path
-argument: **the performance close for §6.1 needs a second-pass FFI
-surface** (caller-supplied or pooled output buffers, no per-call
-malloc) before the Rust path can be claimed as the latency winner.
-That optimization is the follow-on; until it lands, the floor remains
-the measured-faster path and NPS-003 stays Draft with the gate open.
+v1 surface malloc'd the output wire buffer AND a sender-path C string
+on every receive and copied the wire on both send and receive —
+~2-3 allocations and several copies per message, i.e. exactly the
+per-message Python overhead the migration exists to remove.
+
+**FFI surface v2 (ABI 2.0.0) — measured 2026-08-14, same host, and
+it moves the right direction but does NOT close the gate.**
+`nyrqis_transport_recv` now `recvmsg`s DIRECTLY into the caller's
+reusable wire buffer (the `iovec` points at it — zero intermediate
+copy, zero malloc, zero free; `nyrqis_transport_free` is gone) and the
+sender path goes into the caller's path buffer; `send` passes the
+immutable wire bytes by pointer (no `create_string_buffer` copy). The
+Python endpoint owns one buffer pair per socket and reuses it.
+
+| Metric | v1 Rust | v2 Rust (4 runs) | Floor (same-session) |
+|--------|--------:|-----------------:|---------------------:|
+| isolated p50 | 32.50 µs | 24.33 µs | 9.1–9.5 µs |
+| wire p50 | ~426 µs | 307–357 µs | 195–202 µs |
+| wire p95 | ~760 µs | 556–608 µs | 304–312 µs |
+| wire p99 | ~1,000 µs | 762–846 µs | 379–400 µs |
+
+The floor column is the strictly same-session A/B (today's four floor
+runs: p50 195–202 µs); the 231 µs floor figure quoted earlier in this
+section came from the v1-measurement session on the same host and is
+kept there for continuity, not folded into the A/B.
+
+v2 cuts the wire-level p50 by ~120 µs (~28%) and the isolated round
+trip by ~25%, confirming the malloc removal was the right lever. **The
+gate is still NOT met**: the v2 Rust path remains ~1.6× the floor at
+the wire median (~320 µs vs ~200 µs) and ~2.6× isolated (24.3 µs vs
+9.5 µs). The residual is the ctypes FFI boundary tax — two calls with
+eleven marshalled args per round trip, the per-send path encode, and
+the unavoidable receive copy into immutable Python bytes — the honest
+floor of any ABI-rule-compliant compiled transport driven from Python.
+The migration itself is NOT in question: ADR-0020's platform-boundary
+rule requires a compiled transport (the shipped platform must not
+depend on the Python interpreter) and the FFI conformance gate proves
+the v2 path is byte-identical to the floor. NPS-003 stays Draft with
+the gate open; closing it needs the transport's serving loop itself to
+move behind the boundary (a Rust server/client harness, i.e. the
+NyRuntime direction), not just the per-message syscall pair.
 
 ## Status vs BENCHMARK_PLAN
 
