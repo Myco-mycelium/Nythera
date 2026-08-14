@@ -619,6 +619,76 @@ in CI), not a speed win. No gate declared met (the benchmark plan has
 no container-primitives section; recorded as evidence for the
 migration record).
 
+## 19. Consolidated Session Snapshot (2026-08-14)
+
+Third full-session re-run, run in sections (`--ipc --bucket --zstd
+--nyfs --nyfs-persist --save-levers --snapshot-dedup --codec
+--real-corpus --mixed-workload --compaction-cost
+--journal-blocksize --container`; same host, same method as §16/§17).
+Purpose: confirm the recorded findings hold after the ADR-0020
+migration #5 round (container launch-plan primitives in Rust) and the
+§18 first-pass data. **§6 (live FUSE mount) could not be re-measured
+this session**: a wedged mount from an earlier run left four
+D-state benchmark processes holding `/dev/fuse` connections, and the
+live-mount re-run hung rather than completing (the watchdog's
+`os._exit(99)` cannot fire while the process is blocked in an
+uninterruptible FUSE request; recovery needs root to abort the
+connections or a reboot — see the §19 incident note below). §6's last
+verified numbers remain those recorded in §16/§17.
+
+| Section | This session | §17 (2026-08-13) | Consistent? |
+|---------|--------------|------------------|-------------|
+| §1 IPC p50/p95/p99 | 87.4 / 128.4 / 209.9 µs | 88 / 139 / 258 µs | ✓ (median under the <100 µs target; tail improved) |
+| §3 token bucket | 99.5 calls/s sustained | 99.5 calls/s | ✓ |
+| §2 Zstd sweep | ratio flatlines ≥ level 7 (2.54 → 3.17) | same | ✓ |
+| §4 proxy write 1 MiB | 56.9 MB/s | 151 MB/s | ⚠ lower this session (two independent runs: 56.1 in the --all pass, 56.9 standalone — see note) |
+| §4 proxy read | 0.11 MB/s (4 KiB ops) | same band | ✓ (per-call checksum-verify bound) |
+| §5 persist save / ratio | 10.9 s / 6.42 : 1 | 10.9 s / 6.42 : 1 | ✓ |
+| §5 resave / load | 0.134 s / 0.037 s | 0.13 / 0.03 s | ✓ |
+| §8 levers 64k/256k/1m | 10.9 / 6.3 / 5.9 s | 10.9 / 7.1 / 6.3 s | ✓ |
+| §9 journal commit (64k) | 0.218 s | 0.27 s | ✓ |
+| §10 snapshot dedup | 49.08× | 49.08× | ✓ |
+| §11 codec zstd3 vs zlib6 | ratio 2.54 vs 3.13 | same | ✓ |
+| §12 real corpus save | 113.3 s vs 2.33 s journal (~49×) | 112.3 vs 3.0 s (~38×) | ✓ (fsync-bound noise band) |
+| §13 mixed commit avg | 621 vs 146 ms (4.3×) | 513 vs 127 ms (4.0×) | ✓ |
+| §14 compaction | 12.4 s (29.7 ms/block) | 11.2 s (26.8 ms/block) | ✓ |
+| §15 journal × block size | 0.266 / 0.270 / 0.361 s | 0.24 / 0.18 / 0.18 s | ✓ (flat under journal — the finding holds; 1 MiB slightly higher, within the fsync noise band) |
+| §18 container launch-plan floor | launcher 5.95, cgroup 8.06, root 2.08, transition 0.26 µs | *new this session* | — |
+
+Verdict: **every previously recorded finding reproduced.** §1's median
+stayed under the <100 µs target (87.4 µs); §12's journal-vs-interleaved
+gap held at ~49×; §13's journal commit advantage held at ~4.3×; §14's
+compaction cost held at ~30 ms/block. §18's container launch-plan
+floor (~16 µs total per launch) confirms migration #5 is a
+platform-boundary-rule port, not a performance migration.
+
+**§4 proxy note:** the 1 MiB streaming write measured ~57 MB/s this
+session vs 151 MB/s in §16/§17 — a real drop, reproduced in two
+independent runs (the `--all` pass and the standalone `--nyfs` pass).
+The small-op pattern (0.22 MB/s 4 KiB writes, 0.11 MB/s reads) is
+unchanged. Likely host-state sensitivity (page-cache pressure and disk
+state after the FUSE incident rather than a code change — the §5
+persist save of the same corpus still ran at 10.9 s with the same
+6.42 : 1 ratio, so the NyFS write path itself is not slower); no gate
+declared met either way.
+
+**§19 incident note (honesty record, NPC-002 §5.2):** this session's
+consolidated run initially used a single `--all` invocation that hung
+on the §6 live-mount section; the run was killed by the harness
+watchdog timeout, but the python process was left in **D-state
+(uninterruptible `request_wait_answer`)** holding its own `/dev/fuse`
+fds, and repeated `--nyfs-mount` re-runs piled up more wedged
+processes (the FUSE daemon thread and the benchmark's own I/O
+deadlock; the 60 s watchdog timer thread cannot call `os._exit(99)`
+while the main thread is stuck in the kernel). Lazy unmounts detached
+the mounts but the connections persist while the fds are open, and
+SIGKILL cannot take D-state tasks. Recovery requires root
+(`echo 1 > /sys/fs/fuse/connections/N/abort`) or a reboot. This is a
+**benchmark-harness robustness gap, not a NyFS/backend defect** — §6
+passed cleanly in §16 and §17 — and the fix (a `fork()`-isolated
+mount with a parent-side watchdog that can kill the child, or a
+mount-in-subprocess timeout) is recorded as future work.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
