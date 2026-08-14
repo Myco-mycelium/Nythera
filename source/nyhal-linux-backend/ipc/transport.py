@@ -39,6 +39,21 @@ the destination endpoint enqueues through its token bucket (ADR-0009).
 The receive-side ``CAP_IPC_RECEIVE`` check stays on the consumer's
 ``IPCManager.receive()``, exactly as in the in-process path.
 
+Operator identity (the control plane)
+-------------------------------------
+A second, non-container identity exists for the daemon's control
+plane: the daemon's OWN user (``trusted_uids``, default the daemon's
+uid) may act as ``host-operator``. The kernel-attached uid is as
+unforgeable as the pid — only a process running as the daemon's user
+can claim it — and such a process already has full control of the
+daemon (it could kill or restart it), so the capability model for
+containers deliberately does not apply to it; the control service
+validates its operations instead. Resolution is container-FIRST: a
+registered container pid always takes the container path (a container
+spawned by the daemon runs as the same user, so its datagrams must
+NOT be misattributed to the operator), and the operator path only
+applies to pids unknown to the registry.
+
 CALL/REPLY
 ----------
 The server answers a ``CALL`` at the **kernel-observed sender address**
@@ -67,6 +82,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from . import transport_codec  # ADR-0020 priority #6 FFI loader (transport hot path)
 from .core import IPCManager, IPCMessage, IPCMessageType
+
+# The default operator identity: the sender a daemon recognizes as its
+# operator on the trusted-uid path (see ``IPCDatagramServer._authorized``).
+# Defined here — the server is the auth boundary — and imported by the
+# control service, so both sides always agree by construction.
+DEFAULT_OPERATOR_ID = "host-operator"
 
 logger = logging.getLogger(__name__)
 
@@ -232,8 +253,9 @@ class IPCDatagramServer:
 
     Each ``serve_once`` receives one datagram, parses it through the
     wire codec (malformed input is dropped at the trust boundary),
-    resolves the authenticated sender pid to a container, rejects
-    forged ``sender_id`` values and senders lacking ``CAP_IPC_SEND``,
+    authenticates the sender (a registered container pid — checking
+    the wire ``sender_id`` against it and ``CAP_IPC_SEND`` — or, for
+    pids unknown to the registry, a trusted-uid ``host-operator``),
     then either invokes ``on_call`` (CALL) or enqueues to the endpoint
     (everything else, rate-limited per ADR-0009).
     """
@@ -246,6 +268,8 @@ class IPCDatagramServer:
         pid_registry: Optional[Dict[int, str]] = None,
         capability_manager=None,
         on_call: Optional[Callable] = None,
+        trusted_uids: Optional[set] = None,
+        operator_id: str = DEFAULT_OPERATOR_ID,
     ):
         self.manager = manager
         self.endpoint_id = endpoint_id
@@ -255,6 +279,12 @@ class IPCDatagramServer:
         self.pid_registry = pid_registry
         self.capability_manager = capability_manager
         self.on_call = on_call
+        # Uids whose processes may act as the daemon's control plane
+        # (``operator_id``): the daemon's own user by default. Container
+        # resolution stays pid-FIRST, so a daemon-spawned container
+        # (which runs as the same user) is never misattributed.
+        self.trusted_uids = trusted_uids
+        self.operator_id = operator_id
 
     def bind(self) -> "IPCDatagramServer":
         self.endpoint.bind()
@@ -270,38 +300,56 @@ class IPCDatagramServer:
             return self.pid_registry(pid)
         return self.pid_registry.get(pid)
 
-    def _authorized(self, msg: IPCMessage, pid: int) -> Optional[str]:
-        """Return the authenticated sender container id, or None when
-        the datagram must be dropped (unknown sender, a wire
-        ``sender_id`` that does not match the authenticated container —
-        including an empty one, since the transport is the attribution
-        boundary — or a sender without CAP_IPC_SEND)."""
+    def _authorized(self, msg: IPCMessage, pid: int, uid: int) -> Optional[str]:
+        """Return the authenticated sender identity, or None when the
+        datagram must be dropped. Two paths, container-FIRST:
+
+        - **Container** — the pid resolves via the registry; the wire
+          ``sender_id`` must match the resolved container (an empty or
+          forged one is dropped — the transport is the attribution
+          boundary) and the container must hold ``CAP_IPC_SEND``.
+        - **Operator** — the pid is unknown (the operator's short-lived
+          CLI is never registered); the kernel-attached uid must be in
+          ``trusted_uids`` AND the wire must claim ``operator_id``. A
+          daemon-spawned container runs as the same user, so this path
+          only ever applies to pids the registry does not know.
+        """
         sender = self._resolve_sender(pid)
-        if sender is None:
-            logger.warning(
-                "ipc: dropping datagram from unknown pid %d (not in the "
-                "container registry)", pid,
-            )
-            return None
-        if msg.sender_id != sender:
-            logger.warning(
-                "ipc: dropping %s sender_id %r — SCM_CREDENTIALS "
-                "authenticates pid %d as container %r",
-                "forged" if msg.sender_id else "missing",
-                msg.sender_id, pid, sender,
-            )
-            return None
-        if self.capability_manager is not None:
-            from backend.capability import Capability
-            if not self.capability_manager.validate_operation(
-                sender, Capability.CAP_IPC_SEND
-            ):
+        if sender is not None:
+            if msg.sender_id != sender:
                 logger.warning(
-                    "ipc: container %s lacks CAP_IPC_SEND; dropping datagram",
-                    sender,
+                    "ipc: dropping %s sender_id %r — SCM_CREDENTIALS "
+                    "authenticates pid %d as container %r",
+                    "forged" if msg.sender_id else "missing",
+                    msg.sender_id, pid, sender,
                 )
                 return None
-        return sender
+            if self.capability_manager is not None:
+                from backend.capability import Capability
+                if not self.capability_manager.validate_operation(
+                    sender, Capability.CAP_IPC_SEND
+                ):
+                    logger.warning(
+                        "ipc: container %s lacks CAP_IPC_SEND; dropping datagram",
+                        sender,
+                    )
+                    return None
+            return sender
+        if self.trusted_uids is not None and uid in self.trusted_uids:
+            if msg.sender_id == self.operator_id:
+                return self.operator_id
+            logger.warning(
+                "ipc: dropping %s sender_id %r from trusted uid %d — "
+                "the operator must claim %r",
+                "forged" if msg.sender_id else "missing",
+                msg.sender_id, uid, self.operator_id,
+            )
+            return None
+        logger.warning(
+            "ipc: dropping datagram from unknown pid %d uid %d (pid not "
+            "in the container registry and uid not trusted)", pid, uid,
+        )
+        return None
 
     def reply(self, sender_path: str, call_id: str, payload: bytes) -> bool:
         """Send a REPLY to ``sender_path`` for call ``call_id``."""
@@ -329,7 +377,7 @@ class IPCDatagramServer:
                 self.endpoint_id, e,
             )
             return None
-        sender = self._authorized(msg, pid)
+        sender = self._authorized(msg, pid, uid)
         if sender is None:
             return None
         if msg.message_type == IPCMessageType.CALL:

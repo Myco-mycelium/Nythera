@@ -33,7 +33,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent))
 
 from backend.container import (
-    Container, ContainerManager, ContainerConfig, ContainerState, ResourceLimits
+    Container, ContainerManager, ContainerConfig, ContainerState,
+    ResourceLimits, _DIRECT_LAUNCH_TIMEOUT_S,
 )
 from backend.capability import (
     CapabilityManager, Capability, CapabilityGrant
@@ -54,7 +55,8 @@ from fuse import nyfs_codec
 from ipc import ipc_codec
 from ipc import transport_codec
 from ipc.registry import ContainerIpcRegistry
-from ipc.service import BackendStatusService
+from ipc.service import BackendStatusService, ServiceRouter
+from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 import nyrqis_backend
 
@@ -1076,6 +1078,359 @@ class TestStatusServiceHost(unittest.TestCase):
             host.stop()
         self.assertFalse(os.path.exists(self.sock))
 
+    def test_host_control_plane_runs_and_kills_container(self):
+        # The control plane end-to-end through the RUNNABLE daemon: the
+        # operator (same uid — kernel-authenticated) CALLs container_run
+        # over the wire, the daemon spawns a REAL container
+        # (auto-registered + auto-granted), container_list sees it, and
+        # container_kill terminates it.
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        host = self._host()
+        host.start()
+        cli_path = os.path.join(self.tmp, "ctl.sock")
+        op_client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            def ctl(payload):
+                reply = op_client.call(
+                    host.socket_path, json.dumps(payload).encode(),
+                    timeout_s=15,
+                )
+                self.assertIsNotNone(reply, "no reply from the control plane")
+                return json.loads(reply.payload.decode("utf-8"))
+
+            resp = ctl({"service": "control", "op": "container_run",
+                        "command": ["/bin/sleep", "30"], "network": True})
+            self.assertTrue(resp["ok"], resp)
+            cid = resp["container_id"]
+            self.assertIsNotNone(resp["pid"])
+            # The spawned container was auto-granted (control plane).
+            self.assertTrue(host.capability_manager.has_capability(
+                cid, Capability.CAP_IPC_SEND))
+
+            resp = ctl({"service": "control", "op": "container_list"})
+            self.assertTrue(resp["ok"])
+            found = [c for c in resp["containers"] if c["id"] == cid]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["state"], "running")
+
+            resp = ctl({"service": "control", "op": "container_kill",
+                        "container_id": cid})
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(
+                host.container_manager.containers[cid].state.value,
+                "terminated",
+            )
+        finally:
+            for container in list(host.container_manager.containers.values()):
+                _launch_cleanup(host.container_manager, container)
+            op_client.close()
+            host.stop()
+
+    def test_cli_control_wires_operator_client(self):
+        # `nyrqis_backend.py control container-list` builds the control
+        # payload (hyphenated subcommand -> underscored op), claims the
+        # operator identity, and prints the daemon's reply.
+        fake_reply = mock.Mock()
+        fake_reply.payload = b'{"ok": true, "containers": []}'
+        fake_client = mock.Mock()
+        fake_client.call.return_value = fake_reply
+        fake_client.bind.return_value = fake_client
+        with mock.patch.object(nyrqis_backend, "IPCClient",
+                               return_value=fake_client), \
+                mock.patch.object(
+                    nyrqis_backend.sys, "argv",
+                    ["nyrqis_backend.py", "control", "--socket",
+                     "/tmp/x.sock", "container-list"],
+                ):
+            rc = nyrqis_backend.main()
+        self.assertEqual(rc, 0)
+        fake_client.bind.assert_called_once()
+        fake_client.call.assert_called_once()
+        payload = json.loads(
+            fake_client.call.call_args.args[1].decode("utf-8"))
+        self.assertEqual(
+            payload, {"service": "control", "op": "container_list"})
+
+
+class TestServiceRouter(unittest.TestCase):
+    """Multi-service dispatch on one server socket: the router routes on
+    the payload's ``service`` field (default ``status`` for back-compat),
+    replies to unknown services, and never lets a service bug kill the
+    serve loop.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    def _serve(self, services=()):
+        import threading
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry={os.getpid(): "container-A"})
+        router = ServiceRouter()
+        for name, svc in services:
+            router.register(name, svc)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient("container-A", self.cli_path).bind()
+        return server, client, stop
+
+    def _call(self, client, payload):
+        reply = client.call(self.svc_path, payload, timeout_s=5.0)
+        self.assertIsNotNone(reply, "no reply")
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def test_default_routes_to_status(self):
+        status = BackendStatusService(backend_version="9.9.9")
+        server, client, stop = self._serve([("status", status)])
+        try:
+            resp = self._call(client, b'{"op": "ping"}')  # no service field
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["service"], "nyrqis.backend.status")
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_explicit_service_field_routes(self):
+        status = BackendStatusService(backend_version="9.9.9")
+        calls = []
+
+        class Dummy:
+            _server = None
+
+            def _on_call(self, msg, sender, sender_path):
+                calls.append(sender)
+                self._server.reply(
+                    sender_path, msg.message_id,
+                    b'{"ok": true, "service": "dummy"}')
+
+        server, client, stop = self._serve(
+            [("status", status), ("dummy", Dummy())])
+        try:
+            resp = self._call(client, b'{"service": "dummy"}')
+            self.assertTrue(resp["ok"])
+            self.assertEqual(calls, ["container-A"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_unknown_service_reply(self):
+        server, client, stop = self._serve()  # nothing registered
+        try:
+            resp = self._call(client, b'{"service": "nope"}')
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown service", resp["error"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_service_bug_replies_internal_error_and_survives(self):
+        class Buggy:
+            _server = None
+
+            def _on_call(self, msg, sender, sender_path):
+                raise RuntimeError("bug")
+
+        server, client, stop = self._serve([("buggy", Buggy())])
+        try:
+            resp = self._call(client, b'{"service": "buggy"}')
+            self.assertFalse(resp["ok"])
+            self.assertEqual(resp["error"], "internal error")
+            # The serve loop survived: a second call still gets served.
+            resp = self._call(client, b'{"service": "buggy"}')
+            self.assertEqual(resp["error"], "internal error")
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+
+class TestControlService(unittest.TestCase):
+    """The operator control plane: authenticated by the kernel-attached
+    uid at the server (``trusted_uids``, container-FIRST resolution),
+    the control service's own operator-only gate, and the operations
+    themselves (against a stub ContainerManager; the real-container
+    control e2e lives in TestStatusServiceHost).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    class _FakeManager:
+        def __init__(self):
+            self.containers = {}
+            self.created = []
+
+        def create(self, config):
+            c = mock.Mock()
+            c.id = "ctr-1"
+            c.pid = 4242
+            c.state.value = "CREATED"
+            self.containers["ctr-1"] = c
+            self.created.append(config)
+            return c
+
+        def spawn(self, container):
+            container.pid = 4242
+            container.state.value = "RUNNING"
+
+        def terminate(self, container):
+            container.state.value = "TERMINATED"
+
+    def _serve(self, container_manager, pid_registry=None,
+               trusted_uids=None):
+        import threading
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry=pid_registry or {},
+            trusted_uids=trusted_uids,
+        )
+        control = ControlService(container_manager)
+        router = ServiceRouter()
+        router.register("control", control)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        return server, stop
+
+    def _call(self, client, payload, timeout=5.0):
+        reply = client.call(self.svc_path, payload, timeout_s=timeout)
+        if reply is None:
+            return None
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def test_operator_container_run(self):
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_run",
+                "command": ["/bin/sleep", "30"],
+                "capabilities": ["CAP_FILESYSTEM_WRITE"],
+                "memory_mb": 128, "pids": 16,
+            }).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["container_id"], "ctr-1")
+            self.assertEqual(resp["pid"], 4242)
+            cfg = fake.created[0]
+            self.assertEqual(cfg.command, ["/bin/sleep", "30"])
+            self.assertEqual(cfg.capabilities, ["CAP_FILESYSTEM_WRITE"])
+            self.assertEqual(cfg.limits.memory_mb, 128)
+            self.assertEqual(cfg.limits.pid_limit, 16)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_container_list_and_kill(self):
+        fake = self._FakeManager()
+        fake.create(mock.Mock())  # pre-populate the manager with ctr-1
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_list"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["containers"],
+                             [{"id": "ctr-1", "state": "CREATED",
+                               "pid": 4242}])
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_kill",
+                "container_id": "ctr-1"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(fake.containers["ctr-1"].state.value,
+                             "TERMINATED")
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_container_cannot_drive_control(self):
+        # A registered container reaches the router (its pid resolves
+        # first) but the control service refuses any non-operator sender.
+        fake = self._FakeManager()
+        server, stop = self._serve(
+            fake, pid_registry={os.getpid(): "container-A"},
+            trusted_uids={os.getuid()})
+        client = IPCClient("container-A", self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_kill",
+                "container_id": "ctr-1"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("operator-only", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_untrusted_uid_operator_claim_dropped(self):
+        # No trusted_uids configured: even a "host-operator" claim from
+        # an unknown pid is dropped before the router — no reply at all.
+        fake = self._FakeManager()
+        server, stop = self._serve(fake)  # trusted_uids=None
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_list"}).encode(),
+                timeout=1.0)
+            self.assertIsNone(resp)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_bad_command_rejected(self):
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_run",
+                "command": "not-a-list"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("command", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_unknown_op_and_container(self):
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "self_destruct"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown operation", resp["error"])
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_kill",
+                "container_id": "missing"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown container", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
 
 class TestStorageGuarantees(unittest.TestCase):
     """Test NPS-017 §4.4 (Storage Guarantees)."""
@@ -1688,27 +2043,35 @@ class TestDirectSyscallLaunch(unittest.TestCase):
             use_cgroups_v2=False, use_direct_syscalls=True
         )
 
-    def _spawn_with_pipe(self, data=b"4242", fork_returns=777):
-        """Drive _spawn_direct with a mocked pipe/fork/read."""
+    def _spawn_with_pipe(self, data=b"4242", cmd_pid=9876,
+                         fork_returns=777):
+        """Drive _spawn_direct with a mocked pipe/fork/read (pipe1 =
+        setup child -> manager: PID-1 / ERR; the command's HOST pid
+        comes from the host-side ``_resolve_command_pid`` poll)."""
         with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
                 mock.patch("backend.container.os.fork", return_value=fork_returns), \
                 mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.select.select",
                            return_value=([3], [], [])), \
-                mock.patch("backend.container.os.read", return_value=data) as read:
+                mock.patch("backend.container.os.read", return_value=data) as read, \
+                mock.patch("backend.container._resolve_command_pid",
+                           return_value=cmd_pid) as resolve:
             container = self.manager.create(ContainerConfig(
                 command=["/bin/true"], seccomp=False,
             ))
             self.manager._spawn_direct(container)
-        return container, read
+        return container, read, resolve
 
     def test_direct_spawn_relays_container_pid(self):
-        container, _ = self._spawn_with_pipe()
-        # The manager records the container's PID-1 (the grandchild) as
-        # container.pid and the setup child as the reaped launcher pid.
-        self.assertEqual(container.pid, 4242)
+        container, read, resolve = self._spawn_with_pipe()
+        # The manager records the launcher-init (PID-1, the grandchild)
+        # as container._init_pid and the HOST-side-resolved command pid
+        # as container.pid; the setup child is the reaped launcher pid.
+        self.assertEqual(container.pid, 9876)  # the command (host pid)
+        self.assertEqual(container._init_pid, 4242)  # the PID-1 init
         self.assertEqual(container._direct_launcher_pid, 777)
         self.assertIsNone(container._proc)
+        resolve.assert_called_once_with(4242, _DIRECT_LAUNCH_TIMEOUT_S)
 
     def test_direct_spawn_err_marker_raises(self):
         with self.assertRaises(RuntimeError) as cm:
@@ -1722,7 +2085,8 @@ class TestDirectSyscallLaunch(unittest.TestCase):
     def test_direct_spawn_reaps_failed_child(self):
         # The manager must reap the setup child even on the failure path
         # (no zombie), then raise.
-        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+        with mock.patch("backend.container.os.pipe",
+                        return_value=(3, 4)), \
                 mock.patch("backend.container.os.fork", return_value=777), \
                 mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.select.select",
@@ -1888,7 +2252,8 @@ class TestDirectSyscallLaunch(unittest.TestCase):
         ), mock.patch(
             "backend.container.os.waitpid", return_value=(4242, 7 << 8)
         ), mock.patch("backend.container.os._exit"):
-            container_mod._direct_launch_child(4, ["/bin/true"], network=True)
+            container_mod._direct_launch_child(4, ["/bin/true"],
+                                               network=True)
         self.assertEqual(calls, [
             rust_syscalls.CLONE_NEWUSER,
             rust_syscalls.CLONE_NEWNS | rust_syscalls.CLONE_NEWUTS
@@ -2031,6 +2396,121 @@ def _netns_launch_supported() -> bool:
                 supported = False
     _NETNS_SUPPORTED = supported
     return supported
+
+
+class TestPid1Init(unittest.TestCase):
+    """The launcher-init: the container command runs as a plain child
+    of the namespace's PID-1 — not as PID 1 itself — so kernel signal
+    semantics apply to it and SIGTERM terminates it promptly (Linux
+    discards signals sent to a namespace PID 1 without a handler; the
+    pre-init design always burned the full 10s terminate window). The
+    init relays the command pid, forwards supervisor signals, and
+    propagates the exit status.
+    """
+
+    def _manager(self):
+        return ContainerManager(use_cgroups_v2=False, use_direct_syscalls=True)
+
+    def _spawn(self, manager, command, **kw):
+        c = manager.create(ContainerConfig(command=command, seccomp=False, **kw))
+        manager.spawn(c)
+        self.addCleanup(_launch_cleanup, manager, c)
+        return c
+
+    def _ns_pid(self, host_pid):
+        """The pid the process sees inside its own PID namespace (the
+        last NSpid value in /proc/<pid>/status)."""
+        try:
+            with open(f"/proc/{host_pid}/status") as fh:
+                for line in fh:
+                    if line.startswith("NSpid:"):
+                        return int(line.split()[-1])
+        except (OSError, ValueError):
+            return None
+        return None
+
+    def test_command_runs_as_child_of_pid1_init(self):
+        m = self._manager()
+        c = self._spawn(m, ["/bin/sleep", "60"])
+        self.assertIsNotNone(c._init_pid)
+        self.assertNotEqual(c.pid, c._init_pid)
+        # The init is the namespace's PID 1; the command is a plain
+        # child (pid 2 inside the namespace).
+        self.assertEqual(self._ns_pid(c._init_pid), 1)
+        self.assertEqual(self._ns_pid(c.pid), 2)
+        # The command's parent is the init (field 4 of /proc/pid/stat).
+        try:
+            with open(f"/proc/{c.pid}/stat") as fh:
+                fields = fh.read().split()
+        except OSError as e:
+            self.fail(f"could not read /proc/{c.pid}/stat: {e}")
+        self.assertEqual(int(fields[3]), c._init_pid)
+        # The init is the launcher.
+        try:
+            with open(f"/proc/{c._init_pid}/cmdline", "rb") as fh:
+                cmd = fh.read().decode(errors="replace")
+        except OSError:
+            cmd = ""
+        self.assertIn("launcher.py", cmd)
+
+    def test_sigterm_terminates_promptly(self):
+        m = self._manager()
+        c = self._spawn(m, ["/bin/sleep", "60"])
+        t0 = time.time()
+        m.terminate(c)
+        elapsed = time.time() - t0
+        self.assertEqual(c.state, ContainerState.TERMINATED)
+        self.assertLess(elapsed, 3.0,
+                        f"terminate took {elapsed:.1f}s — PID-1 init broken?")
+        self.assertFalse(c.is_running())
+
+    def test_init_forwards_sigterm_to_command(self):
+        m = self._manager()
+        c = self._spawn(m, ["/bin/sleep", "60"])
+        os.kill(c._init_pid, signal.SIGTERM)  # signal the PID-1 INIT
+        deadline = time.time() + 5.0
+        while time.time() < deadline and c.is_running():
+            time.sleep(0.05)
+        self.assertFalse(
+            c.is_running(),
+            "the init did not forward SIGTERM to the command",
+        )
+
+    def test_exit_status_propagates_through_init(self):
+        m = self._manager()
+        c = self._spawn(m, [sys.executable, "-c", "import sys; sys.exit(7)"])
+        self.assertEqual(m.wait(c, timeout_s=30), 7)
+
+    def test_spawn_leaves_environment_untouched(self):
+        # The command-pid relay is carried on a dedicated pipe (resolved
+        # by the setup child), never through the process environment.
+        before = dict(os.environ)
+        m = self._manager()
+        self._spawn(m, ["/bin/sleep", "1"])
+        self.assertEqual(os.environ, before)
+
+    def test_fast_exit_command_spawns_and_reports_status(self):
+        # A command that exits within ~1ms of forking may never become
+        # an observable process (pid=None — nothing to signal/attach).
+        # Either way the spawn succeeds and wait() reports the status
+        # with the setup child reaped (no zombie left behind).
+        m = self._manager()
+        c = self._spawn(m, ["/bin/true"])
+        self.assertEqual(m.wait(c, timeout_s=30), 0)
+        self.assertEqual(c.state, ContainerState.TERMINATED)
+        try:
+            os.waitpid(c._direct_launcher_pid, os.WNOHANG)
+        except ChildProcessError:
+            pass  # already reaped by wait() — expected
+        else:
+            self.fail("setup child still un-reaped after wait()")
+
+    def test_legacy_unshare_path_runs_command_through_init(self):
+        if shutil.which("unshare") is None:
+            self.skipTest("unshare(1) not available")
+        m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=False)
+        c = self._spawn(m, ["/bin/sleep", "1"])
+        self.assertEqual(m.wait(c, timeout_s=30), 0)
 
 
 class TestNetworkNamespaceIsolation(unittest.TestCase):
@@ -5075,6 +5555,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBackendStatusService))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCapabilityLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestStatusServiceHost))
+    suite.addTests(loader.loadTestsFromTestCase(TestServiceRouter))
+    suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
@@ -5090,6 +5572,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRustFfILoader))
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestDirectSyscallLaunch))
+    suite.addTests(loader.loadTestsFromTestCase(TestPid1Init))
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))

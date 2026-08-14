@@ -446,6 +446,31 @@ Documentation hygiene, fixed earlier this session:
   container→service e2e now runs with the auto-registry end-to-end;
   `TestContainerIpcRegistry` (6 tests) pins the registry and manager
   hooks. Suite 251 → 257 (231 run + 26 skipped).
+- 2026-08-14 (**daemon control plane, operator-only over the same
+  transport**): the server gains a trusted-uid operator path
+  (`trusted_uids`/`host-operator`, container-FIRST resolution so
+  daemon-spawned containers are never misattributed); `ServiceRouter`
+  dispatches multiple services on one socket (payload `service`
+  field, default `status`); `ControlService` (`ipc/control.py`) lets
+  the daemon's own user spawn/list/kill containers through the
+  daemon's `ContainerManager` — reached via `nyrqis_backend.py
+  control container-run|container-list|container-kill`. Verified
+  end-to-end: a real container is spawned and killed through the wire
+  on the runnable daemon (`test_host_control_plane_runs_and_kills_container`).
+  New `TestServiceRouter` (4) + `TestControlService` (6). Suite 276 →
+  288 (262 run + 26 skipped).
+- 2026-08-14 (**PID-1 launcher-init**): the launcher stays alive as the
+  namespace's PID-1 and runs the container command as its plain child
+  — Linux discards signals sent to a namespace PID 1 without a
+  handler, so the old exec-into-PID-1 design always burned the full
+  10s terminate window. The init forwards supervisor signals, reaps
+  the command, and exits with its status; the seccomp policy is
+  applied by the command child (the init is the trusted unfiltered
+  supervisor, the model tini uses); the manager resolves the
+  command's HOST pid via the init's /proc children file; both pids
+  join the container cgroups; terminate escalation covers both and
+  reaps the setup child. New `TestPid1Init` (7). Suite 288 → 295
+  (269 run + 26 skipped).
 - 2026-08-14 (**runnable status-service daemon + auto capability
   lifecycle**): `nyrqis_backend.py service serve` runs a
   `StatusServiceHost` daemon — the container manager, transport sender

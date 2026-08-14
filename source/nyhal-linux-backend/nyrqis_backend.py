@@ -16,9 +16,13 @@ References:
 """
 
 import argparse
+import json
 import logging
+import os
+import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -30,9 +34,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from backend.container import ContainerManager, ContainerConfig, ResourceLimits
 from backend.capability import CapabilityManager, Capability
 from ipc.core import IPCManager
-from ipc.transport import IPCDatagramServer
+from ipc.transport import IPCDatagramServer, IPCClient
 from ipc.registry import ContainerIpcRegistry
-from ipc.service import BackendStatusService
+from ipc.service import BackendStatusService, ServiceRouter
+from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
 
@@ -223,12 +228,21 @@ class StatusServiceHost:
             self.ipc_manager, "ep-svc", socket_path,
             pid_registry=self.ipc_registry,
             capability_manager=self.capability_manager,
+            # The daemon's own user is the operator (control plane);
+            # container resolution stays pid-first, so daemon-spawned
+            # containers are never misattributed.
+            trusted_uids={os.getuid()},
         )
         self.service = BackendStatusService(
             capability_manager=self.capability_manager,
             backend_version=backend_version,
         )
-        self.service.attach(self.server)
+        self.control = ControlService(
+            self.container_manager, self.capability_manager)
+        self.router = ServiceRouter()
+        self.router.register("status", self.service)
+        self.router.register("control", self.control)
+        self.router.attach(self.server)
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -280,6 +294,47 @@ def cmd_service_serve(args) -> int:
     )
     host.serve_until_signal()
     return 0
+
+
+def cmd_control(args) -> int:
+    """Drive a running daemon's control plane (operator-only).
+
+    The client claims the operator identity; the daemon authenticates
+    it by the kernel-attached uid (the daemon's own user — an
+    unforgeable check, and the only identity the control service
+    accepts).
+    """
+    setup_logging(args.verbose)
+    tmp = tempfile.mkdtemp(prefix="nyrqis-ctl-")
+    cli_path = os.path.join(tmp, "ctl.sock")
+    client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+    try:
+        payload = {"service": "control",
+                   "op": (args.control_cmd or "").replace("-", "_")}
+        if args.control_cmd == "container-run":
+            payload.update({
+                "command": args.command,
+                "capabilities": parse_capabilities(args.capabilities),
+                "network": args.network,
+                "memory_mb": args.memory,
+                "pids": args.pids,
+                "name": args.name or None,
+            })
+        elif args.control_cmd == "container-kill":
+            payload["container_id"] = args.container_id
+        reply = client.call(
+            args.socket, json.dumps(payload).encode("utf-8"),
+            timeout_s=args.timeout,
+        )
+        if reply is None:
+            print("✗ no reply from the daemon (is it running?)")
+            return 1
+        resp = json.loads(reply.payload.decode("utf-8"))
+        print(json.dumps(resp, indent=2, sort_keys=True))
+        return 0 if resp.get("ok") else 1
+    finally:
+        client.close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def cmd_ipc_endpoint_create(args) -> int:
@@ -339,6 +394,7 @@ Examples:
   %(prog)s capability list                     # List capabilities
   %(prog)s filesystem create /tmp/nyfs         # Create a filesystem
   %(prog)s service serve --socket /tmp/nyrqis-status.sock  # Run the status service daemon
+  %(prog)s control --socket /tmp/nyrqis-status.sock container-run --network /bin/sleep 30
         """
     )
     
@@ -440,6 +496,44 @@ Examples:
         "package version)"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
+
+    # Control commands (against a running daemon)
+    control_parser = subparsers.add_parser(
+        "control",
+        help="Drive a running daemon's control plane (its own user only)")
+    control_parser.add_argument(
+        "--socket", default="/tmp/nyrqis-status.sock",
+        help="The daemon's socket path (default: /tmp/nyrqis-status.sock)"
+    )
+    control_parser.add_argument(
+        "--timeout", type=float, default=30.0,
+        help="CALL timeout in seconds (default: 30)"
+    )
+    control_subparsers = control_parser.add_subparsers(dest="control_cmd")
+
+    ctl_run = control_subparsers.add_parser(
+        "container-run", help="Spawn a container on the daemon")
+    ctl_run.add_argument("--name", default="")
+    ctl_run.add_argument(
+        "--capabilities", default="",
+        help="Comma-separated data-plane capabilities (seccomp)"
+    )
+    ctl_run.add_argument("--network", action="store_true",
+                         help="Give the container its own network namespace")
+    ctl_run.add_argument("--memory", type=int, default=256,
+                         help="Memory limit (MiB)")
+    ctl_run.add_argument("--pids", type=int, default=64, help="PID limit")
+    ctl_run.add_argument("command", nargs="+", help="Command to run")
+    ctl_run.set_defaults(func=cmd_control)
+
+    ctl_list = control_subparsers.add_parser(
+        "container-list", help="List the daemon's containers")
+    ctl_list.set_defaults(func=cmd_control)
+
+    ctl_kill = control_subparsers.add_parser(
+        "container-kill", help="Terminate a container on the daemon")
+    ctl_kill.add_argument("container_id")
+    ctl_kill.set_defaults(func=cmd_control)
 
     # IPC commands
     ipc_parser = subparsers.add_parser("ipc", help="Manage IPC")

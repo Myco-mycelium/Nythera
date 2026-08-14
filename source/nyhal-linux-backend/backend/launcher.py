@@ -14,29 +14,48 @@ namespaces*. ``backend/container.py`` spawns it via ``unshare(1)`` and it:
 2b. Brings the loopback interface up (best-effort ``SIOCSIFFLAGS``):
    succeeds in a container with its own network namespace (owned by this
    user namespace, where the process is root), harmlessly EPERMs when
-   sharing the host's. Runs BEFORE the seccomp install — backend setup,
-   not container behavior.
-3. Installs the container's seccomp policy in *its own execution context*
-   — the data-plane capability enforcement closing `FIND-BACKEND-002`
-   (NPS-017 §4.2).
-4. ``execve``s the container's real command.
+   sharing the host's. Runs early — backend setup, not container behavior.
+3. Validates the seccomp architecture (the filter itself is applied by
+   the command child in step 4: the trusted init never runs filtered, so
+   a container without ``CAP_PROCESS_SPAWN`` cannot EPERM the init's own
+   ``fork`` — the data-plane enforcement closing `FIND-BACKEND-002`
+   (NPS-017 §4.2) applies to the container command and its descendants).
+4. Becomes the container's **PID-1 init**: forks the real command (the
+   child applies the container's seccomp policy to itself, then
+   ``execve``s the command), forwards supervisor signals to the
+   command, reaps it, and exits with its status (or dies by its
+   signal). The manager resolves the command's HOST pid through this
+   process's /proc children file (a pid reported from inside the
+   namespace would be the ns-local value).
 
-Because step 3 runs here — inside the container, before any untrusted code
-executes — a container process can never bypass the capability policy by
-making syscalls directly; the filter is already active.
+Why an init instead of a direct ``execve``? Linux discards signals
+(other than SIGKILL/SIGSTOP) sent to a namespace PID 1 that has no
+handler installed — a command running AS PID 1 could never be
+terminated gracefully, so the backend's 10s SIGTERM window always
+elapsed and kills escalated to SIGKILL. Running the command as a plain
+child restores normal kernel signal semantics: SIGTERM reaches it, and
+the init's signal forwarders make ``kill -TERM <pid-1>`` behave like
+any supervisor signalling its child. The init also resets the
+SIGPIPE/SIGXFSZ dispositions Python ignores at startup (SIG_IGN
+survives fork AND exec — the pre-init launcher leaked an ignored
+SIGPIPE into the container command).
 
 Security notes (kept honest, per NPC-002 §5.2):
 
 - ``sethostname`` is attempted and failures are logged, not fatal: in a
   user namespace the operation requires CAP_SYS_ADMIN in that namespace,
   which ``unshare --map-root-user`` provides.
+- The init itself runs *unfiltered* by design: it is trusted backend
+  code (the model tini uses in Docker), and the container's only
+  interface to it is signalling and the exit status. The seccomp policy
+  applies to the command child and everything it spawns.
 - The cgroup unmount is best-effort *defense in depth*: the primary
   hardening for `FIND-BACKEND-003` happens in ``container.py`` (the
   backend never mounts cgroup filesystems into the container, and sets
   ``notify_on_release=0`` on the container's v1 cgroups).
 - If seccomp installation fails (e.g. the host kernel was booted with
-  ``seccomp=0``), the launcher logs loudly. By default it continues — the
-  container still runs, but the backend records that data-plane
+  ``seccomp=0``), the command child logs loudly. By default it continues —
+  the container still runs, but the backend records that data-plane
   enforcement is not in effect (the conformance statement in
   ``IMPLEMENTATION_STATUS.md`` reflects this). ``--strict-seccomp`` turns
   the failure into a hard error, for hosts where enforcement is mandatory.
@@ -58,9 +77,11 @@ import fcntl
 import json
 import logging
 import os
+import signal
 import socket
 import struct
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -241,6 +262,72 @@ def apply_seccomp(
     return True
 
 
+# Signals the init forwards to the container command — the set a
+# supervisor would pass through. SIGKILL and SIGSTOP cannot be caught
+# and are excluded by design.
+FORWARD_SIGNALS = (
+    signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM,
+    signal.SIGUSR1, signal.SIGUSR2, signal.SIGWINCH,
+)
+
+
+def _install_forwarders(child_pid: int) -> None:
+    """Forward supervisor signals to the container command.
+
+    The command is a plain child (not the namespace's PID 1), so a
+    forwarded signal terminates it normally — this makes ``kill -TERM
+    <pid-1>`` behave exactly like a supervisor signalling its child.
+    """
+    def _forward(signum: int, _frame) -> None:
+        try:
+            os.kill(child_pid, signum)
+        except ProcessLookupError:
+            pass  # the command is already gone; the wait below surfaces it
+
+    for sig in FORWARD_SIGNALS:
+        signal.signal(sig, _forward)
+
+
+def _supervise(child_pid: int) -> int:
+    """Reap the command and exit with its status (or die by its signal).
+
+    The ``main -> sys.exit`` path delivers a normal exit status to the
+    manager's ``waitpid``. When the command died BY a signal, the init
+    re-raises the same signal on itself (forwarder lifted) so the
+    manager observes WIFSIGNALED — matching Popen's negative-returncode
+    semantics. A brief best-effort sweep reaps orphans the command left
+    behind; whatever remains is SIGKILLed by the kernel when this PID 1
+    exits (the container's lifetime is its main process's lifetime).
+    """
+    try:
+        _, status = os.waitpid(child_pid, 0)
+    except ChildProcessError:  # pragma: no cover - the child was reaped elsewhere
+        return 1
+    if os.WIFSIGNALED(status):
+        sig = os.WTERMSIG(status)
+        logger.info("init: container command died by signal %d", sig)
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except ValueError:
+            pass  # uncatchable (SIGKILL/SIGSTOP); the raise below still works
+        os.kill(os.getpid(), sig)
+        os._exit(128 + sig)  # pragma: no cover - only if the signal was ignored
+    code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
+    # Brief best-effort sweep for orphans the command left behind. The
+    # 50 x 10ms bound is deliberate: 0.5s max added to a container's
+    # exit when grandchildren linger (they are SIGKILLed when this PID
+    # 1 exits regardless); shortening it is a cheap follow-up if the
+    # bound ever shows up in exit-latency data.
+    for _ in range(50):
+        try:
+            if os.waitpid(-1, os.WNOHANG) == (0, 0):
+                break
+        except ChildProcessError:
+            break
+        time.sleep(0.01)
+    return code
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Nyrqis container launcher (internal)")
     parser.add_argument("--hostname", default="nyrqis-container")
@@ -273,15 +360,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Before the seccomp install: backend setup, not container behavior.
     bring_loopback_up()
 
-    # Step 3 — data-plane capability enforcement (FIND-BACKEND-002).
+    # Step 3 — validate the seccomp architecture. The filter itself is
+    # applied by the command child in step 4: the init forks the command
+    # AFTER the install point, so installing here would subject the
+    # init's own fork to the container's policy (a container without
+    # CAP_PROCESS_SPAWN would EPERM the init's clone). The trusted init
+    # runs unfiltered; the policy guards the command and its descendants.
     try:
         arch = SyscallArch(args.arch)
     except ValueError as e:
         logger.error("%s", e)
         return 2
-    apply_seccomp(args.policy_file, args.strict_seccomp, arch, args.default_deny)
 
-    # Step 4 — hand control to the container's real command.
+    # Step 4 — become the container's PID-1 init and hand control to the
+    # real command as its plain child (module docstring: why an init).
+    # The manager learns the command's HOST pid from the setup child
+    # (which resolves it via this process's /proc children file) — the
+    # init itself never relays anything.
     if not args.command:
         logger.error("no command provided")
         return 3
@@ -289,15 +384,45 @@ def main(argv: Optional[List[str]] = None) -> int:
     if command and command[0] == "--":
         command = command[1:]
 
-    logger.info("exec: %s", " ".join(command))
+    # Reset the dispositions Python ignores at startup (SIGPIPE/SIGXFSZ):
+    # SIG_IGN survives fork AND exec, so without this the command would
+    # inherit an ignored SIGPIPE (the pre-init launcher leaked it).
+    for sig in (signal.SIGPIPE, signal.SIGXFSZ):
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except ValueError:
+            pass
+
+    logger.info("init: forking container command: %s", " ".join(command))
     try:
-        os.execvpe(command[0], command, os.environ.copy())
-    except FileNotFoundError:
-        logger.error("command not found: %s", command[0])
-        return 127
-    except Exception as e:  # pragma: no cover - exec failure paths are varied
-        logger.error("exec failed: %s", e)
+        child_pid = os.fork()
+    except OSError as e:  # pragma: no cover - fork failure is terminal
+        logger.error("init: fork failed: %s", e)
         return 126
+    if child_pid == 0:
+        # The container command — still trusted launcher code until the
+        # exec below. Apply the container's seccomp policy to THIS
+        # process (the exec'd command and its descendants then run
+        # filtered) and exec. On failure, report and die with the
+        # conventional statuses, bypassing Python's cleanup (this branch
+        # is a fork of the init; atexit must not run here).
+        apply_seccomp(args.policy_file, args.strict_seccomp, arch,
+                      args.default_deny)
+        try:
+            os.execvpe(command[0], command, os.environ.copy())
+        except FileNotFoundError:
+            os.write(2, ("nyrqis launcher: command not found: %s\n"
+                         % command[0]).encode("utf-8", "replace"))
+            os._exit(127)
+        except Exception as e:  # pragma: no cover - exec failure paths are varied
+            os.write(2, ("nyrqis launcher: exec failed: %s\n"
+                         % e).encode("utf-8", "replace"))
+            os._exit(126)
+
+    # Init: forward supervisor signals, then supervise the command to
+    # completion.
+    _install_forwarders(child_pid)
+    return _supervise(child_pid)
 
 
 if __name__ == "__main__":

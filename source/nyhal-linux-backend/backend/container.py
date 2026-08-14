@@ -101,6 +101,11 @@ class Container:
         # container's exit status). Exactly one of the two is set.
         self._proc: Optional[subprocess.Popen] = None
         self._direct_launcher_pid: Optional[int] = None
+        # Direct path: the namespace's PID-1 — the launcher-init that
+        # supervises the real command (``self.pid``). The init is what
+        # suspend/freeze/terminate escalation addresses as belt-and-
+        # braces; killing PID 1 tears down the whole namespace.
+        self._init_pid: Optional[int] = None
         # True when the last suspend froze the container through its
         # cgroup (cgroup.freeze) rather than SIGSTOP; resume must then
         # thaw before anything else, and terminate must thaw so SIGTERM
@@ -486,7 +491,18 @@ class ContainerManager:
     
     def terminate(self, container: Container, timeout_s: float = 10.0) -> None:
         """Terminate a container gracefully, with forced kill as fallback.
-        
+
+        The container command runs as a plain child of the PID-1
+        launcher-init (not as PID 1 itself — see ``launcher.py``), so
+        normal kernel signal semantics apply: SIGTERM terminates it
+        unless it installs its own handler, and a well-behaved command
+        exits within milliseconds (the pre-init design always burned the
+        full window because Linux discards SIGTERM sent to a namespace
+        PID 1 without a handler). Escalation SIGKILLs the command and
+        (belt and braces) the PID-1 init — killing PID 1 tears down the
+        whole namespace. The direct-path setup child is reaped
+        best-effort so a killed container leaves no zombie behind.
+
         Per NPS-010 §4, this transitions the container to TERMINATED.
         """
         if container.state == ContainerState.TERMINATED:
@@ -515,7 +531,9 @@ class ContainerManager:
                         )
                 container._frozen_via_cgroup = False
             
-            # Try SIGTERM first for graceful shutdown
+            # Try SIGTERM first for graceful shutdown. The command is a
+            # plain child of the PID-1 init, so SIGTERM terminates it
+            # normally (see the docstring / launcher.py).
             os.kill(container.pid, signal.SIGTERM)
             
             # Wait for graceful termination
@@ -525,9 +543,16 @@ class ContainerManager:
                     break
                 time.sleep(0.1)
             
-            # Force kill if still running
+            # Force kill if still running: the command and (belt and
+            # braces) the PID-1 init — killing PID 1 tears down the
+            # whole namespace.
             if container.is_running():
                 os.kill(container.pid, signal.SIGKILL)
+                if container._init_pid is not None:
+                    try:
+                        os.kill(container._init_pid, signal.SIGKILL)
+                    except OSError:
+                        pass
                 logger.warning(f"Force-killed container {container.id} (PID {container.pid})")
             
             container.transition_to(ContainerState.TERMINATED)
@@ -539,7 +564,25 @@ class ContainerManager:
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
+        finally:
+            self._reap_direct_child(container)
     
+    def _reap_direct_child(self, container: Container) -> None:
+        """Best-effort WNOHANG reap of the direct-path setup child.
+
+        The setup child exits when the container's PID-1 init does; if
+        nothing waits on it it lingers as a zombie (holding its cgroup).
+        ``wait()`` reaps it normally; ``terminate()`` reaps it here so a
+        killed container does not leave a zombie behind.
+        """
+        pid = getattr(container, "_direct_launcher_pid", None)
+        if pid is None:
+            return
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+
     def _cap_initialize(self, container: Container) -> None:
         """Initialize the container's control-plane capability grants.
 
@@ -784,13 +827,21 @@ class ContainerManager:
         4. PID-1 mounts a hardened procfs (``mount_proc``, the
            ``--mount-proc`` equivalent) and execs the launcher.
 
-        The setup child relays the container's PID through a pipe, waits
-        for it, and exits with its exit status (or dies by its signal),
-        so ``wait()`` reaps the setup child and decodes the container's
-        status exactly as the Popen path does. ``container.pid`` is the
-        container's PID-1 (what suspend/resume/terminate/cgroup-attach
-        must signal), ``container._direct_launcher_pid`` is the setup
-        child (what ``wait()`` reaps).
+        The setup child relays the container's PID-1 (the launcher-init)
+        through a pipe, waits for it, and exits with its exit status (or
+        dies by its signal), so ``wait()`` reaps the setup child and
+        decodes the container's status exactly as the Popen path does.
+        The launcher-init does NOT exec the container command: it stays
+        alive as the namespace's PID 1 (Linux discards signals sent to a
+        namespace PID 1 that has no handler — see ``launcher.py``), runs
+        the command as its child, and the manager resolves the command's
+        HOST pid itself through the init's /proc children file (see
+        ``_resolve_command_pid`` — the manager's /proc is host-scoped).
+        ``container.pid`` is therefore the REAL command (what
+        suspend/resume/terminate/cgroup-attach and the IPC registry must
+        address), ``container._init_pid`` is the PID-1 launcher-init, and
+        ``container._direct_launcher_pid`` is the setup child (what
+        ``wait()`` reaps).
 
         Fork-safety note: between ``fork`` and ``exec`` the child runs
         only the syscall wrappers and plain file writes — no logging, no
@@ -836,8 +887,8 @@ class ContainerManager:
                 os._exit(125)
         os.close(write_fd)
 
-        # Bounded read: the setup child writes the container PID (or an
-        # ERR: marker) and closes the pipe before waiting for PID-1.
+        # Bounded read: the setup child writes the container's PID-1
+        # (or an ERR: marker) and closes the pipe before waiting for it.
         data = b""
         try:
             ready, _, _ = select.select([read_fd], [], [], _DIRECT_LAUNCH_TIMEOUT_S)
@@ -866,21 +917,67 @@ class ContainerManager:
                 "direct-syscall launcher died during namespace setup "
                 "(no PID reported)"
             )
+        init_pid = int(data.decode())
 
-        container.pid = int(data.decode())
+        # Resolve the container command's HOST pid. The launcher-init
+        # does not exec the command (it stays the namespace's PID 1 so
+        # kernel signal semantics apply to the command), and a pid
+        # reported from inside the namespace would be the ns-local
+        # value — so THIS process (whose /proc is host-scoped; the
+        # container's procfs lives in its own mount namespace) polls the
+        # init's /proc children file: the command is the init's only
+        # direct child, and its host pid appears there.
+        cmd_pid = _resolve_command_pid(init_pid, _DIRECT_LAUNCH_TIMEOUT_S)
+        if cmd_pid is None:
+            # None means the command never materialized — either the
+            # init is gone/a zombie (the command exited within ~1ms of
+            # forking; pid=None is correct and wait() reports the
+            # status) OR the deadline elapsed with the init still
+            # alive (a live container the manager has no handle on).
+            # Distinguish the two: a live init must be torn down and
+            # the spawn failed, not silently orphaned.
+            alive = False
+            try:
+                with open(f"/proc/{init_pid}/stat") as fh:
+                    fields = fh.read().split()
+                alive = len(fields) >= 3 and fields[2] != "Z"
+            except OSError:
+                alive = False
+            if alive:
+                try:
+                    os.kill(init_pid, 9)  # killing PID 1 tears down the ns
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    "direct-syscall launcher never reported a command "
+                    f"pid within {_DIRECT_LAUNCH_TIMEOUT_S:.0f}s"
+                )
+
+        container.pid = cmd_pid  # None → the command never materialized
+        container._init_pid = init_pid
         container._direct_launcher_pid = launcher_pid
         return None
     
     def _attach_to_cgroups(self, container: Container) -> None:
-        """Move the container's main process into its cgroups.
+        """Move the container's processes into its cgroups.
         
         Without this the resource limits created in ``_setup_cgroups`` are
         never actually applied. Per NPS-010 §7, limits must be enforced,
-        not merely configured.
+        not merely configured. Both the command and (direct path) the
+        PID-1 launcher-init are attached: limits apply to the whole
+        container, and an un-attached init's memory would escape the
+        container's accounting.
         """
         if container.pid is None:
-            raise ValueError(f"Container {container.id} has no PID to attach")
-        pid = str(container.pid)
+            # The command exited during launch (never became an
+            # observable process); there is nothing to attach and no
+            # limit to enforce on a dead container.
+            logger.debug(f"Container {container.id} exited during launch; "
+                         "skipping cgroup attach")
+            return
+        pids = [str(container.pid)]
+        if container._init_pid is not None:
+            pids.append(str(container._init_pid))
         
         for cgroup_path_str in container.cgroup_paths:
             cgroup_path = Path(cgroup_path_str)
@@ -888,11 +985,12 @@ class ContainerManager:
                 member_file = cgroup_path / "cgroup.procs"
             else:
                 member_file = cgroup_path / "tasks"
-            try:
-                member_file.write_text(pid + "\n")
-                logger.debug(f"Attached pid {pid} to {member_file}")
-            except OSError as e:
-                logger.error(f"Failed to attach pid {pid} to {member_file}: {e}")
+            for pid in pids:
+                try:
+                    member_file.write_text(pid + "\n")
+                    logger.debug(f"Attached pid {pid} to {member_file}")
+                except OSError as e:
+                    logger.error(f"Failed to attach pid {pid} to {member_file}: {e}")
     
     def _cleanup_cgroups(self, container: Container) -> None:
         """Clean up cgroup resources for the container."""
@@ -951,25 +1049,68 @@ def _write_root_maps(uid: Optional[int] = None, gid: Optional[int] = None) -> No
             os.close(fd)
 
 
+def _resolve_command_pid(init_pid: int, timeout_s: float) -> Optional[int]:
+    """Resolve the container command's HOST pid from the host side.
+
+    The launcher-init does not exec the command (it stays the
+    namespace's PID 1 so kernel signal semantics apply to the command),
+    and a pid reported from inside the namespace would be the ns-local
+    value. This function runs in the manager, whose /proc is
+    host-scoped (the container's procfs lives in the container's own
+    mount namespace): the command is the init's only direct child, so
+    its host pid appears in the init's /proc children file. Polls until
+    it appears, the init is gone or a zombie (its namespace died with
+    it — a zombie's children file is empty and kill(pid, 0) still
+    reports it alive), or ``timeout_s`` elapses. Returns None when the
+    command never materialized as an observable process (e.g. it
+    exited within ~1ms of forking — the container's lifetime already
+    ended, and ``wait()`` reports the exit status).
+    """
+    children_path = f"/proc/{init_pid}/task/{init_pid}/children"
+    stat_path = f"/proc/{init_pid}/stat"
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with open(children_path, "r") as fh:
+                children = fh.read().split()
+        except OSError:
+            return None  # the init is gone
+        if children:
+            return int(children[0])
+        # Stop when the init is gone OR a zombie (dead but not yet
+        # reaped — its namespace died with it, so no child can appear).
+        try:
+            with open(stat_path, "r") as fh:
+                fields = fh.read().split()
+            if len(fields) < 3 or fields[2] == "Z":
+                return None
+        except OSError:
+            return None
+        time.sleep(0.001)
+    return None
+
+
 def _direct_launch_child(
     write_fd: int, launcher_argv: List[str], network: bool = False
 ) -> None:
     """The manager's forked namespace-setup child (direct-syscall path).
 
     Performs the ``unshare(2)`` dance ``unshare(1)`` used to do, forks
-    the container's PID-1, relays its PID to the manager through
-    ``write_fd``, then waits for it and exits with its status (or dies
-    by its signal). Never returns on success. All failure exits use
-    ``os._exit``: between fork and exec the child must not run Python's
-    cleanup machinery, and any error is reported to the manager as an
-    ``ERR:`` pipe message rather than an exception (the manager reaps
-    the child and raises).
+    the container's PID-1 (the launcher-init), relays its PID to the
+    manager through ``write_fd``, then waits for it and exits with its
+    status (or dies by its signal). Never returns on success. All
+    failure exits use ``os._exit``: between fork and exec the child
+    must not run Python's cleanup machinery, and any error is reported
+    to the manager as an ``ERR:`` pipe message rather than an exception
+    (the manager reaps the child and raises).
 
     ``launcher_argv`` is the argv handed to ``os.execv`` (Python
     interpreter + launcher.py + container command) — built by the
-    manager before forking so the child does no allocation here.
-    ``network`` adds ``CLONE_NEWNET`` to the mount/UTS/IPC unshare, so
-    the container gets its own network namespace (loopback only).
+    manager before forking so the child does no allocation here. The
+    manager resolves the container command's HOST pid itself (see
+    ``_resolve_command_pid``). ``network`` adds ``CLONE_NEWNET`` to the
+    mount/UTS/IPC unshare, so the container gets its own network
+    namespace (loopback only).
     """
     def _fail(msg: str) -> None:
         try:

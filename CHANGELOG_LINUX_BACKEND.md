@@ -16,6 +16,36 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.0] — 2026-08-14
+
+### PID-1 Launcher-Init (Graceful Termination of Container Commands)
+
+#### Added
+
+- **`backend/launcher.py`** — the launcher no longer `execve`s the container command; it becomes the namespace's **PID-1 init**: forks the command as a plain child, forwards supervisor signals (SIGHUP/INT/QUIT/TERM/USR1/USR2/WINCH), reaps it, and exits with its status (or dies by its signal, preserving Popen-compatible `wait()` semantics: exit code or `-signum`). Also resets Python's SIG_IGN SIGPIPE/SIGXFSZ before the fork (SIG_IGN survives fork AND exec — the old launcher leaked an ignored SIGPIPE into the command).
+- **`backend/container.py`** — the manager resolves the command's **HOST pid** itself (a pid reported from inside the namespace is ns-local) by polling the init's `/proc/<pid>/task/<pid>/children` — the init's only direct child (`_resolve_command_pid`; the manager's /proc is host-scoped, the container's procfs lives in its own mount namespace). `Container` gains `_init_pid` (the PID-1 init); `_attach_to_cgroups` moves BOTH pids into the container cgroups (the init's memory can no longer escape accounting); `terminate()` escalation SIGKILLs both and best-effort reaps the setup child (no zombie left behind).
+- **`test_backend.py`** — `TestPid1Init` (7 tests): the command is a plain child (pid 2 in-namespace) of the PID-1 init, SIGTERM terminates a container in <3s (was: full 10s window), signals to the INIT forward to the command, exit statuses propagate through the init, a fast-exit command spawns and reports its status with no zombie, the host-pid relay never touches the process environment, and the legacy `unshare(1)` path runs the command through the init. Suite **288 → 295** (269 run + 26 skipped).
+- **`ipc/transport.py`, `ipc/control.py`, `ipc/service.py`** — reviewer-driven cleanup: `DEFAULT_OPERATOR_ID` now lives in the transport (the auth boundary) with `ControlService` syncing its operator identity from the server on attach (single source of truth); the `ServiceRouter` wires services through their `attach()` method when present (falling back to the minimal `_server` contract).
+
+#### Fixed
+
+- **PID-1 signal semantics**: Linux discards signals (other than SIGKILL/SIGSTOP) sent to a namespace PID 1 that has no handler installed — a container command running AS PID 1 could never be terminated gracefully, so `terminate()` always burned the full 10s SIGTERM window before the SIGKILL escalation (probe-verified: a SIGTERM to a PID-1 `sleep` was discarded; Docker's `--init` is the same problem). With the init, SIGTERM reaches the command directly and a kill completes in milliseconds.
+- **The init runs unfiltered by design** (the model tini uses): the seccomp policy is applied by the command child before its exec, so a container without `CAP_PROCESS_SPAWN` cannot EPERM the init's own fork (the seccomp filter would otherwise have blocked it — the data-plane guarantee for the command and its descendants is unchanged).
+- **Docs** — `IMPLEMENTATION_STATUS` (v0.22.0), `implementation_plan.md` §4.1, `REPOSITORY_STATE`. Note: the legacy `unshare(1)` path's kill semantics remain their long-standing limitation (SIGTERM to the `unshare(1)` wrapper orphans the init+command); the DIRECT path is where termination is now prompt.
+
+## [0.12.0] — 2026-08-14
+
+### Daemon Control Plane (Operator-Only, Over the Same Transport)
+
+#### Added
+
+- **`ipc/transport.py`** — `IPCDatagramServer` gains a second identity path: `trusted_uids` (default the daemon's uid via the host) resolves an unknown pid to the `host-operator` identity when the kernel-attached uid is trusted AND the wire claims the operator id. Container resolution stays **pid-FIRST**, so a daemon-spawned container (which runs as the same user) is never misattributed to the operator. The operator path deliberately bypasses the container capability model — a process running as the daemon's user already has full control of it.
+- **`ipc/service.py`** — `ServiceRouter`: dispatches the server's CALL handler across registered services on the payload's `service` field (default `status`, back-compatible); unknown services and service bugs become error REPLies, never kill the serve loop.
+- **`ipc/control.py`** — `ControlService`: the operator control plane — `container_run` (spawns through the daemon's `ContainerManager`, auto-registered + auto-granted), `container_list`, `container_kill`. Operator-only: any container sender gets `forbidden` even with CAP_IPC_SEND.
+- **`nyrqis_backend.py`** — the host now serves status + control on one socket (`router` wiring, `trusted_uids={os.getuid()}`); new `control` command (`container-run`, `container-list`, `container-kill`) claims the operator identity and prints the daemon's JSON reply.
+- **`test_backend.py`** — `TestServiceRouter` (4), `TestControlService` (6, incl. container-cannot-drive-control and untrusted-uid-drop), `test_host_control_plane_runs_and_kills_container` (a REAL container spawned and killed through the wire on the runnable daemon), and `test_cli_control_wires_operator_client`. Suite **276 → 288** (262 run + 26 skipped).
+- **Docs** — `IMPLEMENTATION_STATUS` v0.21.0; `implementation_plan.md` §4.3; `REPOSITORY_STATE`.
+
 ## [0.11.0] — 2026-08-14
 
 ### Runnable Status-Service Daemon + Control-Plane Capability Lifecycle

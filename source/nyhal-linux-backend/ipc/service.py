@@ -166,4 +166,87 @@ class BackendStatusService:
         )
 
 
-__all__ = ["BackendStatusService"]
+class ServiceRouter:
+    """Dispatches the server's CALL handler across registered services.
+
+    A daemon hosts several services on one socket; the router is the
+    ``on_call`` handler that picks the service from the request's
+    ``"service"`` field. Requests without a ``service`` field default
+    to ``"status"`` (back-compatible with the status-only clients).
+
+    Registered services must follow the :class:`BackendStatusService`
+    contract: an ``_on_call(msg, sender, sender_path)`` method that
+    replies through ``self._server``. Wiring prefers the service's
+    ``attach(server)`` method when present (the status and control
+    services use it, e.g. to sync the operator identity); the minimal
+    fallback sets ``_server`` directly. The router never raises into
+    the serve loop: an unknown service gets an error REPLY, and a
+    service bug becomes an ``internal error`` REPLY.
+    """
+
+    def __init__(self) -> None:
+        self._handlers: Dict[str, Any] = {}
+        self._server = None
+
+    @staticmethod
+    def _wire(service, server) -> None:
+        attach = getattr(service, "attach", None)
+        if callable(attach):
+            service.attach(server)
+        else:
+            service._server = server  # minimal contract: expose _server
+
+    def register(self, name: str, service) -> "ServiceRouter":
+        """Route requests with ``service == name`` to ``service``."""
+        self._handlers[name] = service
+        if self._server is not None:
+            self._wire(service, self._server)
+        logger.info("ipc: service %r registered on the router", name)
+        return self
+
+    def attach(self, server) -> "ServiceRouter":
+        """Become the server's CALL handler and give every registered
+        service the server to reply through (each service's ``attach``
+        is the preferred wiring path)."""
+        self._server = server
+        for service in self._handlers.values():
+            self._wire(service, server)
+        server.on_call = self._on_call
+        logger.info("ipc: service router attached to %s", server.endpoint.path)
+        return self
+
+    def _on_call(self, msg, sender: str, sender_path: str) -> None:
+        server = self._server
+        if server is None:
+            logger.error("ipc: service router has no server to reply through")
+            return
+        name = None
+        try:
+            try:
+                payload = json.loads(msg.payload.decode("utf-8") or "{}")
+                name = payload.get("service") if isinstance(payload, dict) else None
+            except (ValueError, UnicodeDecodeError):
+                name = None
+            service = self._handlers.get(name or "status")
+            if service is None:
+                server.reply(
+                    sender_path, msg.message_id,
+                    json.dumps({"ok": False,
+                                "error": "unknown service: %r" % (name,)})
+                    .encode("utf-8"),
+                )
+                return
+            service._on_call(msg, sender, sender_path)
+        except Exception:  # noqa: BLE001 - a service bug must not kill the serve loop
+            logger.exception("ipc: service %r handler error", name)
+            try:
+                server.reply(
+                    sender_path, msg.message_id,
+                    json.dumps({"ok": False, "error": "internal error"})
+                    .encode("utf-8"),
+                )
+            except Exception:  # noqa: BLE001 - even the error reply can fail
+                logger.exception("ipc: could not send error reply")
+
+
+__all__ = ["BackendStatusService", "ServiceRouter"]
