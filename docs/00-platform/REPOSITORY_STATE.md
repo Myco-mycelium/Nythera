@@ -244,8 +244,10 @@ measurements:
    in-process only; the over-transport measurement landed 2026-08-14
    (BENCHMARK_RESULTS.md §20): p50 188.79 µs / p95 295.23 µs / p99
    373.51 µs vs 87.28 µs in-process — §6.1's <100 µs gate is NOT met
-   at the median over the real transport, so the item stays open with
-   the ADR-0020 Rust transport as the documented close path.
+   at the median over the real transport. The Rust transport hot path
+   (ADR-0020 migration #6, rust/transport) shipped the same day as the
+   documented close path; the benchmark delta with it active is the
+   next data point.
 2. ~~Benchmark default IPC token-bucket parameters (unblocks ADR-0009,
    then NPS-010 §7.1).~~ **First-pass data collected 2026-08-12** — the
    default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s
@@ -432,6 +434,22 @@ Documentation hygiene, fixed earlier this session:
   + unit tests) and the required `rust-ipc-conformance` gate — Rust ≡
   Python floor, byte-identical wire and field-for-field decode, same
   malformed-input rejection.
+- 2026-08-14 (**ADR-0020 migration #6: IPC transport hot path**):
+  `rust/transport/` (ABI 1.0.0, `libc` the only dependency) ships the
+  per-message syscall half of the Unix-domain datagram transport —
+  sendto, poll+recvmsg with MSG_DONTWAIT, and the SCM_CREDENTIALS
+  parse yielding the sender's global (pid, uid, gid) and bound path —
+  behind the versioned FFI surface. `ipc/transport_codec.py` is the
+  loader (search order, ABI gate, BackendUnavailable → Python-floor
+  fallback, NYRQIS_RUST_FORCE=1) wired into
+  `UnixDatagramEndpoint.send`/`receive`; binding/0700/SO_PASSCRED
+  stays on the floor. New CI jobs: `rust-transport` (build + unit
+  tests) and the required `rust-transport-conformance` gate (transport
+  loader + differential classes forced through the FFI; raw-wire only,
+  so the separate ipc-codec loader's force check stays honest). Suite
+  239 → 251 (225 run + 26 skipped without the Rust crates). The crate
+  is the documented close path for the NPS-003 §6.1 latency gate; the
+  benchmark delta with it active is the next data point.
 - 2026-08-13 (**ADR-0020 migration #5: container launch-plan
   primitives in Rust**): `rust/container/` (ABI 1.0.0, `libc` the only
   dependency) ships the pure launch-plan computations the manager
@@ -447,7 +465,7 @@ Documentation hygiene, fixed earlier this session:
   (build + unit tests) and the required `rust-container-conformance`
   gate — the container-facing classes, including the end-to-end
   launch tests that route through the codec, forced through the FFI.
-  Test suite: **239/239 (216 run + 23 skipped without the Rust
+  Test suite: **251/251 (225 run + 26 skipped without the Rust
   crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the

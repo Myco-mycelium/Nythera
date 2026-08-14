@@ -51,6 +51,10 @@ References:
 - NPS-017 §4.3: IPC Semantics
 - NPS-003 §3–4: IPC Primitives and Endpoint Model
 - ADR-0020 priority #4: IPC wire codec (``ipc/ipc_codec.py``)
+- ADR-0020 priority #6: Rust transport hot path (``ipc/transport_codec.py``,
+  ``rust/transport``) — the per-message sendto/recvmsg syscall path
+  when the crate is built; the Python floor here is the byte-identical
+  fallback and the CI conformance gate's differential.
 - ADR-0009: per-container token-bucket rate limiting
 """
 
@@ -61,9 +65,14 @@ import struct
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+from . import transport_codec  # ADR-0020 priority #6 FFI loader (transport hot path)
 from .core import IPCManager, IPCMessage, IPCMessageType
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for "the Rust backend is unavailable, use the Python floor"
+# (distinct from recv's timeout, which is ``None``).
+_RUST_FLOOR = object()
 
 # AF_UNIX pathname sockets: sun_path is 108 bytes including the NUL.
 _MAX_SOCKET_PATH = 100
@@ -150,6 +159,21 @@ class UnixDatagramEndpoint:
             raise IPCTransportError(f"endpoint {self.path} is not bound")
         target = peer_path or self.path
         try:
+            try:
+                transport_codec.send(self._sock.fileno(), payload, target)
+                return  # routed through the Rust transport
+            except transport_codec.BackendUnavailable:
+                pass  # no crate built — use the Python floor
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if transport_codec.force_enabled():
+                raise IPCTransportError(
+                    f"send to {target} failed: {exc}"
+                ) from exc
+            logger.warning(
+                "ipc transport: Rust send failed (%s: %s); using Python floor",
+                type(exc).__name__, exc,
+            )
+        try:
             self._sock.sendto(payload, target)
         except OSError as e:
             raise IPCTransportError(f"send to {target} failed: {e}") from e
@@ -162,6 +186,24 @@ class UnixDatagramEndpoint:
         sender's real identity, unforgeable by an unprivileged peer."""
         if self._sock is None:
             raise IPCTransportError(f"endpoint {self.path} is not bound")
+        try:
+            try:
+                timeout_ms = -1 if timeout is None else max(0, int(timeout * 1000))
+                got = transport_codec.recv(self._sock.fileno(), timeout_ms)
+            except transport_codec.BackendUnavailable:
+                got = _RUST_FLOOR  # no crate built — use the Python floor
+            if got is not _RUST_FLOOR:
+                # Routed through the Rust transport: None = timeout.
+                return got
+        except Exception as exc:  # noqa: BLE001 - fall back by contract
+            if transport_codec.force_enabled():
+                raise IPCTransportError(
+                    f"receive on {self.path} failed: {exc}"
+                ) from exc
+            logger.warning(
+                "ipc transport: Rust recv failed (%s: %s); using Python floor",
+                type(exc).__name__, exc,
+            )
         try:
             self._sock.settimeout(timeout)
             data, ancdata, _flags, addr = self._sock.recvmsg(

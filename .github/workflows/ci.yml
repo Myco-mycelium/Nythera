@@ -34,6 +34,16 @@
 # - `rust-ipc-conformance`: the IPC codec port's gate — the differential
 #   test (Rust ≡ pure-Python floor, byte-identical wire) runs with the
 #   crate built and NYRQIS_RUST_FORCE=1.
+# - `rust-transport`: builds and tests the sixth-migration crate (the
+#   IPC Unix-domain datagram transport hot path — sendto/recvmsg with
+#   SCM_CREDENTIALS, ADR-0020 priority #6, the NPS-003 §6.1 close path).
+# - `rust-transport-conformance`: the IPC transport port's gate — the
+#   transport test classes (loader + differential: the FFI-driven
+#   endpoint reproduces the Python floor's contract — payload, kernel
+#   creds, sender path, timeout) run with the crate built and
+#   NYRQIS_RUST_FORCE=1. It runs only raw-wire classes: forcing the
+#   transport lib must not make the separate ipc-codec loader fail its
+#   own force check.
 # - `rust-container`: builds and tests the fifth-migration crate (the
 #   container launch-plan primitives — launcher argv, cgroup v1/v2 plan,
 #   root maps, and the NPS-010 §4 state machine, ADR-0020 priority #5).
@@ -187,6 +197,39 @@ jobs:
           python3 -B -m unittest
           test_backend.TestIPCWireLoader
           test_backend.TestIPCCodecConformance
+
+  rust-transport:
+    name: Rust IPC transport crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/transport
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_transport.so
+
+  rust-transport-conformance:
+    name: Rust IPC transport FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/transport
+        run: cargo build --release
+      - name: Force the transport test classes through the FFI
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_RUST_LIB: rust/transport/target/release/libnyrqis_transport.so
+          NYRQIS_RUST_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestTransportRustLoader
+          test_backend.TestTransportConformance
 
   rust-container:
     name: Rust container crate (build + tests)

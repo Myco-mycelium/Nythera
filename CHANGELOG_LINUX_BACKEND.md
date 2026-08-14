@@ -16,6 +16,21 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.8.0] — 2026-08-14
+
+### Rust IPC Transport Hot Path (ADR-0020 migration #6)
+
+#### Added
+
+- **`rust/transport/`** — the sixth-migration crate (ABI 1.0.0, `libc` the only dependency): the per-message syscall half of the Unix-domain datagram transport — `nyrqis_transport_send` (one `sendto`), `nyrqis_transport_recv` (`poll` + `recvmsg` with `MSG_DONTWAIT`, so it never blocks past the timeout and is safe on blocking and non-blocking fds; returns the frame, the kernel-attached global `(pid, uid, gid)` from `SCM_CREDENTIALS`, and the sender's bound path), and `nyrqis_transport_free` — with the seccomp/nyfs/ipc ownership and `-errno`/`ERR_INTERNAL` error contracts. Crate unit tests cover sun_path packing bounds, invalid args, a real round-trip (frame bytes + creds == `getpid/getuid/getgid` + sender path), and the timeout path.
+- **`ipc/transport_codec.py`** — the FFI loader: search order (`$NYRQIS_RUST_LIB`, crate `target/release/`, bare name), ABI-version gate, `BackendUnavailable` → Python-floor fallback, `NYRQIS_RUST_FORCE=1` (routing failures become errors), `-errno → OSError` / `-4096 → RuntimeError` mapping. Wired into `UnixDatagramEndpoint.send`/`receive` (raw frames — the wire codec, migration #4, still owns framing); binding/0700/`SO_PASSCRED` stays on the floor.
+- **`test_backend.py`** — `TestTransportRustLoader` (9 tests: candidates, error mapping, absent-backend fallback + floor round-trip, force-mode errors, FFI routing with a fake lib for send and recv including the byref-output writes and buffer frees) and `TestTransportConformance` (3 differential tests, skip-gated on the crate: endpoint round-trip with kernel creds + sender path, timeout → None, missing-peer error surfacing). Suite **239 → 251** (225 run + 26 skipped).
+- **CI** — `rust-transport` (build + tests + cdylib artifact check) and the required `rust-transport-conformance` gate (transport classes forced through the FFI; raw-wire only, so the separate ipc-codec loader's force check stays honest).
+
+#### Changed
+
+- **`ipc/transport.py`** — `UnixDatagramEndpoint` routes `send`/`receive` through the Rust hot path when the crate is loaded, falling back to the Python floor otherwise (and failing loudly under `NYRQIS_RUST_FORCE=1`).
+
 ## [0.7.0] — 2026-08-14
 
 ### Over-Transport IPC Latency Benchmark (NPS-003 §6.1 gate data)

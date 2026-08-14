@@ -52,6 +52,7 @@ from fuse.nyfs import (
 )
 from fuse import nyfs_codec
 from ipc import ipc_codec
+from ipc import transport_codec
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -4235,6 +4236,211 @@ class TestConformance(unittest.TestCase):
         self.assertEqual(boot.current_phase, BootPhase.UNINITIALIZED)
 
 
+class TestTransportRustLoader(unittest.TestCase):
+    """ADR-0020 priority #6 FFI loader behavior (see rust/transport/):
+    the fallback contract and error mapping for the Rust IPC transport
+    hot path. Like the other migration loader tests, these pin the
+    loader on hosts WITHOUT the crate built; when the crate lands, the
+    CI conformance job (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        transport_codec._RUST_LIB = None
+        transport_codec._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        transport_codec._RUST_LIB = None
+        transport_codec._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_transport.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_transport.so"
+        self.assertEqual(
+            transport_codec._rust_lib_candidates(),
+            ["/custom/libnyrqis_transport.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            transport_codec._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            transport_codec._raise_rust_error(
+                transport_codec.RUST_ERR_INTERNAL, "test")
+
+    def test_absent_backend_raises_backend_unavailable(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(transport_codec._load_rust_backend())
+        with self.assertRaises(transport_codec.BackendUnavailable):
+            transport_codec.send(3, b"x", "/tmp/p.sock")
+        with self.assertRaises(transport_codec.BackendUnavailable):
+            transport_codec.recv(3, 100)
+
+    def test_absent_backend_endpoint_falls_back_to_python_floor(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        base = tempfile.mkdtemp(prefix="nyrqis-floor-transport-")
+        try:
+            a = UnixDatagramEndpoint(os.path.join(base, "a.sock")).bind()
+            b = UnixDatagramEndpoint(os.path.join(base, "b.sock")).bind()
+            try:
+                payload = b"floor-frame"
+                a.send(payload, b.path)
+                got = b.receive(timeout=2.0)
+                self.assertIsNotNone(got)
+                self.assertEqual(got[0], payload)
+                self.assertEqual(got[1], os.getpid())
+            finally:
+                a.close()
+                b.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            transport_codec.send(3, b"x", "/tmp/p.sock")
+        with self.assertRaises(RuntimeError):
+            transport_codec.recv(3, 100)
+
+    def test_ffi_send_routing_with_fake_lib(self):
+        # With a lib loaded, send must drive the FFI entry point with
+        # the expected arguments and never touch ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_transport_send.return_value = 0
+        with mock.patch.object(
+            transport_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch("ipc.transport_codec.ctypes.CDLL") as cdll_mock:
+            transport_codec.send(7, b"frame", "/tmp/dst.sock")
+        fake.nyrqis_transport_send.assert_called_once()
+        cdll_mock.assert_not_called()
+        args = fake.nyrqis_transport_send.call_args.args
+        self.assertEqual(args[0], 7)  # fd
+        self.assertEqual(args[2], 5)  # wire_len
+        self.assertEqual(args[3], b"/tmp/dst.sock")  # peer path
+
+    def test_ffi_recv_routing_with_fake_lib(self):
+        # recv must drive the FFI entry point, translate the written
+        # outputs into the floor's tuple, and free both buffers.
+        fake = mock.Mock()
+        payload = b"recv-frame"
+
+        def fake_recv(fd, ms, ow, ol, op, ou, og, osp):
+            # The byref'd outputs arrive as CArgObjects; write through
+            # them with cast (verified: cast works on CArgObject).
+            fake._buf = ctypes.create_string_buffer(payload, len(payload))
+            ctypes.cast(ol, ctypes.POINTER(ctypes.c_size_t))[0] = len(payload)
+            ctypes.cast(ow, ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)))[0] = (
+                ctypes.cast(fake._buf, ctypes.POINTER(ctypes.c_ubyte)))
+            ctypes.cast(op, ctypes.POINTER(ctypes.c_int))[0] = os.getpid()
+            ctypes.cast(ou, ctypes.POINTER(ctypes.c_int))[0] = os.getuid()
+            ctypes.cast(og, ctypes.POINTER(ctypes.c_int))[0] = os.getgid()
+            ctypes.cast(osp, ctypes.POINTER(ctypes.c_char_p))[0] = (
+                ctypes.c_char_p(b"/tmp/sender.sock"))
+            return 0
+
+        fake.nyrqis_transport_recv.side_effect = fake_recv
+        with mock.patch.object(
+            transport_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch("ipc.transport_codec.ctypes.CDLL") as cdll_mock:
+            result = transport_codec.recv(7, 250)
+        self.assertEqual(
+            result,
+            (payload, os.getpid(), os.getuid(), os.getgid(), "/tmp/sender.sock"),
+        )
+        fake.nyrqis_transport_recv.assert_called_once()
+        cdll_mock.assert_not_called()
+        self.assertEqual(fake.nyrqis_transport_free.call_count, 2)
+
+    def test_force_mode_raises_on_rust_call_failure(self):
+        fake = mock.Mock()
+        fake.nyrqis_transport_send.return_value = transport_codec.RUST_ERR_INTERNAL
+        with mock.patch.object(
+            transport_codec, "_load_rust_backend", return_value=fake
+        ), mock.patch.dict(os.environ, {"NYRQIS_RUST_FORCE": "1"}):
+            with self.assertRaises(RuntimeError):
+                transport_codec.send(3, b"x", "/tmp/p.sock")
+
+
+class TestTransportConformance(unittest.TestCase):
+    """ADR-0020 priority #6 differential: the Rust transport (via the
+    FFI) must reproduce the Python floor's contract exactly — payload
+    round-trip, kernel-attached (pid, uid, gid), sender path, timeout
+    semantics, and error surfacing. Runs when the crate is built (the
+    CI gate builds it and forces the class; locally it runs when the
+    crate is present). Uses raw wire bytes only — it must not depend on
+    the ipc-codec loader, so the transport-only gate stays honest.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # Fresh probe: don't inherit the loader state the loader tests
+        # leave behind, and honor NYRQIS_RUST_LIB/FORCE from a gate env.
+        transport_codec._RUST_LIB = None
+        transport_codec._RUST_LIB_CHECKED = False
+        cls.available = transport_codec.available()
+
+    def setUp(self):
+        if not self.available:
+            self.skipTest(
+                "Rust IPC transport crate not built (CI gate builds it)")
+
+    def test_endpoint_roundtrip_payload_creds_and_sender_path(self):
+        base = tempfile.mkdtemp(prefix="nyrqis-rust-transport-")
+        try:
+            a = UnixDatagramEndpoint(os.path.join(base, "a.sock")).bind()
+            b = UnixDatagramEndpoint(os.path.join(base, "b.sock")).bind()
+            try:
+                payload = b"NYRQ\x01\x02rust-frame"
+                a.send(payload, b.path)
+                got = b.receive(timeout=2.0)
+                self.assertIsNotNone(got)
+                data, pid, uid, gid, sender_path = got
+                self.assertEqual(data, payload)
+                self.assertEqual(pid, os.getpid())
+                self.assertEqual(uid, os.getuid())
+                self.assertEqual(gid, os.getgid())
+                self.assertEqual(sender_path, a.path)
+            finally:
+                a.close()
+                b.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_rust_timeout_returns_none(self):
+        base = tempfile.mkdtemp(prefix="nyrqis-rust-transport-")
+        try:
+            ep = UnixDatagramEndpoint(os.path.join(base, "t.sock")).bind()
+            try:
+                self.assertIsNone(ep.receive(timeout=0.02))
+            finally:
+                ep.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_send_to_missing_peer_raises(self):
+        base = tempfile.mkdtemp(prefix="nyrqis-rust-transport-")
+        try:
+            a = UnixDatagramEndpoint(os.path.join(base, "a.sock")).bind()
+            try:
+                with self.assertRaises(IPCTransportError):
+                    a.send(b"x", os.path.join(base, "missing.sock"))
+            finally:
+                a.close()
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -4267,6 +4473,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCWireLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestTransportRustLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestTransportConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
     

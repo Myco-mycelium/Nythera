@@ -731,9 +731,13 @@ plane (~102 µs added at p50): two process hops, two sendto/recvmsg
 syscall pairs, wire-codec framing, and the kernel's `SO_PASSCRED`
 attachment are all in the measured path. NPS-003 remains Draft and the
 gate stays open; per ADR-0020 the shipped production path is a compiled
-(Rust) transport behind the versioned FFI boundary, and that Rust
-transport is the documented route to close the gap — these numbers are
-the reference (Python) implementation's honest floor.
+(Rust) transport behind the versioned FFI boundary. **The Rust transport
+hot path shipped 2026-08-14** (ADR-0020 migration #6, `rust/transport/`
++ `ipc/transport_codec.py`): the per-message syscall path now runs in
+Rust when the crate is built (Python floor otherwise, byte-identical
+contract). These numbers are the reference (Python) implementation's
+honest floor; the same-session re-run with the crate active is the
+close-path evidence, pending a host with the built crate.
 
 ## Status vs BENCHMARK_PLAN
 

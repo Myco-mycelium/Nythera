@@ -1,0 +1,20 @@
+[package]
+name = "nyrqis-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis IPC Unix-domain datagram transport hot path (send/recv + SCM_CREDENTIALS) — ADR-0020 migration priority #6"
+
+[lib]
+name = "nyrqis_transport"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `libc` is the crate's only dependency: the socket primitives (sendto/
+# recvmsg/poll), the sockaddr_un layout, the SCM_CREDENTIALS ancillary
+# constants, and the -errno convention. The wire bytes themselves are
+# opaque to this crate — the codec (migration #4, rust/ipc) already
+# owns framing and parsing, so the transport just moves frames and
+# kernel-attached identity across the process boundary.
+libc = "0.2"
