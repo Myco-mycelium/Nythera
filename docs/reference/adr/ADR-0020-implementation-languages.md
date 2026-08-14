@@ -270,7 +270,12 @@ platform-boundary rule's obligation. In order:
    primitives — launcher argv, cgroup v1/v2 plan, uid/gid root maps,
    NPS-010 §4 state machine — shipped in `rust/container/`; the
    launcher itself and the syscall dance remain Python (plus
-   `rust/syscalls/`) in the reference backend).
+   `rust/syscalls/`) in the reference backend). Evidence: the
+   platform-boundary rule (container launch is a platform-critical
+   path) plus `BENCHMARK_RESULTS.md` §18 — the whole launch-plan
+   computation is ~16 µs on the pure-Python floor, i.e. this is a
+   boundary-rule migration, not a performance migration; the
+   byte-identical conformance gate is the semantic evidence).
 6. **NyKernel bootstrap and its NyHAL backend** (with the NyKernel
    project itself).
 

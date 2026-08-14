@@ -39,6 +39,12 @@ this host in one reproducible script:
   end-to-end compression-ratio measurement on a deterministic sample of
   real files from ``/usr/share`` (fonts, locale, man, mime, zoneinfo,
   applications).
+- §18 (container launch-plan primitives, 2026-08-13): ``--container``
+  measures the ADR-0020 priority #5 primitives — launcher argv
+  (FIND-BACKEND-004), cgroup v1/v2 plan (FIND-BACKEND-003), uid/gid
+  root maps, NPS-010 §4 state machine — on the pure-Python floor, and
+  the Rust FFI path too when the crate is built (dev host has no Rust
+  toolchain — CI or a host with the crate adds the FFI numbers).
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -52,6 +58,7 @@ Usage:
   python3 tests/benchmarks.py --snapshot-dedup  # §5 cross-snapshot dedup
   python3 tests/benchmarks.py --codec        # §2 zstd vs zlib codec compare
   python3 tests/benchmarks.py --real-corpus  # §2 real-corpus ratio
+  python3 tests/benchmarks.py --container    # §18 launch-plan primitives
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -983,6 +990,81 @@ def benchmark_journal_block_size():
     }
 
 
+def benchmark_container_primitives(n=50000):
+    """Container launch-plan primitives (BENCHMARK_RESULTS §18).
+
+    The pure computations the container manager makes per launch
+    (ADR-0020 priority #5): the launcher argv (FIND-BACKEND-004),
+    cgroup v1/v2 plan (FIND-BACKEND-003), uid/gid root maps, and the
+    NPS-010 §4 state machine. Measures the pure-Python floor (`_py_*`)
+    on any host; when the Rust crate is built and findable by the
+    codec (`backend.container_codec`), the FFI path is measured too and
+    the two compared byte-for-byte. The dev host has no Rust toolchain,
+    so this reports the floor here; CI (or a host with the crate) adds
+    the FFI numbers.
+    """
+    from backend import container_codec as cc
+
+    py = "/usr/bin/python3"
+    launcher = "/opt/nyrqis/launcher.py"
+    command_flat = cc.build_command_flat(["/bin/sh", "-c", "echo hi"])
+
+    def _ops(fn, *args, warmup=2000):
+        for _ in range(warmup):
+            fn(*args)
+        t0 = time.perf_counter_ns()
+        for _ in range(n):
+            fn(*args)
+        return round((time.perf_counter_ns() - t0) / n / 1000.0, 3)  # µs/op
+
+    floor = {
+        "launcher_argv_us": _ops(cc._py_launcher_argv, py.encode(),
+                                  launcher.encode(), b"ctr-1", b"", 0,
+                                  command_flat),
+        "cgroup_plan_us": _ops(cc._py_cgroup_plan, b"ctr-1", 512, 1024,
+                                50000, 100000),
+        "root_maps_us": _ops(cc._py_root_maps, 1000, 1000),
+        "transition_valid_us": _ops(cc._py_transition_valid,
+                                     "running", "suspended"),
+    }
+
+    result = {"iterations": n, "rust_crate_found": False}
+    result.update({f"floor_{k}": v for k, v in floor.items()})
+
+    lib = cc._load_rust_backend()
+    if lib is not None:
+        result["rust_crate_found"] = True
+        ffi = {
+            "launcher_argv_us": _ops(cc._rust_launcher_argv, lib,
+                                      py.encode(), launcher.encode(),
+                                      b"ctr-1", b"", 0, command_flat),
+            "cgroup_plan_us": _ops(cc._rust_cgroup_plan, lib, b"ctr-1",
+                                    512, 1024, 50000, 100000),
+            "root_maps_us": _ops(cc._rust_root_maps, lib, 1000, 1000),
+            "transition_valid_us": _ops(lib.nyrqis_container_transition_valid,
+                                         1, 2),
+        }
+        result.update({f"ffi_{k}": v for k, v in ffi.items()})
+        # Byte-parity: the differential gate's assertion, re-run here.
+        parity = (
+            cc._rust_launcher_argv(lib, py.encode(), launcher.encode(),
+                                   b"ctr-1", b"", 0, command_flat)
+            == cc._py_launcher_argv(py.encode(), launcher.encode(),
+                                    b"ctr-1", b"", 0, command_flat)
+            and cc._rust_cgroup_plan(lib, b"ctr-1", 512, 1024, 50000, 100000)
+            == cc._py_cgroup_plan(b"ctr-1", 512, 1024, 50000, 100000)
+            and cc._rust_root_maps(lib, 1000, 1000)
+            == cc._py_root_maps(1000, 1000)
+            and lib.nyrqis_container_transition_valid(1, 2) == 0
+        )
+        result["byte_parity_ok"] = parity
+        for k in ("launcher_argv", "cgroup_plan", "root_maps",
+                  "transition_valid"):
+            result[f"speedup_{k}_x"] = round(
+                result[f"floor_{k}_us"] / result[f"ffi_{k}_us"], 2)
+    return result
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -1050,19 +1132,22 @@ def main():
                         help="§5 journal compaction pass cost")
     parser.add_argument("--journal-blocksize", action="store_true",
                         help="§5 journal commit vs block-size interplay")
+    parser.add_argument("--container", action="store_true",
+                        help="§18 container launch-plan primitives")
     args = parser.parse_args()
 
     selected = (args.ipc or args.bucket or args.zstd or args.nyfs
                 or args.nyfs_mount or args.nyfs_persist or args.save_levers
                 or args.snapshot_dedup or args.codec or args.real_corpus
                 or args.mixed_workload or args.compaction_cost
-                or args.journal_blocksize)
+                or args.journal_blocksize or args.container)
     if not selected or args.all:
         args.ipc = args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
         args.mixed_workload = args.compaction_cost = True
         args.journal_blocksize = True
+        args.container = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1104,6 +1189,9 @@ def main():
     if args.journal_blocksize:
         _print_section("NyFS journal commit vs block size (§15):",
                        benchmark_journal_block_size())
+    if args.container:
+        _print_section("Container launch-plan primitives (§18):",
+                       benchmark_container_primitives())
 
 
 if __name__ == "__main__":

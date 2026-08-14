@@ -589,6 +589,36 @@ part. §12's interleaved pass ran *faster* than §16 (112 vs 157 s) while
 the journal pass held at ~3 s — both within the documented noise band.
 No recorded range contradicted; no gate declared met (unchanged).
 
+## 18. Container Launch-Plan Primitives — Floor vs Rust FFI (2026-08-13)
+
+First-pass data for the ADR-0020 priority #5 primitives (`--container`;
+`benchmark_container_primitives`). These are the pure computations the
+container manager makes **per launch** — the launcher argv
+(FIND-BACKEND-004), the cgroup v1/v2 plan (FIND-BACKEND-003), the
+`--map-root-user` uid/gid maps, and the NPS-010 §4 state machine — so
+the numbers are **per-container-launch planning overhead**, not
+steady-state throughput. Measured on this host (dev host, no Rust
+toolchain): the pure-Python floor only; the Rust FFI numbers appear
+when the crate is built (CI or a host with the toolchain), with a
+byte-parity re-check (`byte_parity_ok`) and per-primitive speedups.
+
+| Primitive | Pure-Python floor (µs/op) | Rust FFI (µs/op) | Speedup |
+|-----------|---------------------------|------------------|---------|
+| launcher argv (6 args, 50k iters) | 6.14 | *(not built on this host)* | — |
+| cgroup v1/v2 plan (512 MB, 1024 pids, quota) | 8.22 | *(not built on this host)* | — |
+| uid/gid root maps | 2.03 | *(not built on this host)* | — |
+| transition_valid (running→suspended) | 0.26 | *(not built on this host)* | — |
+
+Reading: even on the pure-Python floor, the entire launch-plan
+computation for one container is **~16 µs** — negligible against the
+fork/namespace/cgroup syscall work of a real launch. The Rust port
+(ADR-0020 priority #5) is therefore a **platform-boundary-rule
+migration, not a performance migration**: its evidence is the
+byte-identical conformance gate (Rust ≡ floor, `rust-container-conformance`
+in CI), not a speed win. No gate declared met (the benchmark plan has
+no container-primitives section; recorded as evidence for the
+migration record).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
