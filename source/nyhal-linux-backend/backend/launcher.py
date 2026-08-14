@@ -11,6 +11,11 @@ namespaces*. ``backend/container.py`` spawns it via ``unshare(1)`` and it:
 2. Hardens the mount namespace against the cgroup v1 ``release_agent``
    escape (best-effort unmount of any cgroup filesystems that expose it,
    closing `FIND-BACKEND-003`, NPS-022 §4 / NPS-017 §4.1).
+2b. Brings the loopback interface up (best-effort ``SIOCSIFFLAGS``):
+   succeeds in a container with its own network namespace (owned by this
+   user namespace, where the process is root), harmlessly EPERMs when
+   sharing the host's. Runs BEFORE the seccomp install — backend setup,
+   not container behavior.
 3. Installs the container's seccomp policy in *its own execution context*
    — the data-plane capability enforcement closing `FIND-BACKEND-002`
    (NPS-017 §4.2).
@@ -49,9 +54,12 @@ References:
 
 import argparse
 import ctypes
+import fcntl
 import json
 import logging
 import os
+import socket
+import struct
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -122,6 +130,53 @@ def harden_cgroup_mounts() -> int:
             err = ctypes.get_errno()
             logger.debug("could not unmount %s: errno=%d", mnt, err)
     return unmounted
+
+
+def bring_loopback_up() -> bool:
+    """Best-effort: bring the loopback interface up (``SIOCSIFFLAGS``).
+
+    In a container with its own network namespace (``network=True``) the
+    netns is owned by the container's user namespace, where this process
+    is root — CAP_NET_ADMIN applies and the ioctl succeeds, giving the
+    container a usable 127.0.0.1. When the container shares the host
+    netns (``network=False``, owned by the init user namespace) the
+    ioctl fails with EPERM, which is harmless — the host's lo is already
+    up. Never fatal: a container that cannot set the flag simply has no
+    loopback. Runs before the seccomp install because it is backend
+    setup, not container behavior (a container without network
+    capabilities should still get a usable localhost).
+    """
+    IFF_UP = 0x1
+    SIOCGIFFLAGS = 0x8913
+    SIOCSIFFLAGS = 0x8914
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as e:
+        logger.debug("loopback: cannot open control socket: %s", e)
+        return False
+    try:
+        try:
+            flags = struct.unpack(
+                "16sH", fcntl.ioctl(sock.fileno(), SIOCGIFFLAGS,
+                                     struct.pack("16sH", b"lo", 0))
+            )[1]
+        except OSError as e:
+            logger.debug("loopback: SIOCGIFFLAGS failed: %s", e)
+            return False
+        if flags & IFF_UP:
+            logger.info("loopback already up")
+            return True
+        fcntl.ioctl(sock.fileno(), SIOCSIFFLAGS,
+                    struct.pack("16sH", b"lo", flags | IFF_UP))
+        logger.info("loopback brought up (own network namespace)")
+        return True
+    except OSError as e:
+        logger.debug(
+            "loopback: could not bring lo up (shared host netns?): %s", e
+        )
+        return False
+    finally:
+        sock.close()
 
 
 def load_capabilities(policy_file: str) -> Optional[list]:
@@ -213,6 +268,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Step 2 — cgroup mount hardening (FIND-BACKEND-003, defense in depth).
     harden_cgroup_mounts()
+
+    # Step 2b — usable loopback (own network namespace, best-effort).
+    # Before the seccomp install: backend setup, not container behavior.
+    bring_loopback_up()
 
     # Step 3 — data-plane capability enforcement (FIND-BACKEND-002).
     try:

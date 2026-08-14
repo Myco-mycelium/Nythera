@@ -981,6 +981,55 @@ class TestLauncherSecurity(unittest.TestCase):
         cmd = self.manager._build_launch_command(container, Path("launcher.py"))
         self.assertNotIn("--net", cmd)
 
+    def test_bring_loopback_up_sets_if_up(self):
+        import backend.launcher as launcher
+        fake_sock = mock.Mock()
+        fake_sock.fileno.return_value = 7
+        with mock.patch(
+            "backend.launcher.socket.socket", return_value=fake_sock
+        ), mock.patch("backend.launcher.fcntl.ioctl") as ioctl:
+            # First call (SIOCGIFFLAGS): lo exists but is down.
+            ioctl.return_value = struct.pack("16sH", b"lo", 0)
+            self.assertTrue(launcher.bring_loopback_up())
+        self.assertEqual(ioctl.call_count, 2)
+        sioc, payload = ioctl.call_args_list[1].args[1:]
+        self.assertEqual(sioc, 0x8914)  # SIOCSIFFLAGS
+        self.assertTrue(struct.unpack("16sH", payload)[1] & 0x1)  # IFF_UP
+
+    def test_bring_loopback_up_already_up(self):
+        import backend.launcher as launcher
+        fake_sock = mock.Mock()
+        fake_sock.fileno.return_value = 7
+        with mock.patch(
+            "backend.launcher.socket.socket", return_value=fake_sock
+        ), mock.patch("backend.launcher.fcntl.ioctl") as ioctl:
+            ioctl.return_value = struct.pack("16sH", b"lo", 0x1)
+            self.assertTrue(launcher.bring_loopback_up())
+        # Only the read flags call — no write attempt.
+        ioctl.assert_called_once()
+
+    def test_bring_loopback_up_eperm_graceful(self):
+        # Sharing the host netns (owned by the init user namespace) the
+        # ioctl EPERMs — harmless (host lo already up), never fatal.
+        import backend.launcher as launcher
+        fake_sock = mock.Mock()
+        fake_sock.fileno.return_value = 7
+        with mock.patch(
+            "backend.launcher.socket.socket", return_value=fake_sock
+        ), mock.patch(
+            "backend.launcher.fcntl.ioctl",
+            side_effect=OSError(errno.EPERM, "not permitted"),
+        ):
+            self.assertFalse(launcher.bring_loopback_up())
+
+    def test_bring_loopback_up_no_socket_graceful(self):
+        import backend.launcher as launcher
+        with mock.patch(
+            "backend.launcher.socket.socket",
+            side_effect=OSError(errno.EPERM, "not permitted"),
+        ):
+            self.assertFalse(launcher.bring_loopback_up())
+
 
 class TestDirectSyscallLaunch(unittest.TestCase):
     """Test the direct-syscall launcher (implementation_plan.md §4.1,
@@ -1401,6 +1450,56 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
             self.assertEqual(self._net_dev_names(container.pid), host_names)
         finally:
             _launch_cleanup(manager, container)
+
+    @unittest.skipUnless(_netns_launch_supported(), _NETNS)
+    def test_network_container_loopback_is_up(self):
+        # The launcher brings lo up before exec (step 2b), so a netns
+        # container can bind 127.0.0.1 — verified end-to-end: the
+        # container writes a marker to the shared rootfs only after a
+        # successful loopback bind (a down lo raises EADDRNOTAVAIL).
+        # Network capabilities are granted so the seccomp filter allows
+        # socket()/bind() — proving the path works WITH enforcement on.
+        manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True)
+        marker = f"/tmp/nyrqis-lo-up-{os.getpid()}.marker"
+        try:
+            os.unlink(marker)
+        except OSError:
+            pass
+        snippet = (
+            "import socket; "
+            "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); "
+            "s.bind(('127.0.0.1', 0)); s.close(); "
+            f"open({marker!r}, 'w').write('ok')"
+        )
+        container = manager.create(ContainerConfig(
+            command=[sys.executable, "-c", snippet],
+            seccomp=True,
+            network=True,
+            # Network caps let the seccomp filter allow socket()/bind();
+            # CAP_FILESYSTEM_WRITE lets it write the marker (without it
+            # the data plane correctly EPERMs the open(O_CREAT)).
+            capabilities=[
+                "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                "CAP_FILESYSTEM_WRITE",
+            ],
+        ))
+        manager.spawn(container)
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not os.path.exists(marker):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(marker),
+                "container could not bind 127.0.0.1 (loopback not up "
+                "inside the network namespace)",
+            )
+        finally:
+            _launch_cleanup(manager, container)
+            try:
+                os.unlink(marker)
+            except OSError:
+                pass
 
 
 class TestBootSecurity(unittest.TestCase):

@@ -16,6 +16,19 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.4.0] — 2026-08-14
+
+### Loopback Up in Network Containers
+
+#### Added
+
+- **`backend/launcher.py`** — `bring_loopback_up()` (step 2b, before the seccomp install): best-effort `SIOCSIFFLAGS` sets `lo` up so a `network=True` container has a usable 127.0.0.1. It succeeds because the container's netns is owned by its user namespace (where the launcher is root, so CAP_NET_ADMIN applies); sharing the host netns (default) it EPERMs harmlessly — the host's `lo` is already up. Never fatal; runs before the filter so it is backend setup, not container behavior. Covers both launch paths (the launcher runs inside the container either way).
+- **`test_backend.py`** — 4 unit tests for `bring_loopback_up` (sets IFF_UP, already-up no-op, EPERM graceful, no-socket graceful) plus an end-to-end bind test: a netns container granted `CAP_NETWORK_SOCKET`/`CAP_NETWORK_BIND`/`CAP_FILESYSTEM_WRITE` binds 127.0.0.1 through the real launch path *with the seccomp filter active* and writes a marker to the shared rootfs (the seccomp data plane correctly EPERMs the marker write without the filesystem grant — caught live). Suite **224 → 229**
+
+#### Changed
+
+- `IMPLEMENTATION_STATUS` 0.13.0; `implementation_plan.md` §4.1 records the usable-localhost posture (veth/bridge remains future work, requires host root)
+
 ## [0.3.0] — 2026-08-14
 
 ### Network Namespace Support
