@@ -1524,6 +1524,55 @@ class TestBootLifecycle(unittest.TestCase):
         self.assertTrue(boot.milestones[0].success)
 
 
+class TestSystemdUnit(unittest.TestCase):
+    """Plan §4.5 Host Integration (packaging/systemd/): the systemd unit
+    must exist, run the actual daemon, pass ``systemd-analyze verify``
+    (when systemd is present), and run unprivileged — the daemon
+    launches containers through unprivileged user namespaces.
+    """
+
+    UNIT = (Path(__file__).resolve().parent.parent.parent
+            / "packaging" / "systemd" / "nyrqis-backend.service")
+
+    def test_systemd_unit_exists_and_wires_daemon(self):
+        """The unit runs the backend daemon at boot (not just any
+        command)."""
+        self.assertTrue(self.UNIT.is_file(),
+                        f"missing {self.UNIT}")
+        text = self.UNIT.read_text()
+        self.assertIn("service serve", text)  # the daemon subcommand
+        self.assertIn("nyrqis_backend.py", text)
+        self.assertIn("status.sock", text)
+        self.assertIn("[Install]", text)
+        self.assertIn("WantedBy=multi-user.target", text)
+
+    def test_systemd_unit_analyze_verify(self):
+        """The unit must pass ``systemd-analyze verify`` when systemd is
+        available (skipped on non-systemd hosts)."""
+        if shutil.which("systemd-analyze") is None:
+            self.skipTest("systemd-analyze not available")
+        proc = subprocess.run(
+            ["systemd-analyze", "verify", str(self.UNIT)],
+            capture_output=True, text=True, timeout=60,
+        )
+        # systemd-analyze verify returns 0 with a clean unit; warnings
+        # about unset Unit= targets are acceptable, hard errors are not.
+        self.assertEqual(proc.returncode, 0,
+                         msg=f"systemd-analyze verify failed:\n{proc.stderr}")
+
+    def test_systemd_unit_runs_unprivileged(self):
+        """The daemon launches containers via unprivileged user
+        namespaces, so the unit must NOT run as root (DynamicUser or an
+        explicit User, and NoNewPrivileges)."""
+        text = self.UNIT.read_text()
+        self.assertIn("NoNewPrivileges=true", text)
+        self.assertTrue(
+            "DynamicUser=true" in text or "User=" in text,
+            "unit must not run as root",
+        )
+        self.assertIn("Restart=on-failure", text)
+
+
 class TestSeccompEnforcement(unittest.TestCase):
     """Test NPS-017 §4.2 data-plane enforcement (FIND-BACKEND-002).
 
@@ -5603,6 +5652,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
+    suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestDefaultDenyAllowlist))
     suite.addTests(loader.loadTestsFromTestCase(TestLauncherSecurity))

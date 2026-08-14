@@ -736,8 +736,48 @@ hot path shipped 2026-08-14** (ADR-0020 migration #6, `rust/transport/`
 + `ipc/transport_codec.py`): the per-message syscall path now runs in
 Rust when the crate is built (Python floor otherwise, byte-identical
 contract). These numbers are the reference (Python) implementation's
-honest floor; the same-session re-run with the crate active is the
-close-path evidence, pending a host with the built crate.
+honest floor.
+
+**Same-session A/B with the crate active — measured 2026-08-14 on the
+build host (the promised close-path data point).** Two runs with the
+Rust transport active (crate built, confirmed by the loader log)
+versus two runs with it forced off (`NYRQIS_RUST_LIB=/nonexistent` —
+the identical Python floor). Note the A/B floor (~231 µs) reads above
+the original §20 measurement (188.79 µs, earlier the same day):
+absolute latency varies with host state/load between sessions — the
+A/B is the same-session control, which is why the Rust-vs-floor
+comparison is made within it, not against the earlier number:
+
+| Metric | Floor (A/B run 1) | Floor (A/B run 2) | Rust active (run 1) | Rust active (run 2) |
+|--------|------------------:|------------------:|--------------------:|--------------------:|
+| p50 | 231.52 µs | 231.78 µs | 426.19 µs | 445.58 µs |
+| p95 | 351.94 µs | 353.31 µs | 751.61 µs | 764.57 µs |
+| p99 | 425.23 µs | 427.14 µs | 998.53 µs | 1,006.70 µs |
+| mean | 240.06 µs | 242.38 µs | 462.63 µs | 475.54 µs |
+| min | 145.94 µs | 145.19 µs | 236.83 µs | 238.22 µs |
+
+**Honest verdict (NPC-002 §5.2 — no fabricated numbers): the current
+Rust FFI surface is SLOWER than the Python floor at the median (~1.8×
+over the wire, ~195 µs added at p50), so it does NOT close the NPS-003
+§6.1 gate.** An isolated same-process send/recv microbenchmark (no
+CALL/REPLY structure, no token bucket, no serving thread) localizes
+the overhead to the FFI boundary itself: floor p50 9.06 µs vs Rust
+p50 32.50 µs per round trip (~23 µs of pure boundary cost). Cause: the
+current surface mallocs the output wire buffer AND a sender-path C
+string on every receive (`publish_bytes`/`publish_cstr`), copies the
+wire on send (`create_string_buffer`) and on receive (`string_at`),
+and frees twice through `nyrqis_transport_free` — ~2-3 allocations
+and several copies per message, i.e. exactly the per-message Python
+overhead the migration exists to remove. The migration itself is NOT
+in question — ADR-0020's platform-boundary rule requires a compiled
+transport (the shipped platform must not depend on the Python
+interpreter), and the FFI conformance gate proves the Rust path is
+byte-identical to the floor. What the data changes is the close-path
+argument: **the performance close for §6.1 needs a second-pass FFI
+surface** (caller-supplied or pooled output buffers, no per-call
+malloc) before the Rust path can be claimed as the latency winner.
+That optimization is the follow-on; until it lands, the floor remains
+the measured-faster path and NPS-003 stays Draft with the gate open.
 
 ## Status vs BENCHMARK_PLAN
 

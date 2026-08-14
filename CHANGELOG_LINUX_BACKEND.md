@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.1] — 2026-08-14
+
+### Host Integration (plan §4.5) + First Rust-Transport Benchmark Data
+
+#### Added
+
+- **`packaging/systemd/nyrqis-backend.service`** — runs the backend daemon at boot (`nyrqis_backend.py service serve --socket /run/nyrqis/status.sock`): unprivileged by design (`DynamicUser=true` + `NoNewPrivileges=true` — the daemon launches containers through unprivileged user namespaces and must not run as root), `Restart=on-failure`, `PrivateTmp`/`ProtectHome`/`ProtectSystem` hardening, install steps in `packaging/README.md`.
+- **`test_backend.py`** — `TestSystemdUnit` (3 tests): the unit wires the actual daemon subcommand, passes `systemd-analyze verify` when systemd is present (skipped otherwise), and runs unprivileged. Hermetic — reads the unit file, installs nothing on the host. Suite **295 → 298** (272 run + 26 skipped).
+
+#### Measured (documented honestly, NPC-002 §5.2 — no fabricated numbers)
+
+- **First Rust-transport benchmark data point** (BENCHMARK_RESULTS.md §20, measured 2026-08-14 on the build host): a same-session A/B with the crate active shows the current Rust FFI surface is **slower** than the Python floor at the median (over the wire p50 ~426 µs Rust vs ~231 µs floor; isolated same-process round trip p50 32.50 µs vs 9.06 µs). Cause: the surface mallocs the output wire buffer AND a sender-path C string on every receive and copies the wire on both send and receive — the per-message allocation/copy overhead the migration exists to remove. The migration itself stands on ADR-0020's platform-boundary rule and the byte-identical conformance gate; the §6.1 performance close is a **second-pass FFI surface** (caller-supplied/pooled output buffers, no per-call malloc). NPS-003 stays Draft with the gate open until that lands.
+
+#### Fixed
+
+- **Docs** — `IMPLEMENTATION_STATUS` (§5), `implementation_plan.md` §4.5, `REPOSITORY_STATE`.
+
 ## [0.13.0] — 2026-08-14
 
 ### PID-1 Launcher-Init (Graceful Termination of Container Commands)

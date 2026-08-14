@@ -1,0 +1,60 @@
+# Nyrqis Linux Backend — systemd host integration (implementation_plan.md §4.5)
+#
+# Runs the backend's status-service daemon as a boot service. The daemon
+# owns the IPC registry + capability manager + container manager, serves
+# the container-facing status service, and accepts operator control
+# commands over the same Unix-domain datagram transport
+# (nyrqis_backend.py control ...).
+#
+# Install (see packaging/README.md):
+#   sudo cp packaging/systemd/nyrqis-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyrqis-backend
+#
+# The backend is a reference implementation that launches containers via
+# unprivileged user namespaces (no root required); the unit therefore
+# deliberately runs unprivileged under its own runtime directory rather
+# than as root.
+
+[Unit]
+Description=Nyrqis Linux backend daemon (status service + control plane)
+Documentation=https://github.com/Myco-mycelium/Nythera/blob/main/docs/implementation_plan.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# The backend CLI lives beside the source tree in this repository;
+# adjust ExecStart for a packaged install (see README.md). The CLI
+# resolves its own directory, so only the ExecStart path matters here.
+ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py service serve --socket /run/nyrqis/status.sock
+Restart=on-failure
+RestartSec=2
+
+# Runtime directory: created (and chowned to the service user) by
+# systemd itself, removed when the service stops — no ExecStartPre
+# mkdir needed.
+RuntimeDirectory=nyrqis
+RuntimeDirectoryMode=0755
+
+# Hardening (best-effort — the backend must still create user
+# namespaces and cgroups for containers, so full namespace/priv
+# sandboxing is deliberately NOT applied here).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# ProtectSystem=full does NOT cover /opt, so pin the install tree
+# read-only explicitly. Writable locations for the daemon must live
+# under /run/nyrqis (the RuntimeDirectory) — do not place a NyFS
+# image store or journal under /opt/nyrqis.
+ReadOnlyPaths=/opt/nyrqis
+
+# The daemon and its containers communicate over Unix datagram sockets
+# under the runtime directory; give the service its own user for a
+# baseline privilege separation (adjust if your distribution needs
+# DynamicUser off).
+DynamicUser=true
+
+[Install]
+WantedBy=multi-user.target

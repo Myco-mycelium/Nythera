@@ -62,7 +62,7 @@ Reach the boot milestones described in NPS-001 §5, including hardware/host init
 
 ### 4.5. Boot and Lifecycle
 
-*   **Host Integration**: Develop a service (e.g., a systemd unit) that manages the Nyrqis Linux Backend, ensuring it starts at boot and properly initializes the necessary namespaces, cgroups, and FUSE mounts.
+*   **Host Integration**: Develop a service (e.g., a systemd unit) that manages the Nyrqis Linux Backend, ensuring it starts at boot and properly initializes the necessary namespaces, cgroups, and FUSE mounts. **LANDED 2026-08-14** — `packaging/systemd/nyrqis-backend.service` runs the backend daemon at boot (`service serve` on `/run/nyrqis/status.sock`) unprivileged (`DynamicUser` + `NoNewPrivileges` — the daemon launches containers through unprivileged user namespaces), with `Restart=on-failure`, hardening, and install steps in `packaging/README.md`; `TestSystemdUnit` (3 tests) pins the unit and passes `systemd-analyze verify` on systemd hosts.
 *   **Trusted First Process**: Establish a trusted first process within the Nyrqis environment, responsible for launching subsequent containers and enforcing initial security policies.
 *   **Service Bring-up**: Define a clear sequence for bringing up Nyrqis services and applications, ensuring dependencies are met and resources are correctly allocated.
 
