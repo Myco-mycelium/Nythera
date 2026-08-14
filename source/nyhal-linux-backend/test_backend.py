@@ -1004,6 +1004,77 @@ class TestStatusServiceHost(unittest.TestCase):
                 proc.wait()
         self.assertFalse(os.path.exists(self.sock))
 
+    def test_host_container_completes_status_call(self):
+        # Gate at run time: the _netns_* helpers are defined later in
+        # this module, so a decorator would fail at import time.
+        if not _netns_launch_supported():
+            self.skipTest(_NETNS)
+        # The full platform path through the RUNNABLE daemon: a REAL
+        # container spawned via the host's own ContainerManager is
+        # registered (pid) AND granted (defaults) automatically, and
+        # completes a status CALL against the host's own server — the
+        # operator flow with zero manual bookkeeping. The host's socket
+        # path is the peer the container calls.
+        host = self._host()
+        host.start()
+        base = tempfile.mkdtemp(prefix="nyrqis-host-e2e-")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+        container = None
+        try:
+            backend_dir = str(Path(__file__).resolve().parent)
+            script = (
+                "import os, sys, time\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "deadline = time.time() + 10\n"
+                "while not os.path.exists(sys.argv[4]) and time.time() < deadline:\n"
+                "    time.sleep(0.01)\n"
+                "from ipc.transport import IPCClient\n"
+                "c = IPCClient('container-cli', sys.argv[2]).bind()\n"
+                "r = c.call(sys.argv[3], b'{\"op\": \"status\"}', timeout_s=10)\n"
+                "open(sys.argv[5], 'w').write(r.payload.decode() if r else 'NONE')\n"
+            )
+            container = host.container_manager.create(ContainerConfig(
+                name="container-cli",
+                command=[sys.executable, "-c", script, backend_dir,
+                         cli_path, host.socket_path, ready_path, marker],
+                seccomp=True,
+                network=True,
+                # Data-plane (seccomp) grants: the socket family + the
+                # marker write. Control-plane grants (CAP_IPC_SEND,
+                # CAP_SYSTEM_INFO) come automatically from the host's
+                # capability manager at spawn.
+                capabilities=[
+                    "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                    "CAP_FILESYSTEM_WRITE",
+                ],
+            ))
+            host.container_manager.spawn(container)
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            deadline = time.time() + 20.0
+            while time.time() < deadline and not os.path.exists(marker):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(marker),
+                "container never reached the daemon's status service",
+            )
+            with open(marker) as fh:
+                body = fh.read()
+            self.assertNotEqual(body, "NONE",
+                                "container got no status reply")
+            resp = json.loads(body)
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["container"], "container-cli")
+            self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
+        finally:
+            if container is not None:
+                _launch_cleanup(host.container_manager, container)
+            shutil.rmtree(base, ignore_errors=True)
+            host.stop()
+        self.assertFalse(os.path.exists(self.sock))
+
 
 class TestStorageGuarantees(unittest.TestCase):
     """Test NPS-017 §4.4 (Storage Guarantees)."""
