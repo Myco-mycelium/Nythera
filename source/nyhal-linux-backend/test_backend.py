@@ -2340,6 +2340,7 @@ class TestDirectSyscallLaunch(unittest.TestCase):
 
 
 _NETNS_SUPPORTED = None  # cached real-launch probe result
+_DIRECT_LAUNCH_SUPPORTED = None  # cached real-launch probe result
 
 
 def _launch_cleanup(manager, container) -> None:
@@ -2398,6 +2399,49 @@ def _netns_launch_supported() -> bool:
     return supported
 
 
+def _direct_launch_supported() -> bool:
+    """True when a direct-syscall container (no network namespace) can
+    actually launch on this host. Probing with a real launch is the
+    honest gate: it covers the unprivileged-userns knob (the uid_map
+    write) and the whole mount-proc/launcher chain in one check, so the
+    PID-1-init tests skip (not fail) on hosts that cannot run them —
+    e.g. GitHub's runners, where the kernel blocks the uid_map write
+    even though ``unshare(CLONE_NEWUSER)`` itself succeeds. The result
+    is cached (the skipUnless decorator would otherwise re-run the
+    probe per class)."""
+    global _DIRECT_LAUNCH_SUPPORTED
+    if _DIRECT_LAUNCH_SUPPORTED is not None:
+        return _DIRECT_LAUNCH_SUPPORTED
+    supported = False
+    try:
+        probe = subprocess.run(
+            ["unshare", "--user", "true"],
+            capture_output=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        probe = None
+    if probe is not None and probe.returncode == 0:
+        try:
+            manager = ContainerManager(
+                use_cgroups_v2=False, use_direct_syscalls=True)
+            container = manager.create(ContainerConfig(
+                command=["/bin/sleep", "5"], seccomp=False))
+            manager.spawn(container)
+            try:
+                supported = (container.pid is not None
+                             and container.is_running())
+            finally:
+                _launch_cleanup(manager, container)
+        except Exception:
+            supported = False
+    _DIRECT_LAUNCH_SUPPORTED = supported
+    return supported
+
+
+@unittest.skipUnless(
+    _direct_launch_supported(),
+    "host cannot launch direct-syscall containers",
+)
 class TestPid1Init(unittest.TestCase):
     """The launcher-init: the container command runs as a plain child
     of the namespace's PID-1 — not as PID 1 itself — so kernel signal

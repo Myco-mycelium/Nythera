@@ -470,6 +470,10 @@ Documentation hygiene, fixed earlier this session:
   command's HOST pid via the init's /proc children file; both pids
   join the container cgroups; terminate escalation covers both and
   reaps the setup child. New `TestPid1Init` (7). Suite 288 → 295
+  (26 skipped on hosts with working userns; on runners that block the
+  uid_map write — e.g. GitHub Actions — the class probes with a real
+  launch via `_direct_launch_supported()` and skips instead of failing,
+  so the suite stays green there too).
   (269 run + 26 skipped).
 - 2026-08-14 (**runnable status-service daemon + auto capability
   lifecycle**): `nyrqis_backend.py service serve` runs a
