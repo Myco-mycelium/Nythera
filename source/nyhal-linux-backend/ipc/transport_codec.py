@@ -135,7 +135,11 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
         lib.nyrqis_transport_recv.restype = ctypes.c_int
         lib.nyrqis_transport_recv.argtypes = [
             ctypes.c_int, ctypes.c_int64,
-            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t),
+            # out_wire is *mut *mut u8 — POINTER(POINTER(c_ubyte)), NOT
+            # POINTER(c_void_p): ctypes enforces nested pointer types
+            # exactly (the CI conformance gate caught this mismatch).
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+            ctypes.POINTER(ctypes.c_size_t),
             ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
             ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_char_p),
         ]
