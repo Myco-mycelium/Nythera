@@ -110,6 +110,186 @@ class TestContainerPrimitives(unittest.TestCase):
         self.assertEqual(container.config.limits.pid_limit, 128)
 
 
+class TestContainerFreezer(unittest.TestCase):
+    """Test the cgroup v2 freezer integration for suspension
+    (implementation_plan.md §4.1): suspend freezes the container's whole
+    cgroup via ``cgroup.freeze`` when attached, thawing on resume;
+    SIGSTOP/SIGCONT remains the universal fallback (v1 hosts, failed
+    cgroup setup, failed freeze/thaw writes). The control-file decision
+    and the write/fallback behavior are tested hermetically; the signal
+    fallback is exercised against a real process.
+    """
+
+    def _v2_manager(self):
+        # Force the v2 code path deterministically (no host dependence).
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.use_cgroups_v2 = True
+        return manager
+
+    def _running_container(self, manager, pid=4242, cgroup_path=None):
+        container = manager.create(ContainerConfig())
+        container.transition_to(ContainerState.RUNNING)
+        container.pid = pid
+        if cgroup_path is not None:
+            container.cgroup_paths = [cgroup_path]
+        return container
+
+    def test_freeze_control_v2_returns_cgroup_freeze(self):
+        manager = self._v2_manager()
+        container = self._running_container(manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        control = manager._freeze_control(container)
+        self.assertEqual(
+            control,
+            (Path("/sys/fs/cgroup/nyrqis/c1/cgroup.freeze"), "1", "0"),
+        )
+
+    def test_freeze_control_none_without_cgroup_paths(self):
+        manager = self._v2_manager()
+        container = self._running_container(manager, cgroup_path=None)
+        self.assertIsNone(manager._freeze_control(container))
+
+    def test_freeze_control_none_on_v1(self):
+        # v1 has no unified freezer (the legacy controller is not
+        # provisioned) — the signal path applies.
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = self._running_container(manager, cgroup_path="/sys/fs/cgroup/memory/nyrqis/c1")
+        self.assertIsNone(manager._freeze_control(container))
+
+    def test_suspend_freezes_cgroup_when_attached(self):
+        manager = self._v2_manager()
+        container = self._running_container(
+            manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        with mock.patch("backend.container.Path.write_text") as write, \
+                mock.patch.object(manager, "_wait_frozen", return_value=True), \
+                mock.patch("backend.container.os.kill") as kill:
+            manager.suspend(container)
+        write.assert_called_once_with("1\n")
+        kill.assert_not_called()
+        self.assertTrue(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.SUSPENDED)
+
+    def test_suspend_falls_back_to_sigstop_on_freeze_error(self):
+        manager = self._v2_manager()
+        container = self._running_container(
+            manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        with mock.patch(
+            "backend.container.Path.write_text",
+            side_effect=OSError("permission denied"),
+        ), mock.patch("backend.container.os.kill") as kill:
+            manager.suspend(container)
+        kill.assert_called_once_with(4242, signal.SIGSTOP)
+        self.assertFalse(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.SUSPENDED)
+
+    def test_suspend_signal_fallback_without_cgroup(self):
+        manager = self._v2_manager()
+        container = self._running_container(manager, cgroup_path=None)
+        with mock.patch("backend.container.os.kill") as kill:
+            manager.suspend(container)
+        kill.assert_called_once_with(4242, signal.SIGSTOP)
+        self.assertFalse(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.SUSPENDED)
+
+    def test_resume_thaws_frozen_container(self):
+        manager = self._v2_manager()
+        container = self._running_container(
+            manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        container._frozen_via_cgroup = True
+        container.transition_to(ContainerState.SUSPENDED)
+        with mock.patch("backend.container.Path.write_text") as write, \
+                mock.patch("backend.container.os.kill") as kill:
+            manager.resume(container)
+        write.assert_called_once_with("0\n")
+        kill.assert_not_called()
+        self.assertFalse(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.RUNNING)
+
+    def test_resume_sigcont_after_signal_suspend(self):
+        manager = self._v2_manager()
+        container = self._running_container(manager, cgroup_path=None)
+        container.transition_to(ContainerState.SUSPENDED)
+        with mock.patch("backend.container.os.kill") as kill:
+            manager.resume(container)
+        kill.assert_called_once_with(4242, signal.SIGCONT)
+        self.assertEqual(container.state, ContainerState.RUNNING)
+
+    def test_resume_thaw_error_raises_and_keeps_suspended(self):
+        # A thaw-write failure means the cgroup is still frozen — and a
+        # frozen cgroup defers every signal except SIGKILL, so a SIGCONT
+        # fallback would leave the container frozen while reporting
+        # RUNNING. The OSError is raised instead (the caller retries or
+        # escalates to terminate, whose SIGKILL still applies).
+        manager = self._v2_manager()
+        container = self._running_container(
+            manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        container._frozen_via_cgroup = True
+        container.transition_to(ContainerState.SUSPENDED)
+        with mock.patch(
+            "backend.container.Path.write_text",
+            side_effect=OSError("cgroup removed"),
+        ), mock.patch("backend.container.os.kill") as kill:
+            with self.assertRaises(OSError):
+                manager.resume(container)
+        kill.assert_not_called()
+        self.assertTrue(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.SUSPENDED)
+
+    def test_suspend_state_guard(self):
+        manager = self._v2_manager()
+        container = manager.create(ContainerConfig())  # CREATED
+        with self.assertRaises(ValueError):
+            manager.suspend(container)
+        with self.assertRaises(ValueError):
+            manager.resume(container)
+
+    def test_terminate_thaws_frozen_container_first(self):
+        # A cgroup-frozen container defers non-SIGKILL signals; terminate
+        # must thaw (best-effort) so SIGTERM gets its graceful window.
+        manager = self._v2_manager()
+        container = self._running_container(
+            manager, cgroup_path="/sys/fs/cgroup/nyrqis/c1")
+        container._frozen_via_cgroup = True
+        with mock.patch("backend.container.Path.write_text") as write, \
+                mock.patch.object(container, "is_running", return_value=False), \
+                mock.patch("backend.container.os.kill") as kill:
+            manager.terminate(container)
+        write.assert_called_once_with("0\n")
+        kill.assert_called_once_with(4242, signal.SIGTERM)
+        self.assertFalse(container._frozen_via_cgroup)
+        self.assertEqual(container.state, ContainerState.TERMINATED)
+
+    def test_suspend_resume_real_process_signal_fallback(self):
+        # End-to-end fallback: a real process (no cgroup) is SIGSTOPped
+        # and SIGCONTinued, observable through /proc/<pid>/stat. The
+        # stat field is polled to a deadline (not a fixed sleep) so the
+        # test holds on loaded hosts.
+        manager = ContainerManager(use_cgroups_v2=False)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            container = self._running_container(manager, pid=proc.pid)
+            manager.suspend(container)
+            state = "?"
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                state = open(f"/proc/{proc.pid}/stat").read().split()[2]
+                if state in ("T", "t"):  # stopped (or traced)
+                    break
+                time.sleep(0.02)
+            self.assertIn(state, ("T", "t"))
+            manager.resume(container)
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                state = open(f"/proc/{proc.pid}/stat").read().split()[2]
+                if state not in ("T", "t"):
+                    break
+                time.sleep(0.02)
+            self.assertNotIn(state, ("T", "t"))
+        finally:
+            proc.kill()
+            proc.wait()
+
+
 class TestCapabilityEnforcement(unittest.TestCase):
     """Test NPS-017 §4.2 (Capability Enforcement)."""
     
@@ -3489,6 +3669,7 @@ def run_tests():
     
     # Add test classes
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitives))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerFreezer))
     suite.addTests(loader.loadTestsFromTestCase(TestCapabilityEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))

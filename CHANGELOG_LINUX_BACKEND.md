@@ -16,6 +16,24 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.2.0] — 2026-08-14
+
+### Cgroup Freezer for Suspension
+
+#### Added
+
+- **`backend/container.py`** — cgroup v2 freezer integration for suspension (implementation_plan.md §4.1)
+  - `suspend()` now freezes the container's **whole cgroup** via `cgroup.freeze` (write `1`, best-effort confirmation through `cgroup.events`' `frozen 1`) when attached to a v2 cgroup — descendants and future forks cannot outrun the suspension (SIGSTOP alone only stopped PID-1)
+  - `resume()` thaws via `cgroup.freeze` (write `0`)
+  - `terminate()` thaws a frozen container first so SIGTERM gets its graceful window (a frozen cgroup defers non-SIGKILL signals)
+  - SIGSTOP/SIGCONT remains the fallback for v1 hosts (no unified freezer provisioned), failed cgroup setup, and failed freeze writes; a **failed thaw raises** instead — a frozen cgroup defers every signal except SIGKILL, so a SIGCONT fallback would report RUNNING for a process the kernel still holds frozen (the caller retries or escalates to `terminate()`, whose SIGKILL still applies)
+  - `_freeze_control()` computes the control file (testable without touching `/sys/fs/cgroup`); `_wait_frozen()` confirms the freeze best-effort
+- **`test_backend.py`** — `TestContainerFreezer` (12 tests): control-file decision (v2/v1/no-cgroup), freeze/thaw writes, the raise-on-thaw-failure contract, every fallback path, terminate-thaw ordering, and an end-to-end real-process signal suspend/resume; suite **205 → 217**
+
+#### Changed
+
+- `suspend`/`resume`/`terminate` use `signal.SIGSTOP`/`SIGCONT`/`SIGTERM`/`SIGKILL` constants instead of numeric literals
+
 ## [0.1.0] — 2026-07-15
 
 ### Initial Implementation
@@ -164,7 +182,7 @@ See `tests/BENCHMARK_PLAN.md` for methodology.
 
 **Immediate (Phase 1):**
 - Refactor container primitives to use direct syscalls
-- Implement cgroup freezer for suspension
+- ~~Implement cgroup freezer for suspension~~ — landed 2026-08-14
 - Add network namespace support
 - Run IPC latency benchmarks
 

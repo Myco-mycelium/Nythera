@@ -23,6 +23,7 @@ import logging
 import os
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,11 @@ class Container:
         # container's exit status). Exactly one of the two is set.
         self._proc: Optional[subprocess.Popen] = None
         self._direct_launcher_pid: Optional[int] = None
+        # True when the last suspend froze the container through its
+        # cgroup (cgroup.freeze) rather than SIGSTOP; resume must then
+        # thaw before anything else, and terminate must thaw so SIGTERM
+        # is deliverable (a frozen cgroup defers non-SIGKILL signals).
+        self._frozen_via_cgroup: bool = False
         
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -304,10 +310,63 @@ class ContainerManager:
         container.transition_to(ContainerState.TERMINATED)
         return exit_code
     
+    def _freeze_control(
+        self, container: Container
+    ) -> Optional[Tuple[Path, str, str]]:
+        """The container's cgroup freezer control file, if freeze-capable.
+
+        Returns ``(control_path, freeze_value, thaw_value)`` when the
+        container is attached to a cgroup the backend can freeze, else
+        ``None`` (suspend/resume then fall back to SIGSTOP/SIGCONT).
+
+        The cgroups v2 unified hierarchy exposes the kernel freezer as
+        ``cgroup.freeze`` (write ``1`` = frozen, ``0`` = thawed) — the
+        whole cgroup, including future children, so a container's forks
+        cannot outrun its suspension. cgroups v1 has no unified freezer:
+        the legacy ``freezer`` controller is a separate hierarchy this
+        backend does not provision (its v1 resource plan covers
+        memory/pids/cpu only), so v1 containers keep the signal path.
+        A container whose cgroup setup failed (``cgroup_paths`` empty)
+        also falls back to signals — honest degradation, never a raise.
+        """
+        if not self.use_cgroups_v2 or not container.cgroup_paths:
+            return None
+        return (
+            Path(container.cgroup_paths[0]) / "cgroup.freeze",
+            "1",
+            "0",
+        )
+
+    @staticmethod
+    def _wait_frozen(control_path: Path, timeout_s: float = 1.5) -> bool:
+        """Best-effort confirmation that a cgroup freeze took effect.
+
+        On v2, ``cgroup.events`` next to ``cgroup.freeze`` carries
+        ``frozen 1`` once every task in the cgroup is frozen. The file
+        may be unreadable (permissions) or absent (tests); the freeze
+        write itself already succeeded, so failure to confirm is not an
+        error — the caller proceeds and the kernel freezes asynchronously.
+        """
+        events = control_path.parent / "cgroup.events"
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                if "frozen 1" in events.read_text():
+                    return True
+            except OSError:
+                return False
+            time.sleep(0.02)
+        return False
+
     def suspend(self, container: Container) -> None:
         """Suspend a running container (pause its execution).
         
-        Per NPS-010 §4, this transitions the container from RUNNING to SUSPENDED.
+        Per NPS-010 §4, this transitions the container from RUNNING to
+        SUSPENDED. When the container is attached to a cgroups v2
+        cgroup, the whole cgroup is frozen via ``cgroup.freeze`` (so
+        descendants cannot keep running); otherwise the signal fallback
+        SIGSTOPs the container's PID-1. On a failed freeze the backend
+        falls back to SIGSTOP rather than failing the transition.
         """
         if container.state != ContainerState.RUNNING:
             raise ValueError(f"Cannot suspend container in {container.state.value} state")
@@ -315,18 +374,46 @@ class ContainerManager:
         if container.pid is None:
             raise ValueError(f"Container {container.id} has no associated PID")
         
-        try:
-            os.kill(container.pid, 19)  # SIGSTOP
-            container.transition_to(ContainerState.SUSPENDED)
-            logger.info(f"Suspended container {container.id} (PID {container.pid})")
-        except OSError as e:
-            logger.error(f"Failed to suspend container {container.id}: {e}")
-            raise
+        frozen_via_cgroup = False
+        control = self._freeze_control(container)
+        if control is not None:
+            path, freeze_value, _ = control
+            try:
+                path.write_text(freeze_value + "\n")
+                if self._wait_frozen(path):
+                    logger.debug(
+                        f"cgroup freeze confirmed for {container.id} "
+                        "(cgroup.events: frozen 1)"
+                    )
+                else:
+                    logger.debug(
+                        f"cgroup freeze write succeeded for {container.id} "
+                        "but could not be confirmed (async freeze)"
+                    )
+                frozen_via_cgroup = True
+            except OSError as e:
+                logger.warning(
+                    f"cgroup freeze failed for {container.id} ({e}); "
+                    "falling back to SIGSTOP"
+                )
+        if not frozen_via_cgroup:
+            os.kill(container.pid, signal.SIGSTOP)
+        container._frozen_via_cgroup = frozen_via_cgroup
+        container.transition_to(ContainerState.SUSPENDED)
+        logger.info(
+            f"Suspended container {container.id} (PID {container.pid}, "
+            f"{'cgroup freeze' if frozen_via_cgroup else 'SIGSTOP'})"
+        )
     
     def resume(self, container: Container) -> None:
         """Resume a suspended container.
         
-        Per NPS-010 §4, this transitions the container from SUSPENDED to RUNNING.
+        Per NPS-010 §4, this transitions the container from SUSPENDED to
+        RUNNING. A container frozen through its cgroup is thawed via
+        ``cgroup.freeze``; a thaw-write failure raises (the cgroup is
+        still frozen, and a frozen cgroup defers SIGCONT — the caller
+        retries or escalates to terminate). One stopped by signal is
+        resumed with SIGCONT.
         """
         if container.state != ContainerState.SUSPENDED:
             raise ValueError(f"Cannot resume container in {container.state.value} state")
@@ -334,13 +421,36 @@ class ContainerManager:
         if container.pid is None:
             raise ValueError(f"Container {container.id} has no associated PID")
         
-        try:
-            os.kill(container.pid, 18)  # SIGCONT
-            container.transition_to(ContainerState.RUNNING)
-            logger.info(f"Resumed container {container.id} (PID {container.pid})")
-        except OSError as e:
-            logger.error(f"Failed to resume container {container.id}: {e}")
-            raise
+        if container._frozen_via_cgroup:
+            control = self._freeze_control(container)
+            if control is not None:
+                path, _, thaw_value = control
+                try:
+                    path.write_text(thaw_value + "\n")
+                except OSError:
+                    # The cgroup is still frozen. A frozen cgroup defers
+                    # every signal except SIGKILL, so a SIGCONT fallback
+                    # would NOT resume the container — it would silently
+                    # report RUNNING for a process the kernel still
+                    # holds frozen. Raise instead: the caller can retry
+                    # the thaw or escalate to terminate(), whose SIGKILL
+                    # still applies.
+                    raise
+                container._frozen_via_cgroup = False
+                container.transition_to(ContainerState.RUNNING)
+                logger.info(
+                    f"Resumed container {container.id} (PID {container.pid}, "
+                    "cgroup thaw)"
+                )
+                return
+            # The cgroup is gone (cgroup_paths emptied). A cgroup with
+            # live members cannot be rmdir'd, so the container is dead;
+            # clear the flag and let the signal path report honestly.
+            container._frozen_via_cgroup = False
+        
+        os.kill(container.pid, signal.SIGCONT)
+        container.transition_to(ContainerState.RUNNING)
+        logger.info(f"Resumed container {container.id} (PID {container.pid}, SIGCONT)")
     
     def terminate(self, container: Container, timeout_s: float = 10.0) -> None:
         """Terminate a container gracefully, with forced kill as fallback.
@@ -355,8 +465,25 @@ class ContainerManager:
             return
         
         try:
+            # A cgroup-frozen container defers non-SIGKILL signals, so
+            # thaw first (best-effort) to give SIGTERM a real graceful
+            # window; SIGKILL below still works if the thaw fails.
+            if container._frozen_via_cgroup:
+                control = self._freeze_control(container)
+                if control is not None:
+                    path, _, thaw_value = control
+                    try:
+                        path.write_text(thaw_value + "\n")
+                    except OSError as e:
+                        logger.warning(
+                            f"cgroup thaw before terminate failed for "
+                            f"{container.id} ({e}); SIGKILL escalation "
+                            "will still apply"
+                        )
+                container._frozen_via_cgroup = False
+            
             # Try SIGTERM first for graceful shutdown
-            os.kill(container.pid, 15)  # SIGTERM
+            os.kill(container.pid, signal.SIGTERM)
             
             # Wait for graceful termination
             start_time = time.time()
@@ -367,7 +494,7 @@ class ContainerManager:
             
             # Force kill if still running
             if container.is_running():
-                os.kill(container.pid, 9)  # SIGKILL
+                os.kill(container.pid, signal.SIGKILL)
                 logger.warning(f"Force-killed container {container.id} (PID {container.pid})")
             
             container.transition_to(ContainerState.TERMINATED)
