@@ -16,6 +16,20 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.10.0] — 2026-08-14
+
+### First Real Backend Service on the Transport
+
+#### Added
+
+- **`ipc/service.py`** — `BackendStatusService`, the first container-facing service on the transport (plan §4.3). Attaches to a bound `IPCDatagramServer` as its CALL handler — the server has already authenticated the sender (kernel `SCM_CREDENTIALS` pid → container via the auto-registry) and enforced `CAP_IPC_SEND`, so the service enforces its own per-operation capability on top:
+  - `{"op": "ping"}` — requires nothing beyond the server's checks; verifies the whole chain (transport + identity + reply path) with a pong.
+  - `{"op": "status"}` — requires `CAP_SYSTEM_INFO` (a default grant, NPS-011) and is **denied fail-closed** when no `CapabilityManager` is attached or the caller lacks the grant; reports the backend version, service uptime, and the caller's own container id and capability set.
+  - A service bug becomes an `internal error` REPLY — the handler never raises into the serve loop.
+- **`ipc/transport.py`** — `serve_once` now swallows `on_call` handler exceptions (logged; the datagram is consumed, the loop continues) — consistent with the documented "one bad datagram must not kill the serving thread" guarantee.
+- **`test_backend.py`** — `TestBackendStatusService` (7 tests: ping round-trip with authenticated identity, status identity/capabilities/version, denial without `CAP_SYSTEM_INFO`, fail-closed without a manager, unknown op, malformed request, internal-error-then-recover) and `test_container_calls_status_service` — a **REAL container** completes a `status` CALL through the auto-registry + server capability enforcement + service capability enforcement (`TestNetworkNamespaceIsolation`). Suite **257 → 265** (239 run + 26 skipped).
+- **Docs** — `IMPLEMENTATION_STATUS` v0.19.0; `implementation_plan.md` §4.3; `REPOSITORY_STATE`.
+
 ## [0.9.0] — 2026-08-14
 
 ### Auto-Maintained Container Sender Registry

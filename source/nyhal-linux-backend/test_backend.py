@@ -54,6 +54,7 @@ from fuse import nyfs_codec
 from ipc import ipc_codec
 from ipc import transport_codec
 from ipc.registry import ContainerIpcRegistry
+from ipc.service import BackendStatusService
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 
 
@@ -647,6 +648,155 @@ class TestIPCTransport(unittest.TestCase):
     def test_socket_path_length_guard(self):
         with self.assertRaises(IPCTransportError):
             UnixDatagramEndpoint("x" * 200)
+
+
+class TestBackendStatusService(unittest.TestCase):
+    """Test the first real container-facing service on the transport
+    (implementation_plan.md §4.3): CALL/REPLY over the datagram
+    transport with kernel identity, per-operation capability
+    enforcement (status requires CAP_SYSTEM_INFO; denied when the
+    manager is absent — fail closed), and the reply payloads.
+    """
+
+    VERSION = "9.9.9"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    def _serve(self, capability_manager=None):
+        import threading
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry={os.getpid(): "container-A"},
+            capability_manager=capability_manager,
+        )
+        service = BackendStatusService(
+            capability_manager=capability_manager, backend_version=self.VERSION)
+        service.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient("container-A", self.cli_path).bind()
+        return server, client, stop
+
+    def _call(self, client, payload):
+        reply = client.call(self.svc_path, payload, timeout_s=5.0)
+        self.assertIsNotNone(reply, "no reply from the status service")
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def _default_caps(self):
+        caps = CapabilityManager()
+        caps.initialize_container("container-A")  # defaults incl. CAP_SYSTEM_INFO
+        return caps
+
+    def test_ping_roundtrip(self):
+        server, client, stop = self._serve()
+        try:
+            resp = self._call(client, b'{"op": "ping"}')
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["service"], "nyrqis.backend.status")
+            self.assertEqual(resp["echo"], "pong")
+            # The handler saw the authenticated container, not a claim.
+            self.assertEqual(resp["container"], "container-A")
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_status_reports_identity_and_capabilities(self):
+        server, client, stop = self._serve(capability_manager=self._default_caps())
+        try:
+            resp = self._call(client, b'{"op": "status"}')
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["backend_version"], self.VERSION)
+            self.assertEqual(resp["container"], "container-A")
+            self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
+            self.assertGreaterEqual(resp["uptime_s"], 0.0)
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_status_denied_without_capability(self):
+        caps = self._default_caps()
+        caps.revoke_capability("container-A", Capability.CAP_SYSTEM_INFO)
+        server, client, stop = self._serve(capability_manager=caps)
+        try:
+            resp = self._call(client, b'{"op": "status"}')
+            self.assertFalse(resp["ok"])
+            self.assertIn("CAP_SYSTEM_INFO", resp["error"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_status_fails_closed_without_manager(self):
+        # No capability manager attached: the service cannot verify the
+        # CAP_SYSTEM_INFO grant it needs, so status is denied — never
+        # granted by default.
+        server, client, stop = self._serve(capability_manager=None)
+        try:
+            resp = self._call(client, b'{"op": "status"}')
+            self.assertFalse(resp["ok"])
+            self.assertIn("forbidden", resp["error"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_unknown_operation(self):
+        server, client, stop = self._serve()
+        try:
+            resp = self._call(client, b'{"op": "self_destruct"}')
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown operation", resp["error"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_malformed_request(self):
+        server, client, stop = self._serve()
+        try:
+            resp = self._call(client, b"not json")
+            self.assertFalse(resp["ok"])
+            self.assertIn("bad request", resp["error"])
+            resp = self._call(client, b'["not", "an", "object"]')
+            self.assertFalse(resp["ok"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
+
+    def test_service_bug_replies_internal_error_not_crash(self):
+        # A bug inside the service (here: a capability manager that
+        # raises) becomes an "internal error" REPLY — the client gets an
+        # answer and the serve loop keeps serving the next call.
+        # Authentication still works (validate_operation returns True —
+        # including the server's CAP_IPC_SEND check); the bug is inside
+        # the status path only (get_capabilities raises).
+        caps = self._default_caps()
+        broken = mock.Mock()
+        broken.validate_operation.return_value = True
+        broken.get_capabilities.side_effect = RuntimeError("caps bug")
+        caps.validate_operation = broken.validate_operation
+        caps.get_capabilities = broken.get_capabilities
+        server, client, stop = self._serve(capability_manager=caps)
+        try:
+            resp = self._call(client, b'{"op": "status"}')
+            self.assertFalse(resp["ok"])
+            self.assertEqual(resp["error"], "internal error")
+            # The serve loop survived: a normal ping still works.
+            resp = self._call(client, b'{"op": "ping"}')
+            self.assertTrue(resp["ok"])
+        finally:
+            stop.set()
+            client.close()
+            server.close()
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -1744,6 +1894,88 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
                 self.assertEqual(fh.read(), "pong")
             # The handler saw the authenticated container, not a claim.
             self.assertEqual(results.get("sender"), "container-cli")
+        finally:
+            _launch_cleanup(ctr_manager, container)
+            stop.set()
+            server.close()
+            shutil.rmtree(base, ignore_errors=True)
+
+    @unittest.skipUnless(_netns_launch_supported(), _NETNS)
+    def test_container_calls_status_service(self):
+        # The first real backend service, end-to-end through a REAL
+        # container: the container CALLs the BackendStatusService over
+        # the datagram transport, the kernel's SCM_CREDENTIALS
+        # authenticate it (auto-registry), the server enforces
+        # CAP_IPC_SEND, and the service enforces CAP_SYSTEM_INFO (both
+        # default grants) before answering with the container's own
+        # identity and capability set. Zero manual pid bookkeeping.
+        import threading
+        base = tempfile.mkdtemp(prefix="nyrqis-status-e2e-")
+        svc_path = os.path.join(base, "svc.sock")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+
+        ipc_manager = IPCManager()
+        ipc_manager.create_endpoint("container-svc", "ep-svc")
+        ipc_registry = ContainerIpcRegistry()
+        # Control-plane grants: defaults include CAP_IPC_SEND (server
+        # check) and CAP_SYSTEM_INFO (status check).
+        caps = CapabilityManager()
+        caps.initialize_container("container-cli")
+        server = IPCDatagramServer(
+            ipc_manager, "ep-svc", svc_path,
+            pid_registry=ipc_registry, capability_manager=caps)
+        service = BackendStatusService(
+            capability_manager=caps, backend_version="test")
+        service.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+
+        backend_dir = str(Path(__file__).resolve().parent)
+        script = (
+            "import os, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(sys.argv[4]) and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('container-cli', sys.argv[2]).bind()\n"
+            "r = c.call(sys.argv[3], b'{\"op\": \"status\"}', timeout_s=10)\n"
+            "open(sys.argv[5], 'w').write(r.payload.decode() if r else 'NONE')\n"
+        )
+        ctr_manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True,
+            ipc_registry=ipc_registry)
+        container = ctr_manager.create(ContainerConfig(
+            name="container-cli",
+            command=[sys.executable, "-c", script, backend_dir,
+                     cli_path, svc_path, ready_path, marker],
+            seccomp=True,
+            capabilities=[
+                "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                "CAP_FILESYSTEM_WRITE",
+            ],
+        ))
+        ctr_manager.spawn(container)
+        try:
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            deadline = time.time() + 20.0
+            while time.time() < deadline and not os.path.exists(marker):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(marker),
+                "container never reached the status service",
+            )
+            with open(marker) as fh:
+                body = fh.read()
+            self.assertNotEqual(body, "NONE", "container got no status reply")
+            resp = json.loads(body)
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["container"], "container-cli")
+            self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
         finally:
             _launch_cleanup(ctr_manager, container)
             stop.set()
@@ -4560,6 +4792,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCapabilityEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCTransport))
+    suite.addTests(loader.loadTestsFromTestCase(TestBackendStatusService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))

@@ -446,6 +446,19 @@ Documentation hygiene, fixed earlier this session:
   container→service e2e now runs with the auto-registry end-to-end;
   `TestContainerIpcRegistry` (6 tests) pins the registry and manager
   hooks. Suite 251 → 257 (231 run + 26 skipped).
+- 2026-08-14 (**first real backend service on the transport**):
+  `ipc/service.py` (`BackendStatusService`) is a container-facing
+  CALL/REPLY service attached to an `IPCDatagramServer`: `ping`
+  verifies the whole chain (transport + kernel identity + reply
+  path), and `status` — capability-gated on `CAP_SYSTEM_INFO` (a
+  default grant), denied fail-closed without a `CapabilityManager` —
+  reports the backend version, uptime, and the caller's own container
+  id and capability set. The server's CALL dispatch now swallows
+  handler exceptions (a service bug replies "internal error", never
+  kills the serving thread). New `TestBackendStatusService` (7 tests)
+  and `test_container_calls_status_service` — a REAL container
+  completes a `status` CALL through the auto-registry + capability
+  enforcement. Suite 257 → 265 (239 run + 26 skipped).
 - 2026-08-14 (**ADR-0020 migration #6: IPC transport hot path**):
   `rust/transport/` (ABI 1.0.0, `libc` the only dependency) ships the
   per-message syscall half of the Unix-domain datagram transport —

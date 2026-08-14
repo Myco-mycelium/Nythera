@@ -334,7 +334,13 @@ class IPCDatagramServer:
             return None
         if msg.message_type == IPCMessageType.CALL:
             if self.on_call is not None:
-                self.on_call(msg, sender, sender_path)
+                try:
+                    self.on_call(msg, sender, sender_path)
+                except Exception as e:  # noqa: BLE001 - one bad handler must not kill the serve loop
+                    logger.error(
+                        "ipc: on_call handler on %s raised %s: %s",
+                        self.endpoint_id, type(e).__name__, e,
+                    )
             return msg
         endpoint = self.manager.get_endpoint(self.endpoint_id)
         if endpoint is None:
