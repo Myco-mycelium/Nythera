@@ -1005,10 +1005,11 @@ class TestStatusServiceHost(unittest.TestCase):
         self.assertFalse(os.path.exists(self.sock))
 
     def test_host_container_completes_status_call(self):
-        # Gate at run time: the _netns_* helpers are defined later in
-        # this module, so a decorator would fail at import time.
+        # Gate at run time: the _netns_* helpers (and the _NETNS skip
+        # message, a class attribute) are defined later in this module,
+        # so a decorator would fail at import time.
         if not _netns_launch_supported():
-            self.skipTest(_NETNS)
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
         # The full platform path through the RUNNABLE daemon: a REAL
         # container spawned via the host's own ContainerManager is
         # registered (pid) AND granted (defaults) automatically, and
