@@ -961,6 +961,26 @@ class TestLauncherSecurity(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ContainerManager(use_cgroups_v2=True, require_cgroups_v2=True)
 
+    def test_network_default_off(self):
+        # Network namespace isolation is opt-in: the default container
+        # shares the host network namespace (behavior preserved).
+        self.assertFalse(ContainerConfig().network)
+        self.assertFalse(ContainerConfig(network=False).network)
+        self.assertTrue(ContainerConfig(network=True).network)
+
+    def test_legacy_launch_command_net_when_enabled(self):
+        config = ContainerConfig(network=True, seccomp=False)
+        container = self.manager.create(config)
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+        self.assertIn("--net", cmd)
+        self.assertLess(cmd.index("--net"), cmd.index("--"))
+
+    def test_legacy_launch_command_no_net_by_default(self):
+        config = ContainerConfig(seccomp=False)
+        container = self.manager.create(config)
+        cmd = self.manager._build_launch_command(container, Path("launcher.py"))
+        self.assertNotIn("--net", cmd)
+
 
 class TestDirectSyscallLaunch(unittest.TestCase):
     """Test the direct-syscall launcher (implementation_plan.md §4.1,
@@ -1162,6 +1182,48 @@ class TestDirectSyscallLaunch(unittest.TestCase):
         write.assert_any_call(4, b"4242")
         exit_.assert_any_call(7)
 
+    def test_direct_child_new_net_when_network_enabled(self):
+        # network=True adds CLONE_NEWNET to the mount/UTS/IPC unshare.
+        import backend.container as container_mod
+        calls = []
+        with mock.patch(
+            "backend.container.rust_syscalls.unshare",
+            side_effect=lambda flags: calls.append(flags) or None,
+        ), mock.patch("backend.container._write_root_maps"), mock.patch(
+            "backend.container.os.fork", return_value=4242
+        ), mock.patch("backend.container.os.write"), mock.patch(
+            "backend.container.os.close"
+        ), mock.patch(
+            "backend.container.os.waitpid", return_value=(4242, 7 << 8)
+        ), mock.patch("backend.container.os._exit"):
+            container_mod._direct_launch_child(4, ["/bin/true"], network=True)
+        self.assertEqual(calls, [
+            rust_syscalls.CLONE_NEWUSER,
+            rust_syscalls.CLONE_NEWNS | rust_syscalls.CLONE_NEWUTS
+            | rust_syscalls.CLONE_NEWIPC | rust_syscalls.CLONE_NEWNET,
+            rust_syscalls.CLONE_NEWPID,
+        ])
+
+    def test_direct_spawn_forwards_network_flag_to_child(self):
+        # The manager passes the container's network flag through to the
+        # namespace-setup child (fork mocked to run the child branch so
+        # the forwarding is observable).
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.os.fork", return_value=0), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([3], [], [])), \
+                mock.patch("backend.container.os.read", return_value=b"4242"), \
+                mock.patch(
+                    "backend.container._direct_launch_child") as child:
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False, network=True,
+            ))
+            self.manager._spawn_direct(container)
+        self.assertEqual(child.call_count, 1)
+        self.assertEqual(child.call_args.args[0], 4)  # write_fd
+        self.assertTrue(child.call_args.args[2])  # network=True
+
     def test_direct_child_grandchild_mounts_proc_and_execs(self):
         # The PID-1 grandchild (os.fork returns 0) hardens against
         # losing the setup child, mounts a fresh procfs, and execs the
@@ -1218,6 +1280,127 @@ class TestDirectSyscallLaunch(unittest.TestCase):
         self.assertEqual(written["/proc/self/setgroups"], b"deny\n")
         self.assertEqual(written["/proc/self/uid_map"], b"0 1000 1\n")
         self.assertEqual(written["/proc/self/gid_map"], b"0 1000 1\n")
+
+
+_NETNS_SUPPORTED = None  # cached real-launch probe result
+
+
+def _launch_cleanup(manager, container) -> None:
+    """Tear down a spawned container and reap its launcher child.
+
+    ``terminate()`` already transitions the container to TERMINATED, so
+    ``wait()`` must NOT be called afterwards (the state machine rejects
+    terminated → terminated). The namespace-setup child is reaped
+    directly instead, so no zombie survives the test.
+    """
+    if container.pid is not None and container.is_running():
+        manager.terminate(container)
+    launcher_pid = getattr(container, "_direct_launcher_pid", None)
+    if launcher_pid is not None:
+        try:
+            os.waitpid(launcher_pid, 0)
+        except (ChildProcessError, ProcessLookupError):
+            pass
+
+
+def _netns_launch_supported() -> bool:
+    """True when a direct-syscall container with a network namespace
+    can actually launch on this host. Probing with a real launch is the
+    honest gate: it covers the unprivileged-userns knob AND the whole
+    mount-proc/launcher chain in one check, so the isolation tests skip
+    (not fail) on hosts that cannot run them. The result is cached
+    (both skipUnless decorators would otherwise re-run the probe)."""
+    global _NETNS_SUPPORTED
+    if _NETNS_SUPPORTED is not None:
+        return _NETNS_SUPPORTED
+    supported = False
+    if shutil.which("unshare") is not None:
+        try:
+            probe = subprocess.run(
+                ["unshare", "--user", "--net", "true"],
+                capture_output=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            probe = None
+        if probe is not None and probe.returncode == 0:
+            try:
+                manager = ContainerManager(
+                    use_cgroups_v2=False, use_direct_syscalls=True)
+                container = manager.create(ContainerConfig(
+                    command=["/bin/sleep", "5"], seccomp=False,
+                    network=True))
+                manager.spawn(container)
+                try:
+                    os.readlink(f"/proc/{container.pid}/ns/net")
+                    supported = True
+                finally:
+                    _launch_cleanup(manager, container)
+            except Exception:
+                supported = False
+    _NETNS_SUPPORTED = supported
+    return supported
+
+
+class TestNetworkNamespaceIsolation(unittest.TestCase):
+    """Real-launch verification that ``network=True`` containers get
+    their own network namespace (loopback only), while the default
+    shares the host's — observed through the netns inode and the
+    container's own procfs, no root required.
+    """
+
+    _NETNS = "host cannot launch network-namespace containers"
+
+    @staticmethod
+    def _net_dev_names(pid: int) -> list:
+        """Interface names visible in a process's network namespace.
+
+        ``/proc/<pid>/net/dev`` resolves within the process's netns via
+        the HOST procfs (magic symlink) — unlike
+        ``/proc/<pid>/root/proc/net/dev``, which is either the inherited
+        host procfs before ``mount_proc`` or unreadable (ENOENT) once
+        PID-1 mounts its own (a cross-PID-namespace restriction).
+        Race-free: the netns is created before PID-1 is forked, so the
+        moment the manager holds the PID the namespace is in effect.
+        """
+        text = Path(f"/proc/{pid}/net/dev").read_text()
+        return [ln.split(":")[0].strip()
+                for ln in text.splitlines()[2:] if ln.strip()]
+
+    @unittest.skipUnless(_netns_launch_supported(), _NETNS)
+    def test_network_container_gets_own_netns(self):
+        manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True)
+        host_net = os.readlink("/proc/self/ns/net")
+        container = manager.create(ContainerConfig(
+            command=["/bin/sleep", "30"], seccomp=False, network=True))
+        manager.spawn(container)
+        try:
+            cont_net = os.readlink(f"/proc/{container.pid}/ns/net")
+            self.assertNotEqual(cont_net, host_net)
+            # A fresh network namespace contains exactly the loopback
+            # device — the isolation boundary's observable content.
+            self.assertEqual(self._net_dev_names(container.pid), ["lo"])
+        finally:
+            _launch_cleanup(manager, container)
+
+    @unittest.skipUnless(_netns_launch_supported(), _NETNS)
+    def test_default_container_shares_host_netns(self):
+        manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True)
+        host_net = os.readlink("/proc/self/ns/net")
+        host_names = [
+            ln.split(":")[0].strip()
+            for ln in Path("/proc/self/net/dev").read_text().splitlines()[2:]
+            if ln.strip()]
+        container = manager.create(ContainerConfig(
+            command=["/bin/sleep", "30"], seccomp=False, network=False))
+        manager.spawn(container)
+        try:
+            cont_net = os.readlink(f"/proc/{container.pid}/ns/net")
+            self.assertEqual(cont_net, host_net)
+            self.assertEqual(self._net_dev_names(container.pid), host_names)
+        finally:
+            _launch_cleanup(manager, container)
 
 
 class TestBootSecurity(unittest.TestCase):
@@ -3670,6 +3853,7 @@ def run_tests():
     # Add test classes
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitives))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerFreezer))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkNamespaceIsolation))
     suite.addTests(loader.loadTestsFromTestCase(TestCapabilityEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))

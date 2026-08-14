@@ -16,6 +16,24 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.3.0] — 2026-08-14
+
+### Network Namespace Support
+
+#### Added
+
+- **`backend/container.py`** — opt-in per-container network namespace isolation (implementation_plan.md §4.1)
+  - `ContainerConfig.network` (default `False`): when enabled, the container gets its own network namespace and sees only loopback — a pure isolation boundary; no host interfaces are visible
+  - Direct-syscall path: `CLONE_NEWNET` is added to the mount/UTS/IPC unshare in the namespace-setup child (`_direct_launch_child(..., network=...)`)
+  - Legacy `unshare(1)` path: `--net` flag added to the launch command
+  - Outbound connectivity (veth/bridge) is deliberate future work — the netns is an isolation boundary, not a network pipe
+- **`backend/rust_syscalls.py`** — `CLONE_NEWNET` constant exported (the existing `unshare(flags)` FFI passes flags through raw, so no crate change was needed)
+- **`test_backend.py`** — `TestNetworkNamespaceIsolation` (2 real-launch tests, skip-gated on an honest host probe that actually launches a netns container): `network=True` container's netns inode differs from the host's and its own procfs lists only `lo`; the default container's netns equals the host's. Plus 5 unit tests (config default, legacy `--net` presence/absence, direct-child `CLONE_NEWNET` flags, manager→child flag forwarding). Suite **217 → 224**
+
+#### Changed
+
+- `IMPLEMENTATION_STATUS` 0.12.0; `implementation_plan.md` §4.1 documents the netns posture (loopback-only, veth future work)
+
 ## [0.2.0] — 2026-08-14
 
 ### Cgroup Freezer for Suspension
@@ -183,7 +201,7 @@ See `tests/BENCHMARK_PLAN.md` for methodology.
 **Immediate (Phase 1):**
 - Refactor container primitives to use direct syscalls
 - ~~Implement cgroup freezer for suspension~~ — landed 2026-08-14
-- Add network namespace support
+- ~~Add network namespace support~~ — landed 2026-08-14
 - Run IPC latency benchmarks
 
 **Short-term (Phase 2):**

@@ -76,6 +76,7 @@ class ContainerConfig:
     environment: Dict[str, str] = field(default_factory=dict)
     seccomp: bool = True  # data-plane enforcement (NPS-017 §4.2)
     default_deny: bool = False  # default-deny allowlist posture (opt-in)
+    network: bool = False  # own network namespace (loopback only), opt-in
 
 
 class Container:
@@ -606,8 +607,10 @@ class ContainerManager:
             "--uts",  # UTS namespace (hostname)
             "--mount",  # Mount namespace
             "--ipc",  # IPC namespace
-            "--",
         ]
+        if container.config.network:
+            cmd.append("--net")  # own network namespace (loopback only)
+        cmd.append("--")
         cmd += self._launcher_args(container, launcher)
         return cmd
     
@@ -666,7 +669,8 @@ class ContainerManager:
             f"memory={container.config.limits.memory_mb}MiB, "
             f"pids={container.config.limits.pid_limit}, "
             f"seccomp={container.config.seccomp}, "
-            f"default_deny={container.config.default_deny}, direct_syscalls=False)"
+            f"default_deny={container.config.default_deny}, "
+            f"network={container.config.network}, direct_syscalls=False)"
         )
         
         proc = subprocess.Popen(cmd, env=os.environ.copy())
@@ -720,7 +724,8 @@ class ContainerManager:
             f"memory={container.config.limits.memory_mb}MiB, "
             f"pids={container.config.limits.pid_limit}, "
             f"seccomp={container.config.seccomp}, "
-            f"default_deny={container.config.default_deny}, direct_syscalls=True)"
+            f"default_deny={container.config.default_deny}, "
+            f"network={container.config.network}, direct_syscalls=True)"
         )
 
         read_fd, write_fd = os.pipe()
@@ -734,7 +739,9 @@ class ContainerManager:
             # Namespace-setup child: never returns; exits via os._exit.
             os.close(read_fd)
             try:
-                _direct_launch_child(write_fd, launcher_argv)
+                _direct_launch_child(
+                    write_fd, launcher_argv, container.config.network
+                )
             except BaseException:
                 os._exit(125)
         os.close(write_fd)
@@ -854,7 +861,9 @@ def _write_root_maps(uid: Optional[int] = None, gid: Optional[int] = None) -> No
             os.close(fd)
 
 
-def _direct_launch_child(write_fd: int, launcher_argv: List[str]) -> None:
+def _direct_launch_child(
+    write_fd: int, launcher_argv: List[str], network: bool = False
+) -> None:
     """The manager's forked namespace-setup child (direct-syscall path).
 
     Performs the ``unshare(2)`` dance ``unshare(1)`` used to do, forks
@@ -869,6 +878,8 @@ def _direct_launch_child(write_fd: int, launcher_argv: List[str]) -> None:
     ``launcher_argv`` is the argv handed to ``os.execv`` (Python
     interpreter + launcher.py + container command) — built by the
     manager before forking so the child does no allocation here.
+    ``network`` adds ``CLONE_NEWNET`` to the mount/UTS/IPC unshare, so
+    the container gets its own network namespace (loopback only).
     """
     def _fail(msg: str) -> None:
         try:
@@ -894,15 +905,22 @@ def _direct_launch_child(write_fd: int, launcher_argv: List[str]) -> None:
         _fail(f"root map write: {e}")
 
     # 2. Mount/UTS/IPC namespaces (now permitted: full caps in the new
-    #    user namespace).
+    #    user namespace), plus the network namespace when the container
+    #    opted in. Creating the netns here (inside the new user
+    #    namespace) needs no extra privileges; the container then sees
+    #    only loopback — outbound connectivity is deliberately not
+    #    wired yet (veth/bridge is future work).
+    ns_flags = (
+        rust_syscalls.CLONE_NEWNS
+        | rust_syscalls.CLONE_NEWUTS
+        | rust_syscalls.CLONE_NEWIPC
+    )
+    if network:
+        ns_flags |= rust_syscalls.CLONE_NEWNET
     try:
-        rust_syscalls.unshare(
-            rust_syscalls.CLONE_NEWNS
-            | rust_syscalls.CLONE_NEWUTS
-            | rust_syscalls.CLONE_NEWIPC
-        )
+        rust_syscalls.unshare(ns_flags)
     except OSError as e:
-        _fail(f"unshare(NS|UTS|IPC): {e}")
+        _fail(f"unshare(NS|UTS|IPC{'|NET' if network else ''}): {e}")
 
     # 3. PID namespace — affects only the NEXT fork, so we fork again.
     try:

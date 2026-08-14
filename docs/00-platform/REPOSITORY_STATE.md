@@ -445,7 +445,7 @@ Documentation hygiene, fixed earlier this session:
   (build + unit tests) and the required `rust-container-conformance`
   gate — the container-facing classes, including the end-to-end
   launch tests that route through the codec, forced through the FFI.
-  Test suite: **217/217 (194 run + 23 skipped without the Rust
+  Test suite: **224/224 (201 run + 23 skipped without the Rust
   crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the

@@ -44,6 +44,7 @@ CLONE_NEWUTS = 0x0400_0000
 CLONE_NEWIPC = 0x0800_0000
 CLONE_NEWUSER = 0x1000_0000
 CLONE_NEWPID = 0x2000_0000
+CLONE_NEWNET = 0x4000_0000  # network namespace (container isolation)
 
 # MS_* flags for the container's procfs mount (hardened like
 # unshare(1)'s --mount-proc: nosuid, nodev, noexec).
@@ -458,6 +459,7 @@ __all__ = [
     "CLONE_NEWIPC",
     "CLONE_NEWUSER",
     "CLONE_NEWPID",
+    "CLONE_NEWNET",
     "MS_PROC_MOUNT",
     "set_hostname",
     "sethostname",
