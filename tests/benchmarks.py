@@ -49,6 +49,7 @@ this host in one reproducible script:
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
   python3 tests/benchmarks.py --ipc       # §1 IPC round-trip
+  python3 tests/benchmarks.py --ipc-transport  # §20 over the real UDS transport
   python3 tests/benchmarks.py --bucket    # §3 token-bucket defaults
   python3 tests/benchmarks.py --zstd      # §2 Zstd level sweep
   python3 tests/benchmarks.py --nyfs      # §4 NyFS vs native proxy
@@ -63,9 +64,10 @@ Usage:
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
   methodology (which requires two containers, load variants, and a real
-  FUSE mount). The in-process IPC path excludes the deferred Unix-socket/
-  shared-memory transport, so these numbers bound the control-plane cost,
-  not the final IPC wire cost.
+  FUSE mount). The in-process IPC path (§1) bounds the control-plane
+  cost; §20 measures the final IPC wire cost over the real Unix-domain
+  datagram transport (`--ipc-transport`). A shared-memory transport
+  remains an alternative/complement (deferred).
 - Results belong in `tests/BENCHMARK_RESULTS.md`, not in this file.
 - A full `--all` run takes roughly 1–3 minutes (the Zstd level sweep is
   the long pole at ~30 s, and `--nyfs-mount` adds ~15–20 s where the
@@ -81,6 +83,7 @@ Honesty notes (NPC-002 §5.2):
 
 import json
 import os
+import shutil
 import signal
 import statistics
 import subprocess
@@ -93,6 +96,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "source" / "nyhal-linux-backend"))
 
 from ipc.core import IPCManager, TokenBucket  # noqa: E402
+from ipc.transport import IPCDatagramServer  # noqa: E402
 from fuse.nyfs import NyFSFilesystem, NyFSOperations  # noqa: E402
 
 IPC_ITERATIONS = 20000
@@ -156,6 +160,116 @@ def benchmark_ipc_roundtrip(n=IPC_ITERATIONS, payload_size=64):
         "mean_us": round(statistics.mean(latencies), 2),
         "max_us": round(latencies[-1], 2),
     }
+
+
+TRANSPORT_IPC_WARMUP = 200
+
+
+def benchmark_ipc_transport_roundtrip(n=IPC_ITERATIONS, payload_size=64):
+    """p50/p95/p99 of a CALL/REPLY over the REAL cross-process transport
+    (``ipc/transport.py``, BENCHMARK_PLAN §1): client and server in
+    SEPARATE processes, framed by the wire codec over    ``AF_UNIX``
+    ``SOCK_DGRAM`` with kernel ``SO_PASSCRED`` sender identity (the
+    client runs in a separate process; the server side runs in the
+    benchmark's own thread, so the datagram exchange is genuinely
+    cross-process). This is the number NPS-003 §6.1's <100 us gate is
+    about — the in-process ``benchmark_ipc_roundtrip`` bounds the
+    control plane only.
+
+    The server authenticates the client by its kernel-attached pid
+    (registered before the ready handshake, so no datagram is dropped
+    by the registry), and the endpoint gets a deliberately roomy token
+    budget so the distribution is the wire cost, not ADR-0009's default
+    limiter. The client measures per-call wall latency in its own
+    process and reports the same percentile shape as the in-process
+    benchmark.
+    """
+    base = tempfile.mkdtemp(prefix="nyrqis-ipc-bench-")
+    svc_path = os.path.join(base, "svc.sock")
+    cli_path = os.path.join(base, "cli.sock")
+    ready_path = os.path.join(base, "ready")
+    out_path = os.path.join(base, "client_results.json")
+
+    mgr = IPCManager()
+    roomy = TokenBucket(bucket_size=1_000_000, tokens_per_second=1_000_000.0)
+    svc = mgr.create_endpoint("container-svc", "ep-svc")
+    svc.rate_limit = roomy  # measure the primitive, not the limiter
+    server = IPCDatagramServer(mgr, "ep-svc", svc_path)
+    server.bind()
+    stop = threading.Event()
+
+    def handler(msg, sender, sender_path):
+        server.reply(sender_path, msg.message_id, b"r" * payload_size)
+
+    server.on_call = handler
+    threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+
+    backend_dir = str(Path(__file__).resolve().parent.parent
+                      / "source" / "nyhal-linux-backend")
+    client_src = (
+        "import json, os, statistics, sys, time\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "(_backend_dir, cli_path, svc_path, out_path, ready_path, "
+        "n_s, payload_s, warm_s) = sys.argv[1:]\n"
+        "deadline = time.time() + 10\n"
+        "while not os.path.exists(ready_path) and time.time() < deadline:\n"
+        "    time.sleep(0.005)\n"
+        "from ipc.transport import IPCClient\n"
+        "c = IPCClient('bench-cli', cli_path).bind()\n"
+        "payload = b'x' * int(payload_s)\n"
+        "for _ in range(int(warm_s)):\n"
+        "    c.call(svc_path, payload, timeout_s=5)\n"
+        "lats = []\n"
+        "for _ in range(int(n_s)):\n"
+        "    t0 = time.perf_counter_ns()\n"
+        "    c.call(svc_path, payload, timeout_s=5)\n"
+        "    lats.append((time.perf_counter_ns() - t0) / 1000.0)\n"
+        "lats.sort()\n"
+        "def pct(v, p):\n"
+        "    idx = int(len(v) * p)\n"
+        "    return v[min(idx, len(v) - 1)]\n"
+        "res = {'iterations': int(n_s), 'payload_bytes': int(payload_s),\n"
+        "       'p50_us': round(pct(lats, 0.50), 2),\n"
+        "       'p95_us': round(pct(lats, 0.95), 2),\n"
+        "       'p99_us': round(pct(lats, 0.99), 2),\n"
+        "       'mean_us': round(statistics.mean(lats), 2),\n"
+        "       'min_us': round(lats[0], 2), 'max_us': round(lats[-1], 2)}\n"
+        "with open(out_path, 'w') as fh:\n"
+        "    json.dump(res, fh)\n"
+    )
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", client_src, backend_dir, cli_path,
+             svc_path, out_path, ready_path, str(n), str(payload_size),
+             str(TRANSPORT_IPC_WARMUP)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        # Register the client's pid BEFORE it may send (it waits on the
+        # ready marker - no TOCTOU, no dropped datagrams).
+        server.pid_registry = {proc.pid: "bench-cli"}
+        with open(ready_path, "w") as fh:
+            fh.write("go")
+        try:
+            out, _ = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            # A wedged client must not orphan the runner: kill it and
+            # report the section as failed (the file's own §19 note
+            # requires the runner to survive child failure).
+            proc.kill()
+            proc.communicate()
+            return {"error": "client timed out after 120s"}
+        if proc.returncode != 0:
+            return {"error": f"client failed (rc={proc.returncode}): {out[-300:]}"}
+        try:
+            with open(out_path) as fh:
+                result = json.load(fh)
+        except (OSError, ValueError):
+            return {"error": f"client produced no valid result: {out[-300:]}"}
+    finally:
+        stop.set()
+        server.close()
+        shutil.rmtree(base, ignore_errors=True)
+    return result
 
 
 def benchmark_default_bucket(duration_s=2.0, payload_size=64):
@@ -1193,6 +1307,8 @@ def main():
         description="Nyrqis Linux Backend consolidated benchmarks")
     parser.add_argument("--all", action="store_true", help="run everything (default)")
     parser.add_argument("--ipc", action="store_true", help="§1 IPC round-trip latency")
+    parser.add_argument("--ipc-transport", action="store_true",
+                        help="§20 IPC round-trip over the real UDS transport")
     parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
     parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
@@ -1229,13 +1345,14 @@ def main():
         print(json.dumps(_nyfs_mount_worker()))
         return
 
-    selected = (args.ipc or args.bucket or args.zstd or args.nyfs
-                or args.nyfs_mount or args.nyfs_persist or args.save_levers
-                or args.snapshot_dedup or args.codec or args.real_corpus
-                or args.mixed_workload or args.compaction_cost
-                or args.journal_blocksize or args.container)
+    selected = (args.ipc or args.ipc_transport or args.bucket or args.zstd
+                or args.nyfs or args.nyfs_mount or args.nyfs_persist
+                or args.save_levers or args.snapshot_dedup or args.codec
+                or args.real_corpus or args.mixed_workload
+                or args.compaction_cost or args.journal_blocksize
+                or args.container)
     if not selected or args.all:
-        args.ipc = args.bucket = args.zstd = args.nyfs = True
+        args.ipc = args.ipc_transport = args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
         args.mixed_workload = args.compaction_cost = True
@@ -1247,6 +1364,9 @@ def main():
     if args.ipc:
         _print_section("IPC round-trip, raised token budget (§1):",
                        benchmark_ipc_roundtrip())
+    if args.ipc_transport:
+        _print_section("IPC round-trip over the real UDS transport (§20):",
+                       benchmark_ipc_transport_roundtrip())
     if args.bucket:
         _print_section("Default token bucket sustained rate (§3):",
                        benchmark_default_bucket())

@@ -83,7 +83,7 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
-- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass latency data (p50 92 µs vs <100 µs target — tail exceeds; real transport shipped 2026-08-14, over-transport measurement pending)
+- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass in-process latency (p50 92 µs vs <100 µs target — tail exceeds); the real Unix-domain datagram transport shipped 2026-08-14 and its over-transport measurement landed the same day (BENCHMARK_RESULTS.md §20: p50 188.79 µs / p95 295.23 µs / p99 373.51 µs) — the §6.1 gate is NOT met at the median, so NPS-003 stays Draft with the ADR-0020 Rust transport as the documented close path
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
 - [x] NPS-006 Nyrqis Game/Application Image Format (.nygi) and Overlay — Accepted
@@ -241,11 +241,11 @@ measurements:
 1. ~~Benchmark IPC round-trip latency (unblocks NPS-003, transitively
    NPS-010's remaining path once ADR-0009 also clears).~~ **First-pass
    data collected 2026-08-12** — p50 92 µs / p95 157 µs / p99 213 µs,
-   in-process only (the real Unix-domain datagram transport shipped
-   2026-08-14, but the over-transport latency measurement is still
-   pending); §6.1's <100 µs gate is met at the median, exceeded at the
-   tail, and cannot be judged closed until a measurement over the real
-   transport exists.
+   in-process only; the over-transport measurement landed 2026-08-14
+   (BENCHMARK_RESULTS.md §20): p50 188.79 µs / p95 295.23 µs / p99
+   373.51 µs vs 87.28 µs in-process — §6.1's <100 µs gate is NOT met
+   at the median over the real transport, so the item stays open with
+   the ADR-0020 Rust transport as the documented close path.
 2. ~~Benchmark default IPC token-bucket parameters (unblocks ADR-0009,
    then NPS-010 §7.1).~~ **First-pass data collected 2026-08-12** — the
    default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s

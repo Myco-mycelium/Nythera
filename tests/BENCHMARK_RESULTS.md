@@ -28,11 +28,11 @@ below). 20,000 iterations, 64-byte payloads, warmup 200 calls.
 | max | 5,019 µs |
 
 **What this does NOT measure (honest scope):** the plan calls for two
-containers under load variants on two hardware classes. The backend's
-transport layer (Unix-domain socket / shared memory) is deferred, so
-these numbers bound the in-process control-plane cost only — the final
-wire cost will be higher, and the `NPS-003` §6.1 target (< 100 µs) can
-only be judged against the real transport once it exists.
+containers under load variants on two hardware classes. These numbers
+bound the in-process control-plane cost only — the final wire cost over
+the real Unix-domain datagram transport is measured separately in §20
+(`--ipc-transport`, p50 188.79 µs — above the `NPS-003` §6.1 target of
+< 100 µs, so the gate is NOT met over the wire).
 
 ## 2. IPC Token-Bucket Defaults (BENCHMARK_PLAN §3 data point)
 
@@ -702,6 +702,38 @@ is now **host-state-contaminated** (five D-state children hold
 be re-measured here until root clears the connections
 (`echo 1 > /sys/fs/fuse/connections/{52,53,74,75,76,77}/abort`) or the
 host is rebooted. §6's last verified numbers remain §16/§17's.
+
+## 20. IPC Round-Trip Over the Real Transport — Unix-Domain Datagram (2026-08-14)
+
+`python3 tests/benchmarks.py --ipc-transport` — the `call` primitive over
+the REAL cross-process transport (`ipc/transport.py`): the client runs
+in a separate process while the server side runs in the benchmark's own
+thread, so the datagram exchange is genuinely cross-process; framed by
+the wire codec (ADR-0020 migration #4) over `AF_UNIX SOCK_DGRAM` with
+kernel `SO_PASSCRED` sender identity.
+20,000 iterations, 64-byte payloads, 200 warmup calls, raised token
+budget (measures the wire cost, not ADR-0009's default limiter). The
+server authenticates the client by its kernel-attached pid before the
+ready handshake, so every datagram is delivered.
+
+| Metric | In-process (§1, same session) | Over transport (§20) |
+|--------|------------------------------:|---------------------:|
+| p50 | 87.28 µs | 188.79 µs |
+| p95 | 127.72 µs | 295.23 µs |
+| p99 | 219.53 µs | 373.51 µs |
+| mean | 91.04 µs | 199.31 µs |
+| min | — | 139.39 µs |
+| max | 2,838.60 µs | 2,460.88 µs |
+
+**Gate verdict — NPS-003 §6.1 (<100 µs) is NOT met at the median over
+the real transport.** The wire path costs ~2.2× the in-process control
+plane (~102 µs added at p50): two process hops, two sendto/recvmsg
+syscall pairs, wire-codec framing, and the kernel's `SO_PASSCRED`
+attachment are all in the measured path. NPS-003 remains Draft and the
+gate stays open; per ADR-0020 the shipped production path is a compiled
+(Rust) transport behind the versioned FFI boundary, and that Rust
+transport is the documented route to close the gap — these numbers are
+the reference (Python) implementation's honest floor.
 
 ## Status vs BENCHMARK_PLAN
 

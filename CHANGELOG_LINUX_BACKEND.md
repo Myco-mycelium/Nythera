@@ -16,6 +16,15 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.7.0] — 2026-08-14
+
+### Over-Transport IPC Latency Benchmark (NPS-003 §6.1 gate data)
+
+#### Added
+
+- **`tests/benchmarks.py`** — `--ipc-transport` (§20): the `call` primitive over the REAL cross-process Unix-domain datagram transport (`ipc/transport.py`) — client and server in separate processes, wire-codec framing, kernel `SO_PASSCRED` identity, 20,000 iterations / 64 B payloads / 200 warmup, raised token budget, ready-marker handshake so the registry never drops a datagram. The in-process honesty note now points at §20 for the wire cost.
+- **`tests/BENCHMARK_RESULTS.md` §20** — the gate data point: p50 188.79 µs / p95 295.23 µs / p99 373.51 µs over the transport vs 87.28 µs in-process (same session). **NPS-003 §6.1's <100 µs gate is NOT met at the median** — NPS-003 stays Draft; the ADR-0020 Rust transport is the documented close path.
+
 ## [0.6.0] — 2026-08-14
 
 ### IPC Transport Hardened + Container-to-Service End-to-End
