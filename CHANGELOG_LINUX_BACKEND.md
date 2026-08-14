@@ -16,6 +16,18 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.6.0] — 2026-08-14
+
+### IPC Transport Hardened + Container-to-Service End-to-End
+
+#### Changed
+
+- **`ipc/transport.py`** — sender identity is now **purely receiver-side**: the sender attaches nothing, and `SO_PASSCRED` makes the kernel attach the real `SCM_CREDENTIALS` `(pid, uid, gid)` to every inbound datagram (verified: even a bare `sendto` carries the kernel-attached credentials). The sender can no longer influence or forge its identity at all, and the explicit-credentials path — whose namespace-scoped pid/uid would be wrong inside a container — is gone. All `TestIPCTransport` security behavior (forgery drop, unknown-sender drop, `CAP_IPC_SEND` enforcement, CALL/REPLY correlation) is unchanged and green.
+
+#### Added
+
+- **`test_backend.py`** — `test_container_ipc_call_service` (`TestNetworkNamespaceIsolation`): a real `network=True` container granted `CAP_NETWORK_SOCKET`/`CAP_NETWORK_BIND`/`CAP_FILESYSTEM_WRITE` runs an `IPCClient` under the active seccomp filter and completes a kernel-authenticated CALL/REPLY with a host-side service over the Unix-domain datagram transport. Suite **238 → 239** (216 run + 23 skipped)
+
 ## [0.5.0] — 2026-08-14
 
 ### Unix-Domain Datagram IPC Transport

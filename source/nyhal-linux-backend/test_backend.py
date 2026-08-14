@@ -1665,6 +1665,84 @@ class TestNetworkNamespaceIsolation(unittest.TestCase):
             _launch_cleanup(manager, container)
 
     @unittest.skipUnless(_netns_launch_supported(), _NETNS)
+    def test_container_ipc_call_service(self):
+        # The whole stack end-to-end: a REAL container (direct-syscall
+        # launch) runs an IPCClient that calls a backend service over
+        # the datagram transport. The kernel's SCM_CREDENTIALS
+        # authenticate the container (via its host-visible pid) at the
+        # server, the seccomp filter permits the socket family (network
+        # caps granted) and the marker write (filesystem cap), and the
+        # CALL/REPLY round-trips through the wire codec.
+        import threading
+        base = tempfile.mkdtemp(prefix="nyrqis-ipc-e2e-")
+        svc_path = os.path.join(base, "svc.sock")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+
+        ipc_manager = IPCManager()
+        ipc_manager.create_endpoint("container-svc", "ep-svc")
+        results = {}
+        server = IPCDatagramServer(ipc_manager, "ep-svc", svc_path)
+        server.bind()
+
+        def handler(msg, sender, sender_path):
+            results["sender"] = sender
+            server.reply(sender_path, msg.message_id, b"pong")
+
+        server.on_call = handler
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+
+        backend_dir = str(Path(__file__).resolve().parent)
+        script = (
+            "import os, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(sys.argv[4]) and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('container-cli', sys.argv[2]).bind()\n"
+            "r = c.call(sys.argv[3], b'ping', timeout_s=10)\n"
+            "open(sys.argv[5], 'w').write("
+            "(r.payload.decode() if r else 'NONE'))\n"
+        )
+        ctr_manager = ContainerManager(
+            use_cgroups_v2=False, use_direct_syscalls=True)
+        container = ctr_manager.create(ContainerConfig(
+            command=[sys.executable, "-c", script, backend_dir,
+                     cli_path, svc_path, ready_path, marker],
+            seccomp=True,
+            capabilities=[
+                "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                "CAP_FILESYSTEM_WRITE",
+            ],
+        ))
+        ctr_manager.spawn(container)
+        try:
+            # Register the container's host-visible pid BEFORE it may
+            # send (it waits on the ready marker — no TOCTOU).
+            server.pid_registry = {container.pid: "container-cli"}
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            deadline = time.time() + 20.0
+            while time.time() < deadline and not os.path.exists(marker):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(marker),
+                "container never reached the IPC service",
+            )
+            with open(marker) as fh:
+                self.assertEqual(fh.read(), "pong")
+            # The handler saw the authenticated container, not a claim.
+            self.assertEqual(results.get("sender"), "container-cli")
+        finally:
+            _launch_cleanup(ctr_manager, container)
+            stop.set()
+            server.close()
+            shutil.rmtree(base, ignore_errors=True)
+
+    @unittest.skipUnless(_netns_launch_supported(), _NETNS)
     def test_network_container_loopback_is_up(self):
         # The launcher brings lo up before exec (step 2b), so a netns
         # container can bind 127.0.0.1 — verified end-to-end: the

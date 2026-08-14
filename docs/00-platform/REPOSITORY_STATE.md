@@ -83,7 +83,7 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
-- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass latency data (p50 92 µs vs <100 µs target — tail exceeds; real transport pending)
+- [ ] NPS-003 Inter-Process Communication and Capability Passing — **Draft**, IPC round-trip latency must be benchmarked before exiting Draft (§6.1, self-blocking); v1.1.0 added a shared-memory zeroing requirement, closing threat model finding FIND-CONTAINER-003; v1.2.0 recorded first-pass latency data (p50 92 µs vs <100 µs target — tail exceeds; real transport shipped 2026-08-14, over-transport measurement pending)
 - [x] NPS-004 NyFS Filesystem Core — Accepted
 - [ ] NPS-005 Transparent Compression Policy — **Draft**, transitively blocked on ADR-0007 (defines default levels tied to the still-Proposed codec ADR)
 - [x] NPS-006 Nyrqis Game/Application Image Format (.nygi) and Overlay — Accepted
@@ -241,9 +241,11 @@ measurements:
 1. ~~Benchmark IPC round-trip latency (unblocks NPS-003, transitively
    NPS-010's remaining path once ADR-0009 also clears).~~ **First-pass
    data collected 2026-08-12** — p50 92 µs / p95 157 µs / p99 213 µs,
-   in-process only (transport deferred); §6.1's <100 µs gate is met at
-   the median, exceeded at the tail, and cannot be judged closed until
-   the real transport exists.
+   in-process only (the real Unix-domain datagram transport shipped
+   2026-08-14, but the over-transport latency measurement is still
+   pending); §6.1's <100 µs gate is met at the median, exceeded at the
+   tail, and cannot be judged closed until a measurement over the real
+   transport exists.
 2. ~~Benchmark default IPC token-bucket parameters (unblocks ADR-0009,
    then NPS-010 §7.1).~~ **First-pass data collected 2026-08-12** — the
    default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s
@@ -445,7 +447,7 @@ Documentation hygiene, fixed earlier this session:
   (build + unit tests) and the required `rust-container-conformance`
   gate — the container-facing classes, including the end-to-end
   launch tests that route through the codec, forced through the FFI.
-  Test suite: **238/238 (215 run + 23 skipped without the Rust
+  Test suite: **239/239 (216 run + 23 skipped without the Rust
   crates)**.
 - 2026-08-13 (**ADR-0020 Accepted + syscalls scaffold + CI test fix + session §17**):
   ADR-0020 v2.0.0 **Accepted** by Architecture Group (issue #2; the

@@ -16,16 +16,20 @@ to peer paths.
 
 Sender identity (the honest trust anchor)
 ----------------------------------------
-A datagram sender is authenticated by the kernel's
-``SCM_CREDENTIALS`` ancillary data, not by anything on the wire. The
-receiver sets ``SO_PASSCRED`` so the kernel attaches the real sender's
-``(pid, uid, gid)`` to every inbound datagram; the backend maps the
-pid to a container, and a wire ``sender_id`` that does not match the
-authenticated container is rejected as a forgery. Unprivileged senders
-cannot forge credentials — the kernel refuses (EPERM) a ``ucred`` that
-does not match the caller (verified on Linux 6.x; ``SO_PEERCRED`` does
-NOT work on datagram sockets — it returns ``(0, -1, -1)`` — so
-``SCM_CREDENTIALS`` is the mechanism here).
+A datagram sender is authenticated by the kernel, not by anything on
+the wire: the receiver sets ``SO_PASSCRED`` and the kernel attaches
+the real sender's ``(pid, uid, gid)`` to EVERY inbound datagram (the
+sender attaches nothing, so it cannot influence or forge its identity
+at all). The backend maps the pid to a container, and a wire
+``sender_id`` that does not match the authenticated container is
+rejected as a forgery. The attached pid is the sender's **global**
+pid and the uid/gid its **real** values (verified 2026-08-14: a
+sender inside an unprivileged new pid+user namespace presented its
+namespace-local pid as 1 to itself while the receiver saw the host
+pid and host uid/gid). ``SO_PEERCRED`` does NOT work on datagram
+sockets (it returns ``(0, -1, -1)``, verified on this host), so
+receiver-side ``SO_PASSCRED`` + kernel-attached ``SCM_CREDENTIALS``
+is the mechanism here.
 
 Capability enforcement
 ----------------------
@@ -78,13 +82,6 @@ class IPCTransportError(Exception):
     """Transport-level error (bad path, unbound socket, etc.)."""
 
 
-def _make_credentials() -> bytes:
-    """The caller's real ``ucred`` for SCM_CREDENTIALS. The kernel
-    verifies it matches the caller (an unprivileged sender cannot forge
-    another identity — the send is refused with EPERM)."""
-    return _UCRED.pack(os.getpid(), os.getuid(), os.getgid())
-
-
 def _peer_credentials(ancdata: list) -> Optional[Tuple[int, int, int]]:
     """Extract the kernel-attached (pid, uid, gid) from recvmsg
     ancillary data, or None when absent (a bare sendto still gets
@@ -98,9 +95,10 @@ def _peer_credentials(ancdata: list) -> Optional[Tuple[int, int, int]]:
 class UnixDatagramEndpoint:
     """One bound Unix-domain datagram socket (the primitive).
 
-    The server side of an endpoint path sets ``SO_PASSCRED`` so every
-    inbound datagram carries the kernel-attached sender credentials;
-    the caller side attaches its own ``SCM_CREDENTIALS`` on send.
+    The receiver sets ``SO_PASSCRED`` so every inbound datagram
+    carries the kernel-attached sender credentials; senders attach
+    NOTHING (a bare ``sendto``), so the kernel's attachment is the
+    sender's real identity, uninfluenceable by the sender.
     """
 
     def __init__(self, path: str):
@@ -141,18 +139,18 @@ class UnixDatagramEndpoint:
             pass
 
     def send(self, payload: bytes, peer_path: Optional[str] = None) -> None:
-        """Send ``payload`` to ``peer_path`` (default: ``self.path``),
-        attaching the sender's real SCM_CREDENTIALS."""
+        """Send ``payload`` to ``peer_path`` (default: ``self.path``) as
+        a bare datagram — no ancillary credentials. The receiver's
+        ``SO_PASSCRED`` makes the kernel attach the sender's real
+        identity to the datagram, so the sender cannot influence or
+        forge it. Works from inside containers too: the kernel reports
+        the sender's global pid and real uid/gid (verified with a
+        sender in an unprivileged new pid+user namespace)."""
         if self._sock is None:
             raise IPCTransportError(f"endpoint {self.path} is not bound")
         target = peer_path or self.path
         try:
-            self._sock.sendmsg(
-                [payload],
-                [(_SOL_SOCKET, _SCM_CREDENTIALS, _make_credentials())],
-                0,
-                target,
-            )
+            self._sock.sendto(payload, target)
         except OSError as e:
             raise IPCTransportError(f"send to {target} failed: {e}") from e
 
@@ -174,6 +172,8 @@ class UnixDatagramEndpoint:
         except OSError as e:
             raise IPCTransportError(f"receive on {self.path} failed: {e}") from e
         creds = _peer_credentials(ancdata)
+        # SO_PASSCRED forces the kernel to attach credentials even for
+        # a bare sendto; the (0,-1,-1) fallback is defensive only.
         pid, uid, gid = creds if creds is not None else (0, -1, -1)
         sender_path = addr if isinstance(addr, str) else ""
         return data, pid, uid, gid, sender_path
@@ -322,8 +322,10 @@ class IPCClient:
     """A container's transport endpoint (the caller side).
 
     Binds its own socket path (so the server can reply to CALLs at the
-    path carried in ``metadata['reply_path']``) and speaks to peer
-    endpoint paths with the wire codec.
+    kernel-observed sender address) and speaks to peer endpoint paths
+    with the wire codec. Sends carry no credentials: the receiving
+    server's ``SO_PASSCRED`` supplies the kernel-attached identity, so
+    the client cannot claim a different container even if it wanted to.
     """
 
     def __init__(self, container_id: str, path: str):
