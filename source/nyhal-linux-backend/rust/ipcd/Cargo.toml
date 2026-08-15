@@ -1,0 +1,22 @@
+[package]
+name = "nyrqis-ipcd"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis IPC serving loop (ADR-0021) — poll/recvmsg/parse/dispatch/reply in Rust, batched per boundary crossing"
+
+[lib]
+name = "nyrqis_ipcd"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `libc` is the crate's only dependency, matching the other migration
+# crates: the socket primitives (poll/recvmsg/sendto), the sockaddr_un
+# layout, and the SCM_CREDENTIALS ancillary constants. The wire codec
+# (migration #4, rust/ipc) owns the full framing/parse trust boundary;
+# this crate owns the loop's dispatch parse — the minimal subset of
+# fields the loop reads (message_type, message_id, payload) with the
+# same bounds and drop-on-malformed behavior, pinned by the
+# differential conformance gate against the pure-Python floor.
+libc = "0.2"

@@ -863,6 +863,52 @@ small-op pattern is unchanged and §5/§12 commit numbers are in-band,
 so this stays a host-state observation, not a code regression; no gate
 declared met either way.
 
+## 21a. Live-mount §4 re-run attempt (2026-08-15)
+
+`--nyfs-mount` was re-attempted serially for this snapshot (twice, the
+§21 pattern: one isolated child per run, 150s containment). Both
+attempts wedged the kernel FUSE request (child in D-state
+`request_wait_answer`; cleared each time by `echo abort >
+/sys/fs/fuse/connections/N/abort`, which §21 established is
+owner-writable). The live-mount section therefore stays as the
+2026-08-12 §6 numbers (the last clean measurement: real kernel mount
+works end-to-end, writes batch at 128 KiB and stream ~40–46 MB/s);
+this host's FUSE path is flaky under load regardless of parallelism —
+2/2 serial attempts wedged today. Not a code regression: the §21
+serial pass's §4 proxy (in-process NyFS vs native) measured in-band.
+
+## 22. ADR-0021 A/B — Python floor vs Rust serving loop (2026-08-15)
+
+First measurement of the ADR-0021 artifact (`rust/ipcd/`, the Rust
+serving loop that owns poll → recvmsg → parse → authorize → reply and
+crosses the FFI boundary once per batch, not once per message).
+Same-session A/B over the REAL cross-process Unix-domain datagram
+transport, `--ipcd` (client in a separate process; both sides serve
+`{"op": "ping"}` with byte-identical replies — the floor via
+`BackendStatusService`, the loop via its built-in ping handler).
+
+| Metric | Python floor | Rust loop | Δ |
+|--------|--------------|-----------|-----|
+| p50 | 386.5 / 393.8 µs (2 runs) | **136.3 / 136.2 µs** | **~2.8× faster** |
+| p95 | 663.6 µs | 237.5 µs | ~2.8× |
+| p99 | 844.0 µs | 330.0 µs | ~2.6× |
+| mean | 421.3 µs | 142.6 µs | ~3.0× |
+| min | 232.1 / 231.0 µs | 112.2 / 111.9 µs | ~2.1× |
+
+Reading (the ADR-0021 gate): the loop **beats the floor decisively at
+the wire median (~2.8×)** — the differential gate is GREEN; the loop
+removes the server-side Python per-message cost (JSON parse, dict
+routing, the reply encode + the second FFI hop). The close gate
+(NPS-003 §6.1, <100 µs wire median) stays OPEN: the residual ~136 µs
+is the *client-side* Python per-call cost (its own codec encode,
+ctypes transport calls, and the `IPCClient.call` correlation loop) +
+the kernel round trip — exactly the next NyRuntime direction the ADR
+records (the client half of the loop behind the boundary). Note the
+floor here (~387 µs) is higher than §20's raw floor (~200–230 µs)
+because this A/B carries the full status-service ping path (JSON
+parse + service stack) on both sides — the like-for-like comparison
+is the point, and the differential holds across repeated runs.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

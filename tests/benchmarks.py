@@ -97,6 +97,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "source" / "nyha
 
 from ipc.core import IPCManager, TokenBucket  # noqa: E402
 from ipc.transport import IPCDatagramServer  # noqa: E402
+from ipc.service import BackendStatusService  # noqa: E402
+from ipc import loop as ipc_loop  # noqa: E402
 from fuse.nyfs import NyFSFilesystem, NyFSOperations  # noqa: E402
 
 IPC_ITERATIONS = 20000
@@ -270,6 +272,130 @@ def benchmark_ipc_transport_roundtrip(n=IPC_ITERATIONS, payload_size=64):
         server.close()
         shutil.rmtree(base, ignore_errors=True)
     return result
+
+
+IPCD_IPC_WARMUP = 200
+
+
+def benchmark_ipcd_roundtrip(n=IPC_ITERATIONS, payload_size=11):
+    """ADR-0021 A/B: Python floor vs Rust serving loop — the wire p50
+    of the status service's ``ping`` over the REAL cross-process
+    transport. Both sides serve the SAME request (``{"op": "ping"}``)
+    with the SAME byte-identical reply (the floor via
+    ``BackendStatusService``, the loop via its built-in ping handler),
+    and the client measures per-call wall latency in its own process.
+
+    The loop is the first NyRuntime-shaped artifact (ADR-0021): it owns
+    poll → recvmsg → parse → authorize → reply inside the Rust process
+    and crosses the boundary once per batch (a bounded drain per step),
+    so the per-message ctypes boundary tax is paid once per batch, not
+    twice per round trip. ADR-0021's close gate — the loop's wire p50
+    must BEAT the floor in a same-session A/B AND meet NPS-003 §6.1's
+    <100 µs median — is judged on this section's numbers.
+    """
+
+    def run_side(kind):
+        base = tempfile.mkdtemp(prefix=f"nyrqis-ipcd-{kind}-")
+        svc_path = os.path.join(base, "svc.sock")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        out_path = os.path.join(base, "client_results.json")
+        mgr = IPCManager()
+        server = IPCDatagramServer(
+            mgr, "ep-svc", svc_path, trusted_uids={os.getuid()})
+        server.bind()
+        stop = threading.Event()
+        loop = None
+        if kind == "floor":
+            BackendStatusService().attach(server)
+            threading.Thread(
+                target=server.serve, args=(stop,), daemon=True).start()
+        backend_dir = str(Path(__file__).resolve().parent.parent
+                          / "source" / "nyhal-linux-backend")
+        client_src = (
+            "import json, os, statistics, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "(_backend_dir, cli_path, svc_path, out_path, ready_path, "
+            "n_s, warm_s) = sys.argv[1:]\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(ready_path) and time.time() < deadline:\n"
+            "    time.sleep(0.005)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('bench-cli', cli_path).bind()\n"
+            "payload = b'{\\\"op\\\": \\\"ping\\\"}'\n"
+            "for _ in range(int(warm_s)):\n"
+            "    c.call(svc_path, payload, timeout_s=5)\n"
+            "lats = []\n"
+            "for _ in range(int(n_s)):\n"
+            "    t0 = time.perf_counter_ns()\n"
+            "    c.call(svc_path, payload, timeout_s=5)\n"
+            "    lats.append((time.perf_counter_ns() - t0) / 1000.0)\n"
+            "lats.sort()\n"
+            "def pct(v, p):\n"
+            "    idx = int(len(v) * p)\n"
+            "    return v[min(idx, len(v) - 1)]\n"
+            "res = {'iterations': int(n_s), 'payload_bytes': 11,\n"
+            "       'p50_us': round(pct(lats, 0.50), 2),\n"
+            "       'p95_us': round(pct(lats, 0.95), 2),\n"
+            "       'p99_us': round(pct(lats, 0.99), 2),\n"
+            "       'mean_us': round(statistics.mean(lats), 2),\n"
+            "       'min_us': round(lats[0], 2), 'max_us': round(lats[-1], 2)}\n"
+            "with open(out_path, 'w') as fh:\n"
+            "    json.dump(res, fh)\n"
+        )
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", client_src, backend_dir, cli_path,
+                 svc_path, out_path, ready_path, str(n),
+                 str(IPCD_IPC_WARMUP)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            # Register the client's pid BEFORE it may send (it waits on
+            # the ready marker). The loop's policy is fixed at creation,
+            # so create it now that the pid is known.
+            if kind == "loop":
+                loop = ipc_loop.IpcdLoop(
+                    server.endpoint._sock.fileno(),
+                    batch_max=64,
+                    pids={proc.pid: "bench-cli"},
+                    trusted_uids=[os.getuid()],
+                )
+
+                def drive():
+                    while not stop.is_set():
+                        try:
+                            loop.step(100)
+                        except Exception:
+                            break
+
+                threading.Thread(target=drive, daemon=True).start()
+            server.pid_registry = {proc.pid: "bench-cli"}
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            try:
+                out, _ = proc.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return {"error": "client timed out after 120s"}
+            if proc.returncode != 0:
+                return {"error": f"client failed (rc={proc.returncode}): {out[-300:]}"}
+            try:
+                with open(out_path) as fh:
+                    result = json.load(fh)
+            except (OSError, ValueError):
+                return {"error": f"client produced no valid result: {out[-300:]}"}
+        finally:
+            stop.set()
+            if loop is not None:
+                loop.close()
+            server.close()
+            shutil.rmtree(base, ignore_errors=True)
+        return result
+
+    floor = run_side("floor")
+    loop = run_side("loop")
+    return {"floor": floor, "loop": loop}
 
 
 def benchmark_default_bucket(duration_s=2.0, payload_size=64):
@@ -1297,7 +1423,14 @@ def benchmark_zstd_levels():
 def _print_section(title, data):
     print(title)
     for k, v in data.items():
-        print(f"  {k}: {v}")
+        if isinstance(v, dict):
+            # Nested sections (e.g. the ADR-0021 floor/loop A/B) print
+            # as an indented sub-block.
+            print(f"  {k}:")
+            for k2, v2 in v.items():
+                print(f"    {k2}: {v2}")
+        else:
+            print(f"  {k}: {v}")
 
 
 def main():
@@ -1309,6 +1442,8 @@ def main():
     parser.add_argument("--ipc", action="store_true", help="§1 IPC round-trip latency")
     parser.add_argument("--ipc-transport", action="store_true",
                         help="§20 IPC round-trip over the real UDS transport")
+    parser.add_argument("--ipcd", action="store_true",
+                        help="§21 ADR-0021 A/B: Python floor vs Rust serving loop")
     parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
     parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
@@ -1345,14 +1480,15 @@ def main():
         print(json.dumps(_nyfs_mount_worker()))
         return
 
-    selected = (args.ipc or args.ipc_transport or args.bucket or args.zstd
-                or args.nyfs or args.nyfs_mount or args.nyfs_persist
+    selected = (args.ipc or args.ipc_transport or args.ipcd or args.bucket
+                or args.zstd or args.nyfs or args.nyfs_mount or args.nyfs_persist
                 or args.save_levers or args.snapshot_dedup or args.codec
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
                 or args.container)
     if not selected or args.all:
-        args.ipc = args.ipc_transport = args.bucket = args.zstd = args.nyfs = True
+        args.ipc = args.ipc_transport = args.ipcd = True
+        args.bucket = args.zstd = args.nyfs = True
         args.nyfs_mount = args.nyfs_persist = args.save_levers = True
         args.snapshot_dedup = args.codec = args.real_corpus = True
         args.mixed_workload = args.compaction_cost = True
@@ -1367,6 +1503,9 @@ def main():
     if args.ipc_transport:
         _print_section("IPC round-trip over the real UDS transport (§20):",
                        benchmark_ipc_transport_roundtrip())
+    if args.ipcd:
+        _print_section("ADR-0021 A/B — floor vs Rust serving loop (§21):",
+                       benchmark_ipcd_roundtrip())
     if args.bucket:
         _print_section("Default token bucket sustained rate (§3):",
                        benchmark_default_bucket())

@@ -493,6 +493,27 @@ Documentation hygiene, fixed earlier this session:
   unprivileged posture) — hermetic (reads the unit, installs nothing).
   Suite 295 → 299 (273 run + 26 skipped; the v2 transport conformance
   adds the embedded-NUL binary-payload regression test).
+- 2026-08-15 (**ADR-0021 first increment: the Rust IPC serving loop**):
+  new `rust/ipcd/` (ABI 1.0.0, `libc`-only) — the first
+  NyRuntime-shaped artifact. The loop owns poll → recvmsg
+  (`SCM_CREDENTIALS`) → wire parse → sender authorization → dispatch →
+  reply inside the Rust process and crosses the FFI boundary once per
+  *batch* (bounded drain per step), not once per message; the built-in
+  `ping` op of the status service is byte-identical to the Python
+  floor's reply; non-ping/malformed/forged/unknown senders drop at the
+  trust boundary; authorization policy (pid→container, trusted uids,
+  operator id) crosses as plain data at loop creation. New
+  `ipc/loop.py` driver (established search/ABI/force loader contract),
+  `TestRustIpcdLoader` (8) + `TestIpcdLoopConformance` (3), and a
+  plan §4.5 restart-recovery e2e (real daemon subprocess recovers a
+  stale state file, logs the orphans, atomically replaces the state
+  with its own identity). `--ipcd` benchmark (§22): the loop beats
+  the floor ~2.8× at the wire median (p50 ~136 µs vs ~387–394 µs,
+  2026-08-15) — ADR-0021's differential gate GREEN; the <100 µs
+  close gate stays open (client-side Python cost is the residual, the
+  next NyRuntime direction). CI: `rust-ipcd` build + required
+  `rust-ipcd-conformance` gate. Suite 317 → **329** (300 run + 29
+  skipped on crate-less hosts).
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

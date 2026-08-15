@@ -10,28 +10,35 @@ interpreter**; Python remains the unrestricted language for tooling
 above the boundary. Migrations land behind a versioned FFI boundary
 (ABI-001); user-space tooling, tests, and benchmarks stay Python. See
 `docs/reference/adr/ADR-0020-implementation-languages.md` for the full
-matrix and the three normative rules.
-
-## Status
+matrix and the three normative rules.## Status
 
 | Component | Status | Evidence gate (Migration rule) |
 |-----------|--------|--------------------------------|
-| `seccomp/` policy compiler (BPF generate/validate/simulate) | **Scaffold; Python-side conformance groundwork + FFI loader DONE, Rust implementation blocked on a toolchain** (rustup download does not complete on this host — 2026-08-12). CI (`.github/workflows/ci.yml`) builds the crate on every push; a non-blocking conformance job forces the full Python suite through the FFI and turns green when the port lands | Security posture (memory-safe policy compiler, ADR-0020 priority #1) |
-| `syscalls/` (clone/unshare/sethostname/prctl) | **Scaffold** (FFI boundary contract + stub entry points; built by CI on every push — 2026-08-13) | ADR-0020 priority #2 (implementation_plan.md §4.1) |
-| NyFS checksum/compression hot path | Not started | ADR-0020 priority #3 — gated on §4/§5 measured bottleneck |**Honesty note:** nothing in this directory compiles locally yet — there
-is no Rust toolchain on the current dev host (rustup's toolchain download
-has not completed in several attempts). The crate is a scaffold
-(spec + FFI contract + conformance plan) and **MUST NOT** be treated as
-a built or tested component; `.github/workflows/ci.yml` is the first
-place it compiles. The Python-side conformance groundwork is done and
-verified (serializer + round-trip + syscall-table fixes in
-`backend/seccomp.py`) and the **FFI loader is implemented and tested**
-(`TestRustFfILoader` pins the wire format and the fallback/force
-contract). The Rust implementation itself remains to be written and
-built once a toolchain exists. The pure-Python implementation remains
-the only shipped implementation until the first Rust module passes its
-conformance suite through the FFI. This is the concrete application of
-ADR-0020's **platform-boundary rule**: the seccomp enforcement path
-below it is platform-critical and must not depend on the interpreter
-in its shipped form — the Python implementation remains the reference
-behavior while the Rust module behind the FFI is built.
+| `seccomp/` policy compiler (BPF generate/validate/simulate) | **IMPLEMENTED 2026-08-13** (ABI 1.1.0) | golden BPF programs byte-identical to the pure-Python compiler; `rust-seccomp` build + required `rust-seccomp-conformance` gate green in CI |
+| `syscalls/` (sethostname/prctl/unshare/mount) | **IMPLEMENTED 2026-08-13** (ABI 1.1.0) — wired into the direct-syscall launcher | `rust-syscalls` build + required `rust-syscalls-conformance` gate green |
+| NyFS checksum/compression hot path (`nyfs/`) | **IMPLEMENTED 2026-08-13** (ABI 1.0.0) | `rust-nyfs` build + required `rust-nyfs-conformance` gate green |
+| IPC wire codec (`ipc/`) | **IMPLEMENTED 2026-08-13** (ABI 1.0.0) | `rust-ipc` build + required `rust-ipc-conformance` gate green (byte-identical wire) |
+| Container launch-plan primitives (`container/`) | **IMPLEMENTED 2026-08-13** (ABI 1.0.0) | `rust-container` build + required `rust-container-conformance` gate green |
+| IPC transport hot path (`transport/`) | **IMPLEMENTED 2026-08-14** (ABI 2.0.0, caller-supplied buffers) | `rust-transport` build + required `rust-transport-conformance` gate green; §20 benchmark data |
+| IPC serving loop (`ipcd/`, ADR-0021 — the first NyRuntime-shaped artifact) | **IMPLEMENTED 2026-08-15** (ABI 1.0.0) | `rust-ipcd` build + required `rust-ipcd-conformance` gate green; §22 A/B: beats the Python floor ~2.8× at the wire median |
+
+All seven crates build and pass their unit tests **in CI on every push**
+(the `dtolnay/rust-toolchain@stable` jobs) and locally on the dev host
+(the system rustc 1.75 builds them; a maintained stable toolchain via
+rustup is also being installed there). Each crate is `libc`-only, and
+each has a **required, blocking conformance gate** that forces the
+relevant Python test classes through the FFI
+(`NYRQIS_RUST_LIB=... NYRQIS_RUST_FORCE=1`), so a semantic regression
+in any Rust module fails the build.
+
+This is the concrete application of ADR-0020's **platform-boundary
+rule**: the enforcement paths below the boundary (seccomp, storage
+hot paths, IPC core/transport/serving loop, container launch) must not
+depend on the Python interpreter in their shipped form — the Python
+implementations remain the reference behavior and the fallback, while
+the Rust modules behind the versioned FFI boundary are the platform
+direction. The serving loop is the first step of the ADR-0021
+NyRuntime direction: the loop itself owns the per-message dispatch
+cycle, so the ctypes boundary tax is paid once per batch, not twice
+per round trip.
+

@@ -24,6 +24,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -54,6 +55,7 @@ from fuse.nyfs import (
 from fuse import nyfs_codec
 from ipc import ipc_codec
 from ipc import transport_codec
+from ipc import loop as ipc_loop
 from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
@@ -1082,6 +1084,81 @@ class TestStatusServiceHost(unittest.TestCase):
                 proc.kill()
                 proc.wait()
         self.assertFalse(os.path.exists(self.sock))
+
+    def test_daemon_restart_recovers_stale_state(self):
+        # Plan §4.5 crash-recovery END-TO-END through the REAL daemon
+        # process: a state file left by a previous (now dead) daemon —
+        # carrying an orphaned container manifest — is recovered at
+        # boot. The daemon logs the orphan record, atomically replaces
+        # the state with its OWN identity, and carries the recovery
+        # summary forward (reporting only — never resumption).
+        from backend.daemon_state import DaemonStateFile
+        # A definitely-dead pid: spawn and reap a child, then reuse its
+        # pid (kill(0) on it must raise ProcessLookupError).
+        reaper = subprocess.Popen([sys.executable, "-c", "pass"])
+        reaper.wait()
+        dead_pid = reaper.pid
+        try:
+            os.kill(dead_pid, 0)
+            self.skipTest("could not obtain a dead pid")
+        except ProcessLookupError:
+            pass
+        state_path = os.path.join(self.tmp, "daemon-state.json")
+        self.assertTrue(DaemonStateFile(state_path).save({
+            "daemon_pid": dead_pid,
+            "backend_version": "9.9.8",
+            "socket_path": "/run/nyrqis/old.sock",
+            "containers": [{
+                "id": "ctr-orphan-1",
+                "command": ["/bin/sleep", "5"],
+                "state": "running",
+                "pid": dead_pid,
+            }],
+        }))
+        backend = str(Path(nyrqis_backend.__file__).resolve())
+        proc = subprocess.Popen(
+            [sys.executable, backend, "service", "serve",
+             "--socket", self.sock, "--state-file", state_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not os.path.exists(self.sock):
+                time.sleep(0.05)
+            self.assertTrue(os.path.exists(self.sock),
+                            "service daemon never bound the socket")
+            # The state file was atomically replaced by the new
+            # daemon's identity (poll: start() rewrites right after
+            # recover, which is after bind).
+            state = None
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                state = DaemonStateFile(state_path).load()
+                if state and state.get("daemon_pid") == proc.pid:
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(state)
+            self.assertEqual(state["daemon_pid"], proc.pid)
+            self.assertEqual(state["containers"], [],
+                             "no live containers to re-persist")
+            self.assertEqual(state["recovery"]["previous_pid"], dead_pid)
+            self.assertEqual(
+                len(state["recovery"]["containers_left"]), 1)
+            self.assertEqual(
+                state["recovery"]["containers_left"][0]["id"],
+                "ctr-orphan-1")
+            proc.send_signal(signal.SIGTERM)
+            out, err = proc.communicate(timeout=15)
+            self.assertEqual(proc.returncode, 0, out + err)
+            self.assertIn("Status service listening", out)
+            # The recovery was LOGGED at boot (reporting, not
+            # resumption — nothing was auto-killed or re-spawned).
+            self.assertIn("recovered 1 container record(s)", out + err)
+            self.assertIn("ctr-orphan-1", out + err)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
     def test_host_container_completes_status_call(self):
         # Gate at run time: the _netns_* helpers (and the _NETNS skip
@@ -5988,6 +6065,305 @@ class TestTransportConformance(unittest.TestCase):
             shutil.rmtree(base, ignore_errors=True)
 
 
+class TestRustIpcdLoader(unittest.TestCase):
+    """ADR-0021 FFI loader behavior (see rust/ipcd/): the fallback
+    contract and error mapping for the Rust IPC serving loop. Like the
+    other migration loader tests, these pin the loader on hosts WITHOUT
+    the crate built; when the crate lands, the CI conformance job
+    (NYRQIS_RUST_FORCE=1) is the real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        ipc_loop._RUST_LIB = None
+        ipc_loop._RUST_LIB_CHECKED = False
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        ipc_loop._RUST_LIB = None
+        ipc_loop._RUST_LIB_CHECKED = False
+
+    @staticmethod
+    def _no_backend():
+        os.environ["NYRQIS_RUST_LIB"] = "/nonexistent/libnyrqis_ipcd.so"
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_RUST_LIB"] = "/custom/libnyrqis_ipcd.so"
+        self.assertEqual(
+            ipc_loop._rust_lib_candidates(),
+            ["/custom/libnyrqis_ipcd.so"],
+        )
+
+    def test_error_mapping_negative_errno_becomes_oserror(self):
+        with self.assertRaises(OSError) as cm:
+            ipc_loop._raise_rust_error(-errno.EINVAL, "test")
+        self.assertEqual(cm.exception.errno, errno.EINVAL)
+
+    def test_error_mapping_internal_is_runtime_error(self):
+        with self.assertRaises(RuntimeError):
+            ipc_loop._raise_rust_error(ipc_loop.RUST_ERR_INTERNAL, "test")
+
+    def test_absent_backend_raises_backend_unavailable(self):
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(ipc_loop._load_rust_backend())
+        with self.assertRaises(ipc_loop.BackendUnavailable):
+            ipc_loop.IpcdLoop(3)
+
+    def test_force_mode_raises_when_backend_unavailable(self):
+        self._no_backend()
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            ipc_loop.IpcdLoop(3)
+
+    def test_ffi_loop_new_routing_with_fake_lib(self):
+        # With a lib loaded, IpcdLoop must drive the FFI entry points
+        # with the expected arguments and never touch ctypes.CDLL.
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_loop_new.return_value = 0x1234
+        fake.nyrqis_ipcd_loop_step.return_value = 0
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ), mock.patch("ipc.loop.ctypes.CDLL") as cdll_mock:
+            loop = ipc_loop.IpcdLoop(
+                7, batch_max=8,
+                pids={os.getpid(): "ctr-a"},
+                trusted_uids=[os.getuid()],
+                operator_id="host-op",
+            )
+            processed = loop.step(250)
+            loop.close()
+        cdll_mock.assert_not_called()
+        # loop_new: fd, batch_max, pid table (pid + container), trusted
+        # uids, operator id.
+        new_args = fake.nyrqis_ipcd_loop_new.call_args.args
+        self.assertEqual(new_args[0], 7)
+        self.assertEqual(new_args[1], 8)
+        self.assertEqual(new_args[3], 1)  # one pid entry
+        entry = new_args[2][0]
+        self.assertEqual(entry.pid, os.getpid())
+        self.assertEqual(entry.container, b"ctr-a")
+        self.assertEqual(new_args[5], 1)  # one trusted uid
+        self.assertEqual(new_args[6], b"host-op")
+        # step: (handle, timeout_ms).
+        self.assertEqual(fake.nyrqis_ipcd_loop_step.call_args.args[1], 250)
+        self.assertEqual(processed, 0)
+        # free: the handle (wrapped as c_void_p).
+        self.assertEqual(
+            fake.nyrqis_ipcd_loop_free.call_args.args[0].value, 0x1234)
+
+    def test_ffi_loop_step_error_mapping(self):
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_loop_new.return_value = 0x99
+        fake.nyrqis_ipcd_loop_step.return_value = -errno.EPIPE
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ):
+            loop = ipc_loop.IpcdLoop(3)
+            with self.assertRaises(OSError) as cm:
+                loop.step(10)
+            self.assertEqual(cm.exception.errno, errno.EPIPE)
+
+    def test_force_mode_raises_on_rust_loop_new_failure(self):
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_loop_new.return_value = None
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ), mock.patch.dict(os.environ, {"NYRQIS_RUST_FORCE": "1"}):
+            with self.assertRaises(RuntimeError):
+                ipc_loop.IpcdLoop(3)
+
+
+class TestIpcdLoopConformance(unittest.TestCase):
+    """ADR-0021 differential: the Rust serving loop (via the FFI) must
+    reproduce the Python floor's serving semantics for the built-in
+    ping op — reply correlation (reply_to = call id), payload
+    byte-identical, empty sender/receiver, metadata {}. Runs when the
+    crate is built (the CI gate builds it and forces the class; locally
+    it runs when the crate is present). The message_id and timestamp of
+    the reply are per-message (uuid/now on the floor, generated in the
+    loop) and are NOT part of the differential — everything else is.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        ipc_loop._RUST_LIB = None
+        ipc_loop._RUST_LIB_CHECKED = False
+        cls.available = ipc_loop.available()
+
+    def setUp(self):
+        if not self.available:
+            self.skipTest(
+                "Rust IPC serving loop crate not built (CI gate builds it)")
+        self.tmp = tempfile.mkdtemp(prefix="nyrqis-ipcd-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _floor_server(self, name):
+        """The Python floor: an IPCDatagramServer with the status
+        service attached, same policy as the loop (pid→container,
+        trusted uid, operator id)."""
+        svc_path = os.path.join(self.tmp, f"{name}-svc.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={os.getpid(): "container-A"},
+            trusted_uids={os.getuid()},
+        )
+        BackendStatusService().attach(server)
+        server.bind()
+        return manager, server
+
+    def _loop_server(self, name):
+        """The Rust loop over the same socket setup."""
+        svc_path = os.path.join(self.tmp, f"{name}-svc.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={os.getpid(): "container-A"},
+            trusted_uids={os.getuid()},
+        )
+        server.bind()
+        loop = ipc_loop.IpcdLoop(
+            server.endpoint._sock.fileno(),
+            batch_max=16,
+            pids={os.getpid(): "container-A"},
+            trusted_uids=[os.getuid()],
+        )
+        stop = threading.Event()
+
+        def drive():
+            while not stop.is_set():
+                try:
+                    loop.step(100)
+                except Exception:
+                    break
+
+        thread = threading.Thread(target=drive, daemon=True)
+        thread.start()
+        return manager, server, loop, stop, thread
+
+    @staticmethod
+    def _assert_reply_matches_floor(reply, call_msg, expected_payload):
+        # The differential: every field the floor sets is compared —
+        # message_id and timestamp are per-message by design.
+        assert reply.message_type == IPCMessageType.REPLY
+        assert reply.reply_to == call_msg.message_id
+        assert reply.sender_id == ""
+        assert reply.receiver_id == ""
+        assert reply.capabilities == []
+        assert reply.metadata == {}
+        assert reply.payload == expected_payload
+
+    def test_ping_reply_matches_floor_semantics(self):
+        # The differential: drive the floor once, drive the loop once
+        # with the identical policy and request, and compare every
+        # reply field the floor sets (message_id/timestamp are
+        # per-message by design and excluded).
+        _, floor = self._floor_server("floor")
+        mgr, loop_srv, loop, stop, thread = self._loop_server("loop")
+        client = IPCClient("container-A", os.path.join(self.tmp, "cli.sock")).bind()
+        floor_stop = threading.Event()
+        threading.Thread(
+            target=floor.serve, args=(floor_stop,), daemon=True).start()
+        try:
+            # Floor path: synchronous call through the real server.
+            call_msg = client.call(
+                floor.endpoint.path, b'{"op": "ping"}', timeout_s=5.0)
+            self.assertIsNotNone(call_msg, "floor must answer")
+            self.assertEqual(call_msg.message_type, IPCMessageType.REPLY)
+            # Loop path: the identical request wire, driven by the loop
+            # thread; the client receives the correlated reply.
+            req = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-A",
+                receiver_id="",
+                payload=b'{"op": "ping"}',
+            )
+            client.endpoint.send(req.to_wire(), peer_path=loop_srv.endpoint.path)
+            got = client.endpoint.receive(timeout=3.0)
+            self.assertIsNotNone(got, "loop must answer")
+            data, pid, uid, gid, sender_path = got
+            loop_reply = IPCMessage.from_wire(data)
+            self.assertEqual(loop_reply.message_type, IPCMessageType.REPLY)
+            self.assertEqual(loop_reply.reply_to, req.message_id)
+            self.assertEqual(loop_reply.sender_id, "")
+            self.assertEqual(loop_reply.receiver_id, "")
+            self.assertEqual(loop_reply.capabilities, [])
+            self.assertEqual(loop_reply.metadata, {})
+            # The payload is byte-identical to the floor's.
+            self.assertEqual(loop_reply.payload, call_msg.payload)
+            self.assertIn(
+                b'"container": "container-A"', loop_reply.payload)
+        finally:
+            floor_stop.set()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            loop_srv.close()
+            client.close()
+            floor.close()
+
+    def test_loop_batches_multiple_pings_in_one_step(self):
+        mgr, srv, loop, stop, thread = self._loop_server("batch")
+        client = IPCClient("container-A", os.path.join(self.tmp, "batch-cli.sock")).bind()
+        try:
+            ids = []
+            for i in range(5):
+                req = IPCMessage(
+                    message_type=IPCMessageType.CALL,
+                    sender_id="container-A",
+                    payload=b'{"op": "ping"}',
+                )
+                ids.append(req.message_id)
+                client.endpoint.send(req.to_wire(), peer_path=srv.endpoint.path)
+            time.sleep(0.3)  # let the loop thread drain the batch
+            for expected in ids:
+                got = client.endpoint.receive(timeout=2.0)
+                self.assertIsNotNone(got)
+                reply = IPCMessage.from_wire(got[0])
+                self.assertEqual(reply.reply_to, expected)
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            srv.close()
+            client.close()
+
+    def test_loop_drops_non_ping_and_unknown_sender(self):
+        mgr, srv, loop, stop, thread = self._loop_server("drop")
+        client = IPCClient("container-A", os.path.join(self.tmp, "drop-cli.sock")).bind()
+        try:
+            # Non-ping op from a known sender: drained but not answered.
+            req = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-A",
+                payload=b'{"op": "status"}',
+            )
+            client.endpoint.send(req.to_wire(), peer_path=srv.endpoint.path)
+            self.assertIsNone(client.endpoint.receive(timeout=0.5))
+            # Forged sender_id (pid authenticates as container-A): the
+            # loop drops it — the wire sender is not the kernel identity.
+            forged = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-evil",
+                payload=b'{"op": "ping"}',
+            )
+            client.endpoint.send(forged.to_wire(), peer_path=srv.endpoint.path)
+            self.assertIsNone(client.endpoint.receive(timeout=0.5))
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            srv.close()
+            client.close()
+
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -6031,6 +6407,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportRustLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustIpcdLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestIpcdLoopConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerIpcRegistry))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))

@@ -5,10 +5,21 @@ version: 1.0.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-08-14
-updated: 2026-08-14
+updated: 2026-08-15
 ai_assisted: true
 depends_on: [NPS-003, ADR-0020, ABI-001, ADR-0009]
 ---
+
+> **Status (2026-08-15):** the first increment LANDED — `rust/ipcd/`
+> (ABI 1.0.0) + `ipc/loop.py` + the differential conformance gate
+> (CI `rust-ipcd-conformance`, required) + the `--ipcd` benchmark.
+> Measured on the build host (BENCHMARK_RESULTS.md §22): the loop
+> beats the Python floor ~2.8× at the wire median (p50 ~136 µs vs
+> ~387–394 µs) — the differential gate is GREEN. The close gate
+> (NPS-003 §6.1 <100 µs median) stays OPEN: the residual is the
+> client-side Python per-call cost, which is the next increment (the
+> client half of the loop behind the boundary). The floor remains
+> shipped; this ADR stays Proposed until the close gate is met.
 
 # ADR-0021 — NyRuntime Direction: The IPC Serving Loop Behind the FFI Boundary
 

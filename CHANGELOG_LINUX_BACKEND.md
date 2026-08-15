@@ -16,6 +16,18 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.4] — 2026-08-15
+
+### ADR-0021 first increment: the Rust IPC serving loop (`rust/ipcd/`)
+
+#### Added
+
+- **`rust/ipcd/` (NEW)** — the first NyRuntime-shaped artifact (ADR-0021): a Rust serving loop that owns the whole dispatch cycle for the daemon's service socket — `poll` → `recvmsg` (`SCM_CREDENTIALS`) → wire parse → sender authorization → service dispatch → `sendto` reply — inside the Rust process, crossing the FFI boundary once per *batch* (a bounded drain per step) instead of once per message. ABI 1.0.0, `libc` the only dependency, following the migration-crate conventions. First-increment scope (honest, the ADR's gate-on-data rule): the built-in `ping` op of the status service with byte-identical reply semantics to the Python floor; anything else (non-CALL, non-ping, malformed wire, unknown or forged sender) is dropped at the trust boundary — the non-ping dispatch handoff is the next increment. Sender-authorization policy (pid→container table, trusted uids, operator id) crosses the boundary as plain data at loop creation (ABI-001: no pointers into Python objects). 14 crate unit tests (parse contract, ping detection, reply payload byte-identity, registered/operator/forged/drop paths, batch drain, clean timeout, error codes).
+- **`ipc/loop.py` (NEW)** — the FFI driver for the loop: the established search/ABI/force loader contract (`$NYRQIS_RUST_LIB` → crate `target/release` → bare name; `NYRQIS_RUST_FORCE=1` turns misses into errors) plus the `IpcdLoop` wrapper (`new(fd, batch_max, pids, trusted_uids, operator_id)`, `step(timeout_ms)`, `close()`). The caller (the Python floor) keeps owning the socket lifecycle — the loop does NOT close the fd.
+- **`test_backend.py`** — `TestRustIpcdLoader` (8: loader contract, error mapping, fake-lib FFI routing) and `TestIpcdLoopConformance` (3: ping reply semantics ≡ floor (reply_to correlation, empty sender/receiver, metadata `{}`, byte-identical payload), batch drain of 5 pings in one step, non-ping + forged-sender drops). Plus `TestStatusServiceHost.test_daemon_restart_recovers_stale_state` — the plan §4.5 recovery path END-TO-END through a real daemon subprocess (stale state pre-seeded with a dead pid + orphan manifest → the daemon logs the recovery and atomically replaces the state with its own identity, carrying the recovery summary forward). Suite 317 → **329** (300 run + 29 skipped on crate-less hosts; locally all run).
+- **`tests/benchmarks.py`** — `--ipcd` (§21 ADR-0021 A/B): the same `{"op": "ping"}` request served by the Python floor (`BackendStatusService`) and by the Rust loop, client in a separate process, wire p50 each. Measured on the build host 2026-08-15 (BENCHMARK_RESULTS.md §22): **floor p50 ~387–394 µs vs loop p50 ~136 µs — the loop beats the floor ~2.8× at the wire median**, so ADR-0021's differential gate is GREEN; the close gate (NPS-003 §6.1 <100 µs median) stays OPEN — the residual is the client-side Python per-call cost (its own codec + transport + correlation loop), which is exactly the next NyRuntime direction.
+- **`.github/workflows/ci.yml`** — `rust-ipcd` (build + tests + cdylib present) and `rust-ipcd-conformance` (required gate: `TestRustIpcdLoader` + `TestIpcdLoopConformance` forced through the FFI).
+
 ## [0.13.3] — 2026-08-14
 
 ### Phase 5 (plan §4.5): persistent state, health checks, syslog logging
