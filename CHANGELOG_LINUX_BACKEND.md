@@ -16,6 +16,14 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.1] — 2026-08-15
+
+### The operator CLI (`nyrqisctl`) — the user-facing surface of the daemon's control plane
+
+- **`nyrqisctl.py` (NEW)** — a standalone operator CLI that drives a running daemon's main service socket over the IPC transport, claiming the operator identity (`host-operator`, authenticated by the kernel-attached uid): `ping` / `status` / `health` (status service) and `containers list|run|kill` (control service). Human-readable output by default, `--json` for the raw reply, `--socket` to point at the daemon (`/tmp/nyrqis-status.sock` default; the systemd unit serves `/run/nyrqis/status.sock`), exit 0/1/2 (ok / daemon unreachable or op failed / usage). A missing or closed daemon socket fails cleanly on both client halves (the floor returns `None`, the Rust client half raises `ENOENT`/`ECONNREFUSED` — both map to the same "no reply from the daemon" error).
+- **Operator carve-out in `ipc/service.py`** — `status`/`health` were gated on `CAP_SYSTEM_INFO` with no operator path, so the daemon's own user could not read its own health through the wire. The status service now authorizes `DEFAULT_OPERATOR_ID` outright: the transport has already authenticated it by the kernel-attached uid (trusted-uid path), and such a process has full control of the daemon anyway — the same model the control service already uses (the container capability model deliberately does not apply to the operator). Container callers are unchanged (still capability-gated, fail-closed).
+- **`test_backend.py` — new `TestOperatorCli` (10 tests)**: hermetic payload construction (status + control ops), human-format rendering (status/health/table/run), the `run` positional-vs-subcommand regression (`run_command` dest so the subcommand survives), missing-socket → `None`; end-to-end through a REAL daemon: operator `ping`/`status`/`health` answered (carve-out verified), `containers list`, the full `run`→`list`→`kill` loop on a REAL container (userns-gated like the other netns e2e), clean no-daemon failure (no traceback), and `--json`. Suite 358 → **368**.
+
 ## [0.14.0] — 2026-08-15
 
 ### The Rust-native child entry point: the container's PID-1 is created by ONE `clone(2)` FFI call — no Python between fork and exec (ADR-0020 migration #2 completion, implementation_plan.md §4.1)

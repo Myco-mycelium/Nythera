@@ -41,6 +41,8 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from .transport import DEFAULT_OPERATOR_ID  # operator carve-out (below)
+
 logger = logging.getLogger(__name__)
 
 
@@ -144,7 +146,17 @@ class BackendStatusService:
     def _authorized(self, sender: str, capability) -> bool:
         """True when the caller holds ``capability``. Fails closed: no
         ``CapabilityManager`` attached means no grant can be verified,
-        so nothing is authorized."""
+        so nothing is authorized.
+
+        The operator (``DEFAULT_OPERATOR_ID`` — the daemon's own user
+        on the trusted-uid path) is always authorized: the transport
+        already authenticated it by the kernel-attached uid, and such
+        a process has full control of the daemon anyway (it could kill
+        or restart it), so the container capability model deliberately
+        does not apply to it — the same model the control service
+        uses (see ``ipc/transport.py`` "Operator identity")."""
+        if sender == DEFAULT_OPERATOR_ID:
+            return True
         if self.capability_manager is None:
             return False
         # Lazy import: ipc must not depend on backend eagerly (the

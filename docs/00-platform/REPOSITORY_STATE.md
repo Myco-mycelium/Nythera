@@ -631,6 +631,30 @@ Documentation hygiene, fixed earlier this session:
   close parity, the Python status handler dominates both sides. The
   launcher-init port (seccomp install, cgroup hardening in Rust)
   remains the next NyRuntime step.
+- 2026-08-15 (**operator CLI — `nyrqisctl`, the user-facing surface of
+  the daemon's control plane**): `nyrqisctl.py` (backend root, beside
+  `nyrqis_backend.py`) drives a running daemon's main service socket
+  over the IPC transport claiming the operator identity
+  (`host-operator`, kernel-attached uid): `ping`/`status`/`health`
+  (status service) and `containers list|run|kill` (control service) —
+  human-readable output by default, `--json` for raw replies,
+  `--socket` to point at the daemon (`/tmp/nyrqis-status.sock`
+  default; the systemd unit serves `/run/nyrqis/status.sock`), exit
+  0/1/2 (ok / daemon unreachable or op failed / usage). A missing or
+  closed daemon socket fails cleanly on BOTH client halves (the floor
+  returns `None`, the Rust client half raises `ENOENT`/`ECONNREFUSED`
+  — both map to the same "no reply from the daemon" error). The
+  status service gained the **operator carve-out**: `status`/`health`
+  were `CAP_SYSTEM_INFO`-gated with no operator path, so the daemon's
+  own user could not read its own health through the wire — the
+  operator (a trusted-uid process the transport already authenticated,
+  with full control of the daemon anyway) is now authorized outright,
+  the same model the control service uses (container callers stay
+  capability-gated fail-closed). New `TestOperatorCli` (10 tests:
+  hermetic payloads + formatting + the `run`-positional regression;
+  e2e through a REAL daemon — operator ping/status/health answered,
+  containers list, and a real-container run→list→kill loop,
+  userns-gated). Suite 358 → **368**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

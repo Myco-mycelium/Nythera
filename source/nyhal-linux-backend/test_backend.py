@@ -62,6 +62,7 @@ from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
 import nyrqis_backend
+import nyrqisctl
 
 
 logging.basicConfig(level=logging.WARNING)
@@ -1664,6 +1665,202 @@ class TestStatusServiceHost(unittest.TestCase):
             fake_client.call.call_args.args[1].decode("utf-8"))
         self.assertEqual(
             payload, {"service": "control", "op": "container_list"})
+
+
+class TestOperatorCli(unittest.TestCase):
+    """The operator CLI (`nyrqisctl.py`): payload construction and
+    human formatting are hermetic; the real commands run against a
+    REAL daemon (status + control over the wire) — including the
+    operator carve-out that answers `status`/`health` for the daemon's
+    own user.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.sock = os.path.join(self.tmp, "status.sock")
+        self.backend_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _host(self):
+        return nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9")
+
+    def _cli(self, *argv, socket=None):
+        """Run nyrqisctl as a subprocess; returns (exit, stdout, stderr)."""
+        args = [sys.executable, "-B",
+                os.path.join(self.backend_dir, "nyrqisctl.py"),
+                "--socket", socket or self.sock]
+        args += list(argv)
+        proc = subprocess.run(
+            args, capture_output=True, text=True, timeout=60)
+        return proc.returncode, proc.stdout, proc.stderr
+
+    # -- hermetic -----------------------------------------------------
+
+    def test_cli_builds_status_payloads(self):
+        self.assertEqual(
+            nyrqisctl.build_payload("ping", mock.Mock()), {"op": "ping"})
+        self.assertEqual(
+            nyrqisctl.build_payload("status", mock.Mock()),
+            {"op": "status"})
+        self.assertEqual(
+            nyrqisctl.build_payload("health", mock.Mock()),
+            {"op": "health"})
+
+    def test_cli_builds_control_payloads(self):
+        # ``name`` is a reserved Mock kwarg — set the attributes
+        # explicitly so ``args.name`` is the string, not a child mock.
+        args = mock.Mock()
+        args.run_command = ["/bin/sleep", "30"]
+        args.name = "ctr"
+        args.capabilities = "CAP_IPC_SEND, CAP_SYSTEM_INFO"
+        args.network = True
+        args.memory = 512
+        args.pids = 32
+        payload = nyrqisctl.build_payload("containers-run", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_run")
+        self.assertEqual(payload["command"], ["/bin/sleep", "30"])
+        self.assertEqual(payload["capabilities"],
+                         ["CAP_IPC_SEND", "CAP_SYSTEM_INFO"])
+        self.assertTrue(payload["network"])
+        self.assertEqual(payload["memory_mb"], 512)
+        self.assertEqual(payload["pids"], 32)
+        self.assertEqual(payload["name"], "ctr")
+        kill = nyrqisctl.build_payload(
+            "containers-kill", mock.Mock(container_id="abc"))
+        self.assertEqual(kill["container_id"], "abc")
+        self.assertEqual(nyrqisctl.build_payload(
+            "containers-list", mock.Mock())["op"], "container_list")
+
+    def test_cli_formats_human_output(self):
+        status = {"ok": True, "backend_version": "9.9.9",
+                  "service": "nyrqis.backend.status",
+                  "service_version": "1.0", "uptime_s": 1.5,
+                  "container": "host-operator",
+                  "capabilities": ["CAP_SYSTEM_INFO", "CAP_IPC_SEND"]}
+        out = nyrqisctl.format_human("status", status)
+        self.assertIn("backend:      9.9.9", out)
+        self.assertIn("caller:       host-operator", out)
+        self.assertIn("CAP_SYSTEM_INFO, CAP_IPC_SEND", out)
+        health = {"ok": True, "backend_version": "9.9.9",
+                  "serve_loop_alive": True,
+                  "containers": {"known": 1, "running": 1},
+                  "ipc_registry_entries": 1, "state_persisted": True,
+                  "recovery": {"previous_pid": 42,
+                                "containers_left": 1}}
+        out = nyrqisctl.format_human("health", health)
+        self.assertIn("serve loop:     alive", out)
+        self.assertIn("containers:     1 known, 1 running", out)
+        self.assertIn("previous pid 42 with 1 containers left", out)
+        listed = nyrqisctl.format_human("containers-list", {
+            "ok": True, "containers": [
+                {"id": "a", "state": "running", "pid": 1}]})
+        self.assertIn("a\trunning\t1", listed)
+        self.assertEqual(nyrqisctl.format_human(
+            "containers-list", {"ok": True, "containers": []}),
+            "no containers")
+        self.assertEqual(nyrqisctl.format_human("containers-run", {
+            "ok": True, "container_id": "x", "pid": 7}),
+            "container x started (pid 7)")
+
+    def test_cli_run_subcommand_keeps_command(self):
+        # Regression: a positional named ``command`` on the `run`
+        # subparser would clobber the subcommand value installed by
+        # set_defaults — the positional is ``run_command`` instead.
+        parser = nyrqisctl.build_parser()
+        args = parser.parse_args(
+            ["containers", "run", "--name", "x", "/bin/sleep", "30"])
+        self.assertEqual(args.command, "containers-run")
+        self.assertEqual(args.run_command, ["/bin/sleep", "30"])
+
+    def test_cli_call_daemon_missing_socket_returns_none(self):
+        self.assertIsNone(nyrqisctl.call_daemon(
+            os.path.join(self.tmp, "none.sock"), {"op": "ping"},
+            timeout_s=2.0))
+
+    # -- end to end ---------------------------------------------------
+
+    def test_cli_operator_status_against_daemon(self):
+        # The operator's ping/status/health CALLs are answered (the
+        # status service's operator carve-out — a trusted-uid process
+        # has full control of the daemon anyway, so the container
+        # capability model does not apply to it).
+        host = self._host()
+        host.start()
+        try:
+            rc, out, err = self._cli("ping")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("pong", out)
+            self.assertIn("host-operator", out)
+            rc, out, err = self._cli("status")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("caller:       host-operator", out)
+            self.assertIn("backend:      9.9.9", out)
+            rc, out, err = self._cli("health")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("serve loop:     alive", out)
+        finally:
+            host.stop()
+        self.assertFalse(os.path.exists(self.sock))
+
+    def test_cli_containers_list_against_daemon(self):
+        host = self._host()
+        host.start()
+        try:
+            rc, out, err = self._cli("containers", "list")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("no containers", out)
+        finally:
+            host.stop()
+
+    def test_cli_containers_run_list_kill_e2e(self):
+        # The full operator loop through the CLI against a REAL daemon
+        # and a REAL container (userns-gated like the other netns e2e).
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        host = self._host()
+        host.start()
+        try:
+            rc, out, err = self._cli(
+                "containers", "run", "--name", "cli-e2e", "--network",
+                "/bin/sleep", "30")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("started", out)
+            rc, out, err = self._cli("containers", "list")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("cli-e2e", out)
+            self.assertIn("running", out)
+            rc, out, err = self._cli("containers", "kill", "cli-e2e")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("terminated", out)
+            self.assertEqual(
+                host.container_manager.containers["cli-e2e"].state.value,
+                "terminated")
+        finally:
+            for container in list(host.container_manager.containers.values()):
+                _launch_cleanup(host.container_manager, container)
+            host.stop()
+
+    def test_cli_no_daemon_clean_error(self):
+        # A missing daemon socket must fail cleanly (exit 1, no
+        # traceback) on both the floor and the Rust client half.
+        rc, out, err = self._cli(
+            "ping", socket=os.path.join(self.tmp, "gone.sock"))
+        self.assertEqual(rc, 1)
+        self.assertIn("no reply from the daemon", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_json_flag(self):
+        host = self._host()
+        host.start()
+        try:
+            rc, out, err = self._cli("--json", "ping")
+            self.assertEqual(rc, 0, (out, err))
+            resp = json.loads(out)
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["echo"], "pong")
+        finally:
+            host.stop()
 
 
 class TestServiceRouter(unittest.TestCase):
@@ -7438,6 +7635,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBackendStatusService))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCapabilityLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestStatusServiceHost))
+    suite.addTests(loader.loadTestsFromTestCase(TestOperatorCli))
     suite.addTests(loader.loadTestsFromTestCase(TestServiceRouter))
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))

@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""
+nyrqisctl — the operator CLI for a running Nyrqis backend daemon.
+
+Drives the daemon's main service socket (``--socket``, the same socket
+``nyrqis_backend.py service serve`` binds) over the IPC transport: the
+status service (``ping`` / ``status`` / ``health``) and the control
+plane (``containers list|run|kill``). The caller claims the operator
+identity (``DEFAULT_OPERATOR_ID``); the daemon authenticates it by the
+kernel-attached uid (the daemon's own user) — an unforgeable check, and
+the only identity the control service accepts.
+
+Usage::
+
+    nyrqisctl --socket /run/nyrqis/status.sock status
+    nyrqisctl containers list
+    nyrqisctl containers run --network --memory 512 /bin/sleep 30
+    nyrqisctl --json health
+
+The daemon's default socket is ``/tmp/nyrqis-status.sock`` (the systemd
+unit serves ``/run/nyrqis/status.sock`` — pass ``--socket`` there).
+
+Exit status: 0 on success, 1 when the daemon did not reply or the op
+failed (``ok: false``), 2 on usage errors.
+"""
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import sys
+import tempfile
+from typing import Any, Dict, List, Optional
+
+from ipc.transport import DEFAULT_OPERATOR_ID, IPCClient
+
+logger = logging.getLogger("nyrqisctl")
+
+DEFAULT_SOCKET = "/tmp/nyrqis-status.sock"
+DEFAULT_TIMEOUT_S = 30.0
+
+
+# -- payload construction (pure, unit-testable) ------------------------
+
+def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
+    """The JSON request for ``command`` (the ``args`` come from the
+    command's own subparser). Mirror of the daemon's service ops."""
+    if command in ("ping", "status", "health"):
+        return {"op": command}
+    if command == "containers-list":
+        return {"service": "control", "op": "container_list"}
+    if command == "containers-run":
+        return {
+            "service": "control",
+            "op": "container_run",
+            "command": args.run_command,
+            "capabilities": [
+                c.strip() for c in (args.capabilities or "").split(",")
+                if c.strip()
+            ],
+            "network": bool(args.network),
+            "memory_mb": int(args.memory),
+            "pids": int(args.pids),
+            "name": args.name or None,
+        }
+    if command == "containers-kill":
+        return {
+            "service": "control",
+            "op": "container_kill",
+            "container_id": args.container_id,
+        }
+    raise ValueError(f"unknown command: {command!r}")
+
+
+# -- human formatting (pure, unit-testable) ----------------------------
+
+def format_human(command: str, resp: Dict[str, Any]) -> str:
+    """Render a successful reply (``ok: true``) for the operator."""
+    if command == "ping":
+        return (
+            f"pong (caller={resp.get('container')}, "
+            f"service={resp.get('service')} v{resp.get('service_version')})"
+        )
+    if command == "status":
+        caps = resp.get("capabilities") or []
+        return "\n".join([
+            f"backend:      {resp.get('backend_version')}",
+            f"service:      {resp.get('service')} v{resp.get('service_version')}",
+            f"uptime:       {resp.get('uptime_s')}s",
+            f"caller:       {resp.get('container')}",
+            f"capabilities: {', '.join(caps) if caps else '(none)'}",
+        ])
+    if command == "health":
+        lines = [
+            f"backend:        {resp.get('backend_version')}",
+            f"service:        {resp.get('service')} v{resp.get('service_version')}",
+            f"uptime:         {resp.get('uptime_s')}s",
+            f"serve loop:     "
+            f"{'alive' if resp.get('serve_loop_alive') else 'DEAD'}",
+        ]
+        containers = resp.get("containers")
+        if isinstance(containers, dict):
+            lines.append(
+                f"containers:     {containers.get('known', 0)} known, "
+                f"{containers.get('running', 0)} running"
+            )
+        registry = resp.get("ipc_registry_entries")
+        if registry is not None:
+            lines.append(f"ipc registry:   {registry} entries")
+        if resp.get("state_persisted") is not None:
+            lines.append(
+                f"state:          "
+                f"{'persisted' if resp.get('state_persisted') else 'not persisted'}"
+            )
+        recovery = resp.get("recovery")
+        if recovery:
+            lines.append(
+                f"recovery:       previous pid {recovery.get('previous_pid')} "
+                f"with {recovery.get('containers_left')} containers left"
+            )
+        else:
+            lines.append("recovery:       none")
+        return "\n".join(lines)
+    if command == "containers-list":
+        containers: List[Dict[str, Any]] = resp.get("containers") or []
+        if not containers:
+            return "no containers"
+        rows = [f"{c.get('id')}\t{c.get('state')}\t{c.get('pid')}"
+                for c in containers]
+        return "\n".join(["id\tstate\tpid"] + rows)
+    if command == "containers-run":
+        return (
+            f"container {resp.get('container_id')} started "
+            f"(pid {resp.get('pid')})"
+        )
+    if command == "containers-kill":
+        return f"container {resp.get('container_id')} terminated"
+    return json.dumps(resp, indent=2, sort_keys=True)
+
+
+# -- daemon round trip -------------------------------------------------
+
+def call_daemon(
+    socket_path: str, payload: Dict[str, Any],
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> Optional[Dict[str, Any]]:
+    """One operator CALL over the IPC transport; ``None`` when the
+    daemon did not reply (not running, or the CALL timed out)."""
+    tmp = tempfile.mkdtemp(prefix="nyrqisctl-")
+    cli_path = os.path.join(tmp, "ctl.sock")
+    client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+    try:
+        try:
+            reply = client.call(
+                socket_path, json.dumps(payload).encode("utf-8"),
+                timeout_s=timeout_s,
+            )
+        except OSError as e:
+            # The Rust client half surfaces a missing/closed daemon
+            # socket as ENOENT/ECONNREFUSED; the floor returns None on
+            # timeout. Both mean "no daemon there" — the same outcome.
+            logger.debug("nyrqisctl: call to %s failed: %s",
+                         socket_path, e)
+            return None
+        if reply is None:
+            return None
+        try:
+            resp = json.loads(reply.payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            logger.error("nyrqisctl: malformed reply payload")
+            return None
+        return resp if isinstance(resp, dict) else None
+    finally:
+        client.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def run(command: str, args: argparse.Namespace) -> int:
+    """Execute ``command`` against the daemon; returns the exit code."""
+    payload = build_payload(command, args)
+    resp = call_daemon(args.socket, payload, timeout_s=args.timeout)
+    if resp is None:
+        print(
+            f"error: no reply from the daemon at {args.socket} "
+            "(is it running?)",
+            file=sys.stderr,
+        )
+        return 1
+    if not resp.get("ok"):
+        print(f"error: {resp.get('error', 'operation failed')}",
+              file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(resp, indent=2, sort_keys=True))
+    elif command == "containers-kill":
+        # The kill reply carries no id (``{"ok": true}``) — the CLI
+        # knows which container it asked to terminate.
+        print(f"container {args.container_id} terminated")
+    else:
+        print(format_human(command, resp))
+    return 0
+
+
+# -- argument parsing --------------------------------------------------
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--socket", default=DEFAULT_SOCKET,
+        help=f"The daemon's main service socket "
+             f"(default: {DEFAULT_SOCKET})",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT_S,
+        help=f"CALL timeout in seconds (default: {DEFAULT_TIMEOUT_S})",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Print the raw JSON reply instead of human output",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Verbose logging (debug level)",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nyrqisctl",
+        description="Drive a running Nyrqis backend daemon's control "
+                    "plane (status + control over the IPC transport).",
+    )
+    _add_common(parser)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("ping", help="Ping the daemon (no auth beyond "
+                                    "the transport's own checks)")
+    p.set_defaults(command="ping")
+
+    p = sub.add_parser("status", help="Daemon status (operator)")
+    p.set_defaults(command="status")
+
+    p = sub.add_parser("health", help="Daemon health diagnostics "
+                                      "(operator)")
+    p.set_defaults(command="health")
+
+    containers = sub.add_parser(
+        "containers", help="Manage the daemon's containers")
+    csub = containers.add_subparsers(dest="container_cmd", required=True)
+
+    cl = csub.add_parser("list", help="List the daemon's containers")
+    cl.set_defaults(command="containers-list")
+
+    cr = csub.add_parser("run", help="Spawn a container on the daemon")
+    cr.add_argument("--name", default="", help="Container name")
+    cr.add_argument(
+        "--capabilities", default="",
+        help="Comma-separated data-plane capabilities (seccomp)")
+    cr.add_argument("--network", action="store_true",
+                    help="Give the container its own network namespace")
+    cr.add_argument("--memory", type=int, default=256,
+                    help="Memory limit in MiB (default: 256)")
+    cr.add_argument("--pids", type=int, default=64,
+                    help="PID limit (default: 64)")
+    # Named ``run_command`` (NOT ``command``): a positional sharing the
+    # subparsers' ``dest`` would clobber the ``command`` value the
+    # subparser's ``set_defaults`` installed, so ``run`` would lose the
+    # command it is executing.
+    cr.add_argument("run_command", nargs="+", help="Command to run")
+    cr.set_defaults(command="containers-run")
+
+    ck = csub.add_parser("kill", help="Terminate a container on the daemon")
+    ck.add_argument("container_id")
+    ck.set_defaults(command="containers-kill")
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    return run(args.command, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
