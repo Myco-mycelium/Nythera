@@ -513,7 +513,16 @@ Documentation hygiene, fixed earlier this session:
   close gate stays open (client-side Python cost is the residual, the
   next NyRuntime direction). CI: `rust-ipcd` build + required
   `rust-ipcd-conformance` gate. Suite 317 → **329** (300 run + 29
-  skipped on crate-less hosts).
+  skipped on crate-less hosts). **Wired into the daemon 2026-08-15:**
+  `service serve --health-socket` binds a dedicated health-probe
+  socket served by the loop (trusted-uid/operator policy; the floor
+  when the crate is absent — byte-identical ping replies either way),
+  so liveness probes never contend with container traffic on the main
+  service socket and a probe round trip runs through the Rust loop
+  (~2.8× faster at the median, §22). The systemd unit passes
+  `--health-socket /run/nyrqis/health.sock`. New health-socket tests
+  (real-host loop/floor paths + CLI wiring + unit flag). Suite 329 →
+  **331**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

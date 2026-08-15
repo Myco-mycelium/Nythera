@@ -16,6 +16,16 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.5] — 2026-08-15
+
+### ADR-0021 wired into the daemon: the health-probe socket
+
+#### Added
+
+- **`nyrqis_backend.py`** — `StatusServiceHost` gains `health_socket_path=` and `service serve` gains `--health-socket`: a **dedicated health-probe socket** served by the Rust serving loop when the crate is present (trusted-uid/operator policy, the loop's first-increment scope) and by the floor's status service otherwise — both answer the operator's ping with byte-identical replies, so a probe cannot tell which backend answered. The health path never contends with container traffic on the main service socket; containers keep using the main socket (the loop's per-container pid-table refresh is a later increment). `start()`/`stop()` own the health thread + endpoint lifecycle (the loop does not close the fd; the endpoint unlinks on stop).
+- **`packaging/systemd/nyrqis-backend.service`** — ExecStart now passes `--health-socket /run/nyrqis/health.sock` (a systemd `HealthCheckCommand` can probe liveness once systemd ≥ 253); `packaging/README.md` documents the health socket.
+- **`test_backend.py`** — `test_host_health_socket_serves_ping` (real host: operator ping on the health socket gets the byte-identical reply via the loop when the crate is present / the floor otherwise — asserted — and the MAIN socket still serves status, plus socket unlink on stop), `test_cli_service_serve_wires_health_socket` (CLI wiring); `TestSystemdUnit` asserts the new flag. Suite 329 → **331**.
+
 ## [0.13.4] — 2026-08-15
 
 ### ADR-0021 first increment: the Rust IPC serving loop (`rust/ipcd/`)

@@ -69,3 +69,24 @@ The unit starts the daemon with `--syslog --state-file /run/nyrqis/daemon-state.
 
 Both flags are optional on plain CLI runs; pass `--state-file ''` to disable
 persistence.
+
+## Health probe socket (ADR-0021)
+
+The unit also starts the daemon with `--health-socket /run/nyrqis/health.sock`:
+
+- **What it is** — a dedicated liveness-probe path served by the **Rust
+  serving loop** (`rust/ipcd/`, the first NyRuntime-shaped artifact) when the
+  crate is present, and by the Python floor's status service otherwise. Both
+  answer the operator's `ping` with **byte-identical** replies, so a probe
+  cannot tell which backend answered.
+- **Why separate** — health probes never contend with container traffic on
+  the main service socket, and the loop owns the whole dispatch cycle in
+  Rust (poll → recvmsg → parse → authorize → reply), so a probe round trip
+  is ~2.8× faster at the median than through the floor (BENCHMARK_RESULTS.md
+  §22: loop p50 ~136 µs vs floor ~387–394 µs).
+- **Who can use it** — the daemon's own user (the operator, kernel-
+  authenticated via `SO_PASSCRED`). Containers keep using the main service
+  socket; the loop's per-container pid table is a later increment.
+- **Probe it** — any client that can send the wire `ping` (or
+  `ipc.transport.IPCClient` with the operator identity); a systemd
+  `HealthCheckCommand` can point at it once systemd ≥ 253 is in use.

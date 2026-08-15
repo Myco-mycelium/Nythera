@@ -975,8 +975,84 @@ class TestStatusServiceHost(unittest.TestCase):
         self.assertEqual(rc, 0)
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
-            state_file="/run/nyrqis/daemon-state.json")
+            state_file="/run/nyrqis/daemon-state.json",
+            health_socket_path=None)
         Host.return_value.serve_until_signal.assert_called_once()
+
+    def test_cli_service_serve_wires_health_socket(self):
+        # --health-socket (ADR-0021) is passed to the host: the
+        # dedicated ping path served by the Rust loop (or the floor).
+        health = os.path.join(self.tmp, "health.sock")
+        with mock.patch.object(nyrqis_backend, "StatusServiceHost") as Host, \
+                mock.patch.object(
+                    nyrqis_backend.sys, "argv",
+                    ["nyrqis_backend.py", "service", "serve",
+                     "--socket", self.sock,
+                     "--health-socket", health],
+                ):
+            rc = nyrqis_backend.main()
+        self.assertEqual(rc, 0)
+        Host.assert_called_once_with(
+            socket_path=self.sock, backend_version=None,
+            state_file="/run/nyrqis/daemon-state.json",
+            health_socket_path=health)
+        Host.return_value.serve_until_signal.assert_called_once()
+
+    def test_host_health_socket_serves_ping(self):
+        # The dedicated health-probe socket (ADR-0021): the daemon
+        # serves ping on it — via the Rust serving loop when the crate
+        # is present, the floor otherwise — and the operator's probe
+        # gets the byte-identical reply. The MAIN service socket keeps
+        # working (regression).
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            self.assertTrue(
+                os.path.exists(health_path),
+                "health socket was never bound",
+            )
+            # The loop path is used exactly when the crate is present.
+            self.assertEqual(
+                host.health_loop is not None,
+                ipc_loop.available(),
+                "Rust loop should serve the health socket when built",
+            )
+            op_client = IPCClient(
+                DEFAULT_OPERATOR_ID,
+                os.path.join(self.tmp, "health-cli.sock"),
+            ).bind()
+            try:
+                reply = op_client.call(
+                    health_path, b'{"op": "ping"}', timeout_s=5.0)
+                self.assertIsNotNone(reply, "health socket must answer")
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["echo"], "pong")
+                self.assertEqual(resp["container"], DEFAULT_OPERATOR_ID)
+            finally:
+                op_client.close()
+            # The main socket is unaffected: a registered+granted
+            # caller still gets the full status reply.
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            client = IPCClient("cli", self.cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "status"}',
+                                    timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["container"], "cli")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+        self.assertFalse(os.path.exists(health_path),
+                         "health socket must be unlinked on stop")
+        self.assertFalse(os.path.exists(self.sock))
 
     def test_host_health_op(self):
         # Plan §4.5 health check: serve-loop liveness, container load,
@@ -1941,6 +2017,9 @@ class TestSystemdUnit(unittest.TestCase):
         self.assertIn("--syslog", text)
         self.assertIn("--state-file /run/nyrqis/daemon-state.json",
                       text)
+        # ADR-0021: the unit also serves the dedicated health-probe
+        # socket (Rust serving loop when the crate is present).
+        self.assertIn("--health-socket /run/nyrqis/health.sock", text)
 
     def test_systemd_unit_analyze_verify(self):
         """The unit must pass ``systemd-analyze verify`` when systemd is

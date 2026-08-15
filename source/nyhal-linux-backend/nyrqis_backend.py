@@ -34,10 +34,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from backend.container import ContainerManager, ContainerConfig, ResourceLimits
 from backend.capability import CapabilityManager, Capability
 from ipc.core import IPCManager
-from ipc.transport import IPCDatagramServer, IPCClient
+from ipc.transport import IPCDatagramServer, IPCClient, UnixDatagramEndpoint
 from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
+from ipc import loop as ipc_loop
 from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
 from backend.daemon_state import DaemonStateFile
@@ -245,10 +246,20 @@ class StatusServiceHost:
 
     def __init__(self, socket_path: str,
                  backend_version: Optional[str] = None,
-                 state_file: Optional[str] = None) -> None:
+                 state_file: Optional[str] = None,
+                 health_socket_path: Optional[str] = None) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
+        # Plan §4.3 / ADR-0021 health-probe socket: a dedicated path
+        # served by the Rust serving loop when the crate is present
+        # (ping-only, the loop's first-increment scope) and by the
+        # floor's status service otherwise — both answer ping with
+        # byte-identical replies. The health socket is operator/systemd
+        # facing (the loop's policy is trusted-uid only, no pid table:
+        # containers keep using the MAIN socket), so a liveness probe
+        # never contends with container traffic on the service socket.
+        self.health_socket_path = health_socket_path
         # Plan §4.5 persistent state: a versioned, atomically-written
         # JSON record of the daemon identity + container manifest used
         # for crash-recovery reporting (never auto-resumption). None
@@ -289,17 +300,109 @@ class StatusServiceHost:
         self.router.attach(self.server)
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # Health-probe socket state (ADR-0021): bound only when
+        # ``health_socket_path`` is set. One of ``health_loop`` (Rust
+        # loop) or ``health_floor`` (floor fallback) is active.
+        self.health_endpoint: Optional[UnixDatagramEndpoint] = None
+        self.health_loop: Optional[ipc_loop.IpcdLoop] = None
+        self.health_floor: Optional[IPCDatagramServer] = None
+        self._health_thread: Optional[threading.Thread] = None
 
     def start(self) -> "StatusServiceHost":
         """Bind the socket, start the serve loop thread, then recover
-        from (and record) the previous daemon's state file."""
+        from (and record) the previous daemon's state file. If a
+        health socket is configured, serve it too (Rust loop when the
+        crate is present, floor otherwise)."""
         self.server.bind()
         self._thread = threading.Thread(
             target=self.server.serve, args=(self._stop,), daemon=True)
         self._thread.start()
+        self._start_health_socket()
         self._recover()
         self._save_state()
         return self
+
+    def _start_health_socket(self) -> None:
+        """Serve ping on the dedicated health socket (ADR-0021): the
+        Rust serving loop when the crate is present, the floor's status
+        service otherwise. Both answer the operator's ping with
+        byte-identical replies, so a probe cannot tell which backend
+        answered. The loop's policy is trusted-uid only — the health
+        socket is operator/systemd facing; containers use the main
+        service socket (the loop's pid table refresh is a later
+        increment)."""
+        if not self.health_socket_path:
+            return
+        if ipc_loop.available():
+            # The loop takes the bound fd directly (the endpoint owns
+            # 0700 + SO_PASSCRED + unlink; the loop never closes it).
+            self.health_endpoint = UnixDatagramEndpoint(
+                self.health_socket_path).bind()
+            self.health_loop = ipc_loop.IpcdLoop(
+                self.health_endpoint._sock.fileno(),
+                batch_max=64,
+                trusted_uids=[os.getuid()],
+                operator_id=DEFAULT_OPERATOR_ID,
+            )
+            self._health_thread = threading.Thread(
+                target=self._drive_health_loop, daemon=True)
+            self._health_thread.start()
+            logger.info(
+                "status host: health socket %s served by the Rust "
+                "serving loop (ADR-0021)", self.health_socket_path)
+        else:
+            # Floor fallback: an IPCDatagramServer binds its own
+            # endpoint; the status service answers the same ping.
+            self.ipc_manager.create_endpoint("container-svc", "ep-health")
+            self.ipc_manager.create_endpoint("container-svc", "ep-health")
+            self.health_floor = IPCDatagramServer(
+                self.ipc_manager, "ep-health", self.health_socket_path,
+                pid_registry=self.ipc_registry,
+                capability_manager=self.capability_manager,
+                trusted_uids={os.getuid()},
+            )
+            BackendStatusService(
+                capability_manager=self.capability_manager,
+                backend_version=self.service.backend_version,
+                daemon=self,
+            ).attach(self.health_floor)
+            self.health_floor.bind()
+            self._health_thread = threading.Thread(
+                target=self.health_floor.serve, args=(self._stop,),
+                daemon=True)
+            self._health_thread.start()
+            logger.info(
+                "status host: health socket %s served by the Python "
+                "floor (ipcd crate absent)", self.health_socket_path)
+
+    def _drive_health_loop(self) -> None:
+        """Drive the Rust serving loop until the host stops. A step
+        error is logged and the loop keeps going (one bad datagram must
+        not kill the health path); a persistent failure backs off to
+        avoid a hot spin."""
+        while not self._stop.is_set():
+            try:
+                self.health_loop.step(100)
+            except Exception:  # noqa: BLE001 - the loop must keep serving
+                logger.exception(
+                    "status host: health loop step failed; continuing")
+                self._stop.wait(0.2)
+
+    def _stop_health_socket(self) -> None:
+        """Stop the health thread and release the health socket (the
+        loop does not close the fd — the endpoint owns unlink)."""
+        if self._health_thread is not None:
+            self._health_thread.join(timeout=2.0)
+            self._health_thread = None
+        if self.health_loop is not None:
+            self.health_loop.close()
+            self.health_loop = None
+        if self.health_floor is not None:
+            self.health_floor.close()
+            self.health_floor = None
+        if self.health_endpoint is not None:
+            self.health_endpoint.close()
+            self.health_endpoint = None
 
     def _recover(self) -> None:
         """Plan §4.5 crash recovery: report what a previous daemon left
@@ -357,14 +460,15 @@ class StatusServiceHost:
         })
 
     def stop(self) -> None:
-        """Persist the final state, signal the serve loop, let it exit
-        cleanly, then release the socket (the loop polls at 0.2s, so
-        the join is quick and the thread never receives on a closed
-        fd)."""
+        """Persist the final state, signal the serve loops, let them
+        exit cleanly, then release the sockets (the loops poll at
+        ≤0.2s, so the joins are quick and no thread ever receives on a
+        closed fd)."""
         self._save_state()
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self._stop_health_socket()
         self.server.close()
 
     def serve_until_signal(self) -> None:
@@ -402,6 +506,7 @@ def cmd_service_serve(args) -> int:
         socket_path=args.socket,
         backend_version=args.backend_version or None,
         state_file=args.state_file or None,
+        health_socket_path=args.health_socket or None,
     )
     host.serve_until_signal()
     return 0
@@ -616,6 +721,12 @@ Examples:
         help="Persist daemon identity + container manifest for "
         "crash-recovery reporting (plan 4.5; default: "
         "/run/nyrqis/daemon-state.json — disable with --state-file '')"
+    )
+    serve_parser.add_argument(
+        "--health-socket", default="",
+        help="Serve ping on a dedicated health-probe socket via the "
+        "Rust serving loop (ADR-0021; the Python floor when the crate "
+        "is absent) — default: disabled ('')"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 
