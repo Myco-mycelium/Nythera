@@ -46,6 +46,7 @@ and unlink-on-close, and hands the bound fd in.
 """
 
 import ctypes
+import errno
 import logging
 import os
 from typing import Dict, List, Optional
@@ -64,6 +65,15 @@ class _PidEntry(ctypes.Structure):
     _fields_ = [
         ("pid", ctypes.c_int),
         ("container", ctypes.c_char_p),
+    ]
+
+
+class _ReplyWire(ctypes.Structure):
+    """Mirror of the crate's ``#[repr(C)] ReplyWire`` (one reply wire
+    for the dispatch handoff — plain data, the loop only routes it)."""
+    _fields_ = [
+        ("wire", ctypes.POINTER(ctypes.c_ubyte)),
+        ("wire_len", ctypes.c_size_t),
     ]
 
 
@@ -159,6 +169,18 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
             ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
             ctypes.c_char_p,
         ]
+        lib.nyrqis_ipcd_loop_drain_requests.restype = ctypes.c_int
+        lib.nyrqis_ipcd_loop_drain_requests.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char), ctypes.c_size_t,
+        ]
+        lib.nyrqis_ipcd_loop_enqueue_replies.restype = ctypes.c_int
+        lib.nyrqis_ipcd_loop_enqueue_replies.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_ReplyWire), ctypes.c_size_t,
+        ]
+        lib.nyrqis_ipcd_loop_discard_requests.restype = ctypes.c_int
+        lib.nyrqis_ipcd_loop_discard_requests.argtypes = [ctypes.c_void_p]
         lib.nyrqis_ipcd_loop_step.restype = ctypes.c_int
         lib.nyrqis_ipcd_loop_step.argtypes = [
             ctypes.c_void_p, ctypes.c_int64,
@@ -226,6 +248,13 @@ class IpcdLoop:
         if not handle:
             raise RuntimeError("ipc loop: nyrqis_ipcd_loop_new failed")
         self._handle = ctypes.c_void_p(handle)
+        self._batch_max = batch_max
+        # Reusable drain buffer (the dispatch driver calls
+        # ``drain_requests`` every step even when nothing is pending —
+        # a per-call 4 MiB allocation would dominate the step cost).
+        # Grown on demand; safe because the driver serializes the
+        # drain/enqueue/discard calls on one thread.
+        self._drain_buf: Optional[ctypes.Array] = None
         self._closed = False
 
     def set_policy(
@@ -263,6 +292,76 @@ class IpcdLoop:
         )
         if rc < 0:
             _raise_rust_error(rc, "loop set_policy")
+
+    def drain_requests(self, buf_size: Optional[int] = None) -> List[bytes]:
+        """Pull the queued non-ping requests (ADR-0021 decision point 1
+        — the Python dispatch handoff) as wire bytes, in queue order.
+        The queue keeps the requests until :meth:`enqueue_replies` or
+        :meth:`discard_requests`.
+
+        The buffer is sized from ``batch_max`` (every queued wire came
+        from a 64 KiB recv, so ``batch_max * (64 KiB + 4)`` always
+        fits); on ``-ENOBUFS`` the buffer grows and the call retries.
+        """
+        if self._closed:
+            raise RuntimeError("ipc loop: drain_requests on a closed loop")
+        size = buf_size or (self._batch_max * (64 * 1024 + 4))
+        if self._drain_buf is None or len(self._drain_buf) < size:
+            self._drain_buf = ctypes.create_string_buffer(size)
+        buf = self._drain_buf
+        n = self._lib.nyrqis_ipcd_loop_drain_requests(
+            self._handle, buf, len(buf))
+        if n < 0:
+            if n == -errno.ENOBUFS:
+                return self.drain_requests(buf_size=max(len(buf) * 4, 1 << 20))
+            _raise_rust_error(n, "loop drain_requests")
+        # Copy ONLY the written bytes (``buf.raw`` would copy the whole
+        # buffer — the reuse win would be lost).
+        raw = ctypes.string_at(buf, n)
+        out: List[bytes] = []
+        pos = 0
+        while pos + 4 <= len(raw):
+            rec_len = int.from_bytes(raw[pos:pos + 4], "little")
+            pos += 4
+            out.append(raw[pos:pos + rec_len])
+            pos += rec_len
+        return out
+
+    def enqueue_replies(self, wires: List[bytes]) -> None:
+        """Hand reply wires to the loop, which routes each to the
+        RECORDED sender address of the request whose message_id matches
+        the reply's ``reply_to`` (the driver built them with the same
+        codec the floor uses, so the routing never trusts the wire).
+        """
+        if self._closed:
+            raise RuntimeError("ipc loop: enqueue_replies on a closed loop")
+        if not wires:
+            return
+        keep: List[object] = []
+        entries = []
+        for w in wires:
+            arr = (ctypes.c_ubyte * len(w)).from_buffer_copy(w)
+            keep.append(arr)  # the wire bytes must outlive the call
+            entries.append(_ReplyWire(arr, len(w)))
+        entries_arr = (_ReplyWire * len(entries))(*entries)
+        keep.append(entries_arr)
+        self._keep = keep
+        try:
+            rc = self._lib.nyrqis_ipcd_loop_enqueue_replies(
+                self._handle, entries_arr, len(entries))
+        finally:
+            self._keep = None
+        if rc < 0:
+            _raise_rust_error(rc, "loop enqueue_replies")
+
+    def discard_requests(self) -> None:
+        """Reap the queued requests the handlers chose not to answer
+        (the floor's no-reply semantics, bounded on the loop side)."""
+        if self._closed:
+            raise RuntimeError("ipc loop: discard_requests on a closed loop")
+        rc = self._lib.nyrqis_ipcd_loop_discard_requests(self._handle)
+        if rc < 0:
+            _raise_rust_error(rc, "loop discard_requests")
 
     def step(self, timeout_ms: int = 50) -> int:
         """Poll up to ``timeout_ms`` and drain one batch. Returns the

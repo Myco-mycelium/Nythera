@@ -25,11 +25,25 @@ depends_on: [NPS-003, ADR-0020, ABI-001, ADR-0009]
 > registry's `set_on_change` hook, and the host's
 > `_refresh_health_policy`, so a container whose pid enters the
 > registry can probe the health socket as itself (operator/trusted-uid
-> policy PLUS the pid table, re-pushed on every spawn/terminate). The
-> close gate (NPS-003 §6.1 <100 µs median) stays OPEN: the residual is
-> the client-side Python per-call cost, which is the next increment
-> (the client half of the loop behind the boundary). The floor remains
-> shipped; this ADR stays Proposed until the close gate is met.
+> policy PLUS the pid table, re-pushed on every spawn/terminate).
+> **Decision point 1 LANDED the same day — the non-ping dispatch
+> handoff:** authorized non-ping CALLs are queued and handed to Python
+> as plain data (`nyrqis_ipcd_loop_drain_requests` → the driver
+> dispatches through the Python service handlers → reply wires built
+> with the floor's own codec come back through
+> `nyrqis_ipcd_loop_enqueue_replies`, routed to the RECORDED sender
+> address; unanswered requests reaped by `discard_requests`). The
+> health socket now serves `status`/`health` through the loop
+> (verified end-to-end by a real container), with the floor's
+> `CAP_IPC_SEND` gate mirrored in the driver. Measured (§23): the
+> dispatch path reaches close parity with the floor (~490 vs ~405 µs
+> p50 — the Python handler cost is inherent per this ADR's design)
+> while ping stays ~2.8× faster; the pid-table refresh costs ~9.6 µs
+> p50. The close gate (NPS-003 §6.1 <100 µs median) stays OPEN: the
+> residual is the client-side Python per-call cost, which is the next
+> increment (the client half of the loop behind the boundary). The
+> floor remains shipped; this ADR stays Proposed until the close gate
+> is met.
 
 # ADR-0021 — NyRuntime Direction: The IPC Serving Loop Behind the FFI Boundary
 

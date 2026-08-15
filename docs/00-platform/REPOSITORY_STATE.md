@@ -535,9 +535,35 @@ Documentation hygiene, fixed earlier this session:
   (trusted-uid operator policy PLUS the live pid table, re-pushed on
   every spawn/terminate; the floor path reads the registry live and
   needed no change). New tests: registry hook (2), driver-level
-  refresh (1), host end-to-end refresh (1 — registered pid answered
+  refresh (1), host end-to-end  refresh (1 — registered pid answered
   as its container, removed pid falls back to the operator path,
   identical in both backends). Suite 331 → **335**.
+- 2026-08-15 (**ADR-0021 decision point 1 — the non-ping dispatch
+  handoff**): `rust/ipcd/` queues authorized non-ping CALLs (bounded,
+  fail-closed) and gains `nyrqis_ipcd_loop_drain_requests` (plain-data
+  `[u32 len][wire]` records, `-ENOBUFS` contract),
+  `nyrqis_ipcd_loop_enqueue_replies` (routes each reply wire to the
+  RECORDED sender address captured at recv — the reply routing never
+  trusts the wire), and `nyrqis_ipcd_loop_discard_requests` (reaps
+  unanswered). New `ipc/dispatch.py` — `IpcdLoopDispatcher` drains the
+  batch, dispatches through a `ServiceRouter` into a `_LoopReplySink`
+  (services reply exactly as through an `IPCDatagramServer`), enqueues
+  the reply wires (built with the floor's own codec, byte-identical),
+  and discards the rest; it mirrors the floor's `CAP_IPC_SEND` gate
+  for container senders. The health socket now serves `status`/`health`
+  through the loop (dedicated status service + router; control ops
+  stay off the health socket), with a real-container e2e
+  (`test_container_probes_health_socket`) proving the whole chain:
+  spawn → auto-registry → change hook → policy refresh → loop →
+  dispatch → reply with the container's own identity + grants. The
+  reusable drain buffer fixed a 1933 µs → 490 µs dispatch regression
+  (per-step 4 MiB allocation). Benchmark §23: dispatch reaches close
+  parity with the floor (~490 vs ~405 µs p50 — the Python handler
+  cost is inherent per ADR-0021), ping stays ~2.8× faster, the
+  pid-table refresh costs ~9.6 µs p50. New tests: dispatch conformance
+  (2), loader routing + ENOBUFS retry (2), host status-via-dispatch +
+  control-denied (2), real-container health probe (1). Suite 335 →
+  **342**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

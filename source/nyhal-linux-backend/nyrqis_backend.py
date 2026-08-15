@@ -39,6 +39,7 @@ from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from ipc import loop as ipc_loop
+from ipc.dispatch import IpcdLoopDispatcher
 from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
 from backend.daemon_state import DaemonStateFile
@@ -306,6 +307,11 @@ class StatusServiceHost:
         # loop) or ``health_floor`` (floor fallback) is active.
         self.health_endpoint: Optional[UnixDatagramEndpoint] = None
         self.health_loop: Optional[ipc_loop.IpcdLoop] = None
+        # The loop's non-ping dispatch driver (ADR-0021 decision point
+        # 1): serves status/health over the loop by handing the queued
+        # requests to the Python service handlers and routing their
+        # replies back through the loop.
+        self.health_driver: Optional[IpcdLoopDispatcher] = None
         self.health_floor: Optional[IPCDatagramServer] = None
         self._health_thread: Optional[threading.Thread] = None
 
@@ -353,13 +359,31 @@ class StatusServiceHost:
                 trusted_uids=[os.getuid()],
                 operator_id=DEFAULT_OPERATOR_ID,
             )
+            # The non-ping dispatch handoff (ADR-0021 decision point 1):
+            # a fresh status service on its own router, wired to the
+            # driver's reply sink — status/health over the health
+            # socket go through the loop's queue, exactly like the
+            # floor branch's dedicated service below (and control ops
+            # are NOT exposed on the health socket in either backend).
+            health_service = BackendStatusService(
+                capability_manager=self.capability_manager,
+                backend_version=self.service.backend_version,
+                daemon=self,
+            )
+            health_router = ServiceRouter()
+            health_router.register("status", health_service)
+            self.health_driver = IpcdLoopDispatcher(
+                self.health_loop, health_router,
+                capability_manager=self.capability_manager,
+            )
             self.ipc_registry.set_on_change(self._refresh_health_policy)
             self._health_thread = threading.Thread(
                 target=self._drive_health_loop, daemon=True)
             self._health_thread.start()
             logger.info(
                 "status host: health socket %s served by the Rust "
-                "serving loop (ADR-0021)", self.health_socket_path)
+                "serving loop (ADR-0021, ping inline + dispatch "
+                "handoff)", self.health_socket_path)
         else:
             # Floor fallback: an IPCDatagramServer binds its own
             # endpoint; the status service answers the same ping.
@@ -407,13 +431,14 @@ class StatusServiceHost:
                 exc_info=True)
 
     def _drive_health_loop(self) -> None:
-        """Drive the Rust serving loop until the host stops. A step
-        error is logged and the loop keeps going (one bad datagram must
-        not kill the health path); a persistent failure backs off to
-        avoid a hot spin."""
+        """Drive the Rust serving loop (via the dispatch driver) until
+        the host stops. A step error is logged and the loop keeps going
+        (one bad datagram must not kill the health path); a persistent
+        failure backs off to avoid a hot spin."""
+        driver = self.health_driver
         while not self._stop.is_set():
             try:
-                self.health_loop.step(100)
+                driver.serve_once(100)
             except Exception:  # noqa: BLE001 - the loop must keep serving
                 logger.exception(
                     "status host: health loop step failed; continuing")
@@ -428,6 +453,7 @@ class StatusServiceHost:
         if self.health_loop is not None:
             self.health_loop.close()
             self.health_loop = None
+        self.health_driver = None
         if self.health_floor is not None:
             self.health_floor.close()
             self.health_floor = None

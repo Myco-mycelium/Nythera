@@ -909,6 +909,56 @@ because this A/B carries the full status-service ping path (JSON
 parse + service stack) on both sides — the like-for-like comparison
 is the point, and the differential holds across repeated runs.
 
+## 23. ADR-0021 Dispatch Handoff + Refresh (2026-08-15)
+
+Second-increment measurements (decision point 1 — the non-ping
+dispatch handoff — plus the per-container pid-table refresh). Same
+A/B methodology as §22 (`--ipcd-dispatch`, `--ipcd-refresh`;
+cross-process client, byte-identical replies both sides).
+
+**Dispatch handoff** (`--ipcd-dispatch`): a NON-ping op
+(`{"op": "bogus"}` → the status service's deterministic `unknown
+operation` reply) over the real transport. The loop queues the
+request, the driver drains the batch (one boundary crossing), the
+Python service handler builds the reply, and the loop routes it —
+compared byte-identical to the floor's reply.
+
+| Metric | Python floor | Rust loop (dispatch) | Δ |
+|--------|--------------|----------------------|-----|
+| p50 | 404.8 µs | 490.1 µs | +21% (close parity) |
+| p95 | 680.9 µs | 806.2 µs | +18% |
+| p99 | 862.3 µs | 1054.9 µs | +22% |
+| mean | 434.9 µs | 509.7 µs | +17% |
+| min | 231.4 µs | 247.1 µs | +7% |
+
+Reading: the dispatch handoff reaches **close parity with the floor
+(~+20% at the median)** — and the first measurement (before the
+reusable drain buffer) was 1933 µs p50: the driver's per-step 4 MiB
+drain-buffer allocation dominated the step cost, fixed by reusing the
+buffer and copying only the written bytes. The residual is honest:
+for non-ping ops the SERVICE HANDLER runs in Python either way
+(ADR-0021 keeps the handlers on the floor), so the loop cannot remove
+that cost — it only avoids the per-message FFI tax on the path it
+answers itself (ping, §22). The dispatch A/B isolates exactly that:
+ping stays ~2.8× faster, non-ping is parity, both byte-identical to
+the floor.
+
+**Pid-table refresh** (`--ipcd-refresh`): the isolated `set_policy`
+FFI call the daemon makes on every container spawn/terminate
+(in-process, no network).
+
+| Metric | Value |
+|--------|-------|
+| p50 | **9.6 µs** |
+| p95 | 16.6 µs |
+| p99 | 25.9 µs |
+| mean | 11.0 µs |
+| min | 8.1 µs |
+
+Reading: the refresh is a cheap plain-data policy push (~10 µs p50)
+— the per-container authorization update costs the daemon essentially
+nothing on the lifecycle path.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

@@ -21,11 +21,18 @@
 //!   pid→container table, the trusted-uid set, and the operator id —
 //!   the same inputs the floor's `_authorized` uses. The loop does the
 //!   execution; Python supplies only the data.
-//! - Any other datagram (non-CALL, non-ping CALL, malformed wire,
-//!   unknown sender) is dropped at the trust boundary, mirroring the
-//!   floor's serve-loop behavior (drop, never raise, never crash).
-//!   The non-ping dispatch handoff (Python service handlers across the
-//!   boundary) is the NEXT increment, per ADR-0021 decision point 1.
+//! - Non-ping CALLs from authorized senders are QUEUED and handed to
+//!   Python as plain data (ADR-0021 decision point 1 — the dispatch
+//!   handoff): the driver drains the batch
+//!   (``nyrqis_ipcd_loop_drain_requests``), dispatches through the
+//!   Python service handlers (the reply wires are built by the same
+//!   codec the floor uses), and the replies come back through
+//!   ``nyrqis_ipcd_loop_enqueue_replies``, which the loop routes to
+//!   the RECORDED sender address. Requests the handlers decline are
+//!   reaped by ``nyrqis_ipcd_loop_discard_requests``. Any other
+//!   datagram (non-CALL, malformed wire, unknown or forged sender) is
+//!   dropped at the trust boundary, mirroring the floor's serve-loop
+//!   behavior (drop, never raise, never crash).
 //! - The floor stays shipped. The loop lands behind the differential
 //!   conformance gate (reply semantics byte-equivalent to the floor)
 //!   and the §N benchmark A/B; ADR-0021's close gate (beat the floor
@@ -101,12 +108,40 @@ struct Policy {
     operator_id: Vec<u8>,
 }
 
+/// A request the loop queued for the Python dispatch handoff
+/// (ADR-0021 decision point 1): a non-ping CALL from an authorized
+/// sender that the loop cannot answer itself. The driver drains these
+/// (``nyrqis_ipcd_loop_drain_requests``), dispatches them through the
+/// Python service handlers, and the replies come back through
+/// ``nyrqis_ipcd_loop_enqueue_replies``, which sends each to the
+/// RECORDED sender address (the caller's bound path, captured at
+/// recv) — the reply routing never trusts the wire.
+struct PendingRequest {
+    /// The request's message_id (the reply's ``reply_to`` correlates).
+    message_id: Vec<u8>,
+    /// The full request wire (bounded by RECV_BUF — a datagram larger
+    /// than the recv buffer is truncated and dropped by the parse).
+    wire: Vec<u8>,
+    /// Raw ``sockaddr_un`` bytes of the sender (up to ``addr_len``).
+    addr: [u8; 128],
+    addr_len: usize,
+}
+
+/// Defensive bound on the pending queue. The driver drains after every
+/// step, so pending stays at one step's worth in practice; the bound is
+/// fail-closed insurance against a wedged driver (new requests are
+/// dropped, like the floor drops an unanswered request — never
+/// answered, never crashed).
+const MAX_PENDING: usize = 4096;
+
 /// The serving-loop handle (opaque to the caller). The policy is behind
 /// a ``Mutex`` because ``set_policy`` can be called from the host's
 /// main thread (container spawn/terminate) while the drive thread is
 /// mid-step — the reads in the step loop and the writes in set_policy
 /// must not race (the FFI surface itself still exposes no shared state;
-/// the mutex is internal).
+/// the mutex is internal). ``pending`` is only ever touched by the
+/// step loop thread and the drain/enqueue/discard calls, which the
+/// driver serializes on the same thread — no lock needed.
 struct IpcLoop {
     fd: c_int,
     batch_max: u32,
@@ -114,6 +149,7 @@ struct IpcLoop {
     recv_buf: Vec<u8>,
     ctrl: AlignedCmsg,
     seq: u64,
+    pending: Vec<PendingRequest>,
 }
 
 impl IpcLoop {
@@ -401,6 +437,7 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_new(
         recv_buf: vec![0u8; RECV_BUF],
         ctrl: AlignedCmsg([0u8; CMSG_BUF]),
         seq: 0,
+        pending: Vec::new(),
     });
     // Set SO_PASSCRED defensively: the floor already sets it at bind,
     // but a caller that forgets would silently lose identity.
@@ -466,6 +503,121 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_set_policy(
     }
     let loop_handle = &mut *(handle as *mut IpcLoop);
     *loop_handle.policy.lock().unwrap() = policy;
+    0
+}
+
+/// Drain the loop's queued non-ping requests into `buf` (ADR-0021
+/// decision point 1 — the Python dispatch handoff). The records are
+/// plain data: ``[u32 len_le][wire bytes]`` per request, in queue
+/// order. Returns the number of bytes written (0 = nothing pending) or
+/// ``-ENOBUFS`` when the first record does not fit `cap` (the caller
+/// grows the buffer). The queue is NOT emptied — the requests still
+/// owe replies, which come back through
+/// ``nyrqis_ipcd_loop_enqueue_replies``; the driver calls
+/// ``nyrqis_ipcd_loop_discard_requests`` after a batch to reap any the
+/// handlers chose not to answer.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_ipcd_loop_drain_requests(
+    handle: *mut c_void,
+    buf: *mut u8,
+    cap: usize,
+) -> i32 {
+    if handle.is_null() || (buf.is_null() && cap > 0) {
+        return ERR_INVALID_ARGS;
+    }
+    let loop_handle = &mut *(handle as *mut IpcLoop);
+    let mut written: usize = 0;
+    for req in &loop_handle.pending {
+        let rec_len = 4 + req.wire.len();
+        if written + rec_len > cap {
+            if written == 0 {
+                return -libc::ENOBUFS;
+            }
+            break;
+        }
+        let dst = (buf as *mut u8).add(written);
+        (req.wire.len() as u32).to_le_bytes().as_ptr().copy_to(dst, 4);
+        req.wire.as_ptr().copy_to(dst.add(4), req.wire.len());
+        written += rec_len;
+    }
+    written as i32
+}
+
+/// A reply wire for the dispatch handoff (plain data — the wire the
+/// Python service built with the floor's codec; the loop only routes
+/// it).
+#[repr(C)]
+pub struct ReplyWire {
+    pub wire: *const u8,
+    pub wire_len: usize,
+}
+
+/// Send the drained requests' replies. For each reply wire: parse its
+/// ``reply_to`` (the request's message_id), find the matching pending
+/// request, send the wire to the RECORDED sender address, and remove
+/// it from the queue. Replies with an unknown/empty ``reply_to`` are
+/// skipped (the floor has no such reply either — a handler can only
+/// reply to the call it was given). Returns 0 or ``-errno``.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_ipcd_loop_enqueue_replies(
+    handle: *mut c_void,
+    replies: *const ReplyWire,
+    count: usize,
+) -> i32 {
+    if handle.is_null() || (replies.is_null() && count > 0) {
+        return ERR_INVALID_ARGS;
+    }
+    let loop_handle = &mut *(handle as *mut IpcLoop);
+    for i in 0..count {
+        let entry = &*replies.add(i);
+        if entry.wire.is_null() || entry.wire_len == 0 {
+            continue;
+        }
+        let wire = std::slice::from_raw_parts(entry.wire, entry.wire_len);
+        let parsed = match parse_dispatch(wire) {
+            Some(p) => p,
+            None => continue, // malformed reply — drop, like the floor
+        };
+        if parsed.reply_to.is_empty() {
+            continue;
+        }
+        let idx = match loop_handle
+            .pending
+            .iter()
+            .position(|r| r.message_id == parsed.reply_to)
+        {
+            Some(i) => i,
+            None => continue, // unknown call — no request to answer
+        };
+        let req = loop_handle.pending.swap_remove(idx);
+        let sent = libc::sendto(
+            loop_handle.fd,
+            wire.as_ptr() as *const c_void,
+            wire.len(),
+            0,
+            req.addr.as_ptr() as *const libc::sockaddr,
+            req.addr_len as libc::socklen_t,
+        );
+        if sent < 0 {
+            return -errno_or(libc::EIO);
+        }
+    }
+    0
+}
+
+/// Reap the queue: drop every pending request the handlers did not
+/// answer (the driver calls this after processing a drained batch,
+/// mirroring the floor where a no-reply op simply produces no reply).
+/// Returns 0.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_ipcd_loop_discard_requests(
+    handle: *mut c_void,
+) -> i32 {
+    if handle.is_null() {
+        return ERR_INVALID_ARGS;
+    }
+    let loop_handle = &mut *(handle as *mut IpcLoop);
+    loop_handle.pending.clear();
     0
 }
 
@@ -562,7 +714,28 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_step(
             )
         };
         if !is_ping {
-            continue; // non-ping ops are the next increment's handoff
+            // Non-ping CALL from an authorized sender: queue it for the
+            // Python dispatch handoff (ADR-0021 decision point 1) —
+            // the loop answers only the built-in ping itself; the
+            // driver drains, dispatches through the Python service
+            // handlers, and enqueues the reply wires for the loop to
+            // send (the reply goes to the RECORDED sender address).
+            if loop_handle.pending.len() < MAX_PENDING {
+                let wire = loop_handle.recv_buf[..n as usize].to_vec();
+                let mut addr = [0u8; 128];
+                let addr_len = (msg.msg_namelen as usize)
+                    .min(std::mem::size_of::<libc::sockaddr_un>());
+                let raw = &src as *const libc::sockaddr_un as *const u8;
+                addr[..addr_len]
+                    .copy_from_slice(std::slice::from_raw_parts(raw, addr_len));
+                loop_handle.pending.push(PendingRequest {
+                    message_id: call_id,
+                    wire,
+                    addr,
+                    addr_len,
+                });
+            }
+            continue;
         }
         let reply = loop_handle.build_ping_reply(&call_id, &sender);
         let addr_len = (msg.msg_namelen as usize).min(
@@ -737,7 +910,11 @@ mod tests {
     fn ffi_symbols_exist() {
         let _ = nyrqis_ipcd_version;
         let _ = nyrqis_ipcd_loop_new;
+        let _ = nyrqis_ipcd_loop_set_policy;
         let _ = nyrqis_ipcd_loop_step;
+        let _ = nyrqis_ipcd_loop_drain_requests;
+        let _ = nyrqis_ipcd_loop_enqueue_replies;
+        let _ = nyrqis_ipcd_loop_discard_requests;
         let _ = nyrqis_ipcd_loop_free;
     }
 
@@ -1014,7 +1191,12 @@ mod tests {
     }
 
     #[test]
-    fn loop_drops_non_ping_op() {
+    fn loop_queues_non_ping_op_for_dispatch() {
+        // A non-ping CALL from an authorized sender is NOT answered
+        // inline — it is queued for the Python dispatch handoff
+        // (ADR-0021 decision point 1). Observable behavior matches the
+        // floor's "no reply yet": the caller gets nothing until the
+        // driver dispatches and enqueues the reply.
         let policy = Policy {
             pids: vec![(unsafe { libc::getpid() }, b"ctr-ok".to_vec())],
             trusted_uids: vec![],
@@ -1040,7 +1222,172 @@ mod tests {
         let rc = unsafe { nyrqis_ipcd_loop_step(handle, 2000) };
         assert_eq!(rc, 1, "the datagram was drained");
         let mut buf = [0u8; TEST_RECV];
-        assert_eq!(recv_frame(client_fd, &mut buf), 0, "no reply to a non-ping op");
+        assert_eq!(recv_frame(client_fd, &mut buf), 0, "no inline reply to a non-ping op");
+
+        // The request is now pending: drain returns it as a
+        // length-prefixed record.
+        let mut drain = [0u8; TEST_RECV];
+        let n = unsafe { nyrqis_ipcd_loop_drain_requests(handle, drain.as_mut_ptr(), drain.len()) };
+        assert!(n > 0, "the non-ping request must be drained");
+        let rec_len = u32::from_le_bytes(drain[0..4].try_into().unwrap()) as usize;
+        assert_eq!(rec_len, wire.len());
+        assert_eq!(&drain[4..4 + rec_len], &wire[..]);
+
+        // Enqueue a reply (built by the test, mirroring what the Python
+        // service's codec would produce): the loop routes it to the
+        // RECORDED sender address.
+        let reply_payload = b"{\"ok\": true, \"container\": \"ctr-ok\"}";
+        let reply_wire = build_wire(
+            MT_REPLY, b"reply-1", b"", b"", b"call-status",
+            reply_payload, b"{}",
+        );
+        let entry = ReplyWire {
+            wire: reply_wire.as_ptr(),
+            wire_len: reply_wire.len(),
+        };
+        let rc = unsafe { nyrqis_ipcd_loop_enqueue_replies(handle, &entry, 1) };
+        assert_eq!(rc, 0);
+        let n = recv_frame(client_fd, &mut buf);
+        assert!(n > 0, "the reply must reach the caller");
+        let parsed = parse_dispatch(&buf[..n]).expect("valid reply");
+        assert_eq!(parsed.message_type, MT_REPLY);
+        assert_eq!(parsed.reply_to, b"call-status");
+        assert_eq!(parsed.payload, reply_payload);
+
+        // The queue is now empty (the reply consumed the request).
+        assert_eq!(
+            unsafe { nyrqis_ipcd_loop_drain_requests(handle, drain.as_mut_ptr(), drain.len()) },
+            0,
+            "the answered request must leave the queue"
+        );
+
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn enqueue_unknown_reply_to_is_skipped() {
+        // A reply whose reply_to matches no queued request is skipped
+        // (defensive — the floor can only reply to a call it was given)
+        // and the queue is untouched.
+        let policy = Policy {
+            pids: vec![(unsafe { libc::getpid() }, b"ctr-ok".to_vec())],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+
+        let reply_wire = build_wire(
+            MT_REPLY, b"reply-x", b"", b"", b"never-requested",
+            b"{}", b"{}",
+        );
+        let entry = ReplyWire {
+            wire: reply_wire.as_ptr(),
+            wire_len: reply_wire.len(),
+        };
+        let rc = unsafe { nyrqis_ipcd_loop_enqueue_replies(handle, &entry, 1) };
+        assert_eq!(rc, 0);
+        let mut buf = [0u8; TEST_RECV];
+        assert_eq!(recv_frame(client_fd, &mut buf), 0, "nothing must be sent");
+
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn discard_reaps_unanswered_pending() {
+        // The driver calls discard after a drained batch to reap
+        // requests the handlers chose not to answer (the floor's
+        // no-reply semantics, bounded on the loop side).
+        let policy = Policy {
+            pids: vec![(unsafe { libc::getpid() }, b"ctr-ok".to_vec())],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+
+        let wire = build_wire(
+            MT_CALL, b"call-1", b"ctr-ok", b"backend", b"",
+            b"{\"op\": \"health\"}", b"{}",
+        );
+        unsafe {
+            let (sun, addr_len) = sockaddr_of(&server_path);
+            libc::sendto(
+                client_fd,
+                wire.as_ptr() as *const c_void,
+                wire.len(),
+                0,
+                &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            );
+        }
+        assert_eq!(unsafe { nyrqis_ipcd_loop_step(handle, 2000) }, 1);
+        assert_eq!(
+            unsafe { nyrqis_ipcd_loop_discard_requests(handle) },
+            0,
+            "discard succeeds"
+        );
+        let mut drain = [0u8; TEST_RECV];
+        assert_eq!(
+            unsafe { nyrqis_ipcd_loop_drain_requests(handle, drain.as_mut_ptr(), drain.len()) },
+            0,
+            "the queue is empty after discard"
+        );
+        let mut buf = [0u8; TEST_RECV];
+        assert_eq!(recv_frame(client_fd, &mut buf), 0, "no reply was ever sent");
+
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn drain_enobufs_when_buffer_too_small() {
+        // -ENOBUFS when even the first record cannot fit — the driver
+        // grows the buffer.
+        let policy = Policy {
+            pids: vec![(unsafe { libc::getpid() }, b"ctr-ok".to_vec())],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+
+        let wire = build_wire(
+            MT_CALL, b"call-big", b"ctr-ok", b"backend", b"",
+            b"{\"op\": \"status\"}", b"{}",
+        );
+        unsafe {
+            let (sun, addr_len) = sockaddr_of(&server_path);
+            libc::sendto(
+                client_fd,
+                wire.as_ptr() as *const c_void,
+                wire.len(),
+                0,
+                &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            );
+        }
+        assert_eq!(unsafe { nyrqis_ipcd_loop_step(handle, 2000) }, 1);
+        let mut tiny = [0u8; 4]; // only the length prefix fits, not the record
+        let rc = unsafe { nyrqis_ipcd_loop_drain_requests(handle, tiny.as_mut_ptr(), tiny.len()) };
+        assert_eq!(rc, -libc::ENOBUFS);
+        let mut buf = [0u8; TEST_RECV];
+        let n = unsafe { nyrqis_ipcd_loop_drain_requests(handle, buf.as_mut_ptr(), buf.len()) };
+        assert!(n > 0, "a bigger buffer drains the record");
 
         unsafe {
             nyrqis_ipcd_loop_free(handle);

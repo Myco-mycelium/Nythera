@@ -16,6 +16,20 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.7] — 2026-08-15
+
+### ADR-0021 decision point 1: the non-ping dispatch handoff — the health socket serves status/health
+
+#### Added
+
+- **`rust/ipcd/`** — the loop now QUEUES authorized non-ping CALLs (bounded by `MAX_PENDING`, fail-closed like the floor) instead of dropping them, and gains the dispatch-handoff FFI surface: `nyrqis_ipcd_loop_drain_requests` (plain-data `[u32 len][wire]` records; `-ENOBUFS` when the first record does not fit), `nyrqis_ipcd_loop_enqueue_replies` (routes each reply wire to the RECORDED sender address captured at recv — matched by the reply's `reply_to`; unknown ids skipped), and `nyrqis_ipcd_loop_discard_requests` (reaps unanswered requests). The reply routing never trusts the wire. New crate tests: full queue→drain→enqueue→send cycle with correlation, unknown-reply_to skip, discard reaping, `-ENOBUFS` on a tiny buffer. Crate suite 15 → **18**.
+- **`ipc/loop.py`** — `IpcdLoop.drain_requests` / `enqueue_replies` / `discard_requests` (the FFI driver), with a REUSABLE drain buffer — the first version allocated a ~4 MiB buffer per step and the dispatch benchmark showed p50 1933 µs; reusing the buffer + copying only the written bytes dropped it to ~490 µs (close parity with the floor).
+- **`ipc/dispatch.py`** (NEW) — `IpcdLoopDispatcher`: drives the handoff — after each step it drains the queued batch, dispatches each request through a `ServiceRouter` whose services reply into a `_LoopReplySink` (a server-shaped collector; the loop owns the routing), enqueues the collected reply wires for the loop to send, and discards the rest. Mirrors the floor's `CAP_IPC_SEND` gate for container senders before dispatch (the operator path needs no capability); reply wires are built with the SAME codec the floor's `reply()` uses, so a reply is byte-identical whichever backend served it.
+- **`nyrqis_backend.py`** — the health loop is now driven by a `IpcdLoopDispatcher` wired to a dedicated status service + router (control ops stay off the health socket, matching the floor branch): `status`/`health` over the health socket go through the loop's queue when the crate is present.
+- **`test_backend.py`** — dispatch conformance (unknown-op reply byte-identical to the floor; `status` semantic fields; a sender without `CAP_IPC_SEND` is dropped exactly like the floor), loader routing with a fake lib + the `-ENOBUFS` retry (crate-less host coverage), host end-to-end (`status` served on the health socket; a `control` request gets `unknown service` on the health router), and `test_container_probes_health_socket` — a REAL container spawned through the host's own manager calls `status` on the health socket and gets its own identity + granted capabilities back (auto-registry → change hook → policy refresh → loop → dispatch). Suite 335 → **342**.
+- **`tests/benchmarks.py`** — `--ipcd-dispatch` (the non-ping handoff A/B) and `--ipcd-refresh` (isolated `set_policy` cost), recorded as **§23** in BENCHMARK_RESULTS.md: dispatch reaches close parity with the floor (~490 vs ~405 µs p50, +21% — the Python handler cost is inherent per ADR-0021; ping stays ~2.8× faster), and the pid-table refresh costs ~9.6 µs p50 (a cheap plain-data policy push on the lifecycle path).
+
+
 ## [0.13.6] — 2026-08-15
 
 ### ADR-0021 per-container pid-table refresh: containers can probe the health socket

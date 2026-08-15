@@ -56,6 +56,7 @@ from fuse import nyfs_codec
 from ipc import ipc_codec
 from ipc import transport_codec
 from ipc import loop as ipc_loop
+from ipc.dispatch import IpcdLoopDispatcher
 from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
@@ -1105,6 +1106,139 @@ class TestStatusServiceHost(unittest.TestCase):
                 client.close()
         finally:
             host.stop()
+
+    def test_host_health_socket_serves_status_via_dispatch(self):
+        # ADR-0021 decision point 1 — the non-ping dispatch handoff,
+        # end-to-end through the real host: the health socket is no
+        # longer ping-only. A registered+granted container's `status`
+        # CALL goes through the loop's queue (loop path) or the floor
+        # (fallback) and returns the FULL status reply — the same
+        # service instance data either way.
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "ctr")
+            host.capability_manager.initialize_container("ctr")
+            client = IPCClient(
+                "ctr", os.path.join(self.tmp, "h-status.sock")).bind()
+            try:
+                reply = client.call(
+                    health_path, b'{"op": "status"}', timeout_s=5.0)
+                self.assertIsNotNone(
+                    reply, "the health socket must serve status")
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["container"], "ctr")
+                self.assertEqual(resp["backend_version"], "9.9.9")
+                self.assertEqual(resp["service"], "nyrqis.backend.status")
+                self.assertIn(
+                    "CAP_SYSTEM_INFO", resp["capabilities"])
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
+    def test_host_health_socket_denies_control_ops(self):
+        # The health socket is a status endpoint, NOT the control
+        # plane: a `control` request is never served. The exact error
+        # differs by backend — the loop path's router replies
+        # "unknown service: 'control'" (only the status service is
+        # registered), the floor path's status service replies "unknown
+        # operation" (it handles the payload directly) — both deny it.
+        # The operator must use the MAIN socket for control.
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "ctr")
+            host.capability_manager.initialize_container("ctr")
+            client = IPCClient(
+                "ctr", os.path.join(self.tmp, "h-ctl.sock")).bind()
+            try:
+                reply = client.call(
+                    health_path,
+                    b'{"service": "control", "op": "container_list"}',
+                    timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertFalse(resp["ok"])
+                self.assertIn("unknown", resp["error"])
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
+    def test_container_probes_health_socket(self):
+        # The full chain, real container, real daemon: a container
+        # spawned through the host's OWN ContainerManager (auto-
+        # registered in the registry → the change hook refreshes the
+        # loop's policy) runs an IPCClient that calls `status` on the
+        # HEALTH socket. The kernel attaches the container's host pid,
+        # the loop (or floor) resolves it to the container, and the
+        # reply comes back with the container's own identity + granted
+        # capabilities — proving the refresh end-to-end with zero
+        # manual bookkeeping.
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        base = tempfile.mkdtemp(prefix="nyrqis-health-e2e-")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+        backend_dir = str(Path(__file__).resolve().parent)
+        script = (
+            "import json, os, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(sys.argv[4]) and time.time() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('container-cli', sys.argv[2]).bind()\n"
+            "r = c.call(sys.argv[3], b'{\\\"op\\\": \\\"status\\\"}', "
+            "timeout_s=10)\n"
+            "open(sys.argv[5], 'w').write("
+            "(r.payload.decode() if r else 'NONE'))\n"
+        )
+        container = host.container_manager.create(ContainerConfig(
+            name="container-cli",
+            command=[sys.executable, "-c", script, backend_dir,
+                     cli_path, health_path, ready_path, marker],
+            seccomp=True,
+            capabilities=[
+                "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                "CAP_FILESYSTEM_WRITE",
+            ],
+        ))
+        try:
+            host.container_manager.spawn(container)
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            deadline = time.time() + 20.0
+            while time.time() < deadline and not os.path.exists(marker):
+                time.sleep(0.05)
+            self.assertTrue(
+                os.path.exists(marker),
+                "container never reached the health socket",
+            )
+            with open(marker) as fh:
+                body = fh.read()
+            self.assertNotEqual(body, "NONE", "health socket never replied")
+            resp = json.loads(body)
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["container"], "container-cli")
+            self.assertEqual(resp["backend_version"], "9.9.9")
+            self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
+        finally:
+            _launch_cleanup(host.container_manager, container)
+            host.stop()
+            shutil.rmtree(base, ignore_errors=True)
 
     def test_host_health_op(self):
         # Plan §4.5 health check: serve-loop liveness, container load,
@@ -6345,6 +6479,80 @@ class TestRustIpcdLoader(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ipc_loop.IpcdLoop(3)
 
+    def test_ffi_dispatch_routing_with_fake_lib(self):
+        # ADR-0021 decision point 1 routing (drain → enqueue →
+        # discard) with a fake lib: the driver must marshal the FFI
+        # arguments exactly as the real crate expects, so crate-less
+        # hosts still pin the contract (the CI gate drives the real
+        # crate).
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_loop_new.return_value = 0x55
+        fake.nyrqis_ipcd_loop_step.return_value = 0
+
+        def fake_drain(handle, buf, cap):
+            rec = b"\x05\x00\x00\x00hello"  # [u32 len][wire]
+            ctypes.memmove(buf, rec, len(rec))
+            return len(rec)
+
+        fake.nyrqis_ipcd_loop_drain_requests.side_effect = fake_drain
+        fake.nyrqis_ipcd_loop_enqueue_replies.return_value = 0
+        fake.nyrqis_ipcd_loop_discard_requests.return_value = 0
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ), mock.patch("ipc.loop.ctypes.CDLL") as cdll_mock:
+            loop = ipc_loop.IpcdLoop(7, batch_max=8)
+            wires = loop.drain_requests()
+            self.assertEqual(wires, [b"hello"])
+            loop.enqueue_replies([b"reply-wire-1"])
+            loop.discard_requests()
+            loop.close()
+        cdll_mock.assert_not_called()
+        # drain: (handle, caller buffer, size) — buffer sized from
+        # batch_max * (64 KiB + 4).
+        drain_args = fake.nyrqis_ipcd_loop_drain_requests.call_args.args
+        self.assertEqual(drain_args[0].value, 0x55)
+        self.assertGreaterEqual(drain_args[2], 8 * (64 * 1024 + 4))
+        # enqueue: (handle, ReplyWire array, count) — the wire bytes
+        # marshalled with their length.
+        enq_args = fake.nyrqis_ipcd_loop_enqueue_replies.call_args.args
+        self.assertEqual(enq_args[0].value, 0x55)
+        self.assertEqual(enq_args[2], 1)
+        self.assertEqual(enq_args[1][0].wire_len, len(b"reply-wire-1"))
+        # discard: (handle).
+        self.assertEqual(
+            fake.nyrqis_ipcd_loop_discard_requests.call_args.args[0].value,
+            0x55)
+
+    def test_drain_enobufs_retries_with_grown_buffer(self):
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_loop_new.return_value = 0x55
+
+        def fake_drain(handle, buf, cap):
+            # batch_max=1 sizes the first buffer at 64 KiB + 4; the
+            # retry grows it past 1 MiB. Fail until the grown buffer.
+            if cap < (1 << 20):
+                return -errno.ENOBUFS
+            rec = b"\x04\x00\x00\x00wire"
+            ctypes.memmove(buf, rec, len(rec))
+            return len(rec)
+
+        fake.nyrqis_ipcd_loop_drain_requests.side_effect = fake_drain
+        fake.nyrqis_ipcd_loop_discard_requests.return_value = 0
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ):
+            loop = ipc_loop.IpcdLoop(3, batch_max=1)
+            wires = loop.drain_requests()
+            self.assertEqual(wires, [b"wire"])
+            loop.close()
+        # The retry grew the buffer past the first size.
+        sizes = [
+            c.args[2] for c in
+            fake.nyrqis_ipcd_loop_drain_requests.call_args_list
+        ]
+        self.assertEqual(len(sizes), 2)
+        self.assertLess(sizes[0], sizes[1])
+
 
 class TestIpcdLoopConformance(unittest.TestCase):
     """ADR-0021 differential: the Rust serving loop (via the FFI) must
@@ -6520,6 +6728,151 @@ class TestIpcdLoopConformance(unittest.TestCase):
             thread.join(timeout=2.0)
             loop.close()
             srv.close()
+            client.close()
+
+    def _dispatch_server(self, name):
+        """A server pair (floor + loop-with-dispatcher) serving the
+        status service over a granted container identity — the setup
+        for the non-ping dispatch differential. Returns the floor
+        server, the loop server, the dispatcher, the stop event, and
+        the drive thread."""
+        cap_mgr = CapabilityManager()
+        cap_mgr.initialize_container("container-A")
+        service = BackendStatusService(
+            capability_manager=cap_mgr, backend_version="9.9.9")
+
+        floor_path = os.path.join(self.tmp, f"{name}-floor.sock")
+        floor_mgr = IPCManager()
+        floor_mgr.create_endpoint("container-svc", "ep-svc")
+        floor = IPCDatagramServer(
+            floor_mgr, "ep-svc", floor_path,
+            pid_registry={os.getpid(): "container-A"},
+            capability_manager=cap_mgr,
+            trusted_uids={os.getuid()},
+        )
+        service.attach(floor)
+        floor.bind()
+
+        loop_path = os.path.join(self.tmp, f"{name}-loop.sock")
+        loop_mgr = IPCManager()
+        loop_mgr.create_endpoint("container-svc", "ep-svc")
+        loop_srv = IPCDatagramServer(
+            loop_mgr, "ep-svc", loop_path,
+            pid_registry={os.getpid(): "container-A"},
+            capability_manager=cap_mgr,
+            trusted_uids={os.getuid()},
+        )
+        loop_srv.bind()
+        loop = ipc_loop.IpcdLoop(
+            loop_srv.endpoint._sock.fileno(),
+            batch_max=16,
+            pids={os.getpid(): "container-A"},
+            trusted_uids=[os.getuid()],
+        )
+        router = ServiceRouter()
+        router.register("status", BackendStatusService(
+            capability_manager=cap_mgr, backend_version="9.9.9"))
+        dispatcher = IpcdLoopDispatcher(
+            loop, router, capability_manager=cap_mgr)
+        stop = threading.Event()
+
+        def drive():
+            while not stop.is_set():
+                try:
+                    dispatcher.serve_once(100)
+                except Exception:
+                    break
+
+        thread = threading.Thread(target=drive, daemon=True)
+        thread.start()
+        return floor, loop_srv, loop, dispatcher, stop, thread, cap_mgr
+
+    def test_non_ping_dispatch_matches_floor(self):
+        # ADR-0021 decision point 1 differential: a non-ping op over
+        # the loop (queued → drained → Python service handler → reply
+        # wire → loop routes it) must match the floor's reply. The
+        # unknown-op reply is fully deterministic, so it is compared
+        # byte-for-byte; `status` carries per-run fields (uptime_s), so
+        # its deterministic fields are compared semantically.
+        floor, loop_srv, loop, dispatcher, stop, thread, cap_mgr = \
+            self._dispatch_server("dispatch")
+        client = IPCClient(
+            "container-A", os.path.join(self.tmp, "dispatch-cli.sock")).bind()
+        floor_stop = threading.Event()
+        threading.Thread(
+            target=floor.serve, args=(floor_stop,), daemon=True).start()
+        try:
+            # Deterministic: an unknown op → identical reply bytes.
+            floor_reply = client.call(
+                floor.endpoint.path, b'{"op": "bogus"}', timeout_s=5.0)
+            self.assertIsNotNone(floor_reply, "floor must answer")
+            loop_reply = client.call(
+                loop_srv.endpoint.path, b'{"op": "bogus"}', timeout_s=5.0)
+            self.assertIsNotNone(loop_reply, "loop must answer via dispatch")
+            self.assertEqual(loop_reply.message_type, IPCMessageType.REPLY)
+            # The client's call() already correlated the reply to its
+            # own request, so reply_to is correct by construction; the
+            # differential is the payload.
+            self.assertEqual(
+                loop_reply.payload, floor_reply.payload,
+                "the dispatch-handoff reply must be byte-identical to "
+                "the floor's")
+            resp = json.loads(loop_reply.payload.decode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown operation", resp["error"])
+
+            # Semantics: `status` returns the full service reply with
+            # the caller's identity + granted capabilities.
+            status_reply = client.call(
+                loop_srv.endpoint.path, b'{"op": "status"}', timeout_s=5.0)
+            self.assertIsNotNone(status_reply)
+            resp = json.loads(status_reply.payload.decode())
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["service"], "nyrqis.backend.status")
+            self.assertEqual(resp["backend_version"], "9.9.9")
+            self.assertEqual(resp["container"], "container-A")
+            self.assertIn("CAP_SYSTEM_INFO", resp["capabilities"])
+        finally:
+            floor_stop.set()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            loop_srv.close()
+            floor.close()
+            client.close()
+
+    def test_dispatch_drops_sender_without_cap_ipc_send(self):
+        # Floor parity for the dispatch handoff: a container WITHOUT
+        # CAP_IPC_SEND is dropped BEFORE dispatch in both backends (the
+        # loop authorized it, but the dispatcher mirrors the floor's
+        # CAP_IPC_SEND gate) — no reply, never dispatched.
+        floor, loop_srv, loop, dispatcher, stop, thread, cap_mgr = \
+            self._dispatch_server("nogrant")
+        client = IPCClient(
+            "container-A", os.path.join(self.tmp, "nogrant-cli.sock")).bind()
+        floor_stop = threading.Event()
+        threading.Thread(
+            target=floor.serve, args=(floor_stop,), daemon=True).start()
+        try:
+            # Revoke the container's grants (defaults include
+            # CAP_IPC_SEND + CAP_SYSTEM_INFO) — now it has neither.
+            cap_mgr.reset_container("container-A")
+            floor_reply = client.call(
+                floor.endpoint.path, b'{"op": "status"}', timeout_s=1.0)
+            self.assertIsNone(floor_reply, "floor drops the ungranted sender")
+            loop_reply = client.call(
+                loop_srv.endpoint.path, b'{"op": "status"}', timeout_s=1.0)
+            self.assertIsNone(
+                loop_reply,
+                "the dispatch handoff must drop an ungranted sender "
+                "exactly like the floor")
+        finally:
+            floor_stop.set()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            loop_srv.close()
+            floor.close()
             client.close()
 
     def test_loop_drops_non_ping_and_unknown_sender(self):

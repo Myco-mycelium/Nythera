@@ -398,6 +398,172 @@ def benchmark_ipcd_roundtrip(n=IPC_ITERATIONS, payload_size=11):
     return {"floor": floor, "loop": loop}
 
 
+def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
+    """ADR-0021 decision point 1 A/B — the non-ping dispatch handoff:
+    the wire p50 of a NON-ping op (``{"op": "bogus"}`` → the status
+    service's deterministic ``unknown operation`` reply) over the REAL
+    transport, Python floor vs Rust loop.
+
+    The loop cannot answer this op itself: it queues the request, the
+    driver drains the batch (one boundary crossing), the Python service
+    handler builds the reply with the same codec the floor uses, and
+    the loop routes it (one boundary crossing back) — the batch
+    boundary replaces the floor's per-message loop. The reply is
+    byte-identical in both backends, so the A/B isolates the dispatch
+    path's cost vs the floor.
+    """
+
+    def run_side(kind):
+        base = tempfile.mkdtemp(prefix=f"nyrqis-ipcd-dispatch-{kind}-")
+        svc_path = os.path.join(base, "svc.sock")
+        cli_path = os.path.join(base, "cli.sock")
+        ready_path = os.path.join(base, "ready")
+        out_path = os.path.join(base, "client_results.json")
+        mgr = IPCManager()
+        server = IPCDatagramServer(
+            mgr, "ep-svc", svc_path, trusted_uids={os.getuid()})
+        server.bind()
+        stop = threading.Event()
+        loop = None
+        dispatcher = None
+        if kind == "floor":
+            BackendStatusService().attach(server)
+            threading.Thread(
+                target=server.serve, args=(stop,), daemon=True).start()
+        backend_dir = str(Path(__file__).resolve().parent.parent
+                          / "source" / "nyhal-linux-backend")
+        client_src = (
+            "import json, os, statistics, sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "(_backend_dir, cli_path, svc_path, out_path, ready_path, "
+            "n_s, warm_s) = sys.argv[1:]\n"
+            "deadline = time.time() + 10\n"
+            "while not os.path.exists(ready_path) and time.time() < deadline:\n"
+            "    time.sleep(0.005)\n"
+            "from ipc.transport import IPCClient\n"
+            "c = IPCClient('bench-cli', cli_path).bind()\n"
+            "payload = b'{\\\"op\\\": \\\"bogus\\\"}'\n"
+            "for _ in range(int(warm_s)):\n"
+            "    c.call(svc_path, payload, timeout_s=5)\n"
+            "lats = []\n"
+            "for _ in range(int(n_s)):\n"
+            "    t0 = time.perf_counter_ns()\n"
+            "    c.call(svc_path, payload, timeout_s=5)\n"
+            "    lats.append((time.perf_counter_ns() - t0) / 1000.0)\n"
+            "lats.sort()\n"
+            "def pct(v, p):\n"
+            "    idx = int(len(v) * p)\n"
+            "    return v[min(idx, len(v) - 1)]\n"
+            "res = {'iterations': int(n_s), 'payload_bytes': 15,\n"
+            "       'p50_us': round(pct(lats, 0.50), 2),\n"
+            "       'p95_us': round(pct(lats, 0.95), 2),\n"
+            "       'p99_us': round(pct(lats, 0.99), 2),\n"
+            "       'mean_us': round(statistics.mean(lats), 2),\n"
+            "       'min_us': round(lats[0], 2), 'max_us': round(lats[-1], 2)}\n"
+            "with open(out_path, 'w') as fh:\n"
+            "    json.dump(res, fh)\n"
+        )
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", client_src, backend_dir, cli_path,
+                 svc_path, out_path, ready_path, str(n),
+                 str(IPCD_IPC_WARMUP)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            if kind == "loop":
+                loop = ipc_loop.IpcdLoop(
+                    server.endpoint._sock.fileno(),
+                    batch_max=64,
+                    pids={proc.pid: "bench-cli"},
+                    trusted_uids=[os.getuid()],
+                )
+                from ipc.dispatch import IpcdLoopDispatcher
+                from ipc.service import ServiceRouter
+                router = ServiceRouter()
+                router.register("status", BackendStatusService())
+                dispatcher = IpcdLoopDispatcher(loop, router)
+
+                def drive():
+                    while not stop.is_set():
+                        try:
+                            dispatcher.serve_once(100)
+                        except Exception:
+                            break
+
+                threading.Thread(target=drive, daemon=True).start()
+            server.pid_registry = {proc.pid: "bench-cli"}
+            with open(ready_path, "w") as fh:
+                fh.write("go")
+            try:
+                out, _ = proc.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return {"error": "client timed out after 120s"}
+            if proc.returncode != 0:
+                return {"error": f"client failed (rc={proc.returncode}): {out[-300:]}"}
+            try:
+                with open(out_path) as fh:
+                    result = json.load(fh)
+            except (OSError, ValueError):
+                return {"error": f"client produced no valid result: {out[-300:]}"}
+        finally:
+            stop.set()
+            if loop is not None:
+                loop.close()
+            server.close()
+            shutil.rmtree(base, ignore_errors=True)
+        return result
+
+    floor = run_side("floor")
+    loop = run_side("loop")
+    return {"floor": floor, "loop": loop}
+
+
+def benchmark_ipcd_refresh(n=20000):
+    """ADR-0021 per-container pid-table refresh cost: the isolated
+    ``set_policy`` FFI call the daemon makes on every container
+    spawn/terminate. In-process (no network) — a bound loop socket with
+    an empty policy, refreshed ``n`` times with a small pid table. The
+    refresh is a plain-data policy push across the boundary; this is
+    its per-call cost in the daemon's lifecycle path.
+    """
+    base = tempfile.mkdtemp(prefix="nyrqis-ipcd-refresh-")
+    svc_path = os.path.join(base, "svc.sock")
+    mgr = IPCManager()
+    server = IPCDatagramServer(mgr, "ep-svc", svc_path)
+    server.bind()
+    loop = None
+    try:
+        loop = ipc_loop.IpcdLoop(
+            server.endpoint._sock.fileno(), batch_max=64)
+        lats = []
+        for _ in range(n):
+            t0 = time.perf_counter_ns()
+            loop.set_policy(pids={os.getpid(): "bench-cli"})
+            lats.append((time.perf_counter_ns() - t0) / 1000.0)
+        lats.sort()
+
+        def pct(v, p):
+            idx = int(len(v) * p)
+            return v[min(idx, len(v) - 1)]
+
+        return {
+            "iterations": n,
+            "p50_us": round(pct(lats, 0.50), 3),
+            "p95_us": round(pct(lats, 0.95), 3),
+            "p99_us": round(pct(lats, 0.99), 3),
+            "mean_us": round(statistics.mean(lats), 3),
+            "min_us": round(lats[0], 3),
+            "max_us": round(lats[-1], 3),
+        }
+    finally:
+        if loop is not None:
+            loop.close()
+        server.close()
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def benchmark_default_bucket(duration_s=2.0, payload_size=64):
     """Sustained round-trips under the DEFAULT token bucket (ADR-0009 §3).
 
@@ -1444,6 +1610,10 @@ def main():
                         help="§20 IPC round-trip over the real UDS transport")
     parser.add_argument("--ipcd", action="store_true",
                         help="§21 ADR-0021 A/B: Python floor vs Rust serving loop")
+    parser.add_argument("--ipcd-dispatch", action="store_true",
+                        help="§21 non-ping dispatch handoff A/B (floor vs loop)")
+    parser.add_argument("--ipcd-refresh", action="store_true",
+                        help="§21 pid-table refresh (set_policy) cost")
     parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
     parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
@@ -1485,7 +1655,7 @@ def main():
                 or args.save_levers or args.snapshot_dedup or args.codec
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
-                or args.container)
+                or args.container or args.ipcd_dispatch or args.ipcd_refresh)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -1494,6 +1664,7 @@ def main():
         args.mixed_workload = args.compaction_cost = True
         args.journal_blocksize = True
         args.container = True
+        args.ipcd_dispatch = args.ipcd_refresh = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1506,6 +1677,12 @@ def main():
     if args.ipcd:
         _print_section("ADR-0021 A/B — floor vs Rust serving loop (§21):",
                        benchmark_ipcd_roundtrip())
+    if args.ipcd_dispatch:
+        _print_section("ADR-0021 dispatch handoff A/B — non-ping op (§21):",
+                       benchmark_ipcd_dispatch())
+    if args.ipcd_refresh:
+        _print_section("ADR-0021 pid-table refresh cost (§21):",
+                       benchmark_ipcd_refresh())
     if args.bucket:
         _print_section("Default token bucket sustained rate (§3):",
                        benchmark_default_bucket())
