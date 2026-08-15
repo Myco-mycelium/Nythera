@@ -299,9 +299,19 @@ class StatusServiceHost:
         self.router = ServiceRouter()
         self.router.register("status", self.service)
         self.router.register("control", self.control)
-        self.router.attach(self.server)
+        # The router attaches to whichever serving backend is ACTIVE at
+        # start() — the Rust loop's reply sink when the crate is
+        # present, the floor server otherwise (exactly one).
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # Main service socket serving state (ADR-0021): the Rust loop
+        # + dispatch driver when the crate is present; the floor server
+        # above is the crate-less fallback. ``main_loop``/``main_driver``
+        # are set only on the loop path.
+        self.main_endpoint: Optional[UnixDatagramEndpoint] = None
+        self.main_loop: Optional[ipc_loop.IpcdLoop] = None
+        self.main_driver: Optional[IpcdLoopDispatcher] = None
+        self._main_thread: Optional[threading.Thread] = None
         # Health-probe socket state (ADR-0021): bound only when
         # ``health_socket_path`` is set. One of ``health_loop`` (Rust
         # loop) or ``health_floor`` (floor fallback) is active.
@@ -316,18 +326,89 @@ class StatusServiceHost:
         self._health_thread: Optional[threading.Thread] = None
 
     def start(self) -> "StatusServiceHost":
-        """Bind the socket, start the serve loop thread, then recover
-        from (and record) the previous daemon's state file. If a
-        health socket is configured, serve it too (Rust loop when the
-        crate is present, floor otherwise)."""
-        self.server.bind()
-        self._thread = threading.Thread(
-            target=self.server.serve, args=(self._stop,), daemon=True)
-        self._thread.start()
+        """Bind the socket and start the serve loops: the MAIN service
+        socket (status + control) is served by the Rust serving loop
+        when the crate is present (the floor server otherwise), and a
+        configured health socket is served the same way. Then recover
+        from (and record) the previous daemon's state file."""
+        if ipc_loop.available():
+            self._start_main_loop()
+        else:
+            # Floor fallback: the IPCDatagramServer binds its own
+            # endpoint and the router answers through it.
+            self.router.attach(self.server)
+            self.server.bind()
+            self._thread = threading.Thread(
+                target=self.server.serve, args=(self._stop,), daemon=True)
+            self._thread.start()
         self._start_health_socket()
         self._recover()
         self._save_state()
         return self
+
+    def _start_main_loop(self) -> None:
+        """Serve the daemon's main service socket (status + control)
+        through the Rust serving loop (ADR-0021 — the loop owns the
+        daemon's service socket). The loop takes the bound fd directly
+        (the endpoint owns 0700 + SO_PASSCRED + unlink); the policy
+        starts from the CURRENT registry snapshot (a container spawned
+        before the host started is authorized immediately) and the
+        registry's change hook keeps it in sync; the FULL router
+        (status + control) is driven by the dispatch handoff, exactly
+        like the floor branch's router below.
+
+        One change hook refreshes EVERY active loop (main + health), so
+        a container whose pid enters the registry is authorized on both
+        sockets at once."""
+        self.main_endpoint = UnixDatagramEndpoint(
+            self.socket_path).bind()
+        self.main_loop = ipc_loop.IpcdLoop(
+            self.main_endpoint._sock.fileno(),
+            batch_max=64,
+            pids=self.ipc_registry.snapshot(),
+            trusted_uids=[os.getuid()],
+            operator_id=DEFAULT_OPERATOR_ID,
+        )
+        self.main_driver = IpcdLoopDispatcher(
+            self.main_loop, self.router,
+            capability_manager=self.capability_manager,
+        )
+        self.ipc_registry.set_on_change(self._refresh_loop_policies)
+        self._main_thread = threading.Thread(
+            target=self._drive_main_loop, daemon=True)
+        self._main_thread.start()
+        logger.info(
+            "status host: main socket %s served by the Rust serving "
+            "loop (ADR-0021, status + control via the dispatch "
+            "handoff)", self.socket_path)
+
+    def _drive_main_loop(self) -> None:
+        """Drive the Rust serving loop (via the dispatch driver) for
+        the main service socket until the host stops. A step error is
+        logged and the loop keeps going (one bad datagram must not
+        kill the control plane); a persistent failure backs off."""
+        driver = self.main_driver
+        while not self._stop.is_set():
+            try:
+                driver.serve_once(100)
+            except Exception:  # noqa: BLE001 - the loop must keep serving
+                logger.exception(
+                    "status host: main loop step failed; continuing")
+                self._stop.wait(0.2)
+
+    def _stop_main_loop(self) -> None:
+        """Stop the main-loop thread and release the socket (the loop
+        does not close the fd — the endpoint owns unlink)."""
+        if self._main_thread is not None:
+            self._main_thread.join(timeout=2.0)
+            self._main_thread = None
+        if self.main_loop is not None:
+            self.main_loop.close()
+            self.main_loop = None
+        self.main_driver = None
+        if self.main_endpoint is not None:
+            self.main_endpoint.close()
+            self.main_endpoint = None
 
     def _start_health_socket(self) -> None:
         """Serve ping on the dedicated health socket (ADR-0021): the
@@ -376,7 +457,10 @@ class StatusServiceHost:
                 self.health_loop, health_router,
                 capability_manager=self.capability_manager,
             )
-            self.ipc_registry.set_on_change(self._refresh_health_policy)
+            # The registry change hook was already set by the MAIN
+            # socket's loop startup (_start_main_loop runs first, and a
+            # loop always implies the main loop) — it refreshes every
+            # active loop, this one included.
             self._health_thread = threading.Thread(
                 target=self._drive_health_loop, daemon=True)
             self._health_thread.start()
@@ -409,26 +493,27 @@ class StatusServiceHost:
                 "status host: health socket %s served by the Python "
                 "floor (ipcd crate absent)", self.health_socket_path)
 
-    def _refresh_health_policy(self) -> None:
-        """Push the current registry snapshot into the health loop (the
-        per-container pid-table refresh). Called by the registry's
-        change hook on every container spawn/terminate, so the loop's
+    def _refresh_loop_policies(self) -> None:
+        """Push the current registry snapshot into EVERY active Rust
+        serving loop (the main service socket and the health socket —
+        the per-container pid-table refresh). Called by the registry's
+        change hook on every container spawn/terminate, so each loop's
         authorization stays in sync without recreating it. Best effort:
         a closed or absent loop is a no-op (the hook cannot fail
         container lifecycle — the registry swallows its exceptions)."""
-        loop = self.health_loop
-        if loop is None:
-            return
-        try:
-            loop.set_policy(
-                pids=self.ipc_registry.snapshot(),
-                trusted_uids=[os.getuid()],
-                operator_id=DEFAULT_OPERATOR_ID,
-            )
-        except Exception:  # noqa: BLE001 - policy refresh is best effort
-            logger.warning(
-                "status host: health loop policy refresh failed",
-                exc_info=True)
+        for loop in (self.main_loop, self.health_loop):
+            if loop is None:
+                continue
+            try:
+                loop.set_policy(
+                    pids=self.ipc_registry.snapshot(),
+                    trusted_uids=[os.getuid()],
+                    operator_id=DEFAULT_OPERATOR_ID,
+                )
+            except Exception:  # noqa: BLE001 - policy refresh is best effort
+                logger.warning(
+                    "status host: serving-loop policy refresh failed",
+                    exc_info=True)
 
     def _drive_health_loop(self) -> None:
         """Drive the Rust serving loop (via the dispatch driver) until
@@ -525,6 +610,7 @@ class StatusServiceHost:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self._stop_main_loop()
         self._stop_health_socket()
         self.server.close()
 

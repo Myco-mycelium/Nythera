@@ -588,6 +588,21 @@ Documentation hygiene, fixed earlier this session:
   conformance (Rust client vs floor server, timeout-without-resend),
   floor fallback path. Suite 342 → **342** (new tests slot into
   existing classes).
+- 2026-08-15 (**ADR-0021 main-socket move — the daemon's PRIMARY
+  service socket (status + control) is served by the Rust loop**):
+  `StatusServiceHost.start()` serves `--socket` through the loop when
+  the crate is present — the loop takes the bound fd, the policy
+  starts from the live registry snapshot, and the FULL router (status
+  + control) is driven by the dispatch handoff, exactly like the
+  floor branch's router; the `IPCDatagramServer` floor is the
+  crate-less fallback (the router attaches to whichever backend is
+  active — exactly one). Control ops (container_run/list/kill) cross
+  the loop's batch boundary; the registry change hook is set once and
+  refreshes EVERY active loop (`_refresh_loop_policies` — main +
+  health). Verified end-to-end by the existing real-container control
+  test (now the loop path) and three new host tests (backend
+  selection, control dispatch, container-control denial). Suite 347 →
+  **350**, green on both paths (crate: loop; crate-less: floor).
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

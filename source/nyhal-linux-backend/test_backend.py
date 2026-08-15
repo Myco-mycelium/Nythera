@@ -948,6 +948,97 @@ class TestStatusServiceHost(unittest.TestCase):
             host.stop()
         self.assertFalse(os.path.exists(self.sock))
 
+    def test_host_main_socket_served_by_loop_when_crate_present(self):
+        # ADR-0021 main-socket move: the daemon's PRIMARY service
+        # socket (status + control) is served by the Rust serving loop
+        # when the crate is present — the floor server only otherwise.
+        # The router is driven by the dispatch handoff either way, so a
+        # caller cannot tell which backend answered.
+        host = self._host()
+        host.start()
+        try:
+            self.assertTrue(os.path.exists(self.sock))
+            self.assertEqual(
+                host.main_loop is not None, ipc_loop.available(),
+                "Rust loop should serve the main socket when built",
+            )
+            self.assertEqual(
+                host.main_driver is not None, ipc_loop.available(),
+                "the dispatch driver follows the loop",
+            )
+            # Backend-agnostic: the operator's status call is answered
+            # identically through whichever backend is active.
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            client = IPCClient("cli", os.path.join(self.tmp, "ms.sock")).bind()
+            try:
+                reply = client.call(
+                    self.sock, b'{"op": "status"}', timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["container"], "cli")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+        self.assertFalse(os.path.exists(self.sock))
+
+    def test_host_main_socket_serves_control_ops(self):
+        # The full router (status + control) is exposed on the main
+        # socket through the loop's dispatch handoff: the operator's
+        # container_list reaches the ControlService and gets a real
+        # reply (not a drop).
+        host = self._host()
+        host.start()
+        cli_path = os.path.join(self.tmp, "ctl2.sock")
+        op_client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            reply = op_client.call(
+                self.sock,
+                json.dumps({
+                    "service": "control", "op": "container_list"
+                }).encode(),
+                timeout_s=5.0,
+            )
+            self.assertIsNotNone(reply, "no reply from the control plane")
+            resp = json.loads(reply.payload.decode("utf-8"))
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["containers"], [])
+        finally:
+            op_client.close()
+            host.stop()
+
+    def test_host_main_socket_denies_container_control(self):
+        # A registered container reaches the router on the main socket
+        # (its pid resolves first) but the control service refuses any
+        # non-operator sender — identically through the loop's dispatch
+        # handoff and the floor.
+        host = self._host()
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "container-A")
+            host.capability_manager.initialize_container("container-A")
+            client = IPCClient(
+                "container-A", os.path.join(self.tmp, "deny.sock")).bind()
+            try:
+                reply = client.call(
+                    self.sock,
+                    json.dumps({
+                        "service": "control", "op": "container_kill",
+                        "container_id": "ctr-1",
+                    }).encode(),
+                    timeout_s=5.0,
+                )
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode("utf-8"))
+                self.assertFalse(resp["ok"])
+                self.assertIn("operator-only", resp["error"])
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
     def test_host_manager_auto_wires_grants(self):
         # A container spawned through the host's manager is granted its
         # default capabilities automatically (NPS-010 §5) — the pieces

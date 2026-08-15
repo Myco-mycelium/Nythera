@@ -57,7 +57,21 @@ depends_on: [NPS-003, ADR-0020, ABI-001, ADR-0009]
 > criteria of the close gate are met (beats the floor in the
 > same-session A/B AND <100 µs median).** The floor remains shipped as
 > the crate-less fallback; per this ADR's gate language it is now
-> demoted to fallback on hosts with the crate. This ADR is Accepted
+> demoted to fallback on hosts with the crate. **The MAIN service
+> socket moved behind the loop the same day (2026-08-15) — the
+> Decision's "daemon's service socket" scope is fully realized:**
+> `StatusServiceHost.start()` serves `--socket` through the loop when
+> the crate is present — the loop takes the bound fd, the policy
+> starts from the live registry snapshot (the single change hook now
+> refreshes EVERY active loop — main + health — on every
+> spawn/terminate), and the FULL router (status + control) is driven
+> by the dispatch handoff, exactly like the floor branch's router
+> below; the `IPCDatagramServer` floor is the crate-less fallback.
+> Control ops (container_run/list/kill) cross the loop's batch
+> boundary — verified end-to-end by the real-container control test,
+> which now exercises the loop path, and by new host tests for the
+> backend selection, control dispatch, and container-control denial
+> (suite 347 → 350, green on both paths). This ADR is Accepted
 > (the close gate that held it at Proposed is met).
 
 # ADR-0021 — NyRuntime Direction: The IPC Serving Loop Behind the FFI Boundary

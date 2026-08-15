@@ -16,6 +16,32 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.9] — 2026-08-15
+
+### ADR-0021 main-socket move: the daemon's PRIMARY service socket (status + control) is served by the Rust loop
+
+- `nyrqis_backend.py`: `StatusServiceHost.start()` serves the main service
+  socket (`--socket`) through the Rust serving loop when the crate is
+  present — the loop takes the bound fd, the policy starts from the live
+  registry snapshot (refreshed by the registry change hook on every
+  spawn/terminate), and the FULL router (status + control) is driven by
+  the dispatch handoff (`IpcdLoopDispatcher`), exactly like the floor
+  branch's router. The `IPCDatagramServer` floor remains the crate-less
+  fallback (the router attaches to whichever backend is active — exactly
+  one). Control ops (container_run/list/kill) now cross the loop's batch
+  boundary; verified end-to-end by the existing real-container control
+  test, which now exercises the loop path.
+- The registry change hook is set once by the main loop's startup and
+  refreshes EVERY active loop (`_refresh_loop_policies` — main + health),
+  so a container whose pid enters the registry is authorized on both
+  sockets at once; the health socket's duplicate hook registration is gone.
+- Tests: suite 347 → **350** — `test_host_main_socket_served_by_loop_when_crate_present`
+  (backend selection + backend-agnostic status call), `test_host_main_socket_serves_control_ops`
+  (container_list through the loop's dispatch), `test_host_main_socket_denies_container_control`
+  (operator-only reply through the loop). Both paths verified: 350 OK with
+  the crate (loop path) and 350 OK crate-less (floor path, CI's Python
+  job).
+
 ## [0.13.8] — 2026-08-15
 
 ### ADR-0021 close gate MET: the client half of the loop + the client-side Python elimination
