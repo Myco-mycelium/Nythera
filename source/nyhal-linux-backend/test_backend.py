@@ -6197,8 +6197,25 @@ class TestIpcdLoopConformance(unittest.TestCase):
             self.skipTest(
                 "Rust IPC serving loop crate not built (CI gate builds it)")
         self.tmp = tempfile.mkdtemp(prefix="nyrqis-ipcd-")
+        # The gate env (NYRQIS_RUST_FORCE=1, NYRQIS_RUST_LIB pointing at
+        # the ipcd cdylib) would make the OTHER loaders fail their own
+        # force checks on any class that touches them (the documented
+        # cross-loader hazard — each gate runs only classes that don't
+        # depend on the other modules' libs). This class's data path
+        # goes through the wire codec and the transport, so pin those
+        # two loaders to their pure-Python floors (byte-identical,
+        # proven by their own conformance gates): only the ipcd module
+        # is the forced lib under this gate.
+        self._codec_force = mock.patch.object(
+            ipc_codec, "_force_enabled", return_value=False)
+        self._transport_force = mock.patch.object(
+            transport_codec, "force_enabled", return_value=False)
+        self._codec_force.start()
+        self._transport_force.start()
 
     def tearDown(self):
+        self._transport_force.stop()
+        self._codec_force.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _floor_server(self, name):
