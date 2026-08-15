@@ -33,7 +33,9 @@ import sys
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from ipc.transport import DEFAULT_OPERATOR_ID, IPCClient
+from ipc.transport import (
+    DEFAULT_OPERATOR_ID, IPCClient, IPCTransportError,
+)
 
 logger = logging.getLogger("nyrqisctl")
 
@@ -156,10 +158,12 @@ def call_daemon(
                 socket_path, json.dumps(payload).encode("utf-8"),
                 timeout_s=timeout_s,
             )
-        except OSError as e:
-            # The Rust client half surfaces a missing/closed daemon
-            # socket as ENOENT/ECONNREFUSED; the floor returns None on
-            # timeout. Both mean "no daemon there" — the same outcome.
+        except (OSError, IPCTransportError) as e:
+            # A missing/closed daemon socket surfaces differently per
+            # client half: the Rust client half raises OSError
+            # (ENOENT/ECONNREFUSED), the floor wraps send failures in
+            # IPCTransportError; the floor returns None on timeout.
+            # All mean "no daemon there" — the same outcome.
             logger.debug("nyrqisctl: call to %s failed: %s",
                          socket_path, e)
             return None
