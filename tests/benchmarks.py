@@ -45,6 +45,10 @@ this host in one reproducible script:
   root maps, NPS-010 §4 state machine — on the pure-Python floor, and
   the Rust FFI path too when the crate is built (dev host has no Rust
   toolchain — CI or a host with the crate adds the FFI numbers).
+- §25 (container cold-start, 2026-08-15): ``--launcher-coldstart``
+  A/Bs the compiled launcher-init (`rust/launcher`, ADR-0020) against
+  the Python launcher — real spawn→wait latency, same session,
+  skip-gated on unprivileged user namespaces.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -60,6 +64,7 @@ Usage:
   python3 tests/benchmarks.py --codec        # §2 zstd vs zlib codec compare
   python3 tests/benchmarks.py --real-corpus  # §2 real-corpus ratio
   python3 tests/benchmarks.py --container    # §18 launch-plan primitives
+  python3 tests/benchmarks.py --launcher-coldstart  # §25 cold-start A/B
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -1575,6 +1580,80 @@ def benchmark_container_primitives(n=50000):
     return result
 
 
+def benchmark_launcher_coldstart(n=8):
+    """Container cold-start A/B (§25, 2026-08-15): the compiled
+    launcher-init (`rust/launcher`, ADR-0020) vs the Python launcher
+    (launcher.py) — real spawn→wait latency for a trivial command,
+    same session, one manager, seccomp off (isolating the init
+    process itself from policy-serialization cost). Skip-gated on
+    unprivileged user namespaces (a launch probe); reports both sides
+    when the compiled binary is present, the Python side alone
+    otherwise.
+    """
+    import backend.container as bc
+    from backend import rust_launcher
+    from backend.container import ContainerConfig, ContainerManager
+
+    def _probe():
+        try:
+            m = ContainerManager(
+                use_cgroups_v2=False, use_direct_syscalls=True)
+            c = m.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False))
+            m.spawn(c)
+            rc = m.wait(c, timeout_s=30)
+            return rc == 0
+        except Exception:  # noqa: BLE001 - a probe either works or it does not
+            return False
+
+    if not _probe():
+        return {"skipped": "unprivileged user namespaces not available"}
+
+    def _roundtrip_us(mgr):
+        t0 = time.perf_counter_ns()
+        c = mgr.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        mgr.spawn(c)
+        rc = mgr.wait(c, timeout_s=30)
+        t1 = time.perf_counter_ns()
+        if rc != 0:
+            raise RuntimeError(f"launch failed rc={rc}")
+        return (t1 - t0) / 1000.0
+
+    def _run(force_python):
+        orig = bc.rust_launcher.available
+        if force_python:
+            # The locator is uncached (re-stats per call), but patching
+            # the module attribute is deterministic either way.
+            bc.rust_launcher.available = lambda: False
+        try:
+            mgr = ContainerManager(
+                use_cgroups_v2=False, use_direct_syscalls=True)
+            _roundtrip_us(mgr)  # warmup (clone-path dlopen, caches)
+            times = [_roundtrip_us(mgr) for _ in range(n)]
+        finally:
+            bc.rust_launcher.available = orig
+        return {
+            "mean_us": round(statistics.mean(times), 1),
+            "p50_us": round(statistics.median(times), 1),
+            "p95_us": round(percentile(sorted(times), 95), 1),
+            "iterations": n,
+        }
+
+    result = {}
+    if rust_launcher.available():
+        result["compiled_launcher"] = _run(force_python=False)
+        result["python_launcher"] = _run(force_python=True)
+        a = result["compiled_launcher"]["p50_us"]
+        b = result["python_launcher"]["p50_us"]
+        result["compiled_vs_python_p50_x"] = (
+            round(b / a, 2) if a else None)
+    else:
+        result["compiled_launcher"] = "not built on this host"
+        result["python_launcher"] = _run(force_python=True)
+    return result
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -1661,6 +1740,9 @@ def main():
                         help="§5 journal commit vs block-size interplay")
     parser.add_argument("--container", action="store_true",
                         help="§18 container launch-plan primitives")
+    parser.add_argument("--launcher-coldstart", action="store_true",
+                        help="§25 container cold-start A/B — compiled "
+                             "launcher-init vs the Python launcher")
     parser.add_argument("--nyfs-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -1679,7 +1761,7 @@ def main():
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
-                or args.ipcd_control)
+                or args.ipcd_control or args.launcher_coldstart)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -1690,6 +1772,7 @@ def main():
         args.container = True
         args.ipcd_dispatch = args.ipcd_refresh = True
         args.ipcd_control = True
+        args.launcher_coldstart = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1749,6 +1832,10 @@ def main():
     if args.container:
         _print_section("Container launch-plan primitives (§18):",
                        benchmark_container_primitives())
+    if args.launcher_coldstart:
+        _print_section("Container cold-start A/B — compiled launcher-init "
+                       "vs Python launcher (§25):",
+                       benchmark_launcher_coldstart())
 
 
 if __name__ == "__main__":

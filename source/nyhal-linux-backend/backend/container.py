@@ -79,6 +79,11 @@ class ContainerConfig:
     capabilities: List[str] = field(default_factory=list)  # Nyrqis capabilities
     environment: Dict[str, str] = field(default_factory=dict)
     seccomp: bool = True  # data-plane enforcement (NPS-017 §4.2)
+    # Fail-closed posture (NPS-017 §5.1): a container whose seccomp
+    # install fails must NOT silently run unfiltered. Off only for
+    # hosts where enforcement is impossible and the operator accepts
+    # the conformance consequence.
+    strict_seccomp: bool = True
     default_deny: bool = False  # default-deny allowlist posture (opt-in)
     network: bool = False  # own network namespace (loopback only), opt-in
 
@@ -726,11 +731,18 @@ class ContainerManager:
         policy_path = ""
         if container.config.seccomp:
             policy_path = str(self._write_policy_file(container))
-        return container_codec.launcher_argv(
+        argv = container_codec.launcher_argv(
             sys.executable, str(launcher), container.config.hostname,
             policy_path, container.config.default_deny,
             list(container.config.command),
         )
+        if container.config.seccomp and container.config.strict_seccomp:
+            # Fail-closed: a launcher that cannot install the filter
+            # must refuse to run the command (exit 4), not silently run
+            # unfiltered. Inserted AFTER the codec built the argv, so
+            # the codec's byte-identical contract is untouched.
+            argv.insert(argv.index("--"), "--strict-seccomp")
+        return argv
 
     def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:
         """Build the legacy ``unshare(1)`` command (the opt-in path when
@@ -812,6 +824,8 @@ class ContainerManager:
             ]
             if container.config.seccomp:
                 argv += ["--bpf-file", self._write_bpf_file(container)]
+                if container.config.strict_seccomp:
+                    argv.append("--strict-seccomp")
             argv += ["--"] + list(container.config.command)
             return argv
         return self._launcher_args(container, launcher)

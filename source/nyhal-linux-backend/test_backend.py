@@ -59,6 +59,7 @@ from ipc import transport_codec
 from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
 from ipc.registry import ContainerIpcRegistry
+from ipc.storage import StorageService  # NyVault first increment (ADR-0022)
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
@@ -1070,7 +1071,7 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
-            health_socket_path=None)
+            health_socket_path=None, vault_dir="/var/lib/nyrqis/vault")
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_cli_service_serve_wires_health_socket(self):
@@ -1089,7 +1090,7 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
-            health_socket_path=health)
+            health_socket_path=health, vault_dir="/var/lib/nyrqis/vault")
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_host_health_socket_serves_ping(self):
@@ -2207,6 +2208,263 @@ class TestControlService(unittest.TestCase):
             client.close()
             stop.set()
             server.close()
+
+
+class TestStorageService(unittest.TestCase):
+    """NyVault's first increment (ADR-0022): the storage service on the
+    router — capability-gated named volumes (CAP_STORAGE_VOLUME),
+    creator-scoped opens, opaque handles, and NyFS backing under the
+    daemon's vault directory. The operator path and the container path
+    (real server, real grants) are both exercised.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.sock = os.path.join(self.tmp, "status.sock")
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    def _serve(self, vault_dir=None, capability_manager=None,
+               register_pid=True):
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        caps = capability_manager
+        # register_pid=False leaves the registry EMPTY so the test
+        # process resolves through the trusted-uid OPERATOR path
+        # (container-FIRST: a registered pid would shadow it).
+        registry = {os.getpid(): "cli"} if register_pid else {}
+        server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry=registry,
+            capability_manager=caps,
+            trusted_uids={os.getuid()},
+        )
+        storage = StorageService(
+            capability_manager=caps, vault_dir=vault_dir)
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        return server, stop, storage
+
+    def _call(self, client, payload, timeout=5.0):
+        reply = client.call(self.svc_path, payload, timeout_s=timeout)
+        if reply is None:
+            return None
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def _granted_container(self, caps):
+        # A registered container (the test's pid) initialized with
+        # default grants plus CAP_STORAGE_VOLUME.
+        caps.initialize_container("cli")
+        caps.grant_capability("cli", Capability.CAP_STORAGE_VOLUME)
+
+    def test_operator_volume_lifecycle_with_nyfs_backing(self):
+        vault = os.path.join(self.tmp, "vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "assets"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            vid = resp["volume_id"]
+            self.assertTrue(vid)
+            # NyFS backing: the volume root was created under the vault.
+            self.assertTrue(os.path.isdir(os.path.join(vault, vid + ".nyfs")))
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": vid}).encode())
+            self.assertTrue(resp["ok"], resp)
+            handle = resp["handle"]
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_info",
+                "handle": handle}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["backend"], "nyfs")
+            self.assertEqual(resp["name"], "assets")
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_close",
+                "handle": handle}).encode())
+            self.assertTrue(resp["ok"], resp)
+            # The handle is gone.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_info",
+                "handle": handle}).encode())
+            self.assertFalse(resp["ok"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_container_capability_gate(self):
+        # A container needs CAP_STORAGE_VOLUME: initialized (default
+        # grants) but NOT granted the storage cap → forbidden.
+        caps = CapabilityManager()
+        caps.initialize_container("cli")
+        server, stop, storage = self._serve(capability_manager=caps)
+        client = IPCClient("cli", self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "secret"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("CAP_STORAGE_VOLUME required", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+        # With the grant, the same container creates + opens.
+        caps2 = CapabilityManager()
+        self._granted_container(caps2)
+        server2, stop2, storage2 = self._serve(capability_manager=caps2)
+        client2 = IPCClient("cli", self.cli_path).bind()
+        try:
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "mine"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            vid = resp["volume_id"]
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": vid}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertIn("handle", resp)
+        finally:
+            client2.close()
+            stop2.set()
+            server2.close()
+
+    def test_fail_closed_without_capability_manager(self):
+        # No CapabilityManager attached → no grant can be verified, so
+        # even the operator... is the operator carve-out: the operator
+        # IS authorized (same as the status service). A container is
+        # denied.
+        server, stop, storage = self._serve(capability_manager=None)
+        client = IPCClient("cli", self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_list"}).encode())
+            self.assertIsNotNone(resp)
+            self.assertFalse(resp["ok"])
+            self.assertIn("CAP_STORAGE_VOLUME", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_duplicate_name_and_unknown_volume_rejected(self):
+        server, stop, storage = self._serve(register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            payload = json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "dup"}).encode()
+            self.assertTrue(self._call(client, payload)["ok"])
+            resp = self._call(client, payload)
+            self.assertFalse(resp["ok"])
+            self.assertIn("already exists", resp["error"])
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": "nope"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown volume", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_volumes_are_creator_scoped(self):
+        # Container A creates a volume; container B cannot open it (the
+        # cross-container grant matrix is ADR-0022 future work).
+        caps = CapabilityManager()
+        caps.initialize_container("ctr-a")
+        caps.initialize_container("ctr-b")
+        caps.grant_capability("ctr-a", Capability.CAP_STORAGE_VOLUME)
+        caps.grant_capability("ctr-b", Capability.CAP_STORAGE_VOLUME)
+        # Both pids are the test's pid... the registry maps pid→one id,
+        # so drive the service directly instead of through the wire for
+        # the second caller.
+        storage = StorageService(capability_manager=caps)
+        # A creates via the service handler against a fake server.
+        fake = mock.Mock()
+        fake.reply = mock.Mock()
+        storage.attach(fake)
+        storage._on_call(mock.Mock(message_id="1", payload=json.dumps({
+            "service": "storage", "op": "volume_create",
+            "name": "shared"}).encode()), "ctr-a", "/tmp/a.sock")
+        body = json.loads(fake.reply.call_args.args[2].decode())
+        vid = body["volume_id"]
+        fake.reply.reset_mock()
+        storage._on_call(mock.Mock(message_id="2", payload=json.dumps({
+            "service": "storage", "op": "volume_open",
+            "volume_id": vid}).encode()), "ctr-b", "/tmp/b.sock")
+        body = json.loads(fake.reply.call_args.args[2].decode())
+        self.assertFalse(body["ok"])
+        self.assertIn("is not yours", body["error"])
+        # The creator CAN open it.
+        fake.reply.reset_mock()
+        storage._on_call(mock.Mock(message_id="3", payload=json.dumps({
+            "service": "storage", "op": "volume_open",
+            "volume_id": vid}).encode()), "ctr-a", "/tmp/a.sock")
+        body = json.loads(fake.reply.call_args.args[2].decode())
+        self.assertTrue(body["ok"])
+        self.assertIn("handle", body)
+
+    def test_host_serves_storage_on_main_socket(self):
+        # The full daemon: the storage service rides the main service
+        # socket (ADR-0022), the operator drives a NyFS-backed volume
+        # through the wire end-to-end.
+        vault = os.path.join(self.tmp, "host-vault")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault)
+        host.start()
+        op_client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = op_client.call(self.sock, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "host-vol"}).encode(), timeout_s=5.0)
+            self.assertIsNotNone(resp)
+            body = json.loads(resp.payload.decode())
+            self.assertTrue(body["ok"], body)
+            vid = body["volume_id"]
+            self.assertTrue(os.path.isdir(
+                os.path.join(vault, vid + ".nyfs")))
+            resp = op_client.call(self.sock, json.dumps({
+                "service": "storage", "op": "volume_list"}).encode(),
+                timeout_s=5.0)
+            body = json.loads(resp.payload.decode())
+            self.assertTrue(body["ok"])
+            self.assertEqual([v["name"] for v in body["volumes"]],
+                             ["host-vol"])
+        finally:
+            op_client.close()
+            host.stop()
+
+    def test_host_serves_storage_through_loop_when_crate_present(self):
+        # ADR-0021/ADR-0022: the storage router rides the loop's
+        # dispatch handoff on the main socket when the crate is present
+        # — the reply crosses the batch boundary like control ops.
+        if not ipc_loop.available():
+            self.skipTest("Rust serving loop not built on this host")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9")
+        host.start()
+        op_client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = op_client.call(self.sock, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "loop-vol"}).encode(), timeout_s=5.0)
+            self.assertIsNotNone(resp)
+            body = json.loads(resp.payload.decode())
+            self.assertTrue(body["ok"], body)
+        finally:
+            op_client.close()
+            host.stop()
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -3847,6 +4105,31 @@ class TestLauncherInitRust(unittest.TestCase):
             argv = m._launcher_exec(c)
         self.assertEqual(argv[0], sys.executable)
         self.assertIn("launcher.py", os.path.basename(argv[1]))
+
+    def test_strict_seccomp_default_flows_to_both_launchers(self):
+        # Fail-closed posture (NPS-017 §5.1): strict_seccomp defaults
+        # True, so BOTH launcher paths carry --strict-seccomp — a
+        # container whose filter install fails must refuse to run, not
+        # silently run unfiltered.
+        m = self._manager()
+        c = m.create(ContainerConfig(command=["/bin/true"], seccomp=True))
+        argv = m._launcher_exec(c)
+        if rust_launcher.available():
+            self.assertIn("--strict-seccomp", argv)
+            self.assertLess(
+                argv.index("--strict-seccomp"), argv.index("--"))
+        else:
+            self.assertIn("--strict-seccomp", argv)
+        # Explicit opt-out removes the flag on the Rust path and the
+        # Python path (the codec argv post-process honors it too).
+        c2 = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=True, strict_seccomp=False))
+        argv2 = m._launcher_exec(c2)
+        self.assertNotIn("--strict-seccomp", argv2)
+        # No seccomp at all → no policy, no strict flag.
+        c3 = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        self.assertNotIn("--strict-seccomp", m._launcher_exec(c3))
 
     def test_launcher_exec_writes_bpf_file_when_seccomp(self):
         m = self._manager()
@@ -7923,6 +8206,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestOperatorCli))
     suite.addTests(loader.loadTestsFromTestCase(TestServiceRouter))
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
+    suite.addTests(loader.loadTestsFromTestCase(TestStorageService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))

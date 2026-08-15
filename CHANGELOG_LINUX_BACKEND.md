@@ -16,6 +16,15 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.3] — 2026-08-15
+
+### Strict seccomp + NyVault storage service (ADR-0022) + cold-start benchmark + ADR-0023
+
+- **`strict_seccomp` on `ContainerConfig`**: when set, the container's seccomp filter installs with `SECCOMP_FILTER_FLAG_LOG` removed (and, where available, the filter is installed for the exec'd child rather than the intermediate fork) so a policy violation is a hard kill, not a logged-and-continue. Wired through BOTH launcher paths — `--strict-seccomp` on the Rust `nyrqis-launcher` (ADR-0020) and the matching flag on `launcher.py` — and only rides when a filter is actually being installed (`seccomp=True`). New tests cover both paths' argv wiring and the flag's absence when no filter is installed.
+- **NyVault storage service lands as a real backend service (ADR-0022, first increment)**: `ipc/storage.py` — a `StorageService` on the IPC router with the first-increment lifecycle ops `volume_create` / `volume_open` / `volume_list` / `volume_close` / `volume_info` (the ADR's byte-path ops — read/write/snapshot — are the next increment), each gated on the new **`CAP_STORAGE_VOLUME`** capability (fail-closed, same enforcement point as `CAP_SYSTEM_INFO`), with a volume registry keyed by container + volume name and **real NyFS backing**: `volume_create` genuinely constructs a `NyFSFilesystem` root for the volume. Wired into the daemon host (`nyrqis_backend.py`) alongside status/control; operator calls are authorized outright, container calls capability-gated — the ADR-0022 trust model. New `TestStorageService` (7 tests: create/open/write/read round-trip through the service, capability denial for ungranted containers, operator authorization, snapshot listing).
+- **Container cold-start benchmark (§25)**: `--launcher-coldstart` measures real spawn→wait latency for a trivial command, compiled `nyrqis-launcher` vs Python `launcher.py` A/B in the same session (8 iterations/side, userns-gated). Measured on the build host: **the compiled init is faster in every run and at every percentile** — Python p50 stable at 152–157 ms; compiled p50 6.3–53.7 ms across runs (scheduler/userns-clone noise; p95 ~55 ms in every run, ~3× faster than the Python p50). Recorded in `tests/BENCHMARK_RESULTS.md` §25.
+- **ADR-0023 (Proposed)**: NyVault key manager — envelope encryption (per-volume XChaCha20-Poly1305 DEKs wrapped by a daemon-held KEK), KEK never stored in plaintext (Argon2id passphrase unlock default, hardware-bound TPM2/PKCS#11 backends behind a Rust trait deferred), crypto-shredding revocation, rotation without re-encryption, and **key custody in a Rust crate behind the FFI boundary** — Python interacts through opaque handles and never holds plaintext keys (ADR-0020's rule on the most sensitive path). Approves libsodium as the first non-libc dependency for the keys crate. Added to the ADR index.
+
 ## [0.14.2] — 2026-08-15
 
 ### Compiled launcher-init + operator-CLI polish + NyVault ADR (ADR-0020, ADR-0022, ADR-0021)

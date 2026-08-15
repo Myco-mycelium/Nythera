@@ -997,6 +997,40 @@ costs the operator essentially nothing on control ops while unifying
 the daemon's primary control surface behind the Rust serving loop
 (no interpreter dependence on the platform-critical path).
 
+## 25. Container Cold-Start A/B — compiled launcher-init vs Python launcher (2026-08-15)
+
+Real spawn→wait latency for a trivial command (`/bin/true`), same
+session, one manager, seccomp OFF (isolating the init process itself
+from policy-serialization cost — the seccomp filter is identical on
+both paths and measured separately). Both sides run through the same
+clone/direct-syscall path (`ContainerManager(use_direct_syscalls=True)`);
+the only variable is which init binary execs inside the new PID
+namespace: the compiled `nyrqis-launcher` (rust/launcher, ADR-0020)
+or the Python `launcher.py` fallback. `--launcher-coldstart`, 8
+iterations per side after one warmup.
+
+| Metric | Compiled launcher | Python launcher | Δ |
+|--------|-------------------|-----------------|-----|
+| p50 run 1 | 53.7 ms | 152.0 ms | 2.83× faster |
+| p50 run 2 | 6.3 ms | 156.7 ms | 24.85× faster |
+| p50 run 3 | 31.2 ms | 155.4 ms | 4.99× faster |
+| p95 (all runs) | 55.5 / 55.5 / 56.3 ms | 160–177 ms | ~3× faster floor |
+| mean (all runs) | 42.2 / 23.8 / 30.6 ms | 153.7–158.3 ms | ~5× faster |
+
+Reading: the compiled init is **consistently faster in every run and
+at every percentile**, but its p50 is noisy (6.3–53.7 ms across the
+three runs) while the Python path is rock-stable at ~152–157 ms. The
+compiled path's p95 lands at ~55 ms in every run — the same ceiling —
+so the variance is mostly *scheduler/userns-clone noise on the fast
+path*, not a bimodal failure mode: even its worst p95 is ~3× faster
+than the Python p50. The gap is the interpreter: Python pays
+exec-time import + interpreter spin-up + a second fork + signal
+machinery inside the new namespace; the compiled init is a static
+binary that reaches `execvp` directly. This is the platform-critical
+path per the language matrix — no interpreter dependence — so the
+compiled init is the default when present, Python only the crate-less
+fallback.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

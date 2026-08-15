@@ -38,6 +38,7 @@ from ipc.transport import IPCDatagramServer, IPCClient, UnixDatagramEndpoint
 from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
+from ipc.storage import StorageService  # NyVault first increment (ADR-0022)
 from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
 from fuse.nyfs import NyFSFilesystem
@@ -248,7 +249,8 @@ class StatusServiceHost:
     def __init__(self, socket_path: str,
                  backend_version: Optional[str] = None,
                  state_file: Optional[str] = None,
-                 health_socket_path: Optional[str] = None) -> None:
+                 health_socket_path: Optional[str] = None,
+                 vault_dir: Optional[str] = None) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
@@ -296,9 +298,18 @@ class StatusServiceHost:
         self.control = ControlService(
             self.container_manager, self.capability_manager,
             state_saver=self._save_state)
+        # NyVault (ADR-0022) first increment: capability-gated named
+        # volumes backed by NyFS roots under ``vault_dir`` (None
+        # disables NyFS backing — metadata-only registry).
+        self.storage = StorageService(
+            capability_manager=self.capability_manager,
+            vault_dir=vault_dir,
+        )
+        self.vault_dir = vault_dir
         self.router = ServiceRouter()
         self.router.register("status", self.service)
         self.router.register("control", self.control)
+        self.router.register("storage", self.storage)
         # The router attaches to whichever serving backend is ACTIVE at
         # start() — the Rust loop's reply sink when the crate is
         # present, the floor server otherwise (exactly one).
@@ -650,6 +661,7 @@ def cmd_service_serve(args) -> int:
         backend_version=args.backend_version or None,
         state_file=args.state_file or None,
         health_socket_path=args.health_socket or None,
+        vault_dir=args.vault_dir or None,
     )
     host.serve_until_signal()
     return 0
@@ -870,6 +882,11 @@ Examples:
         help="Serve ping on a dedicated health-probe socket via the "
         "Rust serving loop (ADR-0021; the Python floor when the crate "
         "is absent) — default: disabled ('')"
+    )
+    serve_parser.add_argument(
+        "--vault-dir", default="/var/lib/nyrqis/vault",
+        help="NyVault backing directory for storage-service volumes "
+        "(ADR-0022; disable NyFS backing with --vault-dir '')"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 

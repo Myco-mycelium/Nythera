@@ -73,6 +73,9 @@ class Capability(enum.Enum):
     CAP_SYSTEM_INFO = "CAP_SYSTEM_INFO"  # Read system information
     CAP_MEMORY_ALLOCATE = "CAP_MEMORY_ALLOCATE"  # Allocate memory
 
+    # Storage capabilities (NyVault, ADR-0022)
+    CAP_STORAGE_VOLUME = "CAP_STORAGE_VOLUME"  # Create/open named storage volumes
+
 
 @dataclass
 class CapabilityGrant:

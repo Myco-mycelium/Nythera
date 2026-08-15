@@ -688,6 +688,39 @@ Documentation hygiene, fixed earlier this session:
   storage service on the IPC transport (capability-gated volume
   handles, FUSE passthrough byte path, key management + hardware
   integration deferred to follow-on ADRs).
+- 2026-08-15 (**strict seccomp + the NyVault storage service first
+  increment + the cold-start benchmark + ADR-0023**):
+  `ContainerConfig.strict_seccomp=True` installs the container's
+  filter without `SECCOMP_FILTER_FLAG_LOG` (a violation is a hard
+  kill, not logged-and-continue), wired through BOTH launcher paths
+  (`--strict-seccomp` on the compiled init and `launcher.py`), riding
+  only when a filter is actually installed; new test pins both argv
+  paths. **NyVault storage service LANDED (ADR-0022 first increment):**
+  `ipc/storage.py` (`StorageService`) on the daemon's router —
+  first-increment lifecycle ops `volume_create/open/list/close/info`
+  (the ADR's byte-path read/write/snapshot ops are the next
+  increment), every op gated on the new **`CAP_STORAGE_VOLUME`**
+  capability at the same enforcement point as `CAP_SYSTEM_INFO`
+  (fail-closed), a per-creator volume registry, and REAL NyFS backing
+  (`volume_create` constructs a `NyFSFilesystem` root). Wired into the daemon host alongside
+  status/control (operator authorized outright, containers
+  capability-gated — the ADR-0022 trust model); `TestStorageService`
+  (7 tests: operator lifecycle with NyFS backing, container
+  capability gate, fail-closed, duplicate/unknown rejection, creator
+  scoping, floor + loop serving paths). Suite 382 → **390**.
+  **Container cold-start A/B measured (BENCHMARK_RESULTS.md §25,
+  `--launcher-coldstart`):** the compiled init is faster in every run
+  and at every percentile — Python p50 stable at 152–157 ms, compiled
+  p50 6.3–53.7 ms (userns-clone/scheduler noise; p95 ~55 ms in every
+  run, ~3× faster than the Python p50). **ADR-0023 drafted
+  (Proposed):** NyVault key manager — envelope encryption (per-volume
+  XChaCha20-Poly1305 DEKs wrapped by a daemon-held KEK), KEK never
+  stored in plaintext (Argon2id passphrase unlock default, TPM2/
+  PKCS#11 hardware backends behind a Rust trait deferred),
+  crypto-shredding revocation, rotation without re-encryption, and
+  key custody in a Rust crate behind the FFI boundary (Python holds
+  opaque handles only, never plaintext keys); approves libsodium as
+  the first non-libc dependency for the keys crate.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container
