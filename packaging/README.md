@@ -9,6 +9,11 @@ Host-integration artifacts for the Nyrqis Linux backend (implementation_plan.md
 packaging/
   systemd/
     nyrqis-backend.service   # runs the backend daemon at boot
+  completions/
+    nyrqisctl.bash           # bash tab-completion for the operator CLI
+    nyrqisctl.zsh            # zsh completion for the operator CLI
+  man/
+    nyrqisctl.1              # man page for the operator CLI
 ```
 
 ## `nyrqis-backend.service`
@@ -36,6 +41,51 @@ sudo systemctl enable --now nyrqis-backend
 # the daemon's control plane (operator-only, authenticated by uid)
 python3 source/nyhal-linux-backend/nyrqis_backend.py \
   control --socket /run/nyrqis/status.sock container-list
+
+# the operator CLI (preferred): same plane, human-readable output
+python3 source/nyhal-linux-backend/nyrqisctl.py \
+  --socket /run/nyrqis/status.sock status
+python3 source/nyhal-linux-backend/nyrqisctl.py containers list
+python3 source/nyhal-linux-backend/nyrqisctl.py \
+  containers run --network /bin/sleep 30
+
+# the dedicated health socket (ADR-0021) never contends with
+# container traffic on the main socket
+python3 source/nyhal-linux-backend/nyrqisctl.py \
+  --health-socket /run/nyrqis/health.sock health
+```
+
+## `nyrqisctl` (operator CLI)
+
+`nyrqisctl.py` (source/nyhal-linux-backend/nyrqisctl.py) is the user-facing
+surface of the daemon's control plane: `ping` / `status` / `health` (status
+service) and `containers list|run|kill` (control service), over the IPC
+transport as the operator identity. Human-readable output by default,
+`--json` for raw replies, `--socket` / `--health-socket` to point at the
+daemon. Exit status: 0 ok, 1 daemon unreachable or op failed, 2 usage.
+
+### Man page
+
+```sh
+sudo install -m 644 packaging/man/nyrqisctl.1 /usr/local/share/man/man1/
+sudo mandb   # Debian/Ubuntu; or: gzip -9 /usr/local/share/man/man1/nyrqisctl.1
+man nyrqisctl
+```
+
+### Shell completion
+
+Bash (Debian/Ubuntu: copy into `/etc/bash_completion.d/` and re-login):
+
+```sh
+sudo cp packaging/completions/nyrqisctl.bash /etc/bash_completion.d/nyrqisctl
+```
+
+Zsh (add to `$fpath` and `compinit`):
+
+```sh
+mkdir -p ~/.zsh/completions
+cp packaging/completions/nyrqisctl.zsh ~/.zsh/completions/_nyrqisctl
+echo 'fpath=(~/.zsh/completions $fpath); autoload -U compinit; compinit' >> ~/.zshrc
 ```
 
 ### Notes

@@ -15,10 +15,15 @@ Usage::
     nyrqisctl --socket /run/nyrqis/status.sock status
     nyrqisctl containers list
     nyrqisctl containers run --network --memory 512 /bin/sleep 30
+    nyrqisctl --health-socket /run/nyrqis/health.sock health
     nyrqisctl --json health
 
 The daemon's default socket is ``/tmp/nyrqis-status.sock`` (the systemd
-unit serves ``/run/nyrqis/status.sock`` — pass ``--socket`` there).
+unit serves ``/run/nyrqis/status.sock`` — pass ``--socket`` there). A
+dedicated health-probe socket (``--health-socket``, ADR-0021) serves
+``ping``/``status``/``health`` without contending with container traffic
+on the main socket; control commands always use the main ``--socket``
+(the health socket never serves them).
 
 Exit status: 0 on success, 1 when the daemon did not reply or the op
 failed (``ok: false``), 2 on usage errors.
@@ -43,12 +48,18 @@ DEFAULT_SOCKET = "/tmp/nyrqis-status.sock"
 DEFAULT_TIMEOUT_S = 30.0
 
 
+# The status-service commands the daemon serves on BOTH the main and
+# (when configured) the dedicated health socket (ADR-0021).
+STATUS_COMMANDS = ("ping", "status", "health")
+CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
+
+
 # -- payload construction (pure, unit-testable) ------------------------
 
 def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     """The JSON request for ``command`` (the ``args`` come from the
     command's own subparser). Mirror of the daemon's service ops."""
-    if command in ("ping", "status", "health"):
+    if command in STATUS_COMMANDS:
         return {"op": command}
     if command == "containers-list":
         return {"service": "control", "op": "container_list"}
@@ -182,11 +193,24 @@ def call_daemon(
 
 def run(command: str, args: argparse.Namespace) -> int:
     """Execute ``command`` against the daemon; returns the exit code."""
+    if command in STATUS_COMMANDS and args.health_socket:
+        # ADR-0021: probe the dedicated health socket (no contention
+        # with container traffic on the main service socket).
+        target = args.health_socket
+    elif command in CONTROL_COMMANDS and args.health_socket:
+        print(
+            "error: the health socket serves status/health only — "
+            "control commands use the main --socket",
+            file=sys.stderr,
+        )
+        return 2
+    else:
+        target = args.socket
     payload = build_payload(command, args)
-    resp = call_daemon(args.socket, payload, timeout_s=args.timeout)
+    resp = call_daemon(target, payload, timeout_s=args.timeout)
     if resp is None:
         print(
-            f"error: no reply from the daemon at {args.socket} "
+            f"error: no reply from the daemon at {target} "
             "(is it running?)",
             file=sys.stderr,
         )
@@ -213,6 +237,12 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         "--socket", default=DEFAULT_SOCKET,
         help=f"The daemon's main service socket "
              f"(default: {DEFAULT_SOCKET})",
+    )
+    parser.add_argument(
+        "--health-socket", default="",
+        help="The daemon's dedicated health-probe socket (ADR-0021) — "
+             "ping/status/health are routed there instead of the main "
+             "--socket (default: disabled)",
     )
     parser.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT_S,

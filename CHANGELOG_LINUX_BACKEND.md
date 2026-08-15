@@ -16,6 +16,15 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.2] — 2026-08-15
+
+### Compiled launcher-init + operator-CLI polish + NyVault ADR (ADR-0020, ADR-0022, ADR-0021)
+
+- **The container's PID-1 is now a compiled binary (`rust/launcher/`, ADR-0020)**: the launcher-init moves behind the platform boundary — zero Python between clone and exec. `nyrqis-launcher` (a Rust BINARY, `libc`-only) does everything `launcher.py` did: sethostname (with the prctl fallback), cgroup-mount hardening (`umount2`), loopback bring-up (`SIOCSIFFLAGS`), SIGPIPE/SIGXFSZ reset, fork + **seccomp install via prctl** + `execvp`, signal forwarding (7 signals, async-signal-safe atomic handler), reaping, signal-death propagation (128+n), and the orphan sweep. The seccomp POLICY COMPILATION stays in the backend (the syscall allowlist tables live there); the manager serializes the compiled classic-BPF program to a `--bpf-file` the binary installs. `backend/rust_launcher.py` is the locator (`$NYRQIS_LAUNCHER` override → crate `target/release/` → PATH; `NYRQIS_LAUNCHER_FORCE=1` for the conformance gate) and is deliberately UNCACHED — a stale cached path would exec a dead binary (126). `container.py` `_launcher_exec` hands the container the compiled binary when available, launcher.py otherwise; the Python launcher stays as the crate-less fallback. New CI jobs: `rust-launcher` (build + 10 unit tests) and the required `rust-launcher-conformance` gate (the loader + wiring classes forced through the binary). Verified end-to-end: real containers through the compiled init — exit status 7 propagated, UTS hostname set, **the container's seccomp filter ACTIVE** (a default-cap file create denied → exit 9), SIGTERM to the init forwarded and wait() reported 128+15. Suite 368 → **382**.
+- **`nyrqisctl --health-socket` (ADR-0021)**: `ping`/`status`/`health` route to the daemon's dedicated health-probe socket (no contention with container traffic on the main socket); control commands refuse it (exit 2, clear message). New `test_cli_health_socket_routes_status_ops`.
+- **Packaging polish**: `packaging/man/nyrqisctl.1` (roff man page: commands, options, exit status, examples) + `packaging/completions/nyrqisctl.bash`/`.zsh` (tab-completion), with install steps in `packaging/README.md` (which also documents nyrqisctl as the preferred operator surface).
+- **ADR-0022 drafted (Proposed)**: NyVault — storage as a daemon-hosted service on the IPC transport. A container obtains a NyFS-backed volume by CALLing a `storage` service (registered on ADR-0021's router), gets a capability-gated volume handle, and its in-container byte path is a FUSE passthrough whose ops are the same authenticated CALLs; the daemon holds the data plane. Deliberately NOT a database, NOT a key store (the vault key-manager ADR is deferred before at-rest encryption is claimed), NOT kernel-level storage. Added to the ADR index.
+
 ## [0.14.1] — 2026-08-15
 
 ### The operator CLI (`nyrqisctl`) — the user-facing surface of the daemon's control plane

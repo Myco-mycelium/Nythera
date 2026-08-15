@@ -28,6 +28,7 @@ directory; this index tracks status only.
 | [ADR-0019](ADR-0019-journal-commit-default.md) | Journal commit as the default NyFS save() mode | Proposed |
 | [ADR-0020](ADR-0020-implementation-languages.md) | Implementation languages and the platform boundary | **Accepted** |
 | [ADR-0021](ADR-0021-nyruntime-transport-serving-loop.md) | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** — close gate met |
+| [ADR-0022](ADR-0022-nyvault-storage-service.md) | NyVault — storage as a daemon-hosted service on the IPC transport | Proposed |
 
 ## Blocked Statuses
 

@@ -1,0 +1,17 @@
+[package]
+name = "nyrqis-launcher"
+version = "1.0.0"
+edition = "2021"
+description = "Nyrqis in-namespace container launcher (PID-1 init) — the compiled launcher behind the platform boundary (ADR-0020)"
+license = "MIT"
+
+[[bin]]
+name = "nyrqis-launcher"
+path = "src/main.rs"
+
+[lib]
+name = "nyrqis_launcher"
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"

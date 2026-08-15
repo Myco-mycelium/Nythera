@@ -24,6 +24,7 @@ import os
 import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ from typing import Optional, Dict, List, Tuple
 
 from backend import rust_syscalls  # ADR-0020 priority #2 FFI loader
 from backend import container_codec  # ADR-0020 priority #5 FFI loader
+from backend import rust_launcher  # ADR-0020 launcher-init binary locator
 from ipc.registry import ContainerIpcRegistry  # transport sender auth
 
 logger = logging.getLogger(__name__)
@@ -213,6 +215,7 @@ class ContainerManager:
             )
         self.cgroup_root = self._get_cgroup_root()
         self._policy_files: List[str] = []  # seccomp policy temp files to clean up
+        self._bpf_files: List[str] = []  # serialized seccomp programs (Rust launcher)
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
     
     def _detect_cgroups_v2(self) -> bool:
@@ -748,6 +751,71 @@ class ContainerManager:
         cmd += self._launcher_args(container, launcher)
         return cmd
     
+    def _write_bpf_file(self, container: Container) -> str:
+        """Serialize the container's compiled seccomp program to a file
+        the Rust launcher-init installs via ``prctl`` (ADR-0020). The
+        policy COMPILATION stays here — above the platform boundary;
+        the install is the compiled binary's job. Byte layout: classic-
+        BPF ``sock_filter`` records, little-endian ``<HBBI`` — the
+        format ``rust/launcher``'s ``parse_bpf`` reads.
+        """
+        from backend.seccomp import (  # lazy: no import cycle
+            SyscallArch, build_allowlist_policy, build_policy,
+            build_program,
+        )
+        caps = container.config.capabilities
+        if not caps:
+            from backend.capability import CapabilityManager
+            caps = [
+                c.value
+                for c in CapabilityManager().get_default_capabilities()
+            ]
+        caps = sorted(set(caps))
+        arch = SyscallArch.from_machine()
+        if container.config.default_deny:
+            policy = build_allowlist_policy(caps, arch=arch)
+        else:
+            policy = build_policy(caps, arch=arch)
+        program = build_program(policy)
+        fd, path = tempfile.mkstemp(prefix="nyrqis-bpf-", suffix=".bpf")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                for code, jt, jf, k in program:
+                    fh.write(struct.pack("<HBBI", code, jt, jf, k))
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        os.chmod(path, 0o600)
+        self._bpf_files.append(path)
+        return path
+
+    def _launcher_exec(self, container: Container) -> List[str]:
+        """The container's full launcher argv — ``argv[0]`` IS the
+        executable (handed to ``os.execv`` as-is). The compiled
+        launcher-init (``rust/launcher``, ADR-0020 — zero Python
+        between clone and exec: the clone child execs the binary
+        directly) when available; the Python launcher otherwise. The
+        hostname and command are separate argv entries — never
+        interpolated into a shell string (FIND-BACKEND-004). The Rust
+        path carries the PRE-BUILT seccomp program (``--bpf-file``)
+        instead of the policy JSON: policy compilation stays in the
+        backend, the install is the binary's.
+        """
+        launcher = Path(__file__).resolve().parent / "launcher.py"
+        if rust_launcher.available():
+            argv = [
+                rust_launcher.launcher_path(),
+                "--hostname", container.config.hostname,
+            ]
+            if container.config.seccomp:
+                argv += ["--bpf-file", self._write_bpf_file(container)]
+            argv += ["--"] + list(container.config.command)
+            return argv
+        return self._launcher_args(container, launcher)
+
     def _write_policy_file(self, container: Container) -> str:
         """Write the container's capability set to a 0600 temp file.
         
@@ -768,13 +836,14 @@ class ContainerManager:
         return path
     
     def _cleanup_policy_files(self) -> None:
-        """Remove seccomp policy temp files."""
-        for path in self._policy_files:
+        """Remove seccomp policy + BPF temp files."""
+        for path in self._policy_files + self._bpf_files:
             try:
                 os.unlink(path)
             except OSError as e:
                 logger.warning(f"Failed to remove policy file {path}: {e}")
         self._policy_files.clear()
+        self._bpf_files.clear()
     
     def _spawn(self, container: Container):
         """Spawn the container's main process in isolated namespaces.
@@ -852,8 +921,7 @@ class ContainerManager:
         from a quiescent manager (no other threads holding locks),
         matching the fork rule Python's own ``subprocess`` documents.
         """
-        launcher = Path(__file__).resolve().parent / "launcher.py"
-        launcher_argv = self._launcher_args(container, launcher)
+        launcher_argv = self._launcher_exec(container)
 
         # Pre-load so the forked child never calls dlopen between fork
         # and exec (the loader cache is inherited by the child). The
@@ -869,7 +937,8 @@ class ContainerManager:
             f"seccomp={container.config.seccomp}, "
             f"default_deny={container.config.default_deny}, "
             f"network={container.config.network}, direct_syscalls=True, "
-            f"child={'rust' if rust_syscalls.available() else 'python'})"
+            f"child={'rust' if rust_syscalls.available() else 'python'}, "
+            f"launcher={'rust' if rust_launcher.available() else 'python'})"
         )
 
         if rust_syscalls.available():

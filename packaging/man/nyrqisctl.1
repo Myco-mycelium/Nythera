@@ -1,0 +1,120 @@
+.TH NYRQISCTL 1 "2026-08-15" "Nyrqis" "Nyrqis User Commands"
+.SH NAME
+nyrqisctl \- drive a running Nyrqis backend daemon's control plane
+.SH SYNOPSIS
+.B nyrqisctl
+.RI [ options ]
+.I command
+.RI [ args ]
+.SH DESCRIPTION
+.B nyrqisctl
+is the operator CLI for a running Nyrqis backend daemon. It drives the
+daemon's main service socket (the socket
+.B nyrqis_backend.py service serve
+binds) over the Nyrqis IPC transport, claiming the operator identity
+.RB ( host-operator ),
+which the daemon authenticates by the kernel-attached uid of the caller
+(the daemon's own user). It serves two services: the status service
+.RB ( ping ,
+.BR status ,
+.BR health )
+and the control plane
+.RB ( containers\ list|run|kill ).
+.PP
+The daemon's default socket is
+.B /tmp/nyrqis-status.sock
+(the systemd unit serves
+.BR /run/nyrqis/status.sock ).
+A dedicated health-probe socket (ADR-0021), when configured, serves
+.B ping/status/health
+without contending with container traffic on the main socket; control
+commands always use the main socket.
+.SH OPTIONS
+.TP
+.BI \-\-socket " PATH"
+The daemon's main service socket (default:
+.BR /tmp/nyrqis-status.sock ).
+.TP
+.BI \-\-health\-socket " PATH"
+The daemon's dedicated health-probe socket (ADR-0021). When set,
+.B ping/status/health
+are routed there instead of the main
+.BR \-\-socket .
+Control commands refuse to use it.
+.TP
+.BI \-\-timeout " SECONDS"
+CALL timeout in seconds (default: 30).
+.TP
+.B \-\-json
+Print the raw JSON reply instead of human-readable output.
+.TP
+.B \-v, \-\-verbose
+Verbose (debug-level) logging.
+.SH COMMANDS
+.TP
+.B ping
+Ping the daemon; requires nothing beyond the transport's own checks.
+Prints the daemon's
+.B pong
+reply and the resolved caller identity.
+.TP
+.B status
+Daemon status: backend version, service version, uptime, the caller's
+identity, and its capability set.
+.TP
+.B health
+Daemon health diagnostics: serve-loop liveness, container load, IPC
+registry size, state persistence, and a crash-recovery summary.
+.TP
+.B containers list
+List the daemon's containers (id, state, pid).
+.TP
+.B containers run
+.RI [ options ] " COMMAND " [ ARGS ...]
+Spawn a container on the daemon.
+.RS
+.TP
+.BI \-\-name " NAME"
+Container name.
+.TP
+.BI \-\-capabilities " LIST"
+Comma-separated data-plane capabilities (seccomp).
+.TP
+.B \-\-network
+Give the container its own network namespace.
+.TP
+.BI \-\-memory " MiB"
+Memory limit in MiB (default: 256).
+.TP
+.BI \-\-pids " N"
+PID limit (default: 64).
+.RE
+.TP
+.B containers kill " CONTAINER_ID"
+Terminate a container on the daemon.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+The daemon did not reply (is it running?) or the operation failed
+.RB ( ok:\ false
+in the reply).
+.TP
+.B 2
+Usage error (unknown command, missing argument, or a control command
+sent to
+.BR \-\-health\-socket ).
+.SH EXAMPLES
+.nf
+nyrqisctl status
+nyrqisctl containers list
+nyrqisctl containers run --network --memory 512 /bin/sleep 30
+nyrqisctl containers kill cli-e2e
+nyrqisctl --health-socket /run/nyrqis/health.sock health
+nyrqisctl --json health
+.fi
+.SH SEE ALSO
+.BR nyrqis_backend (1),
+.BR nyrqis-backend (8)

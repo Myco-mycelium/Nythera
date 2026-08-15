@@ -655,6 +655,39 @@ Documentation hygiene, fixed earlier this session:
   e2e through a REAL daemon — operator ping/status/health answered,
   containers list, and a real-container run→list→kill loop,
   userns-gated). Suite 358 → **368**.
+- 2026-08-15 (**the container's PID-1 is now a compiled binary — the
+  launcher-init behind the platform boundary (ADR-0020)**): new
+  `rust/launcher/` (`nyrqis-launcher`, a Rust BINARY, `libc`-only —
+  not a cdylib) does everything `launcher.py` did: sethostname (+prctl
+  fallback), cgroup-mount hardening, loopback bring-up,
+  SIGPIPE/SIGXFSZ reset, fork + **seccomp install via prctl** +
+  `execvp`, signal forwarding, reaping, signal-death propagation
+  (128+n), orphan sweep. The seccomp POLICY COMPILATION stays in the
+  backend (the allowlist tables live there); the manager serializes
+  the compiled classic-BPF program to a `--bpf-file` (`_write_bpf_file`,
+  little-endian `<HBBI` sock_filter records — byte-matched to
+  `rust/launcher`'s `parse_bpf`) that the binary installs.
+  `backend/rust_launcher.py` is the locator (`$NYRQIS_LAUNCHER` →
+  crate `target/release/` → PATH; `NYRQIS_LAUNCHER_FORCE=1` for the
+  gate) and is deliberately UNCACHED — a stale cached path would make
+  spawns exec a dead binary (exit 126; pinned by a regression test).
+  `_launcher_exec` hands the container the compiled binary when
+  available, `launcher.py` otherwise (the crate-less fallback — the
+  fork-path unit tests still pin the Python argv via
+  `available()→False`). CI: `rust-launcher` build job (10 unit tests)
+  + the required `rust-launcher-conformance` gate. Verified e2e
+  through REAL containers: exit status 7 propagated, UTS hostname set,
+  the container's seccomp filter ACTIVE (a default-cap file create
+  denied → exit 9), SIGTERM to the init forwarded (wait → 128+15),
+  network path. Suite 368 → **382**. **Same day:** `nyrqisctl
+  --health-socket` (ping/status/health on the ADR-0021 health socket;
+  control commands refuse it — exit 2), packaging (man page
+  `packaging/man/nyrqisctl.1` + bash/zsh completion
+  `packaging/completions/`, install steps in `packaging/README.md`),
+  and **ADR-0022 drafted (Proposed)** — NyVault as a daemon-hosted
+  storage service on the IPC transport (capability-gated volume
+  handles, FUSE passthrough byte path, key management + hardware
+  integration deferred to follow-on ADRs).
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

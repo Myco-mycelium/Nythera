@@ -307,6 +307,39 @@ jobs:
           test_backend.TestLauncherSecurity
           test_backend.TestDirectSyscallLaunch
 
+  rust-launcher:
+    name: Rust launcher-init crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/launcher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: launcher binary artifact present
+        run: test -x target/release/nyrqis-launcher
+
+  rust-launcher-conformance:
+    name: Rust launcher-init FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the launcher binary
+        working-directory: source/nyhal-linux-backend/rust/launcher
+        run: cargo build --release
+      - name: Force the launcher-init classes through the compiled binary
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_LAUNCHER: rust/launcher/target/release/nyrqis-launcher
+          NYRQIS_LAUNCHER_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestRustLauncherLoader
+          test_backend.TestLauncherInitRust
+
   backend:
     name: Python backend tests
     runs-on: ubuntu-latest

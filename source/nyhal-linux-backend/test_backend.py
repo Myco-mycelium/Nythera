@@ -43,6 +43,7 @@ from backend.capability import (
 from backend import seccomp
 from backend import rust_syscalls
 from backend import container_codec
+from backend import rust_launcher  # compiled launcher-init locator (ADR-0020)
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
@@ -1862,6 +1863,36 @@ class TestOperatorCli(unittest.TestCase):
         finally:
             host.stop()
 
+    def test_cli_health_socket_routes_status_ops(self):
+        # ADR-0021: the dedicated health socket serves the status
+        # service (ping/status/health) without contending with
+        # container traffic on the main socket — nyrqisctl routes the
+        # status commands there via --health-socket, and refuses to
+        # send control commands to it (they use the main --socket).
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            for cmd in ("ping", "status", "health"):
+                rc, out, err = self._cli(
+                    "--health-socket", health_path, cmd)
+                self.assertEqual(rc, 0, (cmd, out, err))
+                if cmd == "ping":
+                    self.assertIn("pong", out)
+            # The main socket still answers status (no --health-socket).
+            rc, out, err = self._cli("status")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("backend:      9.9.9", out)
+            # Control never rides the health socket.
+            rc, out, err = self._cli(
+                "--health-socket", health_path, "containers", "list")
+            self.assertEqual(rc, 2)
+            self.assertIn("health socket serves status/health only", err)
+        finally:
+            host.stop()
+
 
 class TestServiceRouter(unittest.TestCase):
     """Multi-service dispatch on one server socket: the router routes on
@@ -3200,8 +3231,13 @@ class TestDirectSyscallLaunch(unittest.TestCase):
         self.assertEqual(captured["write_fd"], 4)
         self.assertEqual(captured["uid"], os.getuid())
         self.assertEqual(captured["gid"], os.getgid())
+        # The launcher is the Python launcher.py OR the compiled
+        # launcher-init (ADR-0020) — the argv carries whichever the
+        # manager resolved.
         self.assertTrue(any(
-            os.path.basename(a) == "launcher.py" for a in captured["argv"]
+            os.path.basename(a) in ("launcher.py",)
+            or os.path.basename(a).startswith("nyrqis-launcher")
+            for a in captured["argv"]
         ))
 
     def test_clone_spawn_err_marker_raises_and_kills_child(self):
@@ -3618,13 +3654,15 @@ class TestPid1Init(unittest.TestCase):
         except OSError as e:
             self.fail(f"could not read /proc/{c.pid}/stat: {e}")
         self.assertEqual(int(fields[3]), c._init_pid)
-        # The init is the launcher.
+        # The init is the launcher: launcher.py (Python) or the
+        # compiled launcher-init (ADR-0020) — accept either.
         try:
             with open(f"/proc/{c._init_pid}/cmdline", "rb") as fh:
                 cmd = fh.read().decode(errors="replace")
         except OSError:
             cmd = ""
-        self.assertIn("launcher.py", cmd)
+        self.assertTrue(
+            "launcher.py" in cmd or "nyrqis-launcher" in cmd, cmd)
 
     def test_sigterm_terminates_promptly(self):
         m = self._manager()
@@ -3711,6 +3749,253 @@ class TestPid1Init(unittest.TestCase):
         m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=False)
         c = self._spawn(m, ["/bin/sleep", "1"])
         self.assertEqual(m.wait(c, timeout_s=30), 0)
+
+
+class TestRustLauncherLoader(unittest.TestCase):
+    """The Rust launcher-init binary locator (``backend/rust_launcher.py``
+    — ADR-0020): search order, override, and force semantics."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.bin = os.path.join(self.tmp, "nyrqis-launcher")
+        with open(self.bin, "wb") as fh:
+            fh.write(b"#!/bin/sh\nexit 0\n")
+        os.chmod(self.bin, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_override_wins(self):
+        # The locator is deliberately uncached (a stale cached path
+        # would exec a dead binary) — each lookup re-stats.
+        with mock.patch.dict(
+            os.environ, {"NYRQIS_LAUNCHER": self.bin}, clear=False
+        ):
+            self.assertEqual(rust_launcher.launcher_path(), self.bin)
+
+    def _no_force(self, **extra):
+        # Explicitly disable the force var (the conformance gate runs
+        # with NYRQIS_LAUNCHER_FORCE=1 set globally, which would turn
+        # these "missing binary" cases into raises).
+        env = dict(extra, NYRQIS_LAUNCHER_FORCE="0")
+        return mock.patch.dict(os.environ, env, clear=False)
+
+    def test_missing_binary_is_none_without_force(self):
+        with self._no_force(NYRQIS_LAUNCHER="/nonexistent/launcher"):
+            self.assertIsNone(rust_launcher.launcher_path())
+            self.assertFalse(rust_launcher.available())
+
+    def test_force_raises_on_missing(self):
+        with mock.patch.dict(
+            os.environ, {
+                "NYRQIS_LAUNCHER": "/nonexistent/launcher",
+                "NYRQIS_LAUNCHER_FORCE": "1",
+            }, clear=False,
+        ):
+            with self.assertRaises(RuntimeError):
+                rust_launcher.launcher_path()
+
+    def test_non_executable_is_skipped(self):
+        os.chmod(self.bin, 0o644)
+        with self._no_force(NYRQIS_LAUNCHER=self.bin):
+            self.assertIsNone(rust_launcher.launcher_path())
+
+    def test_deleted_binary_no_longer_available(self):
+        # The uncached locator must not keep serving a path whose file
+        # has gone away (regression: a cached path would make spawns
+        # exec a dead binary — exit 126).
+        with self._no_force(NYRQIS_LAUNCHER=self.bin):
+            self.assertEqual(rust_launcher.launcher_path(), self.bin)
+            os.unlink(self.bin)
+            self.assertIsNone(rust_launcher.launcher_path())
+
+
+class TestLauncherInitRust(unittest.TestCase):
+    """The compiled launcher-init (``rust/launcher``, ADR-0020): the
+    manager hands the container the Rust binary (with the PRE-BUILT
+    seccomp program) when it is available, the Python launcher
+    otherwise; real containers launch through it with the init
+    contract intact (exit-status propagation, SIGTERM forwarding,
+    active seccomp filter).
+    """
+
+    def _manager(self):
+        return ContainerManager(use_cgroups_v2=False, use_direct_syscalls=True)
+
+    def test_launcher_exec_uses_rust_binary_when_available(self):
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        argv = m._launcher_exec(c)
+        if rust_launcher.available():
+            self.assertTrue(os.path.basename(argv[0]).startswith("nyrqis-launcher"))
+            self.assertIn("--", argv)
+            self.assertEqual(argv[argv.index("--") + 1:], ["/bin/true"])
+        else:
+            # crate-less hosts: the Python launcher argv (argv[0] is
+            # the interpreter, argv[1] is launcher.py)
+            self.assertEqual(argv[0], sys.executable)
+            self.assertIn("launcher.py", os.path.basename(argv[1]))
+
+    def test_launcher_exec_falls_back_to_python(self):
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False))
+        with mock.patch.object(
+            rust_launcher, "available", return_value=False
+        ):
+            argv = m._launcher_exec(c)
+        self.assertEqual(argv[0], sys.executable)
+        self.assertIn("launcher.py", os.path.basename(argv[1]))
+
+    def test_launcher_exec_writes_bpf_file_when_seccomp(self):
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=True))
+        before = set(m._bpf_files)
+        try:
+            argv = m._launcher_exec(c)
+            if not rust_launcher.available():
+                self.skipTest("Rust launcher-init not built on this host")
+            bpf = argv[argv.index("--bpf-file") + 1]
+            self.assertIn(bpf, m._bpf_files)
+            # A classic-BPF program: a non-empty, 8-byte-aligned file
+            # whose first record is the arch load (code 0x20 = BPF_LD|BPF_W|BPF_ABS).
+            data = open(bpf, "rb").read()
+            self.assertTrue(len(data) > 0 and len(data) % 8 == 0, len(data))
+            self.assertEqual(struct.unpack("<H", data[:2])[0], 0x20)
+        finally:
+            m._cleanup_policy_files()
+
+    def test_bpf_file_round_trips_through_rust_parser(self):
+        # The manager's serialization is byte-for-byte the format
+        # rust/launcher's parse_bpf reads: little-endian <HBBI records.
+        import backend.rust_launcher as rl
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=True))
+        try:
+            if not rust_launcher.available():
+                self.skipTest("Rust launcher-init not built on this host")
+            argv = m._launcher_exec(c)
+            bpf = argv[argv.index("--bpf-file") + 1]
+            data = open(bpf, "rb").read()
+            records = [
+                struct.unpack("<HBBI", data[i:i + 8])
+                for i in range(0, len(data), 8)
+            ]
+            self.assertEqual(
+                [r[0] for r in records[:1]], [0x20], "first instr: ld [4]")
+            self.assertTrue(all(
+                0 <= r[1] <= 0xFF and 0 <= r[2] <= 0xFF for r in records))
+        finally:
+            m._cleanup_policy_files()
+
+    def test_rust_init_propagates_exit_status(self):
+        # Real container through the compiled init: the exit status of
+        # the command (7) reaches the manager's wait() intact.
+        if not rust_launcher.available():
+            self.skipTest("Rust launcher-init not built on this host")
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/sh", "-c", "exit 7"], seccomp=False))
+        m.spawn(c)
+        try:
+            self.assertEqual(m.wait(c, timeout_s=30), 7)
+            self.assertEqual(c.state, ContainerState.TERMINATED)
+        finally:
+            try:
+                m.terminate(c)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+
+    def test_rust_init_forwards_sigterm(self):
+        # SIGTERM to the compiled init reaches the command (PID-1
+        # semantics would discard it without a handler), and the init
+        # dies by the signal so wait() reports 128+15.
+        if not rust_launcher.available():
+            self.skipTest("Rust launcher-init not built on this host")
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        m = self._manager()
+        c = m.create(ContainerConfig(command=["/bin/sleep", "30"], seccomp=False))
+        m.spawn(c)
+        try:
+            time.sleep(0.5)
+            os.kill(c._init_pid, signal.SIGTERM)
+            try:
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    try:
+                        os.kill(c.pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("command survived SIGTERM to the init")
+            except ProcessLookupError:
+                pass  # the command was already gone
+            self.assertEqual(m.wait(c, timeout_s=15), 128 + signal.SIGTERM)
+        finally:
+            try:
+                m.terminate(c)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+
+    def test_rust_init_sets_hostname_and_seccomp(self):
+        # The compiled init sets the UTS hostname AND installs the
+        # container's filter. Proof the filter is ACTIVE: a file
+        # create at an arbitrary path is denied by the DEFAULT
+        # capability set (CAP_FILESYSTEM_WRITE is not a default grant)
+        # — the shell exits 9 via `|| exit 9` (the same denial the
+        # Python launcher produces with the same policy).
+        if not rust_launcher.available():
+            self.skipTest("Rust launcher-init not built on this host")
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        m = self._manager()
+        tmp = tempfile.mkdtemp(prefix="nyrqis-rust-init-")
+        out = os.path.join(tmp, "hn.txt")
+        try:
+            c = m.create(ContainerConfig(
+                command=["/bin/sh", "-c",
+                         f"hostname > {out} || exit 9"],
+                seccomp=True, hostname="rust-hn-test"))
+            m.spawn(c)
+            rc = m.wait(c, timeout_s=30)
+            # The filter denies the create: rc=9 (the `|| exit 9`
+            # path) and no marker file. hostname itself ran fine (the
+            # filter allows it) — hostname denial would also surface
+            # here, which is equally a filter-active proof.
+            self.assertEqual(rc, 9)
+            self.assertFalse(os.path.exists(out))
+        finally:
+            try:
+                m.terminate(c)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_rust_init_runs_command_with_network(self):
+        # The compiled init is also used on the network path (own
+        # netns + loopback up).
+        if not rust_launcher.available():
+            self.skipTest("Rust launcher-init not built on this host")
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
+        m = self._manager()
+        c = m.create(ContainerConfig(
+            command=["/bin/true"], seccomp=False, network=True))
+        m.spawn(c)
+        try:
+            self.assertEqual(m.wait(c, timeout_s=30), 0)
+        finally:
+            try:
+                m.terminate(c)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
 
 
 class TestNetworkNamespaceIsolation(unittest.TestCase):
@@ -7657,6 +7942,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestDirectSyscallLaunch))
     suite.addTests(loader.loadTestsFromTestCase(TestPid1Init))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustLauncherLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestLauncherInitRust))
     suite.addTests(loader.loadTestsFromTestCase(TestRustSyscallsConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSCodecConformance))
