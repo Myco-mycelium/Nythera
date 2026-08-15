@@ -1174,6 +1174,12 @@ class TestStatusServiceHost(unittest.TestCase):
             host.stop()
 
     def test_container_probes_health_socket(self):
+        # Gate at run time: the _netns_* helpers (and the _NETNS skip
+        # message, a class attribute) are defined later in this module,
+        # so a decorator would fail at import time (same pattern as
+        # test_host_container_completes_status_call).
+        if not _netns_launch_supported():
+            self.skipTest(TestNetworkNamespaceIsolation._NETNS)
         # The full chain, real container, real daemon: a container
         # spawned through the host's OWN ContainerManager (auto-
         # registered in the registry → the change hook refreshes the
