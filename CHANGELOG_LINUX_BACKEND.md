@@ -16,6 +16,48 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.6] — 2026-08-15
+
+### KEK rotation, a verified LIVE encrypted mount, and the systemd vault wiring
+
+- **KEK rotation landed (ADR-0023 "rotation without re-encryption")**: the
+  storage service's `volume_rekey` op (OPERATOR-ONLY — a container never
+  holds the master passphrase) unwraps every volume's DEK with the current
+  KEK and re-wraps it with the new one, derived daemon-side and held in
+  the key handle table for the duration; **no block is re-encrypted** (the
+  DEK, hence all ciphertext, is untouched). The reply carries the NEW KEK
+  envelope (its salt is the one the DEKs were wrapped with — a locally
+  generated envelope would NOT match), so `nyrqisctl vault rekey
+  --new-passphrase Q --new-key-file F` persists it and the operator
+  restarts the daemon under the new key. Verified end-to-end: data reads
+  back after a restart under the NEW key, and the OLD key file can no
+  longer open the volume (fail-closed with an honest "vault key mismatch"
+  — the generic handler now surfaces `StorageLockedError` messages instead
+  of "internal error").
+- **The encrypted vault was taken through a REAL kernel FUSE mount and
+  verified live (ADR-0022's data-plane mount, first live verification)**: a
+  `StatusServiceHost` serving an encrypted vault + `nyrqisctl vault mount`
+  (and the in-process `NyVaultMount`) — kernel writes ride the passthrough
+  CALLs into the AEAD block layer and **no plaintext lands under the vault
+  dir**; write/fsync/read/mkdir/root-readdir/stat all work. Two real bugs
+  found and fixed by the live attempt: (1) `_check_path` rejected the
+  volume ROOT (`/`), breaking `readdir("/")`/`getattr("/")` — the root is
+  now a valid path; (2) the CLI's `--background` mount died with the
+  exiting CLI process (the FUSE loop lives in a daemon thread), so
+  `vault mount` now serves in the foreground of the CLI process (prints
+  confirmation, blocks on the loop until unmounted) — removed the
+  misleading flag. `volume_open` also canonicalizes id-or-name resolution
+  (the passthrough hands a name string; the handle now binds the real
+  volume id). New `TestNyVaultLiveMount` (2 tests, skip-gated on fusepy +
+  /dev/fuse + fusermount like `TestNyFSLiveMount`).
+- **systemd unit vault wiring**: `StateDirectory=nyrqis` (persistent
+  `/var/lib/nyrqis`, chowned to the service user), `--vault-dir
+  /var/lib/nyrqis/vault` + `--vault-key-file /var/lib/nyrqis/vault.key`,
+  and `EnvironmentFile=-/etc/nyrqis/backend.env` for the unlock passphrase
+  (the `-` prefix keeps the unit valid — without the file the vault serves
+  plaintext). `TestSystemdUnit` asserts the flags.
+- Suite 427 → **432** (rekey + live mount).
+
 ## [0.14.5] — 2026-08-15
 
 ### NyVault at rest: KEK wiring + block AEAD + the FUSE passthrough

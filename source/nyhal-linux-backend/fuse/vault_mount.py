@@ -102,7 +102,7 @@ class NyVaultOperations:
         the handle is the access token for everything else."""
         payload = json.dumps(
             {"service": _STORAGE_SERVICE, "op": "volume_open",
-             "volume_id": self.volume},
+             "volume": self.volume},  # id-or-name (the service resolves)
             sort_keys=True).encode("utf-8")
         reply = self.client.call(self.socket_path, payload,
                                  timeout_s=self.timeout_s)

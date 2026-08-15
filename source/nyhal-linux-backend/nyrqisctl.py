@@ -57,7 +57,7 @@ VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
     "vault-volume-close", "vault-volume-write", "vault-volume-read",
     "vault-volume-snapshot", "vault-volume-snapshots",
-    "vault-volume-delete", "vault-volume-mount",
+    "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -132,6 +132,9 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
                     "name": args.name}
         return {"service": "storage", "op": "volume_delete",
                 "volume_id": args.volume_id}
+    if command == "vault-volume-rekey":
+        return {"service": "storage", "op": "volume_rekey",
+                "new_passphrase": args.new_passphrase}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -225,6 +228,11 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "vault-volume-delete":
         return f"volume {resp.get('volume_id')} deleted " \
                "(crypto-shredded)"
+    if command == "vault-volume-rekey":
+        return (f"rekeyed {resp.get('rekeyed')} volume(s) — the new "
+                f"KEK envelope was written to {resp.get('key_file')}; "
+                f"restart the daemon with that key file + the new "
+                "passphrase to serve under the new KEK")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -283,6 +291,27 @@ def run(command: str, args: argparse.Namespace) -> int:
         return 2
     else:
         target = args.socket
+    if command == "vault-volume-rekey":
+        # OPERATOR-ONLY KEK rotation (ADR-0023): the new passphrase
+        # rides to the daemon over the authenticated operator path; the
+        # new envelope the daemon derives comes back in the reply.
+        args.new_passphrase = args.new_passphrase or os.environ.get(
+            "NYRQIS_VAULT_REKEY_PASSPHRASE")
+        if not args.new_passphrase:
+            print("error: vault rekey needs the new passphrase "
+                  "(--new-passphrase or "
+                  "NYRQIS_VAULT_REKEY_PASSPHRASE)",
+                  file=sys.stderr)
+            return 2
+        if not args.new_key_file:
+            print("error: vault rekey needs --new-key-file "
+                  "(where the new KEK envelope is written)",
+                  file=sys.stderr)
+            return 2
+        if os.path.exists(args.new_key_file):
+            print(f"error: {args.new_key_file} already exists",
+                  file=sys.stderr)
+            return 2
     if command == "vault-volume-write":
         # The write payload travels as base64 over the datagram
         # transport, so the CLI enforces the same per-call cap the
@@ -335,10 +364,11 @@ def run(command: str, args: argparse.Namespace) -> int:
         tmp = tempfile.mkdtemp(prefix="nyrqisctl-mnt-")
         cli_path = os.path.join(tmp, "ctl.sock")
         client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        mount = None
         try:
             mount = NyVaultMount(client, target, volume, args.mount_point)
             ok = mount.mount(
-                foreground=True, blocking=not args.background)
+                foreground=True, blocking=False)
         except Exception as e:  # noqa: BLE001 - surface mount failures clearly
             print(f"error: vault mount failed: {e}", file=sys.stderr)
             return 1
@@ -349,11 +379,20 @@ def run(command: str, args: argparse.Namespace) -> int:
                 "other 'vault' subcommands for the byte path)",
                 file=sys.stderr,
             )
+            client.close()
             return 1
-        if args.background:
-            print(f"mounted volume {volume} at {args.mount_point} "
-                  "(background FUSE loop)")
-        return 0
+        print(f"mounted volume {volume} at {args.mount_point} "
+              "(serving until unmounted)")
+        # The FUSE loop runs in a daemon thread; this process must stay
+        # alive or the kernel mount dies with it. Block until the mount
+        # is unmounted (fusermount -u or Ctrl-C).
+        try:
+            thread = getattr(mount, "_thread", None)
+            if thread is not None:
+                thread.join()
+            return 0
+        finally:
+            client.close()
     payload = build_payload(command, args)
     resp = call_daemon(target, payload, timeout_s=args.timeout)
     if resp is None:
@@ -383,6 +422,15 @@ def run(command: str, args: argparse.Namespace) -> int:
             print(f"wrote {len(data)} bytes to {args.output}")
         else:
             sys.stdout.buffer.write(data)
+    elif command == "vault-volume-rekey":
+        # Persist the new KEK envelope the daemon derived (its salt is
+        # the one the DEKs were re-wrapped with — a locally-generated
+        # envelope would NOT match).
+        key_file = args.new_key_file
+        with open(key_file, "wb") as f:
+            f.write(base64.b64decode(resp["new_envelope_b64"]))
+        resp["key_file"] = key_file
+        print(format_human(command, resp))
     else:
         print(format_human(command, resp))
     return 0
@@ -529,6 +577,19 @@ def build_parser() -> argparse.ArgumentParser:
     vd.add_argument("--name", default="", help="Delete by volume name")
     vd.set_defaults(command="vault-volume-delete")
 
+    vrk = vsub.add_parser(
+        "rekey", help="OPERATOR-ONLY: rotate the vault KEK (ADR-0023) "
+                       "without re-encrypting any block — re-wraps every "
+                       "volume's DEK with the new key")
+    vrk.add_argument("--new-passphrase", default="",
+                     help="The new unlock secret (or set "
+                          "NYRQIS_VAULT_REKEY_PASSPHRASE)")
+    vrk.add_argument("--new-key-file", default="",
+                     help="Where to write the new KEK envelope (the "
+                          "daemon's salt is the one that matches — the "
+                          "reply carries it)")
+    vrk.set_defaults(command="vault-volume-rekey")
+
     vi = vsub.add_parser(
         "init", help="LOCAL: initialize the vault KEK envelope (ADR-0023) "
                       "for the daemon's --vault-key-file")
@@ -546,9 +607,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Volume id (or use --name)")
     vm.add_argument("--name", default="", help="Mount by volume name")
     vm.add_argument("mount_point", help="Mount point (created if missing)")
-    vm.add_argument("--background", action="store_true",
-                    help="Run the FUSE loop in a background thread "
-                         "(default: foreground, blocks until unmounted)")
     vm.set_defaults(command="vault-volume-mount")
 
     return parser

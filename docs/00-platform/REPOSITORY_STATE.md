@@ -772,6 +772,24 @@ Documentation hygiene, fixed earlier this session:
   writes (~86 ms p50 — one fsync per transaction, the §9/§15 finding
   again), reads run at 1.6–2.8 ms p50 flat across payloads, and the
   block AEAD adds ~0.5 ms on 32 KiB reads. Suite 412 → **427**.
+- 2026-08-15 (**KEK rotation + the encrypted vault VERIFIED through a real
+  kernel FUSE mount + systemd vault wiring — 0.14.6**): `volume_rekey`
+  (OPERATOR-ONLY) rotates the KEK without re-encrypting any block
+  (unwrap with the current KEK, re-wrap with the new one, persist; the
+  reply carries the matching new envelope — `nyrqisctl vault rekey
+  --new-passphrase Q --new-key-file F`, restart under the new key;
+  verified: data reads back under the new key, the old key fails closed
+  with an honest "vault key mismatch"). **The encrypted vault was mounted
+  LIVE and verified** (first live verification of the data-plane mount):
+  kernel write/fsync/read/mkdir/root-readdir/stat through `nyrqisctl
+  vault mount`, no plaintext under the vault dir. The live attempt found
+  and fixed two real bugs: `_check_path` rejected the volume root `/`
+  (breaking `readdir("/")`), and the CLI's background-thread mount died
+  with the exiting process (the CLI now serves the FUSE loop in its
+  foreground until unmounted). `volume_open` canonicalizes id-or-name
+  resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
+  `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
+  `EnvironmentFile` passphrase. Suite 427 → **432**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

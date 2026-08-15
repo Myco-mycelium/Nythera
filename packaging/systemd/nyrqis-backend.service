@@ -27,6 +27,22 @@
 # floor otherwise — byte-identical replies). Operators or a systemd
 # HealthCheckCommand can probe liveness without touching the
 # container-facing service socket.
+#
+# NyVault (ADR-0022/0023): the volume backing store lives in the
+# StateDirectory (/var/lib/nyrqis, created and chowned to the service
+# user by systemd) so volumes + the registry + wrapped DEKs survive
+# restarts. At-rest encryption activates when the operator has placed a
+# KEK envelope at /var/lib/nyrqis/vault.key (`nyrqisctl vault init
+# /var/lib/nyrqis/vault.key --passphrase ...`; the envelope is NOT a
+# secret — chmod 0644 is fine) AND the unlock passphrase is present in
+# the optional EnvironmentFile. Until then the vault runs plaintext
+# (the crate-less fallback). The EnvironmentFile is optional (the `-`
+# prefix): with no file the unit is still valid, the daemon just serves
+# an unencrypted vault.
+#
+#   sudo mkdir -p /etc/nyrqis && sudo chmod 0700 /etc/nyrqis
+#   echo 'NYRQIS_VAULT_PASSPHRASE=change-me' | sudo tee /etc/nyrqis/backend.env >/dev/null
+#   sudo chmod 0600 /etc/nyrqis/backend.env
 
 [Unit]
 Description=Nyrqis Linux backend daemon (status service + control plane)
@@ -39,7 +55,7 @@ Type=simple
 # The backend CLI lives beside the source tree in this repository;
 # adjust ExecStart for a packaged install (see README.md). The CLI
 # resolves its own directory, so only the ExecStart path matters here.
-ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py service serve --socket /run/nyrqis/status.sock --health-socket /run/nyrqis/health.sock --syslog --state-file /run/nyrqis/daemon-state.json
+ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py service serve --socket /run/nyrqis/status.sock --health-socket /run/nyrqis/health.sock --syslog --state-file /run/nyrqis/daemon-state.json --vault-dir /var/lib/nyrqis/vault --vault-key-file /var/lib/nyrqis/vault.key
 Restart=on-failure
 RestartSec=2
 
@@ -48,6 +64,16 @@ RestartSec=2
 # mkdir needed.
 RuntimeDirectory=nyrqis
 RuntimeDirectoryMode=0755
+
+# State directory: created (and chowned to the service user) by
+# systemd, PERSISTS across restarts — the NyVault backing store, the
+# volume registry, and the KEK envelope live here.
+StateDirectory=nyrqis
+StateDirectoryMode=0750
+
+# Optional vault unlock secret: read from /etc/nyrqis/backend.env if it
+# exists (the `-` prefix). Without it the vault serves plaintext.
+EnvironmentFile=-/etc/nyrqis/backend.env
 
 # Hardening (best-effort — the backend must still create user
 # namespaces and cgroups for containers, so full namespace/priv

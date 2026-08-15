@@ -37,6 +37,9 @@ Operations (JSON request → JSON reply over CALL/REPLY):
 - ``{"op": "volume_close", "handle": str}`` — release a handle.
 - ``{"op": "volume_info", "handle": str}`` — the volume's metadata and
   backing-store state (block size, bytes persisted).
+- ``{"op": "volume_rekey", "new_passphrase": str}`` — OPERATOR-ONLY
+  KEK rotation (ADR-0023): re-wraps every volume's DEK with the new
+  KEK (no block re-encryption) and returns the matching envelope.
 
 References:
 - ADR-0022 (NyVault — storage as a daemon-hosted service)
@@ -193,8 +196,18 @@ class StorageService:
                 "vault locked: the KEK is not unlocked (serve with "
                 "--vault-key-file and the passphrase)")
         from backend import keys
-        record["dek"] = keys.unwrap(
-            self.kek, record["id"].encode("utf-8"), record["wrapped_dek"])
+        try:
+            record["dek"] = keys.unwrap(
+                self.kek, record["id"].encode("utf-8"),
+                record["wrapped_dek"])
+        except keys.KeysError as e:
+            # Fail-closed with an honest message: the wrapped DEK cannot
+            # be unwrapped with the current KEK — the vault was rekeyed
+            # (or the wrong key file is serving it).
+            raise StorageLockedError(
+                "vault key mismatch: the volume's DEK cannot be "
+                "unwrapped with the current KEK (was the vault "
+                "rekeyed? serve with the NEW key file) [%s]" % (e,))
         return record["dek"]
 
     def _ensure_nyfs(self, record: Dict[str, Any]):
@@ -273,6 +286,9 @@ class StorageService:
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
+            elif op == "volume_rekey":
+                self._volume_rekey(server, sender_path, msg.message_id,
+                                   sender, request)
             elif op == "volume_getattr":
                 self._volume_getattr(server, sender_path, msg.message_id,
                                      sender, request)
@@ -308,6 +324,19 @@ class StorageService:
                     "ok": False,
                     "error": "unknown operation: %r" % (op,),
                 })
+        except StorageLockedError as e:
+            # A caller-facing vault state (locked KEK, or a rekeyed
+            # vault served with the old key file) — an honest message,
+            # not a generic internal error.
+            logger.error("ipc: %s: %s", self.SERVICE_NAME, e)
+            try:
+                self._reply(server, sender_path, msg.message_id, {
+                    "ok": False,
+                    "error": str(e),
+                })
+            except Exception:  # noqa: BLE001 - even the error reply can fail
+                logger.exception("ipc: %s could not send error reply",
+                                 self.SERVICE_NAME)
         except Exception:  # noqa: BLE001 - a service bug must not kill the serve loop
             logger.exception("ipc: %s internal error", self.SERVICE_NAME)
             try:
@@ -432,9 +461,18 @@ class StorageService:
             })
             return
         # Open by id OR by name (operator UX: ``vault open assets``).
-        volume_id = request.get("volume_id") or \
+        # ``volume`` is the FUSE passthrough's id-or-name key (it hands
+        # whatever the mount was given — an id or a name string — and
+        # cannot tell them apart).
+        volume_id = request.get("volume_id") or request.get("volume") or \
             self._by_name.get(request.get("name") or "")
         record = self._volumes.get(volume_id)
+        if record is None and volume_id:
+            # id-or-name: a NAME handed in as ``volume``/``volume_id``
+            # resolves through the name map.
+            record = self._volumes.get(self._by_name.get(volume_id))
+            if record is not None:
+                volume_id = record["id"]  # canonicalize for the handle
         if record is None:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
@@ -598,6 +636,91 @@ class StorageService:
         self._reply(server, sender_path, call_id, {
             "ok": True, "volume_id": volume_id})
 
+    def _volume_rekey(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        """Rotate the KEK (ADR-0023) without touching any block: every
+        volume's wrapped DEK is unwrapped with the CURRENT KEK and
+        re-wrapped with the new one, so the ciphertext is untouched.
+
+        OPERATOR-ONLY: the new passphrase is the vault's master secret
+        — a container never holds it, regardless of capabilities (the
+        operator is kernel-authenticated by the transport). The new KEK
+        is derived daemon-side and held in the key handle table for the
+        duration of the rekey, then shredded; the reply carries the
+        matching envelope (base64) so ``nyrqisctl vault rekey`` can
+        persist it and the operator can restart the daemon under the
+        new key file. Until that restart the daemon keeps serving with
+        the OLD KEK (the rekey does not interrupt service).
+        """
+        if sender != DEFAULT_OPERATOR_ID:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: volume_rekey is operator-only",
+            })
+            return
+        if self.kek is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "vault is not encrypted (serve with "
+                          "--vault-key-file to enable rekey)",
+            })
+            return
+        new_passphrase = request.get("new_passphrase")
+        if not isinstance(new_passphrase, str) or not new_passphrase.strip():
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "new_passphrase must be a non-empty string",
+            })
+            return
+        try:
+            from backend import keys
+            # The new KEK, derived daemon-side and held in the handle
+            # table (the crate owns the master key during the rekey).
+            new_blob = keys.make_blob_any(new_passphrase.encode("utf-8"))
+            new_kek = keys.unlock(new_blob, new_passphrase.encode("utf-8"))
+        except Exception as e:  # noqa: BLE001 - a key failure is a rekey failure
+            logger.error("ipc: %s rekey could not derive the new KEK: %s",
+                         self.SERVICE_NAME, e)
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "could not derive the new KEK: %s" % (e,),
+            })
+            return
+        rekeyed = 0
+        try:
+            for record in self._volumes.values():
+                wrapped = record.get("wrapped_dek")
+                if wrapped is None:
+                    continue  # a plaintext volume predating the KEK
+                try:
+                    dek = keys.unwrap(
+                        self.kek, record["id"].encode("utf-8"), wrapped)
+                except Exception as e:  # noqa: BLE001 - one bad volume fails the rekey
+                    logger.error(
+                        "ipc: %s rekey could not unwrap volume %s: %s",
+                        self.SERVICE_NAME, record["id"][:8], e)
+                    self._reply(server, sender_path, call_id, {
+                        "ok": False,
+                        "error": "rekey aborted: volume %s failed to "
+                                  "unwrap (%s)" % (record["id"][:8], e),
+                    })
+                    return
+                record["wrapped_dek"] = keys.wrap(
+                    new_kek, record["id"].encode("utf-8"), dek)
+                rekeyed += 1
+            self._save_state()
+        finally:
+            keys.shred(new_kek)
+        logger.info("ipc: %s rekeyed %d volume(s) for the operator",
+                    self.SERVICE_NAME, rekeyed)
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "rekeyed": rekeyed,
+            "new_envelope_b64": base64.b64encode(new_blob).decode("ascii"),
+            "note": "restart the daemon with the new key file + "
+                    "passphrase to serve under the new KEK",
+        })
+
     # -- byte path (ADR-0022: the daemon holds the data plane) ------
 
     def _resolve_handle(self, server, sender_path: str, call_id: str,
@@ -634,7 +757,14 @@ class StorageService:
 
     @staticmethod
     def _check_path(path: Any) -> bool:
-        if not isinstance(path, str) or not _PATH_RE.match(path):
+        if not isinstance(path, str) or not path:
+            return False
+        if path == "/":
+            # The volume ROOT is a valid path (getattr/readdir/statfs
+            # all target it) even though ``_PATH_RE`` needs at least
+            # one non-slash segment.
+            return True
+        if not _PATH_RE.match(path):
             return False
         # ``..`` must be rejected explicitly: the regex's ``[^/]+``
         # would otherwise admit it as an ordinary segment.

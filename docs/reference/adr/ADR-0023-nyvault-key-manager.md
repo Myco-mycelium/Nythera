@@ -47,9 +47,21 @@ depends_on: [NPS-004, NPS-011, ADR-0002, ADR-0014, ADR-0020, ADR-0022]
 > in the crate's handle table; the per-volume DEK is necessarily held
 > daemon-side to serve block I/O and is passed to the crate's block
 > ops per call — the custody boundary is the master key, which never
-> leaves the crate. Remaining per this ADR: rotation without
-> re-encryption, hardware backends (TPM2/PKCS#11), and the FUSE
-> passthrough's encrypted path is covered by the same block layer.
+> leaves the crate.
+>
+> **KEK rotation IMPLEMENTED the same day (2026-08-15) — rotation
+> without re-encryption is now claimed:** `volume_rekey` (OPERATOR-ONLY)
+> unwraps every volume's DEK with the current KEK and re-wraps it with
+> the new one, derived daemon-side and held in the key handle table for
+> the duration; no block is re-encrypted. The reply carries the new
+> envelope (its salt is the one the DEKs were wrapped with), persisted
+> by `nyrqisctl vault rekey --new-key-file`; the daemon restarts under
+> the new key and the OLD key fails closed with an honest key-mismatch
+> error. Verified end-to-end (data reads back after the rekey; the old
+> key file cannot open the volume). The FUSE passthrough's encrypted
+> path is covered by the same block layer and was verified through a
+> real kernel mount. Remaining per this ADR: hardware backends
+> (TPM2/PKCS#11).
 
 # ADR-0023 — NyVault Key Manager: Envelope Encryption with Rust-Held Key Custody
 

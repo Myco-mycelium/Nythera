@@ -2098,6 +2098,83 @@ class TestOperatorCli(unittest.TestCase):
                 vault_dir=vault, vault_key_file=key_file,
                 vault_passphrase="wrong")
 
+    def test_cli_vault_rekey_e2e(self):
+        # ADR-0023 KEK rotation through the CLI against a REAL daemon:
+        # create an encrypted volume + write data under key A, rekey to
+        # B, restart the daemon under B — the data reads back (the DEK,
+        # hence the ciphertext, was never touched). After the rekey the
+        # OLD key file can no longer open the volume (fail-closed).
+        vault = os.path.join(self.tmp, "rk-vault")
+        key_a = os.path.join(self.tmp, "key-a")
+        key_b = os.path.join(self.tmp, "key-b")
+        pw_a, pw_b = "rekey-secret-a", "rekey-secret-b"
+        rc, out, err = self._cli("vault", "init", key_a,
+                                 "--passphrase", pw_a)
+        self.assertEqual(rc, 0, (out, err))
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key_a,
+            vault_passphrase=pw_a)
+        host.start()
+        blob = os.path.join(self.tmp, "secret.bin")
+        out_file = os.path.join(self.tmp, "out.bin")
+        payload = b"REKEY-UNTOUCHED-" * 100
+        with open(blob, "wb") as f:
+            f.write(payload)
+        try:
+            rc, out, err = self._cli("vault", "create", "rk")
+            self.assertEqual(rc, 0, (out, err))
+            rc, out, err = self._cli("vault", "open", "--name", "rk")
+            handle = out.split()[1]
+            rc, out, err = self._cli(
+                "vault", "write", handle, "/blob.bin", "--file", blob)
+            self.assertEqual(rc, 0, (out, err))
+            # The rekey itself, through the CLI.
+            rc, out, err = self._cli(
+                "vault", "rekey", "--new-passphrase", pw_b,
+                "--new-key-file", key_b)
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("rekeyed 1 volume", out)
+            self.assertIn(key_b, out)
+            # A second rekey with an existing target file is refused.
+            rc, out, err = self._cli(
+                "vault", "rekey", "--new-passphrase", "another",
+                "--new-key-file", key_b)
+            self.assertEqual(rc, 2, (out, err))
+            self.assertIn("already exists", err)
+        finally:
+            host.stop()
+        # Restart under the NEW key: the data reads back untouched.
+        host2 = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key_b,
+            vault_passphrase=pw_b)
+        host2.start()
+        try:
+            rc, out, err = self._cli("vault", "open", "--name", "rk")
+            self.assertEqual(rc, 0, (out, err))
+            handle = out.split()[1]
+            rc, out, err = self._cli(
+                "vault", "read", handle, "/blob.bin", "--output", out_file)
+            self.assertEqual(rc, 0, (out, err))
+            with open(out_file, "rb") as f:
+                self.assertEqual(f.read(), payload)
+        finally:
+            host2.stop()
+        # The OLD key can no longer serve the volume (its DEKs were
+        # re-wrapped): opening fails closed with an unwrap error.
+        host3 = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key_a,
+            vault_passphrase=pw_a)
+        host3.start()
+        try:
+            rc, out, err = self._cli("vault", "open", "--name", "rk")
+            self.assertEqual(rc, 1, (out, err))
+            self.assertIn("unwrap", err)
+        finally:
+            host3.stop()
+
     def test_cli_vault_refuses_health_socket(self):
         # Vault ops are control-plane ops: they use the main socket and
         # refuse the dedicated health socket like control commands.
@@ -2141,7 +2218,7 @@ class TestOperatorCli(unittest.TestCase):
             self.assertIn("fusepy is not available", err.getvalue())
             mnt_cls.assert_called_once()
             mnt.mount.assert_called_once_with(
-                foreground=True, blocking=True)
+                foreground=True, blocking=False)
 
     def test_cli_health_socket_routes_status_ops(self):
         # ADR-0021: the dedicated health socket serves the status
@@ -3260,6 +3337,83 @@ class TestStorageService(unittest.TestCase):
             stop.set()
             server.close()
 
+    def test_volume_rekey_rotates_the_kek_without_reencryption(self):
+        kek = self._kek()
+        server, stop, storage = self._serve(
+            vault_dir=os.path.join(self.tmp, "rk-vault"),
+            register_pid=False, kek=kek)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "rk"}).encode())
+            vid = resp["volume_id"]
+            wrapped_before = storage._volumes[vid]["wrapped_dek"]
+            dek = storage._volumes[vid]["dek"]
+            r = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_rekey",
+                "new_passphrase": "fresh-secret"}).encode())
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["rekeyed"], 1)
+            # The old KEK handle must NOT unwrap the re-wrapped DEK.
+            with self.assertRaises(keys_module.KeysError):
+                keys_module.unwrap(
+                    kek, vid.encode("utf-8"),
+                    storage._volumes[vid]["wrapped_dek"])
+            # The new envelope + passphrase must (and the DEK is the
+            # same one — ciphertext untouched).
+            new_blob = base64.b64decode(r["new_envelope_b64"])
+            new_kek = keys_module.unlock(new_blob, b"fresh-secret")
+            self.assertEqual(
+                keys_module.unwrap(
+                    new_kek, vid.encode("utf-8"),
+                    storage._volumes[vid]["wrapped_dek"]),
+                dek)
+            keys_module.shred(new_kek)
+            # Persisted state holds the re-wrapped DEK.
+            with open(os.path.join(
+                    self.tmp, "rk-vault", "volumes.json"), "rb") as f:
+                state = json.loads(f.read().decode())
+            self.assertNotEqual(
+                state["volumes"][0]["wrapped_dek"], wrapped_before)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_volume_rekey_operator_only_and_plaintext_refused(self):
+        # A container can never rekey (it never holds the master
+        # passphrase); an unencrypted vault has nothing to rotate.
+        kek = self._kek()
+        server, stop, storage = self._serve(
+            vault_dir=os.path.join(self.tmp, "rk2-vault"), kek=kek)
+        client = IPCClient("cli", self.cli_path).bind()
+        try:
+            r = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_rekey",
+                "new_passphrase": "x"}).encode())
+            self.assertFalse(r["ok"])
+            self.assertIn("operator-only", r["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+        # Plaintext vault: no KEK to rotate.
+        server2, stop2, storage2 = self._serve(
+            vault_dir=os.path.join(self.tmp, "rk3-vault"),
+            register_pid=False)
+        client2 = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            r = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_rekey",
+                "new_passphrase": "x"}).encode())
+            self.assertFalse(r["ok"])
+            self.assertIn("not encrypted", r["error"])
+        finally:
+            client2.close()
+            stop2.set()
+            server2.close()
+
 
 class TestNyVaultOperations(unittest.TestCase):
     """The NyVault FUSE passthrough (ADR-0022): FUSE ops whose
@@ -3690,6 +3844,14 @@ class TestSystemdUnit(unittest.TestCase):
         # ADR-0021: the unit also serves the dedicated health-probe
         # socket (Rust serving loop when the crate is present).
         self.assertIn("--health-socket /run/nyrqis/health.sock", text)
+        # ADR-0022/0023: the vault backing store lives in the
+        # StateDirectory (persists across restarts) with the KEK
+        # envelope beside it, and the unlock passphrase comes from the
+        # OPTIONAL EnvironmentFile (vault serves plaintext without it).
+        self.assertIn("StateDirectory=nyrqis", text)
+        self.assertIn("--vault-dir /var/lib/nyrqis/vault", text)
+        self.assertIn("--vault-key-file /var/lib/nyrqis/vault.key", text)
+        self.assertIn("EnvironmentFile=-/etc/nyrqis/backend.env", text)
 
     def test_systemd_unit_analyze_verify(self):
         """The unit must pass ``systemd-analyze verify`` when systemd is
@@ -6503,6 +6665,101 @@ class TestNyFSLiveMount(unittest.TestCase):
         fs.save()
         fs2 = NyFSFilesystem.load(self.backing)
         self.assertEqual(fs2.read(fs2.resolve("/trunc.bin")), d)
+
+
+@unittest.skipUnless(
+    _fuse_mount_available(),
+    "live FUSE mount unavailable (needs fusepy, /dev/fuse, and fusermount)",
+)
+class TestNyVaultLiveMount(unittest.TestCase):
+    """End-to-end NyVault through a real kernel FUSE mount (ADR-0022's
+    data-plane mount): kernel FUSE path -> NyVaultOperations ->
+    storage-service CALLs -> encrypted NyFS blocks. Requires fusepy +
+    /dev/fuse + fusermount (present on this dev host; skipped
+    elsewhere). The volume is ENCRYPTED at rest — kernel writes ride
+    the AEAD block layer and no plaintext lands under the vault dir.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.sock = os.path.join(self.tmp, "status.sock")
+        self.vault = os.path.join(self.tmp, "vault")
+        self.key = os.path.join(self.tmp, "vault.key")
+        self.mnt = os.path.join(self.tmp, "mnt")
+        os.makedirs(self.mnt, exist_ok=True)
+        from backend import keys as keys_mod
+        with open(self.key, "wb") as f:
+            f.write(keys_mod.make_blob_any(b"live-mount-secret"))
+        self.host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=self.vault, vault_key_file=self.key,
+            vault_passphrase="live-mount-secret")
+        self.host.start()
+        self.client = IPCClient(
+            DEFAULT_OPERATOR_ID,
+            os.path.join(self.tmp, "ctl.sock")).bind()
+        reply = self.client.call(self.sock, json.dumps({
+            "service": "storage", "op": "volume_create",
+            "name": "live"}).encode("utf-8"))
+        self.vid = json.loads(reply.payload.decode("utf-8"))["volume_id"]
+        self.mount = NyVaultMount(self.client, self.sock, self.vid, self.mnt)
+
+    def tearDown(self):
+        try:
+            subprocess.run(["fusermount3", "-u", self.mnt],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["fusermount", "-u", self.mnt],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        try:
+            self.mount.unmount()
+        except Exception:
+            pass
+        self.client.close()
+        self.host.stop()
+
+    def test_encrypted_kernel_io_and_no_plaintext_leak(self):
+        self.assertTrue(self.mount.attach())
+        self.assertTrue(self.mount.mount(foreground=True, blocking=False))
+        time.sleep(2.0)  # the FUSE loop establishes the kernel mount
+
+        probe = os.path.join(self.mnt, "hello.txt")
+        with open(probe, "w") as f:
+            f.write("encrypted live mount!")
+            f.flush()
+            os.fsync(f.fileno())
+        with open(probe) as f:
+            self.assertEqual(f.read(), "encrypted live mount!")
+        os.mkdir(os.path.join(self.mnt, "subdir"))
+        self.assertEqual(sorted(os.listdir(self.mnt)),
+                         ["hello.txt", "subdir"])
+        self.assertEqual(os.stat(probe).st_size, len("encrypted live mount!"))
+        # At rest: the vault dir never contains the plaintext.
+        for root, _dirs, files in os.walk(self.vault):
+            for name in files:
+                with open(os.path.join(root, name), "rb") as f:
+                    self.assertNotIn(
+                        b"encrypted live mount", f.read(),
+                        f"plaintext leaked into {os.path.join(root, name)}")
+
+    def test_mount_serves_until_unmounted(self):
+        # The mount command's contract: the FUSE loop keeps serving
+        # until the kernel mount is torn down (the CLI blocks on it).
+        self.assertTrue(self.mount.attach())
+        self.assertTrue(self.mount.mount(foreground=True, blocking=False))
+        time.sleep(2.0)
+        self.assertEqual(
+            sorted(os.listdir(self.mnt)), [])  # the volume is empty
+        subprocess.run(["fusermount3", "-u", self.mnt],
+                       capture_output=True, timeout=5)
+        time.sleep(0.5)
+        # After unmount the mount's thread has exited; the ops handle is
+        # released without error.
+        self.mount.unmount()
 
 
 class TestNyFSSnapshotDiff(unittest.TestCase):
@@ -9396,6 +9653,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSPersistence))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSLiveMount))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyVaultLiveMount))
     suite.addTests(loader.loadTestsFromTestCase(TestNyFSSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestRustFfILoader))
