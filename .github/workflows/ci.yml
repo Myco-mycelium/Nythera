@@ -371,6 +371,8 @@ jobs:
       - name: Build the crate
         working-directory: source/nyhal-linux-backend/rust/keys
         run: cargo build --release
+      - name: Install the PyNaCl floor dependency
+        run: pip install pynacl
       - name: Force the keys classes through the crate
         working-directory: source/nyhal-linux-backend
         env:
@@ -392,4 +394,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install pynacl
       - run: python3 -B test_backend.py

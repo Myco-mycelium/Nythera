@@ -81,6 +81,17 @@ class KeysError(Exception):
 
 # -- pure floor (PyNaCl / libsodium) ----------------------------------
 
+def _require_nacl(what: str):
+    """A clear failure when the PyNaCl floor is needed but missing
+    (the crate-less reference path needs libsodium's bindings)."""
+    try:
+        import nacl  # noqa: F401
+    except ImportError as e:
+        raise KeysError(
+            "%s needs the PyNaCl floor (nacl) or the Rust keys crate; "
+            "pip install pynacl" % what) from e
+
+
 def derive_kek(password: bytes, salt: bytes,
                opslimit: int = ARGON2ID_OPSLIMIT,
                memlimit_kib: int = ARGON2ID_MEMLIMIT_KIB) -> bytes:
@@ -88,6 +99,7 @@ def derive_kek(password: bytes, salt: bytes,
     (libsodium's argon2id KDF is fixed at p=1)."""
     if len(salt) != SALT_LEN:
         raise ValueError("salt must be %d bytes" % SALT_LEN)
+    _require_nacl("derive_kek")
     from nacl.pwhash import argon2id
     return argon2id.kdf(KEK_LEN, password, salt, opslimit,
                         memlimit_kib * 1024)
@@ -95,6 +107,7 @@ def derive_kek(password: bytes, salt: bytes,
 
 def _aead_encrypt(key: bytes, nonce: bytes, ad: bytes, plaintext: bytes
                   ) -> bytes:
+    _require_nacl("the AEAD")
     from nacl.bindings import crypto_aead_xchacha20poly1305_ietf_encrypt
     return crypto_aead_xchacha20poly1305_ietf_encrypt(
         plaintext, ad, nonce, key)
@@ -102,6 +115,7 @@ def _aead_encrypt(key: bytes, nonce: bytes, ad: bytes, plaintext: bytes
 
 def _aead_decrypt(key: bytes, nonce: bytes, ad: bytes, ciphertext: bytes
                   ) -> bytes:
+    _require_nacl("the AEAD")
     from nacl.bindings import crypto_aead_xchacha20poly1305_ietf_decrypt
     return crypto_aead_xchacha20poly1305_ietf_decrypt(
         ciphertext, ad, nonce, key)
