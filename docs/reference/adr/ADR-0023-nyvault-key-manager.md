@@ -16,6 +16,20 @@ depends_on: [NPS-004, NPS-011, ADR-0002, ADR-0014, ADR-0020, ADR-0022]
 > hardware backends (TPM2, PKCS#11 token) are named as pluggable
 > implementations behind a Rust trait and are NOT required for the
 > first increment.
+>
+> **First increment LANDED the same day:** `backend/keys.py` (pure
+> PyNaCl floor + loader) and `rust/keys/` (the custody crate —
+> Argon2id + XChaCha20-Poly1305, opaque u64 KEK handles, plaintext
+> never crosses FFI), byte-identical and interoperable, pinned by the
+> required `rust-keys-conformance` CI gate. Two implementation notes:
+> the check nonce in the KEK envelope is fresh random per blob (so
+> envelope bytes differ across runs — the *derived KEK* is what the
+> differential gate pins identical), and the DEK plaintext still
+> crosses FFI on `unwrap` because the block layer is Python-side in
+> this increment (moving block encrypt/decrypt behind the boundary is
+> the documented next step). Wiring per-volume wrapped DEKs into
+> `volume_create` is the following increment — at-rest encryption is
+> NOT yet claimed.
 
 # ADR-0023 — NyVault Key Manager: Envelope Encryption with Rust-Held Key Custody
 

@@ -60,6 +60,14 @@
 #   and differential classes (reply semantics ≡ Python floor's status
 #   service ping; forged senders dropped; batch drain) run with the
 #   crate built and NYRQIS_RUST_FORCE=1.
+# - `rust-keys`: builds and tests the ADR-0023 crate (the vault key
+#   manager — Argon2id KEK derivation, XChaCha20-Poly1305 envelope
+#   encryption, opaque KEK handles behind the FFI boundary).
+# - `rust-keys-conformance`: the key manager's gate — the differential
+#   class (KDF bytes and wrapped-DEK bytes identical to the PyNaCl
+#   floor; cross-implementation blob interop; tamper and wrong-secret
+#   rejection on both) plus the floor behavior class, run with the
+#   crate built and NYRQIS_RUST_FORCE=1.
 # - `backend`: the pure-Python correctness floor.
 
 name: ci
@@ -339,6 +347,39 @@ jobs:
           python3 -B -m unittest
           test_backend.TestRustLauncherLoader
           test_backend.TestLauncherInitRust
+
+  rust-keys:
+    name: Rust keys crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/keys
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_keys.so
+
+  rust-keys-conformance:
+    name: Rust keys FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/keys
+        run: cargo build --release
+      - name: Force the keys classes through the crate
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_KEYS_LIB: rust/keys/target/release/libnyrqis_keys.so
+          NYRQIS_RUST_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestKeysFloor
+          test_backend.TestRustKeysConformance
 
   backend:
     name: Python backend tests

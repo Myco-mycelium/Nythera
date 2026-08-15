@@ -721,6 +721,32 @@ Documentation hygiene, fixed earlier this session:
   key custody in a Rust crate behind the FFI boundary (Python holds
   opaque handles only, never plaintext keys); approves libsodium as
   the first non-libc dependency for the keys crate.
+- 2026-08-15 (**NyVault byte path + operator vault CLI + the key
+  manager — ADR-0022/0023 first increments**): the storage service
+  gained `volume_write`/`volume_read`/`volume_snapshot`/`volume_snapshots`
+  — REAL NyFS I/O through the capability-gated creator-scoped handles
+  (create-on-write + mkdir -p blob semantics, offset writes overwrite
+  in place, reads page with offset/size, snapshots ride NyFS CoW,
+  `..`/trailing-slash paths rejected, 32 KiB per-call payload cap for
+  the 64 KiB datagram budget, registry-only volumes refuse byte ops,
+  `volume_open` accepts a name). `nyrqisctl vault`
+  (`create|open|list|close|write|read|snapshot|snapshots`) drives it
+  all — write from `--file`/stdin, read raw bytes to stdout or
+  `--output` — verified e2e against a REAL daemon. **The key manager
+  landed (ADR-0023):** `backend/keys.py` = PyNaCl floor (Argon2id
+  KEK derivation at p=1, XChaCha20-Poly1305 envelope, 110-byte KEK
+  envelope with AEAD check value, DEK wrap/unwrap, fail-closed on
+  wrong secret + tampering) + loader (ABI 1.0.0 gate, `NYRQIS_KEYS_LIB`
+  override, `NYRQIS_RUST_FORCE=1` gate, floor fallback); `rust/keys/`
+  = the custody boundary — same construction in Rust (RustCrypto
+  argon2 + chacha20poly1305, the ADR's approved non-libc deps), the
+  KEK held ONLY in the crate's handle table (unlock → opaque u64
+  handle, plaintext never crosses FFI). **Differential conformance
+  verified:** KDF + wrapped-DEK bytes identical, cross-interop both
+  ways, wrong-secret/tamper rejected on both, shred invalidates.
+  New CI jobs `rust-keys` + required `rust-keys-conformance`. Suite
+  390 → **412**. KEK wiring into `volume_create` is the next increment
+  (at-rest encryption NOT yet claimed).
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

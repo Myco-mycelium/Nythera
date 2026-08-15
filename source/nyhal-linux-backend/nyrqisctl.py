@@ -30,6 +30,7 @@ failed (``ok: false``), 2 on usage errors.
 """
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -52,6 +53,14 @@ DEFAULT_TIMEOUT_S = 30.0
 # (when configured) the dedicated health socket (ADR-0021).
 STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
+VAULT_COMMANDS = (
+    "vault-volume-create", "vault-volume-open", "vault-volume-list",
+    "vault-volume-close", "vault-volume-write", "vault-volume-read",
+    "vault-volume-snapshot", "vault-volume-snapshots",
+)
+# Vault ops ride the same 64 KiB datagram the transport serves, so a
+# single write/read is capped (the service enforces the same limit).
+MAX_IO_BYTES = 32 * 1024
 
 
 # -- payload construction (pure, unit-testable) ------------------------
@@ -83,6 +92,39 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_kill",
             "container_id": args.container_id,
         }
+    if command == "vault-volume-create":
+        return {"service": "storage", "op": "volume_create",
+                "name": args.name}
+    if command == "vault-volume-open":
+        if args.name:
+            return {"service": "storage", "op": "volume_open",
+                    "name": args.name}
+        return {"service": "storage", "op": "volume_open",
+                "volume_id": args.volume_id}
+    if command == "vault-volume-list":
+        return {"service": "storage", "op": "volume_list"}
+    if command == "vault-volume-close":
+        return {"service": "storage", "op": "volume_close",
+                "handle": args.handle}
+    if command == "vault-volume-write":
+        return {
+            "service": "storage", "op": "volume_write",
+            "handle": args.handle, "path": args.path,
+            "offset": args.offset,
+            "data_b64": base64.b64encode(args.data).decode("ascii"),
+        }
+    if command == "vault-volume-read":
+        return {
+            "service": "storage", "op": "volume_read",
+            "handle": args.handle, "path": args.path,
+            "offset": args.offset, "size": args.size,
+        }
+    if command == "vault-volume-snapshot":
+        return {"service": "storage", "op": "volume_snapshot",
+                "handle": args.handle, "name": args.name}
+    if command == "vault-volume-snapshots":
+        return {"service": "storage", "op": "volume_snapshots",
+                "handle": args.handle}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -149,6 +191,30 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         )
     if command == "containers-kill":
         return f"container {resp.get('container_id')} terminated"
+    if command == "vault-volume-create":
+        return f"volume {resp.get('volume_id')} created ({resp.get('name')})"
+    if command == "vault-volume-open":
+        return (f"handle {resp.get('handle')} for volume "
+                f"{resp.get('volume_id')}")
+    if command == "vault-volume-list":
+        volumes: List[Dict[str, Any]] = resp.get("volumes") or []
+        if not volumes:
+            return "no volumes"
+        rows = [f"{v.get('id')}\t{v.get('name')}\t{v.get('created_by')}"
+                for v in volumes]
+        return "\n".join(["id\tname\tcreated_by"] + rows)
+    if command == "vault-volume-close":
+        # The close reply is ``{"ok": true}`` — no handle echoed; the
+        # operator knows which handle they closed.
+        return "handle closed"
+    if command == "vault-volume-write":
+        return (f"wrote {resp.get('bytes_written')} bytes to "
+                f"{resp.get('path')}")
+    if command == "vault-volume-snapshot":
+        return f"snapshot {resp.get('snapshot_id')} of volume {resp.get('volume_id')}"
+    if command == "vault-volume-snapshots":
+        snaps = resp.get("snapshots") or []
+        return "\n".join(snaps) if snaps else "no snapshots"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -197,15 +263,32 @@ def run(command: str, args: argparse.Namespace) -> int:
         # ADR-0021: probe the dedicated health socket (no contention
         # with container traffic on the main service socket).
         target = args.health_socket
-    elif command in CONTROL_COMMANDS and args.health_socket:
+    elif (command in CONTROL_COMMANDS
+          or command in VAULT_COMMANDS) and args.health_socket:
         print(
             "error: the health socket serves status/health only — "
-            "control commands use the main --socket",
+            "control and vault commands use the main --socket",
             file=sys.stderr,
         )
         return 2
     else:
         target = args.socket
+    if command == "vault-volume-write":
+        # The write payload travels as base64 over the datagram
+        # transport, so the CLI enforces the same per-call cap the
+        # service enforces (page with --offset for larger blobs).
+        if getattr(args, "file", ""):
+            with open(args.file, "rb") as f:
+                args.data = f.read()
+        else:
+            args.data = sys.stdin.buffer.read()
+        if len(args.data) > MAX_IO_BYTES:
+            print(
+                f"error: write exceeds the {MAX_IO_BYTES}-byte "
+                "per-call limit (page with --offset)",
+                file=sys.stderr,
+            )
+            return 2
     payload = build_payload(command, args)
     resp = call_daemon(target, payload, timeout_s=args.timeout)
     if resp is None:
@@ -225,6 +308,16 @@ def run(command: str, args: argparse.Namespace) -> int:
         # The kill reply carries no id (``{"ok": true}``) — the CLI
         # knows which container it asked to terminate.
         print(f"container {args.container_id} terminated")
+    elif command == "vault-volume-read":
+        # Raw bytes by default (a blob read is bytes, not text);
+        # ``--output`` redirects to a file instead of stdout.
+        data = base64.b64decode(resp["data_b64"])
+        if getattr(args, "output", None):
+            with open(args.output, "wb") as f:
+                f.write(data)
+            print(f"wrote {len(data)} bytes to {args.output}")
+        else:
+            sys.stdout.buffer.write(data)
     else:
         print(format_human(command, resp))
     return 0
@@ -306,6 +399,62 @@ def build_parser() -> argparse.ArgumentParser:
     ck = csub.add_parser("kill", help="Terminate a container on the daemon")
     ck.add_argument("container_id")
     ck.set_defaults(command="containers-kill")
+
+    vault = sub.add_parser(
+        "vault", help="NyVault storage service ops (ADR-0022) — "
+                      "capability-gated named volumes")
+    vsub = vault.add_subparsers(dest="vault_cmd", required=True)
+
+    vc = vsub.add_parser("create", help="Create a named volume")
+    vc.add_argument("name")
+    vc.set_defaults(command="vault-volume-create")
+
+    vo = vsub.add_parser(
+        "open", help="Open a volume by id (or --name) — returns a handle")
+    vo.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vo.add_argument("--name", default="", help="Open by volume name")
+    vo.set_defaults(command="vault-volume-open")
+
+    vl = vsub.add_parser("list", help="List the volumes you may open")
+    vl.set_defaults(command="vault-volume-list")
+
+    vcl = vsub.add_parser("close", help="Release a handle")
+    vcl.add_argument("handle")
+    vcl.set_defaults(command="vault-volume-close")
+
+    vw = vsub.add_parser(
+        "write", help="Write bytes to a volume path (stdin or --file)")
+    vw.add_argument("handle")
+    vw.add_argument("path")
+    vw.add_argument("--offset", type=int, default=0,
+                    help="Write offset (default: 0 — overwrite)")
+    vw.add_argument("--file", default="",
+                    help="Read the bytes from FILE instead of stdin")
+    vw.set_defaults(command="vault-volume-write")
+
+    vr = vsub.add_parser(
+        "read", help="Read bytes from a volume path to stdout (or --output)")
+    vr.add_argument("handle")
+    vr.add_argument("path")
+    vr.add_argument("--offset", type=int, default=0,
+                    help="Read offset (default: 0)")
+    vr.add_argument("--size", type=int, default=MAX_IO_BYTES,
+                    help=f"Bytes to read (default: {MAX_IO_BYTES}, the "
+                         f"per-call limit — page with --offset)")
+    vr.add_argument("--output", default="",
+                    help="Write the bytes to FILE instead of stdout")
+    vr.set_defaults(command="vault-volume-read")
+
+    vs = vsub.add_parser("snapshot", help="Snapshot a volume")
+    vs.add_argument("handle")
+    vs.add_argument("name", help="Snapshot id (1..64 chars of "
+                                  "[A-Za-z0-9._-])")
+    vs.set_defaults(command="vault-volume-snapshot")
+
+    vss = vsub.add_parser("snapshots", help="List a volume's snapshots")
+    vss.add_argument("handle")
+    vss.set_defaults(command="vault-volume-snapshots")
 
     return parser
 

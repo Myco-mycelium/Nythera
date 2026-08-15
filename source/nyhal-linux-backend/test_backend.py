@@ -10,6 +10,7 @@ References:
 - tests/BENCHMARK_PLAN.md: Benchmarking methodology
 """
 
+import base64
 import ctypes
 import errno
 import hashlib
@@ -44,6 +45,7 @@ from backend import seccomp
 from backend import rust_syscalls
 from backend import container_codec
 from backend import rust_launcher  # compiled launcher-init locator (ADR-0020)
+from backend import keys as keys_module  # NyVault key manager (ADR-0023)
 from ipc.core import (
     IPCManager, IPCMessage, IPCMessageType, IPCEndpoint, TokenBucket
 )
@@ -1864,6 +1866,160 @@ class TestOperatorCli(unittest.TestCase):
         finally:
             host.stop()
 
+    def test_cli_builds_vault_payloads(self):
+        # NyVault (ADR-0022) commands ride ``service: "storage"`` on
+        # the main socket; the write payload base64-encodes the data.
+        args = mock.Mock()
+        args.name = "assets"
+        payload = nyrqisctl.build_payload("vault-volume-create", args)
+        self.assertEqual(payload["service"], "storage")
+        self.assertEqual(payload["op"], "volume_create")
+        self.assertEqual(payload["name"], "assets")
+        open_args = mock.Mock()
+        open_args.volume_id = "v1"
+        open_args.name = ""
+        payload = nyrqisctl.build_payload("vault-volume-open", open_args)
+        self.assertEqual(payload["volume_id"], "v1")
+        open_args = mock.Mock()
+        open_args.volume_id = ""
+        open_args.name = "assets"
+        payload = nyrqisctl.build_payload("vault-volume-open", open_args)
+        self.assertEqual(payload["name"], "assets")
+        self.assertEqual(nyrqisctl.build_payload(
+            "vault-volume-list", mock.Mock())["op"], "volume_list")
+        payload = nyrqisctl.build_payload(
+            "vault-volume-close", mock.Mock(handle="h1"))
+        self.assertEqual(payload["handle"], "h1")
+        args = mock.Mock()
+        args.handle = "h1"
+        args.path = "/docs/note.txt"
+        args.offset = 3
+        args.data = b"\x00\x01\x02"
+        payload = nyrqisctl.build_payload("vault-volume-write", args)
+        self.assertEqual(payload["op"], "volume_write")
+        self.assertEqual(payload["offset"], 3)
+        self.assertEqual(base64.b64decode(payload["data_b64"]),
+                         b"\x00\x01\x02")
+        args = mock.Mock()
+        args.handle = "h1"
+        args.path = "/docs/note.txt"
+        args.offset = 0
+        args.size = 4096
+        payload = nyrqisctl.build_payload("vault-volume-read", args)
+        self.assertEqual(payload["size"], 4096)
+        snap_args = mock.Mock()
+        snap_args.handle = "h1"
+        snap_args.name = "v1"
+        self.assertEqual(nyrqisctl.build_payload(
+            "vault-volume-snapshot", snap_args)["name"], "v1")
+        self.assertEqual(nyrqisctl.build_payload(
+            "vault-volume-snapshots", mock.Mock(handle="h1"))["op"],
+            "volume_snapshots")
+
+    def test_cli_formats_vault_output(self):
+        self.assertIn("created", nyrqisctl.format_human(
+            "vault-volume-create",
+            {"ok": True, "volume_id": "v1", "name": "assets"}))
+        self.assertIn("h1", nyrqisctl.format_human(
+            "vault-volume-open",
+            {"ok": True, "handle": "h1", "volume_id": "v1"}))
+        self.assertEqual(nyrqisctl.format_human(
+            "vault-volume-list", {"ok": True, "volumes": []}),
+            "no volumes")
+        listed = nyrqisctl.format_human("vault-volume-list", {
+            "ok": True, "volumes": [{"id": "v1", "name": "assets",
+                                      "created_by": "host-operator"}]})
+        self.assertIn("v1\tassets\thost-operator", listed)
+        self.assertEqual(nyrqisctl.format_human(
+            "vault-volume-close", {"ok": True}), "handle closed")
+        self.assertIn("wrote 10 bytes", nyrqisctl.format_human(
+            "vault-volume-write",
+            {"ok": True, "bytes_written": 10, "path": "/x"}))
+        self.assertIn("v1", nyrqisctl.format_human(
+            "vault-volume-snapshot",
+            {"ok": True, "snapshot_id": "v1", "volume_id": "vid"}))
+        self.assertEqual(nyrqisctl.format_human(
+            "vault-volume-snapshots", {"ok": True, "snapshots": []}),
+            "no snapshots")
+        self.assertIn("s1", nyrqisctl.format_human(
+            "vault-volume-snapshots", {"ok": True, "snapshots": ["s1"]}))
+
+    def test_cli_vault_lifecycle_e2e(self):
+        # The full NyVault operator loop through the CLI against a REAL
+        # daemon: create → open → write (from a file) → read (to a
+        # file, byte-identical) → snapshot → snapshots → close.
+        vault = os.path.join(self.tmp, "vault")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault)
+        host.start()
+        blob = os.path.join(self.tmp, "blob.bin")
+        out = os.path.join(self.tmp, "out.bin")
+        with open(blob, "wb") as f:
+            f.write(b"\x00\x01cli-vault-e2e\xfe\xff" * 200)
+        try:
+            rc, o, e = self._cli("vault", "create", "assets")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("created", o)
+            rc, o, e = self._cli("vault", "list")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("assets", o)
+            # Open by NAME (the operator-friendly path).
+            rc, o, e = self._cli("vault", "open", "--name", "assets")
+            self.assertEqual(rc, 0, (o, e))
+            handle = o.split()[1]
+            self.assertTrue(handle)
+            # Opening an unknown name is a clean daemon-side failure.
+            rc, o, e = self._cli("vault", "open", "--name", "nope")
+            self.assertEqual(rc, 1, (o, e))
+            self.assertIn("unknown volume", e)
+            # Close the by-name handle, re-open by id.
+            rc, o, e = self._cli("vault", "close", handle)
+            self.assertEqual(rc, 0, (o, e))
+            rc, o, e = self._cli("--json", "vault", "list")
+            vid = json.loads(o)["volumes"][0]["id"]
+            rc, o, e = self._cli("vault", "open", vid)
+            self.assertEqual(rc, 0, (o, e))
+            handle = o.split()[1]
+            rc, o, e = self._cli(
+                "vault", "write", handle, "/data/blob.bin",
+                "--file", blob)
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("wrote", o)
+            rc, o, e = self._cli(
+                "vault", "read", handle, "/data/blob.bin",
+                "--output", out)
+            self.assertEqual(rc, 0, (o, e))
+            with open(out, "rb") as f:
+                self.assertEqual(
+                    f.read(), b"\x00\x01cli-vault-e2e\xfe\xff" * 200)
+            rc, o, e = self._cli("vault", "snapshot", handle, "v1")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("v1", o)
+            rc, o, e = self._cli("vault", "snapshots", handle)
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("v1", o)
+            rc, o, e = self._cli("vault", "close", handle)
+            self.assertEqual(rc, 0, (o, e))
+        finally:
+            host.stop()
+
+    def test_cli_vault_refuses_health_socket(self):
+        # Vault ops are control-plane ops: they use the main socket and
+        # refuse the dedicated health socket like control commands.
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            rc, o, e = self._cli(
+                "--health-socket", health_path, "vault", "list")
+            self.assertEqual(rc, 2)
+            self.assertIn("health socket serves status/health only", e)
+        finally:
+            host.stop()
+
     def test_cli_health_socket_routes_status_ops(self):
         # ADR-0021: the dedicated health socket serves the status
         # service (ping/status/health) without contending with
@@ -2225,7 +2381,7 @@ class TestStorageService(unittest.TestCase):
         self.cli_path = os.path.join(self.tmp, "cli.sock")
 
     def _serve(self, vault_dir=None, capability_manager=None,
-               register_pid=True):
+               register_pid=True, svc_path=None):
         manager = IPCManager()
         manager.create_endpoint("container-svc", "ep-svc")
         caps = capability_manager
@@ -2234,7 +2390,7 @@ class TestStorageService(unittest.TestCase):
         # (container-FIRST: a registered pid would shadow it).
         registry = {os.getpid(): "cli"} if register_pid else {}
         server = IPCDatagramServer(
-            manager, "ep-svc", self.svc_path,
+            manager, "ep-svc", svc_path or self.svc_path,
             pid_registry=registry,
             capability_manager=caps,
             trusted_uids={os.getuid()},
@@ -2249,8 +2405,9 @@ class TestStorageService(unittest.TestCase):
         threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
         return server, stop, storage
 
-    def _call(self, client, payload, timeout=5.0):
-        reply = client.call(self.svc_path, payload, timeout_s=timeout)
+    def _call(self, client, payload, timeout=5.0, path=None):
+        reply = client.call(path or self.svc_path, payload,
+                            timeout_s=timeout)
         if reply is None:
             return None
         return json.loads(reply.payload.decode("utf-8"))
@@ -2465,6 +2622,239 @@ class TestStorageService(unittest.TestCase):
         finally:
             op_client.close()
             host.stop()
+
+    # -- byte path (ADR-0022: the daemon holds the data plane) ------
+
+    def _opened_volume(self, server, client, name="bv"):
+        resp = self._call(client, json.dumps({
+            "service": "storage", "op": "volume_create",
+            "name": name}).encode())
+        self.assertTrue(resp["ok"], resp)
+        resp = self._call(client, json.dumps({
+            "service": "storage", "op": "volume_open",
+            "volume_id": resp["volume_id"]}).encode())
+        self.assertTrue(resp["ok"], resp)
+        return resp["handle"]
+
+    def test_byte_path_write_read_roundtrip(self):
+        vault = os.path.join(self.tmp, "byte-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            handle = self._opened_volume(server, client)
+            body = b"hello vault " * 100  # 1300 bytes, > 1 block
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/images/logo.bin",
+                "data_b64": base64.b64encode(body).decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["bytes_written"], len(body))
+            # Read it all back (default size = the per-call cap).
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/images/logo.bin"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(
+                base64.b64decode(resp["data_b64"]), body)
+            # Offset + size paging.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/images/logo.bin",
+                "offset": 100, "size": 50}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(
+                base64.b64decode(resp["data_b64"]), body[100:150])
+            # Offset write overwrites in place.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/images/logo.bin",
+                "offset": 6, "data_b64": base64.b64encode(
+                    b"XY").decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/images/logo.bin",
+                "size": 20}).encode())
+            got = base64.b64decode(resp["data_b64"])
+            self.assertEqual(got[:6], body[:6])
+            self.assertEqual(got[6:8], b"XY")
+            self.assertEqual(got[8:], body[8:20])
+            # The write is durable in the NyFS image (saved blocks).
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_info",
+                "handle": handle}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["backend"], "nyfs")
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_byte_path_snapshot_lifecycle(self):
+        vault = os.path.join(self.tmp, "snap-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            handle = self._opened_volume(server, client, name="snap-vol")
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/doc.txt",
+                "data_b64": base64.b64encode(b"v1").decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_snapshot",
+                "handle": handle, "name": "before-edit"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["snapshot_id"], "before-edit")
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_snapshots",
+                "handle": handle}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["snapshots"], ["before-edit"])
+            # Overwrite the file — the snapshot still holds the old data
+            # (the NyFS CoW guarantee behind the op).
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/doc.txt",
+                "data_b64": base64.b64encode(b"v2").decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_snapshot",
+                "handle": handle, "name": "after-edit"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_snapshots",
+                "handle": handle}).encode())
+            self.assertEqual(sorted(resp["snapshots"]),
+                             ["after-edit", "before-edit"])
+            # A bad snapshot name is rejected before touching NyFS.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_snapshot",
+                "handle": handle, "name": "../evil"}).encode())
+            self.assertFalse(resp["ok"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_byte_path_validation_and_errors(self):
+        vault = os.path.join(self.tmp, "err-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            handle = self._opened_volume(server, client, name="err-vol")
+            # Reading a missing path is a clean error.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/missing.txt"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("read failed", resp["error"])
+            # Path traversal is rejected before it reaches NyFS.
+            for bad in ("/../etc/passwd", "/a/../../b", "relative",
+                        "/trailing/", ""):
+                resp = self._call(client, json.dumps({
+                    "service": "storage", "op": "volume_write",
+                    "handle": handle, "path": bad,
+                    "data_b64": "eA=="}).encode())
+                self.assertFalse(resp["ok"], (bad, resp))
+            # Oversize writes are rejected (the 64 KiB datagram budget).
+            big = base64.b64encode(b"x" * (32 * 1024 + 1)).decode()
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/big",
+                "data_b64": big}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("per-call limit", resp["error"])
+            # A registry-only volume (no vault_dir) has no byte path.
+            server2, stop2, storage2 = self._serve(
+                register_pid=False, svc_path=os.path.join(self.tmp, "svc2.sock"))
+            client2 = IPCClient(
+                DEFAULT_OPERATOR_ID,
+                os.path.join(self.tmp, "cli2.sock")).bind()
+            try:
+                resp = self._call(client2, json.dumps({
+                    "service": "storage", "op": "volume_create",
+                    "name": "meta-only"}).encode(),
+                    path=os.path.join(self.tmp, "svc2.sock"))
+                self.assertTrue(resp["ok"], resp)
+                resp = self._call(client2, json.dumps({
+                    "service": "storage", "op": "volume_open",
+                    "volume_id": resp["volume_id"]}).encode(),
+                    path=os.path.join(self.tmp, "svc2.sock"))
+                handle2 = resp["handle"]
+                resp = self._call(client2, json.dumps({
+                    "service": "storage", "op": "volume_write",
+                    "handle": handle2, "path": "/x",
+                    "data_b64": "eA=="}).encode(),
+                    path=os.path.join(self.tmp, "svc2.sock"))
+                self.assertFalse(resp["ok"])
+                self.assertIn("no byte backend", resp["error"])
+            finally:
+                client2.close()
+                stop2.set()
+                server2.close()
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_byte_path_handle_and_capability_gates(self):
+        vault = os.path.join(self.tmp, "gate-vault")
+        caps = CapabilityManager()
+        self._granted_container(caps)
+        server, stop, storage = self._serve(
+            vault_dir=vault, capability_manager=caps)
+        client = IPCClient("cli", self.cli_path).bind()
+        try:
+            # The granted container creates + opens, then writes.
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "gated"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": resp["volume_id"]}).encode())
+            handle = resp["handle"]
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/x",
+                "data_b64": base64.b64encode(b"ok").decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            # A second container CANNOT use the first's handle (foreign
+            # handle). The wire authenticates one pid → one registry id,
+            # so drive the second caller through the handler directly
+            # (the same pattern as test_volumes_are_creator_scoped).
+            caps.initialize_container("ctr-b")
+            caps.grant_capability("ctr-b", Capability.CAP_STORAGE_VOLUME)
+            fake = mock.Mock()
+            fake.reply = mock.Mock()
+            storage.attach(fake)
+            fake.reply.reset_mock()
+            storage._on_call(mock.Mock(message_id="b1", payload=json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/x",
+                "data_b64": base64.b64encode(b"nope").decode()
+            }).encode()), "ctr-b", "/tmp/b.sock")
+            body = json.loads(fake.reply.call_args.args[2].decode())
+            self.assertFalse(body["ok"])
+            self.assertIn("unknown or foreign handle", body["error"])
+            # An UNGRANTED container is denied outright at the handler.
+            caps.initialize_container("ctr-c")  # default grants only
+            fake.reply.reset_mock()
+            storage._on_call(mock.Mock(message_id="c1", payload=json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/x",
+                "data_b64": "eA=="}).encode()), "ctr-c", "/tmp/c.sock")
+            body = json.loads(fake.reply.call_args.args[2].decode())
+            self.assertFalse(body["ok"])
+            self.assertIn("CAP_STORAGE_VOLUME required", body["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -7452,6 +7842,236 @@ class TestTransportConformance(unittest.TestCase):
             shutil.rmtree(base, ignore_errors=True)
 
 
+class TestKeysFloor(unittest.TestCase):
+    """NyVault key manager floor (ADR-0023, backend/keys.py): the pure
+    PyNaCl reference implementation — envelope encryption (Argon2id
+    KEK derivation, XChaCha20-Poly1305 DEK wrapping), the KEK envelope
+    on disk, and fail-closed verification. These run on every host
+    (no crate needed); the crate is the platform-boundary replacement
+    whose byte-identity the conformance class pins.
+    """
+
+    PW = b"correct horse battery staple"
+
+    def _blob(self):
+        return keys_module.make_kek_blob(
+            self.PW, salt=bytes(range(16)))
+
+    def test_derive_kek_deterministic_and_length(self):
+        kek = keys_module.derive_kek(self.PW, bytes(range(16)))
+        self.assertEqual(len(kek), 32)
+        self.assertEqual(kek, keys_module.derive_kek(
+            self.PW, bytes(range(16))))
+        # A different salt yields a different KEK.
+        self.assertNotEqual(kek, keys_module.derive_kek(
+            self.PW, bytes(range(1, 17))))
+        with self.assertRaises(ValueError):
+            keys_module.derive_kek(self.PW, b"short")
+
+    def test_kek_blob_roundtrip_unlock(self):
+        blob = self._blob()
+        self.assertEqual(len(blob), keys_module.kek_blob_size())
+        kek = keys_module.unlock_kek(blob, self.PW)
+        self.assertEqual(len(kek), 32)
+        # The blob itself never contains the KEK (nothing plaintext
+        # beyond the KDF parameters and the AEAD check value).
+        self.assertNotIn(kek, blob)
+        # Wrong unlock secret fails closed.
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock_kek(blob, b"wrong")
+        # A tampered envelope fails verification.
+        tampered = bytearray(blob)
+        tampered[-1] ^= 0xFF
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock_kek(bytes(tampered), self.PW)
+        # Malformed envelopes are rejected outright.
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock_kek(b"garbage", self.PW)
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock_kek(blob[:-1], self.PW)
+
+    def test_wrap_unwrap_roundtrip(self):
+        blob = self._blob()
+        kek = keys_module.unlock_kek(blob, self.PW)
+        dek = keys_module.new_dek()
+        self.assertEqual(len(dek), 32)
+        nonce = bytes(range(24))
+        wrapped = keys_module.wrap_dek(kek, b"volume-assets", dek, nonce)
+        self.assertEqual(len(wrapped), keys_module.dek_blob_size())
+        self.assertEqual(wrapped[:24], nonce)
+        self.assertEqual(keys_module.unwrap_dek(
+            kek, b"volume-assets", wrapped), dek)
+        # Wrong associated data fails verification.
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unwrap_dek(kek, b"volume-other", wrapped)
+        # Tampering is detected.
+        tampered = bytearray(wrapped)
+        tampered[30] ^= 1
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unwrap_dek(kek, b"volume-assets",
+                                   bytes(tampered))
+        # Bad lengths are rejected.
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unwrap_dek(kek, b"volume-assets", wrapped[:-1])
+        with self.assertRaises(ValueError):
+            keys_module.wrap_dek(b"short", b"ad", dek, nonce)
+
+    def test_envelope_format_constants(self):
+        # The wire format is pinned (the crate parses the same bytes).
+        self.assertEqual(keys_module.kek_blob_size(), 110)
+        self.assertEqual(keys_module.dek_blob_size(), 72)
+        self.assertEqual(keys_module.KEK_LEN, 32)
+        self.assertEqual(keys_module.NONCE_LEN, 24)
+        self.assertEqual(keys_module.SALT_LEN, 16)
+
+
+class TestRustKeysLoader(unittest.TestCase):
+    """ADR-0023 FFI loader behavior (see rust/keys/): the fallback
+    contract and error mapping. Like the other migration loader tests,
+    these pin the loader on hosts WITHOUT the crate built; when the
+    crate lands, the CI conformance job (NYRQIS_RUST_FORCE=1) is the
+    real gate.
+    """
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        keys_module._reset_cache()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        keys_module._reset_cache()
+
+    def test_lib_candidates_prefer_override(self):
+        os.environ["NYRQIS_KEYS_LIB"] = "/custom/libnyrqis_keys.so"
+        self.assertEqual(keys_module._crate_candidates(),
+                         ["/custom/libnyrqis_keys.so"])
+
+    def test_absent_crate_means_floor(self):
+        os.environ["NYRQIS_KEYS_LIB"] = "/nonexistent/libnyrqis_keys.so"
+        self.assertFalse(keys_module.available())
+        # The manager API still works — through the PyNaCl floor.
+        blob = keys_module.make_blob_any(
+            b"pw", salt=bytes(range(16)))
+        self.assertEqual(len(blob), 110)
+        self.assertEqual(keys_module.derive_kek_any(
+            b"pw", bytes(range(16))),
+            keys_module.derive_kek(b"pw", bytes(range(16))))
+        handle = keys_module.unlock(blob, b"pw")
+        self.assertIsInstance(handle, keys_module._FloorHandle)
+        self.assertEqual(len(keys_module.wrap(
+            handle, b"ad", bytes(32), bytes(24))), 72)
+
+    def test_force_raises_when_crate_missing(self):
+        os.environ["NYRQIS_KEYS_LIB"] = "/nonexistent/libnyrqis_keys.so"
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            keys_module.derive_kek_any(b"pw", bytes(range(16)))
+        with self.assertRaises(RuntimeError):
+            keys_module.unlock(b"x" * 110, b"pw")
+
+    def test_broken_crate_falls_back_to_floor(self):
+        # A file that exists but is not a valid cdylib is skipped, and
+        # the floor answers (never raises outside the force gate).
+        fake = os.path.join(tempfile.mkdtemp(), "libnyrqis_keys.so")
+        with open(fake, "wb") as f:
+            f.write(b"not a shared object")
+        os.environ["NYRQIS_KEYS_LIB"] = fake
+        self.assertFalse(keys_module.available())
+        self.assertEqual(keys_module.derive_kek_any(
+            b"pw", bytes(range(16))),
+            keys_module.derive_kek(b"pw", bytes(range(16))))
+
+
+class TestRustKeysConformance(unittest.TestCase):
+    """ADR-0023 differential conformance: the Rust keys crate is
+    byte-identical to the PyNaCl floor (Argon2id + XChaCha20-Poly1305,
+    same construction and parameters) and interoperable on each
+    other's blobs — the guarantee that the platform-critical custody
+    path is a drop-in for the reference implementation. Runs in CI
+    forced through the crate (NYRQIS_RUST_FORCE=1, the required
+    `rust-keys-conformance` gate); skips on hosts without the crate.
+    """
+
+    PW = b"correct horse battery staple"
+
+    def setUp(self):
+        if not keys_module.available():
+            self.skipTest("Rust keys crate not built on this host")
+
+    def _blob(self):
+        return keys_module.make_kek_blob(
+            self.PW, salt=bytes(range(16)))
+
+    def test_derive_kek_byte_identical(self):
+        salt = bytes(range(16))
+        self.assertEqual(
+            keys_module.derive_kek(self.PW, salt, 2, 64 * 1024),
+            keys_module.derive_kek_any(self.PW, salt, 2, 64 * 1024))
+
+    def test_make_blob_header_identical_and_cross_unlock(self):
+        salt = bytes(range(16))
+        py_blob = keys_module.make_kek_blob(
+            self.PW, 2, 64 * 1024, salt=salt)
+        rs_blob = keys_module.make_blob_any(
+            self.PW, 2, 64 * 1024, salt=salt)
+        # Magic/version/kdf/params/salt — everything except the fresh
+        # random check nonce — is byte-identical.
+        self.assertEqual(py_blob[:38], rs_blob[:38])
+        # Both unlock to the SAME KEK (cross-implementation).
+        self.assertEqual(keys_module.unlock_kek(rs_blob, self.PW),
+                         keys_module.unlock_kek(py_blob, self.PW))
+
+    def test_wrap_byte_identical(self):
+        blob = self._blob()
+        kek = keys_module.unlock_kek(blob, self.PW)
+        handle = keys_module.unlock(blob, self.PW)  # crate custody
+        dek = keys_module.new_dek()
+        nonce = bytes(range(24))
+        self.assertEqual(
+            keys_module.wrap_dek(kek, b"volume-assets", dek, nonce),
+            keys_module.wrap(handle, b"volume-assets", dek, nonce))
+
+    def test_unwrap_cross_implementation(self):
+        blob = self._blob()
+        kek = keys_module.unlock_kek(blob, self.PW)
+        handle = keys_module.unlock(blob, self.PW)
+        dek = keys_module.new_dek()
+        nonce = bytes(range(24))
+        py_w = keys_module.wrap_dek(kek, b"vol", dek, nonce)
+        rs_w = keys_module.wrap(handle, b"vol", dek, nonce)
+        # The crate unwraps the floor's envelope and vice versa.
+        self.assertEqual(keys_module.unwrap(handle, b"vol", py_w), dek)
+        self.assertEqual(keys_module.unwrap_dek(kek, b"vol", rs_w), dek)
+
+    def test_wrong_secret_and_tamper_rejected_on_both(self):
+        blob = self._blob()
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock_kek(blob, b"wrong")
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unlock(blob, b"wrong")
+        handle = keys_module.unlock(blob, self.PW)
+        wrapped = keys_module.wrap(handle, b"vol", bytes(32), bytes(24))
+        tampered = bytearray(wrapped)
+        tampered[30] ^= 1
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unwrap_dek(
+                keys_module.unlock_kek(blob, self.PW), b"vol",
+                bytes(tampered))
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.unwrap(handle, b"vol", bytes(tampered))
+
+    def test_handle_custody_shred(self):
+        # The KEK lives behind the handle: shred drops it, and the
+        # handle is then rejected — the floor cannot hold what the
+        # crate never gave it.
+        blob = self._blob()
+        handle = keys_module.unlock(blob, self.PW)
+        keys_module.shred(handle)
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.wrap(handle, b"vol", bytes(32), bytes(24))
+
+
 class TestRustIpcdLoader(unittest.TestCase):
     """ADR-0021 FFI loader behavior (see rust/ipcd/): the fallback
     contract and error mapping for the Rust IPC serving loop. Like the
@@ -8235,6 +8855,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIPCCodecConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportRustLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestTransportConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestKeysFloor))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustKeysLoader))
+    suite.addTests(loader.loadTestsFromTestCase(TestRustKeysConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestRustIpcdLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestIpcdLoopConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerIpcRegistry))

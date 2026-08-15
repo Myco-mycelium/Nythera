@@ -1,0 +1,22 @@
+[package]
+name = "nyrqis-keys"
+version = "0.1.0"
+edition = "2021"
+description = "NyVault key manager (ADR-0023) — envelope encryption with Rust-held key custody behind the FFI boundary"
+
+[lib]
+name = "nyrqis_keys"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# ADR-0023 approves the first non-libc dependencies for this crate
+# specifically: RustCrypto's argon2 (Argon2id KDF) and
+# chacha20poly1305 (XChaCha20-Poly1305 AEAD) — pure-Rust equivalents
+# of libsodium behind the same trait surface (the crate is the seam,
+# not the vendor). Byte-identical output and cross-implementation
+# interop with the PyNaCl floor are pinned by the differential
+# conformance gate (CI rust-keys-conformance, required).
+argon2 = "0.5"
+chacha20poly1305 = "0.10"

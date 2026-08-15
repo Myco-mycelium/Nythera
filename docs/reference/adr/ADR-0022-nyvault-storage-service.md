@@ -16,6 +16,16 @@ depends_on: [NPS-003, NPS-004, NPS-011, ADR-0002, ADR-0003, ADR-0007, ADR-0016, 
 > integration points (the matrix's "C/C++ where hardware integration
 > requires it") are explicitly deferred to follow-on ADRs so this
 > decision can be reviewed on its own.
+>
+> **First increment IMPLEMENTED the same day:** the capability-gated
+> lifecycle ops (`volume_create/open/list/close/info`) landed with
+> real NyFS backing, and the byte path followed (see
+> IMPLEMENTATION_STATUS): `volume_write`/`volume_read`/
+> `volume_snapshot`/`volume_snapshots` serve real NyFS I/O through
+> the handles (create-on-write blob semantics, offset paging, CoW
+> snapshots, 32 KiB per-call payload cap pending the FUSE-passthrough
+> streaming path). The key-management follow-on (ADR-0023) has its
+> first increment landed too; at-rest encryption is still not claimed.
 
 # ADR-0022 — NyVault: Storage as a Daemon-Hosted Service on the IPC Transport
 
