@@ -6529,6 +6529,61 @@ class TestRustIpcdLoader(unittest.TestCase):
             fake.nyrqis_ipcd_loop_discard_requests.call_args.args[0].value,
             0x55)
 
+    def test_client_call_routing_with_fake_lib(self):
+        # ADR-0021 client half: the driver must marshal the FFI
+        # arguments exactly as the crate expects (fd, peer path, call
+        # wire, timeout) and map the returns (reply length → bytes,
+        # -ETIMEDOUT → None). Pinned here on crate-less hosts; the CI
+        # gate drives the real crate.
+        fake = mock.Mock()
+
+        def fake_call(fd, peer, call_arr, wire_len, buf, cap, timeout):
+            # A canned reply wire: MAGIC + REPLY + "reply-1" + reply_to
+            # "call-1" + payload.
+            from ipc.core import IPCMessage, IPCMessageType
+            reply = IPCMessage(
+                message_type=IPCMessageType.REPLY,
+                payload=b'{"ok": true}',
+                reply_to="call-1",
+            ).to_wire()
+            ctypes.memmove(buf, reply, len(reply))
+            return len(reply)
+
+        fake.nyrqis_ipcd_client_call.side_effect = fake_call
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ):
+            out = ipc_loop.client_call(7, "/tmp/peer.sock", b"call-wire", 500)
+        from ipc.core import IPCMessage
+        reply = IPCMessage.from_wire(out)
+        self.assertEqual(reply.payload, b'{"ok": true}')
+        self.assertEqual(reply.reply_to, "call-1")
+        args = fake.nyrqis_ipcd_client_call.call_args.args
+        self.assertEqual(args[0], 7)
+        self.assertEqual(args[1], b"/tmp/peer.sock")
+        self.assertEqual(args[3], len(b"call-wire"))
+        self.assertEqual(args[6], 500)
+
+    def test_client_call_timeout_returns_none(self):
+        fake = mock.Mock()
+        fake.nyrqis_ipcd_client_call.return_value = -errno.ETIMEDOUT
+        with mock.patch.object(
+            ipc_loop, "_load_rust_backend", return_value=fake
+        ):
+            self.assertIsNone(
+                ipc_loop.client_call(7, "/tmp/peer.sock", b"call-wire", 60))
+
+    def test_client_call_absent_backend_falls_back(self):
+        # No crate → BackendUnavailable (the caller uses the Python
+        # floor loop); force mode turns it into an error.
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        with self.assertRaises(ipc_loop.BackendUnavailable):
+            ipc_loop.client_call(7, "/tmp/peer.sock", b"call-wire", 60)
+        os.environ["NYRQIS_RUST_FORCE"] = "1"
+        with self.assertRaises(RuntimeError):
+            ipc_loop.client_call(7, "/tmp/peer.sock", b"call-wire", 60)
+
     def test_drain_enobufs_retries_with_grown_buffer(self):
         fake = mock.Mock()
         fake.nyrqis_ipcd_loop_new.return_value = 0x55
@@ -6734,6 +6789,85 @@ class TestIpcdLoopConformance(unittest.TestCase):
             thread.join(timeout=2.0)
             loop.close()
             srv.close()
+            client.close()
+
+    def test_client_half_matches_floor_client(self):
+        # ADR-0021 client half differential: the Rust client must
+        # produce the same CALL/REPLY semantics as the Python floor
+        # client against the SAME server. A floor server (status
+        # service, pid-registered container) answers one ping through
+        # each client; the replies are byte-identical and correlated.
+        mgr, server, loop, stop, thread = self._loop_server("chalf-loop")
+        floor = self._floor_server("chalf-floor")[1]
+        client = IPCClient(
+            "container-A", os.path.join(self.tmp, "chalf-cli.sock")).bind()
+        floor_stop = threading.Event()
+        threading.Thread(
+            target=floor.serve, args=(floor_stop,), daemon=True).start()
+        try:
+            # Floor client → floor server.
+            floor_reply = client.call(
+                floor.endpoint.path, b'{"op": "ping"}', timeout_s=5.0)
+            self.assertIsNotNone(floor_reply)
+            # Rust client → the same floor server (cross-validation:
+            # the client half against the Python server).
+            rust_reply = ipc_loop.client_call(
+                client.endpoint._sock.fileno(),
+                floor.endpoint.path,
+                IPCMessage(
+                    message_type=IPCMessageType.CALL,
+                    sender_id="container-A",
+                    payload=b'{"op": "ping"}',
+                ).to_wire(),
+                5000,
+            )
+            self.assertIsNotNone(rust_reply, "Rust client must get a reply")
+            rust_msg = IPCMessage.from_wire(rust_reply)
+            self.assertEqual(rust_msg.message_type, IPCMessageType.REPLY)
+            # Each call has its own message_id, so the reply_to values
+            # differ across the two calls by construction; the Rust
+            # half correlates internally (it only returns a matching
+            # reply), so the differential is the payload + field
+            # semantics below.
+            self.assertEqual(rust_msg.sender_id, "")
+            self.assertEqual(rust_msg.receiver_id, "")
+            self.assertEqual(rust_msg.capabilities, [])
+            self.assertEqual(rust_msg.metadata, {})
+            # The payload is byte-identical to the floor client's.
+            self.assertEqual(rust_msg.payload, floor_reply.payload)
+        finally:
+            floor_stop.set()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            server.close()
+            floor.close()
+            client.close()
+
+    def test_client_half_times_out_without_reply(self):
+        # A server that never answers (nothing bound at the path) → the
+        # Rust client times out and returns None, like the floor.
+        mgr, server, loop, stop, thread = self._loop_server("ctime")
+        client = IPCClient(
+            "container-A", os.path.join(self.tmp, "ctime-cli.sock")).bind()
+        quiet_ep = UnixDatagramEndpoint(
+            os.path.join(self.tmp, "quiet.sock")).bind()
+        try:
+            wire = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-A",
+                payload=b'{"op": "ping"}',
+            ).to_wire()
+            t0 = time.time()
+            self.assertIsNone(ipc_loop.client_call(
+                client.endpoint._sock.fileno(), quiet_ep.path, wire, 100))
+            self.assertLess(time.time() - t0, 3.0, "must honor the timeout")
+        finally:
+            quiet_ep.close()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            server.close()
             client.close()
 
     def _dispatch_server(self, name):

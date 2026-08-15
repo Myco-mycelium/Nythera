@@ -22,6 +22,7 @@ References:
 import enum
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -59,7 +60,15 @@ class IPCMessage:
     - Capabilities (which may be attenuated per NPS-003 §5)
     - Metadata (sender, receiver, type, etc.)
     """
-    message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # message_id is opaque on the wire (``u32-len id`` in the codec)
+    # and excluded from the conformance differential (per-message by
+    # design), so its generator is a free choice. NPS-003 §3.2's
+    # "unguessable identifiers" rule covers *endpoints*, not message
+    # ids — but keeping the id CSPRNG-random preserves that property
+    # anyway. ``os.urandom(6).hex()`` (48 bits) is unguessable and
+    # collision-safe for correlation, and it avoids the ~6 µs per-call
+    # ``uuid4`` cost that dominates the client hot path (ADR-0021).
+    message_id: str = field(default_factory=lambda: os.urandom(6).hex())
     message_type: IPCMessageType = IPCMessageType.SEND
     sender_id: str = ""
     receiver_id: str = ""
@@ -82,7 +91,14 @@ class IPCMessage:
         through ``ipc_codec``: the Rust codec when loaded, the
         byte-identical ``struct`` floor otherwise. ``metadata`` is
         serialized with ``json.dumps(sort_keys=True)`` so identical
-        dicts produce identical wire bytes on both paths."""
+        dicts produce identical wire bytes on both paths (an empty
+        dict is the constant ``b"{}"`` — byte-identical to the JSON
+        serialization, and it keeps the per-call client hot path free
+        of a ``json.dumps`` round trip)."""
+        metadata_blob = (
+            b"{}" if not self.metadata
+            else json.dumps(self.metadata, sort_keys=True).encode("utf-8")
+        )
         return ipc_codec.encode(
             _TYPE_INDEX[self.message_type],
             self.timestamp,
@@ -92,7 +108,7 @@ class IPCMessage:
             self.reply_to,
             self.payload,
             self.capabilities,
-            json.dumps(self.metadata, sort_keys=True).encode("utf-8"),
+            metadata_blob,
         )
 
     @classmethod

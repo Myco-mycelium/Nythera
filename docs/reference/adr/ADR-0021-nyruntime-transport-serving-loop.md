@@ -2,7 +2,7 @@
 title: NyRuntime Direction — IPC Serving Loop Behind the FFI Boundary
 document_id: ADR-0021
 version: 1.0.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-14
 updated: 2026-08-15
@@ -39,11 +39,26 @@ depends_on: [NPS-003, ADR-0020, ABI-001, ADR-0009]
 > dispatch path reaches close parity with the floor (~490 vs ~405 µs
 > p50 — the Python handler cost is inherent per this ADR's design)
 > while ping stays ~2.8× faster; the pid-table refresh costs ~9.6 µs
-> p50. The close gate (NPS-003 §6.1 <100 µs median) stays OPEN: the
-> residual is the client-side Python per-call cost, which is the next
-> increment (the client half of the loop behind the boundary). The
-> floor remains shipped; this ADR stays Proposed until the close gate
-> is met.
+> p50. **THE CLOSE GATE IS NOW MET (2026-08-15):** the client half of
+> the loop landed behind the boundary — `nyrqis_ipcd_client_call`
+> (sendto → poll → recvmsg → correlation in one FFI call per round
+> trip, thread-local reply buffer, correlated in Rust), wired into
+> `IPCClient.call` with the Python floor loop as the crate-less
+> fallback (a timeout never re-sends the CALL). The remaining
+> client-side Python was then measured and eliminated piece by piece:
+> the codec's per-field `create_string_buffer` marshalling (encode
+> 31.6→8.1 µs, decode 18.3→13.4 µs), the `json.dumps({})` per-call
+> metadata round trip (now the constant `b"{}"`), the per-call 64 KiB
+> reply-buffer allocation (thread-local reuse + `string_at` copy), and
+> the ~6 µs `uuid4` message-id generator (48-bit CSPRNG
+> `os.urandom(6).hex()` — opaque on the wire, excluded from the
+> differential, still unguessable). **Measured §22: the loop's wire
+> p50 is now 82–95 µs (two runs) vs the floor's 263–274 µs — BOTH
+> criteria of the close gate are met (beats the floor in the
+> same-session A/B AND <100 µs median).** The floor remains shipped as
+> the crate-less fallback; per this ADR's gate language it is now
+> demoted to fallback on hosts with the crate. This ADR is Accepted
+> (the close gate that held it at Proposed is met).
 
 # ADR-0021 — NyRuntime Direction: The IPC Serving Loop Behind the FFI Boundary
 

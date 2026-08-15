@@ -82,6 +82,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import transport_codec  # ADR-0020 priority #6 FFI loader (transport hot path)
+from . import loop as ipc_loop  # ADR-0021 client half (Rust client call)
 from .core import IPCManager, IPCMessage, IPCMessageType
 
 # The default operator identity: the sender a daemon recognizes as its
@@ -493,13 +494,59 @@ class IPCClient:
         """Synchronous CALL/REPLY (NPS-003 §3.3): send the CALL, then
         wait for the correlated REPLY. A REPLY is accepted only when
         its ``reply_to`` matches this call — the correlation is the
-        client-side trust anchor."""
+        client-side trust anchor.
+
+        When the Rust serving-loop crate is present, the whole round
+        trip runs through its client half (ADR-0021): ``sendto`` +
+        ``poll`` + ``recvmsg`` + the correlation inside the Rust
+        process, one FFI call per CALL instead of the floor's per-call
+        encode + send + receive loop + decode. The floor loop is the
+        fallback (byte-identical semantics, so a caller cannot tell
+        which half served the call)."""
         msg = IPCMessage(
             message_type=IPCMessageType.CALL,
             sender_id=self.container_id,
             payload=payload,
             capabilities=capabilities or [],
         )
+        wire = msg.to_wire()
+        # The Rust client half (ADR-0021), when the crate is present:
+        # one FFI call for the whole round trip. A timeout returns None
+        # (the floor's semantics); the floor loop below runs ONLY when
+        # the crate is absent (a timeout must not re-send the CALL —
+        # that would duplicate it).
+        if self.endpoint._sock is not None:
+            try:
+                reply_wire = ipc_loop.client_call(
+                    self.endpoint._sock.fileno(),
+                    peer_path,
+                    wire,
+                    int(timeout_s * 1000),
+                )
+            except ipc_loop.BackendUnavailable:
+                pass  # no crate — use the Python floor loop below
+            else:
+                if reply_wire is None:
+                    return None
+                try:
+                    reply = IPCMessage.from_wire(reply_wire)
+                except (ValueError, KeyError, TypeError) as e:
+                    # The Rust half correlated by reply_to; a wire it
+                    # accepted but the full codec rejects is a peer
+                    # anomaly — drop, like the floor drops malformed.
+                    logger.warning(
+                        "ipc: Rust client half returned a malformed "
+                        "reply (%s); dropping", e)
+                    return None
+                if (reply.message_type == IPCMessageType.REPLY
+                        and reply.reply_to == msg.message_id):
+                    return reply
+                logger.warning(
+                    "ipc: Rust client half returned an uncorrelated "
+                    "reply; dropping")
+                return None
+        # The Python floor loop (the fallback when the crate is
+        # absent): send, then wait for the correlated REPLY.
         self._send_message(peer_path, msg)
         deadline = time.time() + timeout_s
         while time.time() < deadline:

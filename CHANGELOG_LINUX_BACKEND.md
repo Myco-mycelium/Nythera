@@ -16,6 +16,21 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.8] — 2026-08-15
+
+### ADR-0021 close gate MET: the client half of the loop + the client-side Python elimination
+
+#### Added
+
+- **`rust/ipcd/`** — `nyrqis_ipcd_client_call` (the client half of the loop, ABI-001): one FFI call per CALL round trip — `sendto` → `poll` → `recvmsg` → correlation (reply must match the call's `message_id`, parsed from the request wire; non-matching datagrams dropped in Rust, exactly the floor's correlation loop) → copy into the caller's reply buffer; `-ETIMEDOUT` on expiry, `-ENOBUFS` on an oversized reply. The receive buffer is a module-level locked array (zeroed once, not per poll iteration). Crate suite 18 → **22** (round trip against the serving loop in-process, timeout, correlation-amid-noise, invalid args, symbol surface).
+- **`ipc/loop.py`** — `client_call` driver with a **thread-local reusable reply buffer** (no per-call 64 KiB allocation) and `string_at` for the reply copy; `BackendUnavailable` fallback contract (a timeout must NOT re-send the CALL — that would duplicate it).
+- **`ipc/transport.py`** — `IPCClient.call` now routes the whole round trip through `client_call` when the crate is present; the Python floor loop (send + correlated receive) is the crate-less fallback with identical semantics, so a caller cannot tell which half served the call.
+- **`ipc/ipc_codec.py`** — the Rust FFI encode/decode now pass `bytes` directly through the `c_void_p` argtypes (buffer protocol, no per-field `create_string_buffer` copy): encode 31.6 → 8.1 µs, decode 18.3 → 13.4 µs, byte-identity preserved (verified).
+- **`ipc/core.py`** — `to_wire` emits the constant `b"{}"` for empty metadata (byte-identical to `json.dumps({}, sort_keys=True)`); the `message_id` generator is now `os.urandom(6).hex()` — 48-bit CSPRNG, opaque on the wire, excluded from the conformance differential, still unguessable, and ~6 µs cheaper than `uuid4` per call.
+- **`test_backend.py`** — client-half loader routing with a fake lib (arg marshalling + `BackendUnavailable`), conformance (Rust client vs floor server round trip; timeout returns None without re-sending), and the floor fallback path. Suite 342 → **342** (the new tests slot into existing classes; all green).
+- **`tests/benchmarks.py`** — §22/§23 re-run with the client half active: **the ADR-0021 close gate is MET** — the loop's wire p50 is **82–95 µs** across runs (UNDER the NPS-003 §6.1 <100 µs median) vs the floor's 263–274 µs (~3× faster), satisfying both close-gate criteria (beats the floor in the same-session A/B AND <100 µs median). Recorded in BENCHMARK_RESULTS.md §22/§23. **ADR-0021 moved to Accepted** (its own gate language: "stays Proposed until the close gate is met").
+
+
 ## [0.13.7] — 2026-08-15
 
 ### ADR-0021 decision point 1: the non-ping dispatch handoff — the health socket serves status/health

@@ -510,8 +510,9 @@ Documentation hygiene, fixed earlier this session:
   with its own identity). `--ipcd` benchmark (§22): the loop beats
   the floor ~2.8× at the wire median (p50 ~136 µs vs ~387–394 µs,
   2026-08-15) — ADR-0021's differential gate GREEN; the <100 µs
-  close gate stays open (client-side Python cost is the residual, the
-  next NyRuntime direction). CI: `rust-ipcd` build + required
+  close gate stayed open (client-side Python cost was the residual,
+  the next NyRuntime direction — **closed the same day, see the
+  client-half bullet below**). CI: `rust-ipcd` build + required
   `rust-ipcd-conformance` gate. Suite 317 → **329** (300 run + 29
   skipped on crate-less hosts). **Wired into the daemon 2026-08-15:**
   `service serve --health-socket` binds a dedicated health-probe
@@ -561,9 +562,32 @@ Documentation hygiene, fixed earlier this session:
   parity with the floor (~490 vs ~405 µs p50 — the Python handler
   cost is inherent per ADR-0021), ping stays ~2.8× faster, the
   pid-table refresh costs ~9.6 µs p50. New tests: dispatch conformance
-  (2), loader routing + ENOBUFS retry (2), host status-via-dispatch +
+  (2), loader routing + ENOBUFS retry  (2), host status-via-dispatch +
   control-denied (2), real-container health probe (1). Suite 335 →
   **342**.
+- 2026-08-15 (**ADR-0021 close gate MET — the client half of the
+  loop + the client-side Python elimination**): `nyrqis_ipcd_client_call`
+  (the client half, one FFI call per round trip — sendto → poll →
+  recvmsg → correlation in Rust, thread-local reply buffer) wired into
+  `IPCClient.call` (Python floor loop = crate-less fallback; a timeout
+  never re-sends the CALL). The remaining client-side Python was then
+  measured and eliminated piece by piece: the codec's per-field
+  `create_string_buffer` marshalling (encode 31.6→8.1 µs, decode
+  18.3→13.4 µs, byte-identity preserved), the per-call
+  `json.dumps({})` metadata round trip (constant `b"{}"`), the
+  per-call 64 KiB reply-buffer allocation (thread-local reuse +
+  `string_at`), and the ~6 µs `uuid4` message-id (48-bit CSPRNG
+  `os.urandom(6).hex()` — opaque on the wire, excluded from the
+  differential, still unguessable). Benchmark §22 re-run: the loop's
+  wire p50 is **82–95 µs vs the floor's 263–274 µs** — the close gate
+  (beat the floor in the same-session A/B AND <100 µs median) is
+  **MET**, and **ADR-0021 moved to Accepted** (its gate language:
+  "stays Proposed until the close gate is met"). §23 re-run: dispatch
+  ~304–314 vs ~267–272 µs p50 (close parity holds), refresh
+  ~8.4–8.7 µs. New tests: client-half loader routing (fake lib),
+  conformance (Rust client vs floor server, timeout-without-resend),
+  floor fallback path. Suite 342 → **342** (new tests slot into
+  existing classes).
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

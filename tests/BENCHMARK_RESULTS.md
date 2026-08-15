@@ -889,25 +889,31 @@ transport, `--ipcd` (client in a separate process; both sides serve
 
 | Metric | Python floor | Rust loop | Δ |
 |--------|--------------|-----------|-----|
-| p50 | 386.5 / 393.8 µs (2 runs) | **136.3 / 136.2 µs** | **~2.8× faster** |
-| p95 | 663.6 µs | 237.5 µs | ~2.8× |
-| p99 | 844.0 µs | 330.0 µs | ~2.6× |
-| mean | 421.3 µs | 142.6 µs | ~3.0× |
-| min | 232.1 / 231.0 µs | 112.2 / 111.9 µs | ~2.1× |
+| p50 | 386.5 / 393.8 µs (2 runs, first pass) → **263.2 / 274.1 µs** (2 runs, client half) | **94.9 / 82.5 µs** | **~2.8–3.3× faster** |
+| p95 | 491.1 / 405.4 µs | 130.6 µs | ~3.1× |
+| p99 | 595.9 µs | 195.5 µs | ~3.0× |
+| mean | 327.2 µs | 95.0 µs | ~3.4× |
+| min | 168.7 µs | 79.1 µs | ~2.1× |
 
-Reading (the ADR-0021 gate): the loop **beats the floor decisively at
-the wire median (~2.8×)** — the differential gate is GREEN; the loop
-removes the server-side Python per-message cost (JSON parse, dict
-routing, the reply encode + the second FFI hop). The close gate
-(NPS-003 §6.1, <100 µs wire median) stays OPEN: the residual ~136 µs
-is the *client-side* Python per-call cost (its own codec encode,
-ctypes transport calls, and the `IPCClient.call` correlation loop) +
-the kernel round trip — exactly the next NyRuntime direction the ADR
-records (the client half of the loop behind the boundary). Note the
-floor here (~387 µs) is higher than §20's raw floor (~200–230 µs)
-because this A/B carries the full status-service ping path (JSON
-parse + service stack) on both sides — the like-for-like comparison
-is the point, and the differential holds across repeated runs.
+Reading (the ADR-0021 gate): **THE CLOSE GATE IS MET — 2026-08-15**.
+The client half of the loop landed behind the boundary
+(`nyrqis_ipcd_client_call`: sendto → poll → recvmsg → correlation in
+one FFI call per round trip, wired into `IPCClient.call`), and the
+remaining client-side Python was measured and eliminated piece by
+piece — the codec's per-field `create_string_buffer` marshalling
+(encode 31.6→8.1 µs, decode 18.3→13.4 µs), the per-call
+`json.dumps({})` metadata round trip (constant `b"{}"`), the
+per-call 64 KiB reply-buffer allocation (thread-local reuse +
+`string_at` copy), and the ~6 µs `uuid4` message-id generator (48-bit
+CSPRNG `os.urandom(6).hex()` — opaque on the wire, excluded from the
+differential). Both runs land the loop's wire p50 at **82–95 µs**,
+UNDER the NPS-003 §6.1 <100 µs median, while the floor sits at
+263–274 µs — both criteria of the close gate (beat the floor in the
+same-session A/B AND <100 µs median) are met. The floor remains
+shipped as the crate-less fallback. (The floor's own drop from ~387 →
+~270 µs is the same client-half + codec work helping the floor side
+too — the like-for-like A/B is what matters, and the differential
+holds across runs.)
 
 ## 23. ADR-0021 Dispatch Handoff + Refresh (2026-08-15)
 
@@ -925,14 +931,14 @@ compared byte-identical to the floor's reply.
 
 | Metric | Python floor | Rust loop (dispatch) | Δ |
 |--------|--------------|----------------------|-----|
-| p50 | 404.8 µs | 490.1 µs | +21% (close parity) |
-| p95 | 680.9 µs | 806.2 µs | +18% |
-| p99 | 862.3 µs | 1054.9 µs | +22% |
-| mean | 434.9 µs | 509.7 µs | +17% |
-| min | 231.4 µs | 247.1 µs | +7% |
+| p50 | 404.8 µs (first pass) → **267.0 / 272.1 µs** (client half) | 490.1 µs (first pass) → **314.2 / 303.7 µs** | +15% (close parity) |
+| p95 | 420.5 µs | 499.3 µs | +19% |
+| p99 | 520.1 µs | 614.3 µs | +18% |
+| mean | 279.3 µs | 322.5 µs | +15% |
+| min | 148.8 µs | 160.6 µs | +8% |
 
 Reading: the dispatch handoff reaches **close parity with the floor
-(~+20% at the median)** — and the first measurement (before the
+(~+15% at the median)** — and the first measurement (before the
 reusable drain buffer) was 1933 µs p50: the driver's per-step 4 MiB
 drain-buffer allocation dominated the step cost, fixed by reusing the
 buffer and copying only the written bytes. The residual is honest:
@@ -940,8 +946,9 @@ for non-ping ops the SERVICE HANDLER runs in Python either way
 (ADR-0021 keeps the handlers on the floor), so the loop cannot remove
 that cost — it only avoids the per-message FFI tax on the path it
 answers itself (ping, §22). The dispatch A/B isolates exactly that:
-ping stays ~2.8× faster, non-ping is parity, both byte-identical to
-the floor.
+ping is ~3× faster (the close gate, §22), non-ping is parity, both
+byte-identical to the floor. (Both sides dropped ~25% with the
+client-half + codec work; the like-for-like comparison holds.)
 
 **Pid-table refresh** (`--ipcd-refresh`): the isolated `set_policy`
 FFI call the daemon makes on every container spawn/terminate
@@ -949,11 +956,11 @@ FFI call the daemon makes on every container spawn/terminate
 
 | Metric | Value |
 |--------|-------|
-| p50 | **9.6 µs** |
-| p95 | 16.6 µs |
-| p99 | 25.9 µs |
-| mean | 11.0 µs |
-| min | 8.1 µs |
+| p50 | **9.6 µs** (first pass) → **8.4–8.7 µs** (client half) |
+| p95 | 17.8 µs |
+| p99 | 29.3 µs |
+| mean | 10.7 µs |
+| min | 8.0 µs |
 
 Reading: the refresh is a cheap plain-data policy push (~10 µs p50)
 — the per-container authorization update costs the daemon essentially

@@ -199,15 +199,21 @@ def _rust_encode(
 ) -> bytes:
     out_ptr = ctypes.c_void_p()
     out_len = ctypes.c_size_t()
+    # The ``c_void_p`` argtypes accept ``bytes`` directly through the
+    # buffer protocol — no per-field copy. The Rust parser reads exactly
+    # ``*_len`` bytes and treats ``len == 0`` before the null check, so
+    # empty fields pass through safely (the older ``create_string_buffer``
+    # wrapper cost ~7µs/field of pure copy; this is the hot path of the
+    # per-call client half).
     rc = lib.nyrqis_ipc_encode(
         int(message_type), timestamp,
-        _buf(message_id), len(message_id),
-        _buf(sender_id), len(sender_id),
-        _buf(receiver_id), len(receiver_id),
-        _buf(reply_to), len(reply_to),
-        _buf(payload), len(payload),
-        _buf(caps_flat), len(caps_flat),
-        _buf(metadata), len(metadata),
+        message_id, len(message_id),
+        sender_id, len(sender_id),
+        receiver_id, len(receiver_id),
+        reply_to, len(reply_to),
+        payload, len(payload),
+        caps_flat, len(caps_flat),
+        metadata, len(metadata),
         ctypes.byref(out_ptr), ctypes.byref(out_len),
     )
     if rc != 0:
@@ -221,7 +227,7 @@ def _rust_encode(
 def _rust_decode(lib: ctypes.CDLL, buf: bytes) -> Dict:
     view_ptr = ctypes.c_void_p()
     rc = lib.nyrqis_ipc_decode(
-        _buf(buf), len(buf), ctypes.byref(view_ptr)
+        buf, len(buf), ctypes.byref(view_ptr)
     )
     if rc != 0:
         _raise_rust_error(int(rc), "ipc_decode")
@@ -242,13 +248,6 @@ def _rust_decode(lib: ctypes.CDLL, buf: bytes) -> Dict:
     finally:
         if view is not None:
             lib.nyrqis_ipc_free(view_ptr)
-
-
-def _buf(data: bytes):
-    """A non-null ctypes buffer for ``data`` (1-byte minimum so even
-    empty fields pass a valid pointer)."""
-    return ctypes.cast(ctypes.create_string_buffer(data, len(data) + 1),
-                       ctypes.c_void_p)
 
 
 # ---------------------------------------------------------------------------

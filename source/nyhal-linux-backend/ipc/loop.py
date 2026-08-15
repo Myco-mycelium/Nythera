@@ -49,6 +49,7 @@ import ctypes
 import errno
 import logging
 import os
+import threading
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,14 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
         ]
         lib.nyrqis_ipcd_loop_discard_requests.restype = ctypes.c_int
         lib.nyrqis_ipcd_loop_discard_requests.argtypes = [ctypes.c_void_p]
+        lib.nyrqis_ipcd_client_call.restype = ctypes.c_int
+        lib.nyrqis_ipcd_client_call.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_char), ctypes.c_size_t,
+            ctypes.c_int64,
+        ]
         lib.nyrqis_ipcd_loop_step.restype = ctypes.c_int
         lib.nyrqis_ipcd_loop_step.argtypes = [
             ctypes.c_void_p, ctypes.c_int64,
@@ -379,6 +388,57 @@ class IpcdLoop:
             self._closed = True
 
 
+_REPLY_BUF = threading.local()  # per-thread reusable reply buffer
+
+
+def client_call(
+    fd: int,
+    peer_path: str,
+    call_wire: bytes,
+    timeout_ms: int,
+    reply_cap: int = 64 * 1024,
+) -> Optional[bytes]:
+    """One CALL round trip through the Rust client half of the loop
+    (ADR-0021 — the client half behind the boundary): ``sendto`` the
+    request wire, then ``poll`` + ``recvmsg`` until the correlated
+    REPLY arrives (non-matching datagrams are dropped in Rust, exactly
+    the floor's correlation loop) or the timeout elapses.
+
+    Returns the reply wire, or None on timeout. Raises
+    ``BackendUnavailable`` when the crate is absent (the caller falls
+    back to the Python floor — never a failure on its own) unless
+    ``NYRQIS_RUST_FORCE=1``, and ``OSError``/``RuntimeError`` per the
+    module error contract.
+    """
+    lib = _load_rust_backend()
+    if lib is None:
+        if force_enabled():
+            raise RuntimeError(_rust_force_error())
+        raise BackendUnavailable()
+    call_arr = (ctypes.c_ubyte * len(call_wire)).from_buffer_copy(call_wire)
+    # Reuse a per-thread reply buffer instead of allocating 64 KiB on
+    # every call (the reply is copied out with string_at, so the buffer
+    # only needs to exist for the duration of the FFI call).
+    reply_buf = getattr(_REPLY_BUF, "buf", None)
+    if reply_buf is None or ctypes.sizeof(reply_buf) < reply_cap:
+        reply_buf = ctypes.create_string_buffer(reply_cap)
+        _REPLY_BUF.buf = reply_buf
+    n = lib.nyrqis_ipcd_client_call(
+        fd,
+        peer_path.encode("utf-8"),
+        call_arr,
+        len(call_wire),
+        reply_buf,
+        reply_cap,
+        int(timeout_ms),
+    )
+    if n < 0:
+        if n == -errno.ETIMEDOUT:
+            return None
+        _raise_rust_error(n, "client_call")
+    return ctypes.string_at(reply_buf, n)
+
+
 __all__ = [
     "MIN_RUST_ABI_VERSION",
     "RUST_ERR_INTERNAL",
@@ -386,4 +446,5 @@ __all__ = [
     "force_enabled",
     "available",
     "IpcdLoop",
+    "client_call",
 ]

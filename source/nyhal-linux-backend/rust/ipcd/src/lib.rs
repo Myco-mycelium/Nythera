@@ -536,7 +536,8 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_drain_requests(
             break;
         }
         let dst = (buf as *mut u8).add(written);
-        (req.wire.len() as u32).to_le_bytes().as_ptr().copy_to(dst, 4);
+        let len_prefix = (req.wire.len() as u32).to_le_bytes();
+        len_prefix.as_ptr().copy_to(dst, 4);
         req.wire.as_ptr().copy_to(dst.add(4), req.wire.len());
         written += rec_len;
     }
@@ -619,6 +620,161 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_discard_requests(
     let loop_handle = &mut *(handle as *mut IpcLoop);
     loop_handle.pending.clear();
     0
+}
+
+/// Reusable receive buffer for the client half: a per-call
+/// ``[0u8; RECV_BUF]`` stack array would zero 64 KiB on EVERY call
+/// (the same allocation pathology the drain buffer had — measured
+/// ~8 µs/call). A static buffer is safe because the client call is
+/// synchronous (one call at a time; concurrent callers serialize on
+/// the lock, which is far cheaper than a per-call memset).
+static CLIENT_RECV: std::sync::Mutex<[u8; RECV_BUF]> =
+    std::sync::Mutex::new([0u8; RECV_BUF]);
+
+/// Monotonic milliseconds (the client call's deadline clock).
+fn now_monotonic_ms() -> i64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as i64 * 1000 + ts.tv_nsec as i64 / 1_000_000
+}
+
+/// One CALL round trip through the client half of the loop
+/// (ADR-0021 — the client half behind the boundary): ``sendto`` the
+/// request wire to ``peer_path``, then ``poll`` + ``recvmsg``
+/// (``MSG_DONTWAIT``) until a REPLY whose ``reply_to`` matches the
+/// call's ``message_id`` arrives or ``timeout_ms`` elapses. Datagrams
+/// that are not that reply (other replies, malformed wire, noise) are
+/// dropped — exactly the floor's ``IPCClient.call`` correlation loop,
+/// now inside the Rust process.
+///
+/// Returns the reply wire length (≥ 0, copied into ``reply_buf``),
+/// ``-ETIMEDOUT`` on timeout, ``-ENOBUFS`` when the reply exceeds
+/// ``reply_cap``, ``-EINVAL`` for invalid arguments, or ``-errno``.
+/// The caller (Python) owns the fd (the floor binds it) and the
+/// reply buffer (reused across calls — the transport v2 contract).
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_ipcd_client_call(
+    fd: c_int,
+    peer_path: *const c_char,
+    call_wire: *const u8,
+    call_wire_len: usize,
+    reply_buf: *mut u8,
+    reply_cap: usize,
+    timeout_ms: i64,
+) -> i32 {
+    if fd < 0
+        || peer_path.is_null()
+        || (call_wire.is_null() && call_wire_len > 0)
+        || (reply_buf.is_null() && reply_cap > 0)
+        || timeout_ms < 0
+    {
+        return ERR_INVALID_ARGS;
+    }
+    let path = match CStr::from_ptr(peer_path).to_bytes() {
+        p if p.is_empty() => return ERR_INVALID_ARGS,
+        p => p,
+    };
+    if path.len() > 107 {
+        return -libc::EINVAL; // sun_path bound (the transport's limit)
+    }
+    let wire = std::slice::from_raw_parts(call_wire, call_wire_len);
+    // The call's message_id is the correlation anchor — parse it from
+    // the request wire (a malformed request is rejected up front).
+    let call_id = match parse_dispatch(wire) {
+        Some(p) if p.message_type == MT_CALL => p.message_id.to_vec(),
+        _ => return ERR_INVALID_ARGS,
+    };
+    // Peer address with the transport's trimmed sockaddr_un length
+    // (the loop's sendto requires the real sun_path, not a cast).
+    let mut sun: libc::sockaddr_un = std::mem::zeroed();
+    sun.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (i, b) in path.iter().enumerate() {
+        sun.sun_path[i] = *b as c_char;
+    }
+    let addr_len = (2 + path.len() + 1) as libc::socklen_t;
+    let sent = libc::sendto(
+        fd,
+        wire.as_ptr() as *const c_void,
+        wire.len(),
+        0,
+        &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+        addr_len,
+    );
+    if sent < 0 {
+        return -errno_or(libc::EIO);
+    }
+    if sent as usize != wire.len() {
+        return -libc::EIO;
+    }
+
+    let deadline = now_monotonic_ms() + timeout_ms;
+    let mut ctrl = AlignedCmsg([0u8; CMSG_BUF]);
+    let mut src: libc::sockaddr_un = std::mem::zeroed();
+    // Locked once for the whole call: the guard lives until the reply
+    // arrives, so the buffer is not zeroed per poll iteration.
+    let mut buf_guard = CLIENT_RECV.lock().unwrap();
+    let buf: &mut [u8] = &mut *buf_guard;
+    loop {
+        let now = now_monotonic_ms();
+        if now >= deadline {
+            return -libc::ETIMEDOUT;
+        }
+        let remaining = (deadline - now).min(c_int::MAX as i64) as c_int;
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let prc = libc::poll(&mut pfd, 1, remaining);
+        if prc < 0 {
+            let e = errno_or(libc::EIO);
+            if e == libc::EINTR {
+                continue;
+            }
+            return -e;
+        }
+        if prc == 0 {
+            return -libc::ETIMEDOUT;
+        }
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr() as *mut c_void,
+            iov_len: buf.len(),
+        };
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_name = &mut src as *mut libc::sockaddr_un as *mut c_void;
+        msg.msg_namelen = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = ctrl.0.as_mut_ptr() as *mut c_void;
+        msg.msg_controllen = ctrl.0.len();
+        let n = libc::recvmsg(fd, &mut msg, libc::MSG_DONTWAIT);
+        if n < 0 {
+            let e = errno_or(libc::EIO);
+            if e == libc::EINTR || e == libc::EAGAIN || e == libc::EWOULDBLOCK {
+                continue; // spurious wake — re-poll until the deadline
+            }
+            return -e;
+        }
+        if n == 0 {
+            continue; // defensive — UDS datagrams cannot EOF
+        }
+        let data = &buf[..n as usize];
+        let parsed = match parse_dispatch(data) {
+            Some(p) => p,
+            None => continue, // malformed — drop, like the floor
+        };
+        if parsed.message_type != MT_REPLY || parsed.reply_to != call_id.as_slice() {
+            continue; // not our reply — drop, exactly the floor's correlation
+        }
+        if data.len() > reply_cap {
+            return -libc::ENOBUFS;
+        }
+        std::ptr::copy_nonoverlapping(data.as_ptr(), reply_buf, data.len());
+        return data.len() as i32;
+    }
 }
 
 /// Run one loop iteration: `poll` up to `timeout_ms` (negative =
@@ -915,6 +1071,7 @@ mod tests {
         let _ = nyrqis_ipcd_loop_drain_requests;
         let _ = nyrqis_ipcd_loop_enqueue_replies;
         let _ = nyrqis_ipcd_loop_discard_requests;
+        let _ = nyrqis_ipcd_client_call;
         let _ = nyrqis_ipcd_loop_free;
     }
 
@@ -1559,6 +1716,176 @@ mod tests {
             libc::unlink(server_path.as_ptr());
             libc::unlink(client_path.as_ptr());
         }
+    }
+
+    #[test]
+    fn client_call_roundtrip_against_serving_loop() {
+        // Both halves in Rust, end-to-end: the serving loop answers a
+        // ping from our pid; the client half does the whole round trip
+        // in one FFI call (sendto + poll + recvmsg + correlation).
+        let policy = Policy {
+            pids: vec![(unsafe { libc::getpid() }, b"ctr-cli".to_vec())],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+        let wire = ping_call(b"call-cli", b"ctr-cli");
+        // A raw pointer is not Send — hand the handle across as usize
+        // and cast back inside the stepping thread.
+        let srv_handle = handle as usize;
+        let t = std::thread::spawn(move || {
+            // The ping is answered on the first step; a few more steps
+            // cover scheduling jitter, then the thread exits (the loop
+            // polls 50 ms with nothing left — keep it short).
+            for _ in 0..10 {
+                unsafe { nyrqis_ipcd_loop_step(srv_handle as *mut c_void, 50) };
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+        let mut reply = [0u8; TEST_RECV];
+        let n = unsafe {
+            nyrqis_ipcd_client_call(
+                client_fd,
+                server_path.as_ptr(),
+                wire.as_ptr(),
+                wire.len(),
+                reply.as_mut_ptr(),
+                reply.len(),
+                2000,
+            )
+        };
+        t.join().unwrap();
+        assert!(n > 0, "the round trip must complete (got {n})");
+        let parsed = parse_dispatch(&reply[..n as usize]).expect("valid reply");
+        assert_eq!(parsed.message_type, MT_REPLY);
+        assert_eq!(parsed.reply_to, b"call-cli");
+        assert_eq!(parsed.payload, build_ping_payload(b"ctr-cli"));
+
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn client_call_times_out_when_no_reply() {
+        // A server that never answers (our pid unknown → the ping is
+        // dropped) → -ETIMEDOUT, bounded by the timeout.
+        let policy = Policy {
+            pids: vec![],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+        let wire = ping_call(b"call-t", b"ctr-ghost");
+        let mut reply = [0u8; TEST_RECV];
+        let n = unsafe {
+            nyrqis_ipcd_client_call(
+                client_fd,
+                server_path.as_ptr(),
+                wire.as_ptr(),
+                wire.len(),
+                reply.as_mut_ptr(),
+                reply.len(),
+                60,
+            )
+        };
+        assert_eq!(n, -libc::ETIMEDOUT);
+
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn client_call_correlates_amid_noise() {
+        // The client's receive queue holds junk, a reply for a
+        // DIFFERENT call, then the matching reply — the client half
+        // must drop the noise and return the correlated reply,
+        // exactly the floor's loop.
+        let server_path = temp_sock("csrv");
+        let client_path = temp_sock("ccli");
+        let server_fd = bind_socket(&server_path);
+        let client_fd = bind_socket(&client_path);
+        let call_wire = build_wire(
+            MT_CALL, b"call-42", b"ctr-cli", b"backend", b"",
+            b"{\"op\": \"ping\"}", b"{}",
+        );
+        let junk = b"garbage-not-a-wire";
+        let other = build_wire(
+            MT_REPLY, b"r-1", b"", b"", b"other-call", b"{}", b"{}",
+        );
+        let matching = build_wire(
+            MT_REPLY, b"r-2", b"", b"", b"call-42",
+            b"{\"ok\": true}", b"{}",
+        );
+        for payload in [&junk[..], &other[..], &matching[..]] {
+            let (sun, addr_len) = sockaddr_of(&client_path);
+            unsafe {
+                libc::sendto(
+                    client_fd,
+                    payload.as_ptr() as *const c_void,
+                    payload.len(),
+                    0,
+                    &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                    addr_len,
+                );
+            }
+        }
+        let mut reply = [0u8; TEST_RECV];
+        let n = unsafe {
+            nyrqis_ipcd_client_call(
+                client_fd,
+                server_path.as_ptr(),
+                call_wire.as_ptr(),
+                call_wire.len(),
+                reply.as_mut_ptr(),
+                reply.len(),
+                2000,
+            )
+        };
+        assert!(n > 0, "the correlated reply must be returned");
+        let parsed = parse_dispatch(&reply[..n as usize]).expect("valid reply");
+        assert_eq!(parsed.reply_to, b"call-42");
+        assert_eq!(parsed.payload, b"{\"ok\": true}");
+
+        unsafe {
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn client_call_invalid_args() {
+        let p = b"/tmp/nyrqis-client-test.sock\0".as_ptr() as *const c_char;
+        let empty = ptr::null();
+        let null_mut = ptr::null_mut();
+        assert_eq!(
+            unsafe { nyrqis_ipcd_client_call(-1, p, empty, 0, null_mut, 0, 10) },
+            ERR_INVALID_ARGS
+        );
+        assert_eq!(
+            unsafe { nyrqis_ipcd_client_call(3, ptr::null(), empty, 0, null_mut, 0, 10) },
+            ERR_INVALID_ARGS
+        );
+        assert_eq!(
+            unsafe { nyrqis_ipcd_client_call(3, p, empty, 0, null_mut, 0, -1) },
+            ERR_INVALID_ARGS
+        );
+        // An empty wire has no message_id to correlate → invalid.
+        assert_eq!(
+            unsafe { nyrqis_ipcd_client_call(3, p, empty, 0, null_mut, 0, 10) },
+            ERR_INVALID_ARGS
+        );
     }
 
     #[test]
