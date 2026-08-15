@@ -159,14 +159,14 @@ Test suite: **299/299 passing** (`python3 test_backend.py` — 273 run + 26 skip
 - ✓ **Secure Boot status reporting** — probes `efivars` (`SecureBoot` variable, attribute-prefixed parse) and `mokutil`; reports enabled/disabled/unknown honestly (closes **FIND-BOOT-001**, NPS-023 §4 / NPS-017 §4.5)
 - ✓ CLI: `secure-boot-status`
 - ✓ **Systemd host integration (plan §4.5)** — `packaging/systemd/nyrqis-backend.service` runs the backend daemon at boot (`nyrqis_backend.py service serve` on `/run/nyrqis/status.sock`): unprivileged by design (`DynamicUser` + `NoNewPrivileges` — the daemon launches containers through unprivileged user namespaces), `Restart=on-failure`, `PrivateTmp`/`ProtectHome`/`ProtectSystem`, install steps in `packaging/README.md`. New `TestSystemdUnit` (3 tests: unit wiring, `systemd-analyze verify` when systemd is present, unprivileged posture) — the class is hermetic (reads the unit file; no unit installed on the host).
+- ✓ **Logging to syslog (plan §4.5)** — `setup_logging(verbose, syslog=True)` mirrors daemon records into the system journal via `/dev/log` (UDP-514 fallback; best-effort degrade to stderr). The systemd unit starts the daemon with `--syslog`, so `journalctl -u nyrqis-backend` is the operating interface. New `TestLoggingConfig` (3 tests: `/dev/log` attach, UDP fallback, graceful degrade).
+- ✓ **Health checks (plan §4.5)** — the status service gains a `health` op (gated on `CAP_SYSTEM_INFO` like `status`): serve-loop liveness, container load (known/running), IPC registry size, state-persistence status, and the crash-recovery record — the payload a systemd `ExecStartPost`/operator health probe reads. New tests: `health` over a real socket, fail-closed denial without `CAP_SYSTEM_INFO`, and `state_persisted` reporting.
+- ✓ **Persistent state management (plan §4.5)** — new `backend/daemon_state.py` (`DaemonStateFile`): a versioned, atomically-written (tmp + `os.replace`, the NyFS discipline) JSON record of the daemon identity (pid, version, socket) + last-known container manifest. The daemon recovers on start — a stale previous-daemon record is REPORTED (the orphan ids are logged; the `health` op returns a recovery *summary* — previous pid + orphan count; the full manifest stays in the state file for operator review), never resumed: orphaned processes are not auto-killed (NPS-010 §4 has no resume-from-pid transition). Mutating control ops (`container_run`/`container_kill`) refresh the manifest. The systemd unit persists to `/run/nyrqis/daemon-state.json` (the `RuntimeDirectory`). New `TestDaemonState` (11 tests: round-trip, atomicity under `os.replace` failure, corrupt/schema/pid-staleness handling, host recovery + persistence).
 
 **Outstanding Work:**
-- [ ] Persistent state management
-- [ ] Health checks and recovery
-- [ ] Logging to syslog
 - [ ] Measured-boot/TPM attestation story (`FIND-BOOT-003` — governance-level, needs a concrete need before design)
 
-**Conformance Status:** Partial (boot sequence implemented; systemd host integration landed 2026-08-14 — persistent state, health checks, syslog, and the TPM attestation story remain open)
+**Conformance Status:** Partial (boot sequence + host integration + persistent state/health checks/syslog landed 2026-08-14; the TPM attestation story remains open)
 
 ## Conformance Assessment
 
@@ -222,9 +222,9 @@ The implementation is **NOT YET conformant** because:
 4. Runtime policy reload for capability revocation
 
 ### Long-term (Phase 4: Production Readiness)
-1. Systemd integration
-2. Persistent state management
-3. Health checks and recovery
+1. ~~Systemd integration~~ — **landed 2026-08-14** (plan §4.5 host integration)
+2. ~~Persistent state management~~ — **landed 2026-08-14** (`backend/daemon_state.py`, `--state-file`)
+3. ~~Health checks and recovery~~ — **landed 2026-08-14** (status-service `health` op; recovery reporting)
 4. Performance optimization
 5. Full conformance assessment
 

@@ -40,6 +40,9 @@ from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from fuse.nyfs import NyFSFilesystem
 from boot.lifecycle import BootSequence
+from backend.daemon_state import DaemonStateFile
+
+logger = logging.getLogger(__name__)
 
 
 def parse_capabilities(value: str) -> list:
@@ -68,13 +71,43 @@ def make_container_config(args) -> ContainerConfig:
     )
 
 
-def setup_logging(verbose: bool = False) -> None:
-    """Configure logging."""
+def setup_logging(verbose: bool = False, syslog: bool = False) -> None:
+    """Configure logging (plan §4.5).
+
+    ``syslog`` additionally mirrors records to the system journal via
+    the Unix ``/dev/log`` socket (falling back to UDP 514 when the
+    socket is unavailable). Best effort: a host without a syslog daemon
+    degrades to stderr logging with a warning.
+    """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    if syslog:
+        try:
+            from logging.handlers import SysLogHandler
+            root = logging.getLogger()
+            # Guard against double-attach (a second setup_logging call
+            # in the same process must not stack a duplicate mirror).
+            # Name-based: robust even when SysLogHandler is patched.
+            if any(type(h).__name__ == "SysLogHandler"
+                   for h in root.handlers):
+                logger.info("logging: syslog mirror already attached")
+                return
+            try:
+                handler = SysLogHandler(address="/dev/log")
+            except OSError:
+                handler = SysLogHandler(address=("localhost", 514))
+            handler.setLevel(level)
+            handler.setFormatter(logging.Formatter(
+                "nyrqis-backend[%(process)d]: %(levelname)s "
+                "%(name)s: %(message)s"))
+            root.addHandler(handler)
+            logger.info("logging: syslog mirror attached")
+        except Exception as exc:  # noqa: BLE001 - syslog is best effort
+            logger.warning("logging: syslog unavailable (%s); "
+                           "continuing with stderr", exc)
 
 
 def cmd_boot(args) -> int:
@@ -211,10 +244,19 @@ class StatusServiceHost:
     """
 
     def __init__(self, socket_path: str,
-                 backend_version: Optional[str] = None) -> None:
+                 backend_version: Optional[str] = None,
+                 state_file: Optional[str] = None) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
+        # Plan §4.5 persistent state: a versioned, atomically-written
+        # JSON record of the daemon identity + container manifest used
+        # for crash-recovery reporting (never auto-resumption). None
+        # disables persistence.
+        self.state_file = state_file
+        self.state = DaemonStateFile(state_file) if state_file else None
+        self._recovery: Optional[dict] = None
+        self._started_at = time.time()
         self.ipc_manager = IPCManager()
         self.ipc_manager.create_endpoint("container-svc", "ep-svc")
         self.ipc_registry = ContainerIpcRegistry()
@@ -236,9 +278,11 @@ class StatusServiceHost:
         self.service = BackendStatusService(
             capability_manager=self.capability_manager,
             backend_version=backend_version,
+            daemon=self,
         )
         self.control = ControlService(
-            self.container_manager, self.capability_manager)
+            self.container_manager, self.capability_manager,
+            state_saver=self._save_state)
         self.router = ServiceRouter()
         self.router.register("status", self.service)
         self.router.register("control", self.control)
@@ -247,17 +291,77 @@ class StatusServiceHost:
         self._stop = threading.Event()
 
     def start(self) -> "StatusServiceHost":
-        """Bind the socket and start the serve loop thread."""
+        """Bind the socket, start the serve loop thread, then recover
+        from (and record) the previous daemon's state file."""
         self.server.bind()
         self._thread = threading.Thread(
             target=self.server.serve, args=(self._stop,), daemon=True)
         self._thread.start()
+        self._recover()
+        self._save_state()
         return self
 
+    def _recover(self) -> None:
+        """Plan §4.5 crash recovery: report what a previous daemon left
+        behind (its pid, version, socket, and last-known container
+        manifest) without resuming or killing anything. Orphaned
+        processes are for the operator to review."""
+        if self.state is None:
+            return
+        prev = self.state.load()
+        if prev is None:
+            return
+        if DaemonStateFile.is_stale(prev, current_pid=os.getpid()):
+            self._recovery = {
+                "previous_pid": prev.get("daemon_pid"),
+                "backend_version": prev.get("backend_version"),
+                "socket_path": prev.get("socket_path"),
+                "containers_left": prev.get("containers", []),
+            }
+            orphan_ids = [
+                c.get("id") for c in self._recovery["containers_left"]
+                if c.get("id")
+            ]
+            logger.warning(
+                "daemon-state: recovered %d container record(s) from "
+                "previous daemon pid %s (version %s): %s; orphaned "
+                "processes are NOT auto-killed — operator review "
+                "advised (full manifest in %s)",
+                len(self._recovery["containers_left"]),
+                prev.get("daemon_pid"), prev.get("backend_version"),
+                ", ".join(orphan_ids) or "(unnamed)",
+                self.state_file)
+        else:
+            logger.warning(
+                "daemon-state: %s references live pid %s — another "
+                "daemon may be running against the same state file",
+                self.state_file, prev.get("daemon_pid"))
+
+    def _save_state(self) -> None:
+        """Persist the daemon identity + current container manifest
+        (best effort; ``DaemonStateFile.save`` degrades to a warning
+        when the directory is not writable)."""
+        if self.state is None:
+            return
+        try:
+            known = list(self.container_manager.containers.values())
+        except Exception:  # noqa: BLE001 - state is best effort
+            known = []
+        self.state.save({
+            "daemon_pid": os.getpid(),
+            "backend_version": self.service.backend_version,
+            "socket_path": self.socket_path,
+            "started_at": self._started_at,
+            "recovery": self._recovery,
+            "containers": DaemonStateFile.manifest(known),
+        })
+
     def stop(self) -> None:
-        """Signal the serve loop, let it exit cleanly, then release the
-        socket (the loop polls at 0.2s, so the join is quick and the
-        thread never receives on a closed fd)."""
+        """Persist the final state, signal the serve loop, let it exit
+        cleanly, then release the socket (the loop polls at 0.2s, so
+        the join is quick and the thread never receives on a closed
+        fd)."""
+        self._save_state()
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -286,11 +390,18 @@ class StatusServiceHost:
 
 
 def cmd_service_serve(args) -> int:
-    """Serve the container-facing status service until interrupted."""
-    setup_logging(args.verbose)
+    """Serve the container-facing status service until interrupted.
+
+    ``--syslog`` mirrors daemon records to the system journal (plan
+    §4.5); ``--state-file`` enables persistent crash-recovery state
+    (defaults to the systemd runtime directory when running as the
+    packaged service, degrading to disabled elsewhere).
+    """
+    setup_logging(args.verbose, syslog=args.syslog)
     host = StatusServiceHost(
         socket_path=args.socket,
         backend_version=args.backend_version or None,
+        state_file=args.state_file or None,
     )
     host.serve_until_signal()
     return 0
@@ -494,6 +605,17 @@ Examples:
         "--backend-version", default="",
         help="Version the status service reports (default: the backend "
         "package version)"
+    )
+    serve_parser.add_argument(
+        "--syslog", action="store_true",
+        help="Mirror daemon records to the system journal via /dev/log "
+        "(plan 4.5; best effort)"
+    )
+    serve_parser.add_argument(
+        "--state-file", default="/run/nyrqis/daemon-state.json",
+        help="Persist daemon identity + container manifest for "
+        "crash-recovery reporting (plan 4.5; default: "
+        "/run/nyrqis/daemon-state.json — disable with --state-file '')"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 

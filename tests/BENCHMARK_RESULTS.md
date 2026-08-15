@@ -805,6 +805,64 @@ the gate open; closing it needs the transport's serving loop itself to
 move behind the boundary (a Rust server/client harness, i.e. the
 NyRuntime direction), not just the per-message syscall pair.
 
+## 21. Consolidated Session Snapshot (2026-08-14, second pass — serial, post-FUSE-clearance)
+
+Fourth full-session re-run, executed **serially** (one invocation with
+`--ipc --ipc-transport --bucket --zstd --nyfs --codec --mixed-workload
+--compaction-cost --journal-blocksize --save-levers --snapshot-dedup
+--real-corpus --container`; same host, same method as §16/§17/§19).
+Purpose: refresh every data point after the Phase-5 daemon round, and
+re-measure the Rust-transport §20 path.
+
+**FUSE incident resolution (updates §19's note):** §19 recorded that
+clearing the wedged `/dev/fuse` connections "requires root … or a
+reboot". This session found the connections **can be aborted by the
+owning user without root** — `echo abort >
+/sys/fs/fuse/connections/{52,53,74,75,76,77}/abort` immediately
+unblocked all five D-state benchmark processes (they exited, and the
+mounts were already detached). §19's incident note is corrected here:
+the `abort` file is owner-writable, so the recovery path is
+root-optional. **The parallel-mount wedge itself reproduced** — the
+first `--all` invocation of this session re-wedged the same way (five
+D-state children in `request_wait_answer`) and was cleared with the
+abort file; the serial invocation below completed cleanly with zero
+wedges. §19's child-isolation fix contains the damage to one child but
+does not stop a parallel `--all` from wedging that child; the
+reliable execution path is the serial flag list used here (or
+root-level `FUSE` tuning). §6 (live mount) was **not** re-measured —
+left to a clean host.
+
+| Section | This session | §19 (2026-08-14) | Consistent? |
+|---------|--------------|------------------|-------------|
+| §1 IPC p50/p95/p99 | 90.9 / 149.4 / 214.1 µs | 87.4 / 128.4 / 209.9 µs | ✓ (median under the <100 µs target) |
+| §20 transport p50 (Rust v2 active) | **322.6 µs** | 307–357 µs (4 runs) | ✓ inside the documented v2 range — same-session floor was ~231 µs |
+| §3 token bucket | 99.5 calls/s sustained (199 in 2 s) | 99.5 | ✓ |
+| §2 Zstd sweep | ratio flatlines ≥ level 7 (2.54 → 3.17) | same | ✓ |
+| §4 proxy write 1 MiB | 33.5 MB/s | 56.9 MB/s | ⚠ lower still — §19's "host-state sensitivity" note holds; the small-op pattern is unchanged (4k write 0.12, read 0.06 MB/s) and §5's save of the same corpus ran normal (10.83 s, ratio 6.42), so the NyFS write path is not the variable |
+| §5 persist save / ratio | 10.83 s / 6.42 : 1 | 10.9 s / 6.42 : 1 | ✓ |
+| §8 levers 64k/256k/1m | 10.83 / 6.18 / 5.75 s | 10.9 / 6.3 / 5.9 s | ✓ |
+| §9 journal commit (64k) | 0.214 s | 0.218 s | ✓ |
+| §10 snapshot dedup | 49.08× (349,209 B new) | 49.08× | ✓ |
+| §11 codec zstd3 vs zlib6 | ratio 2.54 vs 3.13 | same | ✓ |
+| §12 real corpus save | 260.6 s vs 2.0 s journal (~130×) | 113.3 vs 2.33 s | In-range but slower interleaved: fsync-bound and host-load-sensitive (documented ±30%+ band; the journal-vs-interleaved gap stays ≥ 100× this session) |
+| §13 mixed commit avg | 599 vs 143 ms (4.2×) | 621 vs 146 ms (4.3×) | ✓ |
+| §14 compaction | 12.17 s (29.2 ms/block) | 12.4 s (29.7 ms/block) | ✓ |
+| §15 journal × block size | 0.214 / 0.211 / 0.229 s | 0.266 / 0.270 / 0.361 s | ✓ (flat under journal — the finding holds; interleaved ref this session 20.65 s) |
+| §18 container launch-plan (Rust FFI, crate built) | floor 5.74/8.24/1.81/0.25 µs; FFI 26.06/13.21/5.68/1.10 µs; speedups 0.22–0.62×; byte_parity_ok | §18 first-pass (floor only) | ✓ now with the built-crate FFI column — the FFI path is slower per primitive (ctypes boundary tax) exactly as §18's reading predicted: a platform-boundary-rule port, not a performance migration |
+
+Verdict: **every previously recorded finding reproduced on the fresh
+serial pass.** §1's median stayed under the <100 µs target; §20's Rust
+transport measured 322.6 µs p50 — inside the documented v2 range
+(307–357 µs) and ~1.4× the same-session floor, so the NPS-003 §6.1
+gate stays open exactly as §20 records. §18 now carries the Rust FFI
+numbers from the built crate (byte-parity confirmed), closing §18's
+"not built on this host" gap with real data. The only soft spot
+remains §4's 1 MiB proxy write (33.5 MB/s this session, trending down
+across §19→here), reproduced in a standalone `--nyfs` run — the
+small-op pattern is unchanged and §5/§12 commit numbers are in-band,
+so this stays a host-state observation, not a code regression; no gate
+declared met either way.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

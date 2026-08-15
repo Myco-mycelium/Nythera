@@ -17,11 +17,17 @@ primitive):
 - ``{"op": "status"}`` — requires ``CAP_SYSTEM_INFO`` (a default
   capability, NPS-011). Reports the backend version, the service's
   uptime, and the *caller's own* container id and capability set.
+- ``{"op": "health"}`` — requires ``CAP_SYSTEM_INFO``. Plan §4.5
+  health check: serve-loop liveness, container load, IPC registry
+  size, state persistence, and a crash-recovery *summary* (previous
+  daemon pid + orphan count — the full manifest stays in the daemon's
+  state file for operator review). The diagnostic a systemd health
+  probe or an operator reads.
 
-Capability enforcement fails closed: ``status`` is denied when no
-``CapabilityManager`` is attached (the service cannot verify the grant
-it needs) or when the caller lacks ``CAP_SYSTEM_INFO``; ``ping`` needs
-nothing beyond what the server already enforced.
+Capability enforcement fails closed: ``status``/``health`` are denied
+when no ``CapabilityManager`` is attached (the service cannot verify
+the grant it needs) or when the caller lacks ``CAP_SYSTEM_INFO``;
+``ping`` needs nothing beyond what the server already enforced.
 
 References:
 - NPS-017 §4.3: IPC Semantics (CALL/REPLY)
@@ -59,6 +65,7 @@ class BackendStatusService:
         self,
         capability_manager: Optional[Any] = None,
         backend_version: Optional[str] = None,
+        daemon: Optional[Any] = None,
     ) -> None:
         self.capability_manager = capability_manager
         if backend_version is None:
@@ -68,6 +75,12 @@ class BackendStatusService:
             except ImportError:
                 backend_version = "unknown"
         self.backend_version = backend_version
+        # The runnable daemon (``nyrqis_backend.StatusServiceHost``) the
+        # health op reads shared state from: serve-loop thread,
+        # container manager, IPC registry, persistent state. Optional —
+        # a bare service (tests, embedded use) reports the fields it
+        # can, and the rest stay ``None``.
+        self.daemon = daemon
         self._started_at = time.time()
         self._server = None
 
@@ -110,6 +123,8 @@ class BackendStatusService:
                 })
             elif op == "status":
                 self._status(server, sender_path, msg.message_id, sender)
+            elif op == "health":
+                self._health(server, sender_path, msg.message_id, sender)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -126,20 +141,22 @@ class BackendStatusService:
                 logger.exception("ipc: %s could not send error reply",
                                  self.SERVICE_NAME)
 
-    def _status(self, server, sender_path: str, call_id: str,
-                sender: str) -> None:
+    def _authorized(self, sender: str, capability) -> bool:
+        """True when the caller holds ``capability``. Fails closed: no
+        ``CapabilityManager`` attached means no grant can be verified,
+        so nothing is authorized."""
         if self.capability_manager is None:
-            self._reply(server, sender_path, call_id, {
-                "ok": False,
-                "error": "forbidden: no capability manager attached",
-            })
-            return
+            return False
         # Lazy import: ipc must not depend on backend eagerly (the
         # established pattern in ipc/core.py).
+        from backend.capability import Capability  # noqa: F401
+        return self.capability_manager.validate_operation(
+            sender, capability)
+
+    def _status(self, server, sender_path: str, call_id: str,
+                sender: str) -> None:
         from backend.capability import Capability
-        if not self.capability_manager.validate_operation(
-            sender, Capability.CAP_SYSTEM_INFO
-        ):
+        if not self._authorized(sender, Capability.CAP_SYSTEM_INFO):
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": "forbidden: CAP_SYSTEM_INFO required",
@@ -154,6 +171,65 @@ class BackendStatusService:
             "uptime_s": round(time.time() - self._started_at, 3),
             "container": sender,
             "capabilities": sorted(c.value for c in caps),
+        })
+
+    def _health(self, server, sender_path: str, call_id: str,
+                sender: str) -> None:
+        """Liveness + load diagnostics (plan §4.5). Gated like
+        ``status`` (``CAP_SYSTEM_INFO``). Fields the daemon cannot
+        provide (no daemon attached) are reported as ``None`` rather
+        than guessed."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_SYSTEM_INFO):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_SYSTEM_INFO required",
+            })
+            return
+        daemon = self.daemon
+        containers = None
+        if daemon is not None and getattr(
+            daemon, "container_manager", None
+        ) is not None:
+            known = list(daemon.container_manager.containers.values())
+            running = [c for c in known if getattr(
+                getattr(c, "state", None), "value", None) == "running"]
+            containers = {"known": len(known), "running": len(running)}
+        registry_entries = None
+        if daemon is not None and getattr(
+            daemon, "ipc_registry", None
+        ) is not None:
+            registry_entries = len(daemon.ipc_registry)
+        serve_loop_alive = True
+        if daemon is not None:
+            thread = getattr(daemon, "_thread", None)
+            serve_loop_alive = thread is None or thread.is_alive()
+        # Crash-recovery SUMMARY only: the previous daemon's pid and
+        # orphan count. The full orphan manifest (ids, commands, pids)
+        # is operator material — it stays in the daemon's state file
+        # and is never shipped to callers (CAP_SYSTEM_INFO is a default
+        # grant, so per-container detail must not ride this op).
+        recovery = None
+        if daemon is not None and daemon._recovery is not None:
+            recovery = {
+                "previous_pid": daemon._recovery.get("previous_pid"),
+                "containers_left": len(
+                    daemon._recovery.get("containers_left", [])),
+            }
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "service": self.SERVICE_NAME,
+            "service_version": self.SERVICE_VERSION,
+            "backend_version": self.backend_version,
+            "uptime_s": round(time.time() - self._started_at, 3),
+            "serve_loop_alive": serve_loop_alive,
+            "containers": containers,
+            "ipc_registry_entries": registry_entries,
+            "state_persisted": bool(
+                getattr(daemon, "state", None)
+            ) if daemon is not None else False,
+            "recovery": recovery,
+            "container": sender,
         })
 
     @staticmethod

@@ -15,6 +15,12 @@
 # unprivileged user namespaces (no root required); the unit therefore
 # deliberately runs unprivileged under its own runtime directory rather
 # than as root.
+#
+# Logging + state (plan 4.5): --syslog mirrors daemon records into the
+# journal via /dev/log (systemd owns that socket), and --state-file
+# keeps the crash-recovery record inside the RuntimeDirectory, which
+# systemd creates (and chowns to the service user) — so the daemon can
+# always write it.
 
 [Unit]
 Description=Nyrqis Linux backend daemon (status service + control plane)
@@ -27,7 +33,7 @@ Type=simple
 # The backend CLI lives beside the source tree in this repository;
 # adjust ExecStart for a packaged install (see README.md). The CLI
 # resolves its own directory, so only the ExecStart path matters here.
-ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py service serve --socket /run/nyrqis/status.sock
+ExecStart=/usr/bin/python3 /opt/nyrqis/nyhal-linux-backend/nyrqis_backend.py service serve --socket /run/nyrqis/status.sock --syslog --state-file /run/nyrqis/daemon-state.json
 Restart=on-failure
 RestartSec=2
 

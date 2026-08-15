@@ -972,8 +972,85 @@ class TestStatusServiceHost(unittest.TestCase):
             rc = nyrqis_backend.main()
         self.assertEqual(rc, 0)
         Host.assert_called_once_with(
-            socket_path=self.sock, backend_version=None)
+            socket_path=self.sock, backend_version=None,
+            state_file="/run/nyrqis/daemon-state.json")
         Host.return_value.serve_until_signal.assert_called_once()
+
+    def test_host_health_op(self):
+        # Plan §4.5 health check: serve-loop liveness, container load,
+        # registry size — readable over the wire by any granted caller.
+        host = self._host()
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            client = IPCClient("cli", self.cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "health"}',
+                                    timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertTrue(resp["serve_loop_alive"])
+                self.assertEqual(resp["backend_version"], "9.9.9")
+                self.assertGreaterEqual(resp["uptime_s"], 0)
+                self.assertEqual(resp["containers"],
+                                 {"known": 0, "running": 0})
+                self.assertEqual(resp["ipc_registry_entries"], 1)
+                self.assertFalse(resp["state_persisted"])
+                self.assertIsNone(resp["recovery"])
+                self.assertEqual(resp["container"], "cli")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
+    def test_host_health_denied_without_capability(self):
+        # Fail closed: a caller holding CAP_IPC_SEND (so the transport
+        # lets the CALL through) but WITHOUT CAP_SYSTEM_INFO is denied
+        # at the service gate.
+        host = self._host()
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "cli-ungranted")
+            host.capability_manager.grant_capability(
+                "cli-ungranted", Capability.CAP_IPC_SEND)
+            client = IPCClient("cli-ungranted", self.cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "health"}',
+                                    timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertFalse(resp["ok"])
+                self.assertEqual(
+                    resp["error"],
+                    "forbidden: CAP_SYSTEM_INFO required")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
+    def test_host_health_reports_state_persisted(self):
+        # With a state file configured, the health op reports the
+        # daemon's persistence is active.
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            state_file=os.path.join(self.tmp, "daemon-state.json"))
+        host.start()
+        try:
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            client = IPCClient("cli", self.cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "health"}',
+                                    timeout_s=5.0)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertTrue(resp["state_persisted"])
+            finally:
+                client.close()
+        finally:
+            host.stop()
 
     def test_cli_service_serve_real_subprocess(self):
         # A REAL `nyrqis_backend.py service serve` process binds the
@@ -1290,7 +1367,7 @@ class TestControlService(unittest.TestCase):
             container.state.value = "TERMINATED"
 
     def _serve(self, container_manager, pid_registry=None,
-               trusted_uids=None):
+               trusted_uids=None, state_saver=None):
         import threading
         manager = IPCManager()
         manager.create_endpoint("container-svc", "ep-svc")
@@ -1299,7 +1376,7 @@ class TestControlService(unittest.TestCase):
             pid_registry=pid_registry or {},
             trusted_uids=trusted_uids,
         )
-        control = ControlService(container_manager)
+        control = ControlService(container_manager, state_saver=state_saver)
         router = ServiceRouter()
         router.register("control", control)
         router.attach(server)
@@ -1406,6 +1483,42 @@ class TestControlService(unittest.TestCase):
                 "command": "not-a-list"}).encode())
             self.assertFalse(resp["ok"])
             self.assertIn("command", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_control_saves_state_after_mutations(self):
+        # Plan §4.5 persistent state: mutating ops (container_run,
+        # container_kill) trigger the daemon's state saver; the
+        # read-only container_list does not; a saver failure never
+        # breaks the reply.
+        fake = self._FakeManager()
+        saved = []
+        def saver():
+            saved.append(True)
+            if len(saved) == 2:
+                raise OSError("state dir unwritable")
+        server, stop = self._serve(fake, trusted_uids={os.getuid()},
+                                   state_saver=saver)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_run",
+                "command": ["/bin/sleep", "30"]}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(saved, [True])
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_list"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            # read-only op: no additional save
+            self.assertEqual(len(saved), 1)
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "container_kill",
+                "container_id": "ctr-1"}).encode())
+            # the saver raised on this call — the reply still arrives
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(len(saved), 2)
         finally:
             client.close()
             stop.set()
@@ -1524,6 +1637,207 @@ class TestBootLifecycle(unittest.TestCase):
         self.assertTrue(boot.milestones[0].success)
 
 
+class TestDaemonState(unittest.TestCase):
+    """Plan §4.5 Persistent state management: the versioned,
+    atomically-written state file the daemon persists and recovers
+    from, and the host's recovery reporting.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.state_path = os.path.join(self.tmp, "daemon-state.json")
+        self.sock = os.path.join(self.tmp, "status.sock")
+
+    def _state_file(self):
+        from backend.daemon_state import DaemonStateFile
+        return DaemonStateFile(self.state_path)
+
+    def test_save_load_round_trip(self):
+        sf = self._state_file()
+        self.assertTrue(sf.save({"daemon_pid": 1234, "containers": []}))
+        data = sf.load()
+        self.assertIsNotNone(data)
+        self.assertEqual(data["daemon_pid"], 1234)
+        self.assertEqual(data["schema"], 1)
+        self.assertIn("saved_at", data)
+
+    def test_save_is_atomic_no_partial_file(self):
+        # A failed os.replace must leave no partial state behind and
+        # must not lose the previous good copy.
+        sf = self._state_file()
+        self.assertTrue(sf.save({"daemon_pid": 1}))
+        with mock.patch.object(nyrqis_backend.os, "replace",
+                               side_effect=OSError("disk full")):
+            self.assertFalse(sf.save({"daemon_pid": 2}))
+        self.assertEqual(sf.load()["daemon_pid"], 1)
+
+    def test_load_missing_returns_none(self):
+        self.assertIsNone(self._state_file().load())
+
+    def test_load_corrupt_returns_none(self):
+        Path(self.state_path).write_text("{not json")
+        self.assertIsNone(self._state_file().load())
+
+    def test_load_unsupported_schema_returns_none(self):
+        with open(self.state_path, "w") as fh:
+            json.dump({"schema": 99}, fh)
+        self.assertIsNone(self._state_file().load())
+
+    def test_is_stale_detects_dead_previous_daemon(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.2)"])
+        proc.wait()
+        self.assertTrue(self._state_file().is_stale(
+            {"daemon_pid": proc.pid}))
+
+    def test_is_stale_false_for_live_or_self(self):
+        from backend.daemon_state import DaemonStateFile
+        self.assertFalse(DaemonStateFile.is_stale(
+            {"daemon_pid": os.getpid()}, current_pid=os.getpid()))
+        self.assertFalse(DaemonStateFile.is_stale(None))
+        self.assertFalse(DaemonStateFile.is_stale({"daemon_pid": None}))
+
+    def test_manifest_extracts_container_fields(self):
+        from backend.daemon_state import DaemonStateFile
+        class _C:
+            id = "ctr-x"
+            pid = 42
+            created_at = 1.0
+            class _S:
+                value = "running"
+            state = _S()
+            config = type("CFG", (), {"command": ["/bin/sleep", "1"]})()
+        self.assertEqual(DaemonStateFile.manifest([_C()]), [{
+            "id": "ctr-x", "command": ["/bin/sleep", "1"],
+            "state": "running", "pid": 42, "created_at": 1.0,
+        }])
+
+    def test_host_recovers_from_stale_state(self):
+        # A state file left by a crashed previous daemon (dead pid + one
+        # container record) is detected at start and reported; the new
+        # daemon rewrites the file with its own identity.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.2)"])
+        proc.wait()
+        with open(self.state_path, "w") as fh:
+            json.dump({
+                "schema": 1,
+                "daemon_pid": proc.pid,
+                "backend_version": "0.0.0",
+                "socket_path": "/run/nyrqis/status.sock",
+                "containers": [{"id": "ctr-orphan",
+                                 "state": "running",
+                                 "command": ["/bin/sleep"],
+                                 "pid": 12345}],
+            }, fh)
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            state_file=self.state_path)
+        host.start()
+        try:
+            self.assertIsNotNone(host._recovery)
+            self.assertEqual(host._recovery["previous_pid"], proc.pid)
+            self.assertEqual(len(host._recovery["containers_left"]), 1)
+            self.assertEqual(
+                host._recovery["containers_left"][0]["id"],
+                "ctr-orphan")
+            # The health op reports a SUMMARY (previous pid + count) —
+            # never the per-container manifest (CAP_SYSTEM_INFO is a
+            # default grant).
+            host.ipc_registry.register(os.getpid(), "cli")
+            host.capability_manager.initialize_container("cli")
+            cli_path = os.path.join(self.tmp, "cli.sock")
+            client = IPCClient("cli", cli_path).bind()
+            try:
+                reply = client.call(self.sock, b'{"op": "health"}',
+                                    timeout_s=5.0)
+                self.assertIsNotNone(reply)
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["recovery"], {
+                    "previous_pid": proc.pid, "containers_left": 1,
+                })
+                self.assertNotIn("containers_left_manifest", resp)
+                self.assertNotIn("ctr-orphan", reply.payload.decode())
+            finally:
+                client.close()
+        finally:
+            host.stop()
+        data = json.loads(Path(self.state_path).read_text())
+        self.assertEqual(data["daemon_pid"], os.getpid())
+        self.assertEqual(data["backend_version"], "9.9.9")
+
+    def test_host_state_saved_on_start_and_stop(self):
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            state_file=self.state_path)
+        host.start()
+        data = json.loads(Path(self.state_path).read_text())
+        self.assertEqual(data["daemon_pid"], os.getpid())
+        host.stop()
+        data = json.loads(Path(self.state_path).read_text())
+        self.assertIn("saved_at", data)
+
+    def test_host_without_state_file_skips_persistence(self):
+        host = self._plain_host()
+        host.start()
+        try:
+            self.assertIsNone(host._recovery)
+            self.assertIsNone(host.state)
+        finally:
+            host.stop()
+
+    def _plain_host(self):
+        return nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9")
+
+
+class TestLoggingConfig(unittest.TestCase):
+    """Plan §4.5 logging to syslog: `setup_logging(syslog=True)`
+    mirrors records through `/dev/log` (with a UDP fallback), and the
+    failure path degrades to stderr without raising.
+    """
+
+    def tearDown(self):
+        # Remove any handler the tests added to the root logger.
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if getattr(h, "_nyrqis_test", False):
+                root.removeHandler(h)
+
+    class _Recorder(logging.Handler):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            self.recorded_address = kwargs.get("address")
+            self._nyrqis_test = True
+            if self.recorded_address == "/dev/log":
+                raise OSError("no /dev/log")
+
+    def test_syslog_attaches_dev_log_handler(self):
+        with mock.patch("logging.handlers.SysLogHandler") as Slh:
+            nyrqis_backend.setup_logging(verbose=False, syslog=True)
+        Slh.assert_called_once()
+        self.assertEqual(
+            Slh.call_args.kwargs.get("address"), "/dev/log")
+
+    def test_syslog_falls_back_to_udp(self):
+        with mock.patch("logging.handlers.SysLogHandler",
+                        self._Recorder):
+            nyrqis_backend.setup_logging(verbose=False, syslog=True)
+        recorder = [h for h in logging.getLogger().handlers
+                    if getattr(h, "_nyrqis_test", False)]
+        self.assertEqual(len(recorder), 1)
+        self.assertEqual(recorder[0].recorded_address,
+                         ("localhost", 514))
+
+    def test_syslog_failure_degrades_gracefully(self):
+        def _boom(*args, **kwargs):
+            raise RuntimeError("syslog daemon gone")
+        with mock.patch("logging.handlers.SysLogHandler", _boom):
+            # must not raise
+            nyrqis_backend.setup_logging(verbose=False, syslog=True)
+
+
 class TestSystemdUnit(unittest.TestCase):
     """Plan §4.5 Host Integration (packaging/systemd/): the systemd unit
     must exist, run the actual daemon, pass ``systemd-analyze verify``
@@ -1545,6 +1859,11 @@ class TestSystemdUnit(unittest.TestCase):
         self.assertIn("status.sock", text)
         self.assertIn("[Install]", text)
         self.assertIn("WantedBy=multi-user.target", text)
+        # Plan §4.5: the unit enables journal logging and the
+        # crash-recovery state file (inside the RuntimeDirectory).
+        self.assertIn("--syslog", text)
+        self.assertIn("--state-file /run/nyrqis/daemon-state.json",
+                      text)
 
     def test_systemd_unit_analyze_verify(self):
         """The unit must pass ``systemd-analyze verify`` when systemd is
@@ -5689,6 +6008,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
+    suite.addTests(loader.loadTestsFromTestCase(TestDaemonState))
+    suite.addTests(loader.loadTestsFromTestCase(TestLoggingConfig))
     suite.addTests(loader.loadTestsFromTestCase(TestSeccompEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestDefaultDenyAllowlist))
     suite.addTests(loader.loadTestsFromTestCase(TestLauncherSecurity))

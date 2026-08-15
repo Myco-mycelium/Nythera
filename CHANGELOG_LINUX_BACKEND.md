@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.3] — 2026-08-14
+
+### Phase 5 (plan §4.5): persistent state, health checks, syslog logging
+
+#### Added
+
+- **`backend/daemon_state.py` (NEW)** — `DaemonStateFile`: a versioned, atomically-written (tmp + `os.replace`, the NyFS/ADR-0019 discipline) JSON record of the daemon identity (pid, backend version, socket) and a last-known container manifest. Recovery is reporting, never resumption (NPS-010 §4 has no resume-from-pid transition): a stale previous-daemon record is detected at start, the orphan ids are logged, and the health op reports a recovery *summary* (previous pid + orphan count; the full manifest stays in the state file for operator review) — orphaned processes are NOT auto-killed.
+- **`ipc/service.py`** — new `health` op on `BackendStatusService` (gated on `CAP_SYSTEM_INFO` like `status`, fail-closed): serve-loop liveness, container load (known/running), IPC registry size, state-persistence status, crash-recovery record. The service takes an optional `daemon=` reference to read that shared state.
+- **`ipc/control.py`** — `ControlService` gains a `state_saver=` hook called (best effort, failure never breaks the reply) after the mutating `container_run`/`container_kill` ops, so the daemon's manifest stays current.
+- **`nyrqis_backend.py`** — `setup_logging(verbose, syslog=True)` mirrors records to the journal via `/dev/log` (UDP-514 fallback, best-effort); `StatusServiceHost` wires the state file end-to-end (recover-on-start, save-on-start/stop, saver hook to the control service); `service serve` gains `--syslog` and `--state-file` (default `/run/nyrqis/daemon-state.json`, `--state-file ''` disables).
+- **`packaging/systemd/nyrqis-backend.service`** — ExecStart now passes `--syslog --state-file /run/nyrqis/daemon-state.json` (journald owns `/dev/log`; the state file lives in the `RuntimeDirectory` systemd creates for the service user). `packaging/README.md` documents logging + state operation.
+- **`test_backend.py`** — new `TestDaemonState` (11: round-trip, atomicity under `os.replace` failure, corrupt/schema/missing handling, pid-staleness, host recovery + persistence), `TestLoggingConfig` (3: `/dev/log` attach, UDP fallback, graceful degrade), health-op tests (real-socket `health`, fail-closed denial, `state_persisted`), control state-saver test; `TestSystemdUnit` now asserts the unit passes `--syslog --state-file`. Suite **299 → 317** (291 run + 26 skipped).
+
+#### Fixed
+
+- **Docs** — `IMPLEMENTATION_STATUS` (§5 outstanding items closed), `implementation_plan.md` §4.5, `REPOSITORY_STATE`.
+
 ## [0.13.2] — 2026-08-14
 
 ### Rust IPC transport FFI surface v2 (ABI 2.0.0) — caller-supplied buffers

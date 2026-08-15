@@ -493,6 +493,20 @@ Documentation hygiene, fixed earlier this session:
   unprivileged posture) — hermetic (reads the unit, installs nothing).
   Suite 295 → 299 (273 run + 26 skipped; the v2 transport conformance
   adds the embedded-NUL binary-payload regression test).
+- 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
+  new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
+  atomically-written JSON: daemon identity + last-known container
+  manifest; recovery is reporting, never resumption); the status
+  service serves a `health` op (liveness, container load, registry
+  size, `state_persisted`, crash-recovery record — gated on
+  `CAP_SYSTEM_INFO`, fail-closed); `setup_logging(syslog=True)`
+  mirrors to the journal via `/dev/log`; `service serve` gains
+  `--syslog --state-file` and the systemd unit passes both (state in
+  the `RuntimeDirectory`); mutating control ops refresh the manifest
+  via a `state_saver` hook. New `TestDaemonState` (11) +
+  `TestLoggingConfig` (3) + health-op tests + control saver test;
+  `TestSystemdUnit` asserts the new flags. Suite 299 → 317 (291 run +
+  26 skipped).
   (269 run + 26 skipped).
 - 2026-08-14 (**runnable status-service daemon + auto capability
   lifecycle**): `nyrqis_backend.py service serve` runs a

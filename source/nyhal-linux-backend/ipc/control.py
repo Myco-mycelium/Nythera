@@ -57,12 +57,16 @@ class ControlService:
 
     def __init__(self, container_manager,
                  capability_manager: Optional[Any] = None,
-                 operator_id: Optional[str] = None) -> None:
+                 operator_id: Optional[str] = None,
+                 state_saver: Optional[Any] = None) -> None:
         self.container_manager = container_manager
         self.capability_manager = capability_manager
         # None → synced from the server on attach, so the operator gate
         # always matches the server's auth identity by construction.
         self.operator_id = operator_id
+        # Plan §4.5 persistent state: called (best effort) after each
+        # mutating op so the daemon's state file tracks the manifest.
+        self.state_saver = state_saver
         self._server = None
 
     def attach(self, server) -> "ControlService":
@@ -166,6 +170,7 @@ class ControlService:
                 "error": "container_run failed: %s" % (e,),
             })
             return
+        self._save_state()
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "container_id": container.id,
@@ -200,7 +205,20 @@ class ControlService:
                 "error": "container_kill failed: %s" % (e,),
             })
             return
+        self._save_state()
         self._reply(server, sender_path, call_id, {"ok": True})
+
+    def _save_state(self) -> None:
+        """Best-effort: tell the daemon to persist the container
+        manifest after a mutation (plan §4.5). A state-save failure
+        must never break the control reply."""
+        if self.state_saver is None:
+            return
+        try:
+            self.state_saver()
+        except Exception:  # noqa: BLE001 - persistence is best effort
+            logger.exception("ipc: %s could not persist state",
+                             self.SERVICE_NAME)
 
     @staticmethod
     def _reply(server, sender_path: str, call_id: str,
