@@ -79,10 +79,11 @@ nyrqisctl vault open --name assets
 nyrqisctl vault write "$HANDLE" /assets/logo.png --file logo.png
 nyrqisctl vault read  "$HANDLE" /assets/logo.png --output copy.png
 
-# CoW snapshots: snapshot, overwrite, restore
-nyrqisctl vault snapshot  "$HANDLE" v1
-nyrqisctl vault snapshots "$HANDLE"
-nyrqisctl vault restore  "$HANDLE" v1
+# CoW snapshots: snapshot, overwrite, restore, delete
+nyrqisctl vault snapshot      "$HANDLE" v1
+nyrqisctl vault snapshots     "$HANDLE"
+nyrqisctl vault restore       "$HANDLE" v1
+nyrqisctl vault snapshot-delete "$HANDLE" v1   # drop the point-in-time copy
 
 # Delete = crypto-shred: handles + wrapped DEK + backing image + registry
 nyrqisctl vault delete --name assets
@@ -90,6 +91,25 @@ nyrqisctl vault delete --name assets
 
 Per-call payloads are capped at 32 KiB (the datagram budget) — page
 large blobs with `--offset`/`--size`, or use a mount (next step).
+
+### 3b. Let another container in (grants)
+
+A volume is **creator-scoped by default**: only the creating container
+(or the operator) may open it. The creator can grant another container
+explicit access, and revoke it later:
+
+```bash
+# Creator or operator:
+nyrqisctl vault grant  --name assets container-b  # by id or --name
+nyrqisctl vault grants --name assets             # who has access
+nyrqisctl vault revoke --name assets container-b # withdraw it
+```
+
+Grants are per-container, persist with the registry, and never imply
+the storage capability itself (the grantee still needs
+`CAP_STORAGE_VOLUME` to reach the service). Revoking gates future
+opens; a handle already open keeps working (POSIX open-file
+semantics) until it is closed.
 
 ### 4. Mount a volume as a filesystem
 
@@ -155,8 +175,9 @@ without the envelope's salt/KDF parameters.
   envelope. The vault dir never contains plaintext.
 - `volume_delete` crypto-shreds: the ciphertext may remain on disk, but
   no key path survives — treat deleted data as unrecoverable.
-- The byte path is capability-gated (`CAP_STORAGE_VOLUME`) and
-  creator-scoped; rekey and delete are operator-only.
+- The byte path is capability-gated (`CAP_STORAGE_VOLUME`); volumes
+  are creator-scoped unless the creator grants access; rekey and
+  delete are operator-only.
 - Hardening (future): TPM2/PKCS#11 hardware custody of the KEK behind
   the Rust trait (ADR-0023, deferred).
 
@@ -176,4 +197,4 @@ find /var/lib/nyrqis -type f | xargs grep -l hello || echo "no plaintext at rest
 - ADR-0022 (NyVault — storage as a daemon-hosted service)
 - ADR-0023 (NyVault key manager — envelope encryption, rotation, custody)
 - `tests/BENCHMARK_RESULTS.md` §26 (byte path) and §27 (live mount)
-- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.6 (the increments this guide covers)
+- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.8 (the increments this guide covers)

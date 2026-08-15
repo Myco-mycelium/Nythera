@@ -21,19 +21,30 @@ Trust model (ADR-0022):
   the status service's carve-out: the transport already authenticated
   it by the kernel-attached uid, and such a process has full control of
   the daemon anyway.
-- Volumes are **creator-scoped** for this increment: only the creating
-  container (or the operator) may open one. A cross-container grant
-  matrix is future work.
+- Volumes are **creator-scoped by default**: only the creating
+  container (or the operator) may open one. The creator (or the
+  operator) may **grant** another container explicit access
+  (``volume_grant``) and revoke it (``volume_revoke``); grants are
+  per-container, persisted with the registry, and never implied by
+  capabilities alone.
 
 Operations (JSON request → JSON reply over CALL/REPLY):
 
 - ``{"op": "volume_create", "name": str}`` — create a NyFS-backed
   volume; returns ``{volume_id, name}``.
 - ``{"op": "volume_open", "volume_id": str}`` — bind the volume to the
-  caller; returns an opaque ``handle`` (the access token for the
-  subsequent ops; a random id, never derivable from the volume id).
+  caller (creator, operator, or a granted container); returns an
+  opaque ``handle`` (the access token for the subsequent ops; a random
+  id, never derivable from the volume id).
 - ``{"op": "volume_list"}`` — the volumes the caller may open (its own
-  creations).
+  creations plus the volumes granted to it).
+- ``{"op": "volume_grant", "volume_id": str, "container": str}`` —
+  CREATOR/OPERATOR-ONLY: let ``container`` open the volume.
+- ``{"op": "volume_revoke", "volume_id": str, "container": str}`` —
+  CREATOR/OPERATOR-ONLY: withdraw the grant (live handles stay valid
+  until closed).
+- ``{"op": "volume_grants", "volume_id": str}`` — CREATOR/OPERATOR-ONLY:
+  the current grant list.
 - ``{"op": "volume_close", "handle": str}`` — release a handle.
 - ``{"op": "volume_info", "handle": str}`` — the volume's metadata and
   backing-store state (block size, bytes persisted).
@@ -145,6 +156,10 @@ class StorageService:
                     "wrapped_dek": base64.b64decode(rec["wrapped_dek"])
                     if rec.get("wrapped_dek") else None,
                     "encrypted": bool(rec.get("wrapped_dek")),
+                    # container_id -> True; the creator may grant other
+                    # containers explicit open access (cross-container
+                    # access matrix, ADR-0022)
+                    "grants": dict(rec.get("grants") or {}),
                     # dek + nyfs are lazily re-derived on open
                     "dek": None,
                     "nyfs": None,
@@ -166,7 +181,8 @@ class StorageService:
             {"id": r["id"], "name": r["name"],
              "created_by": r["created_by"],
              "wrapped_dek": base64.b64encode(r["wrapped_dek"]).decode("ascii")
-             if r.get("wrapped_dek") else None}
+             if r.get("wrapped_dek") else None,
+             "grants": dict(r.get("grants") or {})}
             for r in self._volumes.values()
         ]}
         os.makedirs(self.vault_dir, exist_ok=True)
@@ -286,6 +302,18 @@ class StorageService:
             elif op == "volume_restore":
                 self._volume_restore(server, sender_path, msg.message_id,
                                      sender, request)
+            elif op == "volume_snapshot_delete":
+                self._volume_snapshot_delete(server, sender_path,
+                                             msg.message_id, sender, request)
+            elif op == "volume_grant":
+                self._volume_grant(server, sender_path, msg.message_id,
+                                   sender, request)
+            elif op == "volume_revoke":
+                self._volume_revoke(server, sender_path, msg.message_id,
+                                    sender, request)
+            elif op == "volume_grants":
+                self._volume_grants(server, sender_path, msg.message_id,
+                                    sender, request)
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
@@ -367,6 +395,16 @@ class StorageService:
             sender, capability)
 
     @staticmethod
+    def _can_open(record: Dict[str, Any], sender: str) -> bool:
+        """Who may open a volume: the operator (always), the creator,
+        or a container holding an explicit grant (ADR-0022's access
+        matrix). Grants never imply the storage capability itself —
+        the capability gate is separate and checked first."""
+        return (sender == DEFAULT_OPERATOR_ID
+                or record.get("created_by") == sender
+                or bool(record.get("grants", {}).get(sender)))
+
+    @staticmethod
     def _reply(server, sender_path: str, call_id: str,
                body: Dict[str, Any]) -> None:
         server.reply(
@@ -401,7 +439,7 @@ class StorageService:
             return
         volume_id = uuid.uuid4().hex
         record = {"id": volume_id, "name": name, "created_by": sender,
-                  "encrypted": False}
+                  "encrypted": False, "grants": {}}
         # ADR-0023: when the daemon holds an unlocked KEK, the volume
         # gets its own random DEK, wrapped with the KEK (ad = the
         # volume id); the wrapped DEK is what persists — the plaintext
@@ -482,9 +520,9 @@ class StorageService:
                 "error": "unknown volume: %r" % (volume_id,),
             })
             return
-        # Creator-scoped for this increment (ADR-0022: the cross-container
-        # grant matrix is future work).
-        if sender != DEFAULT_OPERATOR_ID and record["created_by"] != sender:
+        # Creator-scoped by default; a granted container may open too
+        # (ADR-0022's access matrix).
+        if not self._can_open(record, sender):
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": "forbidden: volume %s is not yours" % (volume_id[:8],),
@@ -518,16 +556,153 @@ class StorageService:
             return
         volumes = []
         for record in self._volumes.values():
-            if sender == DEFAULT_OPERATOR_ID or \
-                    record["created_by"] == sender:
+            if self._can_open(record, sender):
                 volumes.append({
                     "id": record["id"],
                     "name": record["name"],
                     "created_by": record["created_by"],
+                    "granted": bool(record.get("grants", {}).get(sender)),
                 })
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volumes": volumes,
+        })
+
+    def _resolve_volume(self, request: Dict[str, Any]):
+        """(volume_id, record) for the request's id-or-name key, or
+        (None, None) when unresolvable. Shares the open path's
+        id-or-name logic (``volume_id``/``volume``/``name``)."""
+        volume_id = request.get("volume_id") or request.get("volume") or \
+            self._by_name.get(request.get("name") or "")
+        record = self._volumes.get(volume_id)
+        if record is None and volume_id:
+            record = self._volumes.get(self._by_name.get(volume_id))
+            if record is not None:
+                volume_id = record["id"]
+        return (volume_id, record) if record is not None else (None, None)
+
+    def _require_owner(self, server, sender_path: str, call_id: str,
+                       sender: str, record: Dict[str, Any],
+                       op: str) -> bool:
+        """True when ``sender`` may administer the volume (creator or
+        operator). Sends the failure reply and returns False otherwise."""
+        if sender != DEFAULT_OPERATOR_ID and record["created_by"] != sender:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: %s requires the volume creator "
+                          "or the operator" % (op,),
+            })
+            return False
+        return True
+
+    def _volume_grant(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        """Let another container open the volume (ADR-0022's access
+        matrix). CREATOR/OPERATOR-ONLY: a granted container administers
+        nothing — it can only open what it was given."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_grant"):
+            return
+        container = request.get("container")
+        if not isinstance(container, str) or not container.strip():
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container must be a non-empty string",
+            })
+            return
+        container = container.strip()
+        record["grants"][container] = True
+        self._save_state()
+        logger.info("ipc: %s granted %s access to volume %s (%s)",
+                    self.SERVICE_NAME, container, record["name"],
+                    volume_id[:8])
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "container": container,
+            "granted": True,
+        })
+
+    def _volume_revoke(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        """Withdraw a grant. Live handles stay valid until closed —
+        the handle is the open-file token (POSIX open semantics); a
+        revoke gates future opens, not in-flight ones."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_revoke"):
+            return
+        container = request.get("container")
+        if not isinstance(container, str) or not container.strip():
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container must be a non-empty string",
+            })
+            return
+        container = container.strip()
+        was_granted = record["grants"].pop(container, None) is not None
+        if was_granted:
+            self._save_state()
+        logger.info("ipc: %s revoked %s's access to volume %s (%s)",
+                    self.SERVICE_NAME, container, record["name"],
+                    volume_id[:8])
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "container": container,
+            "revoked": was_granted,
+        })
+
+    def _volume_grants(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_grants"):
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "grants": sorted(record["grants"].keys()),
         })
 
     def _volume_close(self, server, sender_path: str, call_id: str,
@@ -553,6 +728,19 @@ class StorageService:
                 "error": "forbidden: handle is not yours",
             })
             return
+        # Write-commit batching (§27): a passthrough mount that wrote
+        # with ``defer_commit`` gets its dirty state committed here, so
+        # unmount/close is a durability boundary (POSIX close semantics).
+        record = self._volumes.get(binding["volume_id"])
+        if record is not None:
+            nyfs = record.get("nyfs")
+            if nyfs is not None and nyfs.dirty:
+                try:
+                    nyfs.save()
+                except Exception as e:  # noqa: BLE001 - close must still succeed
+                    logger.warning(
+                        "ipc: %s close could not commit dirty volume %s: %s",
+                        self.SERVICE_NAME, binding["volume_id"][:8], e)
         self._reply(server, sender_path, call_id, {"ok": True})
 
     def _volume_info(self, server, sender_path: str, call_id: str,
@@ -818,6 +1006,16 @@ class StorageService:
                 "error": "offset must be a non-negative integer",
             })
             return
+        # ``defer_commit`` (the FUSE passthrough's write path): commit
+        # at the fsync/flush/close boundary instead of per CALL, so a
+        # 128 KiB kernel write (4 chunked CALLs) pays ONE save at
+        # fsync — the §27 finding (write-commit batching). The CLI byte
+        # path omits it and stays durable per write. Deferred data is
+        # visible in memory immediately and committed by
+        # ``volume_fsync``/``volume_flush``/``volume_close`` (dirty
+        # gate); a daemon crash before then loses it — exactly POSIX
+        # fsync semantics, spelled out in the vault runbook.
+        defer_commit = bool(request.get("defer_commit"))
         try:
             from fuse.nyfs import NyFSError
             written = self._nyfs_write(nyfs, path, data, offset)
@@ -827,17 +1025,18 @@ class StorageService:
                 "error": "write failed: %s" % (e,),
             })
             return
-        # Durability (ADR-0022: ADR-0019's journal commit is the vault's
-        # default): commit the transaction before replying so an ack is
-        # a durable write, not a memory-state promise.
-        try:
-            nyfs.save()
-        except Exception as e:  # noqa: BLE001 - a commit failure is a write failure
-            self._reply(server, sender_path, call_id, {
-                "ok": False,
-                "error": "commit failed: %s" % (e,),
-            })
-            return
+        if not defer_commit:
+            # Durability (ADR-0022: ADR-0019's journal commit is the
+            # vault's default): commit the transaction before replying
+            # so an ack is a durable write, not a memory promise.
+            try:
+                nyfs.save()
+            except Exception as e:  # noqa: BLE001 - a commit failure is a write failure
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "commit failed: %s" % (e,),
+                })
+                return
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "bytes_written": written,
@@ -977,7 +1176,7 @@ class StorageService:
         })
 
     def _volume_restore(self, server, sender_path: str, call_id: str,
-                        sender: str, request: Dict[str, Any]) -> None:
+                      sender: str, request: Dict[str, Any]) -> None:
         from backend.capability import Capability
         if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
             self._reply(server, sender_path, call_id, {
@@ -1016,6 +1215,49 @@ class StorageService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "restored": name,
+            "volume_id": record["id"],
+        })
+
+    def _volume_snapshot_delete(self, server, sender_path: str, call_id: str,
+                                sender: str, request: Dict[str, Any]) -> None:
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        record, nyfs = resolved
+        name = request.get("name")
+        if not isinstance(name, str) or not re.match(
+                r"^[A-Za-z0-9._-]{1,64}$", name):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "name must be 1..64 chars of [A-Za-z0-9._-]",
+            })
+            return
+        try:
+            nyfs.delete_snapshot(name)
+            nyfs.save()  # persist the deletion with the commit
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "snapshot_delete failed: %s" % (e,),
+            })
+            return
+        except Exception as e:  # noqa: BLE001 - a delete failure is an op failure
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "snapshot_delete failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "deleted": name,
             "volume_id": record["id"],
         })
 

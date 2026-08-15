@@ -105,12 +105,14 @@ Specifically:
   checksums, compression, journal commit). The vault's job is *access
   and lifecycle*, not a second storage format — ADR-0019's journal
   commit stays the durability default.
-- **Access is capability-gated.** The backend grants a container a
-  volume-handle capability at create/open (mirroring how
-  `CAP_FILESYSTEM_*` grants already ride the manager); every storage op
-  validates the handle at the same enforcement point as
-  `CAP_SYSTEM_INFO` (fail-closed). Revocation on container terminate is
-  automatic, matching the existing capability-lifecycle hooks.
+- **Access is capability-gated.** Every storage op requires
+  `CAP_STORAGE_VOLUME` (NPS-011), validated at the same enforcement
+  point as `CAP_SYSTEM_INFO` (fail-closed). Volumes are
+  **creator-scoped by default**; the creator (or operator) may grant
+  another container explicit access (`volume_grant` / `volume_revoke`,
+  per-container, persisted with the registry) — grants never imply the
+  capability itself. Revocation on container terminate is automatic,
+  matching the existing capability-lifecycle hooks.
 - **The in-container byte path is a FUSE passthrough to the service**
   (ADR-0016 stays): the container mounts a thin FUSE view whose
   read/write ops are CALLs to the storage service, so the *container's*
@@ -176,7 +178,10 @@ Specifically:
 - **Deferred (required before at-rest encryption is claimed):** the
   vault key manager ADR (key custody, rotation, hardware binding) and
   the hardware-integration ADR (the matrix's C/C++ carve-out). Volume
-  accounting/quota policy is likewise follow-on.
+  accounting/quota policy is likewise follow-on. The cross-container
+  access matrix shipped with 0.14.8 (`volume_grant`/`volume_revoke`/
+  `volume_grants` — CREATOR/OPERATOR-ONLY, open-file revoke
+  semantics); a per-container quota/accounting policy remains follow-on.
 - **NPS impact:** a new capability (e.g. `CAP_STORAGE_VOLUME`) must be
   added to the NPS-011 registry when the service ships; NPS-004 gains a
   "storage service" section. No renumbering (ADR-0017).

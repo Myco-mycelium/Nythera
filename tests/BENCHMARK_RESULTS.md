@@ -1042,22 +1042,22 @@ iterations per payload after one warmup, `--vault-io`.
 
 | Payload | write p50 | write p95 | read p50 | read p95 |
 |---------|-----------|-----------|----------|----------|
-| 4 KiB plaintext | 88.8 ms | 694.7 ms | 1.61 ms | 3.79 ms |
-| 32 KiB plaintext | 85.6 ms | 355.5 ms | 2.19 ms | 4.66 ms |
-| 4 KiB encrypted (ADR-0023) | 86.6 ms | 490.7 ms | 2.14 ms | 4.99 ms |
-| 32 KiB encrypted (ADR-0023) | 85.6 ms | 202.3 ms | 2.28 ms | 4.77 ms |
+| 4 KiB plaintext | 2.25 ms | 3.85 ms | 1.54 ms | 2.98 ms |
+| 32 KiB plaintext | 2.97 ms | 4.45 ms | 2.13 ms | 3.62 ms |
+| 4 KiB encrypted (ADR-0023) | 3.04 ms | 5.02 ms | 2.02 ms | 3.65 ms |
+| 32 KiB encrypted (ADR-0023) | 3.62 ms | 5.59 ms | 2.68 ms | 4.53 ms |
 
-Reading: **the durable commit dominates the write path** — ~86 ms p50
-regardless of payload size or encryption, the journal `save()` fsync
-that every write acks (the §15/§9 finding again: one fsync per
-transaction is the floor). Reads, which carry no commit, run at
-**1.6–2.8 ms p50 through the full loop** and are flat across payloads
-(4 KiB vs 32 KiB adds ~0.6 ms). The ADR-0023 block AEAD is nearly
-free on this path: encrypted vs plaintext adds ~0.5 ms on 32 KiB reads
-and nothing measurable on writes (the fsync swallows it). Write p95 is
-noisy (202–695 ms) — the fsync's scheduling variance — while read p95
-stays ~4–5 ms. The passthrough's 32 KiB chunking therefore costs the
-mount nothing extra: two calls are cheaper than the commit either way.
+Reading (re-measured 2026-08-15 AFTER write-commit batching — the
+first pass measured the durable-per-CALL path: write p50 85–89 ms,
+reads 1.6–2.8 ms): the passthrough now sends `defer_commit` on every
+chunk, so the write loop is **in-memory** — write p50 dropped ~40× to
+**2.2–3.6 ms** (the transport + NyFS I/O + AEAD, no fsync) — and the
+durable cost moved to the fsync/flush/close boundary (POSIX
+semantics; `volume_fsync`/`volume_flush`/`volume_close` commit a
+dirty volume). Reads are unchanged at **1.5–2.7 ms p50** flat across
+payloads, and the AEAD adds ~0.6–0.8 ms on the 32 KiB paths. The
+pre-batching 85–89 ms write numbers remain the honest cost of the
+per-write durable commit (the CLI byte path still defaults to it).
 
 ## 27. Live ENCRYPTED NyVault FUSE Mount vs Native (2026-08-15)
 
@@ -1068,28 +1068,24 @@ child process (the §19 containment pattern), `--vault-mount-io`.
 
 | Pattern | Encrypted FUSE mount | Native (same tmp dir) | Δ |
 |---------|---------------------|-----------------------|-----|
-| Write, 1 MiB syscalls | 0.28 MB/s | 1,688 MB/s | ~6,000× |
-| Write, 4 KiB syscalls | 0.04 MB/s | 1,145–1,605 MB/s | ~30,000× |
+| Write, 1 MiB syscalls | 3.17 MB/s | 1,688 MB/s | ~530× |
+| Write, 4 KiB syscalls | 0.78 MB/s | 1,145–1,605 MB/s | ~1,800× |
 | Read, 1 MiB | 2.11 MB/s | 3,149–4,232 MB/s | ~1,700× |
 | Read, 4 KiB | 2.08 MB/s | 1,003–1,200 MB/s | ~500× |
 
-Reading: **the durable per-CALL commit is the entire write story.**
-Every `volume_write` CALL commits (`save()`, one fsync per transaction
-— the §9/§15/§26 finding) before replying, and the passthrough caps
-each CALL at 32 KiB, so a 1 MiB write = 32 sequential CALLs ≈ 110 ms
-per CALL. The INIT write-batching negotiation (FUSE_CAP_BIG_WRITES +
-WRITEBACK_CACHE + MAX_PAGES, now shared with `NyFSMount`) matters
-anyway: without it the kernel sends 4 KiB write requests and the 1 MiB
-write pays 256 commits (0.04 MB/s); with it the kernel batches to
-128 KiB requests and the 1 MiB write pays 32 (0.28 MB/s, **7×**). The
-4 KiB-syscall pattern stays at 0.04 MB/s — the kernel writes those
-pages back at 4 KiB granularity regardless, so every page pays a
-commit. Reads need no commit and run at ~2.1 MB/s flat across chunk
-sizes. The gap to the plaintext NyFS mount's 40–46 MB/s (§6) is
-precisely this commit-per-CALL granularity — the documented next step
-is write-commit batching (aggregate `save()` at the fsync/interval
-boundary instead of per CALL), which the vault's own fsync hook
-(`volume_fsync`) already exists to anchor.
+Reading: **write-commit batching moved the durable-commit cost off the
+per-CALL path.** `volume_write` now defers the commit (in-memory dirty
+blocks, the §26 byte-path behavior) and `volume_flush`/fsync anchors
+it — the passthrough's `flush` handler is what the kernel calls at
+close/writeback time. A 1 MiB streaming write = 32 CALLs that mutate
+in memory plus one commit: **0.28 → 3.17 MB/s (11×)**; the 4 KiB-syscall
+pattern pays page-granular flushes but still improves **0.04 →
+0.78 MB/s (19×)**. Reads need no commit and run at ~2.1 MB/s flat
+across chunk sizes. The remaining gap to the plaintext NyFS mount's
+40–46 MB/s (§6) is the IPC round-trip + AEAD per 32 KiB CALL plus the
+fsync per file close; the next lever is amortizing the fsync across
+short-lived files (interval-based commit), which the vault's own
+`volume_fsync` already exists to anchor.
 
 ## Status vs BENCHMARK_PLAN
 

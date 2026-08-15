@@ -1742,6 +1742,56 @@ class TestOperatorCli(unittest.TestCase):
         self.assertEqual(nyrqisctl.build_payload(
             "containers-list", mock.Mock())["op"], "container_list")
 
+    def test_cli_builds_grant_and_snapshot_delete_payloads(self):
+        # The access-matrix ops address the volume by id or --name,
+        # and the snapshot-delete op drops a named snapshot.
+        parser = nyrqisctl.build_parser()
+        args = parser.parse_args(
+            ["vault", "grant", "vid123", "container-x"])
+        self.assertEqual(args.command, "vault-volume-grant")
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_grant",
+             "volume_id": "vid123", "container": "container-x"})
+        args = parser.parse_args(
+            ["vault", "grant", "--name", "shared", "container-x"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_grant",
+             "name": "shared", "container": "container-x"})
+        args = parser.parse_args(
+            ["vault", "revoke", "--name", "shared", "container-x"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_revoke",
+             "name": "shared", "container": "container-x"})
+        args = parser.parse_args(["vault", "grants", "vid123"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_grants",
+             "volume_id": "vid123"})
+        args = parser.parse_args(
+            ["vault", "snapshot-delete", "handle1", "snap-1"])
+        self.assertEqual(args.command, "vault-volume-snapshot-delete")
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_snapshot_delete",
+             "handle": "handle1", "name": "snap-1"})
+        self.assertIn("container-x", nyrqisctl.format_human(
+            "vault-volume-grant", {"ok": True, "volume_id": "vid123",
+                                   "container": "container-x"}))
+        self.assertIn("revoked", nyrqisctl.format_human(
+            "vault-volume-revoke", {"ok": True, "volume_id": "vid123",
+                                    "container": "container-x",
+                                    "revoked": True}))
+        self.assertIn("container-b", nyrqisctl.format_human(
+            "vault-volume-grants", {"ok": True, "volume_id": "vid123",
+                                    "grants": ["container-b"]}))
+        self.assertIn("snap-1", nyrqisctl.format_human(
+            "vault-volume-snapshot-delete", {"ok": True,
+                                             "volume_id": "vid123",
+                                             "deleted": "snap-1"}))
+
     def test_cli_formats_human_output(self):
         status = {"ok": True, "backend_version": "9.9.9",
                   "service": "nyrqis.backend.status",
@@ -3480,6 +3530,154 @@ class TestStorageService(unittest.TestCase):
             client2.close()
             stop2.set()
             server2.close()
+
+    def test_cross_container_grant_matrix(self):
+        # ADR-0022's access matrix: a volume is creator-scoped by
+        # default; the creator (or operator) may grant another
+        # container explicit access, and revoke it. The transport is
+        # pid-attributed (one identity per process), so the handlers
+        # are driven directly with a stub reply server and distinct
+        # sender ids — the transport attribution itself is covered by
+        # the container-path tests.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "grant-vault"))
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "shared"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        vid = last(stub)["volume_id"]
+
+        # The grantee cannot open before the grant.
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-b",
+                             {"volume_id": vid})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("not yours", last(stub)["error"])
+
+        # The creator grants; the grantee opens and writes.
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "3", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_open(stub, "p", "4", "container-b",
+                             {"volume_id": vid})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "5", "container-b", {
+            "handle": handle, "path": "/x",
+            "data_b64": base64.b64encode(b"hi").decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+
+        # The creator sees the grant; the grantee administers nothing.
+        stub = _Stub()
+        storage._volume_grants(stub, "p", "6", "container-a",
+                               {"volume_id": vid})
+        self.assertTrue(last(stub)["ok"])
+        self.assertEqual(last(stub)["grants"], ["container-b"])
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "7", "container-b",
+                              {"volume_id": vid, "container": "c"})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("creator or the operator", last(stub)["error"])
+
+        # Revoke gates future opens; a live handle stays valid (open-
+        # file semantics) and can still read what it wrote.
+        stub = _Stub()
+        storage._volume_revoke(stub, "p", "8", "container-a",
+                               {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["ok"])
+        self.assertTrue(last(stub)["revoked"])
+        stub = _Stub()
+        storage._volume_open(stub, "p", "9", "container-b",
+                             {"volume_id": vid})
+        self.assertFalse(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_read(stub, "p", "10", "container-b",
+                             {"handle": handle, "path": "/x"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        self.assertEqual(base64.b64decode(last(stub)["data_b64"]), b"hi")
+
+        # Grants persist across a daemon restart.
+        storage2 = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "grant-vault"))
+        self.assertEqual(storage2._volumes[vid]["grants"], {})
+        storage._volume_grant(stub, "p", "11", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        storage3 = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "grant-vault"))
+        self.assertEqual(storage3._volumes[vid]["grants"],
+                         {"container-b": True})
+
+    def test_volume_snapshot_delete(self):
+        # The snapshot table is a lifecycle, not just a read path:
+        # delete a snapshot over the wire and the list shrinks; a
+        # missing snapshot fails honestly.
+        vault = os.path.join(self.tmp, "sd-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "sd"}).encode())
+            handle = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": resp["volume_id"]}).encode())["handle"]
+            def op(payload):
+                return self._call(client, json.dumps(payload).encode())
+            r = op({"service": "storage", "op": "volume_write",
+                    "handle": handle, "path": "/doc.txt", "offset": 0,
+                    "data_b64": base64.b64encode(b"original").decode()})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_snapshot",
+                    "handle": handle, "name": "v1"})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_snapshot",
+                    "handle": handle, "name": "v2"})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_snapshots",
+                    "handle": handle})
+            self.assertEqual(sorted(r["snapshots"]), ["v1", "v2"])
+            r = op({"service": "storage", "op": "volume_snapshot_delete",
+                    "handle": handle, "name": "v1"})
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["deleted"], "v1")
+            r = op({"service": "storage", "op": "volume_snapshots",
+                    "handle": handle})
+            self.assertEqual(r["snapshots"], ["v2"])
+            r = op({"service": "storage", "op": "volume_snapshot_delete",
+                    "handle": handle, "name": "nope"})
+            self.assertFalse(r["ok"])
+            self.assertIn("not found", r["error"])
+            # The restored snapshot still works after the delete.
+            r = op({"service": "storage", "op": "volume_restore",
+                    "handle": handle, "name": "v2"})
+            self.assertTrue(r["ok"], r)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
 
 
 class TestNyVaultOperations(unittest.TestCase):

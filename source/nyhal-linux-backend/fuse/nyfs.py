@@ -755,6 +755,19 @@ class NyFSFilesystem:
         with self.lock:
             return list(self.snapshots.keys())
 
+    def delete_snapshot(self, snapshot_id: str) -> None:
+        """Drop a snapshot (the immutable point-in-time copy). The
+        snapshot table entry is removed and the tree is marked dirty,
+        so the next save() persists the deletion; CoW blocks referenced
+        only by the deleted snapshot are reclaimed by compaction.
+        Raises ``ValueError`` when the snapshot does not exist."""
+        if snapshot_id not in self.snapshots:
+            raise ValueError(f"Snapshot {snapshot_id} not found")
+        with self.lock:
+            del self.snapshots[snapshot_id]
+            self._mark_dirty()
+        logger.info(f"Deleted snapshot {snapshot_id}")
+
     # ------------------------------------------------------------------
     # Snapshot diffing
     # ------------------------------------------------------------------

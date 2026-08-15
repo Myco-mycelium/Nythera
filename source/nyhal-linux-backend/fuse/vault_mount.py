@@ -173,13 +173,21 @@ class NyVaultOperations:
 
     def write(self, path, data, offset, fh=None):
         """Chunk the FUSE write into ≤32 KiB CALLs; return the total
-        bytes written (create-on-write lives server-side)."""
+        bytes written (create-on-write lives server-side).
+
+        Write-commit batching (§27): every chunk is sent with
+        ``defer_commit`` — the service commits at fsync/flush/close
+        instead of per CALL, so a batched 128 KiB kernel write pays
+        ONE durable save at the commit boundary (measured ~4–10×
+        faster, BENCHMARK_RESULTS §27). POSIX semantics: data is
+        visible immediately, durable after ``fsync()``/close."""
         written = 0
         pos = offset
         view = memoryview(data)
         while written < len(data):
             piece = bytes(view[written:written + _MAX_IO_BYTES])
             body = self._call("volume_write", path=path, offset=pos,
+                              defer_commit=True,
                               data_b64=base64.b64encode(piece).decode("ascii"))
             written += body["bytes_written"]
             pos += body["bytes_written"]
@@ -215,6 +223,12 @@ class NyVaultOperations:
     def fsync(self, path, datasync, fh=None):
         # FUSE fsync contract: commit at the transaction boundary (the
         # service persists the volume before replying).
+        self._call("volume_fsync")
+        return 0
+
+    def flush(self, path, fh=None):
+        # FUSE flush contract (close of the last fd): the durability
+        # boundary for deferred writes — commit, like fsync.
         self._call("volume_fsync")
         return 0
 

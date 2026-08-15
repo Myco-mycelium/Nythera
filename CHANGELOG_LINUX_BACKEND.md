@@ -16,6 +16,36 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.8] — 2026-08-15
+
+### Write-commit batching, the cross-container grant matrix, and snapshot deletion
+
+- **Write-commit batching (§27 re-bench)**: `volume_write` now defers the
+  durable commit (in-memory dirty blocks — the §26 byte-path behavior)
+  and `volume_fsync`/`volume_flush`/`volume_close` anchor it, so a
+  kernel write pays ONE `save()` at the fsync/flush boundary instead of
+  one per CALL. The passthrough gained the `flush` FUSE handler. Re-bench
+  `--vault-mount-io`: streaming writes **0.28 → 3.17 MB/s (11×)**, 4 KiB
+  syscalls **0.04 → 0.78 MB/s (19×)**; §26 byte-path writes dropped from
+  ~86 ms to ~2.2 ms p50 (~40×) — deferred data is visible in memory
+  immediately and lost on a daemon crash before commit, exactly POSIX
+  fsync semantics (spelled out in the runbook).
+- **Cross-container volume grants (ADR-0022's access matrix is no longer
+  future work)**: `volume_grant`/`volume_revoke`/`volume_grants`
+  (CREATOR/OPERATOR-ONLY — a granted container administers nothing, it
+  can only open) let the creator share a volume with another container;
+  grants are per-container, persisted with the registry (survive a
+  restart), and never imply `CAP_STORAGE_VOLUME`. `volume_open`/
+  `volume_list` honor them; revoke gates future opens while a live
+  handle keeps working (open-file semantics). `nyrqisctl vault
+  grant/revoke/grants` by id or `--name`; the runbook gained §3b.
+- **Snapshot deletion**: `NyFS.delete_snapshot` + `volume_snapshot_delete`
+  over the wire + `nyrqisctl vault snapshot-delete` — the snapshot
+  table is a lifecycle, not just a read path; a missing snapshot fails
+  honestly.
+- Suite 434 → **437** (grant matrix + snapshot delete + the CLI payload
+  tests).
+
 ## [0.14.7] — 2026-08-15
 
 ### Snapshot restore, the live encrypted-mount benchmark (§27), and the vault runbook

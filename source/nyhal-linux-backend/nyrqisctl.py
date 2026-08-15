@@ -55,10 +55,11 @@ STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
+    "vault-volume-grant", "vault-volume-revoke", "vault-volume-grants",
     "vault-volume-close", "vault-volume-write", "vault-volume-read",
     "vault-volume-snapshot", "vault-volume-snapshots",
-    "vault-volume-restore", "vault-volume-delete", "vault-volume-mount",
-    "vault-volume-rekey",
+    "vault-volume-restore", "vault-volume-snapshot-delete",
+    "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -66,6 +67,17 @@ MAX_IO_BYTES = 32 * 1024
 
 
 # -- payload construction (pure, unit-testable) ------------------------
+
+def _volume_ref(payload: Dict[str, Any], args) -> Dict[str, Any]:
+    """Attach the volume id-or-name to a payload (shared by the
+    grant/revoke/grants ops, which address the volume by id or
+    --name)."""
+    if args.name:
+        payload["name"] = args.name
+    else:
+        payload["volume_id"] = args.volume_id
+    return payload
+
 
 def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     """The JSON request for ``command`` (the ``args`` come from the
@@ -105,6 +117,15 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
                 "volume_id": args.volume_id}
     if command == "vault-volume-list":
         return {"service": "storage", "op": "volume_list"}
+    if command == "vault-volume-grant":
+        return _volume_ref({"service": "storage", "op": "volume_grant",
+                            "container": args.container}, args)
+    if command == "vault-volume-revoke":
+        return _volume_ref({"service": "storage", "op": "volume_revoke",
+                            "container": args.container}, args)
+    if command == "vault-volume-grants":
+        return _volume_ref({"service": "storage", "op": "volume_grants"},
+                           args)
     if command == "vault-volume-close":
         return {"service": "storage", "op": "volume_close",
                 "handle": args.handle}
@@ -129,6 +150,9 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
                 "handle": args.handle}
     if command == "vault-volume-restore":
         return {"service": "storage", "op": "volume_restore",
+                "handle": args.handle, "name": args.name}
+    if command == "vault-volume-snapshot-delete":
+        return {"service": "storage", "op": "volume_snapshot_delete",
                 "handle": args.handle, "name": args.name}
     if command == "vault-volume-delete":
         if args.name:
@@ -217,6 +241,19 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         rows = [f"{v.get('id')}\t{v.get('name')}\t{v.get('created_by')}"
                 for v in volumes]
         return "\n".join(["id\tname\tcreated_by"] + rows)
+    if command == "vault-volume-grant":
+        return (f"volume {resp.get('volume_id')}: container "
+                f"{resp.get('container')} granted access")
+    if command == "vault-volume-revoke":
+        return (f"volume {resp.get('volume_id')}: container "
+                f"{resp.get('container')} access "
+                f"{'revoked' if resp.get('revoked') else 'had no grant'}")
+    if command == "vault-volume-grants":
+        grants = resp.get("grants") or []
+        if not grants:
+            return f"volume {resp.get('volume_id')}: no grants"
+        return (f"volume {resp.get('volume_id')}: "
+                + ", ".join(grants))
     if command == "vault-volume-close":
         # The close reply is ``{"ok": true}`` — no handle echoed; the
         # operator knows which handle they closed.
@@ -232,6 +269,9 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "vault-volume-restore":
         return (f"volume restored to snapshot {resp.get('restored')} "
                 f"({resp.get('volume_id')})")
+    if command == "vault-volume-snapshot-delete":
+        return (f"snapshot {resp.get('deleted')} of volume "
+                f"{resp.get('volume_id')} deleted")
     if command == "vault-volume-delete":
         return f"volume {resp.get('volume_id')} deleted " \
                "(crypto-shredded)"
@@ -539,6 +579,31 @@ def build_parser() -> argparse.ArgumentParser:
     vl = vsub.add_parser("list", help="List the volumes you may open")
     vl.set_defaults(command="vault-volume-list")
 
+    vg = vsub.add_parser(
+        "grant", help="CREATOR/OPERATOR-ONLY: let another container "
+                       "open the volume (ADR-0022 access matrix)")
+    vg.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vg.add_argument("--name", default="", help="Volume name")
+    vg.add_argument("container", help="The container id to grant access to")
+    vg.set_defaults(command="vault-volume-grant")
+
+    vrk2 = vsub.add_parser(
+        "revoke", help="CREATOR/OPERATOR-ONLY: withdraw a container's "
+                        "volume grant (live handles stay valid until closed)")
+    vrk2.add_argument("volume_id", nargs="?", default="",
+                      help="Volume id (or use --name)")
+    vrk2.add_argument("--name", default="", help="Volume name")
+    vrk2.add_argument("container", help="The container id to revoke")
+    vrk2.set_defaults(command="vault-volume-revoke")
+
+    vgs = vsub.add_parser(
+        "grants", help="CREATOR/OPERATOR-ONLY: list a volume's grants")
+    vgs.add_argument("volume_id", nargs="?", default="",
+                     help="Volume id (or use --name)")
+    vgs.add_argument("--name", default="", help="Volume name")
+    vgs.set_defaults(command="vault-volume-grants")
+
     vcl = vsub.add_parser("close", help="Release a handle")
     vcl.add_argument("handle")
     vcl.set_defaults(command="vault-volume-close")
@@ -582,6 +647,13 @@ def build_parser() -> argparse.ArgumentParser:
     vr2.add_argument("handle")
     vr2.add_argument("name", help="Snapshot id to restore to")
     vr2.set_defaults(command="vault-volume-restore")
+
+    vsd = vsub.add_parser(
+        "snapshot-delete", help="Delete a snapshot from a volume (the "
+                                 "point-in-time copy is dropped)")
+    vsd.add_argument("handle")
+    vsd.add_argument("name", help="Snapshot id to delete")
+    vsd.set_defaults(command="vault-volume-snapshot-delete")
 
     vd = vsub.add_parser(
         "delete", help="Delete a volume by id (or --name) — crypto-shreds "

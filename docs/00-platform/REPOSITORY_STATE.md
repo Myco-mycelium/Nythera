@@ -790,6 +790,23 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-15 (**write-commit batching + the cross-container grant
+  matrix + snapshot deletion — 0.14.8**): `volume_write` defers the
+  durable commit (in-memory dirty blocks) and
+  `volume_fsync`/`volume_flush`/`volume_close` anchor it — a kernel
+  write pays ONE save() at the flush boundary instead of one per CALL;
+  the passthrough gained the `flush` handler. §27 re-bench: streaming
+  writes **0.28 → 3.17 MB/s (11×)**, 4 KiB syscalls **0.04 → 0.78
+  MB/s (19×)**; §26 byte-path writes ~86 ms → ~2.2 ms p50 (~40×).
+  **Cross-container grants (ADR-0022's access matrix landed):**
+  `volume_grant`/`volume_revoke`/`volume_grants` (CREATOR/OPERATOR-
+  ONLY) + `nyrqisctl vault grant/revoke/grants` — grants are
+  per-container, persisted, and never imply `CAP_STORAGE_VOLUME`;
+  `volume_open`/`volume_list` honor them; revoke gates future opens
+  while a live handle keeps working. **Snapshot deletion:**
+  `NyFS.delete_snapshot` + `volume_snapshot_delete` +
+  `nyrqisctl vault snapshot-delete` (missing snapshot fails honestly).
+  Runbook §3b. Suite 434 → **437**.
 - 2026-08-15 (**snapshot restore + the live encrypted-mount benchmark
   (§27) + the vault runbook — 0.14.7**): `volume_restore` +
   `nyrqisctl vault restore` (snapshot table unchanged; the restored
