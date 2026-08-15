@@ -667,7 +667,7 @@ pub unsafe extern "C" fn nyrqis_ipcd_client_call(
 ) -> i32 {
     if fd < 0
         || peer_path.is_null()
-        || (call_wire.is_null() && call_wire_len > 0)
+        || call_wire.is_null()
         || (reply_buf.is_null() && reply_cap > 0)
         || timeout_ms < 0
     {

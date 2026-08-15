@@ -6550,19 +6550,28 @@ class TestRustIpcdLoader(unittest.TestCase):
             return len(reply)
 
         fake.nyrqis_ipcd_client_call.side_effect = fake_call
+        # Keep the codec on its fallback path for the whole test:
+        # under the CI conformance gate (Nyrqis_RUST_FORCE=1 with the
+        # ipcd crate but not the codec crate loaded) the force check
+        # would otherwise raise inside the fake's to_wire()/from_wire()
+        # round trip. Disabling the codec's force flag falls it back to
+        # the struct floor — byte-identical by contract, so nothing
+        # observable changes.
         with mock.patch.object(
             ipc_loop, "_load_rust_backend", return_value=fake
+        ), mock.patch.object(
+            ipc_codec, "_force_enabled", return_value=False
         ):
             out = ipc_loop.client_call(7, "/tmp/peer.sock", b"call-wire", 500)
-        from ipc.core import IPCMessage
-        reply = IPCMessage.from_wire(out)
-        self.assertEqual(reply.payload, b'{"ok": true}')
-        self.assertEqual(reply.reply_to, "call-1")
-        args = fake.nyrqis_ipcd_client_call.call_args.args
-        self.assertEqual(args[0], 7)
-        self.assertEqual(args[1], b"/tmp/peer.sock")
-        self.assertEqual(args[3], len(b"call-wire"))
-        self.assertEqual(args[6], 500)
+            from ipc.core import IPCMessage
+            reply = IPCMessage.from_wire(out)
+            self.assertEqual(reply.payload, b'{"ok": true}')
+            self.assertEqual(reply.reply_to, "call-1")
+            args = fake.nyrqis_ipcd_client_call.call_args.args
+            self.assertEqual(args[0], 7)
+            self.assertEqual(args[1], b"/tmp/peer.sock")
+            self.assertEqual(args[3], len(b"call-wire"))
+            self.assertEqual(args[6], 500)
 
     def test_client_call_timeout_returns_none(self):
         fake = mock.Mock()
