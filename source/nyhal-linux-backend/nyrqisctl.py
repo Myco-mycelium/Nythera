@@ -57,6 +57,7 @@ VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
     "vault-volume-close", "vault-volume-write", "vault-volume-read",
     "vault-volume-snapshot", "vault-volume-snapshots",
+    "vault-volume-delete", "vault-volume-mount",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -125,6 +126,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "vault-volume-snapshots":
         return {"service": "storage", "op": "volume_snapshots",
                 "handle": args.handle}
+    if command == "vault-volume-delete":
+        if args.name:
+            return {"service": "storage", "op": "volume_delete",
+                    "name": args.name}
+        return {"service": "storage", "op": "volume_delete",
+                "volume_id": args.volume_id}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -215,6 +222,9 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "vault-volume-snapshots":
         snaps = resp.get("snapshots") or []
         return "\n".join(snaps) if snaps else "no snapshots"
+    if command == "vault-volume-delete":
+        return f"volume {resp.get('volume_id')} deleted " \
+               "(crypto-shredded)"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -289,6 +299,61 @@ def run(command: str, args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    if command == "vault-vault-init":
+        # A LOCAL command: writes the KEK envelope (ADR-0023) — the
+        # only thing the daemon needs to unlock the vault at rest.
+        from backend import keys
+        passphrase = args.passphrase or os.environ.get(
+            "NYRQIS_VAULT_PASSPHRASE")
+        if not passphrase:
+            print("error: vault init needs a passphrase "
+                  "(--passphrase or NYRQIS_VAULT_PASSPHRASE)",
+                  file=sys.stderr)
+            return 2
+        if os.path.exists(args.key_file):
+            print(f"error: {args.key_file} already exists",
+                  file=sys.stderr)
+            return 2
+        blob = keys.make_blob_any(passphrase.encode("utf-8"))
+        with open(args.key_file, "wb") as f:
+            f.write(blob)
+        print(f"vault KEK envelope written to {args.key_file} "
+              f"({len(blob)} bytes)")
+        return 0
+    if command == "vault-volume-mount":
+        # A LOCAL command: open the volume and mount it as a FUSE
+        # passthrough whose ops are storage-service CALLs (ADR-0022).
+        # Needs fusepy + /dev/fuse; without them the deferral is
+        # reported honestly (the volume ops stay usable via the other
+        # vault subcommands).
+        from fuse.vault_mount import NyVaultMount
+        volume = args.volume_id or args.name
+        if not volume:
+            print("error: vault mount needs a volume id or --name",
+                  file=sys.stderr)
+            return 2
+        tmp = tempfile.mkdtemp(prefix="nyrqisctl-mnt-")
+        cli_path = os.path.join(tmp, "ctl.sock")
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            mount = NyVaultMount(client, target, volume, args.mount_point)
+            ok = mount.mount(
+                foreground=True, blocking=not args.background)
+        except Exception as e:  # noqa: BLE001 - surface mount failures clearly
+            print(f"error: vault mount failed: {e}", file=sys.stderr)
+            return 1
+        if not ok:
+            print(
+                "error: fusepy is not available in this environment — "
+                "the NyVault mount cannot be established (use the "
+                "other 'vault' subcommands for the byte path)",
+                file=sys.stderr,
+            )
+            return 1
+        if args.background:
+            print(f"mounted volume {volume} at {args.mount_point} "
+                  "(background FUSE loop)")
+        return 0
     payload = build_payload(command, args)
     resp = call_daemon(target, payload, timeout_s=args.timeout)
     if resp is None:
@@ -455,6 +520,36 @@ def build_parser() -> argparse.ArgumentParser:
     vss = vsub.add_parser("snapshots", help="List a volume's snapshots")
     vss.add_argument("handle")
     vss.set_defaults(command="vault-volume-snapshots")
+
+    vd = vsub.add_parser(
+        "delete", help="Delete a volume by id (or --name) — crypto-shreds "
+                       "its wrapped DEK and reclaims the backing image")
+    vd.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vd.add_argument("--name", default="", help="Delete by volume name")
+    vd.set_defaults(command="vault-volume-delete")
+
+    vi = vsub.add_parser(
+        "init", help="LOCAL: initialize the vault KEK envelope (ADR-0023) "
+                      "for the daemon's --vault-key-file")
+    vi.add_argument("key_file", help="Path to write the envelope to")
+    vi.add_argument("--passphrase", default="",
+                    help="The unlock secret (or set "
+                         "NYRQIS_VAULT_PASSPHRASE)")
+    vi.set_defaults(command="vault-vault-init")
+
+    vm = vsub.add_parser(
+        "mount", help="Mount a volume as a FUSE passthrough (ADR-0022) — "
+                       "its ops are storage-service CALLs; requires "
+                       "fusepy + /dev/fuse")
+    vm.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vm.add_argument("--name", default="", help="Mount by volume name")
+    vm.add_argument("mount_point", help="Mount point (created if missing)")
+    vm.add_argument("--background", action="store_true",
+                    help="Run the FUSE loop in a background thread "
+                         "(default: foreground, blocks until unmounted)")
+    vm.set_defaults(command="vault-volume-mount")
 
     return parser
 

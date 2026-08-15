@@ -10,6 +10,7 @@ References:
 - tests/BENCHMARK_PLAN.md: Benchmarking methodology
 """
 
+import argparse
 import base64
 import ctypes
 import errno
@@ -62,6 +63,9 @@ from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
 from ipc.registry import ContainerIpcRegistry
 from ipc.storage import StorageService  # NyVault first increment (ADR-0022)
+from fuse.vault_mount import (  # NyVault FUSE passthrough (ADR-0022)
+    NyVaultOperations, NyVaultMount, VaultMountError,
+)
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from boot.lifecycle import BootSequence, BootPhase, SecureBootStatus
@@ -1073,7 +1077,8 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
-            health_socket_path=None, vault_dir="/var/lib/nyrqis/vault")
+            health_socket_path=None, vault_dir="/var/lib/nyrqis/vault",
+            vault_key_file=None, vault_passphrase=None)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_cli_service_serve_wires_health_socket(self):
@@ -1092,7 +1097,8 @@ class TestStatusServiceHost(unittest.TestCase):
         Host.assert_called_once_with(
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
-            health_socket_path=health, vault_dir="/var/lib/nyrqis/vault")
+            health_socket_path=health, vault_dir="/var/lib/nyrqis/vault",
+            vault_key_file=None, vault_passphrase=None)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_host_health_socket_serves_ping(self):
@@ -2004,6 +2010,94 @@ class TestOperatorCli(unittest.TestCase):
         finally:
             host.stop()
 
+    def test_cli_encrypted_vault_lifecycle_e2e(self):
+        # The full ADR-0023 operator flow through the CLI against a
+        # REAL daemon: `vault init` writes the KEK envelope, the
+        # daemon serves with --vault-key-file + passphrase, volumes
+        # are encrypted at rest (the vault dir never contains the
+        # plaintext), survive a restart (DEK re-unwrapped from the
+        # KEK), and are crypto-shredded by delete.
+        vault = os.path.join(self.tmp, "enc-vault")
+        key_file = os.path.join(self.tmp, "vault.key")
+        pw = "cli-operator-secret"
+        rc, out, err = self._cli("vault", "init", key_file,
+                                 "--passphrase", pw)
+        self.assertEqual(rc, 0, (out, err))
+        self.assertIn("KEK envelope", out)
+        # init refuses to clobber.
+        rc, out, err = self._cli("vault", "init", key_file,
+                                 "--passphrase", pw)
+        self.assertEqual(rc, 2, (out, err))
+        self.assertIn("already exists", err)
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key_file,
+            vault_passphrase=pw)
+        host.start()
+        blob = os.path.join(self.tmp, "secret.bin")
+        out_file = os.path.join(self.tmp, "out.bin")
+        payload = b"CLI-ENCRYPTED-PAYLOAD-" * 100
+        with open(blob, "wb") as f:
+            f.write(payload)
+        try:
+            rc, out, err = self._cli("--json", "vault", "create", "sec")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertTrue(json.loads(out)["encrypted"])
+            rc, out, err = self._cli("vault", "open", "--name", "sec")
+            handle = out.split()[1]
+            rc, out, err = self._cli(
+                "vault", "write", handle, "/blob.bin", "--file", blob)
+            self.assertEqual(rc, 0, (out, err))
+            rc, out, err = self._cli(
+                "vault", "read", handle, "/blob.bin", "--output", out_file)
+            self.assertEqual(rc, 0, (out, err))
+            with open(out_file, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            # At rest: no plaintext anywhere under the vault dir.
+            leaked = False
+            for root, _dirs, files in os.walk(vault):
+                for name in files:
+                    with open(os.path.join(root, name), "rb") as f:
+                        if b"CLI-ENCRYPTED-PAYLOAD" in f.read():
+                            leaked = True
+            self.assertFalse(leaked)
+        finally:
+            host.stop()
+        # Restart with the same key: the volume + data survive, and a
+        # WRONG passphrase cannot open the vault (fail-closed).
+        host2 = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key_file,
+            vault_passphrase=pw)
+        host2.start()
+        try:
+            rc, out, err = self._cli("vault", "list")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("sec", out)
+            rc, out, err = self._cli("vault", "open", "--name", "sec")
+            self.assertEqual(rc, 0, (out, err))
+            handle = out.split()[1]
+            rc, out, err = self._cli(
+                "vault", "read", handle, "/blob.bin", "--output", out_file)
+            self.assertEqual(rc, 0, (out, err))
+            with open(out_file, "rb") as f:
+                self.assertEqual(f.read(), payload)
+            # Delete crypto-shreds.
+            rc, out, err = self._cli("vault", "delete", "--name", "sec")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("crypto-shredded", out)
+            rc, out, err = self._cli("vault", "list")
+            self.assertIn("no volumes", out)
+        finally:
+            host2.stop()
+        # Wrong passphrase at serve time is a hard error (the KEK
+        # check value fails its AEAD verification — fail-closed).
+        with self.assertRaises(keys_module.KeysError):
+            nyrqis_backend.StatusServiceHost(
+                socket_path=self.sock, backend_version="9.9.9",
+                vault_dir=vault, vault_key_file=key_file,
+                vault_passphrase="wrong")
+
     def test_cli_vault_refuses_health_socket(self):
         # Vault ops are control-plane ops: they use the main socket and
         # refuse the dedicated health socket like control commands.
@@ -2017,8 +2111,37 @@ class TestOperatorCli(unittest.TestCase):
                 "--health-socket", health_path, "vault", "list")
             self.assertEqual(rc, 2)
             self.assertIn("health socket serves status/health only", e)
+            # The mount subcommand rides the same refusal.
+            rc, o, e = self._cli(
+                "--health-socket", health_path, "vault", "mount",
+                "--name", "assets", "/tmp/nyrqis-mnt")
+            self.assertEqual(rc, 2)
+            self.assertIn("health socket serves status/health only", e)
         finally:
             host.stop()
+
+    def test_cli_vault_mount_deferral_without_fusepy(self):
+        # No fusepy (the CI condition): the mount reports the deferral
+        # honestly with a nonzero exit instead of pretending to mount.
+        # Driven in-process (the ``_cli`` helper runs a subprocess,
+        # which cannot see parent-process mocks).
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        args = argparse.Namespace(
+            volume_id="", name="assets", mount_point="/tmp/nyrqis-mnt",
+            background=False, socket=self.sock, health_socket=None,
+            timeout=30.0, json=False)
+        with mock.patch("fuse.vault_mount.NyVaultMount") as mnt_cls:
+            mnt = mnt_cls.return_value
+            mnt.mount.return_value = False
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = nyrqisctl.run("vault-volume-mount", args)
+            self.assertEqual(rc, 1)
+            self.assertIn("fusepy is not available", err.getvalue())
+            mnt_cls.assert_called_once()
+            mnt.mount.assert_called_once_with(
+                foreground=True, blocking=True)
 
     def test_cli_health_socket_routes_status_ops(self):
         # ADR-0021: the dedicated health socket serves the status
@@ -2381,7 +2504,7 @@ class TestStorageService(unittest.TestCase):
         self.cli_path = os.path.join(self.tmp, "cli.sock")
 
     def _serve(self, vault_dir=None, capability_manager=None,
-               register_pid=True, svc_path=None):
+               register_pid=True, svc_path=None, kek=None):
         manager = IPCManager()
         manager.create_endpoint("container-svc", "ep-svc")
         caps = capability_manager
@@ -2396,7 +2519,7 @@ class TestStorageService(unittest.TestCase):
             trusted_uids={os.getuid()},
         )
         storage = StorageService(
-            capability_manager=caps, vault_dir=vault_dir)
+            capability_manager=caps, vault_dir=vault_dir, kek=kek)
         router = ServiceRouter()
         router.register("storage", storage)
         router.attach(server)
@@ -2404,6 +2527,14 @@ class TestStorageService(unittest.TestCase):
         stop = threading.Event()
         threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
         return server, stop, storage
+
+    def _kek(self, password=b"test-vault-secret"):
+        """An unlocked KEK handle for encrypted-vault tests (the
+        floor's handle — the crate is exercised in the conformance
+        classes)."""
+        from backend import keys
+        blob = keys.make_kek_blob(password)
+        return keys.unlock(blob, password)
 
     def _call(self, client, payload, timeout=5.0, path=None):
         reply = client.call(path or self.svc_path, payload,
@@ -2855,6 +2986,386 @@ class TestStorageService(unittest.TestCase):
             client.close()
             stop.set()
             server.close()
+
+    # -- encryption + lifecycle (ADR-0023 wiring) --------------------
+
+    def test_encrypted_volume_at_rest_and_locked_vault(self):
+        # With an unlocked KEK, volume_create wraps a fresh DEK and the
+        # volume's NyFS encrypts every block (ADR-0023): the stored
+        # bytes never contain the plaintext, and the wrapped DEK is
+        # what persists. Without the KEK (locked vault), an encrypted
+        # volume's DEK cannot be unwrapped -> clean failure.
+        vault = os.path.join(self.tmp, "enc-vault")
+        kek = self._kek()
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False, kek=kek)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "secrets"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertTrue(resp["encrypted"])
+            vid = resp["volume_id"]
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": vid}).encode())
+            handle = resp["handle"]
+            body = b"PLAINTEXT-MUST-NOT-PERSIST" * 50
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/secret.bin",
+                "data_b64": base64.b64encode(body).decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/secret.bin"}).encode())
+            self.assertEqual(base64.b64decode(resp["data_b64"]), body)
+            # At rest: the vault directory's bytes never contain the
+            # plaintext, and the registry carries only the wrapped DEK.
+            leaked = False
+            for root, _dirs, files in os.walk(vault):
+                for name in files:
+                    with open(os.path.join(root, name), "rb") as f:
+                        if b"PLAINTEXT-MUST-NOT-PERSIST" in f.read():
+                            leaked = True
+            self.assertFalse(leaked)
+            with open(os.path.join(vault, "volumes.json"), "rb") as f:
+                state = json.loads(f.read().decode())
+            self.assertTrue(state["volumes"][0]["wrapped_dek"])
+            self.assertEqual(state["volumes"][0]["id"], vid)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+        # A locked vault (no KEK) cannot unwrap the persisted DEK.
+        server2, stop2, storage2 = self._serve(
+            vault_dir=vault, register_pid=False)  # kek=None
+        client2 = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "name": "secrets"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("vault locked", resp["error"])
+        finally:
+            client2.close()
+            stop2.set()
+            server2.close()
+
+    def test_volume_persistence_survives_restart(self):
+        # The registry + wrapped DEK persist (volumes.json); a fresh
+        # service on the same vault dir restores the volume and its
+        # data — the DEK is re-unwrapped from the KEK at open, never
+        # stored plaintext.
+        vault = os.path.join(self.tmp, "persist-vault")
+        kek = self._kek()
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False, kek=kek)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "durable"}).encode())
+            vid = resp["volume_id"]
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": vid}).encode())
+            handle = resp["handle"]
+            body = b"survives-restart-" * 40
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/data.bin",
+                "data_b64": base64.b64encode(body).decode()}).encode())
+            self.assertTrue(resp["ok"], resp)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+        # "Restart": a brand-new service on the same vault dir.
+        server2, stop2, storage2 = self._serve(
+            vault_dir=vault, register_pid=False, kek=kek)
+        client2 = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_list"}).encode())
+            self.assertEqual([v["name"] for v in resp["volumes"]],
+                             ["durable"])
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "name": "durable"}).encode())
+            handle = resp["handle"]
+            resp = self._call(client2, json.dumps({
+                "service": "storage", "op": "volume_read",
+                "handle": handle, "path": "/data.bin"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(base64.b64decode(resp["data_b64"]), body)
+        finally:
+            client2.close()
+            stop2.set()
+            server2.close()
+
+    def test_volume_delete_crypto_shreds(self):
+        vault = os.path.join(self.tmp, "del-vault")
+        kek = self._kek()
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False, kek=kek)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "gone"}).encode())
+            vid = resp["volume_id"]
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": vid}).encode())
+            handle = resp["handle"]
+            # The handle + wrapped DEK + registry entry + backing image
+            # all go away (crypto-shred).
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_delete",
+                "name": "gone"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertFalse(
+                os.path.exists(os.path.join(vault, vid + ".nyfs")))
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_list"}).encode())
+            self.assertEqual(resp["volumes"], [])
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_info",
+                "handle": handle}).encode())
+            self.assertFalse(resp["ok"])  # the handle is shredded too
+            with open(os.path.join(vault, "volumes.json"), "rb") as f:
+                state = json.loads(f.read().decode())
+            self.assertEqual(state["volumes"], [])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    # -- generic file surface (the FUSE passthrough's backend) ------
+
+    def _open_handle(self, client, name):
+        resp = self._call(client, json.dumps({
+            "service": "storage", "op": "volume_create",
+            "name": name}).encode())
+        self.assertTrue(resp["ok"], resp)
+        vid = resp["volume_id"]
+        resp = self._call(client, json.dumps({
+            "service": "storage", "op": "volume_open",
+            "volume_id": vid}).encode())
+        self.assertTrue(resp["ok"], resp)
+        return resp["handle"]
+
+    def test_volume_file_surface_ops(self):
+        # The passthrough's backend ops, driven over the wire: the full
+        # namespace + byte surface the FUSE mount needs.
+        vault = os.path.join(self.tmp, "fs-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            handle = self._open_handle(client, "fs")
+            def call(payload):
+                return self._call(client, json.dumps(payload).encode())
+            r = call({"service": "storage", "op": "volume_mkdir",
+                      "handle": handle, "path": "/app", "mode": 0o755})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_mknod",
+                      "handle": handle, "path": "/app/data.bin",
+                      "mode": 0o644, "dev": 0})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_write",
+                      "handle": handle, "path": "/app/data.bin",
+                      "offset": 0,
+                      "data_b64": base64.b64encode(b"payload").decode()})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_getattr",
+                      "handle": handle, "path": "/app/data.bin"})
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["stat"]["st_size"], 7)
+            r = call({"service": "storage", "op": "volume_readdir",
+                      "handle": handle, "path": "/app"})
+            self.assertEqual(r["names"], [".", "..", "data.bin"])
+            r = call({"service": "storage", "op": "volume_truncate",
+                      "handle": handle, "path": "/app/data.bin",
+                      "length": 3})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_rename",
+                      "handle": handle, "from": "/app/data.bin",
+                      "to": "/app/renamed.bin"})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_read",
+                      "handle": handle, "path": "/app/renamed.bin",
+                      "offset": 0, "size": 8})
+            self.assertEqual(base64.b64decode(r["data_b64"]), b"pay")
+            r = call({"service": "storage", "op": "volume_statfs",
+                      "handle": handle})
+            for key in ("f_bsize", "f_blocks", "f_bfree", "f_files",
+                        "f_ffree"):
+                self.assertIn(key, r["statfs"])
+            r = call({"service": "storage", "op": "volume_fsync",
+                      "handle": handle})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_unlink",
+                      "handle": handle, "path": "/app/renamed.bin"})
+            self.assertTrue(r["ok"], r)
+            r = call({"service": "storage", "op": "volume_rmdir",
+                      "handle": handle, "path": "/app"})
+            self.assertTrue(r["ok"], r)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_volume_file_surface_errno_and_validation(self):
+        # NyFSError maps to its POSIX errno over the wire (ENOENT for a
+        # missing path), and a ``..`` path is rejected path-side.
+        vault = os.path.join(self.tmp, "err-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            handle = self._open_handle(client, "err")
+            r = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_getattr",
+                "handle": handle, "path": "/missing"}).encode())
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["errno"], errno.ENOENT)
+            r = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_mkdir",
+                "handle": handle, "path": "/a/../b"}).encode())
+            self.assertFalse(r["ok"])
+            self.assertIn("without '..'", r["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_volume_file_surface_capability_gate(self):
+        # The new ops ride the same fail-closed gate as the byte path:
+        # a container without CAP_STORAGE_VOLUME is refused.
+        caps = CapabilityManager()
+        caps.initialize_container("cli")
+        server, stop, storage = self._serve(capability_manager=caps)
+        client = IPCClient("cli", self.cli_path).bind()
+        try:
+            r = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_mkdir",
+                "handle": "x", "path": "/a"}).encode())
+            self.assertFalse(r["ok"])
+            self.assertIn("CAP_STORAGE_VOLUME", r["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+
+class TestNyVaultOperations(unittest.TestCase):
+    """The NyVault FUSE passthrough (ADR-0022): FUSE ops whose
+    handlers are storage-service CALLs — exercised without a kernel
+    mount, exactly like ``TestNyFSOperations``.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        self.server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        self.storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(self.tmp, "vault"))
+        router = ServiceRouter()
+        router.register("storage", self.storage)
+        router.attach(self.server)
+        self.server.bind()
+        self.stop = threading.Event()
+        threading.Thread(target=self.server.serve, args=(self.stop,),
+                         daemon=True).start()
+        self.client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        resp = self._call({"service": "storage", "op": "volume_create",
+                           "name": "passthrough"})
+        self.vid = resp["volume_id"]
+
+    def tearDown(self):
+        self.client.close()
+        self.stop.set()
+        self.server.close()
+
+    def _call(self, payload):
+        reply = self.client.call(self.svc_path,
+                                 json.dumps(payload).encode("utf-8"))
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def _ops(self):
+        return NyVaultOperations(self.client, self.svc_path, self.vid)
+
+    def test_full_flow_through_the_passthrough(self):
+        ops = self._ops()
+        try:
+            self.assertEqual(ops.mkdir("/app", 0o755), 0)
+            self.assertEqual(ops.mknod("/app/data.bin", 0o644, 0), 0)
+            self.assertEqual(ops.write("/app/data.bin", b"payload", 0), 7)
+            st = ops.getattr("/app/data.bin")
+            self.assertEqual(st["st_size"], 7)
+            self.assertEqual(ops.readdir("/app"),
+                             [".", "..", "data.bin"])
+            self.assertEqual(ops.read("/app/data.bin", 100, 0),
+                             b"payload")
+            self.assertEqual(ops.truncate("/app/data.bin", 3), 0)
+            self.assertEqual(ops.read("/app/data.bin", 100, 0), b"pay")
+            self.assertEqual(ops.rename("/app/data.bin",
+                                        "/app/renamed.bin"), 0)
+            self.assertEqual(ops.fsync("/app/renamed.bin", False), 0)
+            for key in ("f_bsize", "f_blocks", "f_bfree", "f_files",
+                        "f_ffree"):
+                self.assertIn(key, ops.statfs("/"))
+            self.assertEqual(ops.unlink("/app/renamed.bin"), 0)
+            self.assertEqual(ops.rmdir("/app"), 0)
+        finally:
+            ops.close()
+
+    def test_chunked_io_across_the_wire(self):
+        # The FUSE kernel sends 128 KiB requests; the passthrough pages
+        # them through the 32 KiB per-call byte path.
+        ops = self._ops()
+        try:
+            big = bytes(range(256)) * 400  # 100 KiB
+            self.assertEqual(ops.write("/big.bin", big, 0), len(big))
+            self.assertEqual(ops.read("/big.bin", len(big), 0), big)
+            # Offset writes through the chunker too.
+            self.assertEqual(ops.write("/big.bin", b"XY", 50_000), 2)
+            expected = big[49_999:50_000] + b"XY" + big[50_002:50_003]
+            self.assertEqual(ops.read("/big.bin", 4, 49_999), expected)
+        finally:
+            ops.close()
+
+    def test_errno_propagation_to_the_mount(self):
+        ops = self._ops()
+        try:
+            with self.assertRaises(VaultMountError) as ctx:
+                ops.getattr("/missing")
+            self.assertEqual(ctx.exception.errno, errno.ENOENT)
+        finally:
+            ops.close()
+
+    def test_close_releases_the_handle(self):
+        ops = self._ops()
+        ops.close()
+        with self.assertRaises(VaultMountError):
+            ops.getattr("/")
+
+    def test_mount_attach_graceful_without_fusepy(self):
+        mount = NyVaultMount(self.client, self.svc_path, self.vid,
+                             tempfile.mkdtemp())
+        with mock.patch("fuse.vault_mount._import_fusepy",
+                        return_value=None):
+            self.assertFalse(mount.attach())
+        mount.unmount()
 
 
 class TestStorageGuarantees(unittest.TestCase):
@@ -7924,6 +8435,26 @@ class TestKeysFloor(unittest.TestCase):
         self.assertEqual(keys_module.NONCE_LEN, 24)
         self.assertEqual(keys_module.SALT_LEN, 16)
 
+    def test_block_encrypt_decrypt_roundtrip(self):
+        dek = bytes(range(32))
+        nonce = bytes(range(24))
+        ad = b"volume-enc-1"
+        pt = b"block-payload-" * 512
+        blob = keys_module.block_encrypt(dek, nonce, ad, pt)
+        self.assertEqual(len(blob), len(pt) + 24 + 16)
+        self.assertEqual(blob[:24], nonce)
+        self.assertEqual(keys_module.block_decrypt(dek, ad, blob), pt)
+        # Tampering is detected (AEAD).
+        tampered = bytearray(blob)
+        tampered[-1] ^= 1
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.block_decrypt(dek, ad, bytes(tampered))
+        # Wrong DEK / wrong AD fail.
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.block_decrypt(bytes(reversed(range(32))), ad, blob)
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.block_decrypt(dek, b"volume-enc-2", blob)
+
 
 class TestRustKeysLoader(unittest.TestCase):
     """ADR-0023 FFI loader behavior (see rust/keys/): the fallback
@@ -8070,6 +8601,30 @@ class TestRustKeysConformance(unittest.TestCase):
         keys_module.shred(handle)
         with self.assertRaises(keys_module.KeysError):
             keys_module.wrap(handle, b"vol", bytes(32), bytes(24))
+
+    def test_block_encrypt_byte_identical(self):
+        # The NyFS at-rest byte path (ADR-0023 checksum-then-encrypt):
+        # the crate's block envelope is byte-identical to the floor's.
+        dek = bytes(range(32))
+        nonce = bytes(range(24))
+        ad = b"volume-enc-1"
+        pt = b"block-payload-" * 256
+        self.assertEqual(
+            keys_module.block_encrypt(dek, nonce, ad, pt),
+            keys_module.block_encrypt_any(dek, nonce, ad, pt))
+        # And the crate decrypts what the floor produced, and vice
+        # versa (both directions).
+        py_blob = keys_module.block_encrypt(dek, nonce, ad, pt)
+        rs_blob = keys_module.block_encrypt_any(dek, nonce, ad, pt)
+        self.assertEqual(
+            keys_module.block_decrypt_any(dek, ad, py_blob), pt)
+        self.assertEqual(
+            keys_module.block_decrypt(dek, ad, rs_blob), pt)
+        # Tampering fails on the crate too.
+        tampered = bytearray(rs_blob)
+        tampered[30] ^= 1
+        with self.assertRaises(keys_module.KeysError):
+            keys_module.block_decrypt_any(dek, ad, bytes(tampered))
 
 
 class TestRustIpcdLoader(unittest.TestCase):
@@ -8827,6 +9382,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestServiceRouter))
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageService))
+    suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))

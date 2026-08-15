@@ -5,7 +5,7 @@ version: 0.1.0
 status: In Progress
 classification: Technical
 created: 2026-07-15
-updated: 2026-07-15
+updated: 2026-08-15
 ai_assisted: true
 ---
 
@@ -15,6 +15,16 @@ ai_assisted: true
 > project name *Nythera*. On 2026-08-12 the project was renamed to *Nyrqis*
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
+
+## [0.14.5] — 2026-08-15
+
+### NyVault at rest: KEK wiring + block AEAD + the FUSE passthrough
+
+- **The vault is now encrypted AT REST end-to-end (ADR-0023's core claim)**: `nyrqisctl vault init` writes the Argon2id-derived KEK envelope; the daemon serves with `--vault-key-file` + passphrase (unlock at serve time, fail-closed on a wrong secret); `volume_create` gives every volume its own random DEK wrapped with the KEK (`ad = volume id`); and the **block layer is AEAD-encrypted**: `rust/keys` + the PyNaCl floor gain `block_encrypt`/`block_decrypt` (24-byte nonce, XChaCha20-Poly1305, checksum over ciphertext per ADR-0023), and `NyFSFilesystem(dek=...)` threads the DEK through `_make_block`/`_decompress_verified` — the single write/read funnels — so every block at rest is `nonce ‖ ciphertext ‖ tag`, verified on read. Verified: write → read → save → load round-trips, and **no plaintext anywhere under the vault dir**. Differential byte-identity for the block ops matches the KEK/wrap conformance.
+- **Volume lifecycle completes**: `volume_delete` crypto-shreds (drop handles + wrapped DEK + backing image + registry entry — the ciphertext may remain, but no key path survives), and the registry + wrapped DEKs **persist across a daemon restart** (`volumes.json` in the vault dir; DEKs re-unwrapped from the KEK on open).
+- **The NyVault FUSE passthrough LANDED (ADR-0022's data-plane mount)**: `fuse/vault_mount.py` — `NyVaultOperations` are FUSE ops whose handlers are **storage-service CALLs** (getattr/readdir/read/write/mkdir/mknod/unlink/rmdir/rename/truncate/statfs/fsync), paging through the 32 KiB per-call byte path for kernel-sized requests, with errno propagation (ENOENT → FileNotFoundError, etc.); `NyVaultMount` mirrors `NyFSMount` (honest deferral without fusepy). The service's generic file surface (`volume_getattr`/`volume_readdir`/`volume_mkdir`/...) sits behind the same capability + handle + path gates as the byte path. CLI: `nyrqisctl vault mount <volume> <mountpoint>` (foreground/`--background`).
+- **§26 vault-io benchmark**: write/read p50 through the full loop — the durable `save()` commit dominates writes (~86 ms, one fsync per transaction — the §9/§15 finding again), reads run at **1.6–2.8 ms p50** flat across payloads, and the block AEAD adds ~0.5 ms on 32 KiB reads (nothing measurable on writes).
+- Suite 412 → **427** (block-AEAD differential + encrypted-vault lifecycle + generic file surface + `TestNyVaultOperations` + CLI mount).
 
 ## [0.14.4] — 2026-08-15
 

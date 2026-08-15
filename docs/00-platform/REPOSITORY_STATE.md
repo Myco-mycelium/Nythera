@@ -747,6 +747,31 @@ Documentation hygiene, fixed earlier this session:
   New CI jobs `rust-keys` + required `rust-keys-conformance`. Suite
   390 → **412**. KEK wiring into `volume_create` is the next increment
   (at-rest encryption NOT yet claimed).
+- 2026-08-15 (**NyVault at rest + the FUSE passthrough — 0.14.5**):
+  the encrypted-vault lifecycle is complete (ADR-0023's core claim) —
+  `nyrqisctl vault init` writes the Argon2id KEK envelope; the daemon
+  serves with `--vault-key-file` + passphrase (unlock at serve time,
+  fail-closed on a wrong secret); `volume_create` wraps a fresh
+  per-volume DEK with the KEK; and the **block layer is
+  AEAD-encrypted** — `rust/keys` + the PyNaCl floor gain
+  `block_encrypt`/`block_decrypt` and `NyFSFilesystem(dek=...)`
+  threads the DEK through the single write/read funnels (`_make_block`
+  / `_decompress_verified`), so every block at rest is
+  `nonce ‖ ciphertext ‖ tag` and no plaintext exists under the vault
+  dir (verified). `volume_delete` crypto-shreds; the registry + wrapped
+  DEKs persist across a daemon restart. **The NyVault FUSE passthrough
+  (ADR-0022's data-plane mount) landed:** `fuse/vault_mount.py` —
+  `NyVaultOperations` are FUSE ops whose handlers are storage-service
+  CALLs (getattr/readdir/read/write/mkdir/mknod/unlink/rmdir/rename/
+  truncate/statfs/fsync), paging the 32 KiB per-call byte path, with
+  errno propagation; `NyVaultMount` mirrors `NyFSMount` (honest
+  deferral without fusepy); the service's generic file surface
+  (`volume_getattr`/`volume_readdir`/`volume_mkdir`/...) sits behind
+  the same capability + handle + path gates; `nyrqisctl vault mount`.
+  **§26 vault-io benchmark:** the durable `save()` commit dominates
+  writes (~86 ms p50 — one fsync per transaction, the §9/§15 finding
+  again), reads run at 1.6–2.8 ms p50 flat across payloads, and the
+  block AEAD adds ~0.5 ms on 32 KiB reads. Suite 412 → **427**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

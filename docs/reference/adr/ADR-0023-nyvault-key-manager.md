@@ -27,9 +27,29 @@ depends_on: [NPS-004, NPS-011, ADR-0002, ADR-0014, ADR-0020, ADR-0022]
 > differential gate pins identical), and the DEK plaintext still
 > crosses FFI on `unwrap` because the block layer is Python-side in
 > this increment (moving block encrypt/decrypt behind the boundary is
-> the documented next step). Wiring per-volume wrapped DEKs into
-> `volume_create` is the following increment — at-rest encryption is
-> NOT yet claimed.
+> the documented next step).
+>
+> **Second increment LANDED the same day (2026-08-15) — at-rest
+> encryption is now claimed:** `volume_create` wraps a fresh per-volume
+> DEK with the daemon-held KEK (`ad = volume id`); `nyrqisctl vault
+> init` writes the KEK envelope and the daemon serves with
+> `--vault-key-file` + passphrase (unlock at serve time, fail-closed on
+> a wrong secret); `volume_delete` crypto-shreds (handles + wrapped DEK
+> + backing image + registry entry); the registry + wrapped DEKs
+> persist across a daemon restart. The **block layer is now
+> AEAD-encrypted**: `block_encrypt`/`block_decrypt` landed in both
+> `rust/keys/` and the PyNaCl floor (24-byte nonce, XChaCha20-Poly1305,
+> checksum over ciphertext), and `NyFSFilesystem(dek=...)` threads the
+> DEK through the single write/read funnels (`_make_block` /
+> `_decompress_verified`) — every block at rest is `nonce ‖ ciphertext
+> ‖ tag`, verified on read, with no plaintext under the vault dir
+> (verified). Honest custody note: the *KEK* (the master secret) stays
+> in the crate's handle table; the per-volume DEK is necessarily held
+> daemon-side to serve block I/O and is passed to the crate's block
+> ops per call — the custody boundary is the master key, which never
+> leaves the crate. Remaining per this ADR: rotation without
+> re-encryption, hardware backends (TPM2/PKCS#11), and the FUSE
+> passthrough's encrypted path is covered by the same block layer.
 
 # ADR-0023 — NyVault Key Manager: Envelope Encryption with Rust-Held Key Custody
 

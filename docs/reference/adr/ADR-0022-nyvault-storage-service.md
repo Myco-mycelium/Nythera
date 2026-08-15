@@ -24,8 +24,21 @@ depends_on: [NPS-003, NPS-004, NPS-011, ADR-0002, ADR-0003, ADR-0007, ADR-0016, 
 > `volume_snapshot`/`volume_snapshots` serve real NyFS I/O through
 > the handles (create-on-write blob semantics, offset paging, CoW
 > snapshots, 32 KiB per-call payload cap pending the FUSE-passthrough
-> streaming path). The key-management follow-on (ADR-0023) has its
-> first increment landed too; at-rest encryption is still not claimed.
+> streaming path).
+>
+> **The FUSE passthrough (the ADR's data-plane mount) IMPLEMENTED the
+> same day (2026-08-15):** `fuse/vault_mount.py` — `NyVaultOperations`
+> are FUSE ops whose handlers are storage-service CALLs over the
+> authenticated transport (getattr/readdir/read/write/mkdir/mknod/
+> unlink/rmdir/rename/truncate/statfs/fsync, paging the 32 KiB
+> per-call byte path for kernel-sized requests, errno propagation),
+> with `NyVaultMount` mirroring `NyFSMount` (honest deferral without
+> fusepy) and `nyrqisctl vault mount`. The service's generic file
+> surface sits behind the same capability + handle + path gates.
+> The key-management follow-on (ADR-0023) has BOTH its increments
+> landed: per-volume wrapped DEKs at `volume_create` and the
+> AEAD-encrypted block layer (`NyFSFilesystem(dek=...)`) — **at-rest
+> encryption is now claimed** (see ADR-0023).
 
 # ADR-0022 — NyVault: Storage as a Daemon-Hosted Service on the IPC Transport
 

@@ -372,6 +372,75 @@ pub extern "C" fn nyrqis_keys_shred(handle: u64) -> i32 {
     }
 }
 
+/// AEAD-encrypt a block payload (the NyFS at-rest byte path, ADR-0023
+/// "checksum-then-encrypt"). `out` receives nonce + ciphertext+tag
+/// (`plaintext_len + NONCE_LEN + TAG_LEN`). The caller supplies the
+/// 24-byte nonce (a fresh random nonce per block WRITE — persisted
+/// with the block, so an overwrite never reuses it) and the associated
+/// data (the volume context). `dek` is the volume's 32-byte DEK.
+#[no_mangle]
+pub extern "C" fn nyrqis_keys_block_encrypt(
+    dek: *const u8, dek_len: usize,
+    nonce: *const u8, nonce_len: usize,
+    ad: *const u8, ad_len: usize,
+    plaintext: *const u8, plaintext_len: usize,
+    out: *mut u8, out_len: usize,
+) -> i32 {
+    if dek_len != DEK_LEN || nonce_len != NONCE_LEN {
+        return ERR_ARGS;
+    }
+    if out_len != plaintext_len + NONCE_LEN + TAG_LEN {
+        return ERR_ARGS;
+    }
+    let dek: [u8; KEK_LEN] = unsafe {
+        std::slice::from_raw_parts(dek, DEK_LEN).try_into().unwrap()
+    };
+    let nonce = unsafe { std::slice::from_raw_parts(nonce, NONCE_LEN) };
+    let ad = unsafe { std::slice::from_raw_parts(ad, ad_len) };
+    let plaintext =
+        unsafe { std::slice::from_raw_parts(plaintext, plaintext_len) };
+    let ct = match aead_encrypt(&dek, nonce, ad, plaintext) {
+        Ok(c) => c,
+        Err(_) => return ERR_INTERNAL,
+    };
+    let mut blob = Vec::with_capacity(out_len);
+    blob.extend_from_slice(nonce);
+    blob.extend_from_slice(&ct);
+    unsafe { std::ptr::copy_nonoverlapping(blob.as_ptr(), out, out_len) };
+    OK
+}
+
+/// AEAD-decrypt a block payload. `blob` is nonce + ciphertext+tag as
+/// produced by `block_encrypt`; `out` receives the plaintext. `-1` on
+/// tampering or a wrong DEK.
+#[no_mangle]
+pub extern "C" fn nyrqis_keys_block_decrypt(
+    dek: *const u8, dek_len: usize,
+    ad: *const u8, ad_len: usize,
+    blob: *const u8, blob_len: usize,
+    out: *mut u8, out_len: usize,
+) -> i32 {
+    if dek_len != DEK_LEN || blob_len < NONCE_LEN + TAG_LEN {
+        return ERR_ARGS;
+    }
+    let pt_len = blob_len - NONCE_LEN - TAG_LEN;
+    if out_len != pt_len {
+        return ERR_ARGS;
+    }
+    let dek: [u8; KEK_LEN] = unsafe {
+        std::slice::from_raw_parts(dek, DEK_LEN).try_into().unwrap()
+    };
+    let ad = unsafe { std::slice::from_raw_parts(ad, ad_len) };
+    let blob = unsafe { std::slice::from_raw_parts(blob, blob_len) };
+    let (nonce, ct) = blob.split_at(NONCE_LEN);
+    let plaintext = match aead_decrypt(&dek, nonce, ad, ct) {
+        Ok(p) => p,
+        Err(_) => return ERR_AUTH,
+    };
+    unsafe { std::ptr::copy_nonoverlapping(plaintext.as_ptr(), out, pt_len) };
+    OK
+}
+
 // -- unit tests -------------------------------------------------------
 
 #[cfg(test)]
@@ -472,5 +541,59 @@ mod tests {
         let rc = nyrqis_keys_unlock(
             b"garbage".as_ptr(), 7, b"pw".as_ptr(), 2, &mut handle);
         assert_eq!(rc, ERR_ARGS);
+    }
+
+    #[test]
+    fn block_encrypt_decrypt_roundtrip() {
+        let dek = [0xabu8; DEK_LEN];
+        let nonce = [0x11u8; NONCE_LEN];
+        let ad = b"volume-42";
+        let pt = b"compressible-block-data;" .repeat(64); // > 1 KiB
+        let mut out = vec![0u8; pt.len() + NONCE_LEN + TAG_LEN];
+        let rc = nyrqis_keys_block_encrypt(
+            dek.as_ptr(), DEK_LEN, nonce.as_ptr(), NONCE_LEN,
+            ad.as_ptr(), ad.len(), pt.as_ptr(), pt.len(),
+            out.as_mut_ptr(), out.len());
+        assert_eq!(rc, OK);
+        // The ciphertext never contains the plaintext.
+        assert!(!out.windows(16).any(|w| w == &pt[0..16]));
+        let mut back = vec![0u8; pt.len()];
+        let rc = nyrqis_keys_block_decrypt(
+            dek.as_ptr(), DEK_LEN, ad.as_ptr(), ad.len(),
+            out.as_ptr(), out.len(), back.as_mut_ptr(), back.len());
+        assert_eq!(rc, OK);
+        assert_eq!(back, pt);
+        // Wrong AD fails.
+        let rc = nyrqis_keys_block_decrypt(
+            dek.as_ptr(), DEK_LEN, b"volume-43".as_ptr(), 9,
+            out.as_ptr(), out.len(), back.as_mut_ptr(), back.len());
+        assert_eq!(rc, ERR_AUTH);
+        // Tampering fails.
+        out[pt.len() / 2] ^= 1;
+        let rc = nyrqis_keys_block_decrypt(
+            dek.as_ptr(), DEK_LEN, ad.as_ptr(), ad.len(),
+            out.as_ptr(), out.len(), back.as_mut_ptr(), back.len());
+        assert_eq!(rc, ERR_AUTH);
+    }
+
+    #[test]
+    fn block_encrypt_deterministic_given_nonce() {
+        let dek = [7u8; DEK_LEN];
+        let nonce = [9u8; NONCE_LEN];
+        let ad = b"vol";
+        let pt = b"same input, same output";
+        let mut a = vec![0u8; pt.len() + NONCE_LEN + TAG_LEN];
+        let mut b = vec![0u8; pt.len() + NONCE_LEN + TAG_LEN];
+        let rc = nyrqis_keys_block_encrypt(
+            dek.as_ptr(), DEK_LEN, nonce.as_ptr(), NONCE_LEN,
+            ad.as_ptr(), 3, pt.as_ptr(), pt.len(),
+            a.as_mut_ptr(), a.len());
+        assert_eq!(rc, OK);
+        let rc = nyrqis_keys_block_encrypt(
+            dek.as_ptr(), DEK_LEN, nonce.as_ptr(), NONCE_LEN,
+            ad.as_ptr(), 3, pt.as_ptr(), pt.len(),
+            b.as_mut_ptr(), b.len());
+        assert_eq!(rc, OK);
+        assert_eq!(a, b);
     }
 }

@@ -250,7 +250,9 @@ class StatusServiceHost:
                  backend_version: Optional[str] = None,
                  state_file: Optional[str] = None,
                  health_socket_path: Optional[str] = None,
-                 vault_dir: Optional[str] = None) -> None:
+                 vault_dir: Optional[str] = None,
+                 vault_key_file: Optional[str] = None,
+                 vault_passphrase: Optional[str] = None) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
@@ -298,14 +300,32 @@ class StatusServiceHost:
         self.control = ControlService(
             self.container_manager, self.capability_manager,
             state_saver=self._save_state)
-        # NyVault (ADR-0022) first increment: capability-gated named
-        # volumes backed by NyFS roots under ``vault_dir`` (None
-        # disables NyFS backing — metadata-only registry).
+        # NyVault (ADR-0022): capability-gated named volumes backed by
+        # NyFS roots under ``vault_dir`` (None disables NyFS backing —
+        # metadata-only registry). ADR-0023: with ``vault_key_file`` +
+        # ``vault_passphrase`` the daemon unlocks the KEK (an opaque
+        # handle — the crate holds it, never Python) and new volumes
+        # get wrapped DEKs + at-rest-encrypted blocks; without them the
+        # vault runs plaintext (the crate-less fallback).
+        self.vault_dir = vault_dir
+        vault_kek = None
+        if vault_key_file:
+            if not vault_passphrase:
+                raise ValueError(
+                    "--vault-key-file requires --vault-passphrase "
+                    "(or NYRQIS_VAULT_PASSPHRASE)")
+            from backend import keys
+            with open(vault_key_file, "rb") as f:
+                envelope = f.read()
+            vault_kek = keys.unlock(envelope, vault_passphrase.encode("utf-8"))
+            logger.info("vault KEK unlocked (%s)",
+                        "crate handle" if isinstance(
+                            vault_kek, keys._CrateHandle) else "floor")
         self.storage = StorageService(
             capability_manager=self.capability_manager,
             vault_dir=vault_dir,
+            kek=vault_kek,
         )
-        self.vault_dir = vault_dir
         self.router = ServiceRouter()
         self.router.register("status", self.service)
         self.router.register("control", self.control)
@@ -662,6 +682,9 @@ def cmd_service_serve(args) -> int:
         state_file=args.state_file or None,
         health_socket_path=args.health_socket or None,
         vault_dir=args.vault_dir or None,
+        vault_key_file=args.vault_key_file or None,
+        vault_passphrase=args.vault_passphrase
+        or os.environ.get("NYRQIS_VAULT_PASSPHRASE") or None,
     )
     host.serve_until_signal()
     return 0
@@ -887,6 +910,17 @@ Examples:
         "--vault-dir", default="/var/lib/nyrqis/vault",
         help="NyVault backing directory for storage-service volumes "
         "(ADR-0022; disable NyFS backing with --vault-dir '')"
+    )
+    serve_parser.add_argument(
+        "--vault-key-file", default="",
+        help="The vault KEK envelope (ADR-0023, written by "
+             "`nyrqisctl vault init`) — unlocks at-rest volume "
+             "encryption when combined with --vault-passphrase"
+    )
+    serve_parser.add_argument(
+        "--vault-passphrase", default="",
+        help="The unlock secret for --vault-key-file (or set "
+             "NYRQIS_VAULT_PASSPHRASE)"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 

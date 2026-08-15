@@ -1031,6 +1031,34 @@ path per the language matrix — no interpreter dependence — so the
 compiled init is the default when present, Python only the crate-less
 fallback.
 
+## 26. NyVault Byte Path Through the CALL/REPLY Loop (2026-08-15)
+
+The FUSE-passthrough data plane the way a mounted client sees it
+(ADR-0022): `NyVaultOperations` write/read are storage-service CALLs,
+so each iteration is the full loop — CALL encode → datagram →
+capability + handle + path checks → real NyFS I/O → durable `save()`
+commit → REPLY decode. In-process server + real UDS client, 200
+iterations per payload after one warmup, `--vault-io`.
+
+| Payload | write p50 | write p95 | read p50 | read p95 |
+|---------|-----------|-----------|----------|----------|
+| 4 KiB plaintext | 88.8 ms | 694.7 ms | 1.61 ms | 3.79 ms |
+| 32 KiB plaintext | 85.6 ms | 355.5 ms | 2.19 ms | 4.66 ms |
+| 4 KiB encrypted (ADR-0023) | 86.6 ms | 490.7 ms | 2.14 ms | 4.99 ms |
+| 32 KiB encrypted (ADR-0023) | 85.6 ms | 202.3 ms | 2.28 ms | 4.77 ms |
+
+Reading: **the durable commit dominates the write path** — ~86 ms p50
+regardless of payload size or encryption, the journal `save()` fsync
+that every write acks (the §15/§9 finding again: one fsync per
+transaction is the floor). Reads, which carry no commit, run at
+**1.6–2.8 ms p50 through the full loop** and are flat across payloads
+(4 KiB vs 32 KiB adds ~0.6 ms). The ADR-0023 block AEAD is nearly
+free on this path: encrypted vs plaintext adds ~0.5 ms on 32 KiB reads
+and nothing measurable on writes (the fsync swallows it). Write p95 is
+noisy (202–695 ms) — the fsync's scheduling variance — while read p95
+stays ~4–5 ms. The passthrough's 32 KiB chunking therefore costs the
+mount nothing extra: two calls are cheaper than the commit either way.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

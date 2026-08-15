@@ -49,6 +49,11 @@ this host in one reproducible script:
   A/Bs the compiled launcher-init (`rust/launcher`, ADR-0020) against
   the Python launcher — real spawn→wait latency, same session,
   skip-gated on unprivileged user namespaces.
+- §26 (NyVault byte path, 2026-08-15): ``--vault-io`` measures the
+  FUSE-passthrough data plane through the CALL/REPLY loop — write/read
+  p50/p95 per payload (4 KiB and the 32 KiB per-call cap) through
+  ``NyVaultOperations`` against a real in-process storage service,
+  plaintext and ADR-0023-encrypted.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -65,6 +70,7 @@ Usage:
   python3 tests/benchmarks.py --real-corpus  # §2 real-corpus ratio
   python3 tests/benchmarks.py --container    # §18 launch-plan primitives
   python3 tests/benchmarks.py --launcher-coldstart  # §25 cold-start A/B
+  python3 tests/benchmarks.py --vault-io     # §26 NyVault byte path
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -1654,6 +1660,97 @@ def benchmark_launcher_coldstart(n=8):
     return result
 
 
+def benchmark_vault_io(n=200, payloads=(4096, 32 * 1024)):
+    """NyVault byte path through the CALL/REPLY loop (§26, 2026-08-15).
+
+    Measures the FUSE-passthrough data plane the way a mounted client
+    sees it: ``NyVaultOperations.write``/``read`` are storage-service
+    CALLs, so each iteration is the full loop — CALL encode → datagram
+    → capability+handle+path checks → real NyFS I/O → durable
+    ``save()`` commit → REPLY decode. Reports p50/p95 per payload
+    (4 KiB = the classic metadata-ish call; 32 KiB = the per-call cap,
+    the FUSE passthrough's chunk size), plus the encrypted-variant
+    delta (block-layer AEAD, ADR-0023) when the PyNaCl floor is
+    present. This is the vault's §4 answer: what the byte path costs
+    per operation, benchmarked in-process like the other control-plane
+    sections.
+    """
+    import json as _json
+    from ipc.transport import (
+        IPCClient, IPCManager, IPCDatagramServer, DEFAULT_OPERATOR_ID,
+    )
+    from ipc.service import ServiceRouter
+    from ipc.storage import StorageService
+    from fuse.vault_mount import NyVaultOperations
+
+    def _loop(encrypted=False):
+        tmp = tempfile.mkdtemp(prefix="nyrqis-vault-io-")
+        svc_path = os.path.join(tmp, "svc.sock")
+        cli_path = os.path.join(tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        kek = None
+        if encrypted:
+            from backend import keys
+            kek = keys.unlock(keys.make_kek_blob(b"bench-vault-secret"),
+                              b"bench-vault-secret")
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(tmp, "vault"), kek=kek)
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            reply = client.call(svc_path, _json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "bench"}).encode("utf-8"))
+            vid = _json.loads(reply.payload.decode("utf-8"))["volume_id"]
+            ops = NyVaultOperations(client, svc_path, vid)
+            rows = {}
+            for size in payloads:
+                data = os.urandom(size)
+                path = f"/bench-{size}.bin"
+                ops.write(path, data, 0)  # warmup (inode, journal, caches)
+                w = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops.write(path, data, 0)
+                    w.append((time.perf_counter_ns() - t0) / 1000.0)
+                r = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops.read(path, size, 0)
+                    r.append((time.perf_counter_ns() - t0) / 1000.0)
+                rows[f"{size // 1024}k"] = {
+                    "write_p50_us": round(statistics.median(w), 1),
+                    "write_p95_us": round(percentile(sorted(w), 95), 1),
+                    "read_p50_us": round(statistics.median(r), 1),
+                    "read_p95_us": round(percentile(sorted(r), 95), 1),
+                    "iterations": n,
+                }
+            ops.close()
+            return rows
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    result = {"plaintext": _loop(encrypted=False)}
+    try:
+        result["encrypted"] = _loop(encrypted=True)
+    except Exception as e:  # noqa: BLE001 - the floor may be absent
+        result["encrypted"] = {"skipped": f"PyNaCl floor unavailable: {e}"}
+    return result
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -1743,6 +1840,9 @@ def main():
     parser.add_argument("--launcher-coldstart", action="store_true",
                         help="§25 container cold-start A/B — compiled "
                              "launcher-init vs the Python launcher")
+    parser.add_argument("--vault-io", action="store_true",
+                        help="§26 NyVault byte path through the "
+                             "CALL/REPLY loop (plaintext + encrypted)")
     parser.add_argument("--nyfs-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -1761,7 +1861,7 @@ def main():
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
-                or args.ipcd_control or args.launcher_coldstart)
+                or args.ipcd_control or args.launcher_coldstart or args.vault_io)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -1773,6 +1873,7 @@ def main():
         args.ipcd_dispatch = args.ipcd_refresh = True
         args.ipcd_control = True
         args.launcher_coldstart = True
+        args.vault_io = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1836,6 +1937,9 @@ def main():
         _print_section("Container cold-start A/B — compiled launcher-init "
                        "vs Python launcher (§25):",
                        benchmark_launcher_coldstart())
+    if args.vault_io:
+        _print_section("NyVault byte path through the loop (§26):",
+                       benchmark_vault_io())
 
 
 if __name__ == "__main__":

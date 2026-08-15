@@ -70,6 +70,11 @@ _MAX_IO_BYTES = 32 * 1024
 _PATH_RE = re.compile(r"^/(?:[^/]+/)*[^/]+$")
 
 
+class StorageLockedError(Exception):
+    """A vault op needs the unlocked KEK but the daemon has none
+    (serve with --vault-key-file and the passphrase)."""
+
+
 class StorageService:
     """NyVault's first increment: capability-gated named volumes.
 
@@ -85,15 +90,132 @@ class StorageService:
 
     def __init__(self,
                  capability_manager: Optional[Any] = None,
-                 vault_dir: Optional[str] = None) -> None:
+                 vault_dir: Optional[str] = None,
+                 kek: Optional[Any] = None) -> None:
         self.capability_manager = capability_manager
         self.vault_dir = vault_dir
+        # The daemon-held KEK (a keys.KeyHandle — an opaque handle into
+        # the Rust keys crate's table when present, the floor's handle
+        # otherwise; ADR-0023). ``None`` runs the vault UNENCRYPTED
+        # (volumes get no wrapped DEK — the crate-less/plaintext mode).
+        self.kek = kek
         self._server = None
-        # volume_id -> record (metadata + optional NyFS root)
+        # volume_id -> record (metadata + optional NyFS root + optional
+        # dek/wrapped_dek). The ``dek`` is the in-memory plaintext key
+        # for the block layer; ``wrapped_dek`` is the persisted at-rest
+        # envelope (crypto-shredded on delete).
         self._volumes: Dict[str, Dict[str, Any]] = {}
         self._by_name: Dict[str, str] = {}
         # handle -> {"volume_id", "container"}
         self._handles: Dict[str, Dict[str, str]] = {}
+        self._load_state()
+
+    # -- persistence -------------------------------------------------
+
+    def _state_path(self) -> str:
+        return os.path.join(self.vault_dir, "volumes.json")
+
+    def _load_state(self) -> None:
+        """Rebuild the volume registry from ``volumes.json`` (volumes
+        and their wrapped DEKs survive a daemon restart; handles and
+        plaintext DEKs are never persisted — the DEK is re-unwrapped
+        from the KEK when a volume is opened)."""
+        if not self.vault_dir:
+            return
+        path = self._state_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except (ValueError, OSError) as e:
+            logger.error("ipc: %s could not read %s: %s",
+                         self.SERVICE_NAME, path, e)
+            return
+        for rec in state.get("volumes", []):
+            try:
+                volume_id = rec["id"]
+                self._volumes[volume_id] = {
+                    "id": volume_id,
+                    "name": rec["name"],
+                    "created_by": rec.get("created_by", ""),
+                    "wrapped_dek": base64.b64decode(rec["wrapped_dek"])
+                    if rec.get("wrapped_dek") else None,
+                    "encrypted": bool(rec.get("wrapped_dek")),
+                    # dek + nyfs are lazily re-derived on open
+                    "dek": None,
+                    "nyfs": None,
+                }
+                self._by_name[self._volumes[volume_id]["name"]] = volume_id
+            except (KeyError, ValueError, TypeError) as e:
+                logger.error("ipc: %s skipped a bad volume record: %s",
+                             self.SERVICE_NAME, e)
+        if self._volumes:
+            logger.info("ipc: %s restored %d volume(s) from %s",
+                        self.SERVICE_NAME, len(self._volumes), path)
+
+    def _save_state(self) -> None:
+        """Atomically persist the registry (id/name/creator/wrapped
+        DEK). Never persists plaintext DEKs or handles."""
+        if not self.vault_dir:
+            return
+        state = {"version": 1, "volumes": [
+            {"id": r["id"], "name": r["name"],
+             "created_by": r["created_by"],
+             "wrapped_dek": base64.b64encode(r["wrapped_dek"]).decode("ascii")
+             if r.get("wrapped_dek") else None}
+            for r in self._volumes.values()
+        ]}
+        os.makedirs(self.vault_dir, exist_ok=True)
+        path = self._state_path()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, sort_keys=True)
+            os.replace(tmp, path)
+        except OSError as e:
+            logger.error("ipc: %s could not persist %s: %s",
+                         self.SERVICE_NAME, path, e)
+
+    # -- lazy rehydration -------------------------------------------
+
+    def _ensure_dek(self, record: Dict[str, Any]) -> Optional[bytes]:
+        """The volume's plaintext DEK, re-unwrapped from the KEK when
+        the record was restored from disk (never persisted plaintext).
+        Returns None for a plaintext volume."""
+        dek = record.get("dek")
+        if dek is not None:
+            return dek
+        if record.get("wrapped_dek") is None:
+            return None
+        if self.kek is None:
+            raise StorageLockedError(
+                "vault locked: the KEK is not unlocked (serve with "
+                "--vault-key-file and the passphrase)")
+        from backend import keys
+        record["dek"] = keys.unwrap(
+            self.kek, record["id"].encode("utf-8"), record["wrapped_dek"])
+        return record["dek"]
+
+    def _ensure_nyfs(self, record: Dict[str, Any]):
+        """The volume's NyFS root — created at volume_create, or
+        LOADED from disk when the daemon restarted (the ``.nyfs``
+        directory is the durable image; the in-memory inode table is
+        rebuilt from it and the DEK re-unwrapped)."""
+        if record.get("nyfs") is not None:
+            return record["nyfs"]
+        if not self.vault_dir:
+            return None
+        path = os.path.join(self.vault_dir, record["id"] + ".nyfs")
+        if not os.path.isdir(path):
+            return None
+        from fuse.nyfs import NyFSFilesystem
+        fs = NyFSFilesystem.load(path)
+        dek = self._ensure_dek(record)
+        fs.dek = dek
+        fs._ad = record["id"].encode("utf-8")
+        record["nyfs"] = fs
+        return fs
 
     def attach(self, server) -> "StorageService":
         """Give the service the server to reply through (the router
@@ -148,6 +270,39 @@ class StorageService:
             elif op == "volume_snapshots":
                 self._volume_snapshots(server, sender_path, msg.message_id,
                                        sender, request)
+            elif op == "volume_delete":
+                self._volume_delete(server, sender_path, msg.message_id,
+                                    sender, request)
+            elif op == "volume_getattr":
+                self._volume_getattr(server, sender_path, msg.message_id,
+                                     sender, request)
+            elif op == "volume_readdir":
+                self._volume_readdir(server, sender_path, msg.message_id,
+                                     sender, request)
+            elif op == "volume_mkdir":
+                self._volume_mkdir(server, sender_path, msg.message_id,
+                                   sender, request)
+            elif op == "volume_mknod":
+                self._volume_mknod(server, sender_path, msg.message_id,
+                                   sender, request)
+            elif op == "volume_unlink":
+                self._volume_unlink(server, sender_path, msg.message_id,
+                                    sender, request)
+            elif op == "volume_rmdir":
+                self._volume_rmdir(server, sender_path, msg.message_id,
+                                   sender, request)
+            elif op == "volume_rename":
+                self._volume_rename(server, sender_path, msg.message_id,
+                                    sender, request)
+            elif op == "volume_truncate":
+                self._volume_truncate(server, sender_path, msg.message_id,
+                                      sender, request)
+            elif op == "volume_statfs":
+                self._volume_statfs(server, sender_path, msg.message_id,
+                                    sender, request)
+            elif op == "volume_fsync":
+                self._volume_fsync(server, sender_path, msg.message_id,
+                                   sender, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -213,17 +368,39 @@ class StorageService:
             })
             return
         volume_id = uuid.uuid4().hex
-        record = {"id": volume_id, "name": name, "created_by": sender}
+        record = {"id": volume_id, "name": name, "created_by": sender,
+                  "encrypted": False}
+        # ADR-0023: when the daemon holds an unlocked KEK, the volume
+        # gets its own random DEK, wrapped with the KEK (ad = the
+        # volume id); the wrapped DEK is what persists — the plaintext
+        # DEK is held only in the daemon's memory for the block layer.
+        if self.kek is not None:
+            try:
+                from backend import keys
+                dek = keys.new_dek()
+                record["dek"] = dek
+                record["wrapped_dek"] = keys.wrap(
+                    self.kek, volume_id.encode("utf-8"), dek)
+                record["encrypted"] = True
+            except Exception as e:  # noqa: BLE001 - a key failure is a create failure
+                logger.error("ipc: %s could not key volume: %s",
+                             self.SERVICE_NAME, e)
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_create failed: %s" % (e,),
+                })
+                return
         # Back the volume with a real NyFS root under the daemon's
         # vault directory (lazy import — ipc must not depend on the
-        # backend eagerly). The root is created empty; data flows in
-        # with the byte-path increment.
+        # backend eagerly). An encrypted volume's root gets the DEK so
+        # every block is AEAD-encrypted at rest (checksum-then-encrypt).
         if self.vault_dir:
             try:
                 from fuse.nyfs import NyFSFilesystem  # noqa: F401
                 os.makedirs(self.vault_dir, exist_ok=True)
                 record["nyfs"] = NyFSFilesystem(
-                    os.path.join(self.vault_dir, volume_id + ".nyfs"))
+                    os.path.join(self.vault_dir, volume_id + ".nyfs"),
+                    dek=record.get("dek"), ad=volume_id)
             except Exception as e:  # noqa: BLE001 - a vault failure is a create failure
                 logger.error("ipc: %s could not back volume: %s",
                              self.SERVICE_NAME, e)
@@ -234,12 +411,15 @@ class StorageService:
                 return
         self._volumes[volume_id] = record
         self._by_name[name] = volume_id
-        logger.info("ipc: %s created volume %s (%s) for %s",
-                    self.SERVICE_NAME, volume_id, name, sender)
+        self._save_state()
+        logger.info("ipc: %s created volume %s (%s, encrypted=%s) for %s",
+                    self.SERVICE_NAME, volume_id, name,
+                    record["encrypted"], sender)
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": volume_id,
             "name": name,
+            "encrypted": record["encrypted"],
         })
 
     def _volume_open(self, server, sender_path: str, call_id: str,
@@ -268,6 +448,14 @@ class StorageService:
                 "ok": False,
                 "error": "forbidden: volume %s is not yours" % (volume_id[:8],),
             })
+            return
+        # A restored (encrypted) volume's DEK is re-unwrapped at open,
+        # so a locked vault fails here — before any handle exists.
+        try:
+            self._ensure_dek(record)
+        except StorageLockedError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e)})
             return
         handle = uuid.uuid4().hex
         self._handles[handle] = {"volume_id": volume_id,
@@ -347,12 +535,13 @@ class StorageService:
             })
             return
         record = self._volumes[binding["volume_id"]]
-        nyfs = record.get("nyfs")
+        nyfs = self._ensure_nyfs(record)
         info = {
             "ok": True,
             "volume_id": record["id"],
             "name": record["name"],
             "created_by": record["created_by"],
+            "encrypted": bool(record.get("wrapped_dek")),
         }
         if nyfs is not None:
             info["backend"] = "nyfs"
@@ -364,6 +553,50 @@ class StorageService:
         else:
             info["backend"] = "registry-only"
         self._reply(server, sender_path, call_id, info)
+
+    def _volume_delete(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id = request.get("volume_id") or \
+            self._by_name.get(request.get("name") or "")
+        record = self._volumes.get(volume_id)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if sender != DEFAULT_OPERATOR_ID and record["created_by"] != sender:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: volume %s is not yours" % (volume_id[:8],),
+            })
+            return
+        # Crypto-shred (ADR-0023): drop every handle, then drop the
+        # wrapped DEK + plaintext DEK from the registry — the ciphertext
+        # may remain on disk, but with no key path it is unrecoverable.
+        for handle, binding in list(self._handles.items()):
+            if binding["volume_id"] == volume_id:
+                del self._handles[handle]
+        name = record["name"]
+        del self._volumes[volume_id]
+        self._by_name.pop(name, None)
+        if self.vault_dir:
+            import shutil
+            shutil.rmtree(
+                os.path.join(self.vault_dir, volume_id + ".nyfs"),
+                ignore_errors=True)
+        self._save_state()
+        logger.info("ipc: %s deleted volume %s (%s) for %s",
+                    self.SERVICE_NAME, volume_id, name, sender)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "volume_id": volume_id})
 
     # -- byte path (ADR-0022: the daemon holds the data plane) ------
 
@@ -385,7 +618,12 @@ class StorageService:
             })
             return None
         record = self._volumes[binding["volume_id"]]
-        nyfs = record.get("nyfs")
+        try:
+            nyfs = self._ensure_nyfs(record)
+        except StorageLockedError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e)})
+            return None
         if nyfs is None:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
@@ -454,6 +692,17 @@ class StorageService:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": "write failed: %s" % (e,),
+            })
+            return
+        # Durability (ADR-0022: ADR-0019's journal commit is the vault's
+        # default): commit the transaction before replying so an ack is
+        # a durable write, not a memory-state promise.
+        try:
+            nyfs.save()
+        except Exception as e:  # noqa: BLE001 - a commit failure is a write failure
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "commit failed: %s" % (e,),
             })
             return
         self._reply(server, sender_path, call_id, {
@@ -561,6 +810,7 @@ class StorageService:
             return
         try:
             snapshot_id = nyfs.create_snapshot(snapshot_id=name)
+            nyfs.save()  # persist the snapshot table with the commit
         except Exception as e:  # noqa: BLE001 - a snapshot failure is an op failure
             self._reply(server, sender_path, call_id, {
                 "ok": False,
@@ -592,6 +842,126 @@ class StorageService:
             "snapshots": nyfs.list_snapshots(),
             "volume_id": record["id"],
         })
+
+    # -- generic file surface (the FUSE passthrough's backend) ------
+    #
+    # The passthrough mount (``fuse.vault_mount``) issues FUSE ops as
+    # these CALLs; each one is authorized + path-checked server-side,
+    # exactly like the byte path. Every NyFSError carries its POSIX
+    # errno back to the caller so the mount can re-raise the right
+    # ``OSError`` subclass (ENOENT → FileNotFoundError, etc.).
+
+    def _delegate(self, server, sender_path: str, call_id: str,
+                  sender: str, request: Dict[str, Any], fn,
+                  path_key: str = "path"):
+        """Authorize → resolve → path-check → run ``fn(nyfs, **args)``
+        → reply. Returns True when a reply was sent (always).
+        """
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        _, nyfs = resolved
+        args = dict(request)
+        args.pop("op", None)
+        args.pop("service", None)
+        args.pop("handle", None)
+        path = args.get(path_key)
+        if path is not None:
+            if not self._check_path(path):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "path must be an absolute volume path "
+                              "without '..' or trailing '/'",
+                })
+                return
+        try:
+            result = fn(nyfs, **args)
+        except Exception as e:  # noqa: BLE001 - errno mapping below
+            from fuse.nyfs import NyFSError
+            if isinstance(e, NyFSError):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "%s failed: %s" % (request.get("op"), e),
+                    "errno": e.errno,
+                })
+            else:
+                logger.error("ipc: %s %s failed: %s",
+                             self.SERVICE_NAME, request.get("op"), e)
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "internal error",
+                })
+            return
+        reply = {"ok": True}
+        if isinstance(result, dict):
+            reply.update(result)
+        self._reply(server, sender_path, call_id, reply)
+
+    def _volume_getattr(self, server, sender_path: str, call_id: str,
+                        sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path: {"stat": nyfs.getattr(path)})
+
+    def _volume_readdir(self, server, sender_path: str, call_id: str,
+                        sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path: {"names": nyfs.readdir(path)})
+
+    def _volume_mkdir(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path, mode=0o755: nyfs.mkdir(path, mode))
+
+    def _volume_mknod(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path, mode=0o644, dev=0:
+                       nyfs.mknod(path, mode, dev))
+
+    def _volume_unlink(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path: nyfs.unlink(path))
+
+    def _volume_rmdir(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path: nyfs.rmdir(path))
+
+    def _volume_rename(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        # ``from`` is a Python keyword; the wire keeps it as ``from``
+        # (the request's own namespace), so pop it before the delegate.
+        def _rename(nyfs, **kw):
+            return nyfs.rename(kw["from"], kw["to"])
+        self._delegate(server, sender_path, call_id, sender, request,
+                       _rename, path_key="from")
+
+    def _volume_truncate(self, server, sender_path: str, call_id: str,
+                         sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs, path, length: nyfs.truncate(path, length))
+
+    def _volume_statfs(self, server, sender_path: str, call_id: str,
+                       sender: str, request: Dict[str, Any]) -> None:
+        self._delegate(server, sender_path, call_id, sender, request,
+                       lambda nyfs: {"statfs": nyfs.statfs()})
+
+    def _volume_fsync(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        # The FUSE fsync contract (NPS-004 §7): commit at the transaction
+        # boundary — the same durability promise the write path gives.
+        def _save(nyfs):
+            nyfs.save()
+        self._delegate(server, sender_path, call_id, sender, request, _save)
 
 
 def _mkdirs(nyfs, path: str) -> None:

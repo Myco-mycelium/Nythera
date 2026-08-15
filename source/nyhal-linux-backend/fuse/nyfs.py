@@ -35,6 +35,7 @@ References:
 - ADR-0007: Adopt Zstandard as the default compression codec
 """
 
+import base64
 import ctypes
 import errno
 import json
@@ -86,7 +87,7 @@ class NyFSBlock:
     block_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     data: bytes = b""
     compressed_data: Optional[bytes] = None
-    checksum: str = ""  # SHA256 hex digest of the uncompressed data
+    checksum: str = ""  # SHA256 hex digest of the (possibly encrypted) data
     compression_level: int = 3  # Zstandard compression level (1-22)
     created_at: float = field(default_factory=time.time)
 
@@ -170,7 +171,9 @@ class NyFSFilesystem:
     JOURNAL_FILE = "journal.bin"  # append-only commit journal
 
     def __init__(self, base_path: str, block_size: int = BLOCK_SIZE,
-                 journal_compact_bytes: int = 64 * 1024 * 1024):
+                 journal_compact_bytes: int = 64 * 1024 * 1024,
+                 dek: Optional[bytes] = None,
+                 ad: Optional[bytes] = None):
         """Initialize the NyFS filesystem.
 
         Args:
@@ -183,6 +186,14 @@ class NyFSFilesystem:
                 blocks are materialized into ``state/blocks/`` and the
                 journal truncated (default 64 MiB; small values in tests
                 exercise compaction cheaply).
+            dek: The volume's 32-byte data-encryption key (ADR-0023).
+                When set, every block is AEAD-encrypted at rest
+                (checksum-then-encrypt: the SHA256 covers the
+                ciphertext) with a fresh per-block random nonce; the
+                ciphertext is what save() persists. ``None`` keeps the
+                filesystem plaintext.
+            ad: The AEAD associated data (the volume context) — required
+                when ``dek`` is set.
         """
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -191,6 +202,12 @@ class NyFSFilesystem:
             raise ValueError(f"block_size must be positive, got {block_size}")
         self.block_size = block_size
         self.journal_compact_bytes = journal_compact_bytes
+        if dek is not None and len(dek) != 32:
+            raise ValueError("dek must be 32 bytes")
+        if dek is not None and not ad:
+            raise ValueError("ad is required when a dek is set")
+        self.dek = dek
+        self._ad = ad.encode("utf-8") if isinstance(ad, str) else ad
 
         self.inode_counter = 1
         self.root_inode = self._create_inode(0, "/", stat.S_IFDIR | 0o755, is_directory=True)
@@ -363,19 +380,33 @@ class NyFSFilesystem:
     # ------------------------------------------------------------------
 
     def _decompress_verified(self, block: NyFSBlock) -> bytes:
-        """Decompress a block and verify its checksum (NPS-004 §4.3).
+        """Decompress a block, verify its checksum (NPS-004 §4.3), and
+        (for an at-rest-encrypted filesystem) AEAD-decrypt it.
 
         ``NyFSBlock.decompress`` routes through the codec module, whose
         ``decompress_verify`` performs the verification in one step (Rust
         FFI when available) and raises ``ValueError`` on a mismatch.
         """
         try:
-            return block.decompress()
+            data = block.decompress()
         except ValueError as e:
             logger.error(
                 f"Checksum mismatch for block {block.block_id}: {e}"
             )
             raise
+        if self.dek is not None:
+            # The block DATA is the AEAD envelope (nonce + ciphertext
+            # + tag, produced by block_encrypt_any); the nonce rides
+            # inside it, so an overwrite at the same index never
+            # reuses it and no separate nonce needs persisting.
+            from backend.keys import block_decrypt_any
+            try:
+                data = block_decrypt_any(self.dek, self._ad, data)
+            except Exception as e:  # noqa: BLE001 - AEAD failure = tamper
+                raise NyFSError(
+                    errno.EIO,
+                    f"block {block.block_id} failed AEAD verification: {e}")
+        return data
 
     def _content(self, inode: NyFSInode) -> bytes:
         data = b"".join(self._decompress_verified(b) for b in inode.blocks)
@@ -385,8 +416,20 @@ class NyFSFilesystem:
         return data[:inode.size]
 
     def _make_block(self, data: bytes) -> NyFSBlock:
-        """Create a checksummed, compressed CoW block (level 3, ADR-0007)."""
+        """Create a checksummed, compressed CoW block (level 3, ADR-0007).
+
+        For an at-rest-encrypted filesystem the block DATA is the AEAD
+        envelope (nonce + ciphertext+tag) — the checksum covers the
+        ciphertext (ADR-0023: a tampered block fails both the checksum
+        and the AEAD verification)."""
         block = NyFSBlock(data=data, compression_level=3)
+        if self.dek is not None:
+            # block_encrypt_any returns nonce + ciphertext+tag — the
+            # filesystem generates a FRESH random nonce per write, so
+            # an overwrite at the same index never reuses one.
+            from backend.keys import NONCE_LEN, block_encrypt_any
+            block.data = block_encrypt_any(
+                self.dek, os.urandom(NONCE_LEN), self._ad, data)
         block.compute_checksum()
         block.compress()
         return block
@@ -402,7 +445,7 @@ class NyFSFilesystem:
         """
         try:
             uniform = all(
-                len(b.decompress()) == self.block_size
+                len(self._decompress_verified(b)) == self.block_size
                 for b in inode.blocks
             )
         except Exception as e:
@@ -578,6 +621,10 @@ class NyFSFilesystem:
             if inode is None:
                 raise ValueError(f"Inode {inode_number} not found")
             block = NyFSBlock(data=data, compression_level=3)
+            if self.dek is not None:
+                from backend.keys import NONCE_LEN, block_encrypt_any
+                block.data = block_encrypt_any(
+                    self.dek, os.urandom(NONCE_LEN), self._ad, data)
             block.compute_checksum()
             if compress:
                 block.compress()

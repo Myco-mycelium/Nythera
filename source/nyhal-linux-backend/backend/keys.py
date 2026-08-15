@@ -219,6 +219,30 @@ def unwrap_dek(kek: bytes, ad: bytes, blob: bytes) -> bytes:
     return dek
 
 
+def block_encrypt(dek: bytes, nonce: bytes, ad: bytes,
+                  plaintext: bytes) -> bytes:
+    """AEAD-encrypt a block payload (ADR-0023 "checksum-then-
+    encrypt"): returns nonce + ciphertext+tag. The nonce is a fresh
+    random value per block WRITE (persisted with the block, so an
+    overwrite never reuses it); ``ad`` is the volume context."""
+    if len(dek) != DEK_LEN or len(nonce) != NONCE_LEN:
+        raise ValueError("DEK must be %d bytes and nonce %d bytes"
+                         % (DEK_LEN, NONCE_LEN))
+    return nonce + _aead_encrypt(dek, nonce, ad, plaintext)
+
+
+def block_decrypt(dek: bytes, ad: bytes, blob: bytes) -> bytes:
+    """The block plaintext back out of ``nonce + ciphertext+tag``.
+    Raises KeysError on tampering or a wrong DEK."""
+    if len(dek) != DEK_LEN or len(blob) < NONCE_LEN + TAG_LEN:
+        raise ValueError("bad block envelope")
+    nonce, ct = blob[:NONCE_LEN], blob[NONCE_LEN:]
+    try:
+        return _aead_decrypt(dek, nonce, ad, ct)
+    except Exception as e:  # noqa: BLE001 - AEAD failure = tamper/wrong key
+        raise KeysError("block failed verification") from e
+
+
 def kek_blob_size() -> int:
     return _KEK_BLOB_SIZE
 
@@ -301,6 +325,12 @@ class _Crate:
             U64, P, L, P, L, P, L]
         self.lib.nyrqis_keys_shred.restype = ctypes.c_int
         self.lib.nyrqis_keys_shred.argtypes = [U64]
+        self.lib.nyrqis_keys_block_encrypt.restype = ctypes.c_int
+        self.lib.nyrqis_keys_block_encrypt.argtypes = [
+            P, L, P, L, P, L, P, L, P, L]
+        self.lib.nyrqis_keys_block_decrypt.restype = ctypes.c_int
+        self.lib.nyrqis_keys_block_decrypt.argtypes = [
+            P, L, P, L, P, L, P, L]
 
     # -- pure functions (differential surface) ----------------------
 
@@ -360,6 +390,27 @@ class _Crate:
             self._ptr(blob), len(blob), out, DEK_LEN)
         if rc != 0:
             raise KeysError("unwrap failed (%d)" % rc)
+        return out.raw
+
+    def block_encrypt(self, dek: bytes, nonce: bytes, ad: bytes,
+                      plaintext: bytes) -> bytes:
+        out = ctypes.create_string_buffer(len(plaintext) + 40)
+        rc = self.lib.nyrqis_keys_block_encrypt(
+            self._ptr(dek), len(dek), self._ptr(nonce), len(nonce),
+            self._ptr(ad), len(ad),
+            self._ptr(plaintext), len(plaintext), out,
+            len(plaintext) + 40)
+        if rc != 0:
+            raise KeysError("block_encrypt failed (%d)" % rc)
+        return out.raw
+
+    def block_decrypt(self, dek: bytes, ad: bytes, blob: bytes) -> bytes:
+        out = ctypes.create_string_buffer(len(blob) - 40)
+        rc = self.lib.nyrqis_keys_block_decrypt(
+            self._ptr(dek), len(dek), self._ptr(ad), len(ad),
+            self._ptr(blob), len(blob), out, len(blob) - 40)
+        if rc != 0:
+            raise KeysError("block_decrypt failed (%d)" % rc)
         return out.raw
 
     def shred(self, handle: int) -> None:
@@ -480,3 +531,26 @@ def shred(key: KeyHandle) -> None:
     drop the reference)."""
     if isinstance(key, _CrateHandle):
         _require_crate().shred(key.handle)
+
+
+def block_encrypt_any(dek: bytes, nonce: bytes, ad: bytes,
+                      plaintext: bytes) -> bytes:
+    """The block envelope (nonce + ciphertext+tag) for the NyFS
+    at-rest byte path. Crate when present, floor otherwise (the
+    conformance gate forces the crate)."""
+    crate = _crate()
+    if crate is not None:
+        return crate.block_encrypt(dek, nonce, ad, plaintext)
+    if _force_enabled():
+        raise RuntimeError(_force_error())
+    return block_encrypt(dek, nonce, ad, plaintext)
+
+
+def block_decrypt_any(dek: bytes, ad: bytes, blob: bytes) -> bytes:
+    """The block plaintext back out of its envelope."""
+    crate = _crate()
+    if crate is not None:
+        return crate.block_decrypt(dek, ad, blob)
+    if _force_enabled():
+        raise RuntimeError(_force_error())
+    return block_decrypt(dek, ad, blob)

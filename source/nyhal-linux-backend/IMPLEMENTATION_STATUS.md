@@ -1,11 +1,11 @@
 ---
 title: Nyrqis Linux Backend Implementation Status
 document_id: IMPL-001
-version: 0.21.0
+version: 0.22.0
 status: In Progress
 classification: Technical
 created: 2026-07-15
-updated: 2026-08-14
+updated: 2026-08-15
 ai_assisted: true
 ---
 
@@ -166,6 +166,9 @@ Test suite: **299/299 passing** (`python3 test_backend.py` — 273 run + 26 skip
 - [ ] Measured-boot/TPM attestation story (`FIND-BOOT-003` — governance-level, needs a concrete need before design)
 
 **Conformance Status:** Partial (boot sequence + host integration + persistent state/health checks/syslog landed 2026-08-14; the TPM attestation story remains open)
+
+**2026-08-15 (0.14.5): NyVault at rest — KEK wiring, block AEAD, and the FUSE passthrough.**
+The encrypted-vault lifecycle is complete (ADR-0023's core claim): `nyrqisctl vault init` writes the Argon2id-derived KEK envelope; the daemon serves with `--vault-key-file` + passphrase (unlock at serve time, fail-closed on a wrong secret); `volume_create` gives every volume its own random DEK wrapped with the KEK (`ad = volume id`); the **block layer is AEAD-encrypted** — `rust/keys` + the PyNaCl floor gain `block_encrypt`/`block_decrypt` (24-byte nonce, XChaCha20-Poly1305, checksum over ciphertext), and `NyFSFilesystem(dek=...)` threads the DEK through `_make_block`/`_decompress_verified`, so every block at rest is `nonce ‖ ciphertext ‖ tag`, verified on read (no plaintext anywhere under the vault dir — verified). `volume_delete` crypto-shreds (handles + wrapped DEK + backing image + registry entry), and the registry + wrapped DEKs **persist across a daemon restart**. **The NyVault FUSE passthrough LANDED (ADR-0022's data-plane mount):** `fuse/vault_mount.py` — `NyVaultOperations` are FUSE ops whose handlers are **storage-service CALLs** (getattr/readdir/read/write/mkdir/mknod/unlink/rmdir/rename/truncate/statfs/fsync), paging the 32 KiB per-call byte path, with errno propagation; `NyVaultMount` mirrors `NyFSMount` (honest deferral without fusepy); the service's generic file surface sits behind the same capability + handle + path gates; CLI `nyrqisctl vault mount <volume> <mountpoint>`. **§26 vault-io benchmark:** the durable `save()` commit dominates writes (~86 ms p50, one fsync per transaction), reads run at **1.6–2.8 ms p50** flat across payloads, and the block AEAD adds ~0.5 ms on 32 KiB reads. Suite 412 → **427**.
 
 ## Conformance Assessment
 
