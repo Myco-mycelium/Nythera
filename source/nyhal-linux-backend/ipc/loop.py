@@ -152,6 +152,13 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
             ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
             ctypes.c_char_p,
         ]
+        lib.nyrqis_ipcd_loop_set_policy.restype = ctypes.c_int
+        lib.nyrqis_ipcd_loop_set_policy.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_PidEntry), ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int), ctypes.c_size_t,
+            ctypes.c_char_p,
+        ]
         lib.nyrqis_ipcd_loop_step.restype = ctypes.c_int
         lib.nyrqis_ipcd_loop_step.argtypes = [
             ctypes.c_void_p, ctypes.c_int64,
@@ -180,8 +187,10 @@ class IpcdLoop:
 
     ``pids`` maps pid → container id; ``trusted_uids`` and
     ``operator_id`` mirror the floor's ``_authorized`` operator
-    fallback. The policy is a snapshot — the per-batch refresh is the
-    next increment (ADR-0021 decision point 2).
+    fallback. The policy is a snapshot, refreshed in place via
+    :meth:`set_policy` whenever the container registry changes — the
+    per-container pid-table refresh, ADR-0021's
+    policy-data-across-the-boundary contract.
     """
 
     def __init__(
@@ -218,6 +227,42 @@ class IpcdLoop:
             raise RuntimeError("ipc loop: nyrqis_ipcd_loop_new failed")
         self._handle = ctypes.c_void_p(handle)
         self._closed = False
+
+    def set_policy(
+        self,
+        pids: Optional[Dict[int, str]] = None,
+        trusted_uids: Optional[List[int]] = None,
+        operator_id: str = "host-operator",
+    ) -> None:
+        """Replace the loop's sender-authorization policy in place (the
+        per-container pid-table refresh — ADR-0021's
+        policy-data-across-the-boundary contract). Safe to call while the
+        drive thread is stepping (the policy is behind a mutex in the
+        Rust module).
+
+        The daemon calls this whenever the container registry changes
+        (spawn/terminate), so newly-spawned containers can use the loop
+        immediately without recreating it.
+        """
+        if self._closed:
+            raise RuntimeError("ipc loop: set_policy on a closed loop")
+        entries = [
+            _PidEntry(pid, cid.encode("utf-8"))
+            for pid, cid in (pids or {}).items()
+        ]
+        entries_arr = (_PidEntry * len(entries))(*entries) if entries else None
+        uids = [int(u) for u in (trusted_uids or [])]
+        uids_arr = (ctypes.c_int * len(uids))(*uids) if uids else None
+        rc = self._lib.nyrqis_ipcd_loop_set_policy(
+            self._handle,
+            entries_arr,
+            len(entries),
+            uids_arr,
+            len(uids),
+            operator_id.encode("utf-8"),
+        )
+        if rc < 0:
+            _raise_rust_error(rc, "loop set_policy")
 
     def step(self, timeout_ms: int = 50) -> int:
         """Poll up to ``timeout_ms`` and drain one batch. Returns the

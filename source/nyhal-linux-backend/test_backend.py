@@ -1054,6 +1054,58 @@ class TestStatusServiceHost(unittest.TestCase):
                          "health socket must be unlinked on stop")
         self.assertFalse(os.path.exists(self.sock))
 
+    def test_host_health_socket_refreshes_container_policy(self):
+        # ADR-0021's per-container pid-table refresh, end-to-end: a
+        # container whose pid enters the registry AFTER the health
+        # socket starts can probe it — the registry's change hook
+        # pushes the policy to the Rust loop (the floor reads the
+        # registry live). Removing the pid flips the sender back to the
+        # trusted-uid operator fallback: a container-id ping is then
+        # dropped. Both backends behave identically, so the assertions
+        # are backend-agnostic (the loop path exercises the refresh;
+        # the floor path pins the same observable contract).
+        health_path = os.path.join(self.tmp, "health.sock")
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            health_socket_path=health_path)
+        host.start()
+        try:
+            # A "container" spawns after the health socket is up: the
+            # manager would register + grant it; mirror that here.
+            host.ipc_registry.register(os.getpid(), "ctr")
+            host.capability_manager.initialize_container("ctr")
+            client = IPCClient(
+                "ctr", os.path.join(self.tmp, "health-cli.sock")).bind()
+            try:
+                reply = client.call(
+                    health_path, b'{"op": "ping"}', timeout_s=5.0)
+                self.assertIsNotNone(
+                    reply, "a registered container must be answered")
+                resp = json.loads(reply.payload.decode())
+                self.assertTrue(resp["ok"])
+                self.assertEqual(
+                    resp["container"], "ctr",
+                    "the reply must carry the container's own identity")
+            finally:
+                client.close()
+            # The container terminates: its pid leaves the registry, so
+            # the policy no longer authorizes it (loop: refresh pushed;
+            # floor: registry read live). A container-id ping is dropped
+            # — the caller now falls to the trusted-uid operator path.
+            host.ipc_registry.unregister(os.getpid())
+            client = IPCClient(
+                "ctr", os.path.join(self.tmp, "health-cli2.sock")).bind()
+            try:
+                self.assertIsNone(
+                    client.call(health_path, b'{"op": "ping"}',
+                                timeout_s=1.0),
+                    "a pid removed from the registry must not be "
+                    "answered as its old container")
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
     def test_host_health_op(self):
         # Plan §4.5 health check: serve-loop liveness, container load,
         # registry size — readable over the wire by any granted caller.
@@ -5835,6 +5887,46 @@ class TestContainerIpcRegistry(unittest.TestCase):
         r.unregister(1)
         self.assertEqual(len(r), 0)
 
+    def test_on_change_fires_after_every_mutation(self):
+        # ADR-0021's per-container pid-table refresh: the daemon hooks
+        # the registry so every spawn/terminate pushes the new policy
+        # to the Rust serving loop. The callback fires AFTER the map is
+        # updated, so a snapshot taken inside it is current.
+        r = ContainerIpcRegistry()
+        events = []
+        r.set_on_change(lambda: events.append(r.snapshot()))
+        r.register(100, "ctr-a")
+        r.register(200, "ctr-b")
+        r.unregister(100)
+        self.assertEqual(events, [
+            {100: "ctr-a"},
+            {100: "ctr-a", 200: "ctr-b"},
+            {200: "ctr-b"},
+        ])
+        # Replacing the hook detaches it; unregistering an unknown pid
+        # or None does NOT fire (nothing changed).
+        events.clear()
+        r.set_on_change(lambda: events.append(1))
+        r.unregister(999)
+        r.unregister(None)
+        self.assertEqual(events, [])
+
+    def test_on_change_failure_is_swallowed(self):
+        # A failing policy-refresh callback must never break container
+        # lifecycle: register/unregister proceed and the exception is
+        # logged, not raised.
+        r = ContainerIpcRegistry()
+
+        def boom():
+            raise RuntimeError("policy push failed")
+
+        r.set_on_change(boom)
+        with mock.patch("ipc.registry.logger.warning"):
+            r.register(100, "ctr-a")
+            r.unregister(100)
+        self.assertEqual(len(r), 0)
+        self.assertIsNone(r.resolve(100))
+
     def test_server_authenticates_via_registry(self):
         registry = ContainerIpcRegistry()
         registry.register(1234, "ctr-a")
@@ -6451,6 +6543,64 @@ class TestIpcdLoopConformance(unittest.TestCase):
             )
             client.endpoint.send(forged.to_wire(), peer_path=srv.endpoint.path)
             self.assertIsNone(client.endpoint.receive(timeout=0.5))
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            srv.close()
+            client.close()
+
+    def test_set_policy_refreshes_pid_table(self):
+        # ADR-0021's per-container pid-table refresh through the driver:
+        # ``IpcdLoop.set_policy`` replaces the loop's authorization in
+        # place (the daemon pushes the registry snapshot on every
+        # container spawn/terminate). The loop starts authorizing
+        # ``container-A`` (from ``_loop_server``); after the refresh to
+        # an EMPTY pid table, our pid resolves only via the trusted-uid
+        # operator fallback, so a container-id ping is dropped; after a
+        # second refresh registering ``container-B``, that identity is
+        # answered. The floor equivalent needs no refresh (it reads the
+        # registry live) — the crate test pins the mechanics, this test
+        # pins the driver round trip.
+        mgr, srv, loop, stop, thread = self._loop_server("refresh")
+        client = IPCClient("container-A", os.path.join(self.tmp, "refresh-cli.sock")).bind()
+        try:
+            # Baseline: container-A is authorized at creation.
+            req = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-A",
+                payload=b'{"op": "ping"}',
+            )
+            client.endpoint.send(req.to_wire(), peer_path=srv.endpoint.path)
+            got = client.endpoint.receive(timeout=2.0)
+            self.assertIsNotNone(got, "container-A must be answered at creation")
+            self.assertIn(b'"container": "container-A"', got[0])
+
+            # Refresh to an empty pid table: our pid now resolves to the
+            # operator via trusted uid → a container-A wire is forged.
+            loop.set_policy(pids={})
+            req = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-A",
+                payload=b'{"op": "ping"}',
+            )
+            client.endpoint.send(req.to_wire(), peer_path=srv.endpoint.path)
+            self.assertIsNone(
+                client.endpoint.receive(timeout=0.5),
+                "a pid removed from the table must no longer be answered")
+
+            # Refresh again, registering container-B: the new identity
+            # is answered immediately (no loop recreation).
+            loop.set_policy(pids={os.getpid(): "container-B"})
+            req = IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id="container-B",
+                payload=b'{"op": "ping"}',
+            )
+            client.endpoint.send(req.to_wire(), peer_path=srv.endpoint.path)
+            got = client.endpoint.receive(timeout=2.0)
+            self.assertIsNotNone(got, "container-B must be answered after the refresh")
+            self.assertIn(b'"container": "container-B"', got[0])
         finally:
             stop.set()
             thread.join(timeout=2.0)

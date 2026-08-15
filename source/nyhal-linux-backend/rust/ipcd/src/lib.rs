@@ -91,21 +91,47 @@ pub struct PidEntry {
 
 /// The loop's sender-authorization policy (a snapshot of the backend's
 /// registry + trusted-uid set, supplied across the boundary at loop
-/// creation — the next increment refreshes it per batch).
+/// creation and refreshed through ``nyrqis_ipcd_loop_set_policy`` — the
+/// per-container pid-table refresh, ADR-0021's
+/// policy-data-across-the-boundary contract).
+#[derive(Clone)]
 struct Policy {
     pids: Vec<(i32, Vec<u8>)>,
     trusted_uids: Vec<i32>,
     operator_id: Vec<u8>,
 }
 
-/// The serving-loop handle (opaque to the caller).
+/// The serving-loop handle (opaque to the caller). The policy is behind
+/// a ``Mutex`` because ``set_policy`` can be called from the host's
+/// main thread (container spawn/terminate) while the drive thread is
+/// mid-step — the reads in the step loop and the writes in set_policy
+/// must not race (the FFI surface itself still exposes no shared state;
+/// the mutex is internal).
 struct IpcLoop {
     fd: c_int,
     batch_max: u32,
-    policy: Policy,
+    policy: std::sync::Mutex<Policy>,
     recv_buf: Vec<u8>,
     ctrl: AlignedCmsg,
     seq: u64,
+}
+
+impl IpcLoop {
+    /// Resolve the kernel-attached ``(pid, uid)`` to a container id or
+    /// the operator id (None = unknown sender — drop). Reads the policy
+    /// under the lock and clones the id out (the caller owns it).
+    fn resolve_sender(&self, pid: i32, uid: i32) -> Option<Vec<u8>> {
+        let policy = self.policy.lock().unwrap();
+        for (p, container) in &policy.pids {
+            if *p == pid {
+                return Some(container.clone());
+            }
+        }
+        if policy.trusted_uids.contains(&uid) {
+            return Some(policy.operator_id.clone());
+        }
+        None
+    }
 }
 
 /// CMSG buffer with the alignment cmsghdr requires.
@@ -113,18 +139,6 @@ struct IpcLoop {
 struct AlignedCmsg([u8; CMSG_BUF]);
 
 impl IpcLoop {
-    fn resolve_sender(&self, pid: i32, uid: i32) -> Option<&[u8]> {
-        for (p, container) in &self.policy.pids {
-            if *p == pid {
-                return Some(container);
-            }
-        }
-        if self.policy.trusted_uids.contains(&uid) {
-            return Some(&self.policy.operator_id);
-        }
-        None
-    }
-
     /// Build the reply wire for a ping CALL. Matches the floor's
     /// `IPCDatagramServer.reply` semantics: message_type REPLY (3),
     /// fresh message_id, empty sender/receiver, `reply_to` = the call's
@@ -383,7 +397,7 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_new(
     let mut loop_handle = Box::new(IpcLoop {
         fd,
         batch_max,
-        policy,
+        policy: std::sync::Mutex::new(policy),
         recv_buf: vec![0u8; RECV_BUF],
         ctrl: AlignedCmsg([0u8; CMSG_BUF]),
         seq: 0,
@@ -403,6 +417,56 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_new(
     let ptr: *mut IpcLoop = &mut *loop_handle;
     std::mem::forget(loop_handle);
     ptr as *mut c_void
+}
+
+/// Replace the loop's sender-authorization policy in place (the
+/// per-container pid-table refresh — ADR-0021's
+/// policy-data-across-the-boundary contract). Same marshalling as
+/// `nyrqis_ipcd_loop_new`; safe to call from another thread while the
+/// drive thread is stepping (the policy is behind a mutex). Returns 0
+/// or `ERR_INVALID_ARGS`.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_ipcd_loop_set_policy(
+    handle: *mut c_void,
+    pids: *const PidEntry,
+    pid_count: usize,
+    trusted_uids: *const i32,
+    trusted_count: usize,
+    operator: *const c_char,
+) -> i32 {
+    if handle.is_null() || operator.is_null() {
+        return ERR_INVALID_ARGS;
+    }
+    let operator_bytes = match CStr::from_ptr(operator).to_bytes() {
+        p if p.is_empty() => return ERR_INVALID_ARGS,
+        p => p,
+    };
+    let mut policy = Policy {
+        pids: Vec::with_capacity(pid_count),
+        trusted_uids: Vec::with_capacity(trusted_count),
+        operator_id: operator_bytes.to_vec(),
+    };
+    if !pids.is_null() {
+        for i in 0..pid_count {
+            let entry = &*pids.add(i);
+            if entry.container.is_null() {
+                return ERR_INVALID_ARGS;
+            }
+            let container = CStr::from_ptr(entry.container).to_bytes();
+            if container.is_empty() {
+                return ERR_INVALID_ARGS;
+            }
+            policy.pids.push((entry.pid, container.to_vec()));
+        }
+    }
+    if !trusted_uids.is_null() {
+        for i in 0..trusted_count {
+            policy.trusted_uids.push(*trusted_uids.add(i));
+        }
+    }
+    let loop_handle = &mut *(handle as *mut IpcLoop);
+    *loop_handle.policy.lock().unwrap() = policy;
+    0
 }
 
 /// Run one loop iteration: `poll` up to `timeout_ms` (negative =
@@ -485,7 +549,7 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_step(
             // (the floor drops forged senders — the kernel creds are
             // the attribution anchor, never the wire).
             let sender = match loop_handle.resolve_sender(pid, uid) {
-                Some(s) => s.to_vec(),
+                Some(s) => s,
                 None => continue, // unknown sender — drop
             };
             if parsed.sender_id != sender {
@@ -1038,6 +1102,109 @@ mod tests {
         let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
         let rc = unsafe { nyrqis_ipcd_loop_step(handle, 20) };
         assert_eq!(rc, 0, "clean timeout, nothing drained");
+        unsafe {
+            nyrqis_ipcd_loop_free(handle);
+            libc::close(client_fd);
+            libc::close(server_fd);
+            libc::unlink(server_path.as_ptr());
+            libc::unlink(client_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn set_policy_refreshes_pid_table() {
+        // A loop created with an empty table must start answering for a
+        // container only after ``nyrqis_ipcd_loop_set_policy`` pushes the
+        // refreshed table (the per-container pid-table refresh).
+        let policy = Policy {
+            pids: vec![],
+            trusted_uids: vec![],
+            operator_id: b"host-operator".to_vec(),
+        };
+        let (client_fd, server_fd, handle, server_path, client_path) = loop_fixture(policy);
+
+        // Before the refresh: our pid is unknown → the ping is dropped.
+        let wire = ping_call(b"call-pre", b"ctr-fresh");
+        unsafe {
+            let (sun, addr_len) = sockaddr_of(&server_path);
+            libc::sendto(
+                client_fd,
+                wire.as_ptr() as *const c_void,
+                wire.len(),
+                0,
+                &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            );
+        }
+        assert_eq!(unsafe { nyrqis_ipcd_loop_step(handle, 2000) }, 1);
+        let mut buf = [0u8; TEST_RECV];
+        assert_eq!(recv_frame(client_fd, &mut buf), 0, "no reply before the refresh");
+
+        // Push the refreshed policy (our real pid → ctr-fresh).
+        let entry = PidEntry {
+            pid: unsafe { libc::getpid() },
+            container: b"ctr-fresh\0".as_ptr() as *const c_char,
+        };
+        let rc = unsafe {
+            nyrqis_ipcd_loop_set_policy(
+                handle,
+                &entry,
+                1,
+                ptr::null(),
+                0,
+                b"host-operator\0".as_ptr() as *const c_char,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        // After the refresh: the same ping is answered with ctr-fresh.
+        let wire = ping_call(b"call-post", b"ctr-fresh");
+        unsafe {
+            let (sun, addr_len) = sockaddr_of(&server_path);
+            libc::sendto(
+                client_fd,
+                wire.as_ptr() as *const c_void,
+                wire.len(),
+                0,
+                &sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            );
+        }
+        assert_eq!(unsafe { nyrqis_ipcd_loop_step(handle, 2000) }, 1);
+        let n = recv_frame(client_fd, &mut buf);
+        assert!(n > 0, "reply after the refresh");
+        let parsed = parse_dispatch(&buf[..n]).expect("valid reply");
+        assert_eq!(parsed.reply_to, b"call-post");
+        assert_eq!(parsed.payload, build_ping_payload(b"ctr-fresh"));
+
+        // Invalid refresh args → ERR_INVALID_ARGS, policy unchanged.
+        assert_eq!(
+            unsafe {
+                nyrqis_ipcd_loop_set_policy(
+                    ptr::null_mut(),
+                    &entry,
+                    1,
+                    ptr::null(),
+                    0,
+                    b"host-operator\0".as_ptr() as *const c_char,
+                )
+            },
+            ERR_INVALID_ARGS
+        );
+        assert_eq!(
+            unsafe {
+                nyrqis_ipcd_loop_set_policy(
+                    handle,
+                    &entry,
+                    1,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                )
+            },
+            ERR_INVALID_ARGS
+        );
+
         unsafe {
             nyrqis_ipcd_loop_free(handle);
             libc::close(client_fd);

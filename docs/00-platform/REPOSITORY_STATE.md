@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-08-13
+2026-08-15
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -523,6 +523,21 @@ Documentation hygiene, fixed earlier this session:
   `--health-socket /run/nyrqis/health.sock`. New health-socket tests
   (real-host loop/floor paths + CLI wiring + unit flag). Suite 329 →
   **331**.
+- 2026-08-15 (**ADR-0021 per-container pid-table refresh**):
+  `nyrqis_ipcd_loop_set_policy` (the policy refresh FFI entry — the
+  pid→container/trusted-uid/operator policy behind a `Mutex`, safe to
+  refresh while the drive thread is stepping), `IpcdLoop.set_policy`
+  in the driver, `ContainerIpcRegistry.set_on_change` (fires after
+  every register/unregister mutation; failures swallowed so a policy
+  push can never break container lifecycle), and the host's
+  `_refresh_health_policy` hooked to the registry — a container whose
+  pid enters the registry can now probe the health socket as itself
+  (trusted-uid operator policy PLUS the live pid table, re-pushed on
+  every spawn/terminate; the floor path reads the registry live and
+  needed no change). New tests: registry hook (2), driver-level
+  refresh (1), host end-to-end refresh (1 — registered pid answered
+  as its container, removed pid falls back to the operator path,
+  identical in both backends). Suite 331 → **335**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

@@ -256,9 +256,10 @@ class StatusServiceHost:
         # (ping-only, the loop's first-increment scope) and by the
         # floor's status service otherwise — both answer ping with
         # byte-identical replies. The health socket is operator/systemd
-        # facing (the loop's policy is trusted-uid only, no pid table:
-        # containers keep using the MAIN socket), so a liveness probe
-        # never contends with container traffic on the service socket.
+        # facing (trusted-uid policy) AND container-facing (the loop's
+        # pid→container table, refreshed on spawn/terminate), while a
+        # liveness probe never contends with container traffic on the
+        # service socket.
         self.health_socket_path = health_socket_path
         # Plan §4.5 persistent state: a versioned, atomically-written
         # JSON record of the daemon identity + container manifest used
@@ -327,23 +328,32 @@ class StatusServiceHost:
         Rust serving loop when the crate is present, the floor's status
         service otherwise. Both answer the operator's ping with
         byte-identical replies, so a probe cannot tell which backend
-        answered. The loop's policy is trusted-uid only — the health
-        socket is operator/systemd facing; containers use the main
-        service socket (the loop's pid table refresh is a later
-        increment)."""
+        answered.
+
+        Loop policy: trusted-uid (operator) PLUS the live pid→container
+        table snapshot (ADR-0021's per-container pid-table refresh) —
+        the registry's change hook re-pushes the policy on every
+        container spawn/terminate, so a container whose pid is in the
+        registry can probe the health socket too."""
         if not self.health_socket_path:
             return
         if ipc_loop.available():
             # The loop takes the bound fd directly (the endpoint owns
             # 0700 + SO_PASSCRED + unlink; the loop never closes it).
+            # The policy starts from the CURRENT registry snapshot (a
+            # container spawned before the health socket started is
+            # authorized immediately) and the registry's change hook
+            # keeps it in sync thereafter.
             self.health_endpoint = UnixDatagramEndpoint(
                 self.health_socket_path).bind()
             self.health_loop = ipc_loop.IpcdLoop(
                 self.health_endpoint._sock.fileno(),
                 batch_max=64,
+                pids=self.ipc_registry.snapshot(),
                 trusted_uids=[os.getuid()],
                 operator_id=DEFAULT_OPERATOR_ID,
             )
+            self.ipc_registry.set_on_change(self._refresh_health_policy)
             self._health_thread = threading.Thread(
                 target=self._drive_health_loop, daemon=True)
             self._health_thread.start()
@@ -374,6 +384,27 @@ class StatusServiceHost:
             logger.info(
                 "status host: health socket %s served by the Python "
                 "floor (ipcd crate absent)", self.health_socket_path)
+
+    def _refresh_health_policy(self) -> None:
+        """Push the current registry snapshot into the health loop (the
+        per-container pid-table refresh). Called by the registry's
+        change hook on every container spawn/terminate, so the loop's
+        authorization stays in sync without recreating it. Best effort:
+        a closed or absent loop is a no-op (the hook cannot fail
+        container lifecycle — the registry swallows its exceptions)."""
+        loop = self.health_loop
+        if loop is None:
+            return
+        try:
+            loop.set_policy(
+                pids=self.ipc_registry.snapshot(),
+                trusted_uids=[os.getuid()],
+                operator_id=DEFAULT_OPERATOR_ID,
+            )
+        except Exception:  # noqa: BLE001 - policy refresh is best effort
+            logger.warning(
+                "status host: health loop policy refresh failed",
+                exc_info=True)
 
     def _drive_health_loop(self) -> None:
         """Drive the Rust serving loop until the host stops. A step

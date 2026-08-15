@@ -16,6 +16,19 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.13.6] — 2026-08-15
+
+### ADR-0021 per-container pid-table refresh: containers can probe the health socket
+
+#### Added
+
+- **`rust/ipcd/`** — `nyrqis_ipcd_loop_set_policy` (the policy refresh FFI entry): replaces the loop's sender-authorization policy in place — pid→container table, trusted uids, operator id — same marshalling as `loop_new`, safe to call from another thread while the drive thread is stepping (the policy moved behind a `Mutex`; the FFI surface still exposes no shared state). New crate test `set_policy_refreshes_pid_table` (drop before refresh → answered after; invalid args → `ERR_INVALID_ARGS`). Crate suite 14 → **15**.
+- **`ipc/registry.py`** — `ContainerIpcRegistry` gains `set_on_change()`: a callback fired after every register/unregister mutation (idempotent unregister of a never-mapped pid does NOT fire — nothing changed), with failures swallowed and logged so a policy push can never break container lifecycle.
+- **`ipc/loop.py`** — `IpcdLoop.set_policy()`: the Python driver for the new FFI entry (snapshot marshalling + error mapping), safe while the drive thread is stepping.
+- **`nyrqis_backend.py`** — `StatusServiceHost` now creates the health loop with the **live registry snapshot** and hooks `self.ipc_registry.set_on_change(self._refresh_health_policy)`, which re-pushes the snapshot on every container spawn/terminate. A container whose pid is in the registry can now probe the health socket as itself (operator/trusted-uid policy PLUS the pid table); the floor path needed no change (it reads the registry live).
+- **`test_backend.py`** — registry change-hook tests (fires after each mutation with a current snapshot; failures swallowed), `test_set_policy_refreshes_pid_table` (driver-level: authorization granted/revoked/re-granted via `set_policy` without recreating the loop), and `test_host_health_socket_refreshes_container_policy` (end-to-end through the real host: a pid registered AFTER the health socket starts is answered as its container; after unregister, a container-id ping is dropped — the caller falls back to the trusted-uid operator path; identical behavior in both backends). Suite 331 → **335**.
+
+
 ## [0.13.5] — 2026-08-15
 
 ### ADR-0021 wired into the daemon: the health-probe socket

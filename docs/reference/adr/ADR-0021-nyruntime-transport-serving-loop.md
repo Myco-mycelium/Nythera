@@ -17,15 +17,19 @@ depends_on: [NPS-003, ADR-0020, ABI-001, ADR-0009]
 > beats the Python floor ~2.8× at the wire median (p50 ~136 µs vs
 > ~387–394 µs) — the differential gate is GREEN. **The same day the
 > loop was wired into the daemon:** `service serve --health-socket`
-> serves a dedicated health-probe path through the loop (trusted-uid
-> policy — containers keep using the main service socket, whose
-> per-container pid-table refresh is the next increment; the floor
+> serves a dedicated health-probe path through the loop; the floor
 > serves the health socket on crate-less hosts with byte-identical
-> replies). The close gate (NPS-003 §6.1 <100 µs median) stays OPEN:
-> the residual is the client-side Python per-call cost, which is the
-> next increment (the client half of the loop behind the boundary).
-> The floor remains shipped; this ADR stays Proposed until the close
-> gate is met.
+> replies. **The per-container pid-table refresh LANDED the same day:**
+> `nyrqis_ipcd_loop_set_policy` (the policy refresh FFI entry, policy
+> behind a `Mutex` — refresh while the drive thread is stepping), the
+> registry's `set_on_change` hook, and the host's
+> `_refresh_health_policy`, so a container whose pid enters the
+> registry can probe the health socket as itself (operator/trusted-uid
+> policy PLUS the pid table, re-pushed on every spawn/terminate). The
+> close gate (NPS-003 §6.1 <100 µs median) stays OPEN: the residual is
+> the client-side Python per-call cost, which is the next increment
+> (the client half of the loop behind the boundary). The floor remains
+> shipped; this ADR stays Proposed until the close gate is met.
 
 # ADR-0021 — NyRuntime Direction: The IPC Serving Loop Behind the FFI Boundary
 
