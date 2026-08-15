@@ -1059,6 +1059,38 @@ noisy (202–695 ms) — the fsync's scheduling variance — while read p95
 stays ~4–5 ms. The passthrough's 32 KiB chunking therefore costs the
 mount nothing extra: two calls are cheaper than the commit either way.
 
+## 27. Live ENCRYPTED NyVault FUSE Mount vs Native (2026-08-15)
+
+The ADR-0022 data-plane mount, first live benchmark: a real kernel
+FUSE mount over an ADR-0023-encrypted volume, where every kernel
+request is a storage-service CALL into the AEAD block layer. Isolated
+child process (the §19 containment pattern), `--vault-mount-io`.
+
+| Pattern | Encrypted FUSE mount | Native (same tmp dir) | Δ |
+|---------|---------------------|-----------------------|-----|
+| Write, 1 MiB syscalls | 0.28 MB/s | 1,688 MB/s | ~6,000× |
+| Write, 4 KiB syscalls | 0.04 MB/s | 1,145–1,605 MB/s | ~30,000× |
+| Read, 1 MiB | 2.11 MB/s | 3,149–4,232 MB/s | ~1,700× |
+| Read, 4 KiB | 2.08 MB/s | 1,003–1,200 MB/s | ~500× |
+
+Reading: **the durable per-CALL commit is the entire write story.**
+Every `volume_write` CALL commits (`save()`, one fsync per transaction
+— the §9/§15/§26 finding) before replying, and the passthrough caps
+each CALL at 32 KiB, so a 1 MiB write = 32 sequential CALLs ≈ 110 ms
+per CALL. The INIT write-batching negotiation (FUSE_CAP_BIG_WRITES +
+WRITEBACK_CACHE + MAX_PAGES, now shared with `NyFSMount`) matters
+anyway: without it the kernel sends 4 KiB write requests and the 1 MiB
+write pays 256 commits (0.04 MB/s); with it the kernel batches to
+128 KiB requests and the 1 MiB write pays 32 (0.28 MB/s, **7×**). The
+4 KiB-syscall pattern stays at 0.04 MB/s — the kernel writes those
+pages back at 4 KiB granularity regardless, so every page pays a
+commit. Reads need no commit and run at ~2.1 MB/s flat across chunk
+sizes. The gap to the plaintext NyFS mount's 40–46 MB/s (§6) is
+precisely this commit-per-CALL granularity — the documented next step
+is write-commit batching (aggregate `save()` at the fsync/interval
+boundary instead of per CALL), which the vault's own fsync hook
+(`volume_fsync`) already exists to anchor.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

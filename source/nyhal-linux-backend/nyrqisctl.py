@@ -57,7 +57,8 @@ VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
     "vault-volume-close", "vault-volume-write", "vault-volume-read",
     "vault-volume-snapshot", "vault-volume-snapshots",
-    "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
+    "vault-volume-restore", "vault-volume-delete", "vault-volume-mount",
+    "vault-volume-rekey",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -126,6 +127,9 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "vault-volume-snapshots":
         return {"service": "storage", "op": "volume_snapshots",
                 "handle": args.handle}
+    if command == "vault-volume-restore":
+        return {"service": "storage", "op": "volume_restore",
+                "handle": args.handle, "name": args.name}
     if command == "vault-volume-delete":
         if args.name:
             return {"service": "storage", "op": "volume_delete",
@@ -225,6 +229,9 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "vault-volume-snapshots":
         snaps = resp.get("snapshots") or []
         return "\n".join(snaps) if snaps else "no snapshots"
+    if command == "vault-volume-restore":
+        return (f"volume restored to snapshot {resp.get('restored')} "
+                f"({resp.get('volume_id')})")
     if command == "vault-volume-delete":
         return f"volume {resp.get('volume_id')} deleted " \
                "(crypto-shredded)"
@@ -568,6 +575,13 @@ def build_parser() -> argparse.ArgumentParser:
     vss = vsub.add_parser("snapshots", help="List a volume's snapshots")
     vss.add_argument("handle")
     vss.set_defaults(command="vault-volume-snapshots")
+
+    vr2 = vsub.add_parser(
+        "restore", help="Restore a volume to a snapshot (the snapshot "
+                        "table itself is unchanged)")
+    vr2.add_argument("handle")
+    vr2.add_argument("name", help="Snapshot id to restore to")
+    vr2.set_defaults(command="vault-volume-restore")
 
     vd = vsub.add_parser(
         "delete", help="Delete a volume by id (or --name) — crypto-shreds "

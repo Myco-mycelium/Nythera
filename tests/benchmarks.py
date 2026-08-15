@@ -54,6 +54,11 @@ this host in one reproducible script:
   p50/p95 per payload (4 KiB and the 32 KiB per-call cap) through
   ``NyVaultOperations`` against a real in-process storage service,
   plaintext and ADR-0023-encrypted.
+- §27 (live encrypted NyVault mount, 2026-08-15): ``--vault-mount-io``
+  benchmarks the ENCRYPTED volume through a REAL kernel FUSE mount
+  (ADR-0022's data-plane mount) vs native I/O, in the §19 isolated
+  child process; every kernel request is a storage-service CALL into
+  the AEAD block layer.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -71,6 +76,7 @@ Usage:
   python3 tests/benchmarks.py --container    # §18 launch-plan primitives
   python3 tests/benchmarks.py --launcher-coldstart  # §25 cold-start A/B
   python3 tests/benchmarks.py --vault-io     # §26 NyVault byte path
+  python3 tests/benchmarks.py --vault-mount-io  # §27 live encrypted mount
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -944,6 +950,163 @@ def benchmark_nyfs_mount(total=16 * 1024 * 1024, timeout_s=150):
     except (ValueError, IndexError):
         return {
             "skipped": "live-mount child failed (rc=%s): %s"
+                       % (proc.returncode, err.decode()[:300]),
+        }
+    return result
+
+
+def _vault_mount_worker():
+    """The live encrypted-NyVault-mount benchmark — run in an isolated
+    child process by ``benchmark_vault_mount_io`` (never call
+    directly), mirroring ``_nyfs_mount_worker``'s containment: the
+    parent enforces the timeout and kills the group on a wedged FUSE
+    request.
+
+    The volume is ENCRYPTED at rest (ADR-0023) and mounted through the
+    FUSE passthrough, so every kernel request rides a storage-service
+    CALL into the AEAD block layer. Each write CALL is durable (the
+    service saves before replying — the §26 finding), so the 4 KiB
+    small-write pattern is the honest durability cost of the
+    passthrough data plane.
+    """
+    import json as _json
+    from backend import keys
+    from ipc.transport import IPCClient, DEFAULT_OPERATOR_ID
+    from fuse.vault_mount import NyVaultMount
+
+    def mbps(bytes_, seconds):
+        return round(bytes_ / seconds / (1024 * 1024), 2) if seconds else float("inf")
+
+    def bench_write(path, chunk, size):
+        data = os.urandom(min(chunk, size))
+        with open(path, "wb") as fh:
+            t0 = time.perf_counter()
+            off = 0
+            while off < size:
+                fh.write(data[:size - off])
+                off += chunk
+            fh.flush()
+            return mbps(size, time.perf_counter() - t0)
+
+    def bench_read(path, chunk, size):
+        with open(path, "rb") as fh:
+            t0 = time.perf_counter()
+            read = 0
+            while read < size:
+                fh.read(chunk)
+                read += chunk
+            return mbps(size, time.perf_counter() - t0)
+
+    tmp = tempfile.mkdtemp(prefix="nyrqis-vault-mnt-bench-")
+    sock = os.path.join(tmp, "status.sock")
+    vault = os.path.join(tmp, "vault")
+    key = os.path.join(tmp, "vault.key")
+    mnt = os.path.join(tmp, "mnt")
+    native_dir = os.path.join(tmp, "native")
+    os.makedirs(mnt, exist_ok=True)
+    os.makedirs(native_dir, exist_ok=True)
+    with open(key, "wb") as f:
+        f.write(keys.make_blob_any(b"bench-mount-secret"))
+
+    import nyrqis_backend
+    host = nyrqis_backend.StatusServiceHost(
+        socket_path=sock, backend_version="9.9.9",
+        vault_dir=vault, vault_key_file=key,
+        vault_passphrase="bench-mount-secret")
+    host.start()
+    client = IPCClient(DEFAULT_OPERATOR_ID,
+                       os.path.join(tmp, "ctl.sock")).bind()
+    try:
+        reply = client.call(sock, _json.dumps({
+            "service": "storage", "op": "volume_create",
+            "name": "bench"}).encode("utf-8"))
+        vid = _json.loads(reply.payload.decode("utf-8"))["volume_id"]
+        m = NyVaultMount(client, sock, vid, mnt)
+        if not m.mount(foreground=True, blocking=False):
+            return {"skipped": "mount could not be started"}
+        watchdog = threading.Timer(90.0, lambda: os._exit(99))
+        watchdog.start()
+        try:
+            time.sleep(2.0)  # the FUSE loop establishes the kernel mount
+            results = {}
+            # Small writes: 256 KiB at 4 KiB per syscall — the honest
+            # durability cost (a save() per CALL).
+            results["write_4k_fuse_mbps"] = bench_write(
+                os.path.join(mnt, "b.bin"), 4096, 256 * 1024)
+            # Streaming: 1 MiB at 1 MiB syscalls (kernel-batched).
+            results["write_1m_fuse_mbps"] = bench_write(
+                os.path.join(mnt, "b.bin"), 1024 * 1024, 1024 * 1024)
+            results["write_1m_native_mbps"] = bench_write(
+                os.path.join(native_dir, "b.bin"),
+                1024 * 1024, 1024 * 1024)
+            for chunk, tag in ((1024 * 1024, "1m"), (4096, "4k")):
+                results[f"read_{tag}_fuse_mbps"] = bench_read(
+                    os.path.join(mnt, "b.bin"), chunk, 1024 * 1024)
+                results[f"read_{tag}_native_mbps"] = bench_read(
+                    os.path.join(native_dir, "b.bin"), chunk, 1024 * 1024)
+            results["total_bytes"] = 1024 * 1024
+            return results
+        finally:
+            watchdog.cancel()
+            try:
+                subprocess.run(["fusermount3", "-u", mnt],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+            try:
+                m.unmount()
+            except Exception:
+                pass
+    finally:
+        client.close()
+        host.stop()
+
+
+def benchmark_vault_mount_io(timeout_s=150):
+    """Live ENCRYPTED NyVault FUSE mount vs native I/O (§27,
+    2026-08-15): the same real-kernel-mount shape as §4/§6, but the
+    mounted volume is ADR-0023-encrypted at rest and every kernel
+    request is a storage-service CALL through the passthrough. Runs in
+    an isolated child process (the §19 containment pattern); skipped
+    without fusepy / /dev/fuse / fusermount.
+    """
+    if not _fuse_mount_available():
+        return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}
+    base = tempfile.mkdtemp(prefix="nyrqis-vault-bench-")
+    proc = subprocess.Popen(
+        [sys.executable, "-B", os.path.abspath(__file__),
+         "--vault-mount-child"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        return {
+            "skipped": "encrypted live mount timed out after %ss (wedged "
+                       "FUSE request); child %s may require root abort or "
+                       "reboot to clear" % (timeout_s, proc.pid),
+        }
+    try:
+        result = json.loads(out.decode().strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {
+            "skipped": "encrypted live-mount child failed (rc=%s): %s"
                        % (proc.returncode, err.decode()[:300]),
         }
     return result
@@ -1843,7 +2006,12 @@ def main():
     parser.add_argument("--vault-io", action="store_true",
                         help="§26 NyVault byte path through the "
                              "CALL/REPLY loop (plaintext + encrypted)")
+    parser.add_argument("--vault-mount-io", action="store_true",
+                        help="§27 live ENCRYPTED NyVault FUSE mount vs "
+                             "native I/O")
     parser.add_argument("--nyfs-mount-child", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--vault-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -1854,6 +2022,11 @@ def main():
         # ``NYRQIS_BENCH_MNT``. Never run by hand.
         print(json.dumps(_nyfs_mount_worker()))
         return
+    if args.vault_mount_child:
+        # Internal: run the encrypted-vault live-mount benchmark in
+        # this process (``benchmark_vault_mount_io``). Never by hand.
+        print(json.dumps(_vault_mount_worker()))
+        return
 
     selected = (args.ipc or args.ipc_transport or args.ipcd or args.bucket
                 or args.zstd or args.nyfs or args.nyfs_mount or args.nyfs_persist
@@ -1861,7 +2034,8 @@ def main():
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
-                or args.ipcd_control or args.launcher_coldstart or args.vault_io)
+                or args.ipcd_control or args.launcher_coldstart
+                or args.vault_io or args.vault_mount_io)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -1874,6 +2048,7 @@ def main():
         args.ipcd_control = True
         args.launcher_coldstart = True
         args.vault_io = True
+        args.vault_mount_io = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1940,6 +2115,9 @@ def main():
     if args.vault_io:
         _print_section("NyVault byte path through the loop (§26):",
                        benchmark_vault_io())
+    if args.vault_mount_io:
+        _print_section("Live ENCRYPTED NyVault FUSE mount vs native (§27):",
+                       benchmark_vault_mount_io())
 
 
 if __name__ == "__main__":

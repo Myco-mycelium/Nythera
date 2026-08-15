@@ -28,6 +28,7 @@ mount client is just another container with a granted capability.
 """
 
 import base64
+import ctypes
 import errno
 import json
 import logging
@@ -217,6 +218,20 @@ class NyVaultOperations:
         self._call("volume_fsync")
         return 0
 
+    def snapshot(self, name: str) -> str:
+        """Create a named CoW snapshot of the whole volume (not a FUSE
+        op — exposed for the mount owner)."""
+        return self._call("volume_snapshot", name=name)["snapshot_id"]
+
+    def restore(self, name: str) -> None:
+        """Restore the volume tree to a snapshot. Path-based lookups
+        re-resolve against the restored table, so the mount stays
+        usable (kernel attribute caches may briefly hold stale sizes)."""
+        self._call("volume_restore", name=name)
+
+    def list_snapshots(self):
+        return self._call("volume_snapshots")["snapshots"]
+
 
 def _import_fusepy():
     """Import the third-party ``fuse`` module (fusepy) by file path —
@@ -265,10 +280,24 @@ class NyVaultMount:
             logger.info("fusepy loaded; NyVault mount available")
         return self._fusepy is not None
 
-    def _build_fuse(self, foreground: bool = True, **fuse_kwargs):
+    def _build_fuse(self, foreground: bool = True, writeback_cache: bool = True,
+                    **fuse_kwargs):
         """Construct the fusepy FUSE object for this mount (blocks in
         the FUSE event loop, like NyFSMount's — ``mount()`` runs it in
-        a thread when ``blocking=False``)."""
+        a thread when ``blocking=False``).
+
+        ``writeback_cache`` negotiates FUSE_CAP_BIG_WRITES +
+        FUSE_CAP_WRITEBACK_CACHE + FUSE_CAP_MAX_PAGES in the INIT
+        handshake (same as ``NyFSMount``), so the kernel batches writes
+        into multi-page requests instead of 4 KiB ones. Without it,
+        every 4 KiB FUSE write pays the service's durable per-CALL
+        save() — measured at ~0.04 MB/s (BENCHMARK_RESULTS.md §27);
+        batched, writes ride the 32 KiB per-call path at the honest
+        durability cost."""
+        from fuse.nyfs import (
+            _FuseConnInfo, _FUSE_CAP_BIG_WRITES,
+            _FUSE_CAP_WRITEBACK_CACHE, _FUSE_CAP_MAX_PAGES,
+        )
         fuse_mod = self._fusepy or _import_fusepy()
         if fuse_mod is None:
             raise VaultMountError(errno.ENODEV, "fusepy is not available")
@@ -291,12 +320,50 @@ class NyVaultMount:
                 except VaultMountError as e:
                     raise fuse_mod.FuseOSError(e.errno)
 
+            def init(self, path):
+                # Presence marker so fusepy registers the ``init`` C
+                # callback; the actual fuse_conn_info negotiation
+                # happens in the FUSE subclass's ``init`` override
+                # below (mirrors NyFSMount's adapter).
+                return 0
+
         fuse_cls = getattr(fuse_mod, "FUSE", None) or getattr(
             fuse_mod, "Fuse", None)
         if fuse_cls is None:
             raise VaultMountError(errno.ENODEV, "fusepy has no FUSE class")
 
-        self._fuse = fuse_cls(
+        class _VaultFUSE(fuse_cls):
+            """FUSE subclass that negotiates write-batching capabilities
+            in the INIT handshake (mirrors NyFSMount's ``_NyFUSE``):
+            without FUSE_CAP_BIG_WRITES + WRITEBACK_CACHE the kernel
+            submits one page per write, and each page rides a CALL that
+            pays the durable save (the §27 finding)."""
+
+            def init(self, conn):
+                if not writeback_cache:
+                    return 0
+                try:
+                    info = ctypes.cast(
+                        conn, ctypes.POINTER(_FuseConnInfo)).contents
+                    if info.proto_major != 7:
+                        logger.warning(
+                            "NyVault FUSE INIT negotiation skipped: "
+                            "unexpected proto_major=%s (ctypes layout "
+                            "mismatch?)", info.proto_major)
+                        return 0
+                    desired = (_FUSE_CAP_BIG_WRITES
+                               | _FUSE_CAP_WRITEBACK_CACHE
+                               | _FUSE_CAP_MAX_PAGES)
+                    info.want |= desired & info.capable
+                    info.max_pages = 256
+                except Exception as e:
+                    # Negotiation failure must not prevent mounting.
+                    logger.warning(
+                        "NyVault FUSE INIT negotiation failed (%s); "
+                        "falling back to kernel write defaults", e)
+                return 0
+
+        self._fuse = _VaultFUSE(
             _Adapter(self.operations),
             str(self.mount_point),
             foreground=foreground,

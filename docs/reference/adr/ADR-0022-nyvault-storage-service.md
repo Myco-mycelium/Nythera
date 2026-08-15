@@ -39,6 +39,18 @@ depends_on: [NPS-003, NPS-004, NPS-011, ADR-0002, ADR-0003, ADR-0007, ADR-0016, 
 > landed: per-volume wrapped DEKs at `volume_create` and the
 > AEAD-encrypted block layer (`NyFSFilesystem(dek=...)`) — **at-rest
 > encryption is now claimed** (see ADR-0023).
+>
+> **Same day, later:** snapshot restore landed (`volume_restore` +
+> `nyrqisctl vault restore`), and the live encrypted mount was
+> benchmarked (§27): the durable per-CALL commit dominates writes
+> (0.28 MB/s for batched 1 MiB writes vs native ~1,700 MB/s; reads
+> ~2.1 MB/s). The benchmark surfaced and fixed a real mount bug — the
+> passthrough adapter never registered the `init` marker, so the
+> write-batching INIT negotiation silently never ran (4 KiB write
+> requests, 0.04 MB/s); with the marker + shared capability
+> negotiation it is 7× faster. **Write-commit batching** (aggregate
+> `save()` at the fsync/interval boundary instead of per CALL) is the
+> documented next step.
 
 # ADR-0022 — NyVault: Storage as a Daemon-Hosted Service on the IPC Transport
 

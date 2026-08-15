@@ -40,6 +40,7 @@ nav:
       - Add a New Capability: how-to/add-a-capability.md
       - Propose an NPS or ADR: how-to/propose-a-change.md
       - Run the Linux Backend Tests: how-to/run-linux-backend-tests.md
+      - Operate the NyVault Storage Service: how-to/operate-the-vault.md
       - Verify the Docs Dependency Graph: how-to/check-dependency-cycles.md
       - Choose an Implementation Language: how-to/choose-an-implementation-language.md
   - Reference:

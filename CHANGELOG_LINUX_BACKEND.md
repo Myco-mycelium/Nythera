@@ -16,6 +16,15 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.7] — 2026-08-15
+
+### Snapshot restore, the live encrypted-mount benchmark (§27), and the vault runbook
+
+- **`volume_restore` + `nyrqisctl vault restore`**: restore a volume's tree to a CoW snapshot over the wire (the snapshot table itself is unchanged; the restored table is what `save()` persists). Verified through the CLI (snapshot → overwrite → restore → original bytes back) AND through the **live encrypted mount** (`TestNyVaultLiveMount`: kernel write → snapshot → kernel overwrite → restore → content verified on the same CALL path the kernel uses). `NyVaultOperations` gains `snapshot`/`restore`/`list_snapshots` for mount owners.
+- **Live ENCRYPTED NyVault mount benchmark (§27, `--vault-mount-io`)**: a real kernel FUSE mount over an ADR-0023-encrypted volume vs native — writes are dominated by the **durable per-CALL commit** (1 MiB ≈ 32 sequential CALLs ≈ 110 ms each → 0.28 MB/s vs native ~1,700 MB/s); reads need no commit and run at ~2.1 MB/s. The benchmark exposed a REAL bug and fixed it: the passthrough mount's adapter never registered an `init` marker, so fusepy never wired the C callback and the write-batching INIT negotiation **silently never ran** (4 KiB write requests → 256 commits per 1 MiB, 0.04 MB/s). The adapter now has the `init` marker and the mount shares `NyFSMount`'s FUSE_CAP_BIG_WRITES + WRITEBACK_CACHE + MAX_PAGES negotiation — **7× on streaming writes** (0.04 → 0.28 MB/s). The documented next step is write-commit batching (aggregate `save()` at the fsync/interval boundary; `volume_fsync` already exists to anchor it).
+- **The vault operator runbook landed** (`docs/how-to/operate-the-vault.md`, in the nav): init → serve → byte path → mount → rekey → backup/restore → security notes, with the honest fail-closed behaviors spelled out.
+- Suite 432 → **434** (restore over the wire + restore through the live encrypted mount).
+
 ## [0.14.6] — 2026-08-15
 
 ### KEK rotation, a verified LIVE encrypted mount, and the systemd vault wiring

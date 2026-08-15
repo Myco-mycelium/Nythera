@@ -790,6 +790,20 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-15 (**snapshot restore + the live encrypted-mount benchmark
+  (§27) + the vault runbook — 0.14.7**): `volume_restore` +
+  `nyrqisctl vault restore` (snapshot table unchanged; the restored
+  tree is what save() persists), verified over the wire and through the
+  live encrypted mount (kernel write → snapshot → kernel overwrite →
+  restore). **§27 (`--vault-mount-io`):** the durable per-CALL commit
+  dominates writes (1 MiB ≈ 32 CALLs ≈ 110 ms each → 0.28 MB/s vs
+  native ~1,700 MB/s; reads ~2.1 MB/s). The benchmark exposed a real
+  bug: the passthrough adapter never registered an `init` marker, so
+  the write-batching INIT negotiation silently never ran (4 KiB
+  requests → 0.04 MB/s); fixed (marker + shared BIG_WRITES/WRITEBACK
+  negotiation) — **7× on streaming writes**. Next step: write-commit
+  batching (`volume_fsync` anchors it). Operator runbook:
+  `docs/how-to/operate-the-vault.md`. Suite 432 → **434**.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

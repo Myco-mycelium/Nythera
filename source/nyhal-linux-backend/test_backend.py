@@ -2005,6 +2005,27 @@ class TestOperatorCli(unittest.TestCase):
             rc, o, e = self._cli("vault", "snapshots", handle)
             self.assertEqual(rc, 0, (o, e))
             self.assertIn("v1", o)
+            # Overwrite, then restore v1 — the original bytes come back.
+            rc, o, e = self._cli(
+                "vault", "write", handle, "/data/blob.bin",
+                "--file", blob)
+            self.assertEqual(rc, 0, (o, e))
+            with open(blob, "wb") as f:
+                f.write(b"temporary overwrite")
+            rc, o, e = self._cli(
+                "vault", "write", handle, "/data/blob.bin",
+                "--file", blob)
+            self.assertEqual(rc, 0, (o, e))
+            rc, o, e = self._cli("vault", "restore", handle, "v1")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("restored to snapshot v1", o)
+            rc, o, e = self._cli(
+                "vault", "read", handle, "/data/blob.bin",
+                "--output", out)
+            self.assertEqual(rc, 0, (o, e))
+            with open(out, "rb") as f:
+                self.assertEqual(
+                    f.read(), b"\x00\x01cli-vault-e2e\xfe\xff" * 200)
             rc, o, e = self._cli("vault", "close", handle)
             self.assertEqual(rc, 0, (o, e))
         finally:
@@ -3376,6 +3397,52 @@ class TestStorageService(unittest.TestCase):
                 state = json.loads(f.read().decode())
             self.assertNotEqual(
                 state["volumes"][0]["wrapped_dek"], wrapped_before)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_volume_restore_swaps_the_tree(self):
+        # CoW snapshot lifecycle over the wire: snapshot, overwrite,
+        # restore — the old bytes come back, and the restored table is
+        # what save() persists.
+        vault = os.path.join(self.tmp, "rs-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "rs"}).encode())
+            handle = self._call(client, json.dumps({
+                "service": "storage", "op": "volume_open",
+                "volume_id": resp["volume_id"]}).encode())["handle"]
+            def op(payload):
+                return self._call(client, json.dumps(payload).encode())
+            r = op({"service": "storage", "op": "volume_write",
+                    "handle": handle, "path": "/doc.txt", "offset": 0,
+                    "data_b64": base64.b64encode(b"original").decode()})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_snapshot",
+                    "handle": handle, "name": "v1"})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_write",
+                    "handle": handle, "path": "/doc.txt", "offset": 0,
+                    "data_b64": base64.b64encode(b"overwritten").decode()})
+            self.assertTrue(r["ok"], r)
+            r = op({"service": "storage", "op": "volume_restore",
+                    "handle": handle, "name": "v1"})
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["restored"], "v1")
+            r = op({"service": "storage", "op": "volume_read",
+                    "handle": handle, "path": "/doc.txt",
+                    "offset": 0, "size": 32})
+            self.assertEqual(base64.b64decode(r["data_b64"]), b"original")
+            # Restore to an unknown snapshot is a clean failure.
+            r = op({"service": "storage", "op": "volume_restore",
+                    "handle": handle, "name": "nope"})
+            self.assertFalse(r["ok"])
+            self.assertIn("not found", r["error"])
         finally:
             client.close()
             stop.set()
@@ -6760,6 +6827,35 @@ class TestNyVaultLiveMount(unittest.TestCase):
         # After unmount the mount's thread has exited; the ops handle is
         # released without error.
         self.mount.unmount()
+
+    def test_snapshot_restore_through_the_live_encrypted_mount(self):
+        # CoW snapshot lifecycle while the encrypted volume is MOUNTED:
+        # kernel write -> snapshot -> kernel overwrite -> restore. The
+        # restored tree is verified through the mount's own operations
+        # (deterministic — the kernel's FUSE attribute cache can briefly
+        # hold stale sizes, so the content check rides the same storage
+        # path the kernel uses after cache expiry).
+        self.assertTrue(self.mount.attach())
+        self.assertTrue(self.mount.mount(foreground=True, blocking=False))
+        time.sleep(2.0)
+        ops = self.mount.operations
+        probe = os.path.join(self.mnt, "doc.txt")
+        with open(probe, "w") as f:
+            f.write("original")
+            f.flush()
+            os.fsync(f.fileno())
+        self.assertEqual(ops.snapshot("v1"), "v1")
+        with open(probe, "w") as f:
+            f.write("overwritten")
+            f.flush()
+            os.fsync(f.fileno())
+        self.assertEqual(ops.read("/doc.txt", 32, 0), b"overwritten")
+        ops.restore("v1")
+        self.assertEqual(ops.read("/doc.txt", 32, 0), b"original")
+        self.assertIn("v1", ops.list_snapshots())
+        # A fresh kernel stat/read sees the restored file (the ops read
+        # above went through the exact same CALL path).
+        self.assertEqual(os.path.getsize(probe), len("original"))
 
 
 class TestNyFSSnapshotDiff(unittest.TestCase):

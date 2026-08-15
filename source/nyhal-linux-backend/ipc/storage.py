@@ -283,6 +283,9 @@ class StorageService:
             elif op == "volume_snapshots":
                 self._volume_snapshots(server, sender_path, msg.message_id,
                                        sender, request)
+            elif op == "volume_restore":
+                self._volume_restore(server, sender_path, msg.message_id,
+                                     sender, request)
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
@@ -970,6 +973,49 @@ class StorageService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "snapshots": nyfs.list_snapshots(),
+            "volume_id": record["id"],
+        })
+
+    def _volume_restore(self, server, sender_path: str, call_id: str,
+                        sender: str, request: Dict[str, Any]) -> None:
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        record, nyfs = resolved
+        name = request.get("name")
+        if not isinstance(name, str) or not re.match(
+                r"^[A-Za-z0-9._-]{1,64}$", name):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "name must be 1..64 chars of [A-Za-z0-9._-]",
+            })
+            return
+        try:
+            nyfs.restore_snapshot(name)
+            nyfs.save()  # the restored table becomes the durable state
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "restore failed: %s" % (e,),
+            })
+            return
+        except Exception as e:  # noqa: BLE001 - a restore failure is an op failure
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "restore failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "restored": name,
             "volume_id": record["id"],
         })
 
