@@ -790,6 +790,24 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-15 (**group commit + the granted-container data plane +
+  the quota design — 0.14.9**): the FUSE `flush` handler is no longer
+  a durability boundary (POSIX: close ≠ durable — fsync is the
+  contract); `volume_flush` is a group-commit opportunity and the
+  service persists the deferred batch at the commit-interval tick
+  (`--commit-interval`, default 5 s; 0 = fsync/close only) — a burst
+  of short-lived files pays ONE save per interval instead of one per
+  close. Verified: flush defers, fsync/close/interval commit. §27
+  re-bench adds a small-files burst pattern (~260 files/s through the
+  encrypted passthrough vs ~11–21 k native — the per-op CALL +
+  AEAD cost, not commits). **Granted-container e2e**: a real seccomp
+  container with an explicit volume grant opens an ENCRYPTED volume
+  by name and drives the passthrough's ops over the wire (the kernel
+  mount is operator/host-only by design — `mount` is in seccomp's
+  always-deny set; documented in the runbook). CLI e2e: `vault
+  snapshot-delete`. ADR-0022 gains the quota & accounting follow-on
+  design (per-container bytes, billing the writer, fail-closed
+  EDQUOT — design only). Suite 437 → **440**.
 - 2026-08-15 (**write-commit batching + the cross-container grant
   matrix + snapshot deletion — 0.14.8**): `volume_write` defers the
   durable commit (in-memory dirty blocks) and

@@ -52,6 +52,16 @@ Operations (JSON request → JSON reply over CALL/REPLY):
   KEK rotation (ADR-0023): re-wraps every volume's DEK with the new
   KEK (no block re-encryption) and returns the matching envelope.
 
+Deferred-write ops (the FUSE passthrough's data plane):
+
+- ``{"op": "volume_write", ..., "defer_commit": true}`` — write into
+  memory; the commit is deferred to fsync/close/the commit interval.
+- ``{"op": "volume_fsync", "handle": str}`` — force the durable
+  commit (POSIX fsync contract).
+- ``{"op": "volume_flush", "handle": str}`` — the FUSE close-of-last-
+  fd hook: a group-commit opportunity (interval check), NOT a per-
+  close durable commit.
+
 References:
 - ADR-0022 (NyVault — storage as a daemon-hosted service)
 - NPS-011 (capability registry; CAP_STORAGE_VOLUME)
@@ -63,6 +73,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -105,9 +116,20 @@ class StorageService:
     def __init__(self,
                  capability_manager: Optional[Any] = None,
                  vault_dir: Optional[str] = None,
-                 kek: Optional[Any] = None) -> None:
+                 kek: Optional[Any] = None,
+                 commit_interval: float = 5.0) -> None:
         self.capability_manager = capability_manager
         self.vault_dir = vault_dir
+        # Deferred-write commit interval (seconds): the durability tick
+        # for the passthrough's ``defer_commit`` writes. Writes are
+        # visible in memory immediately; a commit happens at the next
+        # ``volume_fsync`` (POSIX contract), at ``volume_close``
+        # (unmount), or at the first operation after the interval
+        # elapses (group commit — a burst of short-lived files pays ONE
+        # save, BENCHMARK_RESULTS §27). ``0`` disables the interval
+        # check (fsync/close are then the only commit points).
+        self.commit_interval = commit_interval
+        self._last_commit = time.monotonic()
         # The daemon-held KEK (a keys.KeyHandle — an opaque handle into
         # the Rust keys crate's table when present, the floor's handle
         # otherwise; ADR-0023). ``None`` runs the vault UNENCRYPTED
@@ -350,6 +372,9 @@ class StorageService:
             elif op == "volume_fsync":
                 self._volume_fsync(server, sender_path, msg.message_id,
                                    sender, request)
+            elif op == "volume_flush":
+                self._volume_flush(server, sender_path, msg.message_id,
+                                   sender, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -393,6 +418,34 @@ class StorageService:
             return False
         return self.capability_manager.validate_operation(
             sender, capability)
+
+    def _commit_dirty(self) -> None:
+        """Persist every volume with deferred (dirty) state. Best-effort
+        and non-fatal: one volume failing to save must not block the
+        others, and the op that triggered the commit still succeeds."""
+        for record in self._volumes.values():
+            nyfs = record.get("nyfs")
+            if nyfs is not None and nyfs.dirty:
+                try:
+                    nyfs.save()
+                except Exception as e:  # noqa: BLE001 - log and move on
+                    logger.error(
+                        "ipc: %s interval commit failed for volume %s: %s",
+                        self.SERVICE_NAME, record["id"][:8], e)
+
+    def _maybe_interval_commit(self) -> None:
+        """Group-commit trigger: when the commit interval has elapsed
+        since the last commit, persist every dirty volume. Called from
+        the deferred-write path and ``volume_flush``, so a burst of
+        deferred writes within the interval pays ONE save at the first
+        operation after the interval (or at fsync/close, which commit
+        unconditionally)."""
+        if self.commit_interval <= 0:
+            return
+        if time.monotonic() - self._last_commit < self.commit_interval:
+            return
+        self._commit_dirty()
+        self._last_commit = time.monotonic()
 
     @staticmethod
     def _can_open(record: Dict[str, Any], sender: str) -> bool:
@@ -1007,14 +1060,16 @@ class StorageService:
             })
             return
         # ``defer_commit`` (the FUSE passthrough's write path): commit
-        # at the fsync/flush/close boundary instead of per CALL, so a
-        # 128 KiB kernel write (4 chunked CALLs) pays ONE save at
-        # fsync — the §27 finding (write-commit batching). The CLI byte
-        # path omits it and stays durable per write. Deferred data is
-        # visible in memory immediately and committed by
-        # ``volume_fsync``/``volume_flush``/``volume_close`` (dirty
-        # gate); a daemon crash before then loses it — exactly POSIX
-        # fsync semantics, spelled out in the vault runbook.
+        # at the fsync/close/interval boundary instead of per CALL, so
+        # a 128 KiB kernel write (4 chunked CALLs) pays ONE save at
+        # fsync and a burst of short-lived files pays ONE save per
+        # interval — the §27 finding (write-commit batching + group
+        # commit). The CLI byte path omits it and stays durable per
+        # write. Deferred data is visible in memory immediately and
+        # committed by ``volume_fsync``/``volume_close`` (dirty gate)
+        # or the interval check below; a daemon crash before then
+        # loses it — exactly POSIX fsync semantics, spelled out in the
+        # vault runbook.
         defer_commit = bool(request.get("defer_commit"))
         try:
             from fuse.nyfs import NyFSError
@@ -1025,7 +1080,12 @@ class StorageService:
                 "error": "write failed: %s" % (e,),
             })
             return
-        if not defer_commit:
+        if defer_commit:
+            # Group-commit tick: the first operation after the interval
+            # persists the whole batch of deferred writes (plus any
+            # other dirty volume) in one save.
+            self._maybe_interval_commit()
+        else:
             # Durability (ADR-0022: ADR-0019's journal commit is the
             # vault's default): commit the transaction before replying
             # so an ack is a durable write, not a memory promise.
@@ -1380,6 +1440,17 @@ class StorageService:
         def _save(nyfs):
             nyfs.save()
         self._delegate(server, sender_path, call_id, sender, request, _save)
+
+    def _volume_flush(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        # FUSE flush (close of the last fd) is NOT a durability
+        # boundary (POSIX: close does not promise durability — fsync
+        # does). The flush is a group-commit OPPORTUNITY: deferred
+        # writes stay in memory until the interval tick, an explicit
+        # fsync, or handle close/unmount — so short-lived-file
+        # workloads stop paying one save() per close (§27).
+        self._maybe_interval_commit()
+        self._reply(server, sender_path, call_id, {"ok": True})
 
 
 def _mkdirs(nyfs, path: str) -> None:

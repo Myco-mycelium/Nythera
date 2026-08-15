@@ -1078,7 +1078,8 @@ class TestStatusServiceHost(unittest.TestCase):
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
             health_socket_path=None, vault_dir="/var/lib/nyrqis/vault",
-            vault_key_file=None, vault_passphrase=None)
+            vault_key_file=None, vault_passphrase=None,
+            commit_interval=5.0)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_cli_service_serve_wires_health_socket(self):
@@ -1098,7 +1099,8 @@ class TestStatusServiceHost(unittest.TestCase):
             socket_path=self.sock, backend_version=None,
             state_file="/run/nyrqis/daemon-state.json",
             health_socket_path=health, vault_dir="/var/lib/nyrqis/vault",
-            vault_key_file=None, vault_passphrase=None)
+            vault_key_file=None, vault_passphrase=None,
+            commit_interval=5.0)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_host_health_socket_serves_ping(self):
@@ -2076,6 +2078,24 @@ class TestOperatorCli(unittest.TestCase):
             with open(out, "rb") as f:
                 self.assertEqual(
                     f.read(), b"\x00\x01cli-vault-e2e\xfe\xff" * 200)
+            # Snapshot deletion through the CLI: v2 survives, v1 is
+            # dropped, restore-to-v1 now fails honestly.
+            rc, o, e = self._cli("vault", "snapshot", handle, "v2")
+            self.assertEqual(rc, 0, (o, e))
+            rc, o, e = self._cli(
+                "vault", "snapshot-delete", handle, "v1")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("snapshot v1 of volume", o)
+            self.assertIn("deleted", o)
+            rc, o, e = self._cli("vault", "snapshots", handle)
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("v2", o)
+            self.assertNotIn("v1", o)
+            rc, o, e = self._cli("vault", "restore", handle, "v2")
+            self.assertEqual(rc, 0, (o, e))
+            rc, o, e = self._cli("vault", "restore", handle, "v1")
+            self.assertEqual(rc, 1, (o, e))
+            self.assertIn("not found", e)
             rc, o, e = self._cli("vault", "close", handle)
             self.assertEqual(rc, 0, (o, e))
         finally:
@@ -2652,7 +2672,8 @@ class TestStorageService(unittest.TestCase):
         self.cli_path = os.path.join(self.tmp, "cli.sock")
 
     def _serve(self, vault_dir=None, capability_manager=None,
-               register_pid=True, svc_path=None, kek=None):
+               register_pid=True, svc_path=None, kek=None,
+               commit_interval=None):
         manager = IPCManager()
         manager.create_endpoint("container-svc", "ep-svc")
         caps = capability_manager
@@ -2667,7 +2688,8 @@ class TestStorageService(unittest.TestCase):
             trusted_uids={os.getuid()},
         )
         storage = StorageService(
-            capability_manager=caps, vault_dir=vault_dir, kek=kek)
+            capability_manager=caps, vault_dir=vault_dir, kek=kek,
+            commit_interval=commit_interval or 5.0)
         router = ServiceRouter()
         router.register("storage", storage)
         router.attach(server)
@@ -3629,6 +3651,204 @@ class TestStorageService(unittest.TestCase):
         self.assertEqual(storage3._volumes[vid]["grants"],
                          {"container-b": True})
 
+    def test_granted_container_drives_the_mount_ops(self):
+        # The access matrix through the REAL data plane: a seccomp
+        # container holding an explicit volume grant (created by the
+        # operator) drives the passthrough's operations — the exact
+        # ops a kernel mount issues — over the wire against an
+        # ENCRYPTED volume, opening it BY NAME as the granted
+        # container. (The kernel mount itself is operator/host-only by
+        # design: ``mount``/``umount2`` are in seccomp's _ALWAYS_DENY,
+        # so a seccomp container cannot mount — the container-facing
+        # data plane is these CALLs.)
+        if not _direct_launch_supported():
+            self.skipTest("host cannot launch direct-syscall containers")
+        sock = os.path.join(self.tmp, "g.sock")
+        vault = os.path.join(self.tmp, "g-vault")
+        key = os.path.join(self.tmp, "g.key")
+        from backend import keys as keys_mod
+        with open(key, "wb") as f:
+            f.write(keys_mod.make_blob_any(b"grant-secret"))
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key,
+            vault_passphrase="grant-secret")
+        host.start()
+        operator = IPCClient(
+            DEFAULT_OPERATOR_ID,
+            os.path.join(self.tmp, "g-ctl.sock")).bind()
+        base = tempfile.mkdtemp(prefix="nyrqis-grant-e2e-")
+        cli_path = os.path.join(base, "grantee.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+        backend_dir = str(Path(__file__).resolve().parent)
+        try:
+            r = self._call(operator, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "shared"}).encode(), path=sock)
+            self.assertTrue(r["ok"], r)
+            r = self._call(operator, json.dumps({
+                "service": "storage", "op": "volume_grant",
+                "name": "shared", "container": "grantee"}).encode(),
+                path=sock)
+            self.assertTrue(r["ok"], r)
+            script = (
+                "import json, os, sys, time\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "deadline = time.time() + 15\n"
+                "while not os.path.exists(sys.argv[5]) and "
+                "time.time() < deadline:\n"
+                "    time.sleep(0.01)\n"
+                "from ipc.transport import IPCClient\n"
+                "from fuse.vault_mount import NyVaultOperations\n"
+                "c = IPCClient('grantee', sys.argv[2]).bind()\n"
+                "out = {}\n"
+                "try:\n"
+                "    ops = NyVaultOperations(c, sys.argv[3], "
+                "sys.argv[4])\n"
+                "    ops.write('/from-grantee.txt', b'granted!', 0)\n"
+                "    out['read'] = ops.read("
+                "'/from-grantee.txt', 32, 0).decode()\n"
+                "    ops.close()\n"
+                "    out['ok'] = True\n"
+                "except Exception as e:\n"
+                "    out['ok'] = False\n"
+                "    out['error'] = repr(e)\n"
+                "open(sys.argv[6], 'w').write(json.dumps(out))\n"
+            )
+            container = host.container_manager.create(ContainerConfig(
+                name="grantee",
+                command=[sys.executable, "-c", script, backend_dir,
+                         cli_path, sock, "shared", ready_path, marker],
+                seccomp=True,
+                capabilities=[
+                    "CAP_IPC_SEND", "CAP_STORAGE_VOLUME",
+                    "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                    "CAP_FILESYSTEM_WRITE",
+                ],
+            ))
+            try:
+                host.container_manager.spawn(container)
+                # Spawn initializes the container with its DEFAULTS and
+                # resets pre-spawn grants; the storage capability (an
+                # explicit grant, like the volume grant itself) is
+                # granted afterwards — the standard flow.
+                host.capability_manager.grant_capability(
+                    "grantee", Capability.CAP_STORAGE_VOLUME)
+                with open(ready_path, "w") as fh:
+                    fh.write("go")
+                deadline = time.time() + 30.0
+                while time.time() < deadline and not os.path.exists(marker):
+                    time.sleep(0.05)
+                self.assertTrue(
+                    os.path.exists(marker),
+                    "granted container never reached the storage service",
+                )
+                with open(marker) as fh:
+                    out = json.loads(fh.read() or "{}")
+                self.assertTrue(out.get("ok"), out)
+                self.assertEqual(out.get("read"), "granted!")
+                # The operator sees the container's write too (the
+                # volume is shared, at-rest encrypted).
+                r = self._call(operator, json.dumps({
+                    "service": "storage", "op": "volume_open",
+                    "name": "shared"}).encode(), path=sock)
+                self.assertTrue(r["ok"], r)
+                h = r["handle"]
+                r = self._call(operator, json.dumps({
+                    "service": "storage", "op": "volume_read",
+                    "handle": h, "path": "/from-grantee.txt",
+                    "offset": 0, "size": 32}).encode(), path=sock)
+                self.assertEqual(
+                    base64.b64decode(r["data_b64"]), b"granted!")
+            finally:
+                _launch_cleanup(host.container_manager, container)
+        finally:
+            operator.close()
+            host.stop()
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_interval_commit_flush_fsync_semantics(self):
+        # §27 group commit: deferred writes are visible in memory
+        # immediately; ``volume_flush`` (FUSE close-of-last-fd) is NOT
+        # a durability boundary; ``volume_fsync``, ``volume_close``,
+        # and the commit-interval tick each commit. A burst of
+        # short-lived files therefore pays ONE save per interval
+        # instead of one per close.
+        vault = os.path.join(self.tmp, "ic-vault")
+        server, stop, storage = self._serve(
+            vault_dir=vault, register_pid=False, commit_interval=0.3)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            def op(payload):
+                return self._call(client, json.dumps(payload).encode())
+
+            def journal_size():
+                vid = next(iter(storage._volumes))
+                p = os.path.join(vault, vid + ".nyfs", "state",
+                                 "journal.bin")
+                return os.path.getsize(p) if os.path.exists(p) else 0
+
+            r = op({"service": "storage", "op": "volume_create",
+                    "name": "ic"})
+            handle = op({"service": "storage", "op": "volume_open",
+                         "volume_id": r["volume_id"]})["handle"]
+
+            # Deferred write + flush: NOT committed (flush defers).
+            op({"service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/a", "offset": 0,
+                "data_b64": base64.b64encode(b"a" * 1000).decode(),
+                "defer_commit": True})
+            op({"service": "storage", "op": "volume_flush",
+                "handle": handle})
+            self.assertEqual(journal_size(), 0,
+                             "flush must not commit (POSIX close)")
+
+            # fsync IS the durability boundary.
+            op({"service": "storage", "op": "volume_fsync",
+                "handle": handle})
+            self.assertGreater(journal_size(), 0)
+            after_fsync = journal_size()
+
+            # Interval tick: a deferred write, then the first deferred
+            # op after the interval commits the whole batch in one save.
+            op({"service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/b", "offset": 0,
+                "data_b64": base64.b64encode(b"b" * 1000).decode(),
+                "defer_commit": True})
+            time.sleep(0.4)
+            op({"service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/c", "offset": 0,
+                "data_b64": base64.b64encode(b"c" * 1000).decode(),
+                "defer_commit": True})
+            self.assertGreater(
+                journal_size(), after_fsync,
+                "interval tick must persist the deferred batch")
+
+            # Close is a durability boundary too (unmount semantics).
+            op({"service": "storage", "op": "volume_write",
+                "handle": handle, "path": "/d", "offset": 0,
+                "data_b64": base64.b64encode(b"d" * 1000).decode(),
+                "defer_commit": True})
+            before_close = journal_size()
+            op({"service": "storage", "op": "volume_close",
+                "handle": handle})
+            self.assertGreater(journal_size(), before_close,
+                               "close must commit deferred state")
+
+            # Deferred data was readable in memory all along.
+            h2 = op({"service": "storage", "op": "volume_open",
+                     "volume_id": r["volume_id"]})["handle"]
+            d = op({"service": "storage", "op": "volume_read",
+                    "handle": h2, "path": "/d", "offset": 0,
+                    "size": 32})
+            self.assertEqual(base64.b64decode(d["data_b64"]),
+                             b"d" * 32)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
     def test_volume_snapshot_delete(self):
         # The snapshot table is a lifecycle, not just a read path:
         # delete a snapshot over the wire and the list shrinks; a
@@ -3745,6 +3965,37 @@ class TestNyVaultOperations(unittest.TestCase):
                 self.assertIn(key, ops.statfs("/"))
             self.assertEqual(ops.unlink("/app/renamed.bin"), 0)
             self.assertEqual(ops.rmdir("/app"), 0)
+        finally:
+            ops.close()
+
+    def test_flush_defers_but_fsync_commits(self):
+        # §27 group commit through the passthrough: ``flush`` (the
+        # kernel's close-of-last-fd hook) defers the durable commit,
+        # while ``fsync`` forces it — a burst of short-lived files pays
+        # ONE save per commit interval instead of one per close.
+        ops = self._ops()
+        try:
+            ops.write("/f.bin", b"x" * 1000, 0)
+            record = next(iter(self.storage._volumes.values()))
+            nyfs = record["nyfs"]
+            self.assertTrue(nyfs.dirty, "deferred write must be dirty")
+            journal = os.path.join(nyfs.base_path, "state",
+                                   "journal.bin")
+            before = (os.path.getsize(journal)
+                      if os.path.exists(journal) else 0)
+            ops.flush("/f.bin")
+            self.assertTrue(nyfs.dirty,
+                            "flush must NOT commit (POSIX close)")
+            self.assertEqual(
+                os.path.getsize(journal) if os.path.exists(journal) else 0,
+                before, "flush must not touch the journal")
+            ops.fsync("/f.bin", False)
+            self.assertFalse(nyfs.dirty, "fsync must commit")
+            self.assertGreater(
+                os.path.getsize(journal) if os.path.exists(journal) else 0,
+                before, "fsync must persist the journal")
+            # The deferred data was readable in memory before fsync.
+            self.assertEqual(ops.read("/f.bin", 32, 0), b"x" * 32)
         finally:
             ops.close()
 

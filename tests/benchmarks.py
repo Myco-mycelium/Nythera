@@ -964,10 +964,11 @@ def _vault_mount_worker():
 
     The volume is ENCRYPTED at rest (ADR-0023) and mounted through the
     FUSE passthrough, so every kernel request rides a storage-service
-    CALL into the AEAD block layer. Each write CALL is durable (the
-    service saves before replying — the §26 finding), so the 4 KiB
-    small-write pattern is the honest durability cost of the
-    passthrough data plane.
+    CALL into the AEAD block layer. Writes defer the durable commit
+    (§27 write-commit batching + group commit): the service persists at
+    fsync, at close/unmount, or at the commit-interval tick — so a
+    burst of short-lived files pays ONE save per interval instead of
+    one per close (the ``small_files`` pattern below is that case).
     """
     import json as _json
     from backend import keys
@@ -1044,6 +1045,20 @@ def _vault_mount_worker():
                     os.path.join(mnt, "b.bin"), chunk, 1024 * 1024)
                 results[f"read_{tag}_native_mbps"] = bench_read(
                     os.path.join(native_dir, "b.bin"), chunk, 1024 * 1024)
+            # Short-lived-file burst: 100 files of 4 KiB each,
+            # open/write/close — the per-close-commit case that group
+            # commit amortizes (one save per interval, not per close).
+            def bench_small_files(directory, count=100, size=4096):
+                payload = os.urandom(size)
+                t0 = time.perf_counter()
+                for i in range(count):
+                    with open(os.path.join(directory, "f%03d.bin" % i),
+                              "wb") as fh:
+                        fh.write(payload)
+                return round(count / (time.perf_counter() - t0), 1)
+            results["small_files_fuse_per_s"] = bench_small_files(mnt)
+            results["small_files_native_per_s"] = bench_small_files(
+                native_dir)
             results["total_bytes"] = 1024 * 1024
             return results
         finally:

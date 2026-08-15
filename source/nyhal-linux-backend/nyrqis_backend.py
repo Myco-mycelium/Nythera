@@ -246,13 +246,14 @@ class StatusServiceHost:
       status service with zero manual bookkeeping.
     """
 
-    def __init__(self, socket_path: str,
-                 backend_version: Optional[str] = None,
-                 state_file: Optional[str] = None,
-                 health_socket_path: Optional[str] = None,
-                 vault_dir: Optional[str] = None,
-                 vault_key_file: Optional[str] = None,
-                 vault_passphrase: Optional[str] = None) -> None:
+    def __init__(
+            self, socket_path: str, backend_version: Optional[str] = None,
+            state_file: Optional[str] = None,
+            health_socket_path: Optional[str] = None,
+            vault_dir: Optional[str] = None,
+            vault_key_file: Optional[str] = None,
+            vault_passphrase: Optional[str] = None,
+            commit_interval: float = 5.0) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
@@ -325,6 +326,7 @@ class StatusServiceHost:
             capability_manager=self.capability_manager,
             vault_dir=vault_dir,
             kek=vault_kek,
+            commit_interval=commit_interval,
         )
         self.router = ServiceRouter()
         self.router.register("status", self.service)
@@ -685,6 +687,7 @@ def cmd_service_serve(args) -> int:
         vault_key_file=args.vault_key_file or None,
         vault_passphrase=args.vault_passphrase
         or os.environ.get("NYRQIS_VAULT_PASSPHRASE") or None,
+        commit_interval=args.commit_interval,
     )
     host.serve_until_signal()
     return 0
@@ -921,6 +924,13 @@ Examples:
         "--vault-passphrase", default="",
         help="The unlock secret for --vault-key-file (or set "
              "NYRQIS_VAULT_PASSPHRASE)"
+    )
+    serve_parser.add_argument(
+        "--commit-interval", type=float, default=5.0,
+        help="Deferred-write commit interval in seconds (§27 group "
+             "commit): the passthrough's dirty volumes are persisted at "
+             "the first operation after this interval, at fsync, and at "
+             "close/unmount (default: 5.0; 0 = fsync/close only)"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 

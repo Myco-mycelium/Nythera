@@ -1068,24 +1068,31 @@ child process (the §19 containment pattern), `--vault-mount-io`.
 
 | Pattern | Encrypted FUSE mount | Native (same tmp dir) | Δ |
 |---------|---------------------|-----------------------|-----|
-| Write, 1 MiB syscalls | 3.17 MB/s | 1,688 MB/s | ~530× |
-| Write, 4 KiB syscalls | 0.78 MB/s | 1,145–1,605 MB/s | ~1,800× |
-| Read, 1 MiB | 2.11 MB/s | 3,149–4,232 MB/s | ~1,700× |
-| Read, 4 KiB | 2.08 MB/s | 1,003–1,200 MB/s | ~500× |
+| Write, 1 MiB syscalls | 3.25–3.40 MB/s | 975–1,738 MB/s | ~400× |
+| Write, 4 KiB syscalls | 0.77–0.80 MB/s | 985–1,605 MB/s | ~1,500× |
+| Read, 1 MiB | 2.17 MB/s | 3,079–4,232 MB/s | ~1,600× |
+| Read, 4 KiB | 2.03–2.16 MB/s | 985–1,200 MB/s | ~500× |
+| Small files, 100×4 KiB (open/write/close) | 253–264 files/s | 11,163–20,954 files/s | ~50–80× |
 
-Reading: **write-commit batching moved the durable-commit cost off the
-per-CALL path.** `volume_write` now defers the commit (in-memory dirty
-blocks, the §26 byte-path behavior) and `volume_flush`/fsync anchors
-it — the passthrough's `flush` handler is what the kernel calls at
-close/writeback time. A 1 MiB streaming write = 32 CALLs that mutate
-in memory plus one commit: **0.28 → 3.17 MB/s (11×)**; the 4 KiB-syscall
-pattern pays page-granular flushes but still improves **0.04 →
-0.78 MB/s (19×)**. Reads need no commit and run at ~2.1 MB/s flat
-across chunk sizes. The remaining gap to the plaintext NyFS mount's
-40–46 MB/s (§6) is the IPC round-trip + AEAD per 32 KiB CALL plus the
-fsync per file close; the next lever is amortizing the fsync across
-short-lived files (interval-based commit), which the vault's own
-`volume_fsync` already exists to anchor.
+Reading: **two commit levers moved the durable-commit cost off the
+per-CALL path** — write-commit batching (0.14.8: `volume_write` defers,
+`volume_fsync`/`volume_close` anchor) and now **group commit (0.14.9):
+the FUSE `flush` handler (the kernel's close-of-last-fd hook) is no
+longer a durability boundary** (POSIX: close does not promise
+durability — fsync does). `flush` becomes a group-commit *opportunity*:
+the service persists the deferred batch at the commit-interval tick
+(``--commit-interval``, default 5 s), so a burst of short-lived files
+pays ONE save per interval instead of one per close. The writes above
+were already single-commit patterns (one file, one flush), so they
+hold at ~3.2 MB/s / ~0.8 MB/s; the new `small_files` pattern shows the
+amortized burst at **~260 files/s through the encrypted passthrough vs
+~11–21 k native** — dominated by the per-op CALL round-trip + AEAD per
+32 KiB CALL (the fundamental ADR-0022 data-plane cost), not by
+commits. Reads still need no commit and run at ~2.1 MB/s flat across
+chunk sizes. Durability contract (documented in the runbook): deferred
+data is visible immediately, durable after `fsync()`, at handle
+close/unmount, or at the interval tick — a daemon crash before then
+loses it (POSIX fsync semantics; the interval bounds the loss window).
 
 ## Status vs BENCHMARK_PLAN
 

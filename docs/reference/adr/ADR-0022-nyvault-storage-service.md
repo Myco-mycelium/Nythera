@@ -181,7 +181,40 @@ Specifically:
   accounting/quota policy is likewise follow-on. The cross-container
   access matrix shipped with 0.14.8 (`volume_grant`/`volume_revoke`/
   `volume_grants` — CREATOR/OPERATOR-ONLY, open-file revoke
-  semantics); a per-container quota/accounting policy remains follow-on.
+  semantics).
+
+### Follow-on design: per-container quota & accounting
+
+Not yet implemented — the design this ADR would claim when the
+accounting increment ships (the grant matrix of 0.14.8 is the
+precondition: a volume can be *shared*, so usage must be billed to the
+*writing* container, not the volume's creator).
+
+- **What.** Each container gets a byte quota on the vault; the service
+  accounts bytes per container across every volume it writes to, and
+  enforces the quota fail-closed at write time.
+- **Accounting point.** `volume_write` charges `len(data)` to the
+  handle's binding container (the handle already records `container`),
+  so a shared volume bills each consumer. Reads are free; truncate
+  credits the delta.
+- **Source of truth.** The NyFS tree is the ledger: per-volume,
+  per-container usage is a cache refreshed at commit (`volume_fsync` /
+  interval tick / close) from the tree's own accounting (sum of file
+  sizes = *logical* bytes — the operator contract; block-storage bytes
+  are a separate *physical* figure the same refresh can compute, with
+  CoW sharing and compression making it load-dependent). Deletes and
+  restores re-derive from the tree, so the ledger can never drift
+  from what a restore actually frees.
+- **Enforcement.** Before applying a write, reject with `EDQUOT` when
+  `accounted[container] + write > quota`. Quota is operator-set per
+  container (`volume_quota_set`), unlimited by default. Revoking a
+  volume grant does not zero accrued usage.
+- **New surface.** `volume_quota_set`/`volume_quota_get` (OPERATOR),
+  `volume_usage` (per volume per container), `EDQUOT` on the write
+  path, and quota/usage rows in the registry's persistence. This is
+  deliberately an increment: the enforcement point, the ledger, and
+  the operator surface all exist already in seed form (capability
+  gate + handle binding + `_save_state`).
 - **NPS impact:** a new capability (e.g. `CAP_STORAGE_VOLUME`) must be
   added to the NPS-011 registry when the service ships; NPS-004 gains a
   "storage service" section. No renumbering (ADR-0017).

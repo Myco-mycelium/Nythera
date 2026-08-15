@@ -126,6 +126,22 @@ fusermount -u /mnt/assets
 The mounted volume is encrypted at rest like any other (kernel writes
 ride the AEAD block layer; verified — no plaintext under the vault dir).
 
+**Durability through the mount (group commit).** Writes defer the
+durable commit: data is visible to readers immediately, and is
+persisted at `fsync()`, at unmount/handle close, or at the daemon's
+commit-interval tick (`--commit-interval`, default 5 s — one save per
+interval for a burst of short-lived files instead of one per close,
+BENCHMARK_RESULTS §27). `close()` alone is NOT a durability boundary
+(POSIX semantics — call `fsync()` when the write must survive a
+daemon crash before the next tick; the interval bounds the loss
+window).
+
+The kernel mount itself is the **operator/host view**: seccomp
+containers cannot mount FUSE by design (`mount`/`umount2` are in the
+backend's always-deny set) — a container's data plane is the CALL
+path (a granted container drives the same operations over the wire,
+verified end-to-end).
+
 ### 5. Rotate the KEK (rekey) — no re-encryption
 
 Changing the passphrase re-wraps every volume's DEK with the new KEK;
@@ -197,4 +213,4 @@ find /var/lib/nyrqis -type f | xargs grep -l hello || echo "no plaintext at rest
 - ADR-0022 (NyVault — storage as a daemon-hosted service)
 - ADR-0023 (NyVault key manager — envelope encryption, rotation, custody)
 - `tests/BENCHMARK_RESULTS.md` §26 (byte path) and §27 (live mount)
-- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.8 (the increments this guide covers)
+- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.9 (the increments this guide covers)

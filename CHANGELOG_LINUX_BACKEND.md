@@ -16,6 +16,43 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.9] — 2026-08-15
+
+### Group commit (interval-based), the granted-container data plane, and the quota design
+
+- **Group commit (§27)**: the FUSE `flush` handler (close-of-last-fd) is
+  no longer a durability boundary — POSIX: close does not promise
+  durability, fsync does. `flush` is now a group-commit OPPORTUNITY
+  (`volume_flush`): the service persists the deferred batch at the
+  commit-interval tick (`--commit-interval`, default 5 s; 0 = fsync/
+  close only), so a burst of short-lived files pays ONE save per
+  interval instead of one per close. `volume_fsync` (POSIX contract),
+  `volume_close` (unmount), and reads-in-memory are unchanged.
+  Verified semantics: flush defers (journal untouched), fsync commits,
+  the interval tick commits the batch, close commits. Re-bench §27:
+  writes hold ~3.2 MB/s (1 MiB) / ~0.8 MB/s (4 KiB) — already
+  single-commit patterns — and the new **small-files burst pattern**
+  (100×4 KiB open/write/close) runs at **~260 files/s through the
+  encrypted passthrough vs ~11–21 k native**, dominated by the per-op
+  CALL round-trip + AEAD (the ADR-0022 data-plane cost), not commits.
+- **Granted container drives the mount's ops (verified e2e)**: a real
+  seccomp container holding an explicit volume grant opens an
+  ENCRYPTED volume by NAME and runs the passthrough's operations over
+  the wire (`NyVaultOperations` — the exact ops a kernel mount
+  issues). Honest finding: the kernel mount itself is operator/host-
+  only by design (`mount`/`umount2` are in seccomp's always-deny set),
+  so a seccomp container's data plane is these CALLs — documented in
+  the runbook. CLI e2e: `vault snapshot-delete` verified against a
+  real daemon (v2 survives, v1 dropped, restore-to-v1 fails honestly).
+- **Quota & accounting design**: ADR-0022 gains the follow-on design
+  (per-container byte quota, billing the WRITING container on shared
+  volumes, fail-closed EDQUOT at write, tree-derived ledger refreshed
+  at commit) — a design, not yet implemented, so the doc's "follow-on"
+  status stays honest.
+- Suite 437 → **440** (interval/flush semantics + the granted-container
+  e2e + the flush/fsync passthrough test; the CLI lifecycle e2e gained
+  the snapshot-delete steps).
+
 ## [0.14.8] — 2026-08-15
 
 ### Write-commit batching, the cross-container grant matrix, and snapshot deletion
