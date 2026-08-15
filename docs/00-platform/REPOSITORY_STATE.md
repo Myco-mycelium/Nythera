@@ -603,6 +603,34 @@ Documentation hygiene, fixed earlier this session:
   test (now the loop path) and three new host tests (backend
   selection, control dispatch, container-control denial). Suite 347 →
   **350**, green on both paths (crate: loop; crate-less: floor).
+- 2026-08-15 (**Rust child entry point — zero Python between clone and
+  exec**): `rust/syscalls` gains a real `clone(2)` FFI
+  (`nyrqis_clone` — per-call mmap'd child stack, since glibc's clone
+  wrapper switches the child's stack pointer even without CLONE_VM)
+  and the Rust-native child entry (`nyrqis_launch_child`): the child
+  unshares (NEWUSER|NEWNS|NEWPID|NEWNET), writes the uid/gid maps,
+  mounts proc, brings up loopback, sets the hostname, closes the sync
+  pipe, and execs the launcher — no Python in the setup path.
+  `container.py` `_spawn_direct` branches to the clone path when the
+  crate is present (`backend/rust_syscalls.py` `clone()`/`launch_child()`
+  behind the established loader contract); the Python fork child stays
+  as the crate-less fallback. Two ctypes landmines found by the e2e
+  and fixed: `c_char_p` array construction from bytes yields
+  shared/GC'd pointers (EFAULT in execv — the argv array is now a
+  `c_void_p` array of raw addresses into `create_string_buffer`
+  keepers), and execv needs a NULL argv terminator (the kernel scans
+  past the array end otherwise). Also fixed the SIGTERM-forwarding
+  flake: PID-1 semantics discard signals sent before the handler
+  install, so `test_init_forwards_sigterm_to_command` now waits for
+  the init's `SigCgt` mask to include SIGTERM before signaling. New
+  clone-path unit tests + loader marshalling tests (fake-lib,
+  function-pointer guard) + real-launch e2e on both paths. Crate
+  tests 14/14; suite → **358** OK on both paths (crate: clone;
+  crate-less: fork, 35 expected skips). Benchmark §24: main-socket
+  control-op A/B — floor ~290 µs vs loop ~336–342 µs p50 (+16–18%):
+  close parity, the Python status handler dominates both sides. The
+  launcher-init port (seccomp install, cgroup hardening in Rust)
+  remains the next NyRuntime step.
 - 2026-08-14 (**plan §4.5: persistent state + health checks + syslog**):
   new `backend/daemon_state.py` (`DaemonStateFile` — versioned,
   atomically-written JSON: daemon identity + last-known container

@@ -33,18 +33,23 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-MIN_RUST_ABI_VERSION = 0x0001_0100  # nyrqis-syscalls 1.1.0 (mount added)
+MIN_RUST_ABI_VERSION = 0x0001_0200  # nyrqis-syscalls 1.2.0 (clone + launch child)
 
 # CLONE_NEW* flags (the direct-syscall launcher's namespace mask). These
 # are the stable Linux UAPI bit values; the Rust crate consumes them as
-# the ``unshare`` flags argument. CLONE_NEWPID only affects the caller's
-# children, which is why the launcher forks after unsharing it.
+# the ``unshare``/``clone`` flags argument. CLONE_NEWPID only affects
+# the caller's children, which is why the fork path forks after
+# unsharing it; the clone path carries all the namespace flags in the
+# clone call itself. SIGCHLD (17) must be OR'd in so the child is a
+# normal zombie (a zero signal byte auto-releases it — waitpid would
+# ECHILD).
 CLONE_NEWNS = 0x0002_0000
 CLONE_NEWUTS = 0x0400_0000
 CLONE_NEWIPC = 0x0800_0000
 CLONE_NEWUSER = 0x1000_0000
 CLONE_NEWPID = 0x2000_0000
 CLONE_NEWNET = 0x4000_0000  # network namespace (container isolation)
+CLONE_SIGCHLD = 17  # SIGCHLD — the low byte's child-termination signal
 
 # MS_* flags for the container's procfs mount (hardened like
 # unshare(1)'s --mount-proc: nosuid, nodev, noexec).
@@ -150,10 +155,23 @@ def _load_rust_backend() -> Optional[ctypes.CDLL]:
         ]
         lib.nyrqis_syscalls_mount_proc.restype = ctypes.c_int
         lib.nyrqis_syscalls_mount_proc.argtypes = []
+        lib.nyrqis_syscalls_clone.restype = ctypes.c_int
+        lib.nyrqis_syscalls_clone.argtypes = [
+            ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        lib.nyrqis_syscalls_launch_child.restype = ctypes.c_int
+        lib.nyrqis_syscalls_launch_child.argtypes = [ctypes.c_void_p]
         _RUST_LIB = lib
         logger.info("syscalls: using Rust backend (%s)", path)
         return lib
     return None
+
+
+def available() -> bool:
+    """True when the Rust syscalls backend is loaded (or loadable). The
+    direct-syscall launcher branches on this: the Rust-native clone
+    child when present, the Python fork child otherwise."""
+    return _load_rust_backend() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +229,72 @@ def _rust_mount_proc(lib: ctypes.CDLL) -> int:
     No-arg on purpose: called in the container child between fork and
     exec, where no Python allocation may happen."""
     return int(lib.nyrqis_syscalls_mount_proc())
+
+
+class LaunchArgs(ctypes.Structure):
+    """The argument struct for ``nyrqis_syscalls_launch_child`` — the
+    Rust-native PID-1 entry of the direct-syscall launcher (ABI 1.2.0).
+    Built by the manager BEFORE ``clone``: inside the new user
+    namespace ``getuid()`` reports the overflow uid 65534, so the real
+    uid/gid to map MUST cross in this struct (the kernel refuses to map
+    an id that is not the caller's own). The argv is a NULL-terminated
+    array of NUL-terminated strings in Python memory — inherited
+    copy-on-write by the clone child, which reads it between clone and
+    exec (no allocation)."""
+
+    _fields_ = [
+        ("write_fd", ctypes.c_int),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("argc", ctypes.c_size_t),
+        ("argv", ctypes.POINTER(ctypes.c_void_p)),
+    ]
+
+    @classmethod
+    def build(cls, write_fd: int, uid: int, gid: int,
+              argv: List[str]) -> "LaunchArgs":
+        """Build the struct with a live argv array (kept alive by the
+        returned instance). The argv strings live in
+        ``create_string_buffer`` copies (stable, owned); the array holds
+        their RAW ADDRESSES as ``c_void_p`` — a ``c_char_p`` array would
+        re-copy each string on assignment into a temporary-owned buffer
+        that dies with the temporary, leaving the clone child's execv
+        reading freed memory (EFAULT, exit 126). argc+1 slots: execv
+        scans the array for a NULL terminator, and without one the
+        kernel reads past the end."""
+        bufs = [ctypes.create_string_buffer(a.encode("utf-8")) for a in argv]
+        argv_arr = (ctypes.c_void_p * (len(bufs) + 1))()
+        for i, buf in enumerate(bufs):
+            argv_arr[i] = ctypes.addressof(buf)
+        argv_arr[len(bufs)] = None  # the execv NULL terminator
+        inst = cls()
+        inst.write_fd = write_fd
+        inst.uid = uid
+        inst.gid = gid
+        inst.argc = len(argv)
+        inst.argv = argv_arr
+        # Keep the buffers alive for the struct's lifetime (the child
+        # reads them copy-on-write after clone).
+        inst._argv_bufs = bufs  # type: ignore[attr-defined]
+        return inst
+
+
+def _rust_clone(lib: ctypes.CDLL, flags: int, args: LaunchArgs) -> int:
+    """clone(2) via the Rust module: the child pid (positive), or
+    -errno. The child runs ``nyrqis_syscalls_launch_child`` (the Rust
+    entry address is resolved from the loaded library — never a
+    Python callback) and never returns to Python."""
+    entry_fn = lib.nyrqis_syscalls_launch_child
+    # A malformed library must fail cleanly, never segfault: ctypes.cast
+    # on a non-ctypes object (e.g. a Mock in a loader test) reads
+    # garbage and crashes the process.
+    if not isinstance(entry_fn, ctypes._CFuncPtr):
+        raise RuntimeError(
+            "syscalls: nyrqis_syscalls_launch_child is not a callable"
+        )
+    entry = ctypes.cast(entry_fn, ctypes.c_void_p)
+    rc = lib.nyrqis_syscalls_clone(flags, entry, ctypes.byref(args))
+    return int(rc)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +473,42 @@ def mount_proc() -> int:
     return _ctypes_mount_proc()
 
 
+def clone(flags: int, args: LaunchArgs) -> int:
+    """clone(2) with a Rust child entry point (ABI 1.2.0): returns the
+    child's pid. The child runs ``nyrqis_syscalls_launch_child`` — the
+    container PID-1 entry (root maps, proc mount, exec the launcher) —
+    and never returns to Python, so no Python runs between fork and
+    exec on this path.
+
+    Rust-only by design: a raw ``clone(2)`` child cannot run a Python
+    callback (no GIL, no interpreter — the FFI contract), so there is
+    no ctypes fallback. Callers must check ``available()`` first (the
+    direct-syscall launcher uses the Python fork child on crate-less
+    hosts). ``flags`` must include ``CLONE_SIGCHLD`` (a zero signal
+    byte auto-releases the child). Raises ``OSError`` on -errno and
+    ``RuntimeError`` when the crate is absent."""
+    lib = _load_rust_backend()
+    if lib is None:
+        raise RuntimeError(
+            "syscalls: clone(2) needs the Rust backend (the Python "
+            "fork child is the crate-less path)"
+        )
+    try:
+        rc = _rust_clone(lib, flags, args)
+    except Exception as exc:  # noqa: BLE001 - force-aware, like the others
+        if _force_enabled():
+            raise
+        logger.warning(
+            "syscalls: Rust clone failed (%s: %s)",
+            type(exc).__name__, exc,
+        )
+        raise RuntimeError("syscalls: clone(2) unavailable") from exc
+    if rc > 0:
+        return rc
+    _raise_rust_error(rc, "clone")  # -errno -> OSError(errno)
+    raise AssertionError("unreachable")
+
+
 def _ctypes_mount_generic(
     source: bytes, target: bytes, fstype: bytes, flags: int,
     data: Optional[bytes],
@@ -460,7 +580,11 @@ __all__ = [
     "CLONE_NEWUSER",
     "CLONE_NEWPID",
     "CLONE_NEWNET",
+    "CLONE_SIGCHLD",
     "MS_PROC_MOUNT",
+    "LaunchArgs",
+    "available",
+    "clone",
     "set_hostname",
     "sethostname",
     "prctl",

@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import List, Tuple
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -815,40 +816,41 @@ class ContainerManager:
         """Direct-syscall launch (ADR-0020 priority #2, plan §4.1).
 
         ``unshare(2)`` moves the *calling* process into the new
-        namespaces, so the manager must never call it itself. Instead the
-        manager forks a namespace-setup child which performs the same
-        sequence ``unshare(1)`` used to, then forks the container's PID-1:
+        namespaces, so the manager must never call it itself. Two child
+        entry points create the container's PID-1 (the launcher-init):
 
-        1. ``unshare(CLONE_NEWUSER)`` + write the root uid/gid maps
-           (``--map-root-user`` equivalent).
-        2. ``unshare(CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC)``.
-        3. ``unshare(CLONE_NEWPID)`` — affects only the *next* fork, so
-           the child forks again.
-        4. PID-1 mounts a hardened procfs (``mount_proc``, the
-           ``--mount-proc`` equivalent) and execs the launcher.
+        - **Rust-native** (syscalls ABI 1.2.0, crate present): ONE
+          ``clone(2)`` FFI call creates the PID-1 directly in ALL its
+          namespaces (user/mount/UTS/IPC/pid + net); the Rust entry
+          writes the root maps, sets PDEATHSIG, mounts a hardened
+          procfs, and execs the launcher. No Python runs between fork
+          and exec on this path.
+        - **Python fork child** (crate-less fallback): the manager
+          forks a namespace-setup child which performs the same
+          sequence ``unshare(1)`` used to (unshare NEWUSER + maps →
+          NS|UTS|IPC[|NET] → NEWPID → fork PID-1), relays the PID-1
+          through a pipe, waits for it, and exits with its status.
 
-        The setup child relays the container's PID-1 (the launcher-init)
-        through a pipe, waits for it, and exits with its exit status (or
-        dies by its signal), so ``wait()`` reaps the setup child and
-        decodes the container's status exactly as the Popen path does.
-        The launcher-init does NOT exec the container command: it stays
-        alive as the namespace's PID 1 (Linux discards signals sent to a
-        namespace PID 1 that has no handler — see ``launcher.py``), runs
-        the command as its child, and the manager resolves the command's
-        HOST pid itself through the init's /proc children file (see
-        ``_resolve_command_pid`` — the manager's /proc is host-scoped).
-        ``container.pid`` is therefore the REAL command (what
-        suspend/resume/terminate/cgroup-attach and the IPC registry must
-        address), ``container._init_pid`` is the PID-1 launcher-init, and
-        ``container._direct_launcher_pid`` is the setup child (what
-        ``wait()`` reaps).
+        Both entry points produce the same observable outcome: the
+        launcher-init is the namespace's PID 1 (Linux discards signals
+        sent to a namespace PID 1 that has no handler — see
+        ``launcher.py``), it runs the container command as its child,
+        and the manager resolves the command's HOST pid itself through
+        the init's /proc children file (see ``_resolve_command_pid`` —
+        the manager's /proc is host-scoped). ``container.pid`` is the
+        REAL command (what suspend/resume/terminate/cgroup-attach and
+        the IPC registry must address), ``container._init_pid`` is the
+        PID-1 launcher-init, and ``container._direct_launcher_pid`` is
+        what ``wait()`` reaps (the setup child on the fork path — which
+        exits with the container's status — or the init itself on the
+        clone path).
 
         Fork-safety note: between ``fork`` and ``exec`` the child runs
-        only the syscall wrappers and plain file writes — no logging, no
-        Python allocation beyond the FFI call itself. The Rust backend
-        is pre-loaded here so the child never dlopens. Spawn from a
-        quiescent manager (no other threads holding locks), matching the
-        fork rule Python's own ``subprocess`` documents.
+        only the syscall wrappers and plain file writes — no logging,
+        no Python allocation beyond the FFI call itself. The Rust
+        backend is pre-loaded here so the child never dlopens. Spawn
+        from a quiescent manager (no other threads holding locks),
+        matching the fork rule Python's own ``subprocess`` documents.
         """
         launcher = Path(__file__).resolve().parent / "launcher.py"
         launcher_argv = self._launcher_args(container, launcher)
@@ -866,58 +868,16 @@ class ContainerManager:
             f"pids={container.config.limits.pid_limit}, "
             f"seccomp={container.config.seccomp}, "
             f"default_deny={container.config.default_deny}, "
-            f"network={container.config.network}, direct_syscalls=True)"
+            f"network={container.config.network}, direct_syscalls=True, "
+            f"child={'rust' if rust_syscalls.available() else 'python'})"
         )
 
-        read_fd, write_fd = os.pipe()
-        try:
-            launcher_pid = os.fork()
-        except OSError:
-            os.close(read_fd)
-            os.close(write_fd)
-            raise
-        if launcher_pid == 0:
-            # Namespace-setup child: never returns; exits via os._exit.
-            os.close(read_fd)
-            try:
-                _direct_launch_child(
-                    write_fd, launcher_argv, container.config.network
-                )
-            except BaseException:
-                os._exit(125)
-        os.close(write_fd)
-
-        # Bounded read: the setup child writes the container's PID-1
-        # (or an ERR: marker) and closes the pipe before waiting for it.
-        data = b""
-        try:
-            ready, _, _ = select.select([read_fd], [], [], _DIRECT_LAUNCH_TIMEOUT_S)
-            if ready:
-                data = os.read(read_fd, 4096)
-        finally:
-            os.close(read_fd)
-
-        if data.startswith(b"ERR:") or not data:
-            # The setup child already exited (it reports failures before
-            # dying); kill is a no-op on a zombie and waitpid reaps it.
-            try:
-                os.kill(launcher_pid, 9)
-            except OSError:
-                pass
-            try:
-                os.waitpid(launcher_pid, 0)
-            except ChildProcessError:
-                pass
-            if data.startswith(b"ERR:"):
-                raise RuntimeError(
-                    "direct-syscall launcher failed: "
-                    f"{data[4:].decode('utf-8', 'replace')}"
-                )
-            raise RuntimeError(
-                "direct-syscall launcher died during namespace setup "
-                "(no PID reported)"
-            )
-        init_pid = int(data.decode())
+        if rust_syscalls.available():
+            init_pid, reap_pid = self._spawn_direct_clone(
+                launcher_argv, container.config.network)
+        else:
+            init_pid, reap_pid = self._spawn_direct_fork(
+                launcher_argv, container.config.network)
 
         # Resolve the container command's HOST pid. The launcher-init
         # does not exec the command (it stays the namespace's PID 1 so
@@ -955,8 +915,140 @@ class ContainerManager:
 
         container.pid = cmd_pid  # None → the command never materialized
         container._init_pid = init_pid
-        container._direct_launcher_pid = launcher_pid
+        container._direct_launcher_pid = reap_pid
         return None
+
+    @staticmethod
+    def _kill_launcher(pid: int) -> None:
+        """SIGKILL a setup child / init and reap it (best effort — a
+        zombie's kill is a no-op; waitpid reaps it)."""
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+    def _spawn_direct_clone(
+        self, launcher_argv: List[str], network: bool
+    ) -> Tuple[int, int]:
+        """The Rust-native child entry (syscalls ABI 1.2.0): one
+        ``clone(2)`` FFI call creates the container's PID-1 directly in
+        ALL its namespaces; the Rust entry (``launch_child``) writes the
+        root maps (uid/gid captured HERE — inside the new user
+        namespace getuid() reports 65534), sets PDEATHSIG, mounts a
+        hardened procfs, and execs the launcher. The pipe is an
+        error-reporting channel only (the init pid comes from clone's
+        return): EOF on the read means the entry closed its copy and
+        exec'd; ERR: means it failed.
+
+        Returns ``(init_pid, reap_pid)`` — the clone child IS the init,
+        so ``wait()`` reaps it directly (it exits with the container's
+        status via the launcher-init). Raises on failure (the child is
+        SIGKILLed and reaped first)."""
+        uid = os.getuid()
+        gid = os.getgid()
+        flags = (
+            rust_syscalls.CLONE_NEWUSER | rust_syscalls.CLONE_NEWNS
+            | rust_syscalls.CLONE_NEWUTS | rust_syscalls.CLONE_NEWIPC
+            | rust_syscalls.CLONE_NEWPID | rust_syscalls.CLONE_SIGCHLD
+        )
+        if network:
+            flags |= rust_syscalls.CLONE_NEWNET
+        read_fd, write_fd = os.pipe()
+        try:
+            try:
+                args = rust_syscalls.LaunchArgs.build(
+                    write_fd, uid, gid, launcher_argv)
+                init_pid = rust_syscalls.clone(flags, args)
+            except OSError as e:
+                raise RuntimeError(
+                    f"direct-syscall launcher failed: clone: {e}"
+                ) from e
+        finally:
+            os.close(write_fd)
+
+        # Bounded read for the ERR: channel (the entry closes its copy
+        # of the pipe before exec; EOF = success).
+        data = b""
+        try:
+            ready, _, _ = select.select(
+                [read_fd], [], [], _DIRECT_LAUNCH_TIMEOUT_S)
+            if ready:
+                data = os.read(read_fd, 4096)
+        finally:
+            os.close(read_fd)
+
+        if data.startswith(b"ERR:") or data:
+            self._kill_launcher(init_pid)
+            if data.startswith(b"ERR:"):
+                raise RuntimeError(
+                    "direct-syscall launcher failed: "
+                    f"{data[4:].decode('utf-8', 'replace')}"
+                )
+            raise RuntimeError(
+                "direct-syscall launcher failed: unexpected setup-child "
+                "output"
+            )
+        return init_pid, init_pid
+
+    def _spawn_direct_fork(
+        self, launcher_argv: List[str], network: bool
+    ) -> Tuple[int, int]:
+        """The crate-less fallback child entry: the manager forks a
+        namespace-setup child (``_direct_launch_child``) which performs
+        the ``unshare(2)`` dance ``unshare(1)`` used to and forks the
+        container's PID-1, relaying its pid through a pipe.
+
+        Returns ``(init_pid, reap_pid)`` — the init pid (the relayed
+        PID-1) and the setup child (what ``wait()`` reaps; it exits
+        with the container's status). Raises on failure."""
+        read_fd, write_fd = os.pipe()
+        try:
+            launcher_pid = os.fork()
+        except OSError:
+            os.close(read_fd)
+            os.close(write_fd)
+            raise
+        if launcher_pid == 0:
+            # Namespace-setup child: never returns; exits via os._exit.
+            os.close(read_fd)
+            try:
+                _direct_launch_child(
+                    write_fd, launcher_argv, network
+                )
+            except BaseException:
+                os._exit(125)
+        os.close(write_fd)
+
+        # Bounded read: the setup child writes the container's PID-1
+        # (or an ERR: marker) and closes the pipe before waiting for it.
+        data = b""
+        try:
+            ready, _, _ = select.select(
+                [read_fd], [], [], _DIRECT_LAUNCH_TIMEOUT_S)
+            if ready:
+                data = os.read(read_fd, 4096)
+        finally:
+            os.close(read_fd)
+
+        if data.startswith(b"ERR:") or not data:
+            # The setup child already exited (it reports failures before
+            # dying); kill is a no-op on a zombie and waitpid reaps it.
+            self._kill_launcher(launcher_pid)
+            if data.startswith(b"ERR:"):
+                raise RuntimeError(
+                    "direct-syscall launcher failed: "
+                    f"{data[4:].decode('utf-8', 'replace')}"
+                )
+            raise RuntimeError(
+                "direct-syscall launcher died during namespace setup "
+                "(no PID reported)"
+            )
+        init_pid = int(data.decode())
+        return init_pid, launcher_pid
     
     def _attach_to_cgroups(self, container: Container) -> None:
         """Move the container's processes into its cgroups.

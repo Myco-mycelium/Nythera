@@ -966,6 +966,37 @@ Reading: the refresh is a cheap plain-data policy push (~10 µs p50)
 — the per-container authorization update costs the daemon essentially
 nothing on the lifecycle path.
 
+## 24. ADR-0021 Main-Socket Control Op A/B — real `status` op (2026-08-15)
+
+The control-op A/B the synthetic dispatch (§23) left open: a REAL
+control op (`{"op": "status"}` → full CAP_SYSTEM_INFO authorization
++ status handler) over the real cross-process transport, Python floor
+vs Rust loop. Same methodology as §22/§23 (`--ipcd-control`; the
+client sends the op through `IPCClient.call`, both sides answer
+byte-identical through the SAME `BackendStatusService` handler). The
+main service socket serves status/control through the loop when the
+crate is present (floor fallback crate-less), so this measures what a
+daemon operator actually pays per control op on each path.
+
+| Metric | Python floor | Rust loop (dispatch) | Δ |
+|--------|--------------|----------------------|-----|
+| p50 | 289.6 / 289.6 µs (2 runs) | **336.5 / 342.5 µs** | +16–18% |
+| p95 | 438.6 / 438.6 µs | 502.5 / 503.1 µs | +13–15% |
+| p99 | 531.2 / 531.2 µs | 609.5 / 615.6 µs | +15–16% |
+| mean | 296.4 / 296.4 µs | 336.3 / 346.0 µs | +14–17% |
+| min | 150.5 / 150.5 µs | 164.4 / 164.6 µs | +9% |
+
+Reading: a REAL control op through the loop lands at **close parity
+with the floor (+16–18% at the median)** — the same margin the
+synthetic dispatch A/B measured (§23, +15%). The reason is structural
+and expected: the `status` handler runs in Python on BOTH sides
+(ADR-0021 keeps the handlers on the floor), so the loop cannot remove
+that cost — it only avoids the per-message FFI tax on the path it
+answers itself (ping, §22, ~3× faster). The main-socket move therefore
+costs the operator essentially nothing on control ops while unifying
+the daemon's primary control surface behind the Rust serving loop
+(no interpreter dependence on the platform-critical path).
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

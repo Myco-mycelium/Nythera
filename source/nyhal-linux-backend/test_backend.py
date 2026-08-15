@@ -2852,10 +2852,15 @@ class TestDirectSyscallLaunch(unittest.TestCase):
 
     def _spawn_with_pipe(self, data=b"4242", cmd_pid=9876,
                          fork_returns=777):
-        """Drive _spawn_direct with a mocked pipe/fork/read (pipe1 =
-        setup child -> manager: PID-1 / ERR; the command's HOST pid
-        comes from the host-side ``_resolve_command_pid`` poll)."""
+        """Drive _spawn_direct's FORK child (the crate-less fallback)
+        with a mocked pipe/fork/read (pipe1 = setup child -> manager:
+        PID-1 / ERR; the command's HOST pid comes from the host-side
+        ``_resolve_command_pid`` poll). ``available()`` is forced False
+        so these tests pin the fallback path; the clone path has its
+        own tests below."""
         with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=False), \
                 mock.patch("backend.container.os.fork", return_value=fork_returns), \
                 mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.select.select",
@@ -2891,9 +2896,11 @@ class TestDirectSyscallLaunch(unittest.TestCase):
 
     def test_direct_spawn_reaps_failed_child(self):
         # The manager must reap the setup child even on the failure path
-        # (no zombie), then raise.
+        # (no zombie), then raise (the fork fallback's timeout path).
         with mock.patch("backend.container.os.pipe",
                         return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=False), \
                 mock.patch("backend.container.os.fork", return_value=777), \
                 mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.select.select",
@@ -2907,6 +2914,122 @@ class TestDirectSyscallLaunch(unittest.TestCase):
                 self.manager._spawn_direct(container)
         read.assert_not_called()
         waitpid.assert_called_once_with(777, 0)
+
+    # -- the Rust-native clone child (syscalls ABI 1.2.0) ------------
+
+    def _clone_spawn(self, data=b"", cmd_pid=9876, clone_returns=4242,
+                     network=False):
+        """Drive _spawn_direct's CLONE child (the Rust-native path)
+        with a mocked clone/pipe/read. ``available()`` is forced True
+        (the real crate would take this path anyway); ``os.read``
+        returns ``data`` (EOF = the entry closed the pipe and exec'd;
+        ERR: = setup failure)."""
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=True), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([3], [], [])), \
+                mock.patch("backend.container.os.read",
+                           return_value=data) as read, \
+                mock.patch("backend.container.rust_syscalls.clone",
+                           return_value=clone_returns) as clone, \
+                mock.patch("backend.container._resolve_command_pid",
+                           return_value=cmd_pid) as resolve:
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False, network=network,
+            ))
+            self.manager._spawn_direct(container)
+        return container, clone, read, resolve
+
+    def test_clone_spawn_uses_rust_child_and_records_pids(self):
+        # The clone child IS the launcher-init: one clone(2) FFI call
+        # with ALL the namespace flags + SIGCHLD, the init pid comes
+        # from clone's return (not the pipe), and wait() reaps the init
+        # directly (_direct_launcher_pid == _init_pid).
+        container, clone, read, resolve = self._clone_spawn()
+        self.assertEqual(container.pid, 9876)  # the command (host pid)
+        self.assertEqual(container._init_pid, 4242)  # the clone child
+        self.assertEqual(container._direct_launcher_pid, 4242)
+        self.assertIsNone(container._proc)
+        resolve.assert_called_once_with(4242, _DIRECT_LAUNCH_TIMEOUT_S)
+        self.assertEqual(clone.call_count, 1)
+        flags = clone.call_args.args[0]
+        self.assertEqual(
+            flags,
+            rust_syscalls.CLONE_NEWUSER | rust_syscalls.CLONE_NEWNS
+            | rust_syscalls.CLONE_NEWUTS | rust_syscalls.CLONE_NEWIPC
+            | rust_syscalls.CLONE_NEWPID | rust_syscalls.CLONE_SIGCHLD,
+        )
+
+    def test_clone_spawn_network_adds_newnet(self):
+        _, clone, _, _ = self._clone_spawn(network=True)
+        flags = clone.call_args.args[0]
+        self.assertEqual(flags & rust_syscalls.CLONE_NEWNET,
+                         rust_syscalls.CLONE_NEWNET)
+
+    def test_clone_spawn_captures_real_uid_gid_before_clone(self):
+        # Inside the new user namespace getuid() reports 65534, so the
+        # MANAGER must capture its real uid/gid into the LaunchArgs the
+        # Rust entry maps. Pin the build arguments.
+        captured = {}
+        real_build = rust_syscalls.LaunchArgs.build
+
+        def spy_build(write_fd, uid, gid, argv):
+            captured["write_fd"] = write_fd
+            captured["uid"] = uid
+            captured["gid"] = gid
+            captured["argv"] = argv
+            return real_build(write_fd, uid, gid, argv)
+
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=True), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([3], [], [])), \
+                mock.patch("backend.container.os.read", return_value=b""), \
+                mock.patch("backend.container.rust_syscalls.clone",
+                           return_value=4242), \
+                mock.patch.object(rust_syscalls.LaunchArgs, "build",
+                                  side_effect=spy_build) as build, \
+                mock.patch("backend.container._resolve_command_pid",
+                           return_value=9876):
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False,
+            ))
+            self.manager._spawn_direct(container)
+        build.assert_called_once()
+        self.assertEqual(captured["write_fd"], 4)
+        self.assertEqual(captured["uid"], os.getuid())
+        self.assertEqual(captured["gid"], os.getgid())
+        self.assertTrue(any(
+            os.path.basename(a) == "launcher.py" for a in captured["argv"]
+        ))
+
+    def test_clone_spawn_err_marker_raises_and_kills_child(self):
+        # An ERR: report from the Rust entry kills the clone child (the
+        # manager owns its pid) and surfaces the detail.
+        with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=True), \
+                mock.patch("backend.container.os.close"), \
+                mock.patch("backend.container.select.select",
+                           return_value=([3], [], [])), \
+                mock.patch("backend.container.os.read",
+                           return_value=b"ERR:proc mount failed"), \
+                mock.patch("backend.container.rust_syscalls.clone",
+                           return_value=4242), \
+                mock.patch("backend.container.os.kill") as kill, \
+                mock.patch("backend.container.os.waitpid") as waitpid:
+            container = self.manager.create(ContainerConfig(
+                command=["/bin/true"], seccomp=False,
+            ))
+            with self.assertRaises(RuntimeError) as cm:
+                self.manager._spawn_direct(container)
+        self.assertIn("proc mount failed", str(cm.exception))
+        kill.assert_called_once_with(4242, 9)
+        waitpid.assert_called_once_with(4242, 0)
 
     def test_launcher_args_no_shell_interpolation(self):
         # FIND-BACKEND-004 holds on the shared _launcher_args builder used
@@ -3071,8 +3194,10 @@ class TestDirectSyscallLaunch(unittest.TestCase):
     def test_direct_spawn_forwards_network_flag_to_child(self):
         # The manager passes the container's network flag through to the
         # namespace-setup child (fork mocked to run the child branch so
-        # the forwarding is observable).
+        # the forwarding is observable) — the crate-less fallback path.
         with mock.patch("backend.container.os.pipe", return_value=(3, 4)), \
+                mock.patch("backend.container.rust_syscalls.available",
+                           return_value=False), \
                 mock.patch("backend.container.os.fork", return_value=0), \
                 mock.patch("backend.container.os.close"), \
                 mock.patch("backend.container.select.select",
@@ -3315,9 +3440,36 @@ class TestPid1Init(unittest.TestCase):
                         f"terminate took {elapsed:.1f}s — PID-1 init broken?")
         self.assertFalse(c.is_running())
 
+    def _init_caught_sigterm(self, init_pid: int) -> bool:
+        """True once the launcher-init has installed its SIGTERM
+        forwarder (the SIGTERM bit in /proc/<pid>/status SigCgt).
+        Without this, a SIGTERM sent in the init's fork→install window
+        is DISCARDED by kernel PID-1 semantics (no handler yet), the
+        forwarder never fires, and the command keeps running."""
+        try:
+            with open(f"/proc/{init_pid}/status") as fh:
+                for line in fh:
+                    if line.startswith("SigCgt:"):
+                        mask = int(line.split()[1], 16)
+                        return bool(mask & (1 << (signal.SIGTERM - 1)))
+        except (OSError, ValueError, IndexError):
+            pass
+        return False
+
     def test_init_forwards_sigterm_to_command(self):
         m = self._manager()
         c = self._spawn(m, ["/bin/sleep", "60"])
+        # Wait for the init's forwarders: PID-1 semantics DISCARD a
+        # signal the init has no handler for, so signaling in the
+        # fork→install window would silently drop the SIGTERM.
+        deadline = time.time() + 5.0
+        while (time.time() < deadline
+               and not self._init_caught_sigterm(c._init_pid)):
+            time.sleep(0.02)
+        self.assertTrue(
+            self._init_caught_sigterm(c._init_pid),
+            "the launcher-init never installed its SIGTERM forwarder",
+        )
         os.kill(c._init_pid, signal.SIGTERM)  # signal the PID-1 INIT
         deadline = time.time() + 5.0
         while time.time() < deadline and c.is_running():
@@ -5086,6 +5238,74 @@ class TestRustSyscallsLoader(unittest.TestCase):
         self.assertEqual(rust_syscalls.CLONE_NEWIPC, 0x0800_0000)
         self.assertEqual(rust_syscalls.CLONE_NEWUSER, 0x1000_0000)
         self.assertEqual(rust_syscalls.CLONE_NEWPID, 0x2000_0000)
+        self.assertEqual(rust_syscalls.CLONE_SIGCHLD, 17)
+
+    def test_clone_routes_through_ffi_when_loaded(self):
+        # The Rust-native child (ABI 1.2.0): clone() crosses flags, the
+        # entry function address (resolved from the loaded lib — never
+        # a Python callback), and the LaunchArgs byref; a positive rc is
+        # the child's pid. The entry is a REAL function pointer (from
+        # libc) so the loader's ctypes.cast resolves a genuine address
+        # without requiring the crate on this host.
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_clone.return_value = 4242
+        fake.nyrqis_syscalls_launch_child = ctypes.CDLL(None).free
+        args = rust_syscalls.LaunchArgs.build(
+            4, 1000, 1000, ["/bin/true"])
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            pid = rust_syscalls.clone(0x2000_0000 | 17, args)
+        self.assertEqual(pid, 4242)
+        call_args = fake.nyrqis_syscalls_clone.call_args.args
+        self.assertEqual(call_args[0], 0x2000_0000 | 17)  # flags
+        self.assertIsNotNone(call_args[1])  # the entry address
+        self.assertIsNotNone(call_args[2])  # the LaunchArgs byref
+
+    def test_clone_negative_rc_becomes_oserror(self):
+        fake = mock.Mock()
+        fake.nyrqis_syscalls_clone.return_value = -errno.EPERM
+        fake.nyrqis_syscalls_launch_child = ctypes.CDLL(None).free
+        args = rust_syscalls.LaunchArgs.build(4, 1000, 1000, ["/bin/true"])
+        with mock.patch.object(
+            rust_syscalls, "_load_rust_backend", return_value=fake
+        ):
+            with self.assertRaises(OSError) as cm:
+                rust_syscalls.clone(17, args)
+        self.assertEqual(cm.exception.errno, errno.EPERM)
+
+    def test_clone_without_backend_raises(self):
+        # clone is Rust-only by design (a raw child cannot run a Python
+        # callback) — no ctypes fallback; the manager branches on
+        # available() first.
+        self._no_backend()
+        os.environ.pop("NYRQIS_RUST_FORCE", None)
+        self.assertIsNone(rust_syscalls._load_rust_backend())
+        args = rust_syscalls.LaunchArgs.build(4, 1000, 1000, ["/bin/true"])
+        with self.assertRaises(RuntimeError):
+            rust_syscalls.clone(17, args)
+        self.assertFalse(rust_syscalls.available())
+
+    def test_launch_args_build_is_execv_ready(self):
+        # The argv the Rust entry execs: argc entries + a NULL
+        # terminator, each a valid NUL-terminated string that survives
+        # garbage collection.
+        argv = ["/usr/bin/python3", "/x/launcher.py", "--", "/bin/true"]
+        args = rust_syscalls.LaunchArgs.build(4, 1000, 1000, argv)
+        self.assertEqual(args.argc, 4)
+        import gc
+        gc.collect()
+        for i, expected in enumerate(argv):
+            self.assertEqual(
+                ctypes.string_at(
+                    ctypes.cast(args.argv[i], ctypes.c_void_p).value
+                ).decode(),
+                expected,
+            )
+        # The execv NULL terminator must sit right after the last argv
+        # slot (the kernel scans for it; without it execv reads past the
+        # array -> EFAULT).
+        self.assertEqual(args.argv[args.argc], None)
 
     def test_mount_proc_routes_through_ffi_when_loaded(self):
         fake = mock.Mock()

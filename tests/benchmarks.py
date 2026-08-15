@@ -398,13 +398,15 @@ def benchmark_ipcd_roundtrip(n=IPC_ITERATIONS, payload_size=11):
     return {"floor": floor, "loop": loop}
 
 
-def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
+def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11, op="bogus"):
     """ADR-0021 decision point 1 A/B — the non-ping dispatch handoff:
-    the wire p50 of a NON-ping op (``{"op": "bogus"}`` → the status
-    service's deterministic ``unknown operation`` reply) over the REAL
-    transport, Python floor vs Rust loop.
+    the wire p50 of a NON-ping op over the REAL transport, Python
+    floor vs Rust loop. ``op="bogus"`` exercises the status service's
+    deterministic ``unknown operation`` reply; ``op="status"`` (see
+    ``benchmark_ipcd_control``) exercises a REAL control op with the
+    full CAP_SYSTEM_INFO authorization + handler work.
 
-    The loop cannot answer this op itself: it queues the request, the
+    The loop cannot answer these ops itself: it queues the request, the
     driver drains the batch (one boundary crossing), the Python service
     handler builds the reply with the same codec the floor uses, and
     the loop routes it (one boundary crossing back) — the batch
@@ -432,17 +434,19 @@ def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
                 target=server.serve, args=(stop,), daemon=True).start()
         backend_dir = str(Path(__file__).resolve().parent.parent
                           / "source" / "nyhal-linux-backend")
+        wire_payload = json.dumps({"op": op}).encode()
         client_src = (
             "import json, os, statistics, sys, time\n"
             "sys.path.insert(0, sys.argv[1])\n"
             "(_backend_dir, cli_path, svc_path, out_path, ready_path, "
-            "n_s, warm_s) = sys.argv[1:]\n"
+            "n_s, warm_s, payload_b64) = sys.argv[1:]\n"
+            "import base64\n"
+            "payload = base64.b64decode(payload_b64)\n"
             "deadline = time.time() + 10\n"
             "while not os.path.exists(ready_path) and time.time() < deadline:\n"
             "    time.sleep(0.005)\n"
             "from ipc.transport import IPCClient\n"
             "c = IPCClient('bench-cli', cli_path).bind()\n"
-            "payload = b'{\\\"op\\\": \\\"bogus\\\"}'\n"
             "for _ in range(int(warm_s)):\n"
             "    c.call(svc_path, payload, timeout_s=5)\n"
             "lats = []\n"
@@ -454,7 +458,7 @@ def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
             "def pct(v, p):\n"
             "    idx = int(len(v) * p)\n"
             "    return v[min(idx, len(v) - 1)]\n"
-            "res = {'iterations': int(n_s), 'payload_bytes': 15,\n"
+            "res = {'iterations': int(n_s), 'payload_bytes': len(payload),\n"
             "       'p50_us': round(pct(lats, 0.50), 2),\n"
             "       'p95_us': round(pct(lats, 0.95), 2),\n"
             "       'p99_us': round(pct(lats, 0.99), 2),\n"
@@ -464,10 +468,12 @@ def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
             "    json.dump(res, fh)\n"
         )
         try:
+            import base64
             proc = subprocess.Popen(
                 [sys.executable, "-c", client_src, backend_dir, cli_path,
                  svc_path, out_path, ready_path, str(n),
-                 str(IPCD_IPC_WARMUP)],
+                 str(IPCD_IPC_WARMUP),
+                 base64.b64encode(wire_payload).decode()],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             if kind == "loop":
@@ -518,6 +524,21 @@ def benchmark_ipcd_dispatch(n=IPC_ITERATIONS, payload_size=11):
     floor = run_side("floor")
     loop = run_side("loop")
     return {"floor": floor, "loop": loop}
+
+
+def benchmark_ipcd_control(n=IPC_ITERATIONS):
+    """The MAIN-socket control-op A/B — the wire p50 of a REAL control
+    op (``{"op": "status"}`` → the full CAP_SYSTEM_INFO authorization
+    + status handler) over the real transport, Python floor vs Rust
+    loop. The main service socket serves status/control through the
+    loop when the crate is present (floor fallback crate-less), so this
+    measures what a daemon operator actually pays per control op on
+    each path. The status handler runs in Python on BOTH sides, so the
+    A/B isolates the serving path's cost on top of the handler — the
+    question the earlier synthetic ``bogus`` dispatch A/B (§23) left
+    open for a real op.
+    """
+    return benchmark_ipcd_dispatch(n=n, op="status")
 
 
 def benchmark_ipcd_refresh(n=20000):
@@ -1614,6 +1635,8 @@ def main():
                         help="§21 non-ping dispatch handoff A/B (floor vs loop)")
     parser.add_argument("--ipcd-refresh", action="store_true",
                         help="§21 pid-table refresh (set_policy) cost")
+    parser.add_argument("--ipcd-control", action="store_true",
+                        help="§21 main-socket control op A/B — real status op (floor vs loop)")
     parser.add_argument("--bucket", action="store_true", help="§3 token-bucket defaults")
     parser.add_argument("--zstd", action="store_true", help="§2 Zstd level sweep")
     parser.add_argument("--nyfs", action="store_true", help="§4 NyFS vs native proxy")
@@ -1655,7 +1678,8 @@ def main():
                 or args.save_levers or args.snapshot_dedup or args.codec
                 or args.real_corpus or args.mixed_workload
                 or args.compaction_cost or args.journal_blocksize
-                or args.container or args.ipcd_dispatch or args.ipcd_refresh)
+                or args.container or args.ipcd_dispatch or args.ipcd_refresh
+                or args.ipcd_control)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -1665,6 +1689,7 @@ def main():
         args.journal_blocksize = True
         args.container = True
         args.ipcd_dispatch = args.ipcd_refresh = True
+        args.ipcd_control = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -1683,6 +1708,9 @@ def main():
     if args.ipcd_refresh:
         _print_section("ADR-0021 pid-table refresh cost (§21):",
                        benchmark_ipcd_refresh())
+    if args.ipcd_control:
+        _print_section("ADR-0021 main-socket control op A/B — status (§21):",
+                       benchmark_ipcd_control())
     if args.bucket:
         _print_section("Default token bucket sustained rate (§3):",
                        benchmark_default_bucket())

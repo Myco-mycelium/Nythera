@@ -15,25 +15,37 @@
 //! plain-data entry points, no shared mutable state, no pointers into
 //! Python objects; caller-owned buffers stay owned by the caller.
 //!
-//! **`clone` is deliberately NOT implemented** (returns `ERR_INTERNAL`):
-//! a direct `clone(2)` wrapper must specify what the child runs on its
-//! new stack, and the only safe answer in this FFI design is a Rust
-//! child entry point — a Python callback is not callable from a raw
-//! child (no GIL, no interpreter). The direct-syscall launcher uses
-//! `fork(2)` (via the manager's `os.fork`) as its child-creation
-//! primitive: `unshare(CLONE_NEWPID)` only affects the caller's
-//! children, so a fork is required for the container's PID-1 anyway.
-//! `clone` remains future work for a fully Rust-native child entry
-//! point (no Python between fork and exec).
+//! **`clone` is IMPLEMENTED (ABI 1.2.0) with a Rust child entry point**
+//! (`nyrqis_syscalls_clone` + `nyrqis_syscalls_launch_child`):
+//! `clone(2)` with fork semantics (no `CLONE_VM` — the child gets a
+//! private copy-on-write address space, so the stack argument is
+//! ignored) and a caller-supplied Rust entry that runs in the child
+//! and never returns. The direct-syscall launcher passes the
+//! container's PID-1 entry (`launch_child`: root maps, hardened proc
+//! mount, PDEATHSIG, exec the launcher) with ALL the namespace flags
+//! in one call, so the child is created directly in its namespaces —
+//! no Python between fork and exec (the crate-less fallback keeps the
+//! two-stage `os.fork` setup child in `backend/container.py`).
+//!
+//! The FFI clone validates: `CLONE_VM` is rejected (the child entry
+//! needs a private address space — a thread-shared stack would make
+//! the entry's stack frame dangle), the entry must be non-null, and
+//! the argument pointer must be non-null. Returns the child's pid to
+//! the parent; the child runs `entry(arg)` and `_exit`s with its
+//! return (never returns). The `arg` pointer references parent memory
+//! inherited copy-on-write — the parent must not rely on the child's
+//! mutations and the child must not free it.
 
 use libc::{c_char, c_int, c_ulong, c_void};
 
 /// Module ABI version (semver-major*10000 + minor*100 + patch).
 /// 1.1.0 adds `nyrqis_syscalls_mount` / `nyrqis_syscalls_mount_proc`
-/// (the direct-syscall launcher's procfs mount); the loader requires
-/// this minimum so an older 1.0.x library is skipped before the new
-/// symbols are resolved.
-pub const ABI_VERSION: u32 = 0x0001_0100;
+/// (the direct-syscall launcher's procfs mount); 1.2.0 replaces the
+/// `nyrqis_syscalls_clone` stub with the real fork-semantics clone +
+/// the Rust child entry (`nyrqis_syscalls_launch_child`). The loader
+/// requires this minimum so an older library is skipped before the
+/// new symbols are resolved.
+pub const ABI_VERSION: u32 = 0x0001_0200;
 
 // NyrqisErr codes (negative i32 returns, following the Linux syscall
 // convention of negative errno). ERR_INTERNAL is deliberately OUTSIDE
@@ -169,20 +181,282 @@ pub unsafe extern "C" fn nyrqis_syscalls_mount_proc() -> i32 {
     }
 }
 
-/// clone(3) wrapper returning a new child's PID (or 0 in the child).
-/// **NOT IMPLEMENTED — deferred** (see module docs): the child-side
-/// entry point is a design decision for the direct-syscall launcher
-/// transition, so this returns `ERR_INTERNAL` rather than pretending.
+/// The child entry point type: runs in the clone child, never returns
+/// (its return is the child's exit status).
+pub type ChildEntry = unsafe extern "C" fn(*const c_void) -> i32;
+
+/// The libc::clone callback — dispatches to the caller's entry and
+/// exits with its return. The `arg` it receives points at a
+/// `CloneCtx` on the parent's stack: the child is a fork (no
+/// `CLONE_VM`), so it owns a copy-on-write view of that memory even
+/// after the parent's frame is gone.
+extern "C" fn _clone_trampoline(arg: *mut c_void) -> c_int {
+    if arg.is_null() {
+        return 125;
+    }
+    // SAFETY: the child is a fork (no CLONE_VM); the ctx lives on the
+    // parent's stack, which the child owns a copy-on-write view of.
+    let ctx = unsafe { &*(arg as *const CloneCtx) };
+    let rc = unsafe { (ctx.entry)(ctx.arg) };
+    unsafe { libc::_exit(rc as c_int) };
+}
+
+#[repr(C)]
+struct CloneCtx {
+    entry: ChildEntry,
+    arg: *const c_void,
+}
+
+/// clone(2) with fork semantics and a Rust child entry point
+/// (ABI 1.2.0 — the direct-syscall launcher's fully Rust-native
+/// child, no Python between fork and exec).
+///
+/// ``flags`` is the CLONE_NEW* mask (CLONE_VM is rejected: the child
+/// must get a private address space — the entry's stack frame lives on
+/// the parent's stack). The child runs ``entry(arg)`` and exits with
+/// its return; the parent receives the child's pid. Returns 0 or
+/// negative errno on failure (``ERR_INVALID_ARGS`` for a null entry /
+/// arg or CLONE_VM). The caller must OR in SIGCHLD (or another child
+/// signal) so the child is reapable — clone(2) with a zero signal
+/// byte leaves the child unreaped on exit.
 #[no_mangle]
 pub unsafe extern "C" fn nyrqis_syscalls_clone(
-    _flags: u64,
-    _stack: *mut u8,
-    _stack_size: usize,
-    _ptid: *mut i32,
-    _ctid: *mut i32,
-    _tls: u64,
-) -> i64 {
-    ERR_INTERNAL as i64
+    flags: u64,
+    entry: Option<ChildEntry>,
+    arg: *const c_void,
+) -> i32 {
+    let entry = match entry {
+        Some(e) => e,
+        None => return ERR_INVALID_ARGS,
+    };
+    if arg.is_null() {
+        return ERR_INVALID_ARGS;
+    }
+    if flags & (libc::CLONE_VM as u64) != 0 {
+        return ERR_INVALID_ARGS; // fork semantics only (see module docs)
+    }
+    let mut ctx = CloneCtx { entry, arg };
+    // The child needs a real stack: glibc's clone bootstrap switches
+    // the child's rsp to the passed stack pointer EVEN without
+    // CLONE_VM (the kernel ignores it, the libc wrapper does not), so
+    // a NULL/dummy pointer would crash the child's entry bootstrap.
+    // mmap a per-call stack; the parent unmaps its copy after clone
+    // returns (the child is a fork — it owns a copy-on-write view of
+    // the mapping, so the unmap cannot affect it).
+    const STACK_SIZE: usize = 64 * 1024;
+    let stack = libc::mmap(
+        std::ptr::null_mut(),
+        STACK_SIZE,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+    if stack == libc::MAP_FAILED {
+        return -last_errno();
+    }
+    // The stack grows down: the libc wrapper expects the TOP of the
+    // region (16-byte aligned for the child's bootstrap frame).
+    let top = (stack as usize + STACK_SIZE) as *mut c_void;
+    let rc = libc::clone(
+        _clone_trampoline,
+        top,
+        flags as c_int,
+        &mut ctx as *mut CloneCtx as *mut c_void,
+    );
+    libc::munmap(stack, STACK_SIZE);
+    if rc < 0 {
+        -last_errno()
+    } else {
+        rc
+    }
+}
+
+/// The container's PID-1 launch entry (the direct-syscall launcher's
+/// Rust-native child): written by the MANAGER before clone — inside
+/// the new user namespace getuid() reports the overflow uid 65534, so
+/// the real uid/gid to map MUST cross in the argument struct.
+#[repr(C)]
+pub struct LaunchArgs {
+    pub write_fd: c_int,
+    pub uid: u32,
+    pub gid: u32,
+    pub argc: usize,
+    pub argv: *const *const c_char,
+}
+
+/// Write ``content`` to ``path`` (plain open/write/close — the only
+/// libc calls the entry may use; no allocation between clone and
+/// exec). Returns 0 or -errno.
+unsafe fn _write_file(path: &[u8], content: &[u8]) -> i32 {
+    let mut path_buf = [0u8; 64];
+    if path.len() >= path_buf.len() {
+        return -libc::EINVAL;
+    }
+    path_buf[..path.len()].copy_from_slice(path);
+    let fd = libc::open(
+        path_buf.as_ptr() as *const c_char,
+        libc::O_WRONLY,
+    );
+    if fd < 0 {
+        return -last_errno();
+    }
+    let mut written: usize = 0;
+    while written < content.len() {
+        let n = libc::write(
+            fd,
+            content[written..].as_ptr() as *const c_void,
+            content.len() - written,
+        );
+        if n < 0 {
+            let e = -last_errno();
+            libc::close(fd);
+            return e;
+        }
+        written += n as usize;
+    }
+    libc::close(fd);
+    0
+}
+
+/// Format ``0 <id> 1\n`` into a stack buffer (no allocation).
+fn _map_line(id: u32, buf: &mut [u8; 32]) -> &[u8] {
+    // "0 " + decimal id + " 1\n"
+    let mut idx = 2;
+    let mut id = id as u64;
+    let mut digits = [0u8; 10];
+    let mut nd = 0;
+    if id == 0 {
+        digits[0] = b'0';
+        nd = 1;
+    } else {
+        while id > 0 {
+            digits[nd] = b'0' + (id % 10) as u8;
+            nd += 1;
+            id /= 10;
+        }
+    }
+    buf[0] = b'0';
+    buf[1] = b' ';
+    for i in 0..nd {
+        buf[idx] = digits[nd - 1 - i];
+        idx += 1;
+    }
+    buf[idx] = b' ';
+    buf[idx + 1] = b'1';
+    buf[idx + 2] = b'\n';
+    &buf[..idx + 3]
+}
+
+/// Report a failure to the manager (ERR: protocol) and return the exit
+/// code (125 = generic setup failure, the manager reaps the child).
+unsafe fn _fail(write_fd: c_int, msg: &[u8]) -> i32 {
+    let mut buf = [0u8; 512];
+    let prefix = b"ERR:";
+    if write_fd >= 0 && prefix.len() + msg.len() < buf.len() {
+        buf[..prefix.len()].copy_from_slice(prefix);
+        buf[prefix.len()..prefix.len() + msg.len()].copy_from_slice(msg);
+        buf[prefix.len() + msg.len()] = b'\n';
+        let n = prefix.len() + msg.len() + 1;
+        let _ = libc::write(write_fd, buf.as_ptr() as *const c_void, n);
+    }
+    let _ = libc::write(
+        2,
+        b"nyrqis launch child: setup failed\n".as_ptr() as *const c_void,
+        b"nyrqis launch child: setup failed\n".len(),
+    );
+    125
+}
+
+/// The container PID-1's launch entry (the Rust-native child entry
+/// point of the direct-syscall launcher, ABI 1.2.0). Runs in the clone
+/// child — created by ``nyrqis_syscalls_clone`` with ALL the namespace
+/// flags (NEWUSER|NEWNS|NEWUTS|NEWIPC|NEWPID[|NEWNET]|SIGCHLD) — and
+/// performs the launcher's pre-exec duties entirely in Rust:
+///
+/// 1. Root maps: ``setgroups deny`` (best effort), then ``uid_map`` /
+///    ``gid_map`` mapping the manager-captured uid/gid to root.
+/// 2. ``PR_SET_PDEATHSIG(SIGKILL)`` — if the manager dies before this
+///    process execs, the container is killed instead of orphaned
+///    (cleared on exec; the residual window matches the fork path).
+/// 3. Hardened procfs mount at ``/proc``.
+/// 4. ``execv`` the launcher (argv crossed in ``LaunchArgs``).
+///
+/// No allocation, no logging, no Python — between clone and exec only
+/// plain libc calls run. Returns an exit code on failure (the
+/// trampoline exits with it); never returns on success.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_syscalls_launch_child(
+    arg: *const c_void,
+) -> i32 {
+    if arg.is_null() {
+        return 125;
+    }
+    let args = &*(arg as *const LaunchArgs);
+    // 1. Root maps. The setgroups knob may be absent (older kernels):
+    //    best effort, like the fork path's floor.
+    let _ = _write_file(b"/proc/self/setgroups\0", b"deny\n");
+    let mut uid_line = [0u8; 32];
+    let mut gid_line = [0u8; 32];
+    let uid_map = _map_line(args.uid, &mut uid_line);
+    let gid_map = _map_line(args.gid, &mut gid_line);
+    if _write_file(b"/proc/self/uid_map\0", uid_map) != 0 {
+        return _fail(args.write_fd, b"root map write failed");
+    }
+    if _write_file(b"/proc/self/gid_map\0", gid_map) != 0 {
+        return _fail(args.write_fd, b"root map write failed");
+    }
+    // 2. PDEATHSIG — SIGKILL (9) if the manager (our parent) dies.
+    libc::prctl(libc::PR_SET_PDEATHSIG, 9, 0, 0, 0);
+    // 3. Hardened procfs mount.
+    const PROC: &[u8] = b"proc\0";
+    const PROC_MOUNT: &[u8] = b"/proc\0";
+    let rc = libc::mount(
+        PROC.as_ptr() as *const c_char,
+        PROC_MOUNT.as_ptr() as *const c_char,
+        PROC.as_ptr() as *const c_char,
+        (libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC) as c_ulong,
+        std::ptr::null(),
+    );
+    if rc != 0 {
+        return _fail(args.write_fd, b"proc mount failed");
+    }
+    // 4. Close the error pipe (the manager's bounded read ends at EOF
+    //    — success), then exec the launcher. On success this never
+    //    returns; on failure close again (harmless) and report.
+    let _ = libc::close(args.write_fd);
+    let argv = std::slice::from_raw_parts(args.argv, args.argc);
+    libc::execv(argv[0], args.argv as *const *const c_char);
+    // execv failed — report the errno to stderr, then exit 126 (the
+    // manager's wait decodes it as the container's status).
+    let err = last_errno();
+    let _ = libc::write(
+        2,
+        b"nyrqis launch child: execv failed: errno=".as_ptr() as *const c_void,
+        b"nyrqis launch child: execv failed: errno=".len(),
+    );
+    let mut digits = [0u8; 8];
+    let mut nd = 0;
+    let mut e = err as u32;
+    while e > 0 {
+        digits[nd] = b'0' + (e % 10) as u8;
+        nd += 1;
+        e /= 10;
+    }
+    if nd == 0 {
+        digits[0] = b'0';
+        nd = 1;
+    }
+    while nd > 0 {
+        let _ = libc::write(
+            2,
+            digits[nd - 1..nd].as_ptr() as *const c_void,
+            1,
+        );
+        nd -= 1;
+    }
+    let _ = libc::write(2, b"\n".as_ptr() as *const c_void, 1);
+    126
 }
 
 #[cfg(test)]
@@ -191,7 +465,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_current() {
-        assert_eq!(ABI_VERSION, 0x0001_0100);
+        assert_eq!(ABI_VERSION, 0x0001_0200);
     }
 
     #[test]
@@ -205,6 +479,7 @@ mod tests {
         let _ = nyrqis_syscalls_mount;
         let _ = nyrqis_syscalls_mount_proc;
         let _ = nyrqis_syscalls_clone;
+        let _ = nyrqis_syscalls_launch_child;
     }
 
     #[test]
@@ -304,10 +579,104 @@ mod tests {
     }
 
     #[test]
-    fn clone_is_deferred() {
+    fn clone_forks_and_runs_child_entry() {
+        // Fork semantics: the child runs the entry (writing through the
+        // arg) and exits with its return; the parent gets the pid and
+        // reaps the exact status. SIGCHLD in the low byte (the launcher
+        // passes it too) makes the child a normal zombie — a zero
+        // signal byte would auto-release it and waitpid would ECHILD.
+        extern "C" fn entry(arg: *const c_void) -> i32 {
+            let fd = arg as usize as c_int;
+            let msg = b"hi\0";
+            let n = unsafe {
+                libc::write(fd, msg.as_ptr() as *const c_void, 3)
+            };
+            if n == 3 {
+                7 // the child's exit code
+            } else {
+                8
+            }
+        }
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let pid = unsafe {
+            nyrqis_syscalls_clone(
+                libc::SIGCHLD as u64,
+                Some(entry),
+                fds[1] as usize as *const c_void,
+            )
+        };
+        assert!(pid > 0, "expected a child pid, got {pid}");
+        unsafe { libc::close(fds[1]) };
+        let mut buf = [0u8; 4];
+        let n = unsafe { libc::read(fds[0], buf.as_mut_ptr() as *mut c_void, 4) };
+        assert_eq!(n, 3, "the child never wrote through the arg");
+        assert_eq!(&buf[..3], b"hi\0");
+        let mut status = 0;
+        let wpid = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(wpid, pid);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 7);
+        unsafe { libc::close(fds[0]) };
+    }
+
+    #[test]
+    fn clone_rejects_clone_vm() {
+        // CLONE_VM shares the address space — the child entry's stack
+        // frame (on the parent's stack) would dangle. Rejected by
+        // contract.
+        extern "C" fn entry(_arg: *const c_void) -> i32 {
+            0
+        }
         assert_eq!(
-            unsafe { nyrqis_syscalls_clone(0, std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), 0) },
-            ERR_INTERNAL as i64
+            unsafe {
+                nyrqis_syscalls_clone(
+                    libc::CLONE_VM as u64,
+                    Some(entry),
+                    std::ptr::null(),
+                )
+            },
+            ERR_INVALID_ARGS
         );
+    }
+
+    #[test]
+    fn clone_rejects_null_entry_or_arg() {
+        // Both the entry and the arg must be non-null (the contract
+        // guards before touching the kernel).
+        assert_eq!(
+            unsafe {
+                nyrqis_syscalls_clone(0, None, 1 as *const c_void)
+            },
+            ERR_INVALID_ARGS
+        );
+        extern "C" fn entry(_arg: *const c_void) -> i32 {
+            0
+        }
+        assert_eq!(
+            unsafe {
+                nyrqis_syscalls_clone(0, Some(entry), std::ptr::null())
+            },
+            ERR_INVALID_ARGS
+        );
+    }
+
+    #[test]
+    fn launch_child_null_arg_is_safe() {
+        // The entry guards its argument before touching it (no crash
+        // on a null LaunchArgs pointer).
+        assert_eq!(
+            unsafe { nyrqis_syscalls_launch_child(std::ptr::null()) },
+            125
+        );
+    }
+
+    #[test]
+    fn map_line_formats_root_maps() {
+        // The uid/gid map line the entry writes: "0 <id> 1\n".
+        let mut buf = [0u8; 32];
+        assert_eq!(_map_line(1000, &mut buf), b"0 1000 1\n");
+        assert_eq!(_map_line(0, &mut buf), b"0 0 1\n");
+        assert_eq!(_map_line(4294967294, &mut buf), b"0 4294967294 1\n");
     }
 }
