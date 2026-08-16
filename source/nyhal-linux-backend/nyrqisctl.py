@@ -171,11 +171,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "storage", "op": "volume_rekey",
                 "new_passphrase": args.new_passphrase}
     if command == "vault-volume-quota-set":
-        return _volume_ref({
+        payload = _volume_ref({
             "service": "storage", "op": "volume_quota_set",
             "container": args.container,
             "bytes": None if args.unlimited else args.bytes,
         }, args)
+        if args.path:
+            payload["path"] = args.path
+        return payload
     if command == "vault-volume-quota-get":
         return _volume_ref({"service": "storage", "op": "volume_quota_get"},
                            args)
@@ -335,23 +338,25 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"restart the daemon with that key file + the new "
                 "passphrase to serve under the new KEK")
     if command == "vault-volume-quota-set":
+        scope = resp.get("path")
+        target = f"{resp.get('container')}" + (
+            f" under {scope}" if scope else "")
         if resp.get("bytes") is None:
             return (f"volume {resp.get('volume_id')}: container "
-                    f"{resp.get('container')} quota cleared (unlimited)")
+                    f"{target} quota cleared (unlimited)")
         return (f"volume {resp.get('volume_id')}: container "
-                f"{resp.get('container')} quota set to "
-                f"{resp.get('bytes')} bytes")
+                f"{target} quota set to {resp.get('bytes')} bytes")
     if command == "vault-volume-quota-get":
         rows = resp.get("rows") or []
         if not rows:
             return f"volume {resp.get('volume_id')}: no quotas or usage"
-        lines = ["container\tquota\tusage\twarning"]
+        lines = ["container\tscope\tquota\tusage\twarning"]
         for row in rows:
             quota = (f"{row['quota']}" if row.get("quota") is not None
                      else "unlimited")
             warning = row.get("warning") or "-"
-            lines.append(f"{row['container']}\t{quota}\t{row['usage']}\t"
-                         f"{warning}")
+            lines.append(f"{row['container']}\t{row.get('scope') or '/'}\t"
+                         f"{quota}\t{row['usage']}\t{warning}")
         return "\n".join(lines)
     if command == "vault-volume-usage":
         usage = resp.get("usage") or {}
@@ -365,6 +370,11 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 [f"{c}\t{u}" for c, u in sorted(usage.items())])
         if phys is not None:
             line += f"\nphysical (block-store): {phys} bytes"
+        # Per-subtree usage (0.14.19).
+        scope_usage = resp.get("scope_usage") or {}
+        for c, m in sorted(scope_usage.items()):
+            for s, u in sorted(m.items()):
+                line += f"\nsubtree usage ({c} @ {s}): {u} bytes"
         warnings = resp.get("warnings") or {}
         for c, w in sorted(warnings.items()):
             line += f"\nquota warning ({c}): {w}"
@@ -811,6 +821,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Byte quota (omit with --unlimited to clear)")
     vq.add_argument("--unlimited", action="store_true",
                     help="Clear the quota (unlimited bytes)")
+    vq.add_argument("--path", default="",
+                    help="Scope the quota to a subtree, e.g. /assets "
+                         "(0.14.19; default: whole volume)")
     vq.set_defaults(command="vault-volume-quota-set")
 
     vqg = vsub.add_parser(

@@ -789,7 +789,20 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**the event ring survives a restart — 0.14.18**): the
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**per-subtree quotas — 0.14.19**): `volume_quota_set`
+  gains a `path` scope — the quota becomes an ADDITIONAL cap on
+  writes under that scope; every applicable cap (whole-volume AND
+  each scoped quota containing the path) must pass, so nested scopes
+  overlap by design. Fail-closed EDQUOT before the tree is touched;
+  the scoped EDQUOT carries its scope in the error and the event
+  ring. Scoped usage billed incrementally between commits and
+  re-derived from the tree at each commit (delete re-accounts it
+  away); quotas + usage persist with the registry. `quota-get` rows
+  gain a `scope` column; `usage` reports `scope_usage`; CLI `vault
+  quota-set --path /assets`. Verified e2e against a real encrypted
+  daemon. Advisory warnings stay whole-volume-only; scoped quotas
+  enforce the hard stop. Suite 464 → **466**.
+- 2026-08-16 (**the event ring survives a restart — 0.14.18**): the
   ring persists with the registry at every commit — grant/revoke and
   quota-transition events ride the same registry write, so the
   operator's recent history survives a daemon restart (tested). It

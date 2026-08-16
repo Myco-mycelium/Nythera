@@ -164,6 +164,7 @@ Semantics to rely on:
   (a truncate credits immediately).
 - **Quotas are unlimited by default** and per-container: a quota on
   one container never caps another's consumption of the same volume.
+- **Subtree quotas (0.14.19) budget each scope of a shared volume**: `vault quota-set <vol> <container> --path /assets --bytes 500` sets an ADDITIONAL cap on writes under `/assets` — every applicable cap (the whole-volume quota AND each scoped quota whose scope contains the write's path) must pass, so nested scopes overlap by design (the scoped figures read "bytes under this scope"). `quota-get` shows the scope column (`/` = whole volume, scoped rows = their path + scoped usage); `usage` reports `subtree usage (container @ /assets)`. An over-scope write fails with EDQUOT and the error names the scope; the event ring records it with the scope too.
 - **Watch the warning levels**: `quota-get` shows a per-container
   `warning` column (`near` ≥ 80%, `at` ≥ 95%, `over` > 100%), `usage`
   lists warned containers, `summary` counts them per volume, and a

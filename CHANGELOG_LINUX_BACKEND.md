@@ -16,6 +16,39 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.19] — 2026-08-16
+
+### Per-subtree quotas — budget each scope of a shared volume
+
+- **`volume_quota_set` gains a `path` scope**: the quota becomes
+  PER-SUBTREE — an ADDITIONAL cap on writes under that scope. Every
+  applicable cap must pass (the whole-volume quota AND each scoped
+  quota whose scope contains the path), so a path under nested scopes
+  is capped by each — the scoped figures read "bytes under this
+  scope", so nested caps overlap by design (stated in the ADR + the
+  runbook). Cleared the same way (`bytes: null` removes that scope's
+  cap; `--unlimited --path /x` clears it).
+- **Enforcement**: fail-closed EDQUOT (errno 122) before the write
+  touches the tree; the scoped EDQUOT carries its scope in the error
+  AND in the event ring (a whole-volume EDQUOT stays scope-less, so
+  the operator can tell where it hit). Scoped usage is billed
+  incrementally between commits (like the whole-volume ledger) and
+  re-derived from the tree at every commit — a delete under the scope
+  re-accounts it away (tested). Quotas + scoped usage persist with
+  the registry (restart-tested).
+- **Surface**: `quota-get` rows gain a `scope` column (whole-volume
+  rows print `/`, scoped rows their path + scoped usage); `usage`
+  reports `scope_usage` (bytes under each scope, per container).
+  CLI: `nyrqisctl vault quota-set <vol> <container> --path /assets
+  --bytes 500`, `quota-get`, `usage`. Verified end-to-end against a
+  real encrypted daemon (scoped quota → in-scope write lands →
+  over-scope write rejects with EDQUOT + "under scope /assets" →
+  quota-get shows both rows). Advisory warning levels remain
+  whole-volume-only for now — scoped quotas enforce the hard stop.
+- Suite 464 → **466** (enforcement incl. whole-volume interplay +
+  nested overlap, persistence + re-derive; the CLI quota payload test
+  gained `--path`; quota-get row shape updated for `scope`).
+
 ## [0.14.18] — 2026-08-16
 
 ### The event ring survives a restart

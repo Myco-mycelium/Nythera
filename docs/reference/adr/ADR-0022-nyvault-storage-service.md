@@ -234,6 +234,18 @@ billed to the *writing* container, not the volume's creator.
   container (`volume_quota_set`), unlimited by default. Revoking a
   volume grant does not zero accrued usage. The `EDQUOT` errno rides
   the CALL reply, so the FUSE passthrough surfaces it to the kernel.
+- **Subtree quotas (0.14.19).** `volume_quota_set` may carry a `path`
+  scope: the quota becomes an ADDITIONAL cap on writes under that
+  scope — every applicable cap (the whole-volume quota AND each
+  scoped quota whose scope contains the write's path) must pass, so a
+  path under nested scopes is capped by each (the scoped figures read
+  "bytes under this scope"; overlap is by design). Scoped usage is
+  derived from the same tree walk at commit and billed incrementally
+  between commits, so enforcement stays accurate; the scoped `EDQUOT`
+  names its scope in the error and the event ring, so the operator
+  sees exactly where a shared volume's budget was exceeded. Advisory
+  warning levels remain whole-volume-only — scoped quotas enforce the
+  hard stop.
 - **Advisory warnings (0.14.12).** The write path is the hard stop;
   the OPERATIONAL signal is a warning level per quota-holding
   container — `near` (≥ 80%), `at` (≥ 95%), `over` (> 100%) —

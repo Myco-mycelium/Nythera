@@ -55,10 +55,14 @@ Operations (JSON request → JSON reply over CALL/REPLY):
 Quota & accounting (ADR-0022 follow-on, shipped with 0.14.10):
 
 - ``{"op": "volume_quota_set", "volume_id": str, "container": str,
-  "bytes": int|null}`` — CREATOR/OPERATOR-ONLY: set (or clear, with
-  ``bytes: null``) a per-container byte quota on the volume. A
-  container's writes are billed to it fail-closed at write time
-  (``EDQUOT``); quotas are unlimited by default.
+  "bytes": int|null, "path": str?}`` — CREATOR/OPERATOR-ONLY: set
+  (or clear, with ``bytes: null``) a per-container byte quota on the
+  volume. With ``path`` (0.14.19) the quota is PER-SUBTREE: an
+  ADDITIONAL cap on writes under that scope — every applicable cap
+  (the whole-volume quota and each scoped quota containing the
+  path) must pass, so nested scopes overlap by design. A container's
+  writes are billed to it fail-closed at write time (``EDQUOT``);
+  quotas are unlimited by default.
 - ``{"op": "volume_quota_get", "volume_id": str}`` —
   CREATOR/OPERATOR-ONLY: the per-container quotas and their current
   accounted usage.
@@ -236,9 +240,20 @@ class StorageService:
                     # attribution, and the usage ledger cache.
                     "quota": {k: int(v) for k, v in
                                dict(rec.get("quota") or {}).items()},
+                    # Per-subtree quotas (0.14.19): container ->
+                    # {scope path: bytes}; the write path enforces the
+                    # deepest scope containing the write.
+                    "scope_quota": {
+                        k: {s: int(v) for s, v in dict(sq or {}).items()}
+                        for k, sq in dict(rec.get("scope_quota") or {}).items()
+                    },
                     "owners": dict(rec.get("owners") or {}),
                     "usage": {k: int(v) for k, v in
                               dict(rec.get("usage") or {}).items()},
+                    "scope_usage": {
+                        k: {s: int(v) for s, v in dict(su or {}).items()}
+                        for k, su in dict(rec.get("scope_usage") or {}).items()
+                    },
                     # container -> warning level (None/near/at/over);
                     # advisory, re-computed at each refresh
                     "warnings": dict(rec.get("warnings") or {}),
@@ -266,8 +281,14 @@ class StorageService:
              if r.get("wrapped_dek") else None,
              "grants": dict(r.get("grants") or {}),
              "quota": dict(r.get("quota") or {}),
+             "scope_quota": {
+                 k: dict(sq) for k, sq in (r.get("scope_quota") or {}).items()
+             },
              "owners": dict(r.get("owners") or {}),
              "usage": dict(r.get("usage") or {}),
+             "scope_usage": {
+                 k: dict(su) for k, su in (r.get("scope_usage") or {}).items()
+             },
              "warnings": dict(r.get("warnings") or {})}
             for r in self._volumes.values()
         ], "events": list(self._events)}
@@ -538,6 +559,26 @@ class StorageService:
                 continue
             usage[owner] = usage.get(owner, 0) + size
         record["usage"] = usage
+        # Per-subtree usage (0.14.19): for every container holding a
+        # scoped quota, sum the attributed bytes under each scope.
+        # Overlapping scopes each report "bytes under this scope"; the
+        # write path enforces the DEEPEST scope containing the write,
+        # so a write is governed by exactly one scoped quota.
+        scope_usage: Dict[str, Dict[str, int]] = {}
+        for cid, scopes in (record.get("scope_quota") or {}).items():
+            acc: Dict[str, int] = {}
+            for path, owner in owners.items():
+                if owner != cid:
+                    continue
+                size = sizes.get(path)
+                if size is None:
+                    continue
+                for scope in scopes:
+                    if self._path_in_scope(path, scope):
+                        acc[scope] = acc.get(scope, 0) + size
+            if acc:
+                scope_usage[cid] = acc
+        record["scope_usage"] = scope_usage
         # PHYSICAL bytes (volume-wide): the on-disk state footprint —
         # journal + metadata + the block store, compressed + CoW-
         # deduped, so it is load-dependent and deliberately NOT billed
@@ -1072,7 +1113,10 @@ class StorageService:
         """Set (or clear, with ``bytes: null``) a per-container byte
         quota on the volume. CREATOR/OPERATOR-ONLY — quota is
         administration, exactly like grants; a granted container
-        cannot hand itself quota. Unlimited by default."""
+        cannot hand itself quota. Unlimited by default. An optional
+        ``path`` scope (0.14.19) makes the quota PER-SUBTREE: an
+        ADDITIONAL cap on writes under that scope (every applicable
+        cap must pass; nested scopes overlap by design)."""
         from backend.capability import Capability
         if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
             self._reply(server, sender_path, call_id, {
@@ -1108,18 +1152,40 @@ class StorageService:
                           "(null clears the quota)",
             })
             return
-        if quota_bytes is None:
+        scope_path = request.get("path")
+        if scope_path is not None:
+            if not self._check_path(scope_path):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "path must be an absolute volume path "
+                              "without '..' or trailing '/'",
+                })
+                return
+            # A per-subtree quota (0.14.19): enforced for writes whose
+            # path falls under this scope, superseding the whole-volume
+            # quota for those paths.
+            scopes = record.setdefault("scope_quota", {}).setdefault(
+                container, {})
+            if quota_bytes is None:
+                scopes.pop(scope_path, None)
+                if not scopes:
+                    record["scope_quota"].pop(container, None)
+            else:
+                scopes[scope_path] = quota_bytes
+        elif quota_bytes is None:
             record.setdefault("quota", {}).pop(container, None)
         else:
             record.setdefault("quota", {})[container] = quota_bytes
         self._save_state()
-        logger.info("ipc: %s set quota for %s on volume %s (%s) to %s",
-                    self.SERVICE_NAME, container, record["name"],
-                    record["id"][:8], quota_bytes)
+        logger.info("ipc: %s set quota for %s on volume %s (%s) "
+                    "scope=%s to %s", self.SERVICE_NAME, container,
+                    record["name"], record["id"][:8],
+                    scope_path or "/", quota_bytes)
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
             "container": container,
+            "path": scope_path,   # None = whole-volume quota
             "bytes": quota_bytes,
         })
 
@@ -1149,17 +1215,33 @@ class StorageService:
         usage = record.get("usage", {})
         warnings = record.get("warnings", {})
         containers = sorted(set(quotas) | set(usage))
+        rows = [{
+            "container": c,
+            "scope": "/",
+            "quota": quotas.get(c),   # None = unlimited
+            "usage": usage.get(c, 0),
+            # Advisory warning level (None/near/at/over) — the
+            # write path is the hard stop; this is the signal.
+            "warning": warnings.get(c),
+        } for c in containers]
+        # Per-subtree quotas (0.14.19): one row per (container, scope),
+        # with the scoped usage derived at refresh. Advisory warning
+        # levels remain whole-volume-only for now.
+        scope_usage = record.get("scope_usage", {})
+        for cid, scopes in sorted(
+                (record.get("scope_quota") or {}).items()):
+            for scope, qb in sorted(scopes.items()):
+                rows.append({
+                    "container": cid,
+                    "scope": scope,
+                    "quota": qb,
+                    "usage": scope_usage.get(cid, {}).get(scope, 0),
+                    "warning": None,
+                })
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
-            "rows": [{
-                "container": c,
-                "quota": quotas.get(c),   # None = unlimited
-                "usage": usage.get(c, 0),
-                # Advisory warning level (None/near/at/over) — the
-                # write path is the hard stop; this is the signal.
-                "warning": warnings.get(c),
-            } for c in containers],
+            "rows": rows,
         })
 
     def _volume_usage(self, server, sender_path: str, call_id: str,
@@ -1190,11 +1272,18 @@ class StorageService:
             return
         usage = record.get("usage", {})
         warnings = record.get("warnings", {})
+        scope_usage = record.get("scope_usage", {})
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
             "usage": {c: usage.get(c, 0)
                        for c in sorted(set(usage) | set(record.get("quota", {})))},
+            # Per-subtree usage (0.14.19): bytes under each quota scope,
+            # per container (empty when no scoped quotas are set).
+            "scope_usage": {
+                c: {s: u for s, u in sorted(m.items())}
+                for c, m in sorted(scope_usage.items())
+            },
             # Physical block-store bytes (volume-wide; compressed +
             # CoW-deduped — the un-billed figure, per ADR-0022).
             "physical_bytes": int(record.get("physical_bytes", 0)),
@@ -1591,27 +1680,54 @@ class StorageService:
                 "error": "offset must be a non-negative integer",
             })
             return
-        # Quota enforcement (ADR-0022): fail-closed BEFORE the write
-        # touches the tree — ``accounted[container] + write > quota``
-        # rejects with EDQUOT. The accounted figure is the ledger cache
-        # (re-derived from the tree at commit), billed per write below.
-        quota_bytes = record.get("quota", {}).get(sender)
-        if quota_bytes is not None:
-            used = record.get("usage", {}).get(sender, 0)
-            if used + len(data) > quota_bytes:
+        # Quota enforcement (ADR-0022, 0.14.19): fail-closed BEFORE the
+        # write touches the tree. EVERY applicable cap must pass: the
+        # whole-volume quota AND each scoped quota whose scope contains
+        # the path (a path under nested scopes is capped by each — the
+        # scoped figures are "bytes under this scope", so nested caps
+        # overlap by design). The accounted figures are the ledger
+        # caches (re-derived from the tree at commit), billed per
+        # write below.
+        applicable = []
+        for scope, qb in ((record.get("scope_quota") or {}).get(sender)
+                          or {}).items():
+            if self._path_in_scope(path, scope):
+                used = (record.get("scope_usage", {}).get(sender, {})
+                        .get(scope, 0))
+                applicable.append((scope, qb, used))
+        whole_quota = record.get("quota", {}).get(sender)
+        if whole_quota is not None:
+            applicable.append(
+                ("/", whole_quota,
+                 record.get("usage", {}).get(sender, 0)))
+        for scope, qb, used in applicable:
+            if used + len(data) <= qb:
+                continue
+            if scope == "/":
                 # The hard stop is the most actionable event an
                 # operator can see — record it in the event ring.
                 self._record_event(
                     record["name"], sender, "quota",
-                    level="edquot", usage=used, quota=quota_bytes)
+                    level="edquot", usage=used, quota=qb)
                 self._reply(server, sender_path, call_id, {
                     "ok": False,
                     "error": "quota exceeded: %d bytes accounted, "
                               "%d-byte quota, %d requested"
-                              % (used, quota_bytes, len(data)),
+                              % (used, qb, len(data)),
                     "errno": errno.EDQUOT,
                 })
-                return
+            else:
+                self._record_event(
+                    record["name"], sender, "quota",
+                    level="edquot", usage=used, quota=qb, scope=scope)
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "quota exceeded: %d bytes accounted under "
+                              "scope %s, %d-byte quota, %d requested"
+                              % (used, scope, qb, len(data)),
+                    "errno": errno.EDQUOT,
+                })
+            return
         # ``defer_commit`` (the FUSE passthrough's write path): commit
         # at the fsync/close/interval boundary instead of per CALL, so
         # a 128 KiB kernel write (4 chunked CALLs) pays ONE save at
@@ -1640,11 +1756,30 @@ class StorageService:
         record.setdefault("owners", {})[path] = sender
         usage = record.setdefault("usage", {})
         usage[sender] = usage.get(sender, 0) + len(data)
+        # Per-subtree billing (0.14.19): charge every applicable
+        # scope's ledger too, so enforcement stays accurate between
+        # commit refreshes (the commit refresh re-derives from the
+        # tree).
+        for scope, _qb, _used in applicable:
+            if scope == "/":
+                continue
+            scope_ledger = record.setdefault("scope_usage", {}).setdefault(
+                sender, {})
+            scope_ledger[scope] = scope_ledger.get(scope, 0) + len(data)
         # Advisory warning at the point of action: the writer's level
         # AFTER this write (near/at — never 'over', the write path
-        # already rejected that case).
-        writer_warning = (self._warning_level(usage[sender], quota_bytes)
-                          if quota_bytes is not None else None)
+        # already rejected that case). The deepest applicable scoped
+        # quota governs the signal; otherwise the whole-volume quota.
+        scoped = [a for a in applicable if a[0] != "/"]
+        if scoped:
+            _s, gov_qb, gov_used = max(scoped, key=lambda a: len(a[0]))
+            writer_warning = self._warning_level(
+                gov_used + len(data), gov_qb)
+        elif whole_quota is not None:
+            writer_warning = self._warning_level(
+                usage[sender], whole_quota)
+        else:
+            writer_warning = None
         if defer_commit:
             # Group-commit tick: the first operation after the interval
             # persists the whole batch of deferred writes (plus any

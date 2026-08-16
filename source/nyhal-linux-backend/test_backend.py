@@ -1894,6 +1894,20 @@ class TestOperatorCli(unittest.TestCase):
             {"service": "storage", "op": "volume_quota_set",
              "name": "shared", "container": "container-x",
              "bytes": None})
+        # Per-subtree quotas (0.14.19): --path rides the payload.
+        args = parser.parse_args(
+            ["vault", "quota-set", "--name", "shared", "container-x",
+             "--path", "/assets", "--bytes", "500"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_quota_set",
+             "name": "shared", "container": "container-x",
+             "path": "/assets", "bytes": 500})
+        self.assertIn("under /assets", nyrqisctl.format_human(
+            "vault-volume-quota-set", {"ok": True, "volume_id": "vid123",
+                                       "container": "container-x",
+                                       "path": "/assets",
+                                       "bytes": 500}))
         args = parser.parse_args(["vault", "quota-get", "vid123"])
         self.assertEqual(
             nyrqisctl.build_payload(args.command, args),
@@ -1912,18 +1926,20 @@ class TestOperatorCli(unittest.TestCase):
             "vault-volume-quota-set", {"ok": True, "volume_id": "vid123",
                                        "container": "container-x",
                                        "bytes": None}))
-        self.assertIn("container-x\tunlimited\t100\t-",
+        self.assertIn("container-x\t/\tunlimited\t100\t-",
                       nyrqisctl.format_human(
                           "vault-volume-quota-get", {"ok": True,
                                                      "volume_id": "vid123",
                                                      "rows": [{"container": "container-x",
+                                                                "scope": "/",
                                                                 "quota": None,
                                                                 "usage": 100}]}))
-        self.assertIn("container-x\t1000\t900\tat",
+        self.assertIn("container-x\t/\t1000\t900\tat",
                       nyrqisctl.format_human(
                           "vault-volume-quota-get", {"ok": True,
                                                      "volume_id": "vid123",
                                                      "rows": [{"container": "container-x",
+                                                                "scope": "/",
                                                                 "quota": 1000,
                                                                 "usage": 900,
                                                                 "warning": "at"}]}))
@@ -4252,6 +4268,7 @@ class TestStorageService(unittest.TestCase):
                                   {"volume_id": vid})
         rows = last(stub)["rows"]
         self.assertEqual(rows, [{"container": "container-b",
+                                 "scope": "/",
                                  "quota": 10, "usage": 0,
                                  "warning": None}])
 
@@ -4321,6 +4338,178 @@ class TestStorageService(unittest.TestCase):
                               {"volume_id": vid})
         self.assertEqual(last(stub)["usage"],
                          {"container-a": 70, "container-b": 30})
+
+    def test_subtree_quota_enforced_at_write(self):
+        # 0.14.19: a quota may be scoped to a subtree — an ADDITIONAL
+        # cap: every applicable cap (the whole-volume quota AND each
+        # scoped quota whose scope contains the path) must pass. The
+        # scoped EDQUOT carries its scope in the error and the event
+        # ring; the whole-volume EDQUOT does not.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "subquota-vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "s"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+
+        def write(path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(b"S" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        # Whole-volume cap 200 + subtree caps /assets=60 and
+        # /data=40. Every cap applies: /assets writes are capped by
+        # BOTH /assets and the whole volume.
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a", {
+            "volume_id": vid, "container": "container-a",
+            "path": "/assets", "bytes": 60})
+        self.assertTrue(last(stub)["ok"])
+        self.assertEqual(last(stub)["path"], "/assets")
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "4", "container-a", {
+            "volume_id": vid, "container": "container-a",
+            "path": "/data", "bytes": 40})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "5", "container-a", {
+            "volume_id": vid, "container": "container-a", "bytes": 200})
+        self.assertTrue(last(stub)["ok"])
+
+        self.assertTrue(write("/assets/a", 30)["ok"])
+        self.assertTrue(write("/assets/b", 30)["ok"])
+        # 61 > 60 under /assets: EDQUOT, with the scope in the error.
+        over = write("/assets/c", 1)
+        self.assertFalse(over["ok"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        self.assertIn("scope /assets", over["error"])
+        # The scoped EDQUOT lands in the event ring with its scope.
+        stub = _Stub()
+        storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+        ev = last(stub)["events"][0]
+        self.assertEqual(ev["level"], "edquot")
+        self.assertEqual(ev["scope"], "/assets")
+        # /data is its own cap.
+        self.assertTrue(write("/data/x", 40)["ok"])
+        over = write("/data/y", 1)
+        self.assertFalse(over["ok"])
+        self.assertIn("scope /data", over["error"])
+        # The whole-volume cap still applies to everything: 30+30+40
+        # = 100 so far; /other can take 100 more, then it hits 200.
+        self.assertTrue(write("/other", 100)["ok"])
+        over = write("/other", 1)
+        self.assertFalse(over["ok"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        self.assertNotIn("scope", over["error"])
+        # Nested scopes overlap by design: /assets/img/x is capped by
+        # /assets/img AND /assets. /assets already holds 60, so the
+        # nested write is refused by the /assets cap.
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "6", "container-a", {
+            "volume_id": vid, "container": "container-a",
+            "path": "/assets/img", "bytes": 10})
+        self.assertTrue(last(stub)["ok"])
+        over = write("/assets/img/x", 5)
+        self.assertFalse(over["ok"])
+        self.assertIn("scope /assets", over["error"])
+
+        # quota-get shows the whole-volume row (scope /) AND the
+        # scoped rows.
+        stub = _Stub()
+        storage._volume_quota_get(stub, "p", "7", "container-a",
+                                  {"volume_id": vid})
+        rows = {(r["container"], r["scope"]): r for r in last(stub)["rows"]}
+        self.assertEqual(rows[("container-a", "/")]["quota"], 200)
+        self.assertEqual(rows[("container-a", "/assets")]["quota"], 60)
+        self.assertEqual(rows[("container-a", "/data")]["quota"], 40)
+        self.assertEqual(rows[("container-a", "/assets/img")]["quota"], 10)
+
+    def test_subtree_quota_persists_and_rederives(self):
+        # 0.14.19: scoped quotas and their derived usage persist with
+        # the registry, and the commit refresh re-derives scoped usage
+        # from the tree — a delete under the scope drops the figure.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        vault = os.path.join(self.tmp, "subquota-persist")
+        storage = StorageService(capability_manager=caps, vault_dir=vault)
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "p"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "2", "container-a", {
+            "volume_id": vid, "container": "container-a",
+            "path": "/assets", "bytes": 100})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_open(stub, "p", "o1", "container-a",
+                             {"volume_id": vid})
+        h1 = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "3", "container-a", {
+            "handle": h1, "path": "/assets/a",
+            "data_b64": base64.b64encode(b"A" * 60).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"])  # commits: image + ledger saved
+
+        storage2 = StorageService(capability_manager=caps, vault_dir=vault)
+        self.assertEqual(storage2._volumes[vid]["scope_quota"],
+                         {"container-a": {"/assets": 100}})
+        # The derived scoped usage rode the same persist.
+        self.assertEqual(storage2._volumes[vid]["scope_usage"],
+                         {"container-a": {"/assets": 60}})
+        stub = _Stub()
+        storage2._volume_open(stub, "p", "o2", "container-a",
+                              {"volume_id": vid})
+        handle = last(stub)["handle"]
+        # A delete under the scope re-derives it away at the next
+        # commit (the delegated unlink mutates the tree; fsync is the
+        # commit point that refreshes the ledger).
+        stub = _Stub()
+        storage2._volume_unlink(stub, "p", "4", "container-a", {
+            "handle": handle, "path": "/assets/a"})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage2._volume_fsync(stub, "p", "4b", "container-a",
+                               {"handle": handle})
+        self.assertTrue(last(stub)["ok"])
+        self.assertEqual(storage2._volumes[vid]["scope_usage"], {})
+        # usage surfaces the scoped figure after the delete.
+        stub = _Stub()
+        storage2._volume_usage(stub, "p", "5", "container-a",
+                               {"volume_id": vid})
+        reply = last(stub)
+        self.assertEqual(reply["scope_usage"], {})
 
     def test_quota_truncate_credits_delta(self):
         # ADR-0022: truncate credits the delta, so a container that
