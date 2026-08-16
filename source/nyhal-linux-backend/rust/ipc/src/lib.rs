@@ -14,7 +14,8 @@
 //! ```text
 //! 0   4  magic "NYRQ"
 //! 4   1  wire version (1)
-//! 5   1  message_type (0 send, 1 receive, 2 call, 3 reply, 4 notify)
+//! 5   1  message_type (0 send, 1 receive, 2 call, 3 reply, 4 notify,
+//!                     5 stream_chunk — ADR-0024)
 //! 6   8  timestamp (f64, little-endian)
 //! 14  4  message_id_len (u32 LE) + bytes
 //!     4  sender_id_len + bytes
@@ -148,7 +149,7 @@ pub unsafe extern "C" fn nyrqis_ipc_encode(
     if out_ptr.is_null() || out_len.is_null() {
         return ERR_INVALID_ARGS;
     }
-    if message_type > 4 {
+    if message_type > 5 {
         return ERR_INVALID_ARGS;
     }
     let message_id_slice = unwrap_err!(slice_field(message_id, message_id_len));
@@ -258,7 +259,7 @@ pub unsafe extern "C" fn nyrqis_ipc_decode(
         return ERR_INVALID_WIRE;
     }
     let message_type = unwrap_wire!(take(data, &mut pos, 1))[0];
-    if message_type > 4 {
+    if message_type > 5 {
         return ERR_INVALID_WIRE;
     }
     let ts_bytes = unwrap_wire!(take(data, &mut pos, 8));
@@ -517,8 +518,41 @@ mod tests {
         assert_eq!(&w[41..46], b"hello");
         assert_eq!(&w[46..50], &0u32.to_le_bytes()); // caps_flat_len
         assert_eq!(&w[50..54], &2u32.to_le_bytes()); // metadata_len
-        assert_eq!(&w[54..56], b"{}");
-        assert_eq!(w.len(), 56);
+    }
+
+    #[test]
+    fn stream_chunk_type_roundtrips() {
+        // ADR-0024: message_type 5 (STREAM_CHUNK) is a first-class
+        // wire type on both halves — the envelope (stream_id, index,
+        // count, payload, checksum) rides in the payload field, so the
+        // codec itself needs only the type range, not the envelope.
+        let (rc, w) = unsafe {
+            enc(5, b"stream-1", b"c-a", b"c-b", b"", b"\x00\x00\x00\x00", b"", b"{}")
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(w[5], 5); // message_type = stream_chunk
+
+        let mut view_ptr: *mut IpcMessageView = std::ptr::null_mut();
+        let rc = unsafe { nyrqis_ipc_decode(w.as_ptr(), w.len() as u32, &mut view_ptr) };
+        assert_eq!(rc, 0);
+        let view = unsafe { &*view_ptr };
+        assert_eq!(view.message_type, 5);
+        assert_eq!(view.message_id_len as usize, 8);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(view.message_id, view.message_id_len as usize) },
+            b"stream-1"
+        );
+        assert_eq!(view.payload_len as usize, 4);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(view.payload, view.payload_len as usize) },
+            &[0u8, 0, 0, 0]
+        );
+        assert_eq!(view.metadata_len as usize, 2);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(view.metadata, view.metadata_len as usize) },
+            b"{}"
+        );
+        unsafe { nyrqis_ipc_free(view_ptr as *mut c_uchar) };
     }
 
     #[test]

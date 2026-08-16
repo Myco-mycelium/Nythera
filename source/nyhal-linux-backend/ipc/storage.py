@@ -125,17 +125,29 @@ _MAX_IO_BYTES = 32 * 1024
 # ``volume_write``/``volume_read`` CALLs — each chunk ≤ ``_MAX_IO_BYTES``
 # with a ``stream_id``/``stream_index``/``stream_count`` envelope and a
 # per-chunk SHA-256 checksum — reassembled here (writes) or by the
-# client (reads). The wire codec is untouched (byte-identical gate
-# stays green) and the Rust serving loop needs no change: chunks are
-# ordinary capability-gated CALLs on either loop path. Bounds mirror
+# client (reads). This SERVICE-LEVEL envelope stays implemented forever
+# as the mixed-version path: the wire codec is untouched (byte-identical
+# gate stays green) and it works on either loop path. Bounds mirror
 # the ADR's wire-level window + TTL: a stream may hold at most
 # ``_STREAM_MAX_CHUNKS`` chunks (16 MiB at 32 KiB) and must complete
 # within ``_STREAM_TTL_S``; an incomplete/oversized stream is dropped
 # fail-closed and the caller's paging path (which stays implemented
-# forever) takes over. The wire-level framing (a codec flag + Rust
-# loop reassembly for ALL services) is the documented follow-on.
+# forever) takes over.
 _STREAM_MAX_CHUNKS = 512
 _STREAM_TTL_S = 30.0
+
+# Wire-level streaming (ADR-0024 follow-on): the TRANSPORT now carries
+# STREAM_CHUNK messages (codec type 5) that it reassembles before
+# dispatch, so a CALL can arrive here with a payload far beyond the
+# single-datagram budget — the 32 KiB per-call cap (ADR-0022) becomes
+# a config bound on this path, not a protocol one. The transport
+# reassembles at most ``_STREAM_MAX_CHUNKS × 32 KiB`` (16 MiB) of WIRE
+# payload; data rides inside as base64 (4:3 inflation), so a single
+# wire-level CALL carries at most ~11 MiB of data. The service accepts
+# plain (envelope-less) writes/reads up to this budget — only a
+# wire-level stream can deliver such a CALL (a single datagram cannot
+# carry it), so the cap is safe against ordinary oversized calls too.
+_WIRE_STREAM_DATA_BYTES = 11 * 1024 * 1024
 
 # Volume paths are flat-ish blob names under the volume root: absolute,
 # no ``..`` segments (the NyFS tree is the volume's own namespace, but a
@@ -930,12 +942,16 @@ class StorageService:
             "ok": True,
             "handle": handle,
             "volume_id": volume_id,
-            # ADR-0024 first increment: the service advertises the
-            # streaming data plane so a NEW client only streams
-            # against a peer that understands the stream envelope
-            # (a client that never sees the flag keeps paging — the
-            # mixed-version degradation path).
+            # ADR-0024: the service advertises the streaming data
+            # plane so a NEW client only streams against a peer that
+            # understands it (a client that never sees the flag keeps
+            # paging — the mixed-version degradation path). ``stream``
+            # is the 0.14.20 service-level envelope; ``stream_ver`` 2
+            # is the wire-level STREAM_CHUNK framing (0.14.21): the
+            # transport chunks the CALL/REPLY itself, so the client
+            # sends ONE plain call with the full payload.
             "stream": True,
+            "stream_ver": 2,
         })
 
     def _volume_list(self, server, sender_path: str, call_id: str,
@@ -1695,11 +1711,16 @@ class StorageService:
                 "error": "data_b64 must be valid base64",
             })
             return
-        if len(data) > _MAX_IO_BYTES:
+        # ADR-0024 wire-level framing: a plain (envelope-less) write may
+        # carry up to the wire-stream DATA budget — the transport
+        # reassembled the STREAM_CHUNK sequence into this one CALL (a
+        # single datagram physically cannot carry a larger payload, so
+        # this cap is safe against ordinary oversized calls too).
+        if len(data) > _WIRE_STREAM_DATA_BYTES:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
-                "error": "write exceeds the %d-byte per-call limit "
-                          "(page with offset)" % _MAX_IO_BYTES,
+                "error": "write exceeds the %d-byte stream budget "
+                          "(page with offset)" % _WIRE_STREAM_DATA_BYTES,
             })
             return
         offset = request.get("offset", 0)
@@ -2076,7 +2097,38 @@ class StorageService:
                 "error": "size must be a positive integer",
             })
             return
-        # Streaming data plane (ADR-0024 first increment): a
+        # Wire-level streaming (ADR-0024 follow-on): a ``wire_stream``
+        # read is served in ONE reply with the full payload — the
+        # transport chunks the REPLY into STREAM_CHUNK messages, and
+        # the client reassembles them before decoding (no per-page
+        # round trip, no JSON envelope per page). The service reads
+        # through NyFS itself in-process, exactly like the paged path.
+        if request.get("wire_stream"):
+            if size > _WIRE_STREAM_DATA_BYTES:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "wire-streamed read exceeds the %d-byte "
+                              "budget" % _WIRE_STREAM_DATA_BYTES,
+                })
+                return
+            try:
+                from fuse.nyfs import NyFSError
+                data = nyfs.read(path, size=size, offset=offset)
+            except NyFSError as e:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "read failed: %s" % (e,),
+                })
+                return
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "data_b64": base64.b64encode(data).decode("ascii"),
+                "path": path,
+                "bytes": len(data),
+                "offset": offset,
+            })
+            return
+        # Service-level streaming (ADR-0024 first increment): a
         # ``stream=True`` read may span up to the stream budget (16 MiB)
         # and comes back as a sequence of correlated REPLYs, each
         # carrying ``stream_index``/``stream_count`` and ≤32 KiB of

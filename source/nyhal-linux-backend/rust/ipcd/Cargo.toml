@@ -11,12 +11,16 @@ name = "nyrqis_ipcd"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# `libc` is the crate's only dependency, matching the other migration
-# crates: the socket primitives (poll/recvmsg/sendto), the sockaddr_un
-# layout, and the SCM_CREDENTIALS ancillary constants. The wire codec
-# (migration #4, rust/ipc) owns the full framing/parse trust boundary;
-# this crate owns the loop's dispatch parse — the minimal subset of
-# fields the loop reads (message_type, message_id, payload) with the
-# same bounds and drop-on-malformed behavior, pinned by the
-# differential conformance gate against the pure-Python floor.
+# `libc` is the crate's only dependency for the socket primitives
+# (poll/recvmsg/sendto), the sockaddr_un layout, and the SCM_CREDENTIALS
+# ancillary constants. `sha2` joins it for ADR-0024 wire-level stream
+# reassembly: the loop verifies every chunk's per-chunk SHA-256 before
+# dispatch — the same primitive + version the nyfs crate (migration #3)
+# already established behind the boundary. The wire codec (migration
+# #4, rust/ipc) owns the full framing/parse trust boundary; this crate
+# owns the loop's dispatch parse — the minimal subset of fields the
+# loop reads (message_type, message_id, payload) with the same bounds
+# and drop-on-malformed behavior, pinned by the differential
+# conformance gate against the pure-Python floor.
 libc = "0.2"
+sha2 = "0.10"

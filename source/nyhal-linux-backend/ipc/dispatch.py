@@ -38,10 +38,10 @@ Faithfulness to the floor (``IPCDatagramServer.serve_once``):
 import logging
 from typing import Any, List, Optional
 
-from .core import IPCMessage, IPCMessageType
+from .core import IPCMessage
 from .loop import IpcdLoop
 from .service import ServiceRouter
-from .transport import DEFAULT_OPERATOR_ID
+from .transport import DEFAULT_OPERATOR_ID, build_reply_wires
 
 logger = logging.getLogger(__name__)
 
@@ -148,14 +148,16 @@ class IpcdLoopDispatcher:
                 self._router._on_call(msg, msg.sender_id, msg.sender_id)
             except Exception:  # noqa: BLE001 - the router never raises; defensive
                 logger.exception("ipc dispatch: router raised")
-        replies = [
-            IPCMessage(
-                message_type=IPCMessageType.REPLY,
-                payload=payload,
-                reply_to=call_id,
-            ).to_wire()
-            for call_id, payload in sink.drain_replies()
-        ]
+        # ADR-0024 wire-level framing: a reply payload that exceeds the
+        # single-datagram budget becomes N STREAM_CHUNK wires (the same
+        # helper the floor's reply() uses, so a reply is byte-identical
+        # whichever backend served it). The loop routes each wire to
+        # the RECORDED sender address; STREAM_CHUNK wires do not
+        # consume the pending entry (only the final REPLY does) and
+        # discard_requests reaps it after the batch.
+        replies: List[bytes] = []
+        for call_id, payload in sink.drain_replies():
+            replies.extend(build_reply_wires(call_id, payload))
         if replies:
             self._loop.enqueue_replies(replies)
         # Reap anything the handlers chose not to answer.

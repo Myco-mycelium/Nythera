@@ -276,7 +276,7 @@ def _py_decode(buf: bytes) -> Dict:
     magic, version, message_type, timestamp = struct.unpack_from(
         "<4sBBd", buf, 0
     )
-    if magic != _MAGIC or version != _WIRE_VERSION or message_type > 4:
+    if magic != _MAGIC or version != _WIRE_VERSION or message_type > 5:
         raise ValueError(_INVALID_WIRE_MSG)
     pos = 14
 
@@ -321,9 +321,10 @@ def encode(
     """Serialize a message to the canonical wire format.
 
     ``message_type`` is the IPCMessageType index (0 send, 1 receive,
-    2 call, 3 reply, 4 notify). ``metadata_blob`` is opaque on the wire
-    (the caller's JSON bytes). Rust FFI when the module is loaded; the
-    pure-Python ``struct`` encoder otherwise — byte-identical output.
+    2 call, 3 reply, 4 notify, 5 stream_chunk). ``metadata_blob`` is
+    opaque on the wire (the caller's JSON bytes). Rust FFI when the
+    module is loaded; the pure-Python ``struct`` encoder otherwise —
+    byte-identical output.
     """
     reply_to_bytes = reply_to.encode("utf-8") if reply_to else b""
     caps_flat = build_caps_flat(capabilities)

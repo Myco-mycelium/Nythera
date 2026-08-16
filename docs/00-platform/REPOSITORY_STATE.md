@@ -811,6 +811,31 @@ Documentation hygiene, fixed earlier this session:
   **Measured §29 (`--vault-stream`)**: 1 MiB writes 5.6× / 6.6×
   (plaintext/encrypted) faster than paged; reads ~1.04× (already
   flat). Suite 466 → **479**.
+- 2026-08-16 (**wire-level streaming — the ADR-0024 follow-on, 0.14.21**):
+  STREAM_CHUNK is a first-class wire message type (5) in the codec on
+  BOTH halves (rust/ipc + `ipc_codec.py`, byte-identical,
+  differential-gated) — the envelope (`version ‖ stream_id ‖ call_id ‖
+  index ‖ count ‖ payload ‖ sha256`) rides the payload field and the
+  codec's `reply_to` carries chunk correlation. **Both serving paths
+  reassemble**: the floor transport (window/TTL/sender-bind,
+  chunked REPLYs via `build_reply_wires`) and the Rust serving loop
+  (rust/ipcd: per-chunk SHA-256, rebuilt CALL wire to pending,
+  chunked reply routing without consuming pending — the loop serves
+  the daemon's socket in production, so loop reassembly is what makes
+  the path real). The client gains `wire_stream=True` (chunked send +
+  chunked-reply reassembly, floor path); the service's plain
+  write/read accept the wire-stream DATA budget and `volume_open`
+  advertises `stream_ver: 2`, with the service-level envelope +
+  paging staying for old peers; a payload beyond the 512-chunk window
+  is refused client-side immediately. **Also fixed the transport
+  close-race the wire-level path exposed**: `close()` now joins the
+  serve loop before releasing the socket — a server torn down with
+  `stop.set(); close()` left its serve thread mid-poll, the next bind
+  reused the freed fd, and the stale poll stole ONE datagram from the
+  new socket (a lost STREAM_CHUNK left reassembly one chunk short;
+  the caller timed out). close() is synchronous and safe (path
+  unlinked before it returns; serve-after-close returns immediately).
+  Suite 479 → **492** (both crate paths green).
 - 2026-08-16 (**ADR-0024 drafted (Proposed) — the streaming data plane**):
   the documented next step of ADR-0022's data plane — chunked
   framing for CALL/REPLY payloads beyond the single-datagram budget

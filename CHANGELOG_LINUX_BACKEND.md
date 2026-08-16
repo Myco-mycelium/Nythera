@@ -16,6 +16,72 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.21] — 2026-08-16
+
+### Wire-level streaming — the ADR-0024 follow-on lands
+
+- **STREAM_CHUNK is now a first-class wire message type (5) in the
+  codec** on BOTH halves (rust/ipc + `ipc_codec.py`, byte-identical,
+  differential-gated) — the envelope rides the payload field:
+  `version(1) ‖ stream_id(6B) ‖ call_id ‖ index(u32) ‖ count(u32) ‖
+  payload ‖ sha256(payload)`; the codec's `reply_to` field carries the
+  correlation on every chunk, so the existing correlation machinery is
+  untouched.
+- **The floor transport reassembles STREAM_CHUNK CALLs** with the
+  ADR-0024 bounds (≤512 chunks / 16 MiB, 30 s TTL sweep, per-chunk
+  SHA-256 verified before dispatch, stream bound to its first chunk's
+  sender — a chunk from another sender fails even with a matching id)
+  and **chunks large REPLYs** (`build_reply_wires` — the framing
+  boundary is the single-datagram budget, not the chunk size, so
+  service-level stream pieces of ≤32 KiB of data (~44 KiB of JSON)
+  still ride ONE datagram and old peers are not broken). The client
+  gains wire-level streaming (`wire_stream=True`: chunked send +
+  chunked-reply reassembly) on the floor path.
+- **The Rust serving loop (rust/ipcd) reassembles too** — the crux:
+  the daemon's service socket is loop-served in production, so a
+  floor-only version would pass tests but silently not stream in
+  production. The loop accepts type 5, verifies each chunk's SHA-256
+  (sha2, the precedent the nyfs crate established), rebuilds the CALL
+  wire into pending, and routes chunked reply wires without consuming
+  the pending entry (only the final REPLY reaps it). 24 crate unit
+  tests incl. envelope parse + per-sender slotting.
+- **The service accepts the wire-stream budget**: the plain write/read
+  paths take payloads up to the wire-stream DATA budget (the 32 KiB
+  per-call cap is now a config bound on the stream path, not a
+  protocol one) and `volume_open` advertises `stream_ver: 2`; the
+  service-level envelope stays for old peers, and a passthrough that
+  never sees the advertisement keeps paging. A client payload beyond
+  the 512-chunk reassembly window is refused immediately (fail fast
+  instead of pipelining a stream the receiver is bound to drop).
+- **Measured (§29, unchanged conclusions)**: the wire-level path
+  carries the same 5.6×/6.6× write speedup end-to-end through a real
+  server on both floor and loop paths.
+- New `TestWireLevelStreaming` (8 tests incl. wire-streamed
+  write/read through a real server and the budget rejection),
+  `test_streamed_storage_call_through_rust_loop` (loop e2e), and the
+  differential + Rust unit coverage. Suite 479 → **492**.
+
+### Transport close-race fix (the flake the wire-level path exposed)
+
+- **`IPCDatagramServer.close()` now joins the serve loop before
+  releasing the socket.** Tearing a server down with
+  `stop.set(); close()` used to leave the serve thread mid-`poll`;
+  the next socket bind could reuse the freed fd number, and the stale
+  poll would steal ONE datagram from the new socket. That bit the
+  wire-level streaming path directly: one lost STREAM_CHUNK left the
+  live server's reassembly one chunk short, so a large write never
+  completed and the caller timed out (intermittent — reproduced at
+  ~50% in the harness, zero warnings fired). `close()` now sets the
+  closed flag, the loop notices within one poll window, exits, and
+  closes the endpoint with no poll in flight — the socket path is
+  unlinked before `close()` returns (a new server can rebind the same
+  path immediately). The serve loop also returns immediately when
+  called on an already-closed server instead of spinning. New
+  regression tests: close joins the loop before releasing the socket,
+  rebinding the same path succeeds, serve-after-close returns, and a
+  wire-streamed write completes after a sibling server is torn down
+  the exact way the suite does it.
+
 ## [0.14.20] — 2026-08-16
 
 ### The streaming data plane — ADR-0024 first increment

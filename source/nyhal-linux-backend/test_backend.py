@@ -763,6 +763,126 @@ class TestIPCTransport(unittest.TestCase):
         with self.assertRaises(IPCTransportError):
             UnixDatagramEndpoint("x" * 200)
 
+    def test_close_joins_serve_loop_before_releasing_the_socket(self):
+        # close() must join the serve thread BEFORE closing the
+        # endpoint: a serve thread left mid-poll on a closed fd can
+        # outlive the close, and when the kernel reuses the fd number
+        # for a later bound socket the stale poll can steal ONE
+        # datagram from it — observed as a wire-level stream
+        # (ADR-0024) that lost exactly one chunk and never completed.
+        manager, server = self._server(
+            pid_registry={os.getpid(): "container-A"})
+        server.bind()
+        thread = threading.Thread(target=server.serve, args=(threading.Event(),),
+                                  daemon=True)
+        thread.start()
+        # close() alone (no stop.set()) must stop the loop: it sets the
+        # closed flag, the loop notices within one poll window, exits,
+        # and close() joins it before releasing the socket.
+        server.close()
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(server.endpoint._sock)  # released
+        self.assertFalse(os.path.exists(server.endpoint.path))
+        server.close()  # idempotent
+
+    def test_close_then_rebind_same_path_succeeds(self):
+        # The synchronous close contract: the socket path is unlinked
+        # before close() returns, so a new server can bind the same
+        # path immediately (the pattern the storage tests use for a
+        # second server on the same svc_path).
+        manager, server = self._server(pid_registry={})
+        server.bind()
+        thread = threading.Thread(target=server.serve,
+                                  args=(threading.Event(),), daemon=True)
+        thread.start()
+        server.close()
+        # Rebind at the SAME path — must not hit EADDRINUSE.
+        fresh = IPCManager()
+        fresh.create_endpoint("container-svc", "ep-svc2")
+        server2 = IPCDatagramServer(
+            fresh, "ep-svc2", server.endpoint.path, pid_registry={})
+        server2.bind()
+        self.assertTrue(os.path.exists(server2.endpoint.path))
+        server2.close()
+
+    def test_serve_returns_immediately_when_already_closed(self):
+        # serve() on a closed server must return without polling a
+        # closed fd (a loop would spin raise/catch until stopped).
+        manager, server = self._server(pid_registry={})
+        server.bind()
+        server.close()
+        server.serve(threading.Event())  # returns immediately
+
+    def test_wire_stream_completes_after_sibling_server_close(self):
+        # The fd-reuse theft regression (ADR-0024): a server torn down
+        # with stop.set(); close() used to leave its serve thread
+        # mid-poll; the next server's bind reused the fd and the zombie
+        # stole ONE STREAM_CHUNK, so the live server's reassembly never
+        # completed and the call timed out. close() now joins the loop
+        # before releasing the socket, so the next server is immune.
+        def make_server(path, manager):
+            server = IPCDatagramServer(manager, "ep-svc", path,
+                                       pid_registry={},
+                                       trusted_uids={os.getuid()})
+            storage = StorageService(
+                vault_dir=os.path.join(self.tmp, "v2"))
+            router = ServiceRouter()
+            router.register("storage", storage)
+            router.attach(server)
+            server.bind()
+            stop = threading.Event()
+            threading.Thread(target=server.serve, args=(stop,),
+                             daemon=True).start()
+            return server, stop
+        # Tear one server down exactly as the suite's tests do...
+        m1 = IPCManager()
+        m1.create_endpoint("container-svc", "ep-svc")
+        server1, stop1 = make_server(os.path.join(self.tmp, "s1.sock"), m1)
+        stop1.set()
+        server1.close()  # must join the loop before releasing the socket
+        # ...then IMMEDIATELY open a second server and stream through it.
+        m2 = IPCManager()
+        m2.create_endpoint("container-svc", "ep-svc")
+        server2, stop2 = make_server(os.path.join(self.tmp, "s2.sock"), m2)
+        client = IPCClient(DEFAULT_OPERATOR_ID,
+                           os.path.join(self.tmp, "c2.sock")).bind()
+        try:
+            resp = json.loads(client.call(
+                server2.endpoint.path,
+                json.dumps({"service": "storage", "op": "volume_create",
+                            "name": "v"}).encode(),
+                timeout_s=5.0).payload.decode("utf-8"))
+            self.assertTrue(resp["ok"], resp)
+            vid = resp["volume_id"]
+            resp = json.loads(client.call(
+                server2.endpoint.path,
+                json.dumps({"service": "storage", "op": "volume_open",
+                            "volume_id": vid}).encode(),
+                timeout_s=5.0).payload.decode("utf-8"))
+            self.assertTrue(resp["ok"], resp)
+            handle = resp["handle"]
+            # The real test's oversize write: 11 MiB+1 of data base64-
+            # expands to ~470 STREAM_CHUNKs (inside the 512-chunk
+            # window) and is rejected by the service's stream budget.
+            from ipc.storage import _WIRE_STREAM_DATA_BYTES
+            big = base64.b64encode(
+                b"y" * (_WIRE_STREAM_DATA_BYTES + 1)).decode()
+            reply = client.call(
+                server2.endpoint.path,
+                json.dumps({"service": "storage", "op": "volume_write",
+                            "handle": handle, "path": "/big",
+                            "data_b64": big}).encode(),
+                timeout_s=8.0, wire_stream=True)
+            self.assertIsNotNone(reply)
+            resp = json.loads(reply.payload.decode("utf-8"))
+            self.assertFalse(resp["ok"])
+            self.assertIn("stream budget", resp["error"])
+        finally:
+            client.close()
+            stop2.set()
+            server2.close()
+
 
 class TestBackendStatusService(unittest.TestCase):
     """Test the first real container-facing service on the transport
@@ -3308,14 +3428,25 @@ class TestStorageService(unittest.TestCase):
                     "handle": handle, "path": bad,
                     "data_b64": "eA=="}).encode())
                 self.assertFalse(resp["ok"], (bad, resp))
-            # Oversize writes are rejected (the 64 KiB datagram budget).
-            big = base64.b64encode(b"x" * (32 * 1024 + 1)).decode()
-            resp = self._call(client, json.dumps({
+            # ADR-0024 wire-level framing: the 32 KiB per-call cap is
+            # now a CONFIG bound on the stream path, not a protocol
+            # one — a >32 KiB payload arrives as a reassembled
+            # STREAM_CHUNK CALL, so the plain path accepts it up to
+            # the wire-stream DATA budget. A write beyond THAT budget
+            # (wire-streamed, so it fits the transport) is rejected.
+            from ipc.storage import _WIRE_STREAM_DATA_BYTES
+            big = base64.b64encode(
+                b"x" * (_WIRE_STREAM_DATA_BYTES + 1)).decode()
+            req = json.dumps({
                 "service": "storage", "op": "volume_write",
                 "handle": handle, "path": "/big",
-                "data_b64": big}).encode())
+                "data_b64": big}).encode()
+            reply = client.call(self.svc_path, req, timeout_s=5.0,
+                                wire_stream=True)
+            self.assertIsNotNone(reply)
+            resp = json.loads(reply.payload.decode("utf-8"))
             self.assertFalse(resp["ok"])
-            self.assertIn("per-call limit", resp["error"])
+            self.assertIn("stream budget", resp["error"])
             # A registry-only volume (no vault_dir) has no byte path.
             server2, stop2, storage2 = self._serve(
                 register_pid=False, svc_path=os.path.join(self.tmp, "svc2.sock"))
@@ -5924,6 +6055,336 @@ class TestStorageStreaming(unittest.TestCase):
             with self.assertRaises(VaultMountError) as ctx:
                 ops.write("/data.bin", body, 0)
             self.assertEqual(ctx.exception.errno, errno.EDQUOT)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+
+class TestWireLevelStreaming(unittest.TestCase):
+    """ADR-0024 wire-level streaming (0.14.21) — the STREAM_CHUNK
+    message type (codec type 5) moving the framing into the transport
+    the serving loop owns: floor reassembly of chunked CALLs (bounded
+    window/TTL, per-sender bind, per-chunk checksums), chunked REPLYs
+    rebuilt by the client, the ``stream_ver=2`` advertisement, and the
+    passthrough's wire-level read/write against a real server. The
+    service-level envelope (0.14.20) stays for old peers — exercised
+    as the mixed-version fallback.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _chunk_wire(self, stream_id: bytes, call_id: str, index: int,
+                    count: int, payload: bytes) -> bytes:
+        """Encode a STREAM_CHUNK wire with the floor's envelope
+        (the same bytes a wire-level client sends)."""
+        from ipc.transport import _encode_stream_chunk
+        env = _encode_stream_chunk(stream_id, call_id, index, count, payload)
+        return IPCMessage(
+            message_type=IPCMessageType.STREAM_CHUNK,
+            sender_id=DEFAULT_OPERATOR_ID,
+            payload=env,
+            reply_to=call_id,
+        ).to_wire()
+
+    # -- hermetic floor-server reassembly ---------------------------
+
+    def test_floor_reassembles_chunked_call_and_dispatches_once(self):
+        """The floor server buffers STREAM_CHUNK datagrams and
+        dispatches ONE CALL (the full payload) when the stream
+        completes — out of order, on the final chunk."""
+        from ipc.transport import (IPCDatagramServer, STREAM_CHUNK_BYTES)
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        path = os.path.join(self.tmp, "w.sock")
+        server = IPCDatagramServer(
+            manager, "ep", path, pid_registry={},
+            trusted_uids={os.getuid()})
+        dispatched = []
+        server.on_call = lambda msg, sender, sp: dispatched.append(msg)
+        server.bind()
+        sid = os.urandom(6)
+        body = os.urandom(STREAM_CHUNK_BYTES * 2 + 123)
+        n = 3
+        try:
+            # Send out of order: chunk 2, then 0, then 1.
+            pieces = [
+                body[i * STREAM_CHUNK_BYTES:(i + 1) * STREAM_CHUNK_BYTES]
+                for i in range(n)
+            ]
+            pieces[-1] = body[(n - 1) * STREAM_CHUNK_BYTES:]
+            for i in (2, 0, 1):
+                server.endpoint.send(
+                    self._chunk_wire(sid, "w-call-1", i, n, pieces[i]))
+            # Intermediate chunks: no dispatch.
+            self.assertEqual(server.serve_once(timeout=0.5), None)
+            self.assertEqual(server.serve_once(timeout=0.5), None)
+            # Final chunk: one dispatch, full payload, correct call_id.
+            msg = server.serve_once(timeout=0.5)
+            self.assertIsNotNone(msg)
+            self.assertEqual(len(dispatched), 1)
+            self.assertEqual(dispatched[0].message_id, "w-call-1")
+            self.assertEqual(dispatched[0].sender_id, DEFAULT_OPERATOR_ID)
+            self.assertEqual(dispatched[0].payload, body)
+            # The stream slot was reclaimed.
+            self.assertEqual(server._streams, {})
+        finally:
+            server.close()
+
+    def test_floor_rejects_bad_chunk_checksum_and_duplicate(self):
+        from ipc.transport import IPCDatagramServer
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        path = os.path.join(self.tmp, "w.sock")
+        server = IPCDatagramServer(
+            manager, "ep", path, pid_registry={},
+            trusted_uids={os.getuid()})
+        dispatched = []
+        server.on_call = lambda msg, sender, sp: dispatched.append(msg)
+        server.bind()
+        sid = os.urandom(6)
+        try:
+            good = self._chunk_wire(sid, "c", 0, 2, b"AAAA")
+            # Checksum mismatch: flip a byte in the envelope payload.
+            bad_env = bytearray(
+                IPCMessage.from_wire(good).payload)
+            bad_env[-33] ^= 0xFF  # inside the payload, before checksum
+            bad = IPCMessage(
+                message_type=IPCMessageType.STREAM_CHUNK,
+                sender_id=DEFAULT_OPERATOR_ID,
+                payload=bytes(bad_env),
+                reply_to="c",
+            ).to_wire()
+            server.endpoint.send(bad)
+            self.assertIsNone(server.serve_once(timeout=0.5))
+            self.assertEqual(dispatched, [])
+            # Duplicate chunk: the stream is rejected fail-closed.
+            server.endpoint.send(good)
+            self.assertIsNone(server.serve_once(timeout=0.5))
+            server.endpoint.send(good)
+            self.assertIsNone(server.serve_once(timeout=0.5))
+            self.assertEqual(dispatched, [])
+            self.assertEqual(server._streams, {})
+        finally:
+            server.close()
+
+    def test_floor_cross_sender_stream_binds_to_first_chunk(self):
+        """A chunk from a different authenticated sender never joins a
+        stream: the slot is keyed by (sender, stream_id)."""
+        from ipc.transport import IPCDatagramServer
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        path = os.path.join(self.tmp, "w.sock")
+        server = IPCDatagramServer(
+            manager, "ep", path, pid_registry={},
+            trusted_uids={os.getuid()})
+        dispatched = []
+        server.on_call = lambda msg, sender, sp: dispatched.append(msg)
+        server.bind()
+        sid = os.urandom(6)
+        try:
+            server.endpoint.send(
+                self._chunk_wire(sid, "c", 0, 2, b"AAAA"))
+            self.assertIsNone(server.serve_once(timeout=0.5))
+            # A forged sender_id is dropped by _authorized; a second
+            # chunk with the SAME wire sender but a different kernel
+            # uid cannot be simulated here — the bind is structural
+            # (the slot key). Send chunk 1 from the same sender and
+            # the stream completes normally.
+            server.endpoint.send(
+                self._chunk_wire(sid, "c", 1, 2, b"BBBB"))
+            msg = server.serve_once(timeout=0.5)
+            self.assertIsNotNone(msg)
+            self.assertEqual(dispatched[0].payload, b"AAAABBBB")
+        finally:
+            server.close()
+
+    def test_floor_chunks_large_reply_and_client_reassembles(self):
+        """A reply larger than the datagram budget rides as STREAM_CHUNK
+        messages; ``IPCClient.call(wire_stream=True)`` reassembles them
+        into the full reply payload."""
+        from ipc.transport import (IPCClient, IPCDatagramServer,
+                                   STREAM_CHUNK_BYTES)
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        server = IPCDatagramServer(
+            manager, "ep", svc_path, pid_registry={},
+            trusted_uids={os.getuid()})
+        big = os.urandom(STREAM_CHUNK_BYTES * 4 + 77)
+
+        def handler(msg, sender, sender_path):
+            server.reply(sender_path, msg.message_id, big)
+
+        server.on_call = handler
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            reply = client.call(
+                svc_path, b"{\"op\": \"big\"}", wire_stream=True)
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply.payload, big)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_client_wire_stream_chunks_large_write_call(self):
+        """A >32 KiB CALL payload is sent as STREAM_CHUNK messages; the
+        floor server reassembles and dispatches ONE call; the client
+        gets the single correlated reply."""
+        from ipc.transport import (IPCClient, IPCDatagramServer,
+                                   STREAM_CHUNK_BYTES)
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        server = IPCDatagramServer(
+            manager, "ep", svc_path, pid_registry={},
+            trusted_uids={os.getuid()})
+        seen = []
+
+        def handler(msg, sender, sender_path):
+            seen.append(msg)
+            server.reply(sender_path, msg.message_id,
+                         b"{\"ok\": true}")
+
+        server.on_call = handler
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            payload = os.urandom(STREAM_CHUNK_BYTES * 3 + 5)
+            reply = client.call(svc_path, payload, wire_stream=True)
+            self.assertIsNotNone(reply)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0].payload, payload)
+            self.assertEqual(
+                json.loads(reply.payload.decode("utf-8")), {"ok": True})
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_small_call_unchanged_when_wire_stream_off(self):
+        """With ``wire_stream=False`` a small call is byte-identical to
+        before: a single CALL datagram, a single REPLY."""
+        from ipc.transport import (IPCClient, IPCDatagramServer)
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        server = IPCDatagramServer(
+            manager, "ep", svc_path, pid_registry={},
+            trusted_uids={os.getuid()})
+        server.on_call = lambda msg, s, sp: server.reply(
+            sp, msg.message_id, b"{\"ok\": true}")
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            reply = client.call(svc_path, b"{\"op\": \"ping\"}")
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply.message_type, IPCMessageType.REPLY)
+            self.assertEqual(reply.payload, b"{\"ok\": true}")
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    # -- service advertisement + wire-level passthrough e2e ---------
+
+    def test_open_advertises_wire_level_and_passthrough_streams(self):
+        """End-to-end through a real floor server: the open reply
+        advertises ``stream_ver=2``, and the passthrough's wire-level
+        read/write round-trip a >32 KiB payload in ONE logical call."""
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(self.tmp, "vault"))
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            resp = json.loads(client.call(
+                svc_path, json.dumps({"service": "storage",
+                                      "op": "volume_create",
+                                      "name": "wirevol"}).encode()
+            ).payload.decode("utf-8"))
+            vid = resp["volume_id"]
+            ops = NyVaultOperations(client, svc_path, vid)
+            self.assertTrue(ops._stream_ok)
+            self.assertGreaterEqual(ops._stream_ver, 2)
+            body = os.urandom(100_000)  # 4 chunks at 32 KiB
+            self.assertEqual(ops.write("/data.bin", body, 0), len(body))
+            st = ops.getattr("/data.bin")
+            self.assertEqual(st["st_size"], len(body))
+            self.assertEqual(ops.read("/data.bin", len(body), 0), body)
+            # Offset wire writes still land at the offset.
+            tail = b"TAIL" * 5000
+            self.assertEqual(
+                ops.write("/data.bin", tail, len(body)), len(tail))
+            self.assertEqual(
+                ops.read("/data.bin", len(body) + len(tail), 0),
+                body + tail)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_old_peer_still_uses_service_level_envelope(self):
+        """Mixed-version: a passthrough pointed at a daemon that
+        advertises only ``stream`` (0.14.20) keeps the service-level
+        envelope — the wire-level path never engages."""
+        from ipc.transport import (IPCClient, IPCDatagramServer)
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(self.tmp, "vault"))
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            resp = json.loads(client.call(
+                svc_path, json.dumps({"service": "storage",
+                                      "op": "volume_create",
+                                      "name": "oldvol"}).encode()
+            ).payload.decode("utf-8"))
+            vid = resp["volume_id"]
+            ops = NyVaultOperations(client, svc_path, vid)
+            # Simulate an old daemon: strip the wire-level flag from
+            # the open reply so the passthrough degrades to the
+            # service-level envelope.
+            ops._stream_ver = 1
+            body = os.urandom(100_000)
+            self.assertEqual(ops.write("/data.bin", body, 0), len(body))
+            self.assertEqual(ops.read("/data.bin", len(body), 0), body)
         finally:
             client.close()
             stop.set()
@@ -10109,9 +10570,10 @@ class TestNyFSCodecLoader(unittest.TestCase):
 
 
 def _wire_message_cases():
-    """The message set the IPC codec differential tests run: all five
-    types, absent/present reply_to, empty and large payloads, empty and
-    multi-capability transfers, plain and nested metadata."""
+    """The message set the IPC codec differential tests run: all six
+    types (incl. ADR-0024's STREAM_CHUNK), absent/present reply_to,
+    empty and large payloads, empty and multi-capability transfers,
+    plain and nested metadata."""
     return [
         # (type_index, message_id, sender, receiver, reply_to, payload, caps, metadata)
         (0, "m-empty", "c-a", "c-b", None, b"", [], {}),
@@ -10120,6 +10582,8 @@ def _wire_message_cases():
         (2, "m-call", "c-a", "c-b", None, b"request", ["CAP_IPC_SEND"], {"k": 1}),
         (3, "m-reply", "c-a", "c-b", "m-call", b"response", [], {}),
         (4, "m-notify", "c-a", "c-b", None, b"", [], {"evt": "respawn"}),
+        (5, "m-chunk0", "c-a", "c-b", None, b"chunk-data-0", [], {}),
+        (5, "m-chunk1", "c-a", "c-b", None, b"chunk-data-1", [], {}),
         (0, "m-multi", "c-a", "c-b", "m-parent", b"x" * 4096,
          ["CAP_IPC_SEND", "CAP_IPC_RECEIVE", "CAP_IPC_CALL"],
          {"nested": {"deep": [1, 2, 3]}}),
@@ -12197,6 +12661,108 @@ class TestIpcdLoopConformance(unittest.TestCase):
             floor.close()
             client.close()
 
+    def test_loop_wire_level_stream_round_trip(self):
+        """ADR-0024 wire-level streaming through the RUST serving loop
+        (the production path for the storage socket): the client sends
+        a >64 KiB CALL as STREAM_CHUNK datagrams, the loop reassembles
+        them (per-chunk checksums, sender-bound) into ONE CALL wire,
+        the dispatcher routes it to the storage service, and the
+        chunked REPLY comes back through the loop's enqueue path.
+        The floor-only version of this is TestWireLevelStreaming; this
+        is the crate-path differential."""
+        cap_mgr = CapabilityManager()
+        cap_mgr.initialize_container("container-A")
+        from backend.capability import Capability as _Cap
+        cap_mgr.grant_capability("container-A", _Cap.CAP_STORAGE_VOLUME)
+        loop_path = os.path.join(self.tmp, "stream-loop.sock")
+        loop_mgr = IPCManager()
+        loop_mgr.create_endpoint("container-svc", "ep-svc")
+        loop_srv = IPCDatagramServer(
+            loop_mgr, "ep-svc", loop_path,
+            pid_registry={os.getpid(): "container-A"},
+            capability_manager=cap_mgr,
+            trusted_uids={os.getuid()},
+        )
+        loop_srv.bind()
+        loop = ipc_loop.IpcdLoop(
+            loop_srv.endpoint._sock.fileno(),
+            batch_max=64,
+            pids={os.getpid(): "container-A"},
+            trusted_uids=[os.getuid()],
+        )
+        storage = StorageService(
+            capability_manager=cap_mgr,
+            vault_dir=os.path.join(self.tmp, "loop-vault"))
+        router = ServiceRouter()
+        router.register("storage", storage)
+        dispatcher = IpcdLoopDispatcher(
+            loop, router, capability_manager=cap_mgr)
+        stop = threading.Event()
+
+        def drive():
+            while not stop.is_set():
+                try:
+                    dispatcher.serve_once(100)
+                except Exception:
+                    break
+
+        thread = threading.Thread(target=drive, daemon=True)
+        thread.start()
+        client = IPCClient(
+            "container-A",
+            os.path.join(self.tmp, "stream-loop-cli.sock")).bind()
+        try:
+            # Create + open a volume through the loop (small calls).
+            resp = json.loads(client.call(
+                loop_path, json.dumps({"service": "storage",
+                                       "op": "volume_create",
+                                       "name": "loopvol"}).encode()
+            ).payload.decode("utf-8"))
+            self.assertTrue(resp["ok"])
+            vid = resp["volume_id"]
+            resp = json.loads(client.call(
+                loop_path, json.dumps({"service": "storage",
+                                       "op": "volume_open",
+                                       "volume_id": vid}).encode()
+            ).payload.decode("utf-8"))
+            handle = resp["handle"]
+            # A 128 KiB wire-level write: the client chunks it, the
+            # loop reassembles, the service writes ONCE.
+            body = os.urandom(128 * 1024)
+            reply = client.call(
+                loop_path,
+                json.dumps({"service": "storage", "op": "volume_write",
+                             "handle": handle, "path": "/big.bin",
+                             "offset": 0, "defer_commit": True,
+                             "data_b64": base64.b64encode(body)
+                             .decode("ascii")}).encode(),
+                timeout_s=10.0, wire_stream=True)
+            self.assertIsNotNone(reply, "loop must answer the streamed write")
+            resp = json.loads(reply.payload.decode("utf-8"))
+            self.assertTrue(resp["ok"], resp.get("error"))
+            self.assertEqual(resp["bytes_written"], len(body))
+            # The wire-level read: the service replies once with the
+            # full payload; the loop's enqueue path chunks the REPLY
+            # and the client reassembles it.
+            reply = client.call(
+                loop_path,
+                json.dumps({"service": "storage", "op": "volume_read",
+                             "handle": handle, "path": "/big.bin",
+                             "offset": 0, "size": len(body),
+                             "wire_stream": True}).encode(),
+                timeout_s=10.0, wire_stream=True)
+            self.assertIsNotNone(reply, "loop must answer the streamed read")
+            resp = json.loads(reply.payload.decode("utf-8"))
+            self.assertTrue(resp["ok"], resp.get("error"))
+            self.assertEqual(
+                base64.b64decode(resp["data_b64"], validate=True), body)
+        finally:
+            client.close()
+            stop.set()
+            thread.join(timeout=2.0)
+            loop.close()
+            loop_srv.close()
+
     def test_loop_drops_non_ping_and_unknown_sender(self):
         mgr, srv, loop, stop, thread = self._loop_server("drop")
         client = IPCClient("container-A", os.path.join(self.tmp, "drop-cli.sock")).bind()
@@ -12305,6 +12871,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageStreaming))
+    suite.addTests(loader.loadTestsFromTestCase(TestWireLevelStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -42,6 +42,27 @@ depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 > (already flat — AEAD block decode dominates, and each piece still
 > rides its own REPLY datagram).
 >
+> **Second increment IMPLEMENTED the same day (0.14.21) — wire-level
+> framing lands on both serving paths:** STREAM_CHUNK is now a
+> first-class message type (5) in the codec on both halves
+> (byte-identical, differential-gated), carrying the ADR's envelope
+> (`version ‖ stream_id ‖ call_id ‖ index ‖ count ‖ payload ‖ sha256`)
+> in the payload field with the codec's `reply_to` as the chunk
+> correlation. **The Rust serving loop reassembles** (per-chunk SHA-256,
+> rebuilt CALL wire into pending — required because the daemon's
+> service socket is loop-served in production, so a floor-only version
+> would silently not stream) and the floor reassembles identically;
+> large REPLYs are chunked by the wire layer (`build_reply_wires`,
+> boundary = the single-datagram budget). The client streams on the
+> floor path (`wire_stream=True`: chunked send + chunked-reply
+> reassembly); the Rust client half's streaming remains the documented
+> follow-on. The service's plain write/read accept the wire-stream
+> DATA budget and `volume_open` advertises `stream_ver: 2`, with the
+> service-level envelope + paging staying for old peers. The same
+> increment fixed the transport close-race the wire-level path exposed
+> (a torn-down server's stale poll could steal one datagram from a
+> reused fd — see `CHANGELOG_LINUX_BACKEND.md` 0.14.21).
+>
 > **Why now — the measured cost:** ADR-0022's live FUSE-mount benchmark
 > (§27, `tests/BENCHMARK_RESULTS.md`) shows the per-CALL round trip
 > dominates the data plane: a 1 MiB kernel write rides **32 sequential

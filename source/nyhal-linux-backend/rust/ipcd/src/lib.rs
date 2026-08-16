@@ -53,6 +53,7 @@
 //! `MSG_DONTWAIT` recvmsg) and is safe on both blocking and
 //! non-blocking fds.
 
+use sha2::Digest;
 use std::ffi::{c_char, c_int, c_void, CStr};
 
 /// Module ABI version (semver-major*10000 + minor*100 + patch).
@@ -73,6 +74,21 @@ const WIRE_VERSION: u8 = 1;
 const MAGIC: &[u8; 4] = b"NYRQ";
 const MT_CALL: u8 = 2;
 const MT_REPLY: u8 = 3;
+const MT_STREAM_CHUNK: u8 = 5;
+
+/// ADR-0024 wire-level stream framing (byte-identical to the floor's
+/// ``ipc/transport.py`` envelope): a STREAM_CHUNK message's payload is
+/// version(1) ‖ stream_id_len(4)+stream_id ‖ call_id_len(4)+call_id ‖
+/// chunk_index(4) ‖ chunk_count(4) ‖ payload_len(4)+payload ‖
+/// sha256(payload)(32). Bounds mirror the floor: ≤512 chunks (16 MiB
+/// at 32 KiB), a 30 s TTL, per-sender binding, per-chunk checksums
+/// verified before dispatch.
+const STREAM_CHUNK_BYTES: usize = 32 * 1024;
+const STREAM_MAX_CHUNKS: u32 = 512;
+const STREAM_TTL_MS: i64 = 30_000;
+const STREAM_MAX_STREAMS: usize = 64;
+const STREAM_ENVELOPE_VERSION: u8 = 1;
+const STREAM_ID_BYTES: usize = 6;
 
 /// Receive buffer: the Python floor receives into 64 KiB, so a full
 /// frame fits (bounds above still enforced on the parse).
@@ -134,6 +150,81 @@ struct PendingRequest {
 /// answered, never crashed).
 const MAX_PENDING: usize = 4096;
 
+/// A decoded ADR-0024 wire-level stream chunk (the envelope a
+/// STREAM_CHUNK message's payload carries). Bounds are enforced at
+/// parse time exactly like the floor's ``_decode_stream_chunk``.
+struct StreamChunk {
+    stream_id: Vec<u8>,
+    call_id: Vec<u8>,
+    index: u32,
+    count: u32,
+    payload: Vec<u8>,
+}
+
+/// One in-flight reassembly slot, keyed by (sender, stream_id).
+struct StreamSlot {
+    sender: Vec<u8>,
+    stream_id: Vec<u8>,
+    call_id: Vec<u8>,
+    count: u32,
+    chunks: Vec<Option<Vec<u8>>>,
+    last_seen_ms: i64,
+}
+
+/// Parse + verify one chunk envelope (ADR-0024 wire-level framing).
+/// Returns None on any malformation — version mismatch, bad lengths,
+/// index/count bounds, or a checksum failure — exactly the floor's
+/// ``_decode_stream_chunk`` contract (drop fail-closed at the trust
+/// boundary).
+fn parse_stream_chunk(data: &[u8]) -> Option<StreamChunk> {
+    let mut pos = 0usize;
+    let version = *data.get(pos)?;
+    pos += 1;
+    if version != STREAM_ENVELOPE_VERSION {
+        return None;
+    }
+    let sid_len = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    if sid_len != STREAM_ID_BYTES {
+        return None;
+    }
+    let stream_id = data.get(pos..pos + sid_len)?.to_vec();
+    pos += sid_len;
+    let cid_len = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    if cid_len > 128 {
+        return None;
+    }
+    let call_id = data.get(pos..pos + cid_len)?.to_vec();
+    pos += cid_len;
+    let index = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    if index >= count || count > STREAM_MAX_CHUNKS {
+        return None;
+    }
+    let plen = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    if plen > STREAM_CHUNK_BYTES {
+        return None;
+    }
+    let payload = data.get(pos..pos + plen)?.to_vec();
+    pos += plen;
+    let digest = sha2::Sha256::digest(&payload);
+    let expected = data.get(pos..pos + 32)?;
+    if digest.as_slice() != expected {
+        return None;
+    }
+    Some(StreamChunk {
+        stream_id,
+        call_id,
+        index,
+        count,
+        payload,
+    })
+}
+
 /// The serving-loop handle (opaque to the caller). The policy is behind
 /// a ``Mutex`` because ``set_policy`` can be called from the host's
 /// main thread (container spawn/terminate) while the drive thread is
@@ -150,6 +241,13 @@ struct IpcLoop {
     ctrl: AlignedCmsg,
     seq: u64,
     pending: Vec<PendingRequest>,
+    /// ADR-0024 wire-level stream reassembly: keyed by
+    /// ``(sender, stream_id)`` — the ADR's "bind to the sender of its
+    /// first chunk" rule, never a claimed identity. Bounded by
+    /// ``STREAM_MAX_STREAMS`` slots, ``STREAM_MAX_CHUNKS`` chunks each,
+    /// and a TTL sweep on every arrival (an incomplete stream is
+    /// dropped — the caller's paging path takes over).
+    streams: Vec<StreamSlot>,
 }
 
 impl IpcLoop {
@@ -175,6 +273,93 @@ impl IpcLoop {
 struct AlignedCmsg([u8; CMSG_BUF]);
 
 impl IpcLoop {
+    /// Buffer one STREAM_CHUNK datagram (ADR-0024 wire-level framing)
+    /// from an authorized sender. Returns ``(call_id, call_wire)`` —
+    /// the envelope's logical call_id and the synthesized CALL wire —
+    /// when the stream is complete (the caller queues it for the
+    /// Python dispatch handoff exactly like a non-ping CALL, keyed by
+    /// the envelope call_id so the service's reply correlates), or
+    /// None while chunks are still buffering (or on rejection —
+    /// malformed envelope, sender/stream mismatch, duplicate chunk,
+    /// TTL expiry, table full). Bounds mirror the floor's
+    /// ``_accept_stream_chunk``.
+    fn accept_stream_chunk(
+        &mut self,
+        sender: &[u8],
+        payload: &[u8],
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        let chunk = parse_stream_chunk(payload)?;
+        let now = now_monotonic_ms();
+        // TTL sweep on arrival.
+        self.streams.retain(|s| now - s.last_seen_ms < STREAM_TTL_MS);
+        let idx = self.streams.iter().position(|s| {
+            s.sender == sender && s.stream_id == chunk.stream_id
+        });
+        if let Some(i) = idx {
+            let slot = &mut self.streams[i];
+            if slot.call_id != chunk.call_id || slot.count != chunk.count {
+                // Mid-stream change — reject the whole stream.
+                self.streams.remove(i);
+                return None;
+            }
+            let c = chunk.index as usize;
+            if c >= slot.chunks.len() || slot.chunks[c].is_some() {
+                // Out-of-range or duplicate — reject the stream.
+                self.streams.remove(i);
+                return None;
+            }
+            slot.chunks[c] = Some(chunk.payload);
+            slot.last_seen_ms = now;
+            if slot.chunks.iter().all(|c| c.is_some()) {
+                let mut body = Vec::new();
+                for slot_chunk in slot.chunks.iter() {
+                    body.extend_from_slice(slot_chunk.as_ref().unwrap());
+                }
+                let call_id = slot.call_id.clone();
+                let sender = slot.sender.clone();
+                self.streams.remove(i);
+                return Some((
+                    call_id.clone(),
+                    build_streamed_call_wire(&call_id, &sender, &body),
+                ));
+            }
+            None
+        } else {
+            if self.streams.len() >= STREAM_MAX_STREAMS {
+                return None; // table full — fail closed
+            }
+            let mut chunks: Vec<Option<Vec<u8>>> = Vec::new();
+            chunks.resize(chunk.count as usize, None);
+            let c = chunk.index as usize;
+            if c >= chunks.len() {
+                return None;
+            }
+            chunks[c] = Some(chunk.payload);
+            let slot = StreamSlot {
+                sender: sender.to_vec(),
+                stream_id: chunk.stream_id.clone(),
+                call_id: chunk.call_id.clone(),
+                count: chunk.count,
+                chunks,
+                last_seen_ms: now,
+            };
+            if slot.chunks.iter().all(|c| c.is_some()) {
+                // Single-chunk stream completes immediately.
+                let mut body = Vec::new();
+                for slot_chunk in slot.chunks.iter() {
+                    body.extend_from_slice(slot_chunk.as_ref().unwrap());
+                }
+                return Some((
+                    slot.call_id.clone(),
+                    build_streamed_call_wire(
+                        &slot.call_id, &slot.sender, &body),
+                ));
+            }
+            self.streams.push(slot);
+            None
+        }
+    }
+
     /// Build the reply wire for a ping CALL. Matches the floor's
     /// `IPCDatagramServer.reply` semantics: message_type REPLY (3),
     /// fresh message_id, empty sender/receiver, `reply_to` = the call's
@@ -232,6 +417,31 @@ fn push_field(wire: &mut Vec<u8>, field: &[u8]) {
     wire.extend_from_slice(field);
 }
 
+/// Build the CALL wire for a completed wire-level stream (ADR-0024):
+/// byte-identical to the floor's synthesized
+/// ``IPCMessage(CALL, message_id=call_id, sender_id=sender,
+/// payload=body).to_wire()`` — MAGIC, version, type CALL (2),
+/// timestamp, then the codec fields in order (receiver/reply_to empty,
+/// caps empty, metadata `{}`). The envelope's call_id becomes the
+/// message_id, so the service's reply correlates through the normal
+/// path exactly as if the client had sent one ordinary CALL.
+fn build_streamed_call_wire(call_id: &[u8], sender: &[u8], body: &[u8]) -> Vec<u8> {
+    let timestamp = now_f64();
+    let mut wire = Vec::with_capacity(64 + call_id.len() + sender.len() + body.len());
+    wire.extend_from_slice(MAGIC);
+    wire.push(WIRE_VERSION);
+    wire.push(MT_CALL);
+    wire.extend_from_slice(&timestamp.to_le_bytes());
+    push_field(&mut wire, call_id); // message_id
+    push_field(&mut wire, sender); // sender_id
+    push_field(&mut wire, b""); // receiver_id
+    push_field(&mut wire, b""); // reply_to
+    push_field(&mut wire, body); // payload
+    push_field(&mut wire, b""); // caps_flat
+    push_field(&mut wire, b"{}"); // metadata — the floor's {} json
+    wire
+}
+
 /// The ping reply payload, byte-identical to the floor's
 /// `json.dumps(..., sort_keys=True)` with the sender spliced in.
 fn build_ping_payload(sender: &[u8]) -> Vec<u8> {
@@ -266,7 +476,7 @@ fn parse_dispatch(data: &[u8]) -> Option<DispatchMsg<'_>> {
         return None;
     }
     let message_type = data[5];
-    if message_type > 4 {
+    if message_type > 5 {
         return None;
     }
     let mut pos = 14usize;
@@ -438,6 +648,7 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_new(
         ctrl: AlignedCmsg([0u8; CMSG_BUF]),
         seq: 0,
         pending: Vec::new(),
+        streams: Vec::new(),
     });
     // Set SO_PASSCRED defensively: the floor already sets it at bind,
     // but a caller that forgets would silently lose identity.
@@ -590,6 +801,26 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_enqueue_replies(
             Some(i) => i,
             None => continue, // unknown call — no request to answer
         };
+        // A STREAM_CHUNK reply wire is one piece of a chunked reply
+        // (ADR-0024 wire-level framing): route it to the RECORDED
+        // sender WITHOUT consuming the pending entry — the remaining
+        // pieces still need the address. The final REPLY wire (or the
+        // driver's discard_requests after the batch) reaps the entry.
+        if parsed.message_type == MT_STREAM_CHUNK {
+            let req = &loop_handle.pending[idx];
+            let sent = libc::sendto(
+                loop_handle.fd,
+                wire.as_ptr() as *const c_void,
+                wire.len(),
+                0,
+                req.addr.as_ptr() as *const libc::sockaddr,
+                req.addr_len as libc::socklen_t,
+            );
+            if sent < 0 {
+                return -errno_or(libc::EIO);
+            }
+            continue;
+        }
         let req = loop_handle.pending.swap_remove(idx);
         let sent = libc::sendto(
             loop_handle.fd,
@@ -842,13 +1073,13 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_step(
 
         // Immutable reads first (parse + sender resolution), scoped so
         // their borrows of the loop end before the mutable reply build.
-        let (call_id, sender, is_ping) = {
+        let (call_id, sender, is_ping, parsed_type, chunk_payload) = {
             let data = &loop_handle.recv_buf[..n as usize];
             let parsed = match parse_dispatch(data) {
                 Some(p) => p,
                 None => continue, // malformed — drop, like the floor
             };
-            if parsed.message_type != MT_CALL {
+            if parsed.message_type != MT_CALL && parsed.message_type != MT_STREAM_CHUNK {
                 continue; // SEND/RECEIVE/NOTIFY stay on the floor's path
             }
             // Sender authorization: pid → container, else trusted uid
@@ -866,47 +1097,78 @@ pub unsafe extern "C" fn nyrqis_ipcd_loop_step(
             (
                 parsed.message_id.to_vec(),
                 sender,
-                payload_is_ping(parsed.payload),
+                parsed.message_type == MT_CALL && payload_is_ping(parsed.payload),
+                parsed.message_type,
+                // For STREAM_CHUNK the payload IS the chunk envelope
+                // (the logical call_id lives inside it, not in the
+                // per-chunk message_id).
+                parsed.payload.to_vec(),
             )
         };
-        if !is_ping {
-            // Non-ping CALL from an authorized sender: queue it for the
-            // Python dispatch handoff (ADR-0021 decision point 1) —
-            // the loop answers only the built-in ping itself; the
-            // driver drains, dispatches through the Python service
-            // handlers, and enqueues the reply wires for the loop to
-            // send (the reply goes to the RECORDED sender address).
-            if loop_handle.pending.len() < MAX_PENDING {
-                let wire = loop_handle.recv_buf[..n as usize].to_vec();
-                let mut addr = [0u8; 128];
-                let addr_len = (msg.msg_namelen as usize)
-                    .min(std::mem::size_of::<libc::sockaddr_un>());
-                let raw = &src as *const libc::sockaddr_un as *const u8;
-                addr[..addr_len]
-                    .copy_from_slice(std::slice::from_raw_parts(raw, addr_len));
-                loop_handle.pending.push(PendingRequest {
-                    message_id: call_id,
-                    wire,
-                    addr,
-                    addr_len,
-                });
+        if is_ping {
+            let reply = loop_handle.build_ping_reply(&call_id, &sender);
+            let addr_len = (msg.msg_namelen as usize).min(
+                std::mem::size_of::<libc::sockaddr_un>(),
+            ) as libc::socklen_t;
+            let sent = libc::sendto(
+                loop_handle.fd,
+                reply.as_ptr() as *const c_void,
+                reply.len(),
+                0,
+                &src as *const libc::sockaddr_un as *const libc::sockaddr,
+                addr_len,
+            );
+            if sent < 0 {
+                return -errno_or(libc::EIO);
             }
             continue;
         }
-        let reply = loop_handle.build_ping_reply(&call_id, &sender);
-        let addr_len = (msg.msg_namelen as usize).min(
-            std::mem::size_of::<libc::sockaddr_un>(),
-        ) as libc::socklen_t;
-        let sent = libc::sendto(
-            loop_handle.fd,
-            reply.as_ptr() as *const c_void,
-            reply.len(),
-            0,
-            &src as *const libc::sockaddr_un as *const libc::sockaddr,
-            addr_len,
-        );
-        if sent < 0 {
-            return -errno_or(libc::EIO);
+        // The recorded sender address (the reply goes here — never a
+        // claimed path). Shared by the non-ping CALL queue and the
+        // wire-level stream handoff below.
+        let mut addr = [0u8; 128];
+        let addr_len = (msg.msg_namelen as usize)
+            .min(std::mem::size_of::<libc::sockaddr_un>());
+        let raw = &src as *const libc::sockaddr_un as *const u8;
+        addr[..addr_len]
+            .copy_from_slice(std::slice::from_raw_parts(raw, addr_len));
+        // ADR-0024 wire-level streaming: a STREAM_CHUNK datagram is a
+        // chunk of a larger CALL. Reassemble (bounded by window/TTL,
+        // verified per chunk, bound to this sender); when the stream
+        // completes, the synthesized CALL wire is queued for the SAME
+        // Python dispatch handoff — the service sees a normal CALL
+        // with the full payload and never knows the chunks existed.
+        // The pending entry is keyed by the ENVELOPE's call_id (the
+        // synthesized CALL's message_id), so the reply correlates.
+        if parsed_type == MT_STREAM_CHUNK {
+            if let Some((stream_call_id, call_wire)) =
+                loop_handle.accept_stream_chunk(&sender, &chunk_payload)
+            {
+                if loop_handle.pending.len() < MAX_PENDING {
+                    loop_handle.pending.push(PendingRequest {
+                        message_id: stream_call_id,
+                        wire: call_wire,
+                        addr,
+                        addr_len,
+                    });
+                }
+            }
+            continue;
+        }
+        // Non-ping CALL from an authorized sender: queue it for the
+        // Python dispatch handoff (ADR-0021 decision point 1) —
+        // the loop answers only the built-in ping itself; the
+        // driver drains, dispatches through the Python service
+        // handlers, and enqueues the reply wires for the loop to
+        // send (the reply goes to the RECORDED sender address).
+        if loop_handle.pending.len() < MAX_PENDING {
+            let wire = loop_handle.recv_buf[..n as usize].to_vec();
+            loop_handle.pending.push(PendingRequest {
+                message_id: call_id,
+                wire,
+                addr,
+                addr_len,
+            });
         }
     }
     processed
@@ -1898,5 +2160,131 @@ mod tests {
             .is_null());
         assert_eq!(unsafe { nyrqis_ipcd_loop_step(ptr::null_mut(), 10) }, ERR_INVALID_ARGS);
         unsafe { nyrqis_ipcd_loop_free(ptr::null_mut()) }; // no-op is safe
+    }
+
+    /// The test-only chunk envelope encoder — byte-identical layout to
+    /// the floor's `_encode_stream_chunk` (version 1, 6-byte stream_id,
+    /// call_id, index/count, payload, sha256).
+    fn enc_chunk(
+        stream_id: &[u8], call_id: &[u8], index: u32, count: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut env = Vec::new();
+        env.push(STREAM_ENVELOPE_VERSION);
+        push_field(&mut env, stream_id);
+        push_field(&mut env, call_id);
+        env.extend_from_slice(&index.to_le_bytes());
+        env.extend_from_slice(&count.to_le_bytes());
+        push_field(&mut env, payload);
+        env.extend_from_slice(sha2::Sha256::digest(payload).as_slice());
+        env
+    }
+
+    #[test]
+    fn stream_chunk_parse_contract() {
+        let env = enc_chunk(b"\x01\x02\x03\x04\x05\x06", b"call-1", 0, 3, b"hello");
+        let c = parse_stream_chunk(&env).expect("valid envelope");
+        assert_eq!(c.stream_id, b"\x01\x02\x03\x04\x05\x06");
+        assert_eq!(c.call_id, b"call-1");
+        assert_eq!(c.index, 0);
+        assert_eq!(c.count, 3);
+        assert_eq!(c.payload, b"hello");
+
+        // Bad version.
+        let mut bad = env.clone();
+        bad[0] = 9;
+        assert!(parse_stream_chunk(&bad).is_none());
+        // Bad stream_id length.
+        let mut bad = env.clone();
+        bad[1] = 5;
+        assert!(parse_stream_chunk(&bad).is_none());
+        // index >= count.
+        let mut bad = env.clone();
+        let pos = 1 + 4 + 6 + 4 + 7;
+        bad[pos..pos + 4].copy_from_slice(&3u32.to_le_bytes());
+        assert!(parse_stream_chunk(&bad).is_none());
+        // count over the bound.
+        let mut bad = env.clone();
+        let pos = 1 + 4 + 6 + 4 + 7 + 4;
+        bad[pos..pos + 4].copy_from_slice(&(STREAM_MAX_CHUNKS + 1).to_le_bytes());
+        assert!(parse_stream_chunk(&bad).is_none());
+        // Payload checksum mismatch.
+        let mut bad = env.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xff;
+        assert!(parse_stream_chunk(&bad).is_none());
+        // Truncated.
+        assert!(parse_stream_chunk(&env[..env.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn stream_reassembly_completes_and_correlates() {
+        // A two-chunk stream keyed by (sender, stream_id) completes
+        // into a CALL wire whose message_id is the ENVELOPE call_id
+        // and whose payload is the reassembled body.
+        let mut loop_handle = Box::new(IpcLoop {
+            fd: -1,
+            batch_max: 4,
+            policy: std::sync::Mutex::new(Policy {
+                pids: Vec::new(),
+                trusted_uids: Vec::new(),
+                operator_id: b"op".to_vec(),
+            }),
+            recv_buf: vec![0u8; RECV_BUF],
+            ctrl: AlignedCmsg([0u8; CMSG_BUF]),
+            seq: 0,
+            pending: Vec::new(),
+            streams: Vec::new(),
+        });
+        let sid = b"\xaa\xbb\xcc\xdd\xee\xff";
+        let sender = b"ctr-a";
+        // First chunk: buffered, no completion.
+        let e0 = enc_chunk(sid, b"call-42", 0, 2, b"AAAA");
+        assert!(loop_handle.accept_stream_chunk(sender, &e0).is_none());
+        assert_eq!(loop_handle.streams.len(), 1);
+        // Out-of-order final chunk: completes and returns the CALL.
+        let e1 = enc_chunk(sid, b"call-42", 1, 2, b"BBBB");
+        let (call_id, wire) = loop_handle
+            .accept_stream_chunk(sender, &e1)
+            .expect("stream completes");
+        assert_eq!(call_id, b"call-42");
+        assert_eq!(loop_handle.streams.len(), 0);
+        let parsed = parse_dispatch(&wire).expect("synthesized CALL");
+        assert_eq!(parsed.message_type, MT_CALL);
+        assert_eq!(parsed.message_id, b"call-42");
+        assert_eq!(parsed.sender_id, sender);
+        assert_eq!(parsed.payload, b"AAAABBBB");
+        assert_eq!(parsed.reply_to, b"");
+
+        // A chunk from a DIFFERENT sender with the same stream_id gets
+        // its OWN slot (the reassembly is keyed by (sender, id) — a
+        // stream_id is CSPRNG, so cross-sender collision is not a
+        // trust boundary, exactly the floor's model).
+        let e0b = enc_chunk(sid, b"call-42", 0, 2, b"AAAA");
+        assert!(loop_handle.accept_stream_chunk(sender, &e0b).is_none());
+        assert!(loop_handle.accept_stream_chunk(b"ctr-b", &e0b).is_none());
+        assert_eq!(loop_handle.streams.len(), 2); // one slot per sender
+        loop_handle.streams.clear();
+
+        // A duplicate chunk rejects the stream.
+        let e0c = enc_chunk(sid, b"call-43", 0, 2, b"AAAA");
+        assert!(loop_handle.accept_stream_chunk(sender, &e0c).is_none());
+        assert!(loop_handle.accept_stream_chunk(sender, &e0c).is_none());
+        assert_eq!(loop_handle.streams.len(), 0); // stream dropped
+
+        // A mid-stream call_id change rejects the stream.
+        let e0d = enc_chunk(sid, b"call-44", 0, 2, b"AAAA");
+        assert!(loop_handle.accept_stream_chunk(sender, &e0d).is_none());
+        let e1d = enc_chunk(sid, b"call-45", 1, 2, b"BBBB");
+        assert!(loop_handle.accept_stream_chunk(sender, &e1d).is_none());
+        assert_eq!(loop_handle.streams.len(), 0);
+
+        // Single-chunk stream completes immediately.
+        let e1 = enc_chunk(b"\x11\x22\x33\x44\x55\x66", b"call-1", 0, 1, b"solo");
+        let (call_id, wire) = loop_handle
+            .accept_stream_chunk(sender, &e1)
+            .expect("solo completes");
+        assert_eq!(call_id, b"call-1");
+        assert_eq!(parse_dispatch(&wire).unwrap().payload, b"solo");
     }
 }

@@ -71,11 +71,17 @@ class NyVaultOperations:
         # either (``volume_open`` accepts both).
         self.volume = volume
         self._handle: Optional[str] = None
-        # ADR-0024 first increment: the service advertises the streaming
-        # data plane in the open reply. When absent (an older daemon),
-        # this passthrough pages in ≤32 KiB CALLs — the mixed-version
-        # degradation path that stays implemented forever.
+        # ADR-0024: the service advertises the streaming data plane in
+        # the open reply. ``stream_ver`` 2 (0.14.21) is the WIRE-level
+        # STREAM_CHUNK framing — the transport chunks the CALL/REPLY
+        # itself, so this passthrough sends ONE plain call with the
+        # full payload. ``stream`` alone (0.14.20) is the service-level
+        # envelope (chunk CALLs with a stream_id envelope). When
+        # neither (an older daemon), this passthrough pages in ≤32 KiB
+        # CALLs — the mixed-version degradation paths that stay
+        # implemented forever.
         self._stream_ok = False
+        self._stream_ver = 0
         self._open()
 
     # -- wire helpers -----------------------------------------------
@@ -131,6 +137,9 @@ class NyVaultOperations:
                                   "volume_open: missing handle")
         self._handle = handle
         self._stream_ok = bool(body.get("stream"))
+        ver = body.get("stream_ver")
+        self._stream_ver = ver if isinstance(ver, int) else (
+            1 if self._stream_ok else 0)
 
     def close(self) -> None:
         """Release the volume handle (best-effort; the daemon also
@@ -175,7 +184,27 @@ class NyVaultOperations:
         service in ≤32 KiB CALLs until ``size`` bytes (or a short
         read) have been collected — the pre-streaming path, kept
         forever."""
-        if self._stream_ok and size > _MAX_IO_BYTES:
+        if self._stream_ver >= 2 and size > _MAX_IO_BYTES:
+            try:
+                return self._read_wire(path, size, offset)
+            except VaultMountError as e:
+                if e.errno == errno.ETIMEDOUT:
+                    logger.warning(
+                        "vault passthrough: wire-streamed read timed "
+                        "out, service-level fallback: %s", e)
+                    if self._stream_ok:
+                        try:
+                            return self._read_stream(path, size, offset)
+                        except VaultMountError as e2:
+                            if e2.errno == errno.ETIMEDOUT:
+                                logger.warning(
+                                    "vault passthrough: streamed read "
+                                    "failed, paging fallback: %s", e2)
+                            else:
+                                raise
+                else:
+                    raise
+        elif self._stream_ok and size > _MAX_IO_BYTES:
             try:
                 return self._read_stream(path, size, offset)
             except VaultMountError as e:
@@ -189,6 +218,38 @@ class NyVaultOperations:
                 else:
                     raise
         return self._read_paged(path, size, offset)
+
+    def _read_wire(self, path, size, offset):
+        """Wire-level read (ADR-0024 follow-on): ONE ``volume_read``
+        CALL with the full size — the transport reassembles the
+        STREAM_CHUNK reply sequence, so the service's single full
+        reply comes back as one payload. One round trip for a 128 KiB
+        kernel request instead of four (or instead of N service-level
+        pieces)."""
+        payload = json.dumps(
+            {"service": _STORAGE_SERVICE, "op": "volume_read",
+             "handle": self._handle, "path": path, "offset": offset,
+             "size": size, "wire_stream": True},
+            sort_keys=True).encode("utf-8")
+        reply = self.client.call(self.socket_path, payload,
+                                 timeout_s=self.timeout_s,
+                                 wire_stream=True)
+        if reply is None:
+            raise VaultMountError(errno.ETIMEDOUT,
+                                  "no reply from the storage service")
+        try:
+            body = json.loads(reply.payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise VaultMountError(errno.EPROTO,
+                                  "malformed reply from the storage "
+                                  "service: %s" % (e,))
+        if not body.get("ok"):
+            err = body.get("errno")
+            if isinstance(err, int) and err > 0:
+                raise VaultMountError(err, body.get("error") or "read failed")
+            raise VaultMountError(errno.EIO,
+                                  body.get("error") or "read failed")
+        return base64.b64decode(body["data_b64"], validate=True)
 
     def _read_stream(self, path, size, offset):
         """One CALL, N correlated pieces, reassembled by index."""
@@ -254,7 +315,27 @@ class NyVaultOperations:
         commit interval instead of per CALL. POSIX semantics: data is
         visible immediately, durable after ``fsync()`` (close is NOT a
         durability boundary — the interval commit is the safety net)."""
-        if self._stream_ok and len(data) > _MAX_IO_BYTES:
+        if self._stream_ver >= 2 and len(data) > _MAX_IO_BYTES:
+            try:
+                return self._write_wire(path, data, offset)
+            except VaultMountError as e:
+                if e.errno == errno.ETIMEDOUT:
+                    logger.warning(
+                        "vault passthrough: wire-streamed write timed "
+                        "out, service-level fallback: %s", e)
+                    if self._stream_ok:
+                        try:
+                            return self._write_stream(path, data, offset)
+                        except VaultMountError as e2:
+                            if e2.errno == errno.ETIMEDOUT:
+                                logger.warning(
+                                    "vault passthrough: streamed write "
+                                    "failed, paging fallback: %s", e2)
+                            else:
+                                raise
+                else:
+                    raise
+        elif self._stream_ok and len(data) > _MAX_IO_BYTES:
             try:
                 return self._write_stream(path, data, offset)
             except VaultMountError as e:
@@ -265,6 +346,40 @@ class NyVaultOperations:
                 else:
                     raise
         return self._write_paged(path, data, offset)
+
+    def _write_wire(self, path, data, offset):
+        """Wire-level write (ADR-0024 follow-on): ONE ``volume_write``
+        CALL with the full payload — the transport chunks it into
+        STREAM_CHUNK messages the service reassembles before dispatch,
+        so the service performs ONE write, ONE quota check, ONE
+        accounting charge, ONE commit. The 0.14.20 service-level
+        envelope (per-chunk JSON) is not needed: the wire layer owns
+        the framing now."""
+        payload = json.dumps(
+            {"service": _STORAGE_SERVICE, "op": "volume_write",
+             "handle": self._handle, "path": path, "offset": offset,
+             "defer_commit": True,
+             "data_b64": base64.b64encode(data).decode("ascii")},
+            sort_keys=True).encode("utf-8")
+        reply = self.client.call(self.socket_path, payload,
+                                 timeout_s=self.timeout_s,
+                                 wire_stream=True)
+        if reply is None:
+            raise VaultMountError(errno.ETIMEDOUT,
+                                  "no reply from the storage service")
+        try:
+            body = json.loads(reply.payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise VaultMountError(errno.EPROTO,
+                                  "malformed reply from the storage "
+                                  "service: %s" % (e,))
+        if not body.get("ok"):
+            err = body.get("errno")
+            if isinstance(err, int) and err > 0:
+                raise VaultMountError(err, body.get("error") or "write failed")
+            raise VaultMountError(errno.EIO,
+                                  body.get("error") or "write failed")
+        return int(body.get("bytes_written", len(data)))
 
     def _write_stream(self, path, data, offset):
         """Pipelined chunk CALLs, one final reply; returns the total

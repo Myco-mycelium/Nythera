@@ -36,12 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 class IPCMessageType(enum.Enum):
-    """IPC message types per NPS-003 §3."""
+    """IPC message types per NPS-003 §3, plus the ADR-0024 streaming
+    chunk type (wire-level framing; ordinal 5)."""
     SEND = "send"  # Asynchronous message
     RECEIVE = "receive"  # Receive acknowledgment
     CALL = "call"  # Synchronous request
     REPLY = "reply"  # Reply to call
     NOTIFY = "notify"  # Lightweight notification
+    STREAM_CHUNK = "stream_chunk"  # ADR-0024: one chunk of a streamed CALL/REPLY
 
 
 # The wire's message_type is the enum's ordinal (NPS-003 §3 order:

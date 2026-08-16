@@ -74,11 +74,13 @@ References:
 """
 
 import ctypes
+import hashlib
 import json
 import logging
 import os
 import socket
 import struct
+import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -91,6 +93,136 @@ from .core import IPCManager, IPCMessage, IPCMessageType
 # Defined here — the server is the auth boundary — and imported by the
 # control service, so both sides always agree by construction.
 DEFAULT_OPERATOR_ID = "host-operator"
+
+# ---------------------------------------------------------------------------
+# Wire-level streaming framing (ADR-0024 follow-on)
+# ---------------------------------------------------------------------------
+# A STREAM_CHUNK message's payload is a binary envelope, byte-identical
+# between the Python floor and the Rust serving loop (rust/ipcd):
+#
+#   u8   version = 1
+#   u32  stream_id_len + stream_id       (48-bit CSPRNG -> 6 bytes)
+#   u32  call_id_len + call_id           (the logical CALL id / reply_to)
+#   u32  chunk_index
+#   u32  chunk_count
+#   u32  payload_len + payload
+#   32B  sha256(payload)
+#
+# The receiver reassembles by (kernel-attached sender, stream_id) with
+# the ADR-0024 bounds: at most ``STREAM_MAX_CHUNKS`` chunks (16 MiB at
+# ``STREAM_CHUNK_BYTES``), a 30 s reassembly TTL, per-chunk checksums
+# verified before dispatch, and the stream bound to its first chunk's
+# sender. The codec's ``reply_to`` field rides the correlation for
+# REPLY chunks (the existing correlation machinery untouched); the
+# envelope's ``call_id`` is authoritative for CALL chunks (it becomes
+# the reassembled CALL's ``message_id``).
+STREAM_CHUNK_BYTES = 32 * 1024
+STREAM_MAX_CHUNKS = 512
+STREAM_TTL_S = 30.0
+STREAM_MAX_STREAMS = 64
+_STREAM_ENVELOPE_VERSION = 1
+_STREAM_ID_BYTES = 6
+
+# The largest payload a single datagram can carry. The wire recv buffer
+# is 64 KiB on both halves (a larger datagram is truncated and dropped
+# at the parse), and the codec wire carries ~42 B of fixed header +
+# per-field length prefixes on top of the payload, so a payload that
+# fits a datagram must stay comfortably under 64 KiB. A CALL/REPLY
+# payload larger than this is what ADR-0024 chunks — the FRAMING
+# boundary is the single-datagram budget, not the chunk size (a
+# service-level stream piece of ≤32 KiB of data is ~44 KiB of JSON and
+# still rides ONE datagram; chunking it would break old peers).
+_DATAGRAM_PAYLOAD_BUDGET = 60 * 1024
+
+
+def _encode_stream_chunk(
+    stream_id: bytes, call_id: str, index: int, count: int, payload: bytes,
+) -> bytes:
+    """Encode one chunk envelope (ADR-0024 wire-level framing)."""
+    cid = call_id.encode("utf-8")
+    return (
+        struct.pack("<B", _STREAM_ENVELOPE_VERSION)
+        + struct.pack("<I", len(stream_id)) + stream_id
+        + struct.pack("<I", len(cid)) + cid
+        + struct.pack("<II", index, count)
+        + struct.pack("<I", len(payload)) + payload
+        + hashlib.sha256(payload).digest()
+    )
+
+
+def _decode_stream_chunk(
+    data: bytes,
+) -> Optional[Tuple[bytes, str, int, int, bytes]]:
+    """Decode + verify one chunk envelope. Returns
+    ``(stream_id, call_id, index, count, payload)`` or None when the
+    envelope is malformed or fails a bound/checksum check (the
+    receiver drops those fail-closed, exactly like the codec)."""
+    try:
+        pos = 0
+        (version,) = struct.unpack_from("<B", data, pos)
+        pos += 1
+        if version != _STREAM_ENVELOPE_VERSION:
+            return None
+        (sid_len,) = struct.unpack_from("<I", data, pos)
+        pos += 4
+        if sid_len != _STREAM_ID_BYTES or pos + sid_len > len(data):
+            return None
+        stream_id = data[pos:pos + sid_len]
+        pos += sid_len
+        (cid_len,) = struct.unpack_from("<I", data, pos)
+        pos += 4
+        if pos + cid_len > len(data) or cid_len > 128:
+            return None
+        call_id = data[pos:pos + cid_len].decode("utf-8", "replace")
+        pos += cid_len
+        index, count = struct.unpack_from("<II", data, pos)
+        pos += 8
+        if index >= count or count > STREAM_MAX_CHUNKS:
+            return None
+        (plen,) = struct.unpack_from("<I", data, pos)
+        pos += 4
+        if plen > STREAM_CHUNK_BYTES or pos + plen + 32 != len(data):
+            return None
+        payload = data[pos:pos + plen]
+        pos += plen
+        if hashlib.sha256(payload).digest() != data[pos:pos + 32]:
+            return None
+        return stream_id, call_id, index, count, payload
+    except struct.error:
+        return None
+
+
+def build_reply_wires(call_id: str, payload: bytes) -> List[bytes]:
+    """The wires that carry one reply payload: a single REPLY wire when
+    it fits the datagram budget, or N STREAM_CHUNK wires when it does
+    not (ADR-0024 wire-level framing). The floor's ``reply()`` sends
+    these; the loop dispatcher (``ipc/dispatch.py``) enqueues them —
+    byte-identical by construction, so a reply is identical whichever
+    backend served it."""
+    if len(payload) <= _DATAGRAM_PAYLOAD_BUDGET:
+        return [
+            IPCMessage(
+                message_type=IPCMessageType.REPLY,
+                payload=payload,
+                reply_to=call_id,
+            ).to_wire()
+        ]
+    stream_id = os.urandom(_STREAM_ID_BYTES)
+    chunks = [
+        payload[i:i + STREAM_CHUNK_BYTES]
+        for i in range(0, len(payload), STREAM_CHUNK_BYTES)
+    ]
+    wires = []
+    for i, chunk in enumerate(chunks):
+        env = _encode_stream_chunk(stream_id, call_id, i, len(chunks), chunk)
+        wires.append(
+            IPCMessage(
+                message_type=IPCMessageType.STREAM_CHUNK,
+                payload=env,
+                reply_to=call_id,
+            ).to_wire()
+        )
+    return wires
 
 logger = logging.getLogger(__name__)
 
@@ -307,12 +439,51 @@ class IPCDatagramServer:
         # (which runs as the same user) is never misattributed.
         self.trusted_uids = trusted_uids
         self.operator_id = operator_id
+        # Wire-level stream reassembly (ADR-0024 follow-on): keyed by
+        # ``(authenticated sender, stream_id)`` — the kernel-attached
+        # sender is the ADR's "bind to the sender of its first chunk"
+        # rule, never a claimed identity. Each slot holds the declared
+        # chunk count, the logical call_id (from the envelope), the
+        # buffered chunks by index, and a TTL for the sweep.
+        self._streams: Dict[Tuple[str, bytes], Dict] = {}
+        # Close coordination (see close/serve): close() waits for the
+        # serve loop to exit before closing the endpoint, so the fd is
+        # never closed while a poll is in flight on it (the fd-reuse
+        # hazard close() documents below).
+        self._close_lock = threading.Lock()
+        self._closed = False
+        self._serve_thread: Optional[threading.Thread] = None
 
     def bind(self) -> "IPCDatagramServer":
         self.endpoint.bind()
         return self
 
     def close(self) -> None:
+        """Request shutdown and release the socket. Idempotent; safe
+        from any thread.
+
+        When a serve loop is running, close() waits for it to exit
+        (bounded — the loop notices the closed flag within one poll
+        window) BEFORE closing the endpoint, so the fd is never closed
+        while a ``poll`` is in flight on it. Closing an fd out from
+        under another thread's poll is a classic fd-reuse hazard: the
+        kernel may hand the freed number to the next bound socket, and
+        the stale poll can then steal ONE datagram from it. That bit
+        the wire-level streaming path directly (ADR-0024): a server
+        torn down with ``stop.set(); close()`` left its serve thread
+        mid-poll; the next bind reused the fd; the zombie received one
+        STREAM_CHUNK into its own dead ``_streams``; the live server's
+        reassembly never completed (one chunk short) and the caller
+        timed out. Because the thread is joined, the socket path is
+        unlinked before close() returns — a caller can bind a new
+        endpoint at the same path immediately."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            thread = self._serve_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
         self.endpoint.close()
 
     def _resolve_sender(self, pid: int) -> Optional[str]:
@@ -374,15 +545,106 @@ class IPCDatagramServer:
         return None
 
     def reply(self, sender_path: str, call_id: str, payload: bytes) -> bool:
-        """Send a REPLY to ``sender_path`` for call ``call_id``."""
-        reply = IPCMessage(
-            message_type=IPCMessageType.REPLY,
-            payload=payload,
-            reply_to=call_id,
-        )
-        self.endpoint.send(reply.to_wire(), peer_path=sender_path)
-        logger.info("ipc: replied to call %s", call_id[:8])
+        """Send the REPLY for call ``call_id`` to ``sender_path``: a
+        single REPLY when the payload fits the datagram budget, or a
+        sequence of STREAM_CHUNK messages when it does not (ADR-0024
+        wire-level framing — a large reply is chunked by the wire
+        layer the loop owns, never by the service)."""
+        for wire in build_reply_wires(call_id, payload):
+            self.endpoint.send(wire, peer_path=sender_path)
+        logger.info("ipc: replied to call %s (%d bytes)", call_id[:8], len(payload))
         return True
+
+    def _accept_stream_chunk(
+        self, sender: str, msg: IPCMessage, sender_path: str,
+    ) -> Optional[IPCMessage]:
+        """Buffer one STREAM_CHUNK datagram from ``sender`` (ADR-0024
+        wire-level framing). Returns the reassembled CALL when the
+        stream is complete (the caller dispatches it like any CALL),
+        or None while chunks are still buffering (or on rejection).
+
+        Bounds mirror the service-level stream (ADR-0024): at most
+        ``STREAM_MAX_CHUNKS`` chunks (16 MiB at 32 KiB), a TTL sweep
+        (an incomplete stream is dropped — the caller's paging path
+        takes over), a per-sender bind to the FIRST chunk, and a
+        duplicate/mismatched chunk rejects the whole stream
+        fail-closed. The logical call_id rides the envelope (and the
+        codec ``reply_to`` for REPLY chunks) so the reassembled CALL
+        correlates normally."""
+        env = _decode_stream_chunk(msg.payload)
+        if env is None:
+            logger.warning("ipc: dropping malformed STREAM_CHUNK on %s",
+                           self.endpoint_id)
+            return None
+        stream_id, call_id, index, count, payload = env
+        now = time.monotonic()
+        # TTL sweep on arrival: incomplete streams older than the
+        # window are dropped (bounded memory, independent of the
+        # declared size).
+        expired = [
+            key for key, slot in self._streams.items()
+            if now - slot["last_seen"] > STREAM_TTL_S
+        ]
+        for key in expired:
+            logger.info(
+                "ipc: dropping expired stream %s (%d/%d chunks)",
+                key[1][:4].hex(), len(self._streams[key]["chunks"]),
+                self._streams[key]["count"],
+            )
+            del self._streams[key]
+        key = (sender, stream_id)
+        slot = self._streams.get(key)
+        if slot is None:
+            if len(self._streams) >= STREAM_MAX_STREAMS:
+                logger.warning(
+                    "ipc: stream table full (%d); dropping chunk",
+                    STREAM_MAX_STREAMS,
+                )
+                return None
+            slot = {
+                "count": count,
+                "call_id": call_id,
+                "chunks": {},
+                "last_seen": now,
+                "sender_path": sender_path,
+            }
+            self._streams[key] = slot
+        else:
+            # Bind to the first chunk's sender: a chunk from a
+            # different sender fails closed even with a matching id
+            # (the dict key already enforces this — the check is the
+            # fail-closed floor for a corrupted slot).
+            if slot["count"] != count or slot["call_id"] != call_id:
+                logger.warning(
+                    "ipc: stream %s changed mid-stream; rejecting",
+                    stream_id[:4].hex(),
+                )
+                del self._streams[key]
+                return None
+        slot["last_seen"] = now
+        if index in slot["chunks"]:
+            logger.warning(
+                "ipc: duplicate chunk %d of stream %s; rejecting",
+                index, stream_id[:4].hex(),
+            )
+            del self._streams[key]
+            return None
+        slot["chunks"][index] = payload
+        if len(slot["chunks"]) < slot["count"]:
+            return None  # still buffering
+        # Complete: reassemble in index order and synthesize the CALL
+        # the client meant (the envelope's call_id is the message_id,
+        # so the service's reply correlates through the normal path).
+        del self._streams[key]
+        body = b"".join(
+            slot["chunks"][i] for i in range(slot["count"])
+        )
+        return IPCMessage(
+            message_type=IPCMessageType.CALL,
+            message_id=call_id,
+            sender_id=sender,
+            payload=body,
+        )
 
     def serve_once(self, timeout: Optional[float] = None) -> Optional[IPCMessage]:
         """Receive and dispatch one datagram; returns the dispatched
@@ -412,6 +674,24 @@ class IPCDatagramServer:
                         self.endpoint_id, type(e).__name__, e,
                     )
             return msg
+        if msg.message_type == IPCMessageType.STREAM_CHUNK:
+            # Wire-level streaming (ADR-0024 follow-on): reassemble the
+            # chunks into the CALL the client meant, then dispatch it
+            # through the SAME on_call path (the service sees a normal
+            # CALL with the full payload — it never knows the chunks
+            # existed). Intermediate chunks return None (no dispatch).
+            call_msg = self._accept_stream_chunk(sender, msg, sender_path)
+            if call_msg is None:
+                return None
+            if self.on_call is not None:
+                try:
+                    self.on_call(call_msg, sender, sender_path)
+                except Exception as e:  # noqa: BLE001 - one bad handler must not kill the serve loop
+                    logger.error(
+                        "ipc: on_call handler on %s raised %s: %s",
+                        self.endpoint_id, type(e).__name__, e,
+                    )
+            return call_msg
         endpoint = self.manager.get_endpoint(self.endpoint_id)
         if endpoint is None:
             logger.warning("ipc: endpoint %s not found; dropping", self.endpoint_id)
@@ -425,15 +705,32 @@ class IPCDatagramServer:
         return msg
 
     def serve(self, stop_event, poll_s: float = 0.2) -> None:
-        """Blocking dispatch loop until ``stop_event`` is set. A
-        transient transport error (e.g. an EINTR-wrapped OSError) is
-        logged and the loop continues — one bad datagram must not kill
-        the serving thread."""
-        while not stop_event.is_set():
-            try:
-                self.serve_once(timeout=poll_s)
-            except IPCTransportError as e:
-                logger.warning("ipc: transport error, continuing: %s", e)
+        """Blocking dispatch loop until ``stop_event`` is set or the
+        server is closed. A transient transport error (e.g. an
+        EINTR-wrapped OSError) is logged and the loop continues — one
+        bad datagram must not kill the serving thread.
+
+        close() joins this loop before closing the endpoint (see
+        :meth:`close` — the fd-reuse hazard that motivated it), so the
+        loop must exit promptly once ``stop_event`` is set or close()
+        is called: it checks both on every iteration, and a poll is
+        never left running past ``poll_s``."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._serve_thread = threading.current_thread()
+        try:
+            while not stop_event.is_set() and not self._closed:
+                try:
+                    self.serve_once(timeout=poll_s)
+                except IPCTransportError as e:
+                    if self._closed:
+                        break
+                    logger.warning("ipc: transport error, continuing: %s", e)
+        finally:
+            with self._close_lock:
+                self._serve_thread = None
+            self.endpoint.close()
 
 
 class IPCClient:
@@ -491,6 +788,7 @@ class IPCClient:
         self, peer_path: str, payload: bytes,
         timeout_s: float = 10.0,
         capabilities: Optional[List[str]] = None,
+        wire_stream: bool = False,
     ) -> Optional[IPCMessage]:
         """Synchronous CALL/REPLY (NPS-003 §3.3): send the CALL, then
         wait for the correlated REPLY. A REPLY is accepted only when
@@ -503,13 +801,37 @@ class IPCClient:
         process, one FFI call per CALL instead of the floor's per-call
         encode + send + receive loop + decode. The floor loop is the
         fallback (byte-identical semantics, so a caller cannot tell
-        which half served the call)."""
+        which half served the call).
+
+        ``wire_stream=True`` selects the ADR-0024 wire-level streaming
+        path: a payload larger than the single-datagram budget is sent
+        as a sequence of STREAM_CHUNK messages (the receiver
+        reassembles it into the CALL before dispatch), and a large
+        reply is reassembled from its STREAM_CHUNK pieces. This runs
+        on the FLOOR path by design — the Rust client half is
+        single-round-trip and cannot pipeline chunks (the ADR's
+        wire-level client streaming is the documented follow-on).
+        Calls at or below the budget are byte-identical either way."""
         msg = IPCMessage(
             message_type=IPCMessageType.CALL,
             sender_id=self.container_id,
             payload=payload,
             capabilities=capabilities or [],
         )
+        if wire_stream:
+            # Wire-level streaming (ADR-0024 follow-on): the FLOOR path
+            # with STREAM_CHUNK awareness in BOTH directions — a
+            # request that exceeds the single-datagram budget is
+            # chunked on send (``_call_wire_stream``); a small request
+            # that gets a large reply is reassembled by
+            # ``_await_reply``. The Rust client half is single-round-
+            # trip and cannot see the chunks, so wire_stream always
+            # bypasses it (the ADR's client-half streaming is the
+            # documented follow-on).
+            if len(payload) > _DATAGRAM_PAYLOAD_BUDGET:
+                return self._call_wire_stream(peer_path, msg, timeout_s)
+            self._send_message(peer_path, msg)
+            return self._await_reply(msg, timeout_s)
         wire = msg.to_wire()
         # The Rust client half (ADR-0021), when the crate is present:
         # one FFI call for the whole round trip. A timeout returns None
@@ -549,17 +871,97 @@ class IPCClient:
         # The Python floor loop (the fallback when the crate is
         # absent): send, then wait for the correlated REPLY.
         self._send_message(peer_path, msg)
+        return self._await_reply(msg, timeout_s)
+
+    def _await_reply(
+        self, msg: IPCMessage, timeout_s: float,
+    ) -> Optional[IPCMessage]:
+        """The floor's correlated-reply loop: wait for the REPLY to
+        ``msg`` (single REPLY, or a reassembled STREAM_CHUNK reply
+        stream keyed by the same ``reply_to`` — ADR-0024). Returns the
+        reply (a synthesized REPLY with the reassembled payload for
+        chunked replies) or None on timeout."""
         deadline = time.time() + timeout_s
+        # stream_id -> reassembly slot for chunked replies.
+        reply_streams: Dict[bytes, Dict] = {}
         while time.time() < deadline:
             reply = self.receive(timeout=max(0.05, deadline - time.time()))
-            if reply is not None and reply.message_type == IPCMessageType.REPLY:
+            if reply is None:
+                continue
+            if reply.message_type == IPCMessageType.REPLY:
                 if reply.reply_to == msg.message_id:
                     return reply
                 logger.warning(
                     "ipc: dropping REPLY for unknown call %s",
                     reply.reply_to[:8] if reply.reply_to else None,
                 )
+                continue
+            if reply.message_type == IPCMessageType.STREAM_CHUNK:
+                # A chunk of a chunked REPLY to this call (ADR-0024).
+                if reply.reply_to != msg.message_id:
+                    continue  # a different call's stream — drop
+                env = _decode_stream_chunk(reply.payload)
+                if env is None:
+                    continue  # malformed chunk — drop
+                stream_id, _call_id, index, count, payload = env
+                slot = reply_streams.get(stream_id)
+                if slot is None:
+                    if len(reply_streams) >= STREAM_MAX_STREAMS:
+                        continue  # too many concurrent reply streams
+                    slot = {"count": count, "chunks": {}}
+                    reply_streams[stream_id] = slot
+                if slot["count"] != count or index in slot["chunks"]:
+                    continue  # inconsistent/duplicate — drop
+                slot["chunks"][index] = payload
+                if len(slot["chunks"]) == slot["count"]:
+                    body = b"".join(
+                        slot["chunks"][i] for i in range(slot["count"])
+                    )
+                    return IPCMessage(
+                        message_type=IPCMessageType.REPLY,
+                        payload=body,
+                        reply_to=msg.message_id,
+                    )
+                continue
         return None
+
+    def _call_wire_stream(
+        self, peer_path: str, msg: IPCMessage, timeout_s: float,
+    ) -> Optional[IPCMessage]:
+        """Send ``msg`` as a wire-level STREAM_CHUNK sequence
+        (ADR-0024 follow-on): split the payload into ≤32 KiB chunks,
+        pipeline every chunk back-to-back (the receiver reassembles
+        and dispatches ONE CALL), then await the single correlated
+        reply (which may itself be a chunked stream)."""
+        stream_id = os.urandom(_STREAM_ID_BYTES)
+        chunks = [
+            msg.payload[i:i + STREAM_CHUNK_BYTES]
+            for i in range(0, len(msg.payload), STREAM_CHUNK_BYTES)
+        ]
+        if len(chunks) > STREAM_MAX_CHUNKS:
+            # Fail fast instead of pipelining a stream the receiver is
+            # bound to drop: the reassembly window is 512 chunks
+            # (STREAM_MAX_CHUNKS) and a longer stream is rejected
+            # chunk-by-chunk as malformed — an honest immediate refusal
+            # beats a call that silently times out after the sender has
+            # spent seconds pipelining chunks nobody will accept.
+            logger.warning(
+                "ipc: refusing to wire-stream %d chunks (> %d) for "
+                "call %s — payload exceeds the reassembly window",
+                len(chunks), STREAM_MAX_CHUNKS, msg.message_id[:8],
+            )
+            return None
+        for i, chunk in enumerate(chunks):
+            env = _encode_stream_chunk(
+                stream_id, msg.message_id, i, len(chunks), chunk)
+            chunk_msg = IPCMessage(
+                message_type=IPCMessageType.STREAM_CHUNK,
+                sender_id=self.container_id,
+                payload=env,
+                reply_to=msg.message_id,
+            )
+            self._send_message(peer_path, chunk_msg)
+        return self._await_reply(msg, timeout_s)
 
     def call_stream_write(
         self, peer_path: str, chunk_payloads: List[bytes],
