@@ -12288,18 +12288,24 @@ class TestIpcdLoopConformance(unittest.TestCase):
         # force checks on any class that touches them (the documented
         # cross-loader hazard — each gate runs only classes that don't
         # depend on the other modules' libs). This class's data path
-        # goes through the wire codec and the transport, so pin those
-        # two loaders to their pure-Python floors (byte-identical,
-        # proven by their own conformance gates): only the ipcd module
-        # is the forced lib under this gate.
+        # goes through the wire codec and the transport, and the
+        # storage round trips additionally through the NyFS block
+        # codec, so pin those three loaders to their pure-Python
+        # floors (byte-identical, proven by their own conformance
+        # gates): only the ipcd module is the forced lib under this
+        # gate.
         self._codec_force = mock.patch.object(
             ipc_codec, "_force_enabled", return_value=False)
         self._transport_force = mock.patch.object(
             transport_codec, "force_enabled", return_value=False)
+        self._nyfs_force = mock.patch.object(
+            nyfs_codec, "_force_enabled", return_value=False)
         self._codec_force.start()
         self._transport_force.start()
+        self._nyfs_force.start()
 
     def tearDown(self):
+        self._nyfs_force.stop()
         self._transport_force.stop()
         self._codec_force.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
