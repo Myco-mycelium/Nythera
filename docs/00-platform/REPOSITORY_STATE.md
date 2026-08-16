@@ -789,7 +789,16 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**path-scoped grants e2e + the honest EACCES — 0.14.16**):
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**the access matrix joins the event ring — 0.14.17**):
+  the ring records grant/revoke actions alongside the quota signal —
+  a `grant` logs who, when, and how wide the scope; a `revoke` logs
+  what was actually withdrawn (the scope the grantee held). Events
+  carry a `kind` (`grant`/`revoke`/`quota`); quota events keep
+  level/usage/quota, grant events carry scope. Ring stays bounded
+  (64), newest-first, in-memory, OPERATOR-ONLY. `vault events` prints
+  the kind column (grant/revoke rows `scope=...`); verified e2e
+  against a real daemon. Suite 462 → **463**.
+- 2026-08-16 (**path-scoped grants e2e + the honest EACCES — 0.14.16**):
   the grant-scope rejection now rides the CALL reply with errno 13
   (EACCES — a permission denial, not a generic EIO), so the FUSE
   passthrough surfaces it to the kernel. Verified through a REAL

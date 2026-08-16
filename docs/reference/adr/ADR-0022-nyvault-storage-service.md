@@ -114,11 +114,15 @@ Specifically:
   capability itself. A grant may be **path-scoped** (0.14.15): with
   `path: /subtree` the grantee's data-plane ops are restricted to the
   subtree, fail-closed; a bare grant is whole-volume (back-compatible
-  `True`). **Admin ops (snapshot / restore / snapshot-delete) are
+  `True`).  **Admin ops (snapshot / restore / snapshot-delete) are
   CREATOR/OPERATOR-ONLY** — they capture or rewrite the whole tree, so
   a grantee can never snapshot data outside its scope or clobber the
   volume. Revocation on container terminate is automatic, matching the
-  existing capability-lifecycle hooks.
+  existing capability-lifecycle hooks. **Grant/revoke actions land in
+  the operator event ring** (0.14.17) — a grant records who, when, and
+  the scope; a revoke records what was actually withdrawn — so the
+  access matrix is auditable through the same ring as the quota
+  signal.
 - **The in-container byte path is a FUSE passthrough to the service**
   (ADR-0016 stays): the container mounts a thin FUSE view whose
   read/write ops are CALLs to the storage service, so the *container's*

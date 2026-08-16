@@ -386,12 +386,20 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "vault-volume-events":
         events = resp.get("events") or []
         if not events:
-            return "no quota events"
-        rows = [f"{e.get('t')}\t{e.get('volume')}\t{e.get('container')}\t"
-                f"{e.get('level')}\t{e.get('usage')}/{e.get('quota')}"
-                for e in events]
+            return "no events"
+        rows = []
+        for e in events:
+            kind = e.get("kind", "quota")
+            if kind in ("grant", "revoke"):
+                rows.append(f"{e.get('t')}\t{e.get('volume')}\t"
+                            f"{e.get('container')}\t{kind}\t"
+                            f"scope={e.get('scope')}")
+            else:
+                rows.append(f"{e.get('t')}\t{e.get('volume')}\t"
+                            f"{e.get('container')}\t{e.get('level')}\t"
+                            f"{e.get('usage')}/{e.get('quota')}")
         return "\n".join(
-            ["time\tvolume\tcontainer\tlevel\tusage/quota"] + rows)
+            ["time\tvolume\tcontainer\tkind\tdetail"] + rows)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -829,9 +837,10 @@ def build_parser() -> argparse.ArgumentParser:
     vsm.set_defaults(command="vault-volume-summary")
 
     vev = vsub.add_parser(
-        "events", help="OPERATOR-ONLY: the quota-event ring — warning-"
-                        "level transitions and EDQUOT rejections, "
-                        "newest first (in-memory diagnostics)")
+        "events", help="OPERATOR-ONLY: the event ring — quota warning-"
+                        "level transitions, EDQUOT rejections, and "
+                        "grant/revoke actions, newest first "
+                        "(in-memory diagnostics)")
     vev.set_defaults(command="vault-volume-events")
 
     vi = vsub.add_parser(

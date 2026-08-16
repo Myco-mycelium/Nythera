@@ -74,7 +74,7 @@ Quota & accounting (ADR-0022 follow-on, shipped with 0.14.10):
   per-volume row (logical, physical, consumer count). Re-derives the
   ledger on demand (one walk per volume — the §28-measured cost), so
   the figures are fresh even for uncommitted deferred writes.
-- ``{"op": "volume_events"}`` — OPERATOR-ONLY: the quota-event ring
+- ``{"op": "volume_events"}`` — OPERATOR-ONLY: the event ring
   (warning-level transitions and EDQUOT rejections, newest first).
   In-memory diagnostics, bounded and never persisted — the ledger is
   the durable source of truth.
@@ -557,8 +557,10 @@ class StorageService:
                         "ipc: %s container %s is %s quota on volume %s "
                         "(%d/%d bytes)", self.SERVICE_NAME, cid, level,
                         record["name"], usage.get(cid, 0), quota)
-                    self._record_event(record["name"], cid, level,
-                                       usage.get(cid, 0), quota)
+                    self._record_event(
+                        record["name"], cid, "quota",
+                        level=level, usage=usage.get(cid, 0),
+                        quota=quota)
                 warnings[cid] = level
 
     def _commit_dirty(self) -> None:
@@ -598,19 +600,20 @@ class StorageService:
         self._commit_dirty()
         self._last_commit = time.monotonic()
 
-    def _record_event(self, volume: str, container: str, level: str,
-                      usage: int, quota: Optional[int]) -> None:
-        """Append one quota event to the ring (bounded diagnostics:
-        warning-level transitions and EDQUOT rejections). The ledger
-        itself — not this ring — is the durable source of truth."""
-        self._events.append({
+    def _record_event(self, volume: str, container: str, kind: str,
+                      **fields: Any) -> None:
+        """Append one event to the ring (bounded diagnostics: quota
+        warning-level transitions, EDQUOT rejections, and
+        grant/revoke actions with their scope). The registry — not
+        this ring — is the durable source of truth."""
+        event: Dict[str, Any] = {
             "t": round(time.time(), 3),
             "volume": volume,
             "container": container,
-            "level": level,
-            "usage": usage,
-            "quota": quota,
-        })
+            "kind": kind,
+        }
+        event.update(fields)
+        self._events.append(event)
 
     @staticmethod
     def _warning_level(used: int, quota: int) -> Optional[str]:
@@ -958,10 +961,14 @@ class StorageService:
             # Whole-volume grant (the 0.14.8 shape, back-compatible).
             record["grants"][container] = True
         self._save_state()
+        scope = scope_path or "/"
         logger.info("ipc: %s granted %s access to volume %s (%s) "
                     "scope=%s", self.SERVICE_NAME, container,
-                    record["name"], volume_id[:8],
-                    scope_path or "/")
+                    record["name"], volume_id[:8], scope)
+        # The access matrix belongs in the same event ring as the
+        # quota signal: who was granted what, and how wide the scope.
+        self._record_event(record["name"], container, "grant",
+                           scope=scope)
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
@@ -1000,12 +1007,19 @@ class StorageService:
             })
             return
         container = container.strip()
-        was_granted = record["grants"].pop(container, None) is not None
+        old = record["grants"].pop(container, None)
+        was_granted = old is not None
         if was_granted:
             self._save_state()
+        scope = (old.get("path") if isinstance(old, dict) else "/")
         logger.info("ipc: %s revoked %s's access to volume %s (%s)",
                     self.SERVICE_NAME, container, record["name"],
                     volume_id[:8])
+        if was_granted:
+            # The ring records what was actually withdrawn (the scope
+            # the grantee held), so the audit shows the full action.
+            self._record_event(record["name"], container, "revoke",
+                               scope=scope)
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
@@ -1233,11 +1247,12 @@ class StorageService:
 
     def _volume_events(self, server, sender_path: str, call_id: str,
                        sender: str) -> None:
-        """The quota-event ring: warning-level transitions (near/at/
-        over) and EDQUOT rejections, newest first. OPERATOR-ONLY —
-        quota events reveal per-container accounting. In-memory
-        diagnostics (bounded ring, never persisted; the ledger is the
-        durable source of truth)."""
+        """The event ring: quota warning-level transitions (near/at/
+        over), EDQUOT rejections, and grant/revoke actions (with
+        scope), newest first. OPERATOR-ONLY — the events reveal
+        per-container accounting and grant scopes. In-memory
+        diagnostics (bounded ring, never persisted; the registry is
+        the durable source of truth)."""
         from backend.capability import Capability
         if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
             self._reply(server, sender_path, call_id, {
@@ -1249,7 +1264,8 @@ class StorageService:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": "forbidden: volume_events is operator-only "
-                          "(quota events reveal per-container accounting)",
+                          "(events reveal per-container accounting "
+                          "and grant scopes)",
             })
             return
         events = list(self._events)
@@ -1574,8 +1590,9 @@ class StorageService:
             if used + len(data) > quota_bytes:
                 # The hard stop is the most actionable event an
                 # operator can see — record it in the event ring.
-                self._record_event(record["name"], sender, "edquot",
-                                   used, quota_bytes)
+                self._record_event(
+                    record["name"], sender, "quota",
+                    level="edquot", usage=used, quota=quota_bytes)
                 self._reply(server, sender_path, call_id, {
                     "ok": False,
                     "error": "quota exceeded: %d bytes accounted, "

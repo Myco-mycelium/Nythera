@@ -1970,12 +1970,18 @@ class TestOperatorCli(unittest.TestCase):
             {"service": "storage", "op": "volume_events"})
         self.assertEqual(nyrqisctl.format_human(
             "vault-volume-events", {"ok": True, "events": []}),
-            "no quota events")
+            "no events")
         out = nyrqisctl.format_human(
             "vault-volume-events", {"ok": True, "events": [
                 {"t": 1.5, "volume": "assets", "container": "container-x",
                  "level": "at", "usage": 95, "quota": 100}]})
         self.assertIn("assets\tcontainer-x\tat\t95/100", out)
+        # Grant/revoke events (0.14.17) print kind + scope.
+        out = nyrqisctl.format_human(
+            "vault-volume-events", {"ok": True, "events": [
+                {"t": 1.6, "volume": "assets", "container": "container-b",
+                 "kind": "grant", "scope": "/assets"}]})
+        self.assertIn("assets\tcontainer-b\tgrant\tscope=/assets", out)
 
     def test_cli_formats_human_output(self):
         status = {"ok": True, "backend_version": "9.9.9",
@@ -4696,6 +4702,86 @@ class TestStorageService(unittest.TestCase):
         self.assertEqual(storage._volumes[vid2]["warnings"]
                          .get("container-a"), "over")
 
+    def test_grant_events_recorded_in_the_ring(self):
+        # 0.14.17: the access matrix joins the event ring — a grant
+        # records who, when, and how wide the scope; a revoke records
+        # what was actually withdrawn (the scope the grantee held).
+        # Newest first, same operator-only gate, same bounded ring.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.initialize_container("container-b")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        caps.grant_capability("container-b", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "grevents-vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "assets"})
+        vid = last(stub)["volume_id"]
+
+        def events():
+            stub = _Stub()
+            storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+            return last(stub)["events"]
+
+        # Whole-volume grant, then revoke: two events, newest first.
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_revoke(stub, "p", "3", "container-a",
+                               {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["revoked"])
+        ev = events()
+        self.assertEqual(ev[0]["kind"], "revoke")
+        self.assertEqual(ev[0]["scope"], "/")
+        self.assertEqual(ev[0]["container"], "container-b")
+        self.assertEqual(ev[1]["kind"], "grant")
+        self.assertEqual(ev[1]["scope"], "/")
+
+        # Path-scoped grant: the ring carries the scope; revoking it
+        # records the scope the grantee actually held.
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "4", "container-a",
+                              {"volume_id": vid, "container": "container-b",
+                               "path": "/assets"})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_revoke(stub, "p", "5", "container-a",
+                               {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["revoked"])
+        ev = events()
+        self.assertEqual([e["kind"] for e in ev[:2]],
+                         ["revoke", "grant"])
+        self.assertEqual(ev[0]["scope"], "/assets")
+        self.assertEqual(ev[1]["scope"], "/assets")
+
+        # A revoke of a container with no grant records nothing.
+        stub = _Stub()
+        storage._volume_revoke(stub, "p", "6", "container-a",
+                               {"volume_id": vid, "container": "container-b"})
+        self.assertFalse(last(stub)["revoked"])
+        self.assertEqual(len(events()), 4)
+
+        # The gate stays operator-only: a container is refused the
+        # ring even with the storage capability.
+        stub = _Stub()
+        storage._volume_events(stub, "p", "ev", "container-a")
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("operator-only", last(stub)["error"])
+
     def test_quota_warnings_persist_and_clear(self):
         # Warnings ride the registry persistence (each commit), so a
         # container parked near its quota is still flagged after a
@@ -4805,6 +4891,11 @@ class TestStorageService(unittest.TestCase):
             storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
             return [e["level"] for e in last(stub)["events"]]
 
+        def kinds():
+            stub = _Stub()
+            storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+            return [e["kind"] for e in last(stub)["events"]]
+
         # 81% -> near transition, then 95% -> at transition.
         self.assertTrue(write("/a", 81)["ok"])
         self.assertTrue(write("/b", 14)["ok"])
@@ -4815,6 +4906,8 @@ class TestStorageService(unittest.TestCase):
         events = levels()
         # Newest first: edquot, at, near.
         self.assertEqual(events, ["edquot", "at", "near"])
+        # The kind field labels them all as quota events.
+        self.assertEqual(kinds(), ["quota", "quota", "quota"])
         # The event ring reveals per-container accounting: a container
         # is refused even with the storage capability.
         stub = _Stub()
@@ -4845,7 +4938,8 @@ class TestStorageService(unittest.TestCase):
         storage._volume_create(stub, "p", "1", "container-a", {"name": "b"})
         vid = last(stub)["volume_id"]
         for _ in range(70):
-            storage._record_event("b", "container-a", "edquot", 100, 100)
+            storage._record_event("b", "container-a", "quota",
+                                  level="edquot", usage=100, quota=100)
         self.assertEqual(len(storage._events), 64)
         stub = _Stub()
         storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)

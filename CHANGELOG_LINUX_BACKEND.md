@@ -16,6 +16,30 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.17] — 2026-08-16
+
+### The access matrix joins the event ring
+
+- **Grant/revoke events**: the event ring now records the access
+  matrix, not just the quota signal — a `grant` records who, when, and
+  **how wide the scope**; a `revoke` records **what was actually
+  withdrawn** (the scope the grantee held, `/` for whole-volume).
+  Events carry a `kind` (`grant` / `revoke` / `quota`); quota events
+  keep their `level`/`usage`/`quota` fields, grant events carry
+  `scope`. The ring stays bounded (64), newest-first, in-memory
+  diagnostics (never persisted — the registry is the durable source
+  of truth), and OPERATOR-ONLY.
+- **CLI**: `vault events` prints the kind column — quota rows as
+  before (`time\tvolume\tcontainer\tlevel\tusage/quota`), grant/
+  revoke rows as `time\tvolume\tcontainer\tgrant|revoke\tscope=...`;
+  the header is now `time\tvolume\tcontainer\tkind\tdetail`.
+  Verified end-to-end against a real daemon: create → scoped grant →
+  revoke → the ring shows `revoke container-b scope=/assets` then
+  `grant container-b scope=/assets`, newest first.
+- Suite 462 → **463** (the grant-events ring test: whole + scoped
+  grants, revoke-with-scope, no-event revoke, operator-only gate;
+  the quota-event and CLI tests updated for the `kind` field).
+
 ## [0.14.16] — 2026-08-16
 
 ### Path-scoped grants verified end-to-end + the honest EACCES
