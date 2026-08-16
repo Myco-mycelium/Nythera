@@ -52,6 +52,22 @@ Operations (JSON request → JSON reply over CALL/REPLY):
   KEK rotation (ADR-0023): re-wraps every volume's DEK with the new
   KEK (no block re-encryption) and returns the matching envelope.
 
+Quota & accounting (ADR-0022 follow-on, shipped with 0.14.10):
+
+- ``{"op": "volume_quota_set", "volume_id": str, "container": str,
+  "bytes": int|null}`` — CREATOR/OPERATOR-ONLY: set (or clear, with
+  ``bytes: null``) a per-container byte quota on the volume. A
+  container's writes are billed to it fail-closed at write time
+  (``EDQUOT``); quotas are unlimited by default.
+- ``{"op": "volume_quota_get", "volume_id": str}`` —
+  CREATOR/OPERATOR-ONLY: the per-container quotas and their current
+  accounted usage.
+- ``{"op": "volume_usage", "volume_id": str}`` — the per-container
+  accounted usage (any opener may read it). The ledger is a cache
+  re-derived from the NyFS tree at each commit (fsync / interval /
+  close / restore), so deletes, truncates and restores re-derive it
+  automatically; the enforcement point reads the cache.
+
 Deferred-write ops (the FUSE passthrough's data plane):
 
 - ``{"op": "volume_write", ..., "defer_commit": true}`` — write into
@@ -69,6 +85,7 @@ References:
 """
 
 import base64
+import errno
 import json
 import logging
 import os
@@ -182,6 +199,14 @@ class StorageService:
                     # containers explicit open access (cross-container
                     # access matrix, ADR-0022)
                     "grants": dict(rec.get("grants") or {}),
+                    # Quota & accounting (ADR-0022): per-container byte
+                    # quota (unlimited default), path -> last writer
+                    # attribution, and the usage ledger cache.
+                    "quota": {k: int(v) for k, v in
+                               dict(rec.get("quota") or {}).items()},
+                    "owners": dict(rec.get("owners") or {}),
+                    "usage": {k: int(v) for k, v in
+                              dict(rec.get("usage") or {}).items()},
                     # dek + nyfs are lazily re-derived on open
                     "dek": None,
                     "nyfs": None,
@@ -204,7 +229,10 @@ class StorageService:
              "created_by": r["created_by"],
              "wrapped_dek": base64.b64encode(r["wrapped_dek"]).decode("ascii")
              if r.get("wrapped_dek") else None,
-             "grants": dict(r.get("grants") or {})}
+             "grants": dict(r.get("grants") or {}),
+             "quota": dict(r.get("quota") or {}),
+             "owners": dict(r.get("owners") or {}),
+             "usage": dict(r.get("usage") or {})}
             for r in self._volumes.values()
         ]}
         os.makedirs(self.vault_dir, exist_ok=True)
@@ -336,6 +364,15 @@ class StorageService:
             elif op == "volume_grants":
                 self._volume_grants(server, sender_path, msg.message_id,
                                     sender, request)
+            elif op == "volume_quota_set":
+                self._volume_quota_set(server, sender_path,
+                                       msg.message_id, sender, request)
+            elif op == "volume_quota_get":
+                self._volume_quota_get(server, sender_path,
+                                       msg.message_id, sender, request)
+            elif op == "volume_usage":
+                self._volume_usage(server, sender_path,
+                                   msg.message_id, sender, request)
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
@@ -419,19 +456,69 @@ class StorageService:
         return self.capability_manager.validate_operation(
             sender, capability)
 
+    def _refresh_usage(self, record: Dict[str, Any]) -> None:
+        """Re-derive the per-container usage ledger from the NyFS tree
+        (ADR-0022: the tree is the source of truth). Sum of file sizes
+        = LOGICAL bytes — the operator contract; block-storage bytes
+        (CoW sharing, compression) are a separate physical figure this
+        increment deliberately does not bill. Attribution is the
+        ``owners`` map (path -> last writer), so a delete, truncate,
+        rename or restore re-derives automatically: paths absent from
+        the walk contribute nothing, and their attribution entries are
+        kept so a restore that brings a path back re-attributes it to
+        its last writer (stale entries are inert — they only count
+        when the path exists again). Best-effort: a missing root is
+        not an error."""
+        nyfs = record.get("nyfs")
+        if nyfs is None:
+            return
+        owners = record.setdefault("owners", {})
+        usage: Dict[str, int] = {}
+        try:
+            sizes = {}
+            for path, inode in nyfs.walk().items():
+                if not inode.is_directory:
+                    sizes[path] = inode.size
+        except Exception as e:  # noqa: BLE001 - a walk failure is not fatal
+            logger.warning("ipc: %s could not refresh usage for %s: %s",
+                           self.SERVICE_NAME, record["id"][:8], e)
+            return
+        for path, owner in list(owners.items()):
+            size = sizes.get(path)
+            if size is None:
+                # The path is absent from the live tree (deleted or
+                # restored away) — it contributes nothing NOW, but the
+                # attribution entry is kept: a restore that brings the
+                # path back re-attributes it to its last writer, which
+                # is exactly the re-derive the ADR promises (stale
+                # entries are inert — they only count when the path
+                # exists again).
+                continue
+            usage[owner] = usage.get(owner, 0) + size
+        record["usage"] = usage
+
     def _commit_dirty(self) -> None:
         """Persist every volume with deferred (dirty) state. Best-effort
         and non-fatal: one volume failing to save must not block the
-        others, and the op that triggered the commit still succeeds."""
+        others, and the op that triggered the commit still succeeds.
+        A committed volume's usage ledger is re-derived from the tree
+        (ADR-0022: the tree is the ledger) and the registry (quotas +
+        attribution) is persisted with the commit so accounting
+        survives a daemon restart."""
+        saved_any = False
         for record in self._volumes.values():
             nyfs = record.get("nyfs")
             if nyfs is not None and nyfs.dirty:
                 try:
                     nyfs.save()
+                    self._refresh_usage(record)
+                    saved_any = True
                 except Exception as e:  # noqa: BLE001 - log and move on
                     logger.error(
                         "ipc: %s interval commit failed for volume %s: %s",
                         self.SERVICE_NAME, record["id"][:8], e)
+        if saved_any:
+            self._save_state()
 
     def _maybe_interval_commit(self) -> None:
         """Group-commit trigger: when the commit interval has elapsed
@@ -492,7 +579,12 @@ class StorageService:
             return
         volume_id = uuid.uuid4().hex
         record = {"id": volume_id, "name": name, "created_by": sender,
-                  "encrypted": False, "grants": {}}
+                  "encrypted": False, "grants": {},
+                  # Quota & accounting (ADR-0022): per-container byte
+                  # quota (unlimited by default), the last-writer
+                  # attribution map (path -> container), and the usage
+                  # ledger cache re-derived from the tree at commit.
+                  "quota": {}, "owners": {}, "usage": {}}
         # ADR-0023: when the daemon holds an unlocked KEK, the volume
         # gets its own random DEK, wrapped with the KEK (ad = the
         # volume id); the wrapped DEK is what persists — the plaintext
@@ -758,6 +850,133 @@ class StorageService:
             "grants": sorted(record["grants"].keys()),
         })
 
+    # -- quota & accounting (ADR-0022 follow-on) --------------------
+
+    def _volume_quota_set(self, server, sender_path: str, call_id: str,
+                          sender: str, request: Dict[str, Any]) -> None:
+        """Set (or clear, with ``bytes: null``) a per-container byte
+        quota on the volume. CREATOR/OPERATOR-ONLY — quota is
+        administration, exactly like grants; a granted container
+        cannot hand itself quota. Unlimited by default."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_quota_set"):
+            return
+        container = request.get("container")
+        if not isinstance(container, str) or not container.strip():
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container must be a non-empty string",
+            })
+            return
+        container = container.strip()
+        quota_bytes = request.get("bytes")
+        if quota_bytes is not None and (
+                not isinstance(quota_bytes, int)
+                or isinstance(quota_bytes, bool) or quota_bytes < 0):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "bytes must be a non-negative integer or null "
+                          "(null clears the quota)",
+            })
+            return
+        if quota_bytes is None:
+            record.setdefault("quota", {}).pop(container, None)
+        else:
+            record.setdefault("quota", {})[container] = quota_bytes
+        self._save_state()
+        logger.info("ipc: %s set quota for %s on volume %s (%s) to %s",
+                    self.SERVICE_NAME, container, record["name"],
+                    record["id"][:8], quota_bytes)
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "container": container,
+            "bytes": quota_bytes,
+        })
+
+    def _volume_quota_get(self, server, sender_path: str, call_id: str,
+                          sender: str, request: Dict[str, Any]) -> None:
+        """The volume's per-container quotas AND their accounted usage
+        (the ledger cache — as of the last commit, since writes are
+        billed incrementally between refreshes). CREATOR/OPERATOR-ONLY."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_quota_get"):
+            return
+        quotas = record.get("quota", {})
+        usage = record.get("usage", {})
+        containers = sorted(set(quotas) | set(usage))
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "rows": [{
+                "container": c,
+                "quota": quotas.get(c),   # None = unlimited
+                "usage": usage.get(c, 0),
+            } for c in containers],
+        })
+
+    def _volume_usage(self, server, sender_path: str, call_id: str,
+                      sender: str, request: Dict[str, Any]) -> None:
+        """Per-container accounted usage for a volume the caller may
+        open (creator, operator, or a granted container — the volume's
+        consumers are exactly who needs the figure)."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        volume_id, record = self._resolve_volume(request)
+        if record is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown volume: %r" % (volume_id,),
+            })
+            return
+        if not self._can_open(record, sender):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: volume %s is not yours"
+                          % (record["id"][:8],),
+            })
+            return
+        usage = record.get("usage", {})
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volume_id": record["id"],
+            "usage": {c: usage.get(c, 0)
+                       for c in sorted(set(usage) | set(record.get("quota", {})))},
+        })
+
     def _volume_close(self, server, sender_path: str, call_id: str,
                       sender: str, request: Dict[str, Any]) -> None:
         from backend.capability import Capability
@@ -790,6 +1009,9 @@ class StorageService:
             if nyfs is not None and nyfs.dirty:
                 try:
                     nyfs.save()
+                    # Close is a durability AND ledger-refresh boundary.
+                    self._refresh_usage(record)
+                    self._save_state()
                 except Exception as e:  # noqa: BLE001 - close must still succeed
                     logger.warning(
                         "ipc: %s close could not commit dirty volume %s: %s",
@@ -1027,7 +1249,7 @@ class StorageService:
             server, sender_path, call_id, sender, request)
         if resolved is None:
             return
-        _, nyfs = resolved
+        record, nyfs = resolved
         path = request.get("path")
         if not self._check_path(path):
             self._reply(server, sender_path, call_id, {
@@ -1059,6 +1281,22 @@ class StorageService:
                 "error": "offset must be a non-negative integer",
             })
             return
+        # Quota enforcement (ADR-0022): fail-closed BEFORE the write
+        # touches the tree — ``accounted[container] + write > quota``
+        # rejects with EDQUOT. The accounted figure is the ledger cache
+        # (re-derived from the tree at commit), billed per write below.
+        quota_bytes = record.get("quota", {}).get(sender)
+        if quota_bytes is not None:
+            used = record.get("usage", {}).get(sender, 0)
+            if used + len(data) > quota_bytes:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "quota exceeded: %d bytes accounted, "
+                              "%d-byte quota, %d requested"
+                              % (used, quota_bytes, len(data)),
+                    "errno": errno.EDQUOT,
+                })
+                return
         # ``defer_commit`` (the FUSE passthrough's write path): commit
         # at the fsync/close/interval boundary instead of per CALL, so
         # a 128 KiB kernel write (4 chunked CALLs) pays ONE save at
@@ -1080,6 +1318,13 @@ class StorageService:
                 "error": "write failed: %s" % (e,),
             })
             return
+        # Accounting (ADR-0022): charge the write to the writer and
+        # record last-writer attribution, so a shared volume bills each
+        # consumer and the commit-time refresh can re-derive usage from
+        # the tree. Reads are free; truncate credits the delta below.
+        record.setdefault("owners", {})[path] = sender
+        usage = record.setdefault("usage", {})
+        usage[sender] = usage.get(sender, 0) + len(data)
         if defer_commit:
             # Group-commit tick: the first operation after the interval
             # persists the whole batch of deferred writes (plus any
@@ -1091,6 +1336,8 @@ class StorageService:
             # so an ack is a durable write, not a memory promise.
             try:
                 nyfs.save()
+                self._refresh_usage(record)
+                self._save_state()
             except Exception as e:  # noqa: BLE001 - a commit failure is a write failure
                 self._reply(server, sender_path, call_id, {
                     "ok": False,
@@ -1260,6 +1507,11 @@ class StorageService:
         try:
             nyfs.restore_snapshot(name)
             nyfs.save()  # the restored table becomes the durable state
+            # The tree changed under the ledger: re-derive usage so a
+            # restore frees/re-accounts exactly what the tree holds
+            # (ADR-0022: restores re-derive from the tree).
+            self._refresh_usage(record)
+            self._save_state()
         except ValueError as e:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
@@ -1417,16 +1669,106 @@ class StorageService:
     def _volume_rename(self, server, sender_path: str, call_id: str,
                        sender: str, request: Dict[str, Any]) -> None:
         # ``from`` is a Python keyword; the wire keeps it as ``from``
-        # (the request's own namespace), so pop it before the delegate.
-        def _rename(nyfs, **kw):
-            return nyfs.rename(kw["from"], kw["to"])
-        self._delegate(server, sender_path, call_id, sender, request,
-                       _rename, path_key="from")
+        # (the request's own namespace). Rename also re-keys the quota
+        # ledger's last-writer attribution, so the bytes cannot dodge
+        # accounting by moving to a fresh path.
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        record, nyfs = resolved
+        src = request.get("from")
+        dst = request.get("to")
+        if not self._check_path(src) or not self._check_path(dst):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "from/to must be absolute volume paths "
+                          "without '..' or trailing '/'",
+            })
+            return
+        try:
+            nyfs.rename(src, dst)
+        except Exception as e:  # noqa: BLE001 - errno mapping below
+            from fuse.nyfs import NyFSError
+            if isinstance(e, NyFSError):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_rename failed: %s" % (e,),
+                    "errno": e.errno,
+                })
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_rename failed: %s" % (e,),
+                })
+            return
+        owners = record.setdefault("owners", {})
+        owners[dst] = owners.pop(src, None) or owners.get(dst)
+        self._reply(server, sender_path, call_id, {"ok": True})
 
     def _volume_truncate(self, server, sender_path: str, call_id: str,
                          sender: str, request: Dict[str, Any]) -> None:
-        self._delegate(server, sender_path, call_id, sender, request,
-                       lambda nyfs, path, length: nyfs.truncate(path, length))
+        # Truncate CREDITS the owner's accounted bytes by the size
+        # delta (ADR-0022: truncate credits the delta), keeping the
+        # ledger cache fresh between commit refreshes — a container
+        # that shrinks its files can write again before the next
+        # fsync/interval/close refresh.
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        record, nyfs = resolved
+        path = request.get("path")
+        length = request.get("length")
+        if not self._check_path(path):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "path must be an absolute volume path "
+                          "without '..' or trailing '/'",
+            })
+            return
+        if not isinstance(length, int) or length < 0:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "length must be a non-negative integer",
+            })
+            return
+        try:
+            old_size = nyfs.getattr(path)["st_size"]
+            nyfs.truncate(path, length)
+        except Exception as e:  # noqa: BLE001 - errno mapping below
+            from fuse.nyfs import NyFSError
+            if isinstance(e, NyFSError):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_truncate failed: %s" % (e,),
+                    "errno": e.errno,
+                })
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_truncate failed: %s" % (e,),
+                })
+            return
+        owner = record.get("owners", {}).get(path)
+        if owner is not None and length < old_size:
+            usage = record.setdefault("usage", {})
+            usage[owner] = max(0, usage.get(owner, 0) - (old_size - length))
+        self._reply(server, sender_path, call_id, {"ok": True})
 
     def _volume_statfs(self, server, sender_path: str, call_id: str,
                        sender: str, request: Dict[str, Any]) -> None:
@@ -1437,9 +1779,38 @@ class StorageService:
                       sender: str, request: Dict[str, Any]) -> None:
         # The FUSE fsync contract (NPS-004 §7): commit at the transaction
         # boundary — the same durability promise the write path gives.
-        def _save(nyfs):
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        resolved = self._resolve_handle(
+            server, sender_path, call_id, sender, request)
+        if resolved is None:
+            return
+        record, nyfs = resolved
+        try:
             nyfs.save()
-        self._delegate(server, sender_path, call_id, sender, request, _save)
+            # The fsync commit is a ledger-refresh point (ADR-0022).
+            self._refresh_usage(record)
+            self._save_state()
+        except Exception as e:  # noqa: BLE001 - a commit failure is an op failure
+            from fuse.nyfs import NyFSError
+            if isinstance(e, NyFSError):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_fsync failed: %s" % (e,),
+                    "errno": e.errno,
+                })
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "volume_fsync failed: %s" % (e,),
+                })
+            return
+        self._reply(server, sender_path, call_id, {"ok": True})
 
     def _volume_flush(self, server, sender_path: str, call_id: str,
                       sender: str, request: Dict[str, Any]) -> None:

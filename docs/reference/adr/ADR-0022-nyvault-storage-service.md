@@ -183,12 +183,11 @@ Specifically:
   `volume_grants` — CREATOR/OPERATOR-ONLY, open-file revoke
   semantics).
 
-### Follow-on design: per-container quota & accounting
+### Claimed: per-container quota & accounting (0.14.10)
 
-Not yet implemented — the design this ADR would claim when the
-accounting increment ships (the grant matrix of 0.14.8 is the
-precondition: a volume can be *shared*, so usage must be billed to the
-*writing* container, not the volume's creator).
+The follow-on design below shipped with 0.14.10. The grant matrix of
+0.14.8 was the precondition — a volume can be *shared*, so usage is
+billed to the *writing* container, not the volume's creator.
 
 - **What.** Each container gets a byte quota on the vault; the service
   accounts bytes per container across every volume it writes to, and
@@ -196,28 +195,38 @@ precondition: a volume can be *shared*, so usage must be billed to the
 - **Accounting point.** `volume_write` charges `len(data)` to the
   handle's binding container (the handle already records `container`),
   so a shared volume bills each consumer. Reads are free; truncate
-  credits the delta.
+  credits the delta (immediately, so the enforcement cache stays
+  honest between commit refreshes). Attribution is a per-path
+  **last-writer map** (`owners`), re-keyed on rename, credited on
+  truncate, and retained across deletes so a restore re-attributes a
+  path to its last writer.
 - **Source of truth.** The NyFS tree is the ledger: per-volume,
   per-container usage is a cache refreshed at commit (`volume_fsync` /
-  interval tick / close) from the tree's own accounting (sum of file
-  sizes = *logical* bytes — the operator contract; block-storage bytes
-  are a separate *physical* figure the same refresh can compute, with
-  CoW sharing and compression making it load-dependent). Deletes and
-  restores re-derive from the tree, so the ledger can never drift
-  from what a restore actually frees.
+  interval tick / close / restore) from the tree's own accounting
+  (NyFS's public `walk()`; sum of file sizes = *logical* bytes — the
+  operator contract; block-storage bytes are a separate *physical*
+  figure the same refresh could compute, with CoW sharing and
+  compression making it load-dependent — deliberately NOT billed).
+  Deletes and restores re-derive from the tree, so the ledger can
+  never drift from what a restore actually frees (verified: delete
+  frees, restore re-accounts).
 - **Enforcement.** Before applying a write, reject with `EDQUOT` when
   `accounted[container] + write > quota`. Quota is operator-set per
   container (`volume_quota_set`), unlimited by default. Revoking a
-  volume grant does not zero accrued usage.
-- **New surface.** `volume_quota_set`/`volume_quota_get` (OPERATOR),
-  `volume_usage` (per volume per container), `EDQUOT` on the write
-  path, and quota/usage rows in the registry's persistence. This is
-  deliberately an increment: the enforcement point, the ledger, and
-  the operator surface all exist already in seed form (capability
-  gate + handle binding + `_save_state`).
-- **NPS impact:** a new capability (e.g. `CAP_STORAGE_VOLUME`) must be
-  added to the NPS-011 registry when the service ships; NPS-004 gains a
-  "storage service" section. No renumbering (ADR-0017).
+  volume grant does not zero accrued usage. The `EDQUOT` errno rides
+  the CALL reply, so the FUSE passthrough surfaces it to the kernel.
+- **New surface.** `volume_quota_set`/`volume_quota_get`
+  (CREATOR/OPERATOR-ONLY — quota is administration, exactly like
+  grants), `volume_usage` (per volume per container; any opener),
+  `EDQUOT` on the write path, and quota/usage/attribution rows in the
+  registry's persistence (persisted with each commit, so accounting
+  survives a daemon restart). This was deliberately an increment: the
+  enforcement point, the ledger, and the operator surface existed in
+  seed form (capability gate + handle binding + `_save_state`).
+- **NPS impact:** `CAP_STORAGE_VOLUME` is already in the NPS-011
+  registry (the service shipped under it); NPS-004 gains a "storage
+  service" section when the platform spec is next touched. No
+  renumbering (ADR-0017).
 
 ## References
 

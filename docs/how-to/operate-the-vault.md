@@ -111,6 +111,38 @@ the storage capability itself (the grantee still needs
 opens; a handle already open keeps working (POSIX open-file
 semantics) until it is closed.
 
+### 3c. Quotas and accounting (per container)
+
+Every volume accounts bytes **per writing container** (ADR-0022's
+accounting increment): a shared volume bills each consumer its own
+writes, not the creator's. The creator (or the operator) can cap a
+container's consumption; the cap is enforced **fail-closed at write
+time** with `EDQUOT`:
+
+```bash
+# Creator or operator:
+nyrqisctl vault quota-set --name assets container-b --bytes 1048576
+nyrqisctl vault quota-get --name assets          # quota + usage rows
+nyrqisctl vault usage     --name assets          # per-container usage
+nyrqisctl vault quota-set --name assets container-b --unlimited  # clear
+```
+
+Semantics to rely on:
+
+- **What counts is LOGICAL bytes** — the sum of file sizes in the
+  volume tree, attributed to the last writer of each path. Physical
+  block bytes (CoW sharing, compression) are NOT what quotas measure.
+- **The tree is the ledger.** Usage is re-derived from the tree at
+  each commit (fsync / interval / close / restore), so deleting a
+  file, truncating it, or restoring a snapshot re-accounts exactly
+  what the tree holds — freed bytes are credited at the next commit
+  (a truncate credits immediately).
+- **Quotas are unlimited by default** and per-container: a quota on
+  one container never caps another's consumption of the same volume.
+- Setting a quota never implies the storage capability, and a granted
+  container cannot set (or read) quotas — that is creator/operator
+  administration only.
+
 ### 4. Mount a volume as a filesystem
 
 Requires `fusepy` + `/dev/fuse` + `fusermount`. The mount's operations

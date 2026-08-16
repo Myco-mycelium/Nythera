@@ -1794,6 +1794,55 @@ class TestOperatorCli(unittest.TestCase):
                                              "volume_id": "vid123",
                                              "deleted": "snap-1"}))
 
+    def test_cli_builds_quota_payloads(self):
+        # The ADR-0022 accounting surface: quota-set/get + usage,
+        # addressing the volume by id or --name, with --unlimited
+        # clearing the quota.
+        parser = nyrqisctl.build_parser()
+        args = parser.parse_args(
+            ["vault", "quota-set", "vid123", "container-x",
+             "--bytes", "1048576"])
+        self.assertEqual(args.command, "vault-volume-quota-set")
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_quota_set",
+             "volume_id": "vid123", "container": "container-x",
+             "bytes": 1048576})
+        args = parser.parse_args(
+            ["vault", "quota-set", "--name", "shared", "container-x",
+             "--unlimited"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_quota_set",
+             "name": "shared", "container": "container-x",
+             "bytes": None})
+        args = parser.parse_args(["vault", "quota-get", "vid123"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_quota_get",
+             "volume_id": "vid123"})
+        args = parser.parse_args(["vault", "usage", "--name", "shared"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_usage",
+             "name": "shared"})
+        self.assertIn("1048576 bytes", nyrqisctl.format_human(
+            "vault-volume-quota-set", {"ok": True, "volume_id": "vid123",
+                                       "container": "container-x",
+                                       "bytes": 1048576}))
+        self.assertIn("unlimited", nyrqisctl.format_human(
+            "vault-volume-quota-set", {"ok": True, "volume_id": "vid123",
+                                       "container": "container-x",
+                                       "bytes": None}))
+        self.assertIn("container-x\tunlimited\t100", nyrqisctl.format_human(
+            "vault-volume-quota-get", {"ok": True, "volume_id": "vid123",
+                                       "rows": [{"container": "container-x",
+                                                  "quota": None,
+                                                  "usage": 100}]}))
+        self.assertIn("container-x\t100", nyrqisctl.format_human(
+            "vault-volume-usage", {"ok": True, "volume_id": "vid123",
+                                   "usage": {"container-x": 100}}))
+
     def test_cli_formats_human_output(self):
         status = {"ok": True, "backend_version": "9.9.9",
                   "service": "nyrqis.backend.status",
@@ -2096,6 +2145,33 @@ class TestOperatorCli(unittest.TestCase):
             rc, o, e = self._cli("vault", "restore", handle, "v1")
             self.assertEqual(rc, 1, (o, e))
             self.assertIn("not found", e)
+            # Quota & accounting through the CLI (ADR-0022): the
+            # operator is billed its own writes (the CLI's container is
+            # the operator), and an over-quota write fails fail-closed
+            # with EDQUOT surfaced as a clean CLI error.
+            rc, o, e = self._cli("vault", "quota-set", "--name", "assets",
+                                 "host-operator", "--bytes", "1000")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("quota set to 1000 bytes", o)
+            big = os.path.join(self.tmp, "big.bin")
+            with open(big, "wb") as f:
+                f.write(b"Q" * 2000)
+            rc, o, e = self._cli("vault", "write", handle, "/big.bin",
+                                 "--file", big)
+            self.assertEqual(rc, 1, (o, e))
+            self.assertIn("quota exceeded", e)
+            rc, o, e = self._cli("vault", "quota-get", "--name", "assets")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("host-operator", o)
+            self.assertIn("1000", o)
+            rc, o, e = self._cli("vault", "usage", "--name", "assets")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("host-operator", o)
+            # Clearing the quota makes the volume unlimited again.
+            rc, o, e = self._cli("vault", "quota-set", "--name", "assets",
+                                 "host-operator", "--unlimited")
+            self.assertEqual(rc, 0, (o, e))
+            self.assertIn("unlimited", o)
             rc, o, e = self._cli("vault", "close", handle)
             self.assertEqual(rc, 0, (o, e))
         finally:
@@ -3650,6 +3726,398 @@ class TestStorageService(unittest.TestCase):
             vault_dir=os.path.join(self.tmp, "grant-vault"))
         self.assertEqual(storage3._volumes[vid]["grants"],
                          {"container-b": True})
+
+    def test_quota_enforced_fail_closed_edquot(self):
+        # ADR-0022's accounting increment: a per-container byte quota
+        # rejects the write with EDQUOT BEFORE it touches the tree, and
+        # the accepted bytes land in the ledger. The handlers are
+        # driven directly with distinct sender ids (the transport is
+        # pid-attributed — covered by the container-path tests).
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-vault"))
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "q"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+
+        def write(path, data):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "x", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(data).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        # 60 bytes land; the ledger bills the writer.
+        self.assertTrue(write("/f", b"A" * 60)["ok"])
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"], {"container-a": 60})
+
+        # Quota 100: a 60-byte write would exceed 60+60 > 100 → EDQUOT,
+        # and the tree is untouched (a later 40-byte write still fits).
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 100})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        over = write("/g", b"B" * 60)
+        self.assertFalse(over["ok"])
+        self.assertIn("quota exceeded", over["error"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        self.assertTrue(write("/h", b"C" * 40)["ok"])  # 60 + 40 = 100
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"], {"container-a": 100})
+
+    def test_quota_unlimited_by_default(self):
+        # No quota set → writes are not constrained, but still billed.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-unlimited"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "u"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "3", "container-a", {
+            "handle": handle, "path": "/big",
+            "data_b64": base64.b64encode(b"D" * (32 * 1024)).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"], {"container-a": 32 * 1024})
+
+    def test_quota_set_get_owner_only(self):
+        # Quota is administration: a granted container can consume the
+        # volume, but cannot set (or read) quotas on it.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-gate"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "g"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        self.assertTrue(last(stub)["ok"])
+        # The grantee cannot set or read quotas.
+        for op, payload in (("_volume_quota_set",
+                             {"volume_id": vid, "container": "container-b",
+                              "bytes": 10}),
+                            ("_volume_quota_get", {"volume_id": vid})):
+            stub = _Stub()
+            getattr(storage, op)(stub, "p", "x", "container-b", payload)
+            self.assertFalse(last(stub)["ok"])
+            self.assertIn("creator or the operator", last(stub)["error"])
+        # The creator can.
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-b", "bytes": 10})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_quota_get(stub, "p", "4", "container-a",
+                                  {"volume_id": vid})
+        rows = last(stub)["rows"]
+        self.assertEqual(rows, [{"container": "container-b",
+                                 "quota": 10, "usage": 0}])
+
+    def test_quota_billed_per_writer_on_shared_volume(self):
+        # The grant matrix's point: on a shared volume each consumer is
+        # billed its OWN writes — a quota on one container never caps
+        # the other's consumption.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-shared"))
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "s"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        handles = {}
+        for cid in ("container-a", "container-b"):
+            stub = _Stub()
+            storage._volume_open(stub, "p", "o", cid, {"volume_id": vid})
+            self.assertTrue(last(stub)["ok"], last(stub))
+            handles[cid] = last(stub)["handle"]
+
+        def write(cid, path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", cid, {
+                "handle": handles[cid], "path": path,
+                "data_b64": base64.b64encode(b"Z" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        self.assertTrue(write("container-a", "/a1", 50)["ok"])
+        self.assertTrue(write("container-b", "/b1", 30)["ok"])
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"],
+                         {"container-a": 50, "container-b": 30})
+        # Quota ONLY container-b at 40: b's next 20-byte write is
+        # rejected (30 + 20 > 40); a's is not (a is unlimited).
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-b", "bytes": 40})
+        self.assertTrue(last(stub)["ok"])
+        over = write("container-b", "/b2", 20)
+        self.assertFalse(over["ok"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        self.assertTrue(write("container-a", "/a2", 20)["ok"])
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"],
+                         {"container-a": 70, "container-b": 30})
+
+    def test_quota_truncate_credits_delta(self):
+        # ADR-0022: truncate credits the delta, so a container that
+        # shrinks its files can write again before the next commit
+        # refresh (the ledger stays honest between refreshes).
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-trunc"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "t"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+
+        def write(path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(b"Y" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        self.assertTrue(write("/f", 100)["ok"])
+        # Truncate 100 -> 40 credits 60.
+        stub = _Stub()
+        storage._volume_truncate(stub, "p", "3", "container-a", {
+            "handle": handle, "path": "/f", "length": 40})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        self.assertEqual(last(stub)["usage"], {"container-a": 40})
+        # Quota 70: 40 + 5 fits, 40 + 40 does not.
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "4", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 70})
+        self.assertTrue(last(stub)["ok"])
+        self.assertTrue(write("/g", 5)["ok"])
+        self.assertFalse(write("/h", 40)["ok"])
+
+    def test_quota_delete_and_restore_rederive(self):
+        # The tree is the ledger: a delete (or a restore) re-derives
+        # usage from what the tree actually holds, so freed bytes are
+        # credited at the commit refresh even though the enforcement
+        # check reads the cache.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        def usage(storage, vid):
+            stub = _Stub()
+            storage._volume_usage(stub, "p", "u", "container-a",
+                                  {"volume_id": vid})
+            return last(stub)["usage"]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "quota-rederive"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "r"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+
+        def write(path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(b"X" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        def fsync():
+            stub = _Stub()
+            storage._volume_fsync(stub, "p", "s", "container-a",
+                                  {"handle": handle})
+            return last(stub)
+
+        self.assertTrue(write("/f", 100)["ok"])
+        self.assertTrue(fsync()["ok"])
+        stub = _Stub()
+        storage._volume_snapshot(stub, "p", "3", "container-a",
+                                 {"handle": handle, "name": "s1"})
+        self.assertTrue(last(stub)["ok"])
+        self.assertTrue(write("/g", 50)["ok"])
+        self.assertTrue(fsync()["ok"])
+        self.assertEqual(usage(storage, vid), {"container-a": 150})
+        # Delete /f (100 bytes) → the next commit re-derives to 50.
+        stub = _Stub()
+        storage._volume_unlink(stub, "p", "4", "container-a",
+                               {"handle": handle, "path": "/f"})
+        self.assertTrue(last(stub)["ok"])
+        self.assertTrue(fsync()["ok"])
+        self.assertEqual(usage(storage, vid), {"container-a": 50})
+        # Restore to s1 (which held /f = 100, no /g) → usage is 100
+        # again, re-derived from the restored tree.
+        stub = _Stub()
+        storage._volume_restore(stub, "p", "5", "container-a",
+                                {"handle": handle, "name": "s1"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        self.assertEqual(usage(storage, vid), {"container-a": 100})
+
+    def test_quota_and_usage_persist_across_restart(self):
+        # The registry persists quotas AND the accounted usage + last-
+        # writer attribution with each commit, so accounting survives a
+        # daemon restart (the tree re-derives it anyway, but the cache
+        # is warm and the quotas are authoritative).
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        vault = os.path.join(self.tmp, "quota-persist")
+        storage = StorageService(capability_manager=caps, vault_dir=vault)
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "p"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "2", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 500})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_open(stub, "p", "3", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "4", "container-a", {
+            "handle": handle, "path": "/f",
+            "data_b64": base64.b64encode(b"P" * 100).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+
+        storage2 = StorageService(capability_manager=caps, vault_dir=vault)
+        self.assertEqual(storage2._volumes[vid]["quota"],
+                         {"container-a": 500})
+        self.assertEqual(storage2._volumes[vid]["usage"],
+                         {"container-a": 100})
+        self.assertEqual(storage2._volumes[vid]["owners"]["/f"],
+                         "container-a")
 
     def test_granted_container_drives_the_mount_ops(self):
         # The access matrix through the REAL data plane: a seccomp

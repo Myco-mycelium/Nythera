@@ -60,6 +60,8 @@ VAULT_COMMANDS = (
     "vault-volume-snapshot", "vault-volume-snapshots",
     "vault-volume-restore", "vault-volume-snapshot-delete",
     "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
+    "vault-volume-quota-set", "vault-volume-quota-get",
+    "vault-volume-usage",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -163,6 +165,18 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "vault-volume-rekey":
         return {"service": "storage", "op": "volume_rekey",
                 "new_passphrase": args.new_passphrase}
+    if command == "vault-volume-quota-set":
+        return _volume_ref({
+            "service": "storage", "op": "volume_quota_set",
+            "container": args.container,
+            "bytes": None if args.unlimited else args.bytes,
+        }, args)
+    if command == "vault-volume-quota-get":
+        return _volume_ref({"service": "storage", "op": "volume_quota_get"},
+                           args)
+    if command == "vault-volume-usage":
+        return _volume_ref({"service": "storage", "op": "volume_usage"},
+                           args)
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -280,6 +294,29 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"KEK envelope was written to {resp.get('key_file')}; "
                 f"restart the daemon with that key file + the new "
                 "passphrase to serve under the new KEK")
+    if command == "vault-volume-quota-set":
+        if resp.get("bytes") is None:
+            return (f"volume {resp.get('volume_id')}: container "
+                    f"{resp.get('container')} quota cleared (unlimited)")
+        return (f"volume {resp.get('volume_id')}: container "
+                f"{resp.get('container')} quota set to "
+                f"{resp.get('bytes')} bytes")
+    if command == "vault-volume-quota-get":
+        rows = resp.get("rows") or []
+        if not rows:
+            return f"volume {resp.get('volume_id')}: no quotas or usage"
+        lines = ["container\tquota\tusage"]
+        for row in rows:
+            quota = (f"{row['quota']}" if row.get("quota") is not None
+                     else "unlimited")
+            lines.append(f"{row['container']}\t{quota}\t{row['usage']}")
+        return "\n".join(lines)
+    if command == "vault-volume-usage":
+        usage = resp.get("usage") or {}
+        if not usage:
+            return f"volume {resp.get('volume_id')}: no accounted usage"
+        return "\n".join(["container\tusage"] +
+                          [f"{c}\t{u}" for c, u in sorted(usage.items())])
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -675,6 +712,37 @@ def build_parser() -> argparse.ArgumentParser:
                           "daemon's salt is the one that matches — the "
                           "reply carries it)")
     vrk.set_defaults(command="vault-volume-rekey")
+
+    vq = vsub.add_parser(
+        "quota-set", help="CREATOR/OPERATOR-ONLY: set (or clear) a "
+                           "per-container byte quota on a volume "
+                           "(ADR-0022 accounting)")
+    vq.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vq.add_argument("--name", default="", help="Volume name")
+    vq.add_argument("container", help="The container id to quota")
+    vq.add_argument("--bytes", type=int, default=None,
+                    help="Byte quota (omit with --unlimited to clear)")
+    vq.add_argument("--unlimited", action="store_true",
+                    help="Clear the quota (unlimited bytes)")
+    vq.set_defaults(command="vault-volume-quota-set")
+
+    vqg = vsub.add_parser(
+        "quota-get", help="CREATOR/OPERATOR-ONLY: a volume's per-"
+                           "container quotas and accounted usage")
+    vqg.add_argument("volume_id", nargs="?", default="",
+                     help="Volume id (or use --name)")
+    vqg.add_argument("--name", default="", help="Volume name")
+    vqg.set_defaults(command="vault-volume-quota-get")
+
+    vu = vsub.add_parser(
+        "usage", help="Per-container accounted usage for a volume "
+                      "(any opener — logical bytes, the ADR-0022 "
+                      "operator contract)")
+    vu.add_argument("volume_id", nargs="?", default="",
+                    help="Volume id (or use --name)")
+    vu.add_argument("--name", default="", help="Volume name")
+    vu.set_defaults(command="vault-volume-usage")
 
     vi = vsub.add_parser(
         "init", help="LOCAL: initialize the vault KEK envelope (ADR-0023) "

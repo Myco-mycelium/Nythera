@@ -790,6 +790,26 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-16 (**per-container quota & accounting — 0.14.10**):
+  ADR-0022's follow-on design is implemented. Every volume accounts
+  bytes per container (`volume_usage`), billed to the WRITING
+  container at `volume_write`; reads are free and `volume_truncate`
+  credits the owner the size delta. Attribution is a per-path
+  last-writer map (`owners`); the ledger is a cache re-derived from
+  the NyFS tree at every commit (fsync / interval / close / restore —
+  NyFS gains a public `walk()`), so deletes/truncates/renames/
+  restores re-account exactly what the tree holds (verified: delete
+  100 → usage 50; restore to the 100-byte snapshot → usage 100).
+  Logical bytes (sum of file sizes) is the operator contract;
+  physical block bytes (CoW/compression) are deliberately not billed
+  — stated honestly in the ADR. `volume_quota_set`
+  (CREATOR/OPERATOR-ONLY) sets a per-container byte quota (`bytes:
+  null` clears; unlimited default); the write path rejects
+  fail-closed with **EDQUOT (errno 122)** before touching the tree,
+  the errno riding the reply to the FUSE passthrough. Quotas +
+  usage + attribution persist in the registry at every commit
+  (restart-safe). CLI: `vault quota-set/quota-get/usage`, verified
+  e2e against a real daemon. Suite 440 → **448**.
 - 2026-08-15 (**group commit + the granted-container data plane +
   the quota design — 0.14.9**): the FUSE `flush` handler is no longer
   a durability boundary (POSIX: close ≠ durable — fsync is the

@@ -785,6 +785,18 @@ class NyFSFilesystem:
         walk(root, "/")
         return out
 
+    def walk(self) -> Dict[str, NyFSInode]:
+        """Map absolute path -> inode for the LIVE tree (a public alias
+        of the snapshot-diff walker, rooted at ``self.root_inode``).
+        Directories are included; callers skip them via
+        ``inode.is_directory``. Used by the storage service's quota
+        ledger, which re-derives per-container usage from the tree at
+        commit time (ADR-0022: the tree is the source of truth, so
+        deletes/restores/truncates can never leave the ledger drifting
+        from what the tree actually holds)."""
+        with self.lock:
+            return self._build_path_map(self.root_inode)
+
     def _snapshot_path_map(self, snap_id: str) -> Dict[str, NyFSInode]:
         snap = self.snapshots.get(snap_id)
         if snap is None:

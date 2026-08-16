@@ -16,6 +16,44 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.10] — 2026-08-16
+
+### Per-container quota & accounting — ADR-0022's follow-on design is implemented
+
+- **The ledger.** Every volume now accounts bytes per container
+  (`volume_usage`), billed to the WRITING container at `volume_write`
+  (the handle's binding container — the grant matrix of 0.14.8 made
+  this possible: a shared volume bills each consumer). Reads are free;
+  `volume_truncate` credits the owner the size delta immediately, so a
+  container that shrinks its files can write again before the next
+  commit refresh. Attribution is a per-path last-writer map
+  (`owners`), and the ledger itself is a **cache re-derived from the
+  NyFS tree at every commit** (fsync / interval tick / close / restore
+  — NyFS gains a public `walk()`): a delete, truncate, rename or
+  restore re-accounts exactly what the tree holds, so the ledger can
+  never drift from what a restore actually frees. Sum of file sizes =
+  LOGICAL bytes (the operator contract); physical block-storage bytes
+  (CoW sharing, compression) are deliberately NOT billed — stated
+  honestly in the ADR.
+- **Enforcement.** `volume_quota_set` (CREATOR/OPERATOR-ONLY — quota
+  is administration, like grants) sets a per-container byte quota
+  (`bytes: null` clears it; unlimited by default). The write path
+  rejects **fail-closed with EDQUOT (errno 122) BEFORE touching the
+  tree** when `accounted + write > quota`; the errno rides the reply so
+  the FUSE passthrough surfaces the real `EDQUOT` to the kernel.
+- **Persistence.** Quotas, usage and attribution persist in the volume
+  registry (`volumes.json`) at every commit — accounting survives a
+  daemon restart, and the tree re-derives it anyway on the first
+  commit.
+- **CLI.** `vault quota-set <vol|--name> <container> [--bytes N |
+  --unlimited]`, `vault quota-get <vol|--name>` (quota + usage rows),
+  `vault usage <vol|--name>` (per-container usage, any opener).
+  Verified e2e against a real daemon: quota set → over-quota write
+  fails with "quota exceeded" (exit 1) → quota-get/usage show the
+  billed figure → `--unlimited` clears.
+- Suite 440 → **448** (7 storage-service accounting tests + the CLI
+  quota payload tests + the lifecycle-e2e quota round trip).
+
 ## [0.14.9] — 2026-08-15
 
 ### Group commit (interval-based), the granted-container data plane, and the quota design
