@@ -215,6 +215,16 @@ billed to the *writing* container, not the volume's creator.
   container (`volume_quota_set`), unlimited by default. Revoking a
   volume grant does not zero accrued usage. The `EDQUOT` errno rides
   the CALL reply, so the FUSE passthrough surfaces it to the kernel.
+- **Advisory warnings (0.14.12).** The write path is the hard stop;
+  the OPERATIONAL signal is a warning level per quota-holding
+  container — `near` (≥ 80%), `at` (≥ 95%), `over` (> 100%) —
+  computed at every ledger refresh, logged only on a level transition
+  (no spam), and persisted with the registry. `over` is unreachable
+  by writing (the write path rejects it) and reachable only via
+  re-derivation (a quota set below existing usage, or a restore to a
+  larger snapshot). The level surfaces in `volume_quota_get` rows,
+  `volume_usage` warnings, `volume_summary`'s `warning_count`, and
+  the write reply (the CLI prints it at the point of action).
 - **New surface.** `volume_quota_set`/`volume_quota_get`
   (CREATOR/OPERATOR-ONLY — quota is administration, exactly like
   grants), `volume_usage` (per volume per container; any opener),

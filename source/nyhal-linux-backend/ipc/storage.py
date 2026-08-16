@@ -118,6 +118,13 @@ _MAX_IO_BYTES = 32 * 1024
 # path is still a path), no trailing slash.
 _PATH_RE = re.compile(r"^/(?:[^/]+/)*[^/]+$")
 
+# Advisory quota-warning thresholds (ADR-0022 accounting): the write
+# path is the hard stop; these are the operational signal levels —
+# "near" at >= 80%, "at" at >= 95%, "over" above 100% (reachable via
+# a restore or a quota set below existing usage).
+_QUOTA_NEAR_RATIO = 0.8
+_QUOTA_AT_RATIO = 0.95
+
 
 class StorageLockedError(Exception):
     """A vault op needs the unlocked KEK but the daemon has none
@@ -214,6 +221,9 @@ class StorageService:
                     "owners": dict(rec.get("owners") or {}),
                     "usage": {k: int(v) for k, v in
                               dict(rec.get("usage") or {}).items()},
+                    # container -> warning level (None/near/at/over);
+                    # advisory, re-computed at each refresh
+                    "warnings": dict(rec.get("warnings") or {}),
                     # dek + nyfs are lazily re-derived on open
                     "dek": None,
                     "nyfs": None,
@@ -239,7 +249,8 @@ class StorageService:
              "grants": dict(r.get("grants") or {}),
              "quota": dict(r.get("quota") or {}),
              "owners": dict(r.get("owners") or {}),
-             "usage": dict(r.get("usage") or {})}
+             "usage": dict(r.get("usage") or {}),
+             "warnings": dict(r.get("warnings") or {})}
             for r in self._volumes.values()
         ]}
         os.makedirs(self.vault_dir, exist_ok=True)
@@ -514,6 +525,23 @@ class StorageService:
         # ``volume_usage``/``volume_summary`` never pay a disk walk on
         # demand; refreshed with the ledger.
         record["physical_bytes"] = self._physical_bytes(nyfs)
+        # Quota warning levels (advisory — the write path is the hard
+        # stop). Computed at every refresh and logged only on a level
+        # TRANSITION, so a volume parked near its quota does not spam.
+        warnings = record.setdefault("warnings", {})
+        quotas = record.get("quota", {})
+        for cid in list(warnings):
+            if cid not in quotas:
+                warnings.pop(cid, None)  # quota cleared -> signal gone
+        for cid, quota in quotas.items():
+            level = self._warning_level(usage.get(cid, 0), quota)
+            if warnings.get(cid) != level:
+                if level is not None:
+                    logger.warning(
+                        "ipc: %s container %s is %s quota on volume %s "
+                        "(%d/%d bytes)", self.SERVICE_NAME, cid, level,
+                        record["name"], usage.get(cid, 0), quota)
+                warnings[cid] = level
 
     def _commit_dirty(self) -> None:
         """Persist every volume with deferred (dirty) state. Best-effort
@@ -551,6 +579,23 @@ class StorageService:
             return
         self._commit_dirty()
         self._last_commit = time.monotonic()
+
+    @staticmethod
+    def _warning_level(used: int, quota: int) -> Optional[str]:
+        """The advisory quota-warning level for ``used`` of ``quota``
+        bytes: None (< 80%), 'near' (>= 80%), 'at' (>= 95%), or 'over'
+        (> 100% — reachable via a restore or a quota set below
+        existing usage, since the write path is the only hard stop)."""
+        if not quota or quota <= 0:
+            return None
+        ratio = used / quota
+        if ratio > 1.0:
+            return "over"
+        if ratio >= _QUOTA_AT_RATIO:
+            return "at"
+        if ratio >= _QUOTA_NEAR_RATIO:
+            return "near"
+        return None
 
     @staticmethod
     def _physical_bytes(nyfs) -> int:
@@ -622,9 +667,10 @@ class StorageService:
                   "encrypted": False, "grants": {},
                   # Quota & accounting (ADR-0022): per-container byte
                   # quota (unlimited by default), the last-writer
-                  # attribution map (path -> container), and the usage
-                  # ledger cache re-derived from the tree at commit.
-                  "quota": {}, "owners": {}, "usage": {}}
+                  # attribution map (path -> container), the usage
+                  # ledger cache re-derived from the tree at commit,
+                  # and the advisory warning levels (near/at/over).
+                  "quota": {}, "owners": {}, "usage": {}, "warnings": {}}
         # ADR-0023: when the daemon holds an unlocked KEK, the volume
         # gets its own random DEK, wrapped with the KEK (ad = the
         # volume id); the wrapped DEK is what persists — the plaintext
@@ -972,6 +1018,7 @@ class StorageService:
             return
         quotas = record.get("quota", {})
         usage = record.get("usage", {})
+        warnings = record.get("warnings", {})
         containers = sorted(set(quotas) | set(usage))
         self._reply(server, sender_path, call_id, {
             "ok": True,
@@ -980,6 +1027,9 @@ class StorageService:
                 "container": c,
                 "quota": quotas.get(c),   # None = unlimited
                 "usage": usage.get(c, 0),
+                # Advisory warning level (None/near/at/over) — the
+                # write path is the hard stop; this is the signal.
+                "warning": warnings.get(c),
             } for c in containers],
         })
 
@@ -1010,6 +1060,7 @@ class StorageService:
             })
             return
         usage = record.get("usage", {})
+        warnings = record.get("warnings", {})
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
@@ -1018,6 +1069,8 @@ class StorageService:
             # Physical block-store bytes (volume-wide; compressed +
             # CoW-deduped — the un-billed figure, per ADR-0022).
             "physical_bytes": int(record.get("physical_bytes", 0)),
+            # Advisory warning levels for quota-holding containers.
+            "warnings": {c: w for c, w in warnings.items() if w is not None},
         })
 
     def _volume_summary(self, server, sender_path: str, call_id: str,
@@ -1052,6 +1105,8 @@ class StorageService:
             consumers = len(record.get("usage", {}))
             total_logical += logical
             total_physical += physical
+            warned = sum(1 for w in record.get("warnings", {}).values()
+                         if w is not None)
             volumes.append({
                 "id": record["id"],
                 "name": record["name"],
@@ -1060,6 +1115,7 @@ class StorageService:
                 "logical_bytes": logical,
                 "physical_bytes": physical,
                 "consumers": consumers,
+                "warning_count": warned,
             })
         volumes.sort(key=lambda v: v["name"])
         self._reply(server, sender_path, call_id, {
@@ -1415,6 +1471,11 @@ class StorageService:
         record.setdefault("owners", {})[path] = sender
         usage = record.setdefault("usage", {})
         usage[sender] = usage.get(sender, 0) + len(data)
+        # Advisory warning at the point of action: the writer's level
+        # AFTER this write (near/at — never 'over', the write path
+        # already rejected that case).
+        writer_warning = (self._warning_level(usage[sender], quota_bytes)
+                          if quota_bytes is not None else None)
         if defer_commit:
             # Group-commit tick: the first operation after the interval
             # persists the whole batch of deferred writes (plus any
@@ -1438,6 +1499,7 @@ class StorageService:
             "ok": True,
             "bytes_written": written,
             "path": path,
+            "warning": writer_warning,
         })
 
     @staticmethod

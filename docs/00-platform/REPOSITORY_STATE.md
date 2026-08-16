@@ -790,6 +790,16 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-16 (**quota warnings — 0.14.12**): warning levels
+  (`near` ≥ 80%, `at` ≥ 95%, `over` > 100%) computed at every ledger
+  refresh, logged only on a level transition (no spam), persisted
+  with the registry. `over` is unreachable by writing (the write path
+  rejects it) — only via re-derivation (quota set below existing
+  usage, or a restore to a larger snapshot; both tested). Surfaced in
+  `volume_quota_get` rows, `volume_usage` warnings, `volume_summary`
+  `warning_count`, and the write REPLY (`nyrqisctl vault write`
+  prints `(quota warning: near)` at the point of action). Clearing a
+  quota drops the signal. Suite 452 → **454**.
 - 2026-08-16 (**the operator's vault view — 0.14.11**):
   `volume_usage` also reports the volume-wide PHYSICAL figure (the
   on-disk state footprint, compressed + CoW-deduped, cached with the

@@ -275,8 +275,12 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         # operator knows which handle they closed.
         return "handle closed"
     if command == "vault-volume-write":
-        return (f"wrote {resp.get('bytes_written')} bytes to "
+        line = (f"wrote {resp.get('bytes_written')} bytes to "
                 f"{resp.get('path')}")
+        warning = resp.get("warning")
+        if warning is not None:
+            line += f" (quota warning: {warning})"
+        return line
     if command == "vault-volume-snapshot":
         return f"snapshot {resp.get('snapshot_id')} of volume {resp.get('volume_id')}"
     if command == "vault-volume-snapshots":
@@ -307,11 +311,13 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         rows = resp.get("rows") or []
         if not rows:
             return f"volume {resp.get('volume_id')}: no quotas or usage"
-        lines = ["container\tquota\tusage"]
+        lines = ["container\tquota\tusage\twarning"]
         for row in rows:
             quota = (f"{row['quota']}" if row.get("quota") is not None
                      else "unlimited")
-            lines.append(f"{row['container']}\t{quota}\t{row['usage']}")
+            warning = row.get("warning") or "-"
+            lines.append(f"{row['container']}\t{quota}\t{row['usage']}\t"
+                         f"{warning}")
         return "\n".join(lines)
     if command == "vault-volume-usage":
         usage = resp.get("usage") or {}
@@ -325,20 +331,24 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 [f"{c}\t{u}" for c, u in sorted(usage.items())])
         if phys is not None:
             line += f"\nphysical (block-store): {phys} bytes"
+        warnings = resp.get("warnings") or {}
+        for c, w in sorted(warnings.items()):
+            line += f"\nquota warning ({c}): {w}"
         return line
     if command == "vault-volume-summary":
         volumes = resp.get("volumes") or []
         if not volumes:
             return (f"vault: no volumes (logical 0 B, physical 0 B)")
         rows = [f"{v['name']}\t{v['logical_bytes']}\t"
-                f"{v['physical_bytes']}\t{v['consumers']}"
+                f"{v['physical_bytes']}\t{v['consumers']}\t"
+                f"{v.get('warning_count', 0)}"
                 for v in volumes]
         return "\n".join(
             ["vault summary",
              f"volumes: {resp.get('volume_count')} "
              f"(logical {resp.get('total_logical_bytes')} B, "
              f"physical {resp.get('total_physical_bytes')} B)",
-             "name\tlogical\tphysical\tconsumers"] + rows)
+             "name\tlogical\tphysical\tconsumers\twarnings"] + rows)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 

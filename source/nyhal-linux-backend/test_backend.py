@@ -1834,11 +1834,21 @@ class TestOperatorCli(unittest.TestCase):
             "vault-volume-quota-set", {"ok": True, "volume_id": "vid123",
                                        "container": "container-x",
                                        "bytes": None}))
-        self.assertIn("container-x\tunlimited\t100", nyrqisctl.format_human(
-            "vault-volume-quota-get", {"ok": True, "volume_id": "vid123",
-                                       "rows": [{"container": "container-x",
-                                                  "quota": None,
-                                                  "usage": 100}]}))
+        self.assertIn("container-x\tunlimited\t100\t-",
+                      nyrqisctl.format_human(
+                          "vault-volume-quota-get", {"ok": True,
+                                                     "volume_id": "vid123",
+                                                     "rows": [{"container": "container-x",
+                                                                "quota": None,
+                                                                "usage": 100}]}))
+        self.assertIn("container-x\t1000\t900\tat",
+                      nyrqisctl.format_human(
+                          "vault-volume-quota-get", {"ok": True,
+                                                     "volume_id": "vid123",
+                                                     "rows": [{"container": "container-x",
+                                                                "quota": 1000,
+                                                                "usage": 900,
+                                                                "warning": "at"}]}))
         self.assertIn("container-x\t100", nyrqisctl.format_human(
             "vault-volume-usage", {"ok": True, "volume_id": "vid123",
                                    "usage": {"container-x": 100}}))
@@ -1848,6 +1858,15 @@ class TestOperatorCli(unittest.TestCase):
                                                  "volume_id": "vid123",
                                                  "usage": {"container-x": 100},
                                                  "physical_bytes": 42}))
+        self.assertIn("quota warning (container-x): near",
+                      nyrqisctl.format_human(
+                          "vault-volume-usage", {"ok": True,
+                                                 "volume_id": "vid123",
+                                                 "usage": {"container-x": 100},
+                                                 "warnings": {"container-x": "near"}}))
+        self.assertIn("(quota warning: near)", nyrqisctl.format_human(
+            "vault-volume-write", {"ok": True, "bytes_written": 10,
+                                   "path": "/x", "warning": "near"}))
         # The operator whole-vault summary.
         args = parser.parse_args(["vault", "summary"])
         self.assertEqual(args.command, "vault-volume-summary")
@@ -1861,8 +1880,9 @@ class TestOperatorCli(unittest.TestCase):
                                      "volumes": [{"name": "assets",
                                                    "logical_bytes": 100,
                                                    "physical_bytes": 40,
-                                                   "consumers": 1}]})
-        self.assertIn("assets\t100\t40\t1", out)
+                                                   "consumers": 1,
+                                                   "warning_count": 1}]})
+        self.assertIn("assets\t100\t40\t1\t1", out)
         self.assertIn("logical 100 B", out)
 
     def test_cli_formats_human_output(self):
@@ -3897,7 +3917,8 @@ class TestStorageService(unittest.TestCase):
                                   {"volume_id": vid})
         rows = last(stub)["rows"]
         self.assertEqual(rows, [{"container": "container-b",
-                                 "quota": 10, "usage": 0}])
+                                 "quota": 10, "usage": 0,
+                                 "warning": None}])
 
     def test_quota_billed_per_writer_on_shared_volume(self):
         # The grant matrix's point: on a shared volume each consumer is
@@ -4254,6 +4275,160 @@ class TestStorageService(unittest.TestCase):
         self.assertEqual(by_name["two"]["consumers"], 2)
         self.assertGreater(by_name["two"]["physical_bytes"], 0)
         self.assertEqual(reply["total_logical_bytes"], 80)
+
+    def test_quota_warning_levels(self):
+        # Advisory signals on top of the hard EDQUOT stop: "near" at
+        # >= 80% of the quota, "at" at >= 95%. "over" is NOT reachable
+        # by writing (the write path rejects it) — only by a restore or
+        # a quota set below existing usage, which the refresh re-derives.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "warn-vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "w"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 100})
+        self.assertTrue(last(stub)["ok"])
+
+        def write(path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(b"W" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        def warnings():
+            return dict(storage._volumes[vid]["warnings"])
+
+        # 79 bytes = 79% — no warning.
+        self.assertTrue(write("/a", 79)["ok"])
+        self.assertIsNone(warnings().get("container-a"))
+        # 81 bytes = 81% — near.
+        self.assertTrue(write("/b", 2)["ok"])
+        self.assertEqual(warnings().get("container-a"), "near")
+        # The write reply carries the advisory level at the point of
+        # action (81 = near).
+        self.assertEqual(write("/c", 5)["warning"], "near")  # 86/100
+        # 95 bytes = 95% — at.
+        self.assertTrue(write("/d", 9)["ok"])
+        self.assertEqual(warnings().get("container-a"), "at")
+        # The hard stop still fires beyond the quota.
+        over = write("/e", 6)
+        self.assertFalse(over["ok"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        # "over" arrives only via re-derivation: a quota set BELOW
+        # existing usage (a restore would do the same).
+        stub = _Stub()
+        storage._volume_create(stub, "p", "4", "container-a", {"name": "o"})
+        vid2 = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "5", "container-a",
+                             {"volume_id": vid2})
+        handle2 = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "6", "container-a", {
+            "handle": handle2, "path": "/f",
+            "data_b64": base64.b64encode(b"O" * 60).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "7", "container-a",
+                                  {"volume_id": vid2,
+                                   "container": "container-a", "bytes": 50})
+        self.assertTrue(last(stub)["ok"])
+        # quota_set does not refresh — the next commit does.
+        self.assertNotIn("over", (storage._volumes[vid2]["warnings"]
+                                   .get("container-a") or ""))
+        stub = _Stub()
+        storage._volume_fsync(stub, "p", "8", "container-a",
+                              {"handle": handle2})
+        self.assertTrue(last(stub)["ok"])
+        self.assertEqual(storage._volumes[vid2]["warnings"]
+                         .get("container-a"), "over")
+
+    def test_quota_warnings_persist_and_clear(self):
+        # Warnings ride the registry persistence (each commit), so a
+        # container parked near its quota is still flagged after a
+        # daemon restart; clearing the quota drops the signal.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        vault = os.path.join(self.tmp, "warn-persist")
+        storage = StorageService(capability_manager=caps, vault_dir=vault)
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "w"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 100})
+        self.assertTrue(last(stub)["ok"])
+        stub = _Stub()
+        storage._volume_write(stub, "p", "4", "container-a", {
+            "handle": handle, "path": "/f",
+            "data_b64": base64.b64encode(b"W" * 96).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"])  # 96% = at (>= 95%)
+        self.assertEqual(storage._volumes[vid]["warnings"]["container-a"],
+                         "at")
+        # Survives a restart.
+        storage2 = StorageService(capability_manager=caps, vault_dir=vault)
+        self.assertEqual(storage2._volumes[vid]["warnings"]["container-a"],
+                         "at")
+        # Clearing the quota removes the signal at the next refresh.
+        stub = _Stub()
+        storage2._volume_quota_set(stub, "p", "5", "container-a",
+                                   {"volume_id": vid,
+                                    "container": "container-a",
+                                    "bytes": None})
+        self.assertTrue(last(stub)["ok"])
+        # The old instance's handle is gone after the restart — open a
+        # fresh one on storage2 for the fsync/refresh.
+        stub = _Stub()
+        storage2._volume_open(stub, "p", "o", "container-a",
+                              {"volume_id": vid})
+        handle2 = last(stub)["handle"]
+        stub = _Stub()
+        storage2._volume_fsync(stub, "p", "6", "container-a",
+                               {"handle": handle2})
+        self.assertTrue(last(stub)["ok"])
+        self.assertIsNone(storage2._volumes[vid]["warnings"]
+                          .get("container-a"))
 
     def test_granted_container_drives_the_mount_ops(self):
         # The access matrix through the REAL data plane: a seccomp

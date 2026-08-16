@@ -147,6 +147,13 @@ Semantics to rely on:
   (a truncate credits immediately).
 - **Quotas are unlimited by default** and per-container: a quota on
   one container never caps another's consumption of the same volume.
+- **Watch the warning levels**: `quota-get` shows a per-container
+  `warning` column (`near` ≥ 80%, `at` ≥ 95%, `over` > 100%), `usage`
+  lists warned containers, `summary` counts them per volume, and a
+  write near the cap prints `(quota warning: near)` at the point of
+  action. `over` only ever appears via re-derivation (a quota set
+  below existing usage, or a restore to a larger snapshot) — the
+  write path itself fails closed at 100% with EDQUOT.
 - Setting a quota never implies the storage capability, and a granted
   container cannot set (or read) quotas — that is creator/operator
   administration only.

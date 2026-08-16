@@ -16,6 +16,27 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.12] — 2026-08-16
+
+### Quota warnings — the operational signal on top of the hard EDQUOT stop
+
+- **Warning levels** (`near` ≥ 80%, `at` ≥ 95%, `over` > 100%), computed
+  at every ledger refresh (commit) from the quota ledger, logged only
+  on a level TRANSITION (a volume parked near its quota does not
+  spam), and persisted with the registry. `over` is not reachable by
+  writing — the write path rejects it — only by re-derivation: a
+  quota set below existing usage or a restore to a larger snapshot
+  (both tested).
+- **Surfaced everywhere the operator looks**: `volume_quota_get` rows
+  carry the level, `volume_usage` carries per-container warnings,
+  `volume_summary` rows carry a `warning_count`, and the WRITE reply
+  carries the writer's post-billing level so `nyrqisctl vault write`
+  prints `(quota warning: near)` at the point of action. Clearing a
+  quota drops the signal at the next refresh.
+- Suite 452 → **454** (warning-level + persistence/clearing tests; the
+  CLI quota payload test gained the warning columns and the write
+  warning).
+
 ## [0.14.11] — 2026-08-16
 
 ### The operator's vault view: physical-byte figure, whole-vault summary, ledger-refresh cost
