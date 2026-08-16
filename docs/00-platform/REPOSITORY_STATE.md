@@ -213,6 +213,18 @@ Two things now, not one:
   back to pure Python on any failure. `NYRQIS_RUST_FORCE=1` turns
   failures into errors — the conformance gate CI watches.
 
+  **2026-08-16 (0.14.22): the NUI (.nstudio) runtime consumption lands
+  (ADR-0025).** The Nyrqis side of the NyForge ↔ runtime pipeline:
+  `ui/nstudio.py` (pure-Python reference floor — parse, contract
+  validation, `$state:` substitution, layout render, text preview),
+  `rust/nyui/` (the Rust import gate, ABI 1.0.0 — the UI layer's first
+  compiled artifact, per ADR-0020), `ui/nstudio_codec.py` (the standard
+  FFI loader), the four NyForge example designs as fixtures under
+  `tests/fixtures/nstudio/` (including the 1440×900 `nyrqis-shell` UI
+  draft), and `TestNstudioImport` + `TestNstudioCodecConformance` (32
+  tests; differential messages byte-identical floor↔crate). CI gains
+  `rust-nyui` + `rust-nyui-conformance` (required gate).
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

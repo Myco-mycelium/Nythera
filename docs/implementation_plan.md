@@ -103,6 +103,22 @@ This roadmap aligns with the existing Nyrqis project milestones where applicable
     *   Implement the trusted first process and service orchestration.
     *   Ensure graceful shutdown and error recovery.
 
+6.  **Phase 6: NUI Runtime Consumption (ADR-0025)** — the NyForge ↔
+    runtime pipeline: the shell UI NyForge produces must actually run on
+    Nyrqis.
+    *   **Import gate (landed 2026-08-16, 0.14.22):** parse + validate
+        `.nstudio` documents against the NUI contract tables (NFS-001
+        §4–§8) with the strict schema-version gate (§9) — reference
+        floor `ui/nstudio.py`, Rust crate `rust/nyui` behind ABI 1.0.0,
+        FFI loader `ui/nstudio_codec.py`, differential conformance gate
+        in CI.
+    *   **Shell renderer (deferred):** the graphical/declarative shell
+        that walks the rendered layout tree — C++ + declarative UI per
+        the ADR-0020 matrix, consuming the import gate's output.
+    *   **API registry (long-term):** replace the static contract tables
+        with the future Nyrqis API Registry (NFS-001 §5) so the runtime
+        validates against the live registry, not a mirrored copy.
+
 ## References
 
 [^1]: Myco-mycelium. (2026). *ADR-0012: Adopt NyHAL as a pluggable kernel abstraction layer*. Nyrqis GitHub Repository. `https://github.com/Myco-mycelium/Nythera/blob/main/docs/reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md`

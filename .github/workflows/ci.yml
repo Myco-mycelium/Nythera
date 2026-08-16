@@ -68,6 +68,14 @@
 #   floor; cross-implementation blob interop; tamper and wrong-secret
 #   rejection on both) plus the floor behavior class, run with the
 #   crate built and NYRQIS_RUST_FORCE=1.
+# - `rust-nyui`: builds and tests the ADR-0025 crate (the NUI
+#   (.nstudio) document parse/validate import gate — the UI runtime's
+#   first compiled artifact, mirroring the pure-Python reference floor
+#   ui/nstudio.py).
+# - `rust-nyui-conformance`: the NUI import gate's gate — the loader
+#   and differential class (the floor's validation suite forced through
+#   the FFI, error messages byte-identical) run with the crate built
+#   and NYRQIS_RUST_FORCE=1.
 # - `backend`: the pure-Python correctness floor.
 
 name: ci
@@ -382,6 +390,39 @@ jobs:
           python3 -B -m unittest
           test_backend.TestKeysFloor
           test_backend.TestRustKeysConformance
+
+  rust-nyui:
+    name: Rust NUI crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/nyui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_nyui.so
+
+  rust-nyui-conformance:
+    name: Rust NUI FFI conformance (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the crate
+        working-directory: source/nyhal-linux-backend/rust/nyui
+        run: cargo build --release
+      - name: Force the NUI test classes through the crate
+        working-directory: source/nyhal-linux-backend
+        env:
+          NYRQIS_RUST_LIB: rust/nyui/target/release/libnyrqis_nyui.so
+          NYRQIS_RUST_FORCE: "1"
+        run: >
+          python3 -B -m unittest
+          test_backend.TestNstudioImport
+          test_backend.TestNstudioCodecConformance
 
   backend:
     name: Python backend tests

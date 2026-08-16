@@ -1,0 +1,72 @@
+{
+  "version": "0.4.0",
+  "project": {
+    "name": "Nyforge Home Screen (default)",
+    "id": "forge-home-default",
+    "created": "2026-08-14T00:00:00+00:00",
+    "updated": "2026-08-14T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "screens": [
+    {
+      "id": "home",
+      "size": { "width": 1024, "height": 380 },
+      "root": {
+        "id": "home_root",
+        "type": "Window",
+        "properties": { "title": "Nyforge Home" },
+        "layout": { "x": 0, "y": 0, "width": 1024, "height": 380 },
+        "events": {},
+        "children": [
+          {
+            "id": "text_title",
+            "type": "Text",
+            "properties": { "text": "Welcome to Nyrqis Forge" },
+            "layout": { "x": 24, "y": 24, "width": 500, "height": 40 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "text_tagline",
+            "type": "Text",
+            "properties": { "text": "This panel is not hardcoded. It's this .nstudio file — open it in Forge like any other project." },
+            "layout": { "x": 24, "y": 70, "width": 700, "height": 24 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "cmd_new_project",
+            "type": "Button",
+            "properties": { "text": "New Project" },
+            "layout": { "x": 24, "y": 140, "width": 160, "height": 40 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "cmd_open_project",
+            "type": "Button",
+            "properties": { "text": "Open Project..." },
+            "layout": { "x": 200, "y": 140, "width": 160, "height": 40 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "cmd_save_project",
+            "type": "Button",
+            "properties": { "text": "Save Current Project" },
+            "layout": { "x": 376, "y": 140, "width": 200, "height": 40 },
+            "events": {},
+            "children": []
+          }
+        ]
+      }
+    }
+  ],
+  "components": [],
+  "states": {},
+  "behaviors": [],
+  "bindings": []
+}

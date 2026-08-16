@@ -1,0 +1,19 @@
+[package]
+name = "nyrqis-nyui"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis NUI (.nstudio) document parse/validate — the UI runtime's import gate, ADR-0025"
+
+[lib]
+name = "nyrqis_nyui"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# JSON parsing for .nstudio documents. Everything else is std: the
+# crate validates against the NUI contract tables (NFS-001 §4/§5)
+# embedded here and mirrors the pure-Python reference floor
+# (ui/nstudio.py) — the conformance gate forces the floor's suite
+# through this FFI unchanged (ADR-0025).
+serde_json = "1"

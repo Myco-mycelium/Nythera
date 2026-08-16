@@ -1,0 +1,147 @@
+{
+  "version": "0.4.0",
+  "project": {
+    "name": "Nyrqis Settings",
+    "id": "example-settings-app",
+    "created": "2026-08-13T00:00:00+00:00",
+    "updated": "2026-08-14T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "screens": [
+    {
+      "id": "main",
+      "size": { "width": 1024, "height": 768 },
+      "root": {
+        "id": "window_settings",
+        "type": "Window",
+        "properties": {
+          "title": "Settings"
+        },
+        "layout": { "x": 0, "y": 0, "width": 1024, "height": 768 },
+        "events": {},
+        "children": [
+          {
+            "id": "sidebar_nav",
+            "type": "Sidebar",
+            "properties": { "width": 220, "collapsible": false },
+            "layout": { "x": 0, "y": 0, "width": 220, "height": 768 },
+            "events": {},
+            "children": [
+              {
+                "id": "nav_appearance",
+                "type": "Link",
+                "properties": { "text": "Appearance", "target": "page_appearance" },
+                "layout": { "x": 16, "y": 24, "width": 188, "height": 32 },
+                "events": { "clicked": null },
+                "children": []
+              },
+              {
+                "id": "nav_general",
+                "type": "Link",
+                "properties": { "text": "General", "target": "page_general" },
+                "layout": { "x": 16, "y": 64, "width": 188, "height": 32 },
+                "events": { "clicked": null },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "page_appearance",
+            "type": "Container",
+            "properties": { "padding": 24 },
+            "layout": { "x": 240, "y": 24, "width": 740, "height": 700 },
+            "events": {},
+            "children": [
+              {
+                "id": "label_theme",
+                "type": "Text",
+                "properties": { "text": "Theme" },
+                "layout": { "x": 0, "y": 0, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "toggle_eclipse",
+                "type": "Toggle",
+                "properties": { "value": true, "label": "Currently using a dark theme" },
+                "layout": { "x": 0, "y": 40, "width": 280, "height": 32 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "label_switch",
+                "type": "Text",
+                "properties": { "text": "Switch theme" },
+                "layout": { "x": 0, "y": 96, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "button_use_eclipse",
+                "type": "Button",
+                "properties": { "text": "Use Eclipse" },
+                "layout": { "x": 0, "y": 130, "width": 140, "height": 34 },
+                "events": {
+                  "clicked": "behavior_use_eclipse"
+                },
+                "children": []
+              },
+              {
+                "id": "button_use_solar",
+                "type": "Button",
+                "properties": { "text": "Use Solar" },
+                "layout": { "x": 152, "y": 130, "width": 140, "height": 34 },
+                "events": {
+                  "clicked": "behavior_use_solar"
+                },
+                "children": []
+              },
+              {
+                "id": "button_save",
+                "type": "Button",
+                "properties": { "text": "Save", "enabled": true },
+                "layout": { "x": 0, "y": 320, "width": 120, "height": 36 },
+                "events": {
+                  "clicked": "behavior_commit_settings"
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "components": [],
+  "states": {
+    "useDarkTheme": true
+  },
+  "behaviors": [
+    {
+      "id": "behavior_use_eclipse",
+      "condition": null,
+      "action": { "target": "System", "name": "Nyrqis.Theme.Set", "arguments": { "theme": "Eclipse" } }
+    },
+    {
+      "id": "behavior_use_solar",
+      "condition": null,
+      "action": { "target": "System", "name": "Nyrqis.Theme.Set", "arguments": { "theme": "Solar" } }
+    },
+    {
+      "id": "behavior_commit_settings",
+      "condition": null,
+      "action": { "target": "System", "name": "Nyrqis.Settings.Commit", "arguments": {} }
+    }
+  ],
+  "bindings": [
+    {
+      "_note": "Demonstrates Bindings (NUI-SCHEMA.md §8): toggle_eclipse.value is seeded from and reflects the 'useDarkTheme' state. It's display-only here — the two buttons above are what actually drive Nyrqis.Theme.Set, since v0.3's Behaviors model uses static action arguments and can't yet read 'whatever the toggle currently says' into an action's arguments. That's a known gap, not an oversight; see engineering/ROADMAP.md.",
+      "component": "toggle_eclipse",
+      "property": "value",
+      "state": "useDarkTheme"
+    }
+  ]
+}

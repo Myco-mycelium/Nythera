@@ -201,6 +201,43 @@ The encrypted-vault lifecycle is complete (ADR-0023's core claim): `nyrqisctl va
 
 **2026-08-15 (0.14.8): write-commit batching + the cross-container grant matrix + snapshot deletion.** `volume_write` defers the durable commit (in-memory dirty blocks — the §26 byte-path behavior) and `volume_fsync`/`volume_flush`/`volume_close` anchor it, so a kernel write pays ONE `save()` at the fsync/flush/close boundary instead of one per CALL; the passthrough gained the `flush` FUSE handler. §27 re-bench: streaming writes **0.28 → 3.17 MB/s (11×)**, 4 KiB syscalls **0.04 → 0.78 MB/s (19×)**; §26 byte-path writes ~86 ms → ~2.2 ms p50 (~40×) — deferred data is visible in memory immediately and lost on a crash before commit (POSIX fsync semantics, spelled out in the runbook). **Cross-container volume grants (ADR-0022's access matrix is no longer future work):** `volume_grant`/`volume_revoke`/`volume_grants` (CREATOR/OPERATOR-ONLY — a granted container administers nothing, it can only open) + `nyrqisctl vault grant/revoke/grants` (by id or `--name`); grants are per-container, persisted with the registry, and never imply `CAP_STORAGE_VOLUME`; `volume_open`/`volume_list` honor them; revoke gates future opens while a live handle keeps working (open-file semantics). **Snapshot deletion:** `NyFS.delete_snapshot` + `volume_snapshot_delete` over the wire + `nyrqisctl vault snapshot-delete` (missing snapshot fails honestly). Runbook §3b. Suite 434 → **437**.
 
+### 6. NUI Runtime Consumption (ADR-0025)
+
+**2026-08-16 (0.14.22): the UI import gate lands.** The Nyrqis side of
+the NyForge ↔ runtime pipeline: the runtime can now import, validate, and
+render the `.nstudio` documents NyForge produces (NFS-001).
+
+- **Reference floor** (`ui/nstudio.py`): parse + validate against the NUI
+  contract tables (vocabulary NFS-001 §4, per-type property/event/
+  action contracts §5, behavior/binding references §7–§8), strict
+  schema-version gate (§9 → `NstudioVersionError`), `$state:` argument
+  substitution (§7.1), `resolve_action()`, layout `render()` (absolute
+  coordinates), and a deterministic `text_preview()` stand-in renderer.
+- **Rust import gate** (`rust/nyui/`, ABI 1.0.0): parse/validate behind
+  the versioned FFI (`nyrqis_nyui_validate`/`_version`/`_last_error`),
+  caller-supplied input, zero Rust-side allocation, serde_json-only. 9
+  crate unit tests. **This is the first compiled artifact of the UI
+  layer** — the platform-critical execution path per ADR-0020.
+- **FFI loader** (`ui/nstudio_codec.py`): the standard crate-loader
+  contract (`$NYRQIS_RUST_LIB` → `target/release/` → `LD_LIBRARY_PATH`,
+  ABI check, `NYRQIS_RUST_FORCE=1` semantics, error-class mapping back
+  to the floor's exception hierarchy).
+- **Fixtures**: the four NyForge example designs (forge-home,
+  settings-app, vault-dashboard, nyrqis-shell) under
+  `tests/fixtures/nstudio/` — the runtime is self-contained and
+  CI-verifiable without the NyForge checkout.
+- **Tests**: `TestNstudioImport` (floor) + `TestNstudioCodecConformance`
+  (differential: the crate rejects exactly what the floor rejects, error
+  messages byte-identical on single-issue documents) — 32 new tests,
+  green on the crate path; the crate-less path skips the conformance
+  class (gate pattern).
+- **CI**: `rust-nyui` (build + tests) and `rust-nyui-conformance`
+  (required gate, forces the two classes through the FFI).
+
+Status: **implemented + gated** — the import gate is real; a graphical
+shell renderer (C++/declarative UI per the matrix) is the documented
+follow-on, not yet started.
+
 ## Conformance Assessment
 
 Per NPS-017 §5.1:

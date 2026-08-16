@@ -58,6 +58,8 @@ from fuse.nyfs import (
 )
 from fuse import nyfs_codec
 from ipc import ipc_codec
+from ui import nstudio  # NUI (.nstudio) runtime consumption floor (ADR-0025)
+from ui import nstudio_codec  # FFI loader for the Rust nyui crate
 from ipc import transport_codec
 from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
@@ -12856,6 +12858,274 @@ class TestIpcdLoopConformance(unittest.TestCase):
             client.close()
 
 
+class TestNstudioImport(unittest.TestCase):
+    """The pure-Python NUI (.nstudio) reference floor (ui/nstudio.py,
+    ADR-0025): parse, version gate, contract validation, $state:
+    resolution, and layout render — the behavior the Rust crate must
+    reproduce through the FFI."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.FIXTURE_DIR = cls.FIXTURES
+
+    def _fixture(self, name):
+        return os.path.join(self.FIXTURE_DIR, name)
+
+    def _load(self, name):
+        return nstudio.load(self._fixture(name))
+
+    @staticmethod
+    def _mutate(text, old, new):
+        assert old in text, f"anchor not found: {old[:60]}"
+        return text.replace(old, new)
+
+    def test_all_fixtures_load(self):
+        for name in ("forge-home", "settings-app", "vault-dashboard", "nyrqis-shell"):
+            doc = self._load(name + ".nstudio")
+            self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
+            self.assertTrue(doc.screens)
+
+    def test_shell_fixture_shape(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        self.assertEqual(len(doc.component_ids()), 71)
+        self.assertEqual(len(doc.behaviors), 5)
+        self.assertEqual(len(doc.bindings), 1)
+        self.assertEqual([s.id for s in doc.screens], ["main"])
+        self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
+
+    def test_version_gate(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        with self.assertRaises(nstudio.NstudioVersionError):
+            nstudio.loads(text.replace('"version": "0.4.0"', '"version": "0.2.0"'))
+
+    def test_malformed_json(self):
+        with self.assertRaises(nstudio.NstudioValidationError):
+            nstudio.loads("{not json")
+
+    def test_unknown_component_type(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"type": "Toggle"', '"type": "Taskbar"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("unknown type 'Taskbar'", str(ctx.exception))
+
+    def test_unknown_event(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"changed": "behavior_dnd_on"', '"hovered": "behavior_dnd_on"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("event 'hovered' not in the 'Toggle' contract", str(ctx.exception))
+
+    def test_dangling_behavior_reference(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"clicked": "behavior_refresh"', '"clicked": "behavior_missing"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("unknown behavior 'behavior_missing'", str(ctx.exception))
+
+    def test_unknown_system_action(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, "Nyrqis.Notification.Show", "Nyrqis.System.Shutdown")
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("unknown system action 'Nyrqis.System.Shutdown'", str(ctx.exception))
+
+    def test_unknown_action_argument(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"severity": "info"', '"severity": "info", "bogus": 1')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("argument 'bogus' not in the 'Nyrqis.Notification.Show' contract", str(ctx.exception))
+
+    def test_dangling_binding(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"component": "toggle_dnd"', '"component": "ghost"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("component 'ghost' does not exist", str(ctx.exception))
+
+    def test_unknown_condition_state(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        # The pretty-printed fixture puts the condition on several lines;
+        # the trailing comma anchors the condition's state key only (the
+        # binding's state line has no trailing comma).
+        text = self._mutate(text, '"state": "doNotDisturb",', '"state": "nope",')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("condition references unknown state 'nope'", str(ctx.exception))
+
+    def test_duplicate_component_ids(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"id": "sb_top"', '"id": "brand"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("duplicate component id 'brand'", str(ctx.exception))
+
+    def test_layout_must_be_non_negative_ints(self):
+        text = open(self._fixture("nyrqis-shell.nstudio")).read()
+        text = self._mutate(text, '"x": 16, "y": 12', '"x": -1, "y": 12')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("layout 'x' must be a non-negative integer", str(ctx.exception))
+
+    def test_resolve_action_substitutes_state(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        target, name, args = doc.resolve_action("behavior_refresh")
+        self.assertEqual((target, name), ("System", "Nyrqis.Notification.Show"))
+        self.assertEqual(args["message"], "12:04")  # $state:lastRefresh
+        # literal (non-$state) arguments pass through untouched
+        self.assertEqual(args["title"], "Workspace refreshed")
+
+    def test_resolve_action_missing_state_stays_literal(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        doc.states.pop("lastRefresh", None)
+        _, _, args = doc.resolve_action("behavior_refresh")
+        self.assertEqual(args["message"], "$state:lastRefresh")
+
+    def test_resolve_unknown_behavior_raises(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        with self.assertRaises(nstudio.NstudioValidationError):
+            doc.resolve_action("behavior_ghost")
+
+    def test_render_stays_within_screen_bounds(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        screen = doc.screens[0]
+        for component, depth in doc.render("main"):
+            layout = component.layout
+            self.assertLessEqual(layout["x"] + layout["width"], screen.size["width"],
+                                 f"{component.id} overflows width")
+            self.assertLessEqual(layout["y"] + layout["height"], screen.size["height"],
+                                 f"{component.id} overflows height")
+            self.assertGreaterEqual(depth, 0)
+
+    def test_text_preview_is_deterministic(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        preview = doc.text_preview("main")
+        self.assertIn("screen main 1440x900", preview)
+        self.assertIn("Window window_shell (0,0 1440x900)", preview)
+        self.assertIn("Toggle toggle_dnd (848,8 224x32)", preview)
+        self.assertEqual(preview, doc.text_preview("main"))
+
+    def test_unknown_screen_raises(self):
+        doc = self._load("nyrqis-shell.nstudio")
+        with self.assertRaises(nstudio.NstudioValidationError):
+            doc.render("ghost")
+
+
+class TestNstudioCodecConformance(unittest.TestCase):
+    """ADR-0025 differential: the Rust nyui crate (via the FFI loader
+    ui/nstudio_codec.py) must reject exactly what the reference floor
+    rejects — same gates, same error messages. Runs when the crate is
+    built (the CI gate builds it and forces the class; locally it runs
+    when the crate is present)."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+
+    @classmethod
+    def setUpClass(cls):
+        nstudio_codec.force_reload()
+        cls.available = nstudio_codec.available()
+
+    def setUp(self):
+        if not self.available:
+            self.skipTest(
+                "Rust nyui crate not built (CI gate builds it)")
+
+    def _text(self, name):
+        return open(os.path.join(self.FIXTURES, name)).read()
+
+    @staticmethod
+    def _mutate(text, old, new):
+        assert old in text, f"anchor not found: {old[:60]}"
+        return text.replace(old, new)
+
+    def _rejects(self, text, expected_fragment, exc_type=nstudio.NstudioValidationError):
+        with self.assertRaises(exc_type) as ctx:
+            nstudio_codec.validate(text)
+        self.assertIn(expected_fragment, str(ctx.exception))
+
+    def test_crate_accepts_all_fixtures(self):
+        for name in ("forge-home", "settings-app", "vault-dashboard", "nyrqis-shell"):
+            nstudio_codec.validate(self._text(name + ".nstudio"))
+
+    def test_crate_version_gate(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"version": "0.4.0"', '"version": "0.2.0"')
+        self._rejects(text, "unsupported schema version '0.2.0'", nstudio.NstudioVersionError)
+
+    def test_crate_rejects_unknown_type(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"type": "Toggle"', '"type": "Taskbar"')
+        self._rejects(text, "unknown type 'Taskbar'")
+
+    def test_crate_rejects_unknown_event(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"changed": "behavior_dnd_on"', '"hovered": "behavior_dnd_on"')
+        self._rejects(text, "event 'hovered' not in the 'Toggle' contract")
+
+    def test_crate_rejects_dangling_behavior(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"clicked": "behavior_refresh"', '"clicked": "behavior_missing"')
+        self._rejects(text, "unknown behavior 'behavior_missing'")
+
+    def test_crate_rejects_unknown_system_action(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            "Nyrqis.Notification.Show", "Nyrqis.System.Shutdown")
+        self._rejects(text, "unknown system action 'Nyrqis.System.Shutdown'")
+
+    def test_crate_rejects_unknown_action_argument(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"severity": "info"', '"severity": "info", "bogus": 1')
+        self._rejects(text, "argument 'bogus' not in the 'Nyrqis.Notification.Show' contract")
+
+    def test_crate_rejects_dangling_binding(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"component": "toggle_dnd"', '"component": "ghost"')
+        self._rejects(text, "component 'ghost' does not exist")
+
+    def test_crate_rejects_unknown_condition_state(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"state": "doNotDisturb",', '"state": "nope",')
+        self._rejects(text, "condition references unknown state 'nope'")
+
+    def test_crate_rejects_duplicate_ids(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"id": "sb_top"', '"id": "brand"')
+        self._rejects(text, "duplicate component id 'brand'")
+
+    def test_crate_rejects_negative_layout(self):
+        text = self._mutate(self._text("nyrqis-shell.nstudio"),
+                            '"x": 16, "y": 12', '"x": -1, "y": 12')
+        self._rejects(text, "layout 'x' must be a non-negative integer")
+
+    def test_crate_rejects_malformed_json(self):
+        self._rejects("{not json", "malformed JSON")
+
+    def test_error_messages_match_floor(self):
+        """Differential: the crate reports the same FIRST validation
+        failure as the floor (the floor aggregates every issue into one
+        message; the crate reports the first — for single-issue
+        documents they are identical). The ADR-0020 migration contract:
+        the suite passes through the FFI unchanged."""
+        cases = [
+            ('"type": "Toggle"', '"type": "Taskbar"', "unknown type 'Taskbar'"),
+            ("Nyrqis.Notification.Show", "Nyrqis.System.Shutdown",
+             "unknown system action 'Nyrqis.System.Shutdown'"),
+            ('"component": "toggle_dnd"', '"component": "ghost"', "component 'ghost' does not exist"),
+        ]
+        for old, new, expected in cases:
+            text = self._mutate(self._text("nyrqis-shell.nstudio"), old, new)
+            with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+                nstudio.loads(text)
+            with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+                nstudio_codec.validate(text)
+            first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+            self.assertEqual(str(crate_ctx.exception), first_floor_issue,
+                             f"message drift for {expected}")
+
+
 
 def run_tests():
     """Run all tests."""
@@ -12916,6 +13186,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerIpcRegistry))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
+    suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

@@ -16,6 +16,43 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.22] — 2026-08-16
+
+### NUI (.nstudio) runtime consumption — the UI import gate (ADR-0025)
+
+The Nyrqis side of the NyForge ↔ runtime pipeline lands: the runtime can
+now import, validate, and render the `.nstudio` documents NyForge
+produces (NFS-001). ADR-0025 documents the decision; the first increment
+is implemented and gated the same day.
+
+- **`ui/nstudio.py` — the pure-Python reference floor.** Parses and
+  validates `.nstudio` documents against the NUI contract tables
+  (component vocabulary NFS-001 §4, per-type property/event contracts and
+  system actions §5, behavior/binding references §7–§8), with the strict
+  schema-version gate of §9 (`NstudioVersionError` on an unsupported
+  version). Also provides `$state:` argument substitution (§7.1),
+  `resolve_action()`, a layout `render()` (absolute coordinates), and a
+  deterministic `text_preview()` stand-in renderer.
+- **`rust/nyui/` — the Rust import gate (ABI 1.0.0).** Parse/validate in
+  Rust behind a versioned FFI (`nyrqis_nyui_validate` / `_version` /
+  `_last_error`; caller-supplied input, zero Rust-side allocation),
+  mirroring the seccomp/transport/ipcd migration pattern. Deps: serde_json
+  only. 9 crate unit tests.
+- **`ui/nstudio_codec.py` — the FFI loader.** Same contract as the other
+  crate loaders: `$NYRQIS_RUST_LIB` → crate `target/release/` →
+  `LD_LIBRARY_PATH`, ABI check, `NYRQIS_RUST_FORCE=1` semantics, and
+  error-class mapping back to the floor's exception hierarchy.
+- **Fixtures + tests.** The four NyForge example designs (forge-home,
+  settings-app, vault-dashboard, **nyrqis-shell** — the 1440×900 shell UI
+  draft) are fixtures under `tests/fixtures/nstudio/`. `TestNstudioImport`
+  (floor: parse, gates, substitution, render, preview) and
+  `TestNstudioCodecConformance` (differential: the crate rejects exactly
+  what the floor rejects, error messages byte-identical on single-issue
+  documents) — 32 new tests, all green on the crate path.
+- **CI.** `rust-nyui` builds/tests the crate; `rust-nyui-conformance`
+  forces the two classes through the FFI (required gate), matching the
+  established per-crate gate pattern.
+
 ## [0.14.21] — 2026-08-16
 
 ### Wire-level streaming — the ADR-0024 follow-on lands
