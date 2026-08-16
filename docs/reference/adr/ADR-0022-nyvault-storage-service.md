@@ -218,9 +218,15 @@ billed to the *writing* container, not the volume's creator.
 - **New surface.** `volume_quota_set`/`volume_quota_get`
   (CREATOR/OPERATOR-ONLY — quota is administration, exactly like
   grants), `volume_usage` (per volume per container; any opener),
+  `volume_summary` (OPERATOR-ONLY whole-vault aggregate, 0.14.11),
   `EDQUOT` on the write path, and quota/usage/attribution rows in the
   registry's persistence (persisted with each commit, so accounting
-  survives a daemon restart). This was deliberately an increment: the
+  survives a daemon restart). `volume_usage` also carries the
+  volume-wide PHYSICAL figure (the on-disk state footprint,
+  compressed + CoW-deduped), cached with the ledger at each commit
+  and re-derived on demand by the summary; it is volume-wide, never
+  per-container, because CoW sharing makes per-container physical
+  attribution load-dependent. This was deliberately an increment: the
   enforcement point, the ledger, and the operator surface existed in
   seed form (capability gate + handle binding + `_save_state`).
 - **NPS impact:** `CAP_STORAGE_VOLUME` is already in the NPS-011

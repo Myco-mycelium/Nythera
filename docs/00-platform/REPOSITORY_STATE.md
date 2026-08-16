@@ -790,6 +790,23 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-16 (**the operator's vault view — 0.14.11**):
+  `volume_usage` also reports the volume-wide PHYSICAL figure (the
+  on-disk state footprint, compressed + CoW-deduped, cached with the
+  ledger at each commit) — volume-wide, never per-container (CoW
+  sharing makes per-container physical attribution load-dependent;
+  honest in the ADR + runbook). Verified: 9 KiB compressible →
+  logical 9000, physical 902. `volume_info.bytes_persisted` now uses
+  the same helper (it previously counted only the post-compaction
+  `blocks/` dir and reported 0 for journal-resident state).
+  **`volume_summary` (OPERATOR-ONLY) + `nyrqisctl vault summary`**: the
+  whole-vault aggregate — volume count, total logical/physical bytes,
+  per-volume rows (logical, physical, consumers), re-derived fresh;
+  a granted container is refused even with the capability. **§28
+  benchmark (`--ledger-refresh`)**: the per-commit usage refresh
+  measures 0.53–0.67 ms @ 1 k files, 7.79–8.93 ms @ 10 k — a rounding
+  error next to the ~110 ms durable save it rides on. Suite 450 →
+  **452**.
 - 2026-08-16 (**per-container quota & accounting — 0.14.10**):
   ADR-0022's follow-on design is implemented. Every volume accounts
   bytes per container (`volume_usage`), billed to the WRITING

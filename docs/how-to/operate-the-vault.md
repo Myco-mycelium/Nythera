@@ -125,6 +125,7 @@ nyrqisctl vault quota-set --name assets container-b --bytes 1048576
 nyrqisctl vault quota-get --name assets          # quota + usage rows
 nyrqisctl vault usage     --name assets          # per-container usage
 nyrqisctl vault quota-set --name assets container-b --unlimited  # clear
+nyrqisctl vault summary                         # OPERATOR: whole-vault view
 ```
 
 Semantics to rely on:
@@ -132,6 +133,13 @@ Semantics to rely on:
 - **What counts is LOGICAL bytes** — the sum of file sizes in the
   volume tree, attributed to the last writer of each path. Physical
   block bytes (CoW sharing, compression) are NOT what quotas measure.
+- **`vault usage` also reports the volume-wide PHYSICAL figure** —
+  the actual on-disk state footprint (journal + metadata + block
+  store, compressed + CoW-deduped). It is volume-wide, not
+  per-container: with CoW sharing, per-container physical attribution
+  is load-dependent, so only the whole-volume figure is honest.
+  `vault summary` (OPERATOR-ONLY) aggregates every volume: logical +
+  physical totals and per-volume consumer counts, re-derived fresh.
 - **The tree is the ledger.** Usage is re-derived from the tree at
   each commit (fsync / interval / close / restore), so deleting a
   file, truncating it, or restoring a snapshot re-accounts exactly

@@ -63,10 +63,17 @@ Quota & accounting (ADR-0022 follow-on, shipped with 0.14.10):
   CREATOR/OPERATOR-ONLY: the per-container quotas and their current
   accounted usage.
 - ``{"op": "volume_usage", "volume_id": str}`` — the per-container
-  accounted usage (any opener may read it). The ledger is a cache
-  re-derived from the NyFS tree at each commit (fsync / interval /
-  close / restore), so deletes, truncates and restores re-derive it
-  automatically; the enforcement point reads the cache.
+  accounted usage (any opener may read it) plus the volume-wide
+  PHYSICAL block-store bytes (compressed/CoW-deduped — never billed).
+  The ledger is a cache re-derived from the NyFS tree at each commit
+  (fsync / interval / close / restore), so deletes, truncates and
+  restores re-derive it automatically; the enforcement point reads
+  the cache.
+- ``{"op": "volume_summary"}`` — OPERATOR-ONLY: the whole-vault
+  aggregate — volume count, total logical + physical bytes, and a
+  per-volume row (logical, physical, consumer count). Re-derives the
+  ledger on demand (one walk per volume — the §28-measured cost), so
+  the figures are fresh even for uncommitted deferred writes.
 
 Deferred-write ops (the FUSE passthrough's data plane):
 
@@ -373,6 +380,9 @@ class StorageService:
             elif op == "volume_usage":
                 self._volume_usage(server, sender_path,
                                    msg.message_id, sender, request)
+            elif op == "volume_summary":
+                self._volume_summary(server, sender_path,
+                                     msg.message_id, sender)
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
@@ -496,6 +506,14 @@ class StorageService:
                 continue
             usage[owner] = usage.get(owner, 0) + size
         record["usage"] = usage
+        # PHYSICAL bytes (volume-wide): the on-disk state footprint —
+        # journal + metadata + the block store, compressed + CoW-
+        # deduped, so it is load-dependent and deliberately NOT billed
+        # (ADR-0022: logical bytes are the quota contract; physical is
+        # a separate operator figure). Cached here so
+        # ``volume_usage``/``volume_summary`` never pay a disk walk on
+        # demand; refreshed with the ledger.
+        record["physical_bytes"] = self._physical_bytes(nyfs)
 
     def _commit_dirty(self) -> None:
         """Persist every volume with deferred (dirty) state. Best-effort
@@ -533,6 +551,28 @@ class StorageService:
             return
         self._commit_dirty()
         self._last_commit = time.monotonic()
+
+    @staticmethod
+    def _physical_bytes(nyfs) -> int:
+        """The volume's on-disk footprint: every file under the NyFS
+        state dir (journal + metadata + the blocks/ store — pre-
+        compaction blocks live in the journal). Compressed + CoW-
+        deduped PHYSICAL bytes, the un-billed operator figure
+        (ADR-0022: logical bytes are the quota contract)."""
+        state = os.path.join(str(nyfs.base_path), "state")
+        if not os.path.isdir(state):
+            return 0
+        total = 0
+        try:
+            for root, _dirs, files in os.walk(state):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        return total
 
     @staticmethod
     def _can_open(record: Dict[str, Any], sender: str) -> bool:
@@ -975,6 +1015,59 @@ class StorageService:
             "volume_id": record["id"],
             "usage": {c: usage.get(c, 0)
                        for c in sorted(set(usage) | set(record.get("quota", {})))},
+            # Physical block-store bytes (volume-wide; compressed +
+            # CoW-deduped — the un-billed figure, per ADR-0022).
+            "physical_bytes": int(record.get("physical_bytes", 0)),
+        })
+
+    def _volume_summary(self, server, sender_path: str, call_id: str,
+                        sender: str) -> None:
+        """The whole-vault aggregate (OPERATOR-ONLY — it reveals the
+        existence and sizes of volumes the caller may not be able to
+        open). Per-volume: logical bytes (the billed ledger), PHYSICAL
+        block-store bytes, and the number of consuming containers.
+        The ledger is re-derived on demand (one walk per volume — the
+        §28-measured cost), so deferred writes are included."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        if sender != DEFAULT_OPERATOR_ID:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: volume_summary is operator-only "
+                          "(it reveals volumes you may not open)",
+            })
+            return
+        volumes = []
+        total_logical = 0
+        total_physical = 0
+        for record in self._volumes.values():
+            self._refresh_usage(record)  # fresh figures (walk per volume)
+            logical = sum(record.get("usage", {}).values())
+            physical = int(record.get("physical_bytes", 0))
+            consumers = len(record.get("usage", {}))
+            total_logical += logical
+            total_physical += physical
+            volumes.append({
+                "id": record["id"],
+                "name": record["name"],
+                "created_by": record["created_by"],
+                "encrypted": bool(record.get("wrapped_dek")),
+                "logical_bytes": logical,
+                "physical_bytes": physical,
+                "consumers": consumers,
+            })
+        volumes.sort(key=lambda v: v["name"])
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "volumes": volumes,
+            "volume_count": len(volumes),
+            "total_logical_bytes": total_logical,
+            "total_physical_bytes": total_physical,
         })
 
     def _volume_close(self, server, sender_path: str, call_id: str,
@@ -1050,10 +1143,7 @@ class StorageService:
         if nyfs is not None:
             info["backend"] = "nyfs"
             info["block_size"] = nyfs.block_size
-            info["bytes_persisted"] = sum(
-                p.stat().st_size
-                for p in (nyfs.base_path / "state" / "blocks").glob("*")
-            ) if (nyfs.base_path / "state" / "blocks").is_dir() else 0
+            info["bytes_persisted"] = self._physical_bytes(nyfs)
         else:
             info["backend"] = "registry-only"
         self._reply(server, sender_path, call_id, info)

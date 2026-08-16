@@ -61,7 +61,7 @@ VAULT_COMMANDS = (
     "vault-volume-restore", "vault-volume-snapshot-delete",
     "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
     "vault-volume-quota-set", "vault-volume-quota-get",
-    "vault-volume-usage",
+    "vault-volume-usage", "vault-volume-summary",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -177,6 +177,8 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "vault-volume-usage":
         return _volume_ref({"service": "storage", "op": "volume_usage"},
                            args)
+    if command == "vault-volume-summary":
+        return {"service": "storage", "op": "volume_summary"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -313,10 +315,30 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines)
     if command == "vault-volume-usage":
         usage = resp.get("usage") or {}
+        phys = resp.get("physical_bytes")
+        head = f"volume {resp.get('volume_id')}: "
         if not usage:
-            return f"volume {resp.get('volume_id')}: no accounted usage"
-        return "\n".join(["container\tusage"] +
-                          [f"{c}\t{u}" for c, u in sorted(usage.items())])
+            line = head + "no accounted usage"
+        else:
+            line = head + "\n" + "\n".join(
+                ["container\tusage"] +
+                [f"{c}\t{u}" for c, u in sorted(usage.items())])
+        if phys is not None:
+            line += f"\nphysical (block-store): {phys} bytes"
+        return line
+    if command == "vault-volume-summary":
+        volumes = resp.get("volumes") or []
+        if not volumes:
+            return (f"vault: no volumes (logical 0 B, physical 0 B)")
+        rows = [f"{v['name']}\t{v['logical_bytes']}\t"
+                f"{v['physical_bytes']}\t{v['consumers']}"
+                for v in volumes]
+        return "\n".join(
+            ["vault summary",
+             f"volumes: {resp.get('volume_count')} "
+             f"(logical {resp.get('total_logical_bytes')} B, "
+             f"physical {resp.get('total_physical_bytes')} B)",
+             "name\tlogical\tphysical\tconsumers"] + rows)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -737,12 +759,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     vu = vsub.add_parser(
         "usage", help="Per-container accounted usage for a volume "
-                      "(any opener — logical bytes, the ADR-0022 "
-                      "operator contract)")
+                      "(any opener — logical bytes + the volume-wide "
+                      "physical block-store figure)")
     vu.add_argument("volume_id", nargs="?", default="",
                     help="Volume id (or use --name)")
     vu.add_argument("--name", default="", help="Volume name")
     vu.set_defaults(command="vault-volume-usage")
+
+    vsm = vsub.add_parser(
+        "summary", help="OPERATOR-ONLY: the whole-vault aggregate — "
+                         "per-volume logical + physical bytes and "
+                         "consumer counts")
+    vsm.set_defaults(command="vault-volume-summary")
 
     vi = vsub.add_parser(
         "init", help="LOCAL: initialize the vault KEK envelope (ADR-0023) "

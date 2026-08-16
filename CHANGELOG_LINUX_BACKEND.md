@@ -16,6 +16,36 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.11] — 2026-08-16
+
+### The operator's vault view: physical-byte figure, whole-vault summary, ledger-refresh cost
+
+- **PHYSICAL bytes, honestly scoped.** `volume_usage` now also reports
+  the volume-wide PHYSICAL figure: the on-disk state footprint
+  (journal + metadata + block store — compressed + CoW-deduped),
+  cached with the ledger at each commit (one `stat` pass over the
+  state dir). It is volume-wide, never per-container — with CoW
+  sharing, per-container physical attribution is load-dependent, so
+  only the whole-volume figure is honest (stated in the ADR and the
+  runbook). Verified: 9 KiB of compressible data → logical 9000,
+  physical 902 (compression is visible). `volume_info`'s
+  `bytes_persisted` now uses the same helper — it previously only
+  counted the post-compaction `blocks/` dir and reported 0 for
+  journal-resident state.
+- **`volume_summary` (OPERATOR-ONLY)** + `nyrqisctl vault summary`:
+  the whole-vault aggregate — volume count, total logical + physical
+  bytes, and a per-volume row (logical, physical, consumer count),
+  re-derived fresh on demand (a granted container is refused even
+  with the storage capability — the summary reveals volumes the
+  caller may not open).
+- **§28 ledger-refresh benchmark (`--ledger-refresh`)**: the ADR-0022
+  per-commit usage refresh (tree walk + attribution + physical stat)
+  measures **0.53–0.67 ms at 1 k files and 7.79–8.93 ms at 10 k** —
+  a rounding error next to the ~110 ms durable save it rides on, so
+  the accounting increment added no measurable commit cost.
+- Suite 450 → **452** (usage-physical + summary tests; the CLI quota
+  payload test gained the summary/usage-physical assertions).
+
 ## [0.14.10] — 2026-08-16
 
 ### Per-container quota & accounting — ADR-0022's follow-on design is implemented

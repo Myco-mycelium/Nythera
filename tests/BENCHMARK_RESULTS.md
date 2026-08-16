@@ -1094,6 +1094,27 @@ data is visible immediately, durable after `fsync()`, at handle
 close/unmount, or at the interval tick — a daemon crash before then
 loses it (POSIX fsync semantics; the interval bounds the loss window).
 
+## 28. Quota Ledger Refresh per Commit (2026-08-16)
+
+ADR-0022 accounting made the per-container usage ledger a **cache
+re-derived from the NyFS tree at every commit** (fsync / interval /
+close / restore): `StorageService._refresh_usage` walks the tree
+(path → size), re-attributes each path to its last writer, and stats
+ the on-disk state for the volume-wide PHYSICAL-byte figure.
+`--ledger-refresh`, in-process volumes of 1 k and 10 k small files
+(5 runs, min of the median):
+
+| Volume size | refresh per commit | files/s |
+|-------------|-------------------|---------|
+| 1,000 files | 0.53–0.67 ms | ~1.5–1.9 M |
+| 10,000 files | 7.79–8.93 ms | ~1.1–1.3 M |
+
+Reading: the accounting refresh is **negligible next to the durable
+commit it rides on** — ~8 ms vs the ~110 ms journal save (§26/§27
+finding), so the quota ledger adds a rounding error to each
+fsync/interval/close commit even at 10 k files. It is a pure in-memory
+walk plus one `stat` pass over the state dir; no disk writes.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

@@ -1842,6 +1842,28 @@ class TestOperatorCli(unittest.TestCase):
         self.assertIn("container-x\t100", nyrqisctl.format_human(
             "vault-volume-usage", {"ok": True, "volume_id": "vid123",
                                    "usage": {"container-x": 100}}))
+        self.assertIn("physical (block-store): 42 bytes",
+                      nyrqisctl.format_human(
+                          "vault-volume-usage", {"ok": True,
+                                                 "volume_id": "vid123",
+                                                 "usage": {"container-x": 100},
+                                                 "physical_bytes": 42}))
+        # The operator whole-vault summary.
+        args = parser.parse_args(["vault", "summary"])
+        self.assertEqual(args.command, "vault-volume-summary")
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_summary"})
+        out = nyrqisctl.format_human(
+            "vault-volume-summary", {"ok": True, "volume_count": 1,
+                                     "total_logical_bytes": 100,
+                                     "total_physical_bytes": 40,
+                                     "volumes": [{"name": "assets",
+                                                   "logical_bytes": 100,
+                                                   "physical_bytes": 40,
+                                                   "consumers": 1}]})
+        self.assertIn("assets\t100\t40\t1", out)
+        self.assertIn("logical 100 B", out)
 
     def test_cli_formats_human_output(self):
         status = {"ok": True, "backend_version": "9.9.9",
@@ -4118,6 +4140,117 @@ class TestStorageService(unittest.TestCase):
                          {"container-a": 100})
         self.assertEqual(storage2._volumes[vid]["owners"]["/f"],
                          "container-a")
+
+    def test_usage_reports_physical_bytes(self):
+        # ADR-0022: LOGICAL bytes are the billed ledger; PHYSICAL
+        # block-store bytes are a separate operator figure (compressed
+        # + CoW-deduped, load-dependent — never billed). The physical
+        # figure is cached at commit, so a 9 KiB compressible write
+        # shows logical 9000 but a physical footprint well under it.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "phys-vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "p"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "3", "container-a", {
+            "handle": handle, "path": "/f",
+            "data_b64": base64.b64encode(
+                b"compressible-data;" * 500).decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_usage(stub, "p", "u", "container-a",
+                              {"volume_id": vid})
+        reply = last(stub)
+        self.assertEqual(reply["usage"], {"container-a": 9000})
+        phys = reply["physical_bytes"]
+        self.assertIsInstance(phys, int)
+        self.assertGreater(phys, 0, "the on-disk state must occupy bytes")
+        self.assertLess(phys, 9000,
+                        "compressible data must shrink the physical figure")
+
+    def test_volume_summary_operator_only_and_aggregates(self):
+        # The operator's whole-vault view: per-volume logical + PHYSICAL
+        # bytes and consumer counts, with fresh (re-derived) figures
+        # and honest totals. OPERATOR-ONLY — a container sees it even
+        # with the storage capability: it reveals volumes the caller
+        # may not be able to open.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "summary-vault"))
+        # Two volumes, two writers on the shared one.
+        for name in ("one", "two"):
+            stub = _Stub()
+            storage._volume_create(stub, "p", "c", "container-a",
+                                   {"name": name})
+            self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "g", "container-a",
+                              {"name": "two", "container": "container-b"})
+        self.assertTrue(last(stub)["ok"])
+        handles = {}
+        for cid in ("container-a", "container-b"):
+            stub = _Stub()
+            storage._volume_open(stub, "p", "o", cid, {"name": "two"})
+            handles[cid] = last(stub)["handle"]
+        for cid, path, n in (("container-a", "/a", 50),
+                             ("container-b", "/b", 30)):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", cid, {
+                "handle": handles[cid], "path": path,
+                "data_b64": base64.b64encode(b"Z" * n).decode("ascii"),
+                "offset": 0})
+            self.assertTrue(last(stub)["ok"], last(stub))
+        # A container is refused even with the capability.
+        stub = _Stub()
+        storage._volume_summary(stub, "p", "s", "container-a")
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("operator-only", last(stub)["error"])
+        # The operator sees the aggregate.
+        stub = _Stub()
+        storage._volume_summary(stub, "p", "s", DEFAULT_OPERATOR_ID)
+        reply = last(stub)
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(reply["volume_count"], 2)
+        by_name = {v["name"]: v for v in reply["volumes"]}
+        self.assertEqual(by_name["one"]["logical_bytes"], 0)
+        self.assertEqual(by_name["two"]["logical_bytes"], 80)
+        self.assertEqual(by_name["two"]["consumers"], 2)
+        self.assertGreater(by_name["two"]["physical_bytes"], 0)
+        self.assertEqual(reply["total_logical_bytes"], 80)
 
     def test_granted_container_drives_the_mount_ops(self):
         # The access matrix through the REAL data plane: a seccomp

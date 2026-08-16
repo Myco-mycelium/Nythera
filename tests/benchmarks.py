@@ -59,6 +59,10 @@ this host in one reproducible script:
   (ADR-0022's data-plane mount) vs native I/O, in the §19 isolated
   child process; every kernel request is a storage-service CALL into
   the AEAD block layer.
+- §28 (quota ledger refresh, 2026-08-16): ``--ledger-refresh`` times
+  the storage service's per-commit usage refresh (ADR-0022 accounting
+  — the NyFS tree walk + attribution + the on-disk physical-byte
+  stat) on volumes of 1 k and 10 k files.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -77,6 +81,7 @@ Usage:
   python3 tests/benchmarks.py --launcher-coldstart  # §25 cold-start A/B
   python3 tests/benchmarks.py --vault-io     # §26 NyVault byte path
   python3 tests/benchmarks.py --vault-mount-io  # §27 live encrypted mount
+  python3 tests/benchmarks.py --ledger-refresh  # §28 quota ledger refresh
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -1838,6 +1843,58 @@ def benchmark_launcher_coldstart(n=8):
     return result
 
 
+def benchmark_ledger_refresh(ns=(1000, 10000)):
+    """Quota ledger refresh cost (§28, 2026-08-16).
+
+    ADR-0022 accounting made the per-container usage ledger a cache
+    re-derived from the NyFS tree at every commit. This measures that
+    refresh — ``StorageService._refresh_usage``: the tree walk (path
+    -> size) + last-writer attribution + the on-disk physical-byte
+    stat — on volumes of 1 k and 10 k small files. It is the cost the
+    accounting increment added to each fsync/interval/close commit,
+    and the honest answer to "is the ledger refresh a problem?"
+    (in-process, like the other control-plane sections)."""
+    from ipc.storage import StorageService
+    from ipc.transport import DEFAULT_OPERATOR_ID
+
+    class _Stub:
+        def __init__(self):
+            self.replies = []
+
+        def reply(self, sender_path, call_id, payload):
+            self.replies.append(json.loads(payload.decode("utf-8")))
+
+    def _build(n):
+        tmp = tempfile.mkdtemp(prefix="nyrqis-ledger-")
+        storage = StorageService(vault_dir=os.path.join(tmp, "vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", DEFAULT_OPERATOR_ID,
+                               {"name": "v"})
+        record = storage._volumes[stub.replies[-1]["volume_id"]]
+        nyfs = record["nyfs"]
+        for i in range(n):
+            path = f"/f{i:05d}"
+            nyfs.write(nyfs.create_file(path), b"x" * 64)
+        return storage, record
+
+    results = {}
+    for n in ns:
+        storage, record = _build(n)
+        try:
+            storage._refresh_usage(record)  # warm (lazy loads)
+            t0 = time.perf_counter()
+            for _ in range(5):
+                storage._refresh_usage(record)
+            dt = (time.perf_counter() - t0) / 5
+            results[f"{n} files"] = {
+                "refresh_ms": round(dt * 1000, 2),
+                "files_per_s": int(n / dt) if dt > 0 else 0,
+            }
+        finally:
+            shutil.rmtree(storage.vault_dir, ignore_errors=True)
+    return results
+
+
 def benchmark_vault_io(n=200, payloads=(4096, 32 * 1024)):
     """NyVault byte path through the CALL/REPLY loop (§26, 2026-08-15).
 
@@ -2024,6 +2081,9 @@ def main():
     parser.add_argument("--vault-mount-io", action="store_true",
                         help="§27 live ENCRYPTED NyVault FUSE mount vs "
                              "native I/O")
+    parser.add_argument("--ledger-refresh", action="store_true",
+                        help="§28 quota ledger refresh cost (ADR-0022 "
+                             "per-commit tree walk)")
     parser.add_argument("--nyfs-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--vault-mount-child", action="store_true",
@@ -2050,7 +2110,8 @@ def main():
                 or args.compaction_cost or args.journal_blocksize
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
                 or args.ipcd_control or args.launcher_coldstart
-                or args.vault_io or args.vault_mount_io)
+                or args.vault_io or args.vault_mount_io
+                or args.ledger_refresh)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -2064,6 +2125,7 @@ def main():
         args.launcher_coldstart = True
         args.vault_io = True
         args.vault_mount_io = True
+        args.ledger_refresh = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -2133,6 +2195,9 @@ def main():
     if args.vault_mount_io:
         _print_section("Live ENCRYPTED NyVault FUSE mount vs native (§27):",
                        benchmark_vault_mount_io())
+    if args.ledger_refresh:
+        _print_section("Quota ledger refresh per commit (§28):",
+                       benchmark_ledger_refresh())
 
 
 if __name__ == "__main__":
