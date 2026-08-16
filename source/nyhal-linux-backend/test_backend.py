@@ -1814,6 +1814,15 @@ class TestOperatorCli(unittest.TestCase):
             nyrqisctl.build_payload(args.command, args),
             {"service": "storage", "op": "volume_grant",
              "name": "shared", "container": "container-x"})
+        # Path-scoped grants (0.14.15): --path rides the grant payload.
+        args = parser.parse_args(
+            ["vault", "grant", "--name", "shared", "container-x",
+             "--path", "/assets"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_grant",
+             "name": "shared", "container": "container-x",
+             "path": "/assets"})
         args = parser.parse_args(
             ["vault", "revoke", "--name", "shared", "container-x"])
         self.assertEqual(
@@ -1842,6 +1851,22 @@ class TestOperatorCli(unittest.TestCase):
         self.assertIn("container-b", nyrqisctl.format_human(
             "vault-volume-grants", {"ok": True, "volume_id": "vid123",
                                     "grants": ["container-b"]}))
+        # Scope-aware display: whole-volume grants print bare, scoped
+        # grants print as container@path.
+        self.assertIn("container-x@/assets", nyrqisctl.format_human(
+            "vault-volume-grants", {"ok": True, "volume_id": "vid123",
+                                    "grants": [
+                                        {"container": "container-x",
+                                         "path": "/assets"},
+                                        {"container": "container-b",
+                                         "path": "/"}]}))
+        self.assertIn("scope: /assets", nyrqisctl.format_human(
+            "vault-volume-grant", {"ok": True, "volume_id": "vid123",
+                                   "container": "container-x",
+                                   "path": "/assets"}))
+        self.assertIn("whole volume", nyrqisctl.format_human(
+            "vault-volume-grant", {"ok": True, "volume_id": "vid123",
+                                   "container": "container-x"}))
         self.assertIn("snap-1", nyrqisctl.format_human(
             "vault-volume-snapshot-delete", {"ok": True,
                                              "volume_id": "vid123",
@@ -3814,7 +3839,8 @@ class TestStorageService(unittest.TestCase):
         storage._volume_grants(stub, "p", "6", "container-a",
                                {"volume_id": vid})
         self.assertTrue(last(stub)["ok"])
-        self.assertEqual(last(stub)["grants"], ["container-b"])
+        self.assertEqual(last(stub)["grants"],
+                         [{"container": "container-b", "path": "/"}])
         stub = _Stub()
         storage._volume_grant(stub, "p", "7", "container-b",
                               {"volume_id": vid, "container": "c"})
@@ -3850,6 +3876,223 @@ class TestStorageService(unittest.TestCase):
             vault_dir=os.path.join(self.tmp, "grant-vault"))
         self.assertEqual(storage3._volumes[vid]["grants"],
                          {"container-b": True})
+
+    def test_path_scoped_grant_restricts_the_data_plane(self):
+        # ADR-0022 (0.14.15): a grant may carry a ``path`` scope — the
+        # grantee can open the volume but every data-plane op on a
+        # path outside the subtree is rejected fail-closed. Both sides
+        # of a rename must stay inside the scope.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "scope-vault"))
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "scoped"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        vid = last(stub)["volume_id"]
+
+        # A path-scoped grant to /assets.
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b",
+                               "path": "/assets"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        self.assertEqual(last(stub)["path"], "/assets")
+
+        stub = _Stub()
+        storage._volume_open(stub, "p", "3", "container-b",
+                             {"volume_id": vid})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        handle = last(stub)["handle"]
+
+        # Writes inside the scope land; outside are rejected and the
+        # rejection never reaches the tree.
+        stub = _Stub()
+        storage._volume_write(stub, "p", "4", "container-b", {
+            "handle": handle, "path": "/assets/x",
+            "data_b64": base64.b64encode(b"in-scope").decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_write(stub, "p", "5", "container-b", {
+            "handle": handle, "path": "/outside",
+            "data_b64": base64.b64encode(b"nope").decode("ascii"),
+            "offset": 0})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("outside your grant scope", last(stub)["error"])
+
+        # The creator puts a file outside the scope; the grantee's
+        # read there is rejected too.
+        stub = _Stub()
+        storage._volume_open(stub, "p", "6", "container-a",
+                             {"volume_id": vid})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        creator_handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_write(stub, "p", "7", "container-a", {
+            "handle": creator_handle, "path": "/outside",
+            "data_b64": base64.b64encode(b"secret").decode("ascii"),
+            "offset": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_read(stub, "p", "8", "container-b", {
+            "handle": handle, "path": "/outside", "offset": 0,
+            "size": 32})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("outside your grant scope", last(stub)["error"])
+        stub = _Stub()
+        storage._volume_read(stub, "p", "9", "container-b", {
+            "handle": handle, "path": "/assets/x", "offset": 0,
+            "size": 32})
+        self.assertTrue(last(stub)["ok"])
+        self.assertEqual(base64.b64decode(last(stub)["data_b64"]),
+                         b"in-scope")
+
+        # Rename: BOTH sides must stay in scope — in-scope moves pass,
+        # escaping the scope either way is rejected.
+        stub = _Stub()
+        storage._volume_rename(stub, "p", "10", "container-b", {
+            "handle": handle, "from": "/assets/x", "to": "/assets/y"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        stub = _Stub()
+        storage._volume_rename(stub, "p", "11", "container-b", {
+            "handle": handle, "from": "/assets/y", "to": "/outside"})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("outside your grant scope", last(stub)["error"])
+        stub = _Stub()
+        storage._volume_rename(stub, "p", "12", "container-b", {
+            "handle": handle, "from": "/outside", "to": "/assets/z"})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("outside your grant scope", last(stub)["error"])
+
+        # Truncate outside the scope is rejected; inside passes.
+        stub = _Stub()
+        storage._volume_truncate(stub, "p", "13", "container-b", {
+            "handle": handle, "path": "/outside", "length": 0})
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("outside your grant scope", last(stub)["error"])
+        stub = _Stub()
+        storage._volume_truncate(stub, "p", "14", "container-b", {
+            "handle": handle, "path": "/assets/y", "length": 0})
+        self.assertTrue(last(stub)["ok"], last(stub))
+
+    def test_path_scoped_grant_persists_and_backcompat(self):
+        # The persisted shape: ``True`` (whole volume, the 0.14.8
+        # format) or ``{"path": str}``. Both survive a daemon restart,
+        # and the scope helper treats the legacy ``True`` as the whole
+        # volume.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        for cid in ("container-a", "container-b", "container-c"):
+            caps.initialize_container(cid)
+            caps.grant_capability(cid, Capability.CAP_STORAGE_VOLUME)
+        vault = os.path.join(self.tmp, "scope-persist")
+        storage = StorageService(capability_manager=caps, vault_dir=vault)
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "shared"})
+        vid = last(stub)["volume_id"]
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b",
+                               "path": "/assets"})
+        storage._volume_grant(stub, "p", "3", "container-a",
+                              {"volume_id": vid, "container": "container-c"})
+
+        storage2 = StorageService(capability_manager=caps, vault_dir=vault)
+        self.assertEqual(storage2._volumes[vid]["grants"], {
+            "container-b": {"path": "/assets"},
+            "container-c": True,
+        })
+        # Scope helper: the legacy True grant reads as the whole
+        # volume; the path grant reads as its subtree.
+        self.assertEqual(storage2._grant_scope(storage2._volumes[vid],
+                                               "container-b"), "/assets")
+        self.assertEqual(storage2._grant_scope(storage2._volumes[vid],
+                                               "container-c"), "/")
+
+    def test_granted_container_cannot_administer_snapshots(self):
+        # 0.14.15 tightening: snapshot/restore/snapshot-delete rewrite
+        # or capture the WHOLE volume tree — a granted container (even
+        # with a whole-volume grant) could clobber data outside any
+        # scope, so these are CREATOR/OPERATOR-ONLY like grants
+        # themselves.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.initialize_container("container-b")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        caps.grant_capability("container-b", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "admin-vault"))
+
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "shared"})
+        vid = last(stub)["volume_id"]
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b"})
+        stub = _Stub()
+        storage._volume_open(stub, "p", "3", "container-b",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+
+        # The creator snapshots; the grantee's attempts fail closed
+        # with the owner gate. (The creator needs its own handle — a
+        # handle is bound to the container that opened it.)
+        stub = _Stub()
+        storage._volume_open(stub, "p", "4", "container-a",
+                             {"volume_id": vid})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        creator_handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_snapshot(stub, "p", "5", "container-a",
+                                 {"handle": creator_handle, "name": "s1"})
+        self.assertTrue(last(stub)["ok"], last(stub))
+        for i, (op, payload) in enumerate([
+            ("volume_snapshot", {"handle": handle, "name": "s2"}),
+            ("volume_restore", {"handle": handle, "name": "s1"}),
+            ("volume_snapshot_delete", {"handle": handle, "name": "s1"}),
+        ], start=6):
+            stub = _Stub()
+            getattr(storage, "_" + op)(stub, "p", str(i), "container-b",
+                                       payload)
+            self.assertFalse(last(stub)["ok"], (op, last(stub)))
+            self.assertIn("creator or the operator", last(stub)["error"])
 
     def test_quota_enforced_fail_closed_edquot(self):
         # ADR-0022's accounting increment: a per-container byte quota

@@ -662,6 +662,50 @@ class StorageService:
                 or bool(record.get("grants", {}).get(sender)))
 
     @staticmethod
+    def _grant_scope(record: Dict[str, Any], sender: str) -> Optional[str]:
+        """The path scope of ``sender``'s grant: None when not
+        granted, '/' for a whole-volume grant (or the creator/
+        operator — they are never path-restricted), or the granted
+        subtree path. Persisted shape: ``True`` (whole volume, the
+        0.14.8 format) or ``{"path": str}`` (path-scoped)."""
+        if sender == DEFAULT_OPERATOR_ID or record.get("created_by") == sender:
+            return "/"
+        grant = record.get("grants", {}).get(sender)
+        if grant is None:
+            return None
+        if isinstance(grant, dict):
+            return grant.get("path") or "/"
+        return "/"
+
+    @staticmethod
+    def _path_in_scope(path: str, scope: Optional[str]) -> bool:
+        """True when ``path`` is inside ``scope`` (None or '/' = the
+        whole volume; otherwise the subtree — exact or a descendant)."""
+        if scope in (None, "/", ""):
+            return True
+        return path == scope or path.startswith(scope.rstrip("/") + "/")
+
+    def _check_grant_scope(self, server, sender_path: str, call_id: str,
+                           record: Dict[str, Any], sender: str,
+                           path: Optional[str]) -> bool:
+        """Reject a data-plane op whose path falls outside the caller's
+        grant scope (path-scoped grants, 0.14.15). The creator and
+        operator are never restricted; a whole-volume grant passes
+        everything. Returns True when the op may proceed (the failure
+        reply was already sent otherwise)."""
+        if path is None:
+            return True
+        scope = self._grant_scope(record, sender)
+        if self._path_in_scope(path, scope):
+            return True
+        self._reply(server, sender_path, call_id, {
+            "ok": False,
+            "error": "forbidden: %r is outside your grant scope %r"
+                      % (path, scope),
+        })
+        return False
+
+    @staticmethod
     def _reply(server, sender_path: str, call_id: str,
                body: Dict[str, Any]) -> None:
         server.reply(
@@ -862,7 +906,13 @@ class StorageService:
                       sender: str, request: Dict[str, Any]) -> None:
         """Let another container open the volume (ADR-0022's access
         matrix). CREATOR/OPERATOR-ONLY: a granted container administers
-        nothing — it can only open what it was given."""
+        nothing — it can only open what it was given.
+
+        An optional ``path`` scope (``/subtree``) limits the grant to
+        that subtree: the grantee may open the volume, but every
+        data-plane op on a path outside the scope is rejected. A bare
+        grant (no ``path``) stays a whole-volume grant (back-
+        compatible; persisted as ``True``)."""
         from backend.capability import Capability
         if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
             self._reply(server, sender_path, call_id, {
@@ -888,15 +938,31 @@ class StorageService:
             })
             return
         container = container.strip()
-        record["grants"][container] = True
+        scope_path = request.get("path")
+        if scope_path is not None:
+            if not self._check_path(scope_path):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "path must be an absolute volume path "
+                              "without '..' or trailing '/'",
+                })
+                return
+            # A path-scoped grant: the grantee may open the volume but
+            # only reach data under this subtree.
+            record["grants"][container] = {"path": scope_path}
+        else:
+            # Whole-volume grant (the 0.14.8 shape, back-compatible).
+            record["grants"][container] = True
         self._save_state()
-        logger.info("ipc: %s granted %s access to volume %s (%s)",
-                    self.SERVICE_NAME, container, record["name"],
-                    volume_id[:8])
+        logger.info("ipc: %s granted %s access to volume %s (%s) "
+                    "scope=%s", self.SERVICE_NAME, container,
+                    record["name"], volume_id[:8],
+                    scope_path or "/")
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
             "container": container,
+            "path": scope_path,   # None = whole-volume grant
             "granted": True,
         })
 
@@ -962,10 +1028,13 @@ class StorageService:
         if not self._require_owner(server, sender_path, call_id, sender,
                                    record, "volume_grants"):
             return
+        grants = sorted(
+            {"container": c, "path": self._grant_scope(record, c)}
+            for c in record["grants"])
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
-            "grants": sorted(record["grants"].keys()),
+            "grants": grants,
         })
 
     # -- quota & accounting (ADR-0022 follow-on) --------------------
@@ -1465,6 +1534,9 @@ class StorageService:
                           "without '..' or trailing '/'",
             })
             return
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, path):
+            return
         raw = request.get("data_b64")
         try:
             data = base64.b64decode(raw, validate=True) if raw else b""
@@ -1601,7 +1673,7 @@ class StorageService:
             server, sender_path, call_id, sender, request)
         if resolved is None:
             return
-        _, nyfs = resolved
+        record, nyfs = resolved
         path = request.get("path")
         if not self._check_path(path):
             self._reply(server, sender_path, call_id, {
@@ -1609,6 +1681,9 @@ class StorageService:
                 "error": "path must be an absolute volume path "
                           "without '..' or trailing '/'",
             })
+            return
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, path):
             return
         offset = request.get("offset", 0)
         if not isinstance(offset, int) or offset < 0:
@@ -1656,6 +1731,12 @@ class StorageService:
         if resolved is None:
             return
         record, nyfs = resolved
+        # ADMIN op: a snapshot captures the WHOLE volume tree — a
+        # path-scoped (or any) grantee snapshotting would copy data
+        # outside its scope. CREATOR/OPERATOR-ONLY (0.14.15 tightening).
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_snapshot"):
+            return
         name = request.get("name")
         if not isinstance(name, str) or not re.match(r"^[A-Za-z0-9._-]{1,64}$",
                                                      name):
@@ -1713,6 +1794,12 @@ class StorageService:
         if resolved is None:
             return
         record, nyfs = resolved
+        # ADMIN op: a restore rewrites the WHOLE volume tree — a
+        # grantee restoring would clobber data outside its scope.
+        # CREATOR/OPERATOR-ONLY (0.14.15 tightening).
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_restore"):
+            return
         name = request.get("name")
         if not isinstance(name, str) or not re.match(
                 r"^[A-Za-z0-9._-]{1,64}$", name):
@@ -1761,6 +1848,11 @@ class StorageService:
         if resolved is None:
             return
         record, nyfs = resolved
+        # ADMIN op: deleting a snapshot affects the WHOLE volume's
+        # point-in-time history. CREATOR/OPERATOR-ONLY (0.14.15).
+        if not self._require_owner(server, sender_path, call_id, sender,
+                                   record, "volume_snapshot_delete"):
+            return
         name = request.get("name")
         if not isinstance(name, str) or not re.match(
                 r"^[A-Za-z0-9._-]{1,64}$", name):
@@ -1815,7 +1907,7 @@ class StorageService:
             server, sender_path, call_id, sender, request)
         if resolved is None:
             return
-        _, nyfs = resolved
+        record, nyfs = resolved
         args = dict(request)
         args.pop("op", None)
         args.pop("service", None)
@@ -1828,6 +1920,12 @@ class StorageService:
                     "error": "path must be an absolute volume path "
                               "without '..' or trailing '/'",
                 })
+                return
+            # Path-scoped grants: the data-plane op must stay inside
+            # the grantee's subtree (the creator/operator are never
+            # restricted).
+            if not self._check_grant_scope(
+                    server, sender_path, call_id, record, sender, path):
                 return
         try:
             result = fn(nyfs, **args)
@@ -1910,6 +2008,15 @@ class StorageService:
                           "without '..' or trailing '/'",
             })
             return
+        # Path-scoped grants: BOTH sides of a rename must stay inside
+        # the grantee's subtree — a rename is a move, and neither the
+        # source nor the destination may leave the scope.
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, src):
+            return
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, dst):
+            return
         try:
             nyfs.rename(src, dst)
         except Exception as e:  # noqa: BLE001 - errno mapping below
@@ -1957,6 +2064,9 @@ class StorageService:
                 "error": "path must be an absolute volume path "
                           "without '..' or trailing '/'",
             })
+            return
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, path):
             return
         if not isinstance(length, int) or length < 0:
             self._reply(server, sender_path, call_id, {

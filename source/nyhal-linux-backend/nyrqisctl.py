@@ -121,8 +121,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "vault-volume-list":
         return {"service": "storage", "op": "volume_list"}
     if command == "vault-volume-grant":
-        return _volume_ref({"service": "storage", "op": "volume_grant",
-                            "container": args.container}, args)
+        payload = _volume_ref(
+            {"service": "storage", "op": "volume_grant",
+             "container": args.container}, args)
+        if args.path:
+            payload["path"] = args.path
+        return payload
     if command == "vault-volume-revoke":
         return _volume_ref({"service": "storage", "op": "volume_revoke",
                             "container": args.container}, args)
@@ -276,8 +280,10 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 for v in volumes]
         return "\n".join(["id\tname\tcreated_by"] + rows)
     if command == "vault-volume-grant":
+        scope = resp.get("path")
+        suffix = (f" (scope: {scope})" if scope else " (whole volume)")
         return (f"volume {resp.get('volume_id')}: container "
-                f"{resp.get('container')} granted access")
+                f"{resp.get('container')} granted access{suffix}")
     if command == "vault-volume-revoke":
         return (f"volume {resp.get('volume_id')}: container "
                 f"{resp.get('container')} access "
@@ -286,8 +292,18 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         grants = resp.get("grants") or []
         if not grants:
             return f"volume {resp.get('volume_id')}: no grants"
+        parts = []
+        for g in grants:
+            if isinstance(g, dict):
+                scope = g.get("path")
+                label = (f"{g.get('container')}@{scope}"
+                         if scope and scope != "/"
+                         else f"{g.get('container')}")
+            else:
+                label = str(g)
+            parts.append(label)
         return (f"volume {resp.get('volume_id')}: "
-                + ", ".join(grants))
+                + ", ".join(parts))
     if command == "vault-volume-close":
         # The close reply is ``{"ok": true}`` — no handle echoed; the
         # operator knows which handle they closed.
@@ -682,6 +698,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Volume id (or use --name)")
     vg.add_argument("--name", default="", help="Volume name")
     vg.add_argument("container", help="The container id to grant access to")
+    vg.add_argument("--path", default="",
+                    help="Limit the grant to a subtree, e.g. /assets "
+                         "(default: whole volume)")
     vg.set_defaults(command="vault-volume-grant")
 
     vrk2 = vsub.add_parser(

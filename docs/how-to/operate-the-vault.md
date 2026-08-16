@@ -101,15 +101,30 @@ explicit access, and revoke it later:
 ```bash
 # Creator or operator:
 nyrqisctl vault grant  --name assets container-b  # by id or --name
+nyrqisctl vault grant  --name assets container-b --path /assets \
+                       # scope the grant to a subtree (0.14.15)
 nyrqisctl vault grants --name assets             # who has access
 nyrqisctl vault revoke --name assets container-b # withdraw it
 ```
 
 Grants are per-container, persist with the registry, and never imply
 the storage capability itself (the grantee still needs
-`CAP_STORAGE_VOLUME` to reach the service). Revoking gates future
-opens; a handle already open keeps working (POSIX open-file
-semantics) until it is closed.
+`CAP_STORAGE_VOLUME` to reach the service). A **path-scoped grant**
+(`--path /assets`) lets the grantee open the volume but rejects every
+data-plane op outside that subtree — write, read, rename (both sides
+must stay inside), truncate — fail-closed; `vault grants` prints
+scoped grants as `container@path`, whole-volume grants bare. A bare
+grant (no `--path`) stays whole-volume, and the old persisted shape
+(`True`) reads as whole-volume for back-compat.
+
+**Admin ops are creator/operator-only** (0.14.15): snapshot, restore,
+and snapshot-delete capture or rewrite the whole volume tree, so a
+granted container — even one with a whole-volume grant — is refused
+those ops. A grantee's data plane is exactly what it was given: the
+paths it can reach.
+
+Revoking gates future opens; a handle already open keeps working
+(POSIX open-file semantics) until it is closed.
 
 ### 3c. Quotas and accounting (per container)
 

@@ -16,6 +16,34 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.15] — 2026-08-16
+
+### Path-scoped grants + admin-op tightening
+
+- **Path-scoped grants**: `volume_grant` may now carry a `path` scope
+  (`/subtree`) — the grantee can open the volume, but every data-plane
+  op on a path outside the subtree is rejected **fail-closed**: write,
+  read, rename (**BOTH sides** of a rename must stay inside the scope;
+  a move cannot escape it either way), and truncate. A bare grant
+  stays a whole-volume grant, persisted back-compatibly as `True`
+  (the 0.14.8 shape); a scoped grant persists as `{"path": ...}` —
+  both survive a daemon restart (tested). The creator and operator
+  are never path-restricted.
+- **Admin-op tightening (the finding this round)**: snapshot /
+  restore / snapshot-delete capture or rewrite the **WHOLE** volume
+  tree — a granted container (even with a whole-volume grant) could
+  snapshot data outside any scope or clobber the entire volume with a
+  restore — so these are now CREATOR/OPERATOR-ONLY, exactly like
+  grants themselves (a grantee's attempt fails closed with "creator
+  or the operator", even with a valid handle — tested).
+- **CLI**: `nyrqisctl vault grant --name assets container-b --path
+  /assets`; `vault grants` prints scoped grants as `container@path`
+  (whole-volume grants bare); the grant reply echoes the scope.
+- Suite 458 → **461** (scope enforcement across write/read/rename-both-
+  sides/truncate, persistence + `True` back-compat, admin-op refusal
+  for grantees; the grant-matrix and CLI payload tests updated for the
+  scope-aware shapes).
+
 ## [0.14.14] — 2026-08-16
 
 ### The quota-event ring — the operator's actionable history

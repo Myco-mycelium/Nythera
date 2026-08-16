@@ -111,8 +111,14 @@ Specifically:
   **creator-scoped by default**; the creator (or operator) may grant
   another container explicit access (`volume_grant` / `volume_revoke`,
   per-container, persisted with the registry) — grants never imply the
-  capability itself. Revocation on container terminate is automatic,
-  matching the existing capability-lifecycle hooks.
+  capability itself. A grant may be **path-scoped** (0.14.15): with
+  `path: /subtree` the grantee's data-plane ops are restricted to the
+  subtree, fail-closed; a bare grant is whole-volume (back-compatible
+  `True`). **Admin ops (snapshot / restore / snapshot-delete) are
+  CREATOR/OPERATOR-ONLY** — they capture or rewrite the whole tree, so
+  a grantee can never snapshot data outside its scope or clobber the
+  volume. Revocation on container terminate is automatic, matching the
+  existing capability-lifecycle hooks.
 - **The in-container byte path is a FUSE passthrough to the service**
   (ADR-0016 stays): the container mounts a thin FUSE view whose
   read/write ops are CALLs to the storage service, so the *container's*
@@ -181,7 +187,16 @@ Specifically:
   accounting/quota policy is likewise follow-on. The cross-container
   access matrix shipped with 0.14.8 (`volume_grant`/`volume_revoke`/
   `volume_grants` — CREATOR/OPERATOR-ONLY, open-file revoke
-  semantics).
+  semantics). **Path scope (0.14.15):** a grant may carry a `path`
+  subtree — the grantee opens the volume but every data-plane op on a
+  path outside the scope is rejected fail-closed (write, read, rename
+  — both sides must stay inside — and truncate); a bare grant stays a
+  whole-volume grant, persisted back-compatibly as `True`. **Admin-op
+  tightening (0.14.15):** snapshot/restore/snapshot-delete capture or
+  rewrite the WHOLE volume tree, so they are CREATOR/OPERATOR-ONLY
+  exactly like grants themselves — a grantee (even whole-volume)
+  cannot snapshot data outside any scope or clobber the volume with a
+  restore.
 
 ### Claimed: per-container quota & accounting (0.14.10)
 
