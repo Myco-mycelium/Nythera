@@ -793,7 +793,25 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**ADR-0024 drafted (Proposed) — the streaming data plane**):
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**the streaming data plane — ADR-0024 first increment, 0.14.20**):
+  large passthrough writes/reads ride ONE pipelined stream instead of
+  N sequential ≤32 KiB CALLs — chunks are ordinary capability-gated
+  `volume_write` CALLs with a `stream_id`/`stream_index`/`stream_count`
+  envelope + per-chunk SHA-256; the service reassembles (out-of-order
+  OK, bound to the first chunk's sender, ≤512 chunks / 30 s TTL,
+  duplicate/mismatch/checksum failure reject the stream) and performs
+  ONE write/quota-check/accounting/commit on the final chunk;
+  streamed reads page in-process and return correlated ≤32 KiB REPLY
+  pieces the client reassembles by index. The wire codec is untouched
+  (byte-identical gate green; the Rust loop needs no change) — the
+  ADR's wire-level framing (codec flag + Rust loop reassembly) is the
+  documented follow-on. `volume_open` advertises `stream: true`;
+  older peers keep paging (the paging path stays forever). Client
+  halves: `call_stream_write` + `call_stream_reply` (floor path).
+  **Measured §29 (`--vault-stream`)**: 1 MiB writes 5.6× / 6.6×
+  (plaintext/encrypted) faster than paged; reads ~1.04× (already
+  flat). Suite 466 → **479**.
+- 2026-08-16 (**ADR-0024 drafted (Proposed) — the streaming data plane**):
   the documented next step of ADR-0022's data plane — chunked
   framing for CALL/REPLY payloads beyond the single-datagram budget
   (stream_id + ordered, checksummed 32 KiB chunks; receiver-side

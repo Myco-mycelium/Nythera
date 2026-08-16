@@ -74,6 +74,7 @@ References:
 """
 
 import ctypes
+import json
 import logging
 import os
 import socket
@@ -558,6 +559,104 @@ class IPCClient:
                     "ipc: dropping REPLY for unknown call %s",
                     reply.reply_to[:8] if reply.reply_to else None,
                 )
+        return None
+
+    def call_stream_write(
+        self, peer_path: str, chunk_payloads: List[bytes],
+        timeout_s: float = 10.0, capabilities: Optional[List[str]] = None,
+    ) -> Optional[IPCMessage]:
+        """Pipelined streaming WRITE (ADR-0024 first increment): send
+        every chunk CALL back-to-back WITHOUT waiting, then await the
+        single reply correlated to the LAST chunk.
+
+        The storage service answers intermediate chunks with no reply
+        and replies once on the final chunk (the correlated write
+        result), so the round trip collapses from one-per-chunk to one
+        per logical write. This is the FLOOR path by design — the Rust
+        client half is single-round-trip and would wait (and time out)
+        for replies the service never sends to intermediate chunks.
+        The wire-level streaming of the Rust client half is the
+        documented follow-on.
+
+        Returns the reply message (or None on timeout). The caller
+        built the chunk payloads (each an ordinary ``volume_write``
+        CALL with the stream envelope) and knows how to interpret the
+        final reply."""
+        msgs = [
+            IPCMessage(
+                message_type=IPCMessageType.CALL,
+                sender_id=self.container_id,
+                payload=payload,
+                capabilities=capabilities or [],
+            )
+            for payload in chunk_payloads
+        ]
+        if not msgs:
+            return None
+        for m in msgs:
+            self._send_message(peer_path, m)
+        last_id = msgs[-1].message_id
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            reply = self.receive(timeout=max(0.05, deadline - time.time()))
+            if reply is None:
+                continue
+            if (reply.message_type == IPCMessageType.REPLY
+                    and reply.reply_to == last_id):
+                return reply
+            # Replies to intermediate chunks never arrive (the service
+            # replies only on the final chunk); anything else is
+            # unrelated — drop and keep waiting.
+        return None
+
+    def call_stream_reply(
+        self, peer_path: str, payload: bytes,
+        timeout_s: float = 10.0, capabilities: Optional[List[str]] = None,
+    ) -> Optional[List[bytes]]:
+        """Streamed READ (ADR-0024 first increment): send ONE CALL
+        (``stream=True`` in the service payload), then collect the
+        correlated REPLYs until ``stream_count`` pieces have arrived.
+
+        Each REPLY's JSON carries ``stream_index``/``stream_count`` and
+        ≤32 KiB of data; the pieces are returned ORDERED by index (the
+        caller decodes each). A single non-stream reply (an old peer
+        or a plain error) is returned as a one-element list so the
+        caller can surface it. FLOOR path by design (see
+        ``call_stream_write``); None on timeout or a service error
+        reply."""
+        msg = IPCMessage(
+            message_type=IPCMessageType.CALL,
+            sender_id=self.container_id,
+            payload=payload,
+            capabilities=capabilities or [],
+        )
+        self._send_message(peer_path, msg)
+        deadline = time.time() + timeout_s
+        pieces: Dict[int, bytes] = {}
+        count: Optional[int] = None
+        while time.time() < deadline:
+            reply = self.receive(timeout=max(0.05, deadline - time.time()))
+            if reply is None:
+                continue
+            if (reply.message_type != IPCMessageType.REPLY
+                    or reply.reply_to != msg.message_id):
+                continue  # unrelated datagram — drop
+            try:
+                body = json.loads(reply.payload.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue  # malformed reply — drop, keep waiting
+            if not body.get("ok"):
+                # A mid-stream failure fails the read; the caller
+                # surfaces the error from the piece it gets.
+                return [reply.payload]
+            idx = body.get("stream_index")
+            n = body.get("stream_count")
+            if not isinstance(idx, int) or not isinstance(n, int):
+                return [reply.payload]  # plain single reply
+            pieces[idx] = reply.payload
+            count = n
+            if len(pieces) == count:
+                return [pieces[i] for i in range(count)]
         return None
 
     def receive(self, timeout: Optional[float] = None) -> Optional[IPCMessage]:

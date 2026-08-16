@@ -5565,6 +5565,371 @@ class TestStorageService(unittest.TestCase):
             server.close()
 
 
+class _StreamStub:
+    """Stub reply server for the streaming handler tests: records
+    every reply the handlers send (payloads already JSON-parsed)."""
+
+    def __init__(self):
+        self.replies = []
+
+    def reply(self, sender_path, call_id, payload):
+        self.replies.append(json.loads(payload.decode("utf-8")))
+
+    @property
+    def last(self):
+        return self.replies[-1]
+
+
+class TestStorageStreaming(unittest.TestCase):
+    """ADR-0024 first increment — the streaming data plane at the
+    service level: chunked ``volume_write`` reassembly (window + TTL +
+    cross-sender binding + per-chunk checksum) with ONE write on the
+    final chunk, streamed ``volume_read`` replies collected by index,
+    the ``stream`` advertisement in ``volume_open``, and the client
+    halves (``call_stream_write`` pipelining, ``call_stream_reply``
+    collection). The wire codec is untouched, so these ride ordinary
+    capability-gated CALLs on either loop path.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    # -- hermetic handler tests (stub reply server) -----------------
+
+    def _stub_storage(self):
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "stream-vault"))
+        return storage, caps
+
+    def _open_handle(self, storage, caps, owner="container-a"):
+        stub = _StreamStub()
+        storage._volume_create(stub, "p", "1", owner, {"name": "svol"})
+        vid = stub.replies[-1]["volume_id"]
+        stub = _StreamStub()
+        storage._volume_open(stub, "p", "2", owner, {"volume_id": vid})
+        return stub, stub.replies[-1]["handle"]
+
+    def _chunk(self, data, index, count, stream_id, **extra):
+        return {
+            "handle": "H", "path": "/big.bin", "offset": 0,
+            "defer_commit": True,
+            "stream_id": stream_id, "stream_index": index,
+            "stream_count": count,
+            "checksum": hashlib.sha256(data).hexdigest(),
+            "data_b64": base64.b64encode(data).decode("ascii"),
+            **extra,
+        }
+
+    def test_stream_write_reassembles_and_writes_once(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        body = bytes(range(256)) * 300  # 76.8 KiB → 3 chunks
+        n = 3
+        sid = os.urandom(6).hex()
+        # Out-of-order arrival: 1, 0, 2 (the last chunk completes).
+        for i, piece in ((1, body[32768:65536]),
+                         (0, body[:32768]),
+                         (2, body[65536:])):
+            stub = _StreamStub()
+            storage._volume_write(
+                stub, "p", "c%d" % i, "container-a",
+                self._chunk(piece, i, n, sid, handle=handle))
+        # Intermediate chunks get NO reply; only the final one replies.
+        ok_replies = [r for r in stub.replies if r.get("ok")]
+        self.assertEqual(len(ok_replies), 1, stub.replies)
+        self.assertEqual(ok_replies[0]["bytes_written"], len(body))
+        # The volume holds the FULL assembled write, in order.
+        record = storage._volumes[storage._by_name["svol"]]
+        nyfs = storage._ensure_nyfs(record)
+        self.assertEqual(nyfs.read("/big.bin"), body)
+        # The slot is gone.
+        self.assertEqual(storage._streams, {})
+
+    def test_stream_write_duplicate_chunk_rejects_stream(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        sid = os.urandom(6).hex()
+        # 3 chunks; send 0 and 1 (the stream is still open), then a
+        # duplicate of 1 BEFORE completion → fail-closed, dropped.
+        for i in (0, 1):
+            stub = _StreamStub()
+            storage._volume_write(
+                stub, "p", "c%d" % i, "container-a",
+                self._chunk(b"x" * 1024, i, 3, sid, handle=handle))
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "c3", "container-a",
+            self._chunk(b"y" * 1024, 1, 3, sid, handle=handle))
+        self.assertFalse(stub.replies[-1]["ok"])
+        self.assertIn("duplicate", stub.replies[-1]["error"])
+        self.assertEqual(storage._streams, {})
+
+    def test_stream_write_cross_sender_rejected(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        sid = os.urandom(6).hex()
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "c0", "container-a",
+            self._chunk(b"a" * 1024, 0, 2, sid, handle=handle))
+        # Give container-b a LEGITIMATE handle to the same volume (it
+        # must pass the handle gate to reach the stream-bind check),
+        # then have it claim container-a's stream_id → the bind fails.
+        caps.initialize_container("container-b")
+        caps.grant_capability("container-b", Capability.CAP_STORAGE_VOLUME)
+        vid = storage._by_name["svol"]
+        stub = _StreamStub()
+        storage._volume_grant(stub, "p", "g1", "container-a", {
+            "volume_id": vid, "container": "container-b"})
+        self.assertTrue(stub.replies[-1]["ok"])
+        stub = _StreamStub()
+        storage._volume_open(stub, "p", "o1", "container-b",
+                             {"volume_id": vid})
+        self.assertTrue(stub.replies[-1]["ok"])
+        handle_b = stub.replies[-1]["handle"]
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "c1", "container-b",
+            self._chunk(b"b" * 1024, 1, 2, sid, handle=handle_b))
+        self.assertFalse(stub.replies[-1]["ok"])
+        self.assertIn("another container", stub.replies[-1]["error"])
+
+    def test_stream_write_checksum_mismatch_rejects(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        sid = os.urandom(6).hex()
+        req = self._chunk(b"tampered", 0, 1, sid, handle=handle)
+        req["checksum"] = "0" * 64  # lies about the data
+        stub = _StreamStub()
+        storage._volume_write(stub, "p", "c0", "container-a", req)
+        self.assertFalse(stub.replies[-1]["ok"])
+        self.assertIn("checksum", stub.replies[-1]["error"])
+
+    def test_stream_write_count_bound_rejected(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        from ipc import storage as storage_mod
+        req = self._chunk(b"x" * 1024, 0, storage_mod._STREAM_MAX_CHUNKS + 1,
+                          os.urandom(6).hex(), handle=handle)
+        stub = _StreamStub()
+        storage._volume_write(stub, "p", "c0", "container-a", req)
+        self.assertFalse(stub.replies[-1]["ok"])
+        self.assertIn("chunk bound", stub.replies[-1]["error"])
+
+    def test_stream_write_ttl_expires_partial_stream(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        from ipc import storage as storage_mod
+        sid = os.urandom(6).hex()
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "c0", "container-a",
+            self._chunk(b"a" * 1024, 0, 3, sid, handle=handle))
+        # Age the slot past the TTL, then finish the stream: the
+        # expired slot is swept on arrival, and the "new" stream starts
+        # from chunk 0 again — so chunk 2 completes only 1/3 chunks
+        # and gets no reply (waiting for more).
+        storage._streams[sid]["last_seen"] -= (
+            storage_mod._STREAM_TTL_S + 1)
+        for i, piece in ((1, b"b" * 1024), (2, b"c" * 1024)):
+            stub = _StreamStub()
+            storage._volume_write(
+                stub, "p", "c%d" % i, "container-a",
+                self._chunk(piece, i, 3, sid, handle=handle))
+        # The old slot was swept (logged); the new partial stream waits.
+        self.assertIn(sid, storage._streams)
+        self.assertEqual(len(storage._streams[sid]["chunks"]), 2)
+
+    def test_stream_write_scoped_quota_checked_once_on_full_payload(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        # A scoped quota that the FULL payload violates but a single
+        # 32 KiB chunk would pass: enforcement must see the assembled
+        # bytes (ADR-0024: one quota check on the whole stream).
+        record = storage._volumes[storage._by_name["svol"]]
+        record["scope_quota"] = {"container-a": {"/big": 40_000}}
+        body = b"z" * 100_000  # 4 chunks
+        n = 4
+        sid = os.urandom(6).hex()
+        for i in range(n):
+            piece = body[i * 32768:(i + 1) * 32768]
+            stub = _StreamStub()
+            storage._volume_write(
+                stub, "p", "c%d" % i, "container-a",
+                self._chunk(piece, i, n, sid, handle=handle,
+                            path="/big/data.bin"))
+        self.assertFalse(stub.replies[-1]["ok"])
+        self.assertEqual(stub.replies[-1].get("errno"), errno.EDQUOT)
+        self.assertIn("scope /big", stub.replies[-1]["error"])
+
+    def test_stream_read_pieces_and_reassembly(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        # Seed a >32 KiB file through the PLAIN paged path (each write
+        # ≤32 KiB — the pre-streaming surface must still work).
+        body = os.urandom(90_000)
+        for off in range(0, len(body), 32768):
+            stub = _StreamStub()
+            storage._volume_write(
+                stub, "p", "w%d" % off, "container-a", {
+                    "handle": handle, "path": "/big.bin",
+                    "data_b64": base64.b64encode(
+                        body[off:off + 32768]).decode("ascii"),
+                    "offset": off})
+        # A streamed read: one call, N correlated pieces.
+        stub = _StreamStub()
+        storage._volume_read(stub, "p", "r1", "container-a", {
+            "handle": handle, "path": "/big.bin", "offset": 0,
+            "size": 90_000, "stream": True})
+        self.assertTrue(stub.replies)
+        pieces = sorted(
+            (r["stream_index"], r) for r in stub.replies if r.get("ok"))
+        self.assertEqual([i for i, _ in pieces], list(range(len(pieces))))
+        self.assertEqual(pieces[-1][1]["stream_count"], len(pieces))
+        out = b"".join(
+            base64.b64decode(r["data_b64"], validate=True)
+            for _i, r in pieces)
+        self.assertEqual(out, body)
+        # Every piece stays ≤32 KiB (the datagram budget).
+        self.assertTrue(all(
+            len(base64.b64decode(r["data_b64"])) <= 32768
+            for _i, r in pieces))
+
+    def test_stream_read_eof_short(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "w1", "container-a", {
+                "handle": handle, "path": "/short.bin",
+                "data_b64": base64.b64encode(b"abcdef").decode("ascii"),
+                "offset": 0})
+        stub = _StreamStub()
+        storage._volume_read(stub, "p", "r1", "container-a", {
+            "handle": handle, "path": "/short.bin", "offset": 0,
+            "size": 100_000, "stream": True})
+        self.assertTrue(stub.replies)
+        self.assertTrue(all(r.get("ok") for r in stub.replies))
+        out = b"".join(base64.b64decode(r["data_b64"], validate=True)
+                        for r in stub.replies)
+        self.assertEqual(out, b"abcdef")
+        self.assertEqual(len(stub.replies), 1)  # one short piece
+
+    def test_volume_open_advertises_stream(self):
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        self.assertTrue(stub.replies[-1].get("stream"))
+
+    def test_plain_write_still_pages_without_stream_fields(self):
+        # Back-compat: an ordinary write (no stream envelope) behaves
+        # exactly as before — one write per call, durable when
+        # defer_commit is omitted.
+        storage, caps = self._stub_storage()
+        stub, handle = self._open_handle(storage, caps)
+        stub = _StreamStub()
+        storage._volume_write(
+            stub, "p", "w1", "container-a", {
+                "handle": handle, "path": "/x",
+                "data_b64": base64.b64encode(b"plain").decode("ascii"),
+                "offset": 0})
+        self.assertTrue(stub.replies[-1]["ok"])
+        record = storage._volumes[storage._by_name["svol"]]
+        nyfs = storage._ensure_nyfs(record)
+        self.assertEqual(nyfs.read("/x"), b"plain")
+
+    # -- real-server e2e (the passthrough + the wire client halves) --
+
+    def test_passthrough_streamed_write_and_read_round_trip(self):
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(self.tmp, "vault"))
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            resp = json.loads(client.call(
+                svc_path, json.dumps({"service": "storage",
+                                      "op": "volume_create",
+                                      "name": "streamvol"}).encode()
+            ).payload.decode("utf-8"))
+            vid = resp["volume_id"]
+            ops = NyVaultOperations(client, svc_path, vid)
+            # The open reply advertised streaming → the passthrough
+            # engages the stream paths.
+            self.assertTrue(ops._stream_ok)
+            body = os.urandom(100_000)  # 4 chunks
+            self.assertEqual(ops.write("/data.bin", body, 0), len(body))
+            st = ops.getattr("/data.bin")
+            self.assertEqual(st["st_size"], len(body))
+            self.assertEqual(ops.read("/data.bin", len(body), 0), body)
+            # Offset writes still stream correctly (base offset rides
+            # every chunk; the service writes the assembled payload at
+            # it).
+            tail = b"TAIL" * 5000
+            self.assertEqual(
+                ops.write("/data.bin", tail, len(body)), len(tail))
+            self.assertEqual(
+                ops.read("/data.bin", len(body) + len(tail), 0),
+                body + tail)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_passthrough_stream_write_rejects_over_quota(self):
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(self.tmp, "vault"))
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            resp = json.loads(client.call(
+                svc_path, json.dumps({"service": "storage",
+                                      "op": "volume_create",
+                                      "name": "quota-vol"}).encode()
+            ).payload.decode("utf-8"))
+            vid = resp["volume_id"]
+            # A 20 KiB whole-volume quota; the streamed write is 100 KiB.
+            storage._volumes[vid]["quota"] = {
+                DEFAULT_OPERATOR_ID: 20_000}
+            ops = NyVaultOperations(client, svc_path, vid)
+            body = b"q" * 100_000
+            with self.assertRaises(VaultMountError) as ctx:
+                ops.write("/data.bin", body, 0)
+            self.assertEqual(ctx.exception.errno, errno.EDQUOT)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+
 class TestNyVaultOperations(unittest.TestCase):
     """The NyVault FUSE passthrough (ADR-0022): FUSE ops whose
     handlers are storage-service CALLs — exercised without a kernel
@@ -11939,6 +12304,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestServiceRouter))
     suite.addTests(loader.loadTestsFromTestCase(TestControlService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageService))
+    suite.addTests(loader.loadTestsFromTestCase(TestStorageStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

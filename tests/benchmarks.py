@@ -63,6 +63,12 @@ this host in one reproducible script:
   the storage service's per-commit usage refresh (ADR-0022 accounting
   — the NyFS tree walk + attribution + the on-disk physical-byte
   stat) on volumes of 1 k and 10 k files.
+- §29 (streaming vs paged byte path, 2026-08-16): ``--vault-stream``
+  is ADR-0024's evidence run — large passthrough writes/reads on the
+  same volume through BOTH paths (N sequential ≤32 KiB CALLs vs ONE
+  pipelined stream with a single reply), the round-trip + envelope
+  delta the ADR predicts and Architecture Group reviews before
+  accepting it.
 
 Usage:
   python3 tests/benchmarks.py --all       # everything (default)
@@ -82,6 +88,7 @@ Usage:
   python3 tests/benchmarks.py --vault-io     # §26 NyVault byte path
   python3 tests/benchmarks.py --vault-mount-io  # §27 live encrypted mount
   python3 tests/benchmarks.py --ledger-refresh  # §28 quota ledger refresh
+  python3 tests/benchmarks.py --vault-stream  # §29 streaming vs paged
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -1986,6 +1993,114 @@ def benchmark_vault_io(n=200, payloads=(4096, 32 * 1024)):
     return result
 
 
+def benchmark_vault_stream(n=20, payloads=(256 * 1024, 1024 * 1024)):
+    """Streaming vs paged passthrough byte path (§29, 2026-08-16).
+
+    ADR-0024 first increment, measured the way the ADR's acceptance
+    gate demands (the §27 finding): a large logical write/read rides
+    the data plane either as N sequential ≤32 KiB CALLs (paging) or as
+    ONE pipelined stream (chunks sent back-to-back, ONE final reply /
+    ONE reassembled read). This benchmark drives BOTH paths through the
+    real CALL/REPLY loop on the same encrypted volume and reports the
+    throughput delta — the round-trip + envelope collapse the ADR
+    predicts, and the number Architecture Group reviews before
+    accepting ADR-0024.
+    """
+    import json as _json
+    from ipc.transport import (
+        IPCClient, IPCManager, IPCDatagramServer, DEFAULT_OPERATOR_ID,
+    )
+    from ipc.service import ServiceRouter
+    from ipc.storage import StorageService
+    from fuse.vault_mount import NyVaultOperations
+
+    def _loop(encrypted=False):
+        tmp = tempfile.mkdtemp(prefix="nyrqis-vault-stream-")
+        svc_path = os.path.join(tmp, "svc.sock")
+        cli_path = os.path.join(tmp, "cli.sock")
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", svc_path,
+            pid_registry={}, trusted_uids={os.getuid()})
+        kek = None
+        if encrypted:
+            from backend import keys
+            kek = keys.unlock(keys.make_kek_blob(b"bench-vault-secret"),
+                              b"bench-vault-secret")
+        storage = StorageService(
+            capability_manager=None,
+            vault_dir=os.path.join(tmp, "vault"), kek=kek)
+        router = ServiceRouter()
+        router.register("storage", storage)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        try:
+            reply = client.call(svc_path, _json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "bench"}).encode("utf-8"))
+            vid = _json.loads(reply.payload.decode("utf-8"))["volume_id"]
+            ops = NyVaultOperations(client, svc_path, vid)
+            rows = {}
+            for size in payloads:
+                data = os.urandom(size)
+                path = f"/bench-{size}.bin"
+                ops._write_paged(path, data, 0)  # warmup
+                # Paged (the §27 baseline): N sequential CALLs.
+                wp = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops._write_paged(path, data, 0)
+                    wp.append((time.perf_counter_ns() - t0) / 1000.0)
+                # Streamed (ADR-0024): one pipelined stream, one reply.
+                ws = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops._write_stream(path, data, 0)
+                    ws.append((time.perf_counter_ns() - t0) / 1000.0)
+                rp = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops._read_paged(path, size, 0)
+                    rp.append((time.perf_counter_ns() - t0) / 1000.0)
+                rs = []
+                for _ in range(n):
+                    t0 = time.perf_counter_ns()
+                    ops._read_stream(path, size, 0)
+                    rs.append((time.perf_counter_ns() - t0) / 1000.0)
+                rows[f"{size // 1024}k"] = {
+                    "write_paged_p50_us": round(statistics.median(wp), 1),
+                    "write_stream_p50_us": round(statistics.median(ws), 1),
+                    "write_stream_x_faster": round(
+                        statistics.median(wp) / statistics.median(ws), 2)
+                        if ws else None,
+                    "read_paged_p50_us": round(statistics.median(rp), 1),
+                    "read_stream_p50_us": round(statistics.median(rs), 1),
+                    "read_stream_x_faster": round(
+                        statistics.median(rp) / statistics.median(rs), 2)
+                        if rs else None,
+                    "iterations": n,
+                }
+            ops.close()
+            return rows
+        finally:
+            client.close()
+            stop.set()
+            time.sleep(0.3)  # one serve poll cycle (poll_s=0.2)
+            server.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    result = {"plaintext": _loop(encrypted=False)}
+    try:
+        result["encrypted"] = _loop(encrypted=True)
+    except Exception as e:  # noqa: BLE001 - the floor may be absent
+        result["encrypted"] = {"skipped": f"PyNaCl floor unavailable: {e}"}
+    return result
+
+
 def benchmark_zstd_levels():
     """Zstd level sweep (BENCHMARK_PLAN §2) via benchmark_zstd.py."""
     try:
@@ -2084,6 +2199,9 @@ def main():
     parser.add_argument("--ledger-refresh", action="store_true",
                         help="§28 quota ledger refresh cost (ADR-0022 "
                              "per-commit tree walk)")
+    parser.add_argument("--vault-stream", action="store_true",
+                        help="§29 streaming vs paged passthrough byte "
+                             "path (ADR-0024 evidence run)")
     parser.add_argument("--nyfs-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--vault-mount-child", action="store_true",
@@ -2111,7 +2229,7 @@ def main():
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
                 or args.ipcd_control or args.launcher_coldstart
                 or args.vault_io or args.vault_mount_io
-                or args.ledger_refresh)
+                or args.ledger_refresh or args.vault_stream)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -2126,6 +2244,7 @@ def main():
         args.vault_io = True
         args.vault_mount_io = True
         args.ledger_refresh = True
+        args.vault_stream = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -2198,6 +2317,9 @@ def main():
     if args.ledger_refresh:
         _print_section("Quota ledger refresh per commit (§28):",
                        benchmark_ledger_refresh())
+    if args.vault_stream:
+        _print_section("Streaming vs paged passthrough byte path (§29):",
+                       benchmark_vault_stream())
 
 
 if __name__ == "__main__":

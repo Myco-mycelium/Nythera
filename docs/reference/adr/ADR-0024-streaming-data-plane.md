@@ -18,6 +18,30 @@ depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 > implementation, exactly as the quota design was written up before
 > 0.14.10 implemented it.
 >
+> **First increment IMPLEMENTED the same day (0.14.20) — service-level
+> streaming, with the wire-level framing as the documented follow-on:**
+> the streaming data plane now works end-to-end, but the chunk envelope
+> rides ORDINARY capability-gated CALLs and reassembly lives at the
+> storage service + client boundary rather than in the codec header +
+> serving loop. Chunks are `volume_write`/`volume_read` CALLs with a
+> `stream_id`/`stream_index`/`stream_count` envelope + per-chunk SHA-256;
+> the service reassembles writes (bound to the first chunk's sender,
+> ≤512 chunks / 30 s TTL, duplicate/mismatch/checksum failures reject
+> the stream) and performs ONE write/quota-check/accounting/commit on
+> the final chunk; streamed reads page through NyFS in-process and
+> return correlated ≤32 KiB REPLY pieces the client collects by index.
+> **This keeps the wire codec byte-identical (the differential gate
+> stays green) and the Rust serving loop unchanged (chunks dispatch on
+> either loop path)** — the tradeoff accepted for increment 1, exactly
+> as ADR-0022's byte path landed before its streaming. The ADR's
+> wire-level placement (a codec flag distinguishable from an ordinary
+> CALL + Rust loop reassembly serving ALL services, and the Rust client
+> half streaming) remains the follow-on increment. The §29 evidence run
+> (`--vault-stream`) is in `tests/BENCHMARK_RESULTS.md`: 1 MiB writes
+> 5.6× faster plaintext / 6.6× encrypted vs paging; reads ~1.04×
+> (already flat — AEAD block decode dominates, and each piece still
+> rides its own REPLY datagram).
+>
 > **Why now — the measured cost:** ADR-0022's live FUSE-mount benchmark
 > (§27, `tests/BENCHMARK_RESULTS.md`) shows the per-CALL round trip
 > dominates the data plane: a 1 MiB kernel write rides **32 sequential

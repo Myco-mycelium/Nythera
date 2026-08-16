@@ -90,7 +90,15 @@ nyrqisctl vault delete --name assets
 ```
 
 Per-call payloads are capped at 32 KiB (the datagram budget) — page
-large blobs with `--offset`/`--size`, or use a mount (next step).
+large blobs with `--offset`/`--size`, or use a mount. **The FUSE
+passthrough streams large I/O automatically (ADR-0024 first
+increment, 0.14.20)**: a write/read larger than 32 KiB rides ONE
+pipelined stream of chunk CALLs instead of N sequential round trips
+(measured §29: 1 MiB writes ~5.6–6.6× faster), and the passthrough
+falls back to paging against an older daemon that does not advertise
+streaming (`volume_open`'s `stream` flag) or when a stream is
+partial/timed out. The wire protocol is unchanged for ≤32 KiB calls
+and for the CLI byte path (which still pages with `--offset`/`--size`).
 
 ### 3b. Let another container in (grants)
 

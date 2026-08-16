@@ -16,6 +16,54 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.20] — 2026-08-16
+
+### The streaming data plane — ADR-0024 first increment
+
+- **A large write/read rides ONE pipelined stream instead of N
+  sequential CALLs** (ADR-0024 first increment). A logical write
+  larger than the 32 KiB per-call cap is split client-side into
+  ≤32 KiB chunks, each an ORDINARY capability-gated `volume_write`
+  CALL carrying a `stream_id`/`stream_index`/`stream_count` envelope
+  and a per-chunk SHA-256 `checksum`; the service reassembles (chunks
+  may arrive out of order) and performs **ONE write, ONE quota check,
+  ONE accounting charge, and ONE commit** when the final chunk
+  arrives, replying once. Reads: one `volume_read` CALL with
+  `stream=True` returns a sequence of correlated ≤32 KiB REPLYs that
+  the client reassembles by index.
+- **The wire codec is untouched** — chunks are ordinary CALLs, so the
+  byte-identical differential gate stays green and the Rust serving
+  loop needs no change (chunks dispatch on either loop path). The
+  ADR's wire-level framing (a codec flag + Rust loop reassembly for
+  ALL services) is the documented follow-on increment.
+- **Bounds mirror the ADR's window + TTL**: at most 512 chunks (16 MiB)
+  per stream, a 30 s reassembly TTL (incomplete streams are swept),
+  duplicate/mismatched chunks reject the whole stream fail-closed, and
+  a stream is bound to the first chunk's sender (a chunk from another
+  container fails even with a matching id).
+- **Mixed-version degradation is first-class**: `volume_open` now
+  advertises `stream: true`; a passthrough that never sees the flag
+  (an older daemon) keeps paging in ≤32 KiB CALLs, and the paging
+  paths stay implemented forever as the fallback (also on a partial/
+  timed-out stream).
+- **Client halves**: `IPCClient.call_stream_write` (pipelined chunk
+  sends, one final reply) and `IPCClient.call_stream_reply` (collect
+  correlated pieces by index) — both the Python floor path by design
+  (the Rust client half is single-round-trip; its streaming is the
+  follow-on).
+- **Measured (§29, `--vault-stream`)**: 1 MiB writes **5.6× faster
+  plaintext / 6.6× encrypted** vs the paged path (355.9 → 64.1 ms;
+  511.4 → 77.9 ms); reads ~1.02–1.08× (their cost was already flat —
+  AEAD block decode dominates, and each piece still rides its own
+  REPLY datagram). The evidence Architecture Group reviews before
+  accepting ADR-0024.
+- New `TestStorageStreaming` (13 tests: out-of-order reassembly,
+  duplicate/cross-sender/checksum/count-bound rejection, TTL sweep,
+  single-write enforcement on the FULL payload (scoped-EDQUOT on the
+  assembled bytes), streamed-read pieces + EOF, the open
+  advertisement, plain-path back-compat, and two real-server e2e
+  round trips incl. a quota-rejected stream). Suite 466 → **479**.
+
 ## [0.14.19] — 2026-08-16
 
 ### Per-subtree quotas — budget each scope of a shared volume

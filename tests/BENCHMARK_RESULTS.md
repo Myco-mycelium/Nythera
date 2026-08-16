@@ -1115,6 +1115,40 @@ finding), so the quota ledger adds a rounding error to each
 fsync/interval/close commit even at 10 k files. It is a pure in-memory
 walk plus one `stat` pass over the state dir; no disk writes.
 
+## 29. Streaming vs Paged Passthrough Byte Path (2026-08-16)
+
+ADR-0024's evidence run (`--vault-stream`): large passthrough
+writes/reads driven through BOTH data-plane paths on the same volume,
+plaintext and ADR-0023-encrypted — the pre-streaming baseline (N
+sequential ≤32 KiB CALLs, one round trip + one dispatch per chunk)
+versus the ADR-0024 first increment (ONE pipelined stream: every chunk
+sent back-to-back as an ordinary capability-gated CALL, ONE final
+reply / ONE reassembled read, one dispatch, one quota check, one
+commit). p50 of 20 iterations, 256 KiB and 1 MiB payloads:
+
+| Payload | Write paged | Write streamed | Δ | Read paged | Read streamed | Δ |
+|---------|-------------|----------------|-----|------------|---------------|-----|
+| 256 KiB plaintext | 38.0 ms | 16.1 ms | **2.4×** | 29.9 ms | 27.6 ms | 1.08× |
+| 1 MiB plaintext | 355.9 ms | 64.1 ms | **5.6×** | 329.4 ms | 323.7 ms | 1.02× |
+| 256 KiB encrypted | 51.9 ms | 20.0 ms | **2.6×** | 40.4 ms | 38.9 ms | 1.04× |
+| 1 MiB encrypted | 511.4 ms | 77.9 ms | **6.6×** | 472.3 ms | 464.5 ms | 1.02× |
+
+Reading: **the streaming data plane delivers what ADR-0024 predicted**
+— the write path collapses the per-chunk round trip + dispatch + JSON
+envelope overhead: 1 MiB writes are ~5.6× faster plaintext and ~6.6×
+faster encrypted, and the gap grows with payload size (32 round trips
+→ 1). **Reads barely move (~1.02–1.08×): the read cost was already
+flat across chunk sizes in §27 (the AEAD block decode dominates, not
+round trips), and a streamed read still carries each ≤32 KiB piece in
+its own REPLY datagram — so the honest win is the write path and the
+single dispatch, exactly as the ADR's consequences section scoped it.**
+The service-level framing rides ordinary CALLs (the wire codec is
+untouched — byte-identical gate green — and the Rust serving loop
+needs no change); the wire-level framing (codec flag + Rust loop
+reassembly for ALL services) is the documented follow-on increment.
+This is the evidence Architecture Group reviews before accepting
+ADR-0024.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

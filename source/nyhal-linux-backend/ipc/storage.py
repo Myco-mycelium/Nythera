@@ -117,10 +117,25 @@ logger = logging.getLogger(__name__)
 # Byte-path payload cap: the transport's datagram buffers are 64 KiB
 # (CALL and REPLY alike), so a single volume op must stay under that
 # once JSON + base64 are accounted for. 32 KiB of data → ~43.7 KiB of
-# base64 + ~1 KiB of envelope. Streaming (the FUSE passthrough byte
-# path of ADR-0022) is the future path; this increment pages with
-# ``offset``/``size``.
+# base64 + ~1 KiB of envelope.
 _MAX_IO_BYTES = 32 * 1024
+
+# Streaming data plane (ADR-0024 first increment): a logical byte op
+# larger than ``_MAX_IO_BYTES`` rides as a STREAM of ordinary
+# ``volume_write``/``volume_read`` CALLs — each chunk ≤ ``_MAX_IO_BYTES``
+# with a ``stream_id``/``stream_index``/``stream_count`` envelope and a
+# per-chunk SHA-256 checksum — reassembled here (writes) or by the
+# client (reads). The wire codec is untouched (byte-identical gate
+# stays green) and the Rust serving loop needs no change: chunks are
+# ordinary capability-gated CALLs on either loop path. Bounds mirror
+# the ADR's wire-level window + TTL: a stream may hold at most
+# ``_STREAM_MAX_CHUNKS`` chunks (16 MiB at 32 KiB) and must complete
+# within ``_STREAM_TTL_S``; an incomplete/oversized stream is dropped
+# fail-closed and the caller's paging path (which stays implemented
+# forever) takes over. The wire-level framing (a codec flag + Rust
+# loop reassembly for ALL services) is the documented follow-on.
+_STREAM_MAX_CHUNKS = 512
+_STREAM_TTL_S = 30.0
 
 # Volume paths are flat-ish blob names under the volume root: absolute,
 # no ``..`` segments (the NyFS tree is the volume's own namespace, but a
@@ -194,6 +209,15 @@ class StorageService:
         # Bounded, and persisted with the registry at each commit so a
         # daemon restart keeps the operator's recent history (0.14.18).
         self._events: Deque[Dict[str, Any]] = deque(maxlen=_EVENT_RING_SIZE)
+        # Stream reassembly buffers (ADR-0024 first increment):
+        # stream_id -> slot. Keyed by stream_id alone so the ADR's
+        # "bind to the sender of its first chunk" rule holds — a chunk
+        # whose sender differs from the slot's owner is rejected (a
+        # stream_id is CSPRNG 48-bit+, so cross-sender collision is
+        # already unguessable; the check is the fail-closed floor).
+        # Slots are in-memory diagnostics-bounded state (never
+        # persisted): an incomplete stream dies with the daemon.
+        self._streams: Dict[str, Dict[str, Any]] = {}
         self._load_state()
 
     # -- persistence -------------------------------------------------
@@ -906,6 +930,12 @@ class StorageService:
             "ok": True,
             "handle": handle,
             "volume_id": volume_id,
+            # ADR-0024 first increment: the service advertises the
+            # streaming data plane so a NEW client only streams
+            # against a peer that understands the stream envelope
+            # (a client that never sees the flag keeps paging — the
+            # mixed-version degradation path).
+            "stream": True,
         })
 
     def _volume_list(self, server, sender_path: str, call_id: str,
@@ -1646,16 +1676,15 @@ class StorageService:
         if resolved is None:
             return
         record, nyfs = resolved
-        path = request.get("path")
-        if not self._check_path(path):
-            self._reply(server, sender_path, call_id, {
-                "ok": False,
-                "error": "path must be an absolute volume path "
-                          "without '..' or trailing '/'",
-            })
-            return
-        if not self._check_grant_scope(
-                server, sender_path, call_id, record, sender, path):
+        # Streaming data plane (ADR-0024 first increment): a write with
+        # a ``stream_id`` envelope is a chunk of a larger logical write.
+        # The stream path validates + buffers chunks and performs ONE
+        # write (one quota check, one accounting charge, one commit)
+        # when the final chunk arrives.
+        if request.get("stream_id") is not None:
+            self._volume_write_stream(
+                server, sender_path, call_id, sender, record, nyfs,
+                request)
             return
         raw = request.get("data_b64")
         try:
@@ -1679,6 +1708,33 @@ class StorageService:
                 "ok": False,
                 "error": "offset must be a non-negative integer",
             })
+            return
+        defer_commit = bool(request.get("defer_commit"))
+        self._write_once(
+            server, sender_path, call_id, sender, record, nyfs, request,
+            path=request.get("path"), data=data, offset=offset,
+            defer_commit=defer_commit)
+
+    def _write_once(self, server, sender_path: str, call_id: str,
+                    sender: str, record: Dict[str, Any], nyfs: Any,
+                    request: Dict[str, Any], *, path: Any, data: bytes,
+                    offset: int, defer_commit: bool) -> None:
+        """The single-write core shared by the plain ``volume_write``
+        path and the stream-final path (ADR-0024): path + scope checks,
+        quota enforcement, one NyFS write, accounting, commit, reply.
+        A stream's final chunk calls this exactly once with the FULL
+        assembled payload, so a 1 MiB streamed write is one dispatch,
+        one quota check, one accounting charge, and one commit — not 32.
+        """
+        if not self._check_path(path):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "path must be an absolute volume path "
+                          "without '..' or trailing '/'",
+            })
+            return
+        if not self._check_grant_scope(
+                server, sender_path, call_id, record, sender, path):
             return
         # Quota enforcement (ADR-0022, 0.14.19): fail-closed BEFORE the
         # write touches the tree. EVERY applicable cap must pass: the
@@ -1739,7 +1795,6 @@ class StorageService:
         # or the interval check below; a daemon crash before then
         # loses it — exactly POSIX fsync semantics, spelled out in the
         # vault runbook.
-        defer_commit = bool(request.get("defer_commit"))
         try:
             from fuse.nyfs import NyFSError
             written = self._nyfs_write(nyfs, path, data, offset)
@@ -1806,6 +1861,161 @@ class StorageService:
             "warning": writer_warning,
         })
 
+    # -- streaming data plane (ADR-0024 first increment) ------------
+
+    def _volume_write_stream(self, server, sender_path: str, call_id: str,
+                             sender: str, record: Dict[str, Any], nyfs: Any,
+                             request: Dict[str, Any]) -> None:
+        """Reassemble a chunked write and perform ONE ``_write_once``
+        when the final chunk arrives.
+
+        Every chunk rides an ordinary ``volume_write`` CALL (so the
+        wire codec, the auth model, and the Rust serving loop are
+        untouched) carrying the stream envelope ``stream_id`` /
+        ``stream_index`` / ``stream_count`` plus a per-chunk SHA-256
+        ``checksum``. Chunks may arrive out of order; the slot is
+        bound to the FIRST chunk's sender (the ADR's "bind to the
+        sender of its first chunk" rule — a stream_id is CSPRNG
+        48-bit+, and the check is the fail-closed floor). Bounds: at
+        most ``_STREAM_MAX_CHUNKS`` chunks (16 MiB at 32 KiB), a TTL
+        (an incomplete stream is dropped — the caller's paging path
+        takes over), and a duplicate/mismatched chunk rejects the
+        whole stream. Intermediate chunks get NO reply — the client
+        pipelines them and awaits the final chunk's reply (the one
+        correlated write result); a rejected stream replies on the
+        offending chunk so the caller fails fast instead of timing
+        out.
+        """
+        stream_id = request.get("stream_id")
+        if not isinstance(stream_id, str) or not (
+                1 <= len(stream_id) <= 64):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream_id must be a 1..64-char string",
+            })
+            return
+        idx = request.get("stream_index")
+        count = request.get("stream_count")
+        if not isinstance(idx, int) or not isinstance(count, int):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream_index/stream_count must be integers",
+            })
+            return
+        if idx < 0 or count <= 0 or idx >= count:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream_index must be in [0, stream_count)",
+            })
+            return
+        if count > _STREAM_MAX_CHUNKS:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream_count %d exceeds the %d-chunk bound"
+                          % (count, _STREAM_MAX_CHUNKS),
+            })
+            return
+        raw = request.get("data_b64")
+        try:
+            data = base64.b64decode(raw, validate=True) if raw else b""
+        except (TypeError, ValueError):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "data_b64 must be valid base64",
+            })
+            return
+        if len(data) > _MAX_IO_BYTES:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream chunk exceeds the %d-byte per-chunk "
+                          "limit" % _MAX_IO_BYTES,
+            })
+            return
+        checksum = request.get("checksum")
+        if not isinstance(checksum, str) or len(checksum) != 64:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "checksum must be a 64-hex SHA-256",
+            })
+            return
+        import hashlib
+        if hashlib.sha256(data).hexdigest() != checksum.lower():
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "stream chunk checksum mismatch",
+            })
+            # A corrupted chunk poisons the whole stream — drop it.
+            self._streams.pop(stream_id, None)
+            return
+        # TTL sweep on arrival: an incomplete stream older than the
+        # window is dropped (bounded memory, independent of the
+        # declared size).
+        now = time.monotonic()
+        expired = [
+            sid for sid, slot in self._streams.items()
+            if now - slot["last_seen"] > _STREAM_TTL_S
+        ]
+        for sid in expired:
+            logger.info(
+                "ipc: dropping expired stream %s (%d/%d chunks)",
+                sid[:8], len(self._streams[sid]["chunks"]),
+                self._streams[sid]["count"],
+            )
+            del self._streams[sid]
+        slot = self._streams.get(stream_id)
+        if slot is None:
+            slot = {
+                "sender": sender,
+                "count": count,
+                "offset": request.get("offset", 0),
+                "path": request.get("path"),
+                "defer_commit": bool(request.get("defer_commit")),
+                "chunks": {},
+                "last_seen": now,
+            }
+            self._streams[stream_id] = slot
+        else:
+            # Bind to the first chunk's sender: a chunk from a
+            # different sender fails closed even with a matching id.
+            if slot["sender"] != sender:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "stream %s belongs to another container"
+                              % (stream_id[:8],),
+                })
+                return
+            if slot["count"] != count:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "stream_count changed mid-stream",
+                })
+                self._streams.pop(stream_id, None)
+                return
+        if idx in slot["chunks"]:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "duplicate stream chunk %d" % idx,
+            })
+            self._streams.pop(stream_id, None)
+            return
+        slot["chunks"][idx] = data
+        slot["last_seen"] = now
+        if len(slot["chunks"]) < count:
+            return  # waiting for more — the client awaits the final reply
+        # Complete: assemble in index order, drop the slot, and run the
+        # single-write core once (quota check + accounting + commit on
+        # the FULL payload — one dispatch, not per-chunk).
+        assembled = b"".join(
+            slot["chunks"][i] for i in range(count))
+        offset = slot["offset"]
+        path = slot["path"]
+        defer_commit = slot["defer_commit"]
+        self._streams.pop(stream_id, None)
+        self._write_once(
+            server, sender_path, call_id, sender, record, nyfs, request,
+            path=path, data=assembled, offset=offset,
+            defer_commit=defer_commit)
+
     @staticmethod
     def _nyfs_write(nyfs, path: str, data: bytes, offset: int) -> int:
         """Create-on-write with mkdir -p semantics: a blob store, so a
@@ -1860,11 +2070,36 @@ class StorageService:
             })
             return
         size = request.get("size", _MAX_IO_BYTES)
-        if not isinstance(size, int) or size <= 0 or size > _MAX_IO_BYTES:
+        if not isinstance(size, int) or size <= 0:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
-                "error": "size must be 1..%d (page with offset)"
-                          % _MAX_IO_BYTES,
+                "error": "size must be a positive integer",
+            })
+            return
+        # Streaming data plane (ADR-0024 first increment): a
+        # ``stream=True`` read may span up to the stream budget (16 MiB)
+        # and comes back as a sequence of correlated REPLYs, each
+        # carrying ``stream_index``/``stream_count`` and ≤32 KiB of
+        # data. The service pages through NyFS itself (in-process — no
+        # wire round trip per page); the client reassembles by index.
+        # The old ≤32 KiB single-reply path stays the default (an old
+        # client never sees the flag and keeps paging).
+        if request.get("stream"):
+            if size > _STREAM_MAX_CHUNKS * _MAX_IO_BYTES:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "streamed read exceeds the %d-byte bound"
+                              % (_STREAM_MAX_CHUNKS * _MAX_IO_BYTES),
+                })
+                return
+            self._volume_read_stream(
+                server, sender_path, call_id, nyfs, path, offset, size)
+            return
+        if size > _MAX_IO_BYTES:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "size must be 1..%d (page with offset; "
+                          "stream=True for larger reads)" % _MAX_IO_BYTES,
             })
             return
         try:
@@ -1883,6 +2118,51 @@ class StorageService:
             "bytes": len(data),
             "offset": offset,
         })
+
+    def _volume_read_stream(self, server, sender_path: str, call_id: str,
+                            nyfs: Any, path: str, offset: int,
+                            size: int) -> None:
+        """Serve a streamed read: page through NyFS in ≤32 KiB pieces
+        and send one correlated REPLY per piece (``stream_index`` /
+        ``stream_count`` in each), so the client reassembles a large
+        read without a round trip per page. The final piece may be
+        short at EOF; ``stream_count`` reflects the pieces actually
+        sent. Each piece carries the volume path and its own
+        ``offset`` so the client can reassemble and diagnose without
+        extra state."""
+        from fuse.nyfs import NyFSError
+        remaining = size
+        pos = offset
+        pieces = []
+        while remaining > 0:
+            want = min(remaining, _MAX_IO_BYTES)
+            try:
+                data = nyfs.read(path, size=want, offset=pos)
+            except NyFSError as e:
+                # A mid-stream failure fails the whole read: send one
+                # final error reply (the client reassembles only on
+                # success).
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "read failed: %s" % (e,),
+                })
+                return
+            pieces.append((pos, data))
+            pos += len(data)
+            if len(data) < want:  # EOF — short read
+                break
+            remaining -= len(data)
+        count = len(pieces)
+        for i, (p, data) in enumerate(pieces):
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "data_b64": base64.b64encode(data).decode("ascii"),
+                "path": path,
+                "bytes": len(data),
+                "offset": p,
+                "stream_index": i,
+                "stream_count": count,
+            })
 
     def _volume_snapshot(self, server, sender_path: str, call_id: str,
                          sender: str, request: Dict[str, Any]) -> None:
