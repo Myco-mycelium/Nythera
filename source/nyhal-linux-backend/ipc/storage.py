@@ -702,6 +702,10 @@ class StorageService:
             "ok": False,
             "error": "forbidden: %r is outside your grant scope %r"
                       % (path, scope),
+            # The honest errno: a scope violation is a permission
+            # denial, so the FUSE passthrough surfaces EACCES to the
+            # kernel instead of a generic EIO.
+            "errno": errno.EACCES,
         })
         return False
 

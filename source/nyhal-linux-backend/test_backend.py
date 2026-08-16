@@ -3935,6 +3935,9 @@ class TestStorageService(unittest.TestCase):
             "offset": 0})
         self.assertFalse(last(stub)["ok"])
         self.assertIn("outside your grant scope", last(stub)["error"])
+        # A scope violation is a permission denial: the honest errno
+        # rides the reply so the FUSE passthrough surfaces EACCES.
+        self.assertEqual(last(stub)["errno"], errno.EACCES)
 
         # The creator puts a file outside the scope; the grantee's
         # read there is rejected too.
@@ -3979,6 +3982,7 @@ class TestStorageService(unittest.TestCase):
             "handle": handle, "from": "/outside", "to": "/assets/z"})
         self.assertFalse(last(stub)["ok"])
         self.assertIn("outside your grant scope", last(stub)["error"])
+        self.assertEqual(last(stub)["errno"], errno.EACCES)
 
         # Truncate outside the scope is rejected; inside passes.
         stub = _Stub()
@@ -4959,6 +4963,146 @@ class TestStorageService(unittest.TestCase):
                     "offset": 0, "size": 32}).encode(), path=sock)
                 self.assertEqual(
                     base64.b64decode(r["data_b64"]), b"granted!")
+            finally:
+                _launch_cleanup(host.container_manager, container)
+        finally:
+            operator.close()
+            host.stop()
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_scoped_grant_restricts_the_passthrough_in_a_container(self):
+        # 0.14.15 through the REAL data plane: a seccomp container
+        # holding a PATH-SCOPED grant (/assets) drives the passthrough
+        # ops — writes inside the scope land, writes/reads outside are
+        # rejected with the honest EACCES riding the CALL reply (a
+        # permission denial, not a generic EIO), and the rejection
+        # never touches the tree (the rejected path still reads as
+        # ENOENT for the operator).
+        if not _direct_launch_supported():
+            self.skipTest("host cannot launch direct-syscall containers")
+        sock = os.path.join(self.tmp, "s.sock")
+        vault = os.path.join(self.tmp, "s-vault")
+        key = os.path.join(self.tmp, "s.key")
+        from backend import keys as keys_mod
+        with open(key, "wb") as f:
+            f.write(keys_mod.make_blob_any(b"scope-secret"))
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=sock, backend_version="9.9.9",
+            vault_dir=vault, vault_key_file=key,
+            vault_passphrase="scope-secret")
+        host.start()
+        operator = IPCClient(
+            DEFAULT_OPERATOR_ID,
+            os.path.join(self.tmp, "s-ctl.sock")).bind()
+        base = tempfile.mkdtemp(prefix="nyrqis-scope-e2e-")
+        cli_path = os.path.join(base, "grantee.sock")
+        ready_path = os.path.join(base, "ready")
+        marker = os.path.join(base, "marker")
+        backend_dir = str(Path(__file__).resolve().parent)
+        try:
+            r = self._call(operator, json.dumps({
+                "service": "storage", "op": "volume_create",
+                "name": "shared"}).encode(), path=sock)
+            self.assertTrue(r["ok"], r)
+            # A PATH-SCOPED grant: /assets only.
+            r = self._call(operator, json.dumps({
+                "service": "storage", "op": "volume_grant",
+                "name": "shared", "container": "grantee",
+                "path": "/assets"}).encode(), path=sock)
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["path"], "/assets")
+            script = (
+                "import json, os, sys, time, errno\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "deadline = time.time() + 15\n"
+                "while not os.path.exists(sys.argv[5]) and "
+                "time.time() < deadline:\n"
+                "    time.sleep(0.01)\n"
+                "from ipc.transport import IPCClient\n"
+                "from fuse.vault_mount import NyVaultOperations, "
+                "VaultMountError\n"
+                "c = IPCClient('grantee', sys.argv[2]).bind()\n"
+                "out = {}\n"
+                "try:\n"
+                "    ops = NyVaultOperations(c, sys.argv[3], "
+                "sys.argv[4])\n"
+                "    ops.write('/assets/ok.txt', b'in-scope', 0)\n"
+                "    out['in_scope'] = True\n"
+                "    try:\n"
+                "        ops.write('/outside.txt', b'nope', 0)\n"
+                "        out['outside_write'] = 'accepted'\n"
+                "    except VaultMountError as e:\n"
+                "        out['outside_write'] = 'denied'\n"
+                "        out['outside_errno'] = e.errno\n"
+                "    try:\n"
+                "        ops.read('/outside.txt', 32, 0)\n"
+                "        out['outside_read'] = 'accepted'\n"
+                "    except VaultMountError as e:\n"
+                "        out['outside_read'] = 'denied'\n"
+                "        out['outside_read_errno'] = e.errno\n"
+                "    out['read'] = ops.read("
+                "'/assets/ok.txt', 32, 0).decode()\n"
+                "    ops.close()\n"
+                "    out['ok'] = True\n"
+                "except Exception as e:\n"
+                "    out['ok'] = False\n"
+                "    out['error'] = repr(e)\n"
+                "open(sys.argv[6], 'w').write(json.dumps(out))\n"
+            )
+            container = host.container_manager.create(ContainerConfig(
+                name="grantee",
+                command=[sys.executable, "-c", script, backend_dir,
+                         cli_path, sock, "shared", ready_path, marker],
+                seccomp=True,
+                capabilities=[
+                    "CAP_IPC_SEND", "CAP_STORAGE_VOLUME",
+                    "CAP_NETWORK_SOCKET", "CAP_NETWORK_BIND",
+                    "CAP_FILESYSTEM_WRITE",
+                ],
+            ))
+            try:
+                host.container_manager.spawn(container)
+                host.capability_manager.grant_capability(
+                    "grantee", Capability.CAP_STORAGE_VOLUME)
+                with open(ready_path, "w") as fh:
+                    fh.write("go")
+                deadline = time.time() + 30.0
+                while time.time() < deadline and not os.path.exists(marker):
+                    time.sleep(0.05)
+                self.assertTrue(
+                    os.path.exists(marker),
+                    "scoped grantee never reached the storage service",
+                )
+                with open(marker) as fh:
+                    out = json.loads(fh.read() or "{}")
+                self.assertTrue(out.get("ok"), out)
+                self.assertTrue(out.get("in_scope"))
+                # The scope violation surfaces with the honest EACCES,
+                # and the rejected path never reached the tree.
+                self.assertEqual(out.get("outside_write"), "denied")
+                self.assertEqual(out.get("outside_errno"), errno.EACCES)
+                self.assertEqual(out.get("outside_read"), "denied")
+                self.assertEqual(out.get("outside_read_errno"), errno.EACCES)
+                self.assertEqual(out.get("read"), "in-scope")
+                # The operator sees the in-scope write and confirms the
+                # rejected path does not exist.
+                r = self._call(operator, json.dumps({
+                    "service": "storage", "op": "volume_open",
+                    "name": "shared"}).encode(), path=sock)
+                self.assertTrue(r["ok"], r)
+                h = r["handle"]
+                r = self._call(operator, json.dumps({
+                    "service": "storage", "op": "volume_read",
+                    "handle": h, "path": "/assets/ok.txt",
+                    "offset": 0, "size": 32}).encode(), path=sock)
+                self.assertEqual(
+                    base64.b64decode(r["data_b64"]), b"in-scope")
+                r = self._call(operator, json.dumps({
+                    "service": "storage", "op": "volume_read",
+                    "handle": h, "path": "/outside.txt",
+                    "offset": 0, "size": 32}).encode(), path=sock)
+                self.assertFalse(r["ok"])
+                self.assertIn("no such file", r["error"].lower())
             finally:
                 _launch_cleanup(host.container_manager, container)
         finally:

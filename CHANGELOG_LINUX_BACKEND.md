@@ -16,6 +16,27 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.16] — 2026-08-16
+
+### Path-scoped grants verified end-to-end + the honest EACCES
+
+- **EACCES on scope violations**: the grant-scope rejection now rides
+  the CALL reply with `errno` 13 (`EACCES`) — a scope violation is a
+  permission denial, so the FUSE passthrough surfaces the honest
+  errno to the kernel instead of a generic `EIO`. Asserted in the
+  hermetic handler tests (write + rename) and in the e2e below.
+- **Verified through a REAL seccomp container** (0.14.15's feature,
+  this round's proof): a container holding a **path-scoped grant**
+  (`/assets`) on an ENCRYPTED volume drives the passthrough ops over
+  the wire — the write inside the scope lands, the write AND read
+  outside the scope are denied with `EACCES` riding the reply, the
+  in-scope write reads back, and the operator confirms the rejected
+  path **never reached the tree** (reads as no-such-file). The full
+  chain: kernel-scoped grant → container CALL → fail-closed scope
+  check → honest errno → operator verification.
+- Suite 461 → **462** (the container e2e; the hermetic scope tests
+  gained the errno assertions).
+
 ## [0.14.15] — 2026-08-16
 
 ### Path-scoped grants + admin-op tightening

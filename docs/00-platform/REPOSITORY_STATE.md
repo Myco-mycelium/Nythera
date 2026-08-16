@@ -789,7 +789,15 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**path-scoped grants + admin-op tightening — 0.14.15**):
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**path-scoped grants e2e + the honest EACCES — 0.14.16**):
+  the grant-scope rejection now rides the CALL reply with errno 13
+  (EACCES — a permission denial, not a generic EIO), so the FUSE
+  passthrough surfaces it to the kernel. Verified through a REAL
+  seccomp container with a path-scoped grant (`/assets`) on an
+  encrypted volume: in-scope write lands, out-of-scope write AND read
+  are denied with EACCES, and the operator confirms the rejected path
+  never reached the tree. Suite 461 → **462**.
+- 2026-08-16 (**path-scoped grants + admin-op tightening — 0.14.15**):
   a grant may now carry a `path` scope (`/subtree`) — the grantee
   opens the volume but every data-plane op outside the subtree is
   rejected fail-closed (write, read, rename — BOTH sides must stay in
@@ -799,7 +807,7 @@ Documentation hygiene, fixed earlier this session:
   path-restricted. **Admin-op tightening**: snapshot / restore /
   snapshot-delete rewrite or capture the WHOLE tree, so they are now
   CREATOR/OPERATOR-ONLY (a grantee fails closed with "creator or the
-  operator" even with a valid handle). CLI: `vault grant --path
+  operator" even with a valid handle).  CLI: `vault grant --path
   /assets`; `vault grants` prints scoped grants as `container@path`.
   Suite 458 → **461**.
 - 2026-08-16 (**the quota-event ring — 0.14.14**): `volume_events` (OPERATOR-ONLY) + `nyrqisctl vault events` expose

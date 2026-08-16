@@ -121,7 +121,9 @@ grant (no `--path`) stays whole-volume, and the old persisted shape
 and snapshot-delete capture or rewrite the whole volume tree, so a
 granted container — even one with a whole-volume grant — is refused
 those ops. A grantee's data plane is exactly what it was given: the
-paths it can reach.
+paths it can reach. A scope violation surfaces as the honest
+`EACCES` (errno 13 — a permission denial, not a generic I/O error)
+through the passthrough to the kernel (0.14.16).
 
 Revoking gates future opens; a handle already open keeps working
 (POSIX open-file semantics) until it is closed.
