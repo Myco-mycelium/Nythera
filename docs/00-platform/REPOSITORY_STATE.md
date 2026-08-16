@@ -806,10 +806,13 @@ Documentation hygiene, fixed earlier this session:
   (CREATOR/OPERATOR-ONLY) sets a per-container byte quota (`bytes:
   null` clears; unlimited default); the write path rejects
   fail-closed with **EDQUOT (errno 122)** before touching the tree,
-  the errno riding the reply to the FUSE passthrough. Quotas +
+  the errno riding the reply to the FUSE passthrough — **verified
+  through a real kernel mount** (an over-quota write on the live
+  encrypted mount raises EDQUOT at the syscall, not a generic EIO;
+  the fail-closed rejection does not wedge the volume). Quotas +
   usage + attribution persist in the registry at every commit
   (restart-safe). CLI: `vault quota-set/quota-get/usage`, verified
-  e2e against a real daemon. Suite 440 → **448**.
+  e2e against a real daemon. Suite 440 → **450**.
 - 2026-08-15 (**group commit + the granted-container data plane +
   the quota design — 0.14.9**): the FUSE `flush` handler is no longer
   a durability boundary (POSIX: close ≠ durable — fsync is the

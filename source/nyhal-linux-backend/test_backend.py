@@ -4491,6 +4491,30 @@ class TestNyVaultOperations(unittest.TestCase):
         finally:
             ops.close()
 
+    def test_edquot_surfaces_through_the_mount(self):
+        # ADR-0022 accounting through the passthrough: an over-quota
+        # write is rejected fail-closed server-side with EDQUOT, and
+        # the errno rides the CALL reply — a kernel mount sees EDQUOT,
+        # not a generic EIO (the adapter maps VaultMountError.errno to
+        # FuseOSError). The rejected write bills NOTHING: the next
+        # within-quota write still lands and the rejected path never
+        # appeared in the tree.
+        self._call({"service": "storage", "op": "volume_quota_set",
+                    "volume_id": self.vid,
+                    "container": DEFAULT_OPERATOR_ID, "bytes": 16})
+        ops = self._ops()
+        try:
+            with self.assertRaises(VaultMountError) as ctx:
+                ops.write("/over.bin", b"x" * 32, 0)
+            self.assertEqual(ctx.exception.errno, errno.EDQUOT)
+            self.assertEqual(ops.write("/ok.bin", b"y" * 16, 0), 16)
+            self.assertEqual(ops.read("/ok.bin", 16, 0), b"y" * 16)
+            with self.assertRaises(VaultMountError) as ctx:
+                ops.getattr("/over.bin")
+            self.assertEqual(ctx.exception.errno, errno.ENOENT)
+        finally:
+            ops.close()
+
     def test_close_releases_the_handle(self):
         ops = self._ops()
         ops.close()
@@ -7773,6 +7797,48 @@ class TestNyVaultLiveMount(unittest.TestCase):
         # A fresh kernel stat/read sees the restored file (the ops read
         # above went through the exact same CALL path).
         self.assertEqual(os.path.getsize(probe), len("original"))
+
+    def test_edquot_reaches_the_kernel_write(self):
+        # ADR-0022 accounting END-TO-END through the REAL kernel: an
+        # over-quota write on the encrypted mount is rejected fail-
+        # closed server-side with EDQUOT, and the errno rides the CALL
+        # reply through the passthrough (VaultMountError -> FuseOSError)
+        # to the kernel. With writeback cache the FUSE write can be
+        # deferred to the page cache, so the error may surface at
+        # fsync rather than the write syscall — both are checked, and
+        # EDQUOT must be among them (not a generic EIO).
+        self.assertTrue(self.mount.attach())
+        self.assertTrue(self.mount.mount(foreground=True, blocking=False))
+        time.sleep(2.0)
+        reply = self.client.call(self.sock, json.dumps({
+            "service": "storage", "op": "volume_quota_set",
+            "volume_id": self.vid, "container": DEFAULT_OPERATOR_ID,
+            "bytes": 64}).encode("utf-8"))
+        self.assertTrue(json.loads(reply.payload.decode("utf-8"))["ok"])
+        probe = os.path.join(self.mnt, "quota.bin")
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT, 0o644)
+        errs = []
+        try:
+            try:
+                os.write(fd, b"x" * 4096)  # 4 KiB >> 64-byte quota
+            except OSError as e:
+                errs.append(e.errno)
+            try:
+                os.fsync(fd)
+            except OSError as e:
+                errs.append(e.errno)
+        finally:
+            os.close(fd)
+        self.assertIn(errno.EDQUOT, errs)
+        # The fail-closed rejection did not wedge the volume: a
+        # within-quota kernel write still lands and reads back.
+        ok_path = os.path.join(self.mnt, "ok.bin")
+        with open(ok_path, "w") as f:
+            f.write("tiny")
+            f.flush()
+            os.fsync(f.fileno())
+        with open(ok_path) as f:
+            self.assertEqual(f.read(), "tiny")
 
 
 class TestNyFSSnapshotDiff(unittest.TestCase):

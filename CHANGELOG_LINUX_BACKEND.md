@@ -51,8 +51,14 @@ ai_assisted: true
   Verified e2e against a real daemon: quota set → over-quota write
   fails with "quota exceeded" (exit 1) → quota-get/usage show the
   billed figure → `--unlimited` clears.
-- Suite 440 → **448** (7 storage-service accounting tests + the CLI
-  quota payload tests + the lifecycle-e2e quota round trip).
+- **EDQUOT verified through a REAL kernel mount**: an over-quota write
+  on the live ENCRYPTED mount surfaces as `EDQUOT` at the syscall
+  (the errno rides the CALL reply → `VaultMountError` → `FuseOSError`
+  → kernel), not a generic EIO — and the fail-closed rejection does
+  not wedge the volume (the next within-quota kernel write lands).
+- Suite 440 → **450** (7 storage-service accounting tests + the CLI
+  quota payload tests + the lifecycle-e2e quota round trip + the
+  passthrough and live-mount EDQUOT tests).
 
 ## [0.14.9] — 2026-08-15
 
