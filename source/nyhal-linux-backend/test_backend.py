@@ -60,6 +60,7 @@ from fuse import nyfs_codec
 from ipc import ipc_codec
 from ui import nstudio  # NUI (.nstudio) runtime consumption floor (ADR-0025)
 from ui import nstudio_codec  # FFI loader for the Rust nyui crate
+from ui.service import NuiService, NUI_DOCUMENT_MAX_BYTES  # operator import gate
 from ipc import transport_codec
 from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
@@ -12858,6 +12859,174 @@ class TestIpcdLoopConformance(unittest.TestCase):
             client.close()
 
 
+class TestNuiService(unittest.TestCase):
+    """The operator NUI import gate (ui/service.py, ADR-0025):
+    ``nui_validate`` runs the import gate and reports a summary;
+    ``nui_load`` validates AND persists the design as the daemon's
+    shell UI. Operator-only — a registered container is refused."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.svc_path = os.path.join(self.tmp, "svc.sock")
+        self.cli_path = os.path.join(self.tmp, "cli.sock")
+
+    def _serve(self, state_dir=None, pid_registry=None):
+        manager = IPCManager()
+        manager.create_endpoint("container-svc", "ep-svc")
+        server = IPCDatagramServer(
+            manager, "ep-svc", self.svc_path,
+            pid_registry=pid_registry or {},
+            trusted_uids={os.getuid()},
+        )
+        nui = NuiService(state_dir=state_dir)
+        router = ServiceRouter()
+        router.register("nui", nui)
+        router.attach(server)
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,), daemon=True).start()
+        return server, stop
+
+    def _call(self, client, payload, timeout=5.0):
+        reply = client.call(self.svc_path, payload, timeout_s=timeout)
+        if reply is None:
+            return None
+        return json.loads(reply.payload.decode("utf-8"))
+
+    def _shell(self):
+        return open(os.path.join(self.FIXTURES, "nyrqis-shell.nstudio")).read()
+
+    def test_operator_validate_shell_design(self):
+        server, stop = self._serve()
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_validate",
+                "document": self._shell()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            summary = resp["summary"]
+            self.assertEqual(summary["version"], "0.4.0")
+            self.assertIn(summary["engine"], ("rust", "python"))
+            self.assertEqual(summary["screens"], ["main"])
+            self.assertEqual(summary["components"], 71)
+            self.assertEqual(summary["behaviors"], 5)
+            self.assertEqual(summary["bindings"], 1)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_validate_rejects_bad_design(self):
+        server, stop = self._serve()
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            bad = self._shell().replace(
+                "Nyrqis.Notification.Show", "Nyrqis.System.Shutdown")
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_validate",
+                "document": bad}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown system action", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_validate_rejects_wrong_version(self):
+        server, stop = self._serve()
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            bad = self._shell().replace(
+                '"version": "0.4.0"', '"version": "0.2.0"')
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_validate",
+                "document": bad}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unsupported schema version", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_validate_rejects_oversized(self):
+        server, stop = self._serve()
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_validate",
+                "document": "x" * (NUI_DOCUMENT_MAX_BYTES + 1024)}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("per-call budget", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_load_persists_shell_design(self):
+        server, stop = self._serve(state_dir=self.tmp)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_load",
+                "document": self._shell()}).encode())
+            self.assertTrue(resp["ok"], resp)
+            expected = os.path.join(self.tmp, "ui", "shell.nstudio")
+            self.assertEqual(resp["path"], expected)
+            self.assertTrue(os.path.exists(expected))
+            # The persisted design re-imports cleanly (round trip).
+            reloaded = nstudio.load(expected)
+            self.assertEqual(len(reloaded.component_ids()), 71)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_operator_load_without_state_dir(self):
+        server, stop = self._serve(state_dir=None)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_load",
+                "document": self._shell()}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("state directory", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_container_cannot_drive_nui(self):
+        # A registered container reaches the router (its pid resolves
+        # first) but the NUI service refuses any non-operator sender.
+        server, stop = self._serve(pid_registry={os.getpid(): "container-A"})
+        client = IPCClient("container-A", self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_validate",
+                "document": self._shell()}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("operator-only", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_unknown_op_rejected(self):
+        server, stop = self._serve()
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_bogus"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("unknown operation", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+
 class TestNstudioImport(unittest.TestCase):
     """The pure-Python NUI (.nstudio) reference floor (ui/nstudio.py,
     ADR-0025): parse, version gate, contract validation, $state:
@@ -12882,7 +13051,8 @@ class TestNstudioImport(unittest.TestCase):
         return text.replace(old, new)
 
     def test_all_fixtures_load(self):
-        for name in ("forge-home", "settings-app", "vault-dashboard", "nyrqis-shell"):
+        for name in ("forge-home", "settings-app", "vault-dashboard",
+                     "nyrqis-shell", "security-center"):
             doc = self._load(name + ".nstudio")
             self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
             self.assertTrue(doc.screens)
@@ -12894,6 +13064,24 @@ class TestNstudioImport(unittest.TestCase):
         self.assertEqual(len(doc.bindings), 1)
         self.assertEqual([s.id for s in doc.screens], ["main"])
         self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
+
+    def test_security_center_fixture_shape(self):
+        doc = self._load("security-center.nstudio")
+        self.assertEqual(len(doc.component_ids()), 71)
+        self.assertEqual(len(doc.behaviors), 4)
+        self.assertEqual(len(doc.bindings), 1)
+        self.assertEqual([s.id for s in doc.screens], ["main"])
+        self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
+        # The lockdown binding maps the Toggle to document state, and
+        # its behavior resolves $state: substitution at action time.
+        toggle = doc.find_component("toggle_lockdown")
+        self.assertIsNotNone(toggle)
+        self.assertEqual(toggle.type, "Toggle")
+        target, name, args = doc.resolve_action("behavior_run_check")
+        self.assertEqual(name, "Nyrqis.Notification.Show")
+        # Whole-string $state: substitution (NFS-001 §7.1) — the
+        # message resolves to the document state value.
+        self.assertEqual(args["message"], "22:09")
 
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13047,7 +13235,8 @@ class TestNstudioCodecConformance(unittest.TestCase):
         self.assertIn(expected_fragment, str(ctx.exception))
 
     def test_crate_accepts_all_fixtures(self):
-        for name in ("forge-home", "settings-app", "vault-dashboard", "nyrqis-shell"):
+        for name in ("forge-home", "settings-app", "vault-dashboard",
+                     "nyrqis-shell", "security-center"):
             nstudio_codec.validate(self._text(name + ".nstudio"))
 
     def test_crate_version_gate(self):
@@ -13186,6 +13375,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerIpcRegistry))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesLoader))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestNuiService))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     

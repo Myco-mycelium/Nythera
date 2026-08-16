@@ -16,6 +16,41 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.23] — 2026-08-16
+
+### NUI follow-on — the import gate over the control plane, a second screen, and §30
+
+- **`ui/service.py` — `NuiService`, the operator NUI import gate over the
+  IPC control plane.** `nui_validate` runs the gate and returns a summary
+  (schema version, engine — `rust` or `python` — screens, component /
+  behavior / binding counts); `nui_load` validates AND persists the
+  design as the daemon's shell UI (`<state-dir>/ui/shell.nstudio`),
+  re-importable on the next load (round trip). Both ops are
+  operator-only — a registered container is refused — with a per-call
+  document budget (`NUI_DOCUMENT_MAX_BYTES`, ~60 KiB datagram budget
+  minus envelope) and unknown-op rejection. Wired into the daemon's
+  `ServiceRouter` under `service: nui`.
+- **`nyrqisctl nui`** — `nui validate <file>` (gate only) and
+  `nui load <file>` (gate + persist) with the usual `--socket`/`--timeout`
+  flags and human-readable summary output; a real end-to-end CLI run
+  drives a live daemon with the **Rust crate as the engine** and rejects
+  a bad design over the wire.
+- **Second NyForge screen — Security Center.** `security-center.nstudio`
+  joins `tests/fixtures/nstudio/` (71 components, 4 behaviors, 1
+  binding — lockdown Toggle bound to state, conditional lockdown
+  behavior, posture `$state:` substitution) and the fixture lists in
+  `TestNstudioImport` + `TestNstudioCodecConformance`.
+- **§30 benchmark — the NUI import gate A/B.** `--nui` measures the
+  parse+validate gate on the security-center fixture, Python floor vs
+  Rust crate in the same process: crate **~2.1× faster at the median**
+  (242 µs vs 502 µs p50) with ~1/3 the variance — evidence for
+  ADR-0025's ADR-0020 performance claim. Results in §30 of
+  `tests/BENCHMARK_RESULTS.md`.
+- **Tests.** `TestNuiService` (8 tests: operator validate/load happy
+  paths, bad design, wrong version, oversized document, load without a
+  state dir, container refusal, unknown op) plus the security-center
+  shape + `$state:` resolution tests — suite 524 → **533**.
+
 ## [0.14.22] — 2026-08-16
 
 ### NUI (.nstudio) runtime consumption — the UI import gate (ADR-0025)

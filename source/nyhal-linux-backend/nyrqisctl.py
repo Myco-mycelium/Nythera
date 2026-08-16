@@ -53,6 +53,7 @@ DEFAULT_TIMEOUT_S = 30.0
 # (when configured) the dedicated health socket (ADR-0021).
 STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
+NUI_COMMANDS = ("nui-validate", "nui-load")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
     "vault-volume-grant", "vault-volume-revoke", "vault-volume-grants",
@@ -108,6 +109,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "container_kill",
             "container_id": args.container_id,
+        }
+    if command in NUI_COMMANDS:
+        return {
+            "service": "nui",
+            "op": command.replace("-", "_"),
+            "document": getattr(args, "document", ""),
         }
     if command == "vault-volume-create":
         return {"service": "storage", "op": "volume_create",
@@ -196,6 +203,19 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
 
 def format_human(command: str, resp: Dict[str, Any]) -> str:
     """Render a successful reply (``ok: true``) for the operator."""
+    if command in NUI_COMMANDS:
+        summary = resp.get("summary") or {}
+        lines = [
+            f"engine:      {summary.get('engine')}",
+            f"schema:      {summary.get('version')}",
+            f"screens:     {', '.join(summary.get('screens') or [])}",
+            f"components:  {summary.get('components')}",
+            f"behaviors:   {summary.get('behaviors')}",
+            f"bindings:    {summary.get('bindings')}",
+        ]
+        if resp.get("path"):
+            lines.append(f"stored:      {resp['path']}")
+        return "\n".join(lines)
     if command == "ping":
         return (
             f"pong (caller={resp.get('container')}, "
@@ -459,7 +479,8 @@ def run(command: str, args: argparse.Namespace) -> int:
         # with container traffic on the main service socket).
         target = args.health_socket
     elif (command in CONTROL_COMMANDS
-          or command in VAULT_COMMANDS) and args.health_socket:
+          or command in VAULT_COMMANDS
+          or command in NUI_COMMANDS) and args.health_socket:
         print(
             "error: the health socket serves status/health only — "
             "control and vault commands use the main --socket",
@@ -502,6 +523,22 @@ def run(command: str, args: argparse.Namespace) -> int:
             print(
                 f"error: write exceeds the {MAX_IO_BYTES}-byte "
                 "per-call limit (page with --offset)",
+                file=sys.stderr,
+            )
+            return 2
+    if command in NUI_COMMANDS:
+        # The .nstudio document rides ONE CALL/REPLY datagram, so the
+        # CLI enforces the service's per-call budget before sending.
+        from ui.service import NUI_DOCUMENT_MAX_BYTES
+        if getattr(args, "file", ""):
+            with open(args.file, "r", encoding="utf-8") as f:
+                args.document = f.read()
+        else:
+            args.document = sys.stdin.read()
+        if len(args.document.encode("utf-8")) > NUI_DOCUMENT_MAX_BYTES:
+            print(
+                f"error: document exceeds the {NUI_DOCUMENT_MAX_BYTES}-byte "
+                "per-call budget (wire streaming is a follow-on)",
                 file=sys.stderr,
             )
             return 2
@@ -874,6 +911,29 @@ def build_parser() -> argparse.ArgumentParser:
     vm.add_argument("--name", default="", help="Mount by volume name")
     vm.add_argument("mount_point", help="Mount point (created if missing)")
     vm.set_defaults(command="vault-volume-mount")
+
+    nui = sub.add_parser(
+        "nui", help="NUI (.nstudio) import gate (ADR-0025) — validate or "
+                     "load a NyForge design on the daemon (operator)")
+    nsub = nui.add_subparsers(dest="nui_cmd", required=True)
+
+    nv = nsub.add_parser(
+        "validate", help="Validate a design against the NUI contract "
+                         "tables (vocabulary, events, actions, bindings, "
+                         "schema version)")
+    nv.add_argument("--file", default="",
+                    help="Read the .nstudio document from FILE "
+                         "(default: stdin)")
+    nv.set_defaults(command="nui-validate")
+
+    nl = nsub.add_parser(
+        "load", help="Validate AND persist the design as the daemon's "
+                      "shell UI (<state-dir>/ui/shell.nstudio); needs a "
+                      "daemon --state-file")
+    nl.add_argument("--file", default="",
+                    help="Read the .nstudio document from FILE "
+                         "(default: stdin)")
+    nl.set_defaults(command="nui-load")
 
     return parser
 

@@ -89,6 +89,7 @@ Usage:
   python3 tests/benchmarks.py --vault-mount-io  # §27 live encrypted mount
   python3 tests/benchmarks.py --ledger-refresh  # §28 quota ledger refresh
   python3 tests/benchmarks.py --vault-stream  # §29 streaming vs paged
+  python3 tests/benchmarks.py --nui  # §30 NUI import gate A/B (floor vs crate)
 
 Honesty notes (NPC-002 §5.2):
 - These are FIRST-PASS microbenchmarks on this host, not the full plan
@@ -2133,6 +2134,49 @@ def benchmark_zstd_levels():
         return {"error": f"zstandard unavailable: {e}"}
 
 
+def benchmark_nui_import(n=500, fixture="security-center.nstudio"):
+    """ADR-0025 A/B: the .nstudio import gate — pure-Python reference
+    floor (``ui/nstudio.py``) vs the Rust nyui crate behind the FFI
+    (``ui/nstudio_codec.py``). Same document, same process, repeated
+    parse+validate; p50/p95 per document. The crate is the shipped hot
+    path (ADR-0020: the UI layer's platform-critical paths must not
+    depend on the Python interpreter); this section reports the
+    per-document import cost of each side so the A/B closes the
+    migration claim.
+    """
+    from ui import nstudio, nstudio_codec
+
+    fixtures = (Path(__file__).resolve().parent.parent / "source"
+                / "nyhal-linux-backend" / "tests" / "fixtures" / "nstudio")
+    text = (fixtures / fixture).read_text(encoding="utf-8")
+
+    def time_it(fn):
+        for _ in range(50):  # warmup
+            fn()
+        lats = []
+        for _ in range(n):
+            t0 = time.perf_counter_ns()
+            fn()
+            lats.append((time.perf_counter_ns() - t0) / 1000.0)
+        lats.sort()
+        return {
+            "iterations": n,
+            "document": fixture,
+            "p50_us": round(percentile(lats, 0.50), 2),
+            "p95_us": round(percentile(lats, 0.95), 2),
+            "mean_us": round(statistics.mean(lats), 2),
+            "min_us": round(lats[0], 2),
+            "max_us": round(lats[-1], 2),
+        }
+
+    result = {"floor": time_it(lambda: nstudio.loads(text))}
+    if nstudio_codec.available():
+        result["crate"] = time_it(lambda: nstudio_codec.validate(text))
+    else:
+        result["crate"] = {"error": "Rust nyui crate not built (CI gate builds it)"}
+    return result
+
+
 def _print_section(title, data):
     print(title)
     for k, v in data.items():
@@ -2202,6 +2246,9 @@ def main():
     parser.add_argument("--vault-stream", action="store_true",
                         help="§29 streaming vs paged passthrough byte "
                              "path (ADR-0024 evidence run)")
+    parser.add_argument("--nui", action="store_true",
+                        help="§30 NUI import gate A/B — Python floor vs "
+                             "Rust nyui crate (ADR-0025)")
     parser.add_argument("--nyfs-mount-child", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--vault-mount-child", action="store_true",
@@ -2229,7 +2276,7 @@ def main():
                 or args.container or args.ipcd_dispatch or args.ipcd_refresh
                 or args.ipcd_control or args.launcher_coldstart
                 or args.vault_io or args.vault_mount_io
-                or args.ledger_refresh or args.vault_stream)
+                or args.ledger_refresh or args.vault_stream or args.nui)
     if not selected or args.all:
         args.ipc = args.ipc_transport = args.ipcd = True
         args.bucket = args.zstd = args.nyfs = True
@@ -2245,6 +2292,7 @@ def main():
         args.vault_mount_io = True
         args.ledger_refresh = True
         args.vault_stream = True
+        args.nui = True
 
     print("Nyrqis Linux Backend — consolidated first-pass benchmarks")
     print("=" * 60)
@@ -2320,6 +2368,9 @@ def main():
     if args.vault_stream:
         _print_section("Streaming vs paged passthrough byte path (§29):",
                        benchmark_vault_stream())
+    if args.nui:
+        _print_section("NUI import gate A/B — floor vs Rust crate (§30):",
+                       benchmark_nui_import())
 
 
 if __name__ == "__main__":

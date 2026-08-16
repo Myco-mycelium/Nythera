@@ -1149,6 +1149,29 @@ reassembly for ALL services) is the documented follow-on increment.
 This is the evidence Architecture Group reviews before accepting
 ADR-0024.
 
+## 30. NUI Import Gate A/B — Python floor vs Rust crate (2026-08-16)
+
+ADR-0025's evidence run (`--nui`): the `.nstudio` parse+validate gate
+(the UI shell's import path) driven through BOTH implementations in the
+same process on the same document — the security-center fixture (71
+components, 4 behaviors, 1 binding, the largest design in the
+fixtures). 500 iterations, p50/p95/mean per document:
+
+| Side | p50 | p95 | mean | min | max |
+|------|-----|-----|------|-----|-----|
+| Python floor (ui/nstudio.py) | 502.19 µs | 994.14 µs | 601.62 µs | 461.90 µs | 1382.12 µs |
+| Rust crate (nyrqis_nyui, FFI) | 241.90 µs | 427.75 µs | 272.55 µs | 234.88 µs | 519.38 µs |
+
+Reading: **the Rust import gate is ~2.1× faster at the median (242 µs
+vs 502 µs) and ~2.3× at the tail (428 µs vs 994 µs p95)** — the
+per-document gate stays sub-millisecond on the floor and the crate
+halves it, with the crate's variance roughly a third of the floor's
+(237 µs min→max spread vs 920 µs). The UI layer's shipped hot path
+per ADR-0020 runs on the crate behind the byte-identical conformance
+gate (ADR-0025 §Differential); the floor remains the reference and
+the tooling path. No gate declared met — this is evidence the
+Architecture Group reviews with ADR-0025.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |

@@ -225,6 +225,19 @@ Two things now, not one:
   tests; differential messages byte-identical floor↔crate). CI gains
   `rust-nyui` + `rust-nyui-conformance` (required gate).
 
+  **2026-08-16 (0.14.23): the import gate rides the control plane.**
+  `NuiService` (`ui/service.py`) exposes `nui_validate` / `nui_load`
+  over the datagram control plane — operator-only (registered
+  containers refused), per-call document budget, `nui_load` persists
+  the design as the daemon's shell UI — with `nyrqisctl nui
+  validate|load` as the CLI (e2e verified against a live daemon with
+  the Rust crate as the engine). The Security Center screen
+  (`security-center.nstudio`, the second NyForge design: 71 components,
+  4 behaviors, 1 binding) joins the fixtures with shape + `$state:`
+  tests. `tests/benchmarks.py --nui` (§30) A/Bs the gate floor-vs-crate:
+  crate ~2.1× faster at the median (242 µs vs 502 µs p50). Suite 524 →
+  **533**.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

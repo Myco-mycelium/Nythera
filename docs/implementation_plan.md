@@ -112,6 +112,13 @@ This roadmap aligns with the existing Nyrqis project milestones where applicable
         floor `ui/nstudio.py`, Rust crate `rust/nyui` behind ABI 1.0.0,
         FFI loader `ui/nstudio_codec.py`, differential conformance gate
         in CI.
+    *   **Control-plane ops (landed 2026-08-16, 0.14.23):** the gate is
+        operator-drivable end to end — `NuiService` (`ui/service.py`)
+        exposes `nui_validate` / `nui_load` over the IPC control plane
+        (operator-only, per-call document budget, `nui_load` persists
+        the design as the daemon's shell UI) with `nyrqisctl nui` as
+        the CLI; §30 of the benchmark suite A/Bs floor vs crate
+        (~2.1× crate win at the median).
     *   **Shell renderer (deferred):** the graphical/declarative shell
         that walks the rendered layout tree — C++ + declarative UI per
         the ADR-0020 matrix, consuming the import gate's output.

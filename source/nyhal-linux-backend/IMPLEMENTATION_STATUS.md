@@ -234,9 +234,22 @@ render the `.nstudio` documents NyForge produces (NFS-001).
 - **CI**: `rust-nyui` (build + tests) and `rust-nyui-conformance`
   (required gate, forces the two classes through the FFI).
 
-Status: **implemented + gated** — the import gate is real; a graphical
-shell renderer (C++/declarative UI per the matrix) is the documented
-follow-on, not yet started.
+**2026-08-16 (0.14.23): the import gate rides the control plane + a
+second screen + §30.** `NuiService` (`ui/service.py`) exposes
+`nui_validate` (gate only) and `nui_load` (gate + persist as the daemon's
+shell UI at `<state-dir>/ui/shell.nstudio`) over the datagram control
+plane — operator-only (a registered container is refused), per-call
+document budget, unknown-op rejection; `nyrqisctl nui validate|load`
+wraps them and a real e2e drives a live daemon with the Rust crate as the
+engine. The Security Center screen (`security-center.nstudio`, the second
+NyForge design) joins the fixtures with its shape + `$state:` tests.
+`tests/benchmarks.py --nui` (§30) A/Bs the gate floor-vs-crate on the
+largest fixture: crate **~2.1× faster at the median** (242 µs vs 502 µs
+p50, ~1/3 the variance). Suite 524 → **533**.
+
+Status: **implemented + gated** — the import gate is real and
+operator-drivable end to end; a graphical shell renderer (C++/declarative
+UI per the matrix) is the documented follow-on, not yet started.
 
 ## Conformance Assessment
 

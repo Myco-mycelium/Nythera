@@ -39,6 +39,7 @@ from ipc.registry import ContainerIpcRegistry
 from ipc.service import BackendStatusService, ServiceRouter
 from ipc.control import ControlService, DEFAULT_OPERATOR_ID
 from ipc.storage import StorageService  # NyVault first increment (ADR-0022)
+from ui.service import NuiService  # NUI import gate (ADR-0025)
 from ipc import loop as ipc_loop
 from ipc.dispatch import IpcdLoopDispatcher
 from fuse.nyfs import NyFSFilesystem
@@ -328,10 +329,17 @@ class StatusServiceHost:
             kek=vault_kek,
             commit_interval=commit_interval,
         )
+        # NUI import gate (ADR-0025): operator-only .nstudio validate /
+        # load. ``nui_load`` persists the shell design next to the
+        # daemon's state file (<state-dir>/ui/shell.nstudio); without a
+        # state file the service validates but cannot load.
+        nui_state_dir = os.path.dirname(state_file) if state_file else None
+        self.nui = NuiService(state_dir=nui_state_dir)
         self.router = ServiceRouter()
         self.router.register("status", self.service)
         self.router.register("control", self.control)
         self.router.register("storage", self.storage)
+        self.router.register("nui", self.nui)
         # The router attaches to whichever serving backend is ACTIVE at
         # start() — the Rust loop's reply sink when the crate is
         # present, the floor server otherwise (exactly one).

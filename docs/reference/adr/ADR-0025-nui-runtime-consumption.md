@@ -17,7 +17,11 @@ depends_on: [NFS-001, NPS-009, ADR-0020]
 **Proposed** — drafted for Architecture Group review. The first increment
 is **implemented and gated the same day (2026-08-16)** as the reference
 floor + Rust crate + conformance gate, mirroring the ADR-0020 migration
-pattern.
+pattern. Follow-on increments landed the same day: the import gate is
+exposed to operators over the IPC control plane (`nui_validate` /
+`nui_load` + `nyrqisctl nui`), a second NyForge-authored screen (the
+Security Center) joins the fixtures, and §30 of the benchmark suite
+measures the floor-vs-crate A/B.
 
 ## Context
 
@@ -67,10 +71,11 @@ boundary).
    `version` is not supported raises `NstudioVersionError`; the runtime
    never guesses.
 
-5. **The four NyForge example designs are test fixtures** in this repo
-   (`source/nyhal-linux-backend/tests/fixtures/nstudio/`), so the runtime
-   is self-contained and CI-verifiable without depending on the NyForge
-   checkout.
+5. **The NyForge example designs are test fixtures** in this repo
+   (`source/nyhal-linux-backend/tests/fixtures/nstudio/` — forge-home,
+   settings-app, vault-dashboard, nyrqis-shell, security-center), so the
+   runtime is self-contained and CI-verifiable without depending on the
+   NyForge checkout.
 
 ## Consequences
 
@@ -80,6 +85,12 @@ boundary).
 - The crate is the first NyRuntime-shaped artifact for the UI layer (the
   serving loop `rust/ipcd` is the first NyRuntime-shaped artifact
   overall).
+- The import gate is operator-drivable end to end: `NuiService`
+  (`ui/service.py`) exposes `nui_validate` (gate only) and `nui_load`
+  (gate + persist as the daemon's shell UI) over the datagram control
+  plane, operator-only (a registered container is refused), with a
+  per-call document budget; `nyrqisctl nui validate|load` wraps it. The
+  CLI e2e drives the real daemon with the Rust crate as the engine.
 - Rendering is deliberately bounded: the floor renders absolute layout
   entries and a text preview. A graphical shell renderer is a separate
   follow-on (C++/declarative UI per the matrix) — this ADR covers the
@@ -87,6 +98,9 @@ boundary).
 - Drift risk is acknowledged and bounded: table changes in NyForge must be
   reflected here; the differential test (`test_error_messages_match_floor`)
   pins the two sides to identical validation semantics.
+- Benchmark evidence (§30) shows the crate's gate is ~2.1× faster than
+  the floor at the median (242 µs vs 502 µs p50 on the security-center
+  fixture) — the ADR-0020 migration's performance claim, measured.
 
 ## Alternatives Considered
 
