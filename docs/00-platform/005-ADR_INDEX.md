@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.15.0
+version: 1.18.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-13
+updated: 2026-08-16
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -42,6 +42,10 @@ only.
 | ADR-0018 | Hash-chained append-only log for capability audit records | Proposed | 2026-07-13 | — |
 | ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
 | ADR-0020 | Implementation languages and the platform boundary | **Accepted** | 2026-08-13 | ADR-0020 v1 superseded by v2 (Python and Rust, 2026-08-12) |
+| ADR-0021 | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** | 2026-08-15 | — |
+| ADR-0022 | NyVault — storage as a daemon-hosted service on the IPC transport | Proposed | 2026-08-15 | — |
+| ADR-0023 | NyVault key manager — envelope encryption with Rust-held key custody | Proposed | 2026-08-15 | — |
+| ADR-0024 | Streaming data plane — chunked framing for large CALL payloads | Proposed | 2026-08-16 | — |
 
 ## ADR Statuses
 
@@ -70,6 +74,9 @@ only.
 | 1.13.0  | 2026-08-12 | Add ADR-0020 (Python and Rust as the implementation languages) — first recorded language strategy |
 | 1.14.0  | 2026-08-13 | ADR-0020 v2.0.0 — canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle (platform-critical execution paths must not depend on the Python interpreter) |
 | 1.15.0  | 2026-08-13 | ADR-0020 **Accepted** by Architecture Group (issue #2) — matrix and boundary rule binding |
+| 1.16.0  | 2026-08-15 | Add ADR-0021 (NyRuntime direction — IPC serving loop behind the FFI boundary); ADR-0021 **Accepted** — close gate met |
+| 1.17.0  | 2026-08-15 | Add ADR-0022 (NyVault storage service) and ADR-0023 (NyVault key manager) |
+| 1.18.0  | 2026-08-16 | Add ADR-0024 (streaming data plane — chunked framing for large CALL payloads) |
 
 ---
 **End of Document**

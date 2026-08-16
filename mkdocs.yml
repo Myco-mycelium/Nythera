@@ -67,6 +67,9 @@ nav:
           - ADR-0019 Journal commit as default save() mode: reference/adr/ADR-0019-journal-commit-default.md
           - ADR-0020 Implementation languages and the platform boundary: reference/adr/ADR-0020-implementation-languages.md
           - ADR-0021 NyRuntime direction — IPC serving loop behind the FFI boundary: reference/adr/ADR-0021-nyruntime-transport-serving-loop.md
+          - ADR-0022 NyVault storage service: reference/adr/ADR-0022-nyvault-storage-service.md
+          - ADR-0023 NyVault key manager: reference/adr/ADR-0023-nyvault-key-manager.md
+          - ADR-0024 Streaming data plane: reference/adr/ADR-0024-streaming-data-plane.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md

@@ -30,6 +30,7 @@ directory; this index tracks status only.
 | [ADR-0021](ADR-0021-nyruntime-transport-serving-loop.md) | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** — close gate met |
 | [ADR-0022](ADR-0022-nyvault-storage-service.md) | NyVault — storage as a daemon-hosted service on the IPC transport | Proposed |
 | [ADR-0023](ADR-0023-nyvault-key-manager.md) | NyVault key manager — envelope encryption with Rust-held key custody | Proposed |
+| [ADR-0024](ADR-0024-streaming-data-plane.md) | Streaming data plane — chunked framing for large CALL payloads | Proposed |
 
 ## Blocked Statuses
 

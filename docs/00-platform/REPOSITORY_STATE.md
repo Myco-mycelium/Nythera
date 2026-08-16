@@ -74,6 +74,10 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 - [ ] ADR-0019 Journal commit as the default NyFS save() mode — **Proposed**, review package for the 2026-08-12 implementer default flip; daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answers its open question 1, AG tuning review pending
 - [x] ADR-0020 Implementation languages and the platform boundary — **Accepted** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); Architecture Group acceptance recorded in issue #2 (closing the issue itself is a manual step — the PAT cannot comment/close issues)
+- [x] ADR-0021 NyRuntime direction — IPC serving loop behind the FFI boundary — **Accepted** (2026-08-15), close gate met (wire p50 82–95 µs vs <100 µs target, §22)
+- [x] ADR-0022 NyVault — storage as a daemon-hosted service on the IPC transport — **Proposed** (2026-08-15) but IMPLEMENTED through the accounting increments (0.14.10–0.14.19: quotas, warnings, event ring, path-scoped grants, subtree quotas); Architecture Group review pending
+- [x] ADR-0023 NyVault key manager — envelope encryption with Rust-held key custody — **Proposed** (2026-08-15) but IMPLEMENTED (at-rest encryption claimed: per-volume DEKs, KEK custody crate, AEAD block layer); Architecture Group review pending
+- [ ] ADR-0024 Streaming data plane — chunked framing for large CALL payloads — **Proposed** (2026-08-16), drafted as the documented next step of ADR-0022's data plane (the 32 KiB per-call cap, §27 paging cost); implementation pending Architecture Group review + the §29 evidence run (`--vault-stream`)
 
 ## Specifications (NPS)
 13 accepted, 14 held (4 named benchmark/dependency blockers, plus
@@ -789,7 +793,19 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**per-subtree quotas — 0.14.19**): `volume_quota_set`
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**ADR-0024 drafted (Proposed) — the streaming data plane**):
+  the documented next step of ADR-0022's data plane — chunked
+  framing for CALL/REPLY payloads beyond the single-datagram budget
+  (stream_id + ordered, checksummed 32 KiB chunks; receiver-side
+  reassembly bound by an in-flight window and a TTL; per-datagram
+  kernel identity and the ADR-0009 token bucket still apply; ≤32 KiB
+  calls byte-identical — back-compat first-class; the paging loop
+  collapses to one streaming CALL per kernel request). Written before
+  implementation per the evidence-first rule; the §29 `--vault-stream`
+  benchmark is the acceptance gate. Registered in the ADR index
+  (README + NPC-005 + mkdocs nav — the nav and NPC-005 also gained
+  the missing ADR-0022/0023 rows).
+- 2026-08-16 (**per-subtree quotas — 0.14.19**): `volume_quota_set`
   gains a `path` scope — the quota becomes an ADDITIONAL cap on
   writes under that scope; every applicable cap (whole-volume AND
   each scoped quota containing the path) must pass, so nested scopes
