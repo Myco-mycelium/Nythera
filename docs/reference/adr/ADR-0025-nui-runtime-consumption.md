@@ -19,9 +19,9 @@ is **implemented and gated the same day (2026-08-16)** as the reference
 floor + Rust crate + conformance gate, mirroring the ADR-0020 migration
 pattern. Follow-on increments landed the same day: the import gate is
 exposed to operators over the IPC control plane (`nui_validate` /
-`nui_load` + `nyrqisctl nui`), a second NyForge-authored screen (the
-Security Center) joins the fixtures, and §30 of the benchmark suite
-measures the floor-vs-crate A/B.
+`nui_load` / `nui_current` + `nyrqisctl nui`), two more NyForge-authored
+screens (the Security Center and the Vault Workspace) join the fixtures,
+and §30 of the benchmark suite measures the floor-vs-crate A/B.
 
 ## Context
 
@@ -73,9 +73,9 @@ boundary).
 
 5. **The NyForge example designs are test fixtures** in this repo
    (`source/nyhal-linux-backend/tests/fixtures/nstudio/` — forge-home,
-   settings-app, vault-dashboard, nyrqis-shell, security-center), so the
-   runtime is self-contained and CI-verifiable without depending on the
-   NyForge checkout.
+   settings-app, vault-dashboard, nyrqis-shell, security-center,
+   vault-workspace), so the runtime is self-contained and CI-verifiable
+   without depending on the NyForge checkout.
 
 ## Consequences
 
@@ -86,11 +86,14 @@ boundary).
   serving loop `rust/ipcd` is the first NyRuntime-shaped artifact
   overall).
 - The import gate is operator-drivable end to end: `NuiService`
-  (`ui/service.py`) exposes `nui_validate` (gate only) and `nui_load`
-  (gate + persist as the daemon's shell UI) over the datagram control
-  plane, operator-only (a registered container is refused), with a
-  per-call document budget; `nyrqisctl nui validate|load` wraps it. The
-  CLI e2e drives the real daemon with the Rust crate as the engine.
+  (`ui/service.py`) exposes `nui_validate` (gate only), `nui_load`
+  (gate + persist as the daemon's shell UI), and `nui_current` (the
+  loaded-design surface — what the daemon has loaded, re-imported
+  through the gate on every call, stale designs surfaced honestly as
+  `valid: false`) over the datagram control plane, operator-only (a
+  registered container is refused), with a per-call document budget;
+  `nyrqisctl nui validate|load|current` wraps them. The CLI e2e drives
+  the real daemon with the Rust crate as the engine.
 - Rendering is deliberately bounded: the floor renders absolute layout
   entries and a text preview. A graphical shell renderer is a separate
   follow-on (C++/declarative UI per the matrix) — this ADR covers the

@@ -241,11 +241,16 @@ shell UI at `<state-dir>/ui/shell.nstudio`) over the datagram control
 plane — operator-only (a registered container is refused), per-call
 document budget, unknown-op rejection; `nyrqisctl nui validate|load`
 wraps them and a real e2e drives a live daemon with the Rust crate as the
-engine. The Security Center screen (`security-center.nstudio`, the second
-NyForge design) joins the fixtures with its shape + `$state:` tests.
-`tests/benchmarks.py --nui` (§30) A/Bs the gate floor-vs-crate on the
-largest fixture: crate **~2.1× faster at the median** (242 µs vs 502 µs
-p50, ~1/3 the variance). Suite 524 → **533**.
+engine. **`nui_current`** (the loaded-design surface: `loaded: false`
+before any design, the persisted summary re-imported through the gate on
+every call, `valid: false` with the message when the persisted file has
+gone stale) rides alongside via `nyrqisctl nui current`. The Security
+Center screen (`security-center.nstudio`, the second NyForge design) and
+the Vault Workspace (`vault-workspace.nstudio`, the third) join the
+fixtures with shape + `$state:` tests. `tests/benchmarks.py --nui` (§30)
+A/Bs the gate floor-vs-crate on the largest fixture: crate **~2.1×
+faster at the median** (242 µs vs 502 µs p50, ~1/3 the variance). Suite
+524 → **538**.
 
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative

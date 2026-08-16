@@ -21,6 +21,13 @@ Operations (JSON request → JSON reply over CALL/REPLY):
   AND, on success, persist the document as the daemon's shell design at
   ``<state_dir>/ui/shell.nstudio`` (atomic write). Rejected without a
   configured state directory.
+- ``{"service": "nui", "op": "nui_current"}`` — report what the
+  daemon has loaded: ``loaded: false`` when no design has been
+  persisted yet (honest, not an error), or the persisted design's
+  summary (re-imported through the gate on every call) plus its path.
+  A persisted design that no longer re-imports cleanly is reported as
+  ``loaded: true, valid: false`` with the validation message — the
+  operator sees the stale design instead of a silent failure.
 
 The import gate itself routes through the Rust crate
 (``ui/nstudio_codec.py``) when it is available and falls back to the
@@ -118,6 +125,9 @@ class NuiService:
             elif op == "nui_load":
                 self._nui_load(server, sender_path, msg.message_id,
                                request)
+            elif op == "nui_current":
+                self._nui_current(server, sender_path, msg.message_id,
+                                  request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -206,6 +216,57 @@ class NuiService:
         })
 
     # -- internals ----------------------------------------------------
+
+    def _nui_current(self, server, sender_path: str, call_id: str,
+                     request: Dict[str, Any]) -> None:
+        """Report the daemon's loaded shell design (see module docstring)."""
+        if not self.state_dir:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "nui_current requires a daemon state directory "
+                         "(--state-file)",
+            })
+            return
+        target = os.path.join(self.state_dir, "ui", "shell.nstudio")
+        if not os.path.exists(target):
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "loaded": False,
+                "service": self.SERVICE_NAME,
+                "service_version": self.SERVICE_VERSION,
+            })
+            return
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                document = handle.read()
+            ok, detail = self._validate_document(document)
+        except OSError as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "loaded": True,
+                "valid": False,
+                "path": target,
+                "error": f"cannot read persisted design: {exc}",
+            })
+            return
+        if not ok:
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "loaded": True,
+                "valid": False,
+                "path": target,
+                "error": f"persisted design no longer validates: {detail}",
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "loaded": True,
+            "valid": True,
+            "path": target,
+            "service": self.SERVICE_NAME,
+            "service_version": self.SERVICE_VERSION,
+            "summary": detail,
+        })
 
     def _validate_document(self, document: str):
         """Run the import gate (crate when available, floor otherwise)

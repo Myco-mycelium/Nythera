@@ -53,7 +53,7 @@ DEFAULT_TIMEOUT_S = 30.0
 # (when configured) the dedicated health socket (ADR-0021).
 STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
-NUI_COMMANDS = ("nui-validate", "nui-load")
+NUI_COMMANDS = ("nui-validate", "nui-load", "nui-current")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
     "vault-volume-grant", "vault-volume-revoke", "vault-volume-grants",
@@ -111,11 +111,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
         }
     if command in NUI_COMMANDS:
-        return {
+        payload = {
             "service": "nui",
             "op": command.replace("-", "_"),
-            "document": getattr(args, "document", ""),
         }
+        if command != "nui-current":
+            # validate/load carry the document; current is a query.
+            payload["document"] = getattr(args, "document", "")
+        return payload
     if command == "vault-volume-create":
         return {"service": "storage", "op": "volume_create",
                 "name": args.name}
@@ -204,6 +207,8 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
 def format_human(command: str, resp: Dict[str, Any]) -> str:
     """Render a successful reply (``ok: true``) for the operator."""
     if command in NUI_COMMANDS:
+        if command == "nui-current" and not resp.get("loaded"):
+            return "no shell design loaded (run `nyrqisctl nui load`)"
         summary = resp.get("summary") or {}
         lines = [
             f"engine:      {summary.get('engine')}",
@@ -215,6 +220,8 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         ]
         if resp.get("path"):
             lines.append(f"stored:      {resp['path']}")
+        if resp.get("loaded") is True and resp.get("valid") is False:
+            lines.append(f"stale:       {resp.get('error')}")
         return "\n".join(lines)
     if command == "ping":
         return (
@@ -530,6 +537,8 @@ def run(command: str, args: argparse.Namespace) -> int:
         # The .nstudio document rides ONE CALL/REPLY datagram, so the
         # CLI enforces the service's per-call budget before sending.
         from ui.service import NUI_DOCUMENT_MAX_BYTES
+        if command == "nui-current":
+            args.document = ""
         if getattr(args, "file", ""):
             with open(args.file, "r", encoding="utf-8") as f:
                 args.document = f.read()
@@ -934,6 +943,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Read the .nstudio document from FILE "
                          "(default: stdin)")
     nl.set_defaults(command="nui-load")
+
+    nc = nsub.add_parser(
+        "current", help="Report the daemon's loaded shell design: "
+                        "nothing loaded, or the persisted design's "
+                        "summary (re-imported through the gate)")
+    nc.set_defaults(command="nui-current")
 
     return parser
 

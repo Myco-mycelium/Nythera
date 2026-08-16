@@ -13026,6 +13026,84 @@ class TestNuiService(unittest.TestCase):
             stop.set()
             server.close()
 
+    def test_current_before_any_load(self):
+        # Nothing persisted yet is honest success, not an error: the
+        # daemon reports loaded:false so the operator knows the shell
+        # is unset (vs the call itself failing).
+        server, stop = self._serve(state_dir=self.tmp)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_current"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertFalse(resp["loaded"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_current_after_load_reports_summary(self):
+        server, stop = self._serve(state_dir=self.tmp)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            load_resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_load",
+                "document": self._shell()}).encode())
+            self.assertTrue(load_resp["ok"], load_resp)
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_current"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertTrue(resp["loaded"])
+            self.assertTrue(resp["valid"])
+            self.assertEqual(resp["summary"]["components"], 71)
+            self.assertEqual(resp["summary"]["screens"], ["main"])
+            self.assertEqual(resp["path"],
+                             os.path.join(self.tmp, "ui", "shell.nstudio"))
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_current_reports_stale_design(self):
+        # A persisted design that no longer re-imports cleanly is
+        # surfaced honestly (loaded:true, valid:false) — the operator
+        # sees the stale shell instead of a silent failure.
+        server, stop = self._serve(state_dir=self.tmp)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            load_resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_load",
+                "document": self._shell()}).encode())
+            self.assertTrue(load_resp["ok"], load_resp)
+            # Corrupt the persisted file out from under the daemon
+            # (malformed JSON fails the gate on the next nui_current).
+            target = os.path.join(self.tmp, "ui", "shell.nstudio")
+            with open(target, "w") as fh:
+                fh.write("{not json")
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_current"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertTrue(resp["loaded"])
+            self.assertFalse(resp["valid"])
+            self.assertIn("no longer validates", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_current_without_state_dir(self):
+        server, stop = self._serve(state_dir=None)
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "nui", "op": "nui_current"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("state directory", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
 
 class TestNstudioImport(unittest.TestCase):
     """The pure-Python NUI (.nstudio) reference floor (ui/nstudio.py,
@@ -13052,7 +13130,7 @@ class TestNstudioImport(unittest.TestCase):
 
     def test_all_fixtures_load(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
-                     "nyrqis-shell", "security-center"):
+                     "nyrqis-shell", "security-center", "vault-workspace"):
             doc = self._load(name + ".nstudio")
             self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
             self.assertTrue(doc.screens)
@@ -13082,6 +13160,25 @@ class TestNstudioImport(unittest.TestCase):
         # Whole-string $state: substitution (NFS-001 §7.1) — the
         # message resolves to the document state value.
         self.assertEqual(args["message"], "22:09")
+
+    def test_vault_workspace_fixture_shape(self):
+        doc = self._load("vault-workspace.nstudio")
+        self.assertEqual(len(doc.component_ids()), 71)
+        self.assertEqual(len(doc.behaviors), 4)
+        self.assertEqual(len(doc.bindings), 1)
+        self.assertEqual([s.id for s in doc.screens], ["main"])
+        self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
+        # The auto-snapshot binding maps the Toggle to document state;
+        # the conditional behavior fires when the state flips false.
+        toggle = doc.find_component("toggle_auto")
+        self.assertIsNotNone(toggle)
+        self.assertEqual(toggle.type, "Toggle")
+        condition = doc.behavior_by_id("behavior_snapshot_off").condition
+        self.assertEqual(condition["state"], "autoSnapshot")
+        self.assertEqual(condition["operator"], "equals")
+        target, name, args = doc.resolve_action("behavior_sync_now")
+        self.assertEqual(name, "Nyrqis.Notification.Show")
+        self.assertEqual(args["message"], "22:41")
 
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13236,7 +13333,7 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
     def test_crate_accepts_all_fixtures(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
-                     "nyrqis-shell", "security-center"):
+                     "nyrqis-shell", "security-center", "vault-workspace"):
             nstudio_codec.validate(self._text(name + ".nstudio"))
 
     def test_crate_version_gate(self):

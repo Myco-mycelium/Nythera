@@ -1,0 +1,672 @@
+{
+  "version": "0.4.0",
+  "project": {
+    "name": "Nyrqis Vault Workspace",
+    "id": "example-vault-workspace",
+    "created": "2026-08-16T00:00:00+00:00",
+    "updated": "2026-08-16T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "components": [],
+  "states": {
+    "autoSnapshot": true,
+    "lastSync": "22:41",
+    "posture": "guarded"
+  },
+  "behaviors": [
+    {
+      "id": "behavior_sync_now",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Vault synced",
+          "message": "$state:lastSync",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_snapshot_off",
+      "condition": {
+        "state": "autoSnapshot",
+        "operator": "equals",
+        "value": false
+      },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Auto-snapshot paused",
+          "message": "Snapshot on demand only",
+          "severity": "warning"
+        }
+      }
+    },
+    {
+      "id": "behavior_new_volume",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "New volume",
+          "message": "Volume creation wizard opened",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_snapshot_now",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Snapshot taken",
+          "message": "assets@2026-08-16-22:41",
+          "severity": "info"
+        }
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "component": "toggle_auto",
+      "property": "value",
+      "state": "autoSnapshot"
+    }
+  ],
+  "screens": [
+    {
+      "id": "main",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_vault",
+        "type": "Window",
+        "properties": {
+          "title": "Nyrqis Vault Workspace",
+          "width": 1440,
+          "height": 900
+        },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "sb_top",
+            "type": "StatusBar",
+            "properties": { "background": "Surface" },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 48 },
+            "events": {},
+            "children": [
+              {
+                "id": "brand",
+                "type": "Text",
+                "properties": { "text": "NYRQIS VAULT" },
+                "layout": { "x": 16, "y": 12, "width": 240, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "toggle_auto",
+                "type": "Toggle",
+                "properties": { "value": true, "label": "Auto-snapshot" },
+                "layout": { "x": 848, "y": 8, "width": 200, "height": 32 },
+                "events": { "changed": "behavior_snapshot_off" },
+                "children": []
+              },
+              {
+                "id": "sb_posture",
+                "type": "Text",
+                "properties": { "text": "SYNC · CURRENT" },
+                "layout": { "x": 1088, "y": 12, "width": 176, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "sb_clock",
+                "type": "Text",
+                "properties": { "text": "22:41:33" },
+                "layout": { "x": 1232, "y": 12, "width": 144, "height": 24 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "rail_main",
+            "type": "NavigationRail",
+            "properties": { "collapsible": true },
+            "layout": { "x": 0, "y": 48, "width": 72, "height": 852 },
+            "events": {},
+            "children": [
+              {
+                "id": "rail_home_icon",
+                "type": "Icon",
+                "properties": { "glyph": "❖" },
+                "layout": { "x": 12, "y": 64, "width": 48, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_home_label",
+                "type": "Text",
+                "properties": { "text": "Home" },
+                "layout": { "x": 4, "y": 116, "width": 64, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_files_icon",
+                "type": "Icon",
+                "properties": { "glyph": "◈" },
+                "layout": { "x": 12, "y": 152, "width": 48, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_files_label",
+                "type": "Text",
+                "properties": { "text": "Files" },
+                "layout": { "x": 4, "y": 204, "width": 64, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_vault_icon",
+                "type": "Icon",
+                "properties": { "glyph": "▣" },
+                "layout": { "x": 12, "y": 240, "width": 48, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_vault_label",
+                "type": "Text",
+                "properties": { "text": "Vault" },
+                "layout": { "x": 4, "y": 292, "width": 64, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_security_icon",
+                "type": "Icon",
+                "properties": { "glyph": "⚠" },
+                "layout": { "x": 12, "y": 328, "width": 48, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "rail_security_label",
+                "type": "Text",
+                "properties": { "text": "Security" },
+                "layout": { "x": 4, "y": 380, "width": 64, "height": 20 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "sidebar_vault",
+            "type": "Sidebar",
+            "properties": { "width": 232, "collapsible": true },
+            "layout": { "x": 72, "y": 48, "width": 232, "height": 852 },
+            "events": {},
+            "children": [
+              {
+                "id": "vault_header",
+                "type": "Text",
+                "properties": { "text": "VAULT" },
+                "layout": { "x": 88, "y": 64, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_volumes",
+                "type": "Text",
+                "properties": { "text": "Volumes" },
+                "layout": { "x": 88, "y": 96, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_snapshots",
+                "type": "Text",
+                "properties": { "text": "Snapshots" },
+                "layout": { "x": 88, "y": 128, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_grants",
+                "type": "Text",
+                "properties": { "text": "Grants" },
+                "layout": { "x": 88, "y": 160, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_quotas",
+                "type": "Text",
+                "properties": { "text": "Quotas" },
+                "layout": { "x": 88, "y": 192, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_activity",
+                "type": "Text",
+                "properties": { "text": "Activity" },
+                "layout": { "x": 88, "y": 224, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "sys_header",
+                "type": "Text",
+                "properties": { "text": "SYSTEM" },
+                "layout": { "x": 88, "y": 272, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "sys_trust",
+                "type": "Text",
+                "properties": { "text": "Trust Anchors" },
+                "layout": { "x": 88, "y": 304, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "sys_keys",
+                "type": "Text",
+                "properties": { "text": "Key Management" },
+                "layout": { "x": 88, "y": 336, "width": 200, "height": 24 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "tb_main",
+            "type": "Toolbar",
+            "properties": { "background": "Surface" },
+            "layout": { "x": 304, "y": 48, "width": 1136, "height": 40 },
+            "events": {},
+            "children": [
+              {
+                "id": "tb_breadcrumb",
+                "type": "Text",
+                "properties": { "text": "Vault / Volumes" },
+                "layout": { "x": 320, "y": 56, "width": 280, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "btn_new",
+                "type": "Button",
+                "properties": { "text": "New volume", "enabled": true, "visible": true },
+                "layout": { "x": 1064, "y": 52, "width": 112, "height": 32 },
+                "events": { "clicked": "behavior_new_volume" },
+                "children": []
+              },
+              {
+                "id": "btn_snapshot",
+                "type": "Button",
+                "properties": { "text": "Snapshot", "enabled": true, "visible": true },
+                "layout": { "x": 1188, "y": 52, "width": 112, "height": 32 },
+                "events": { "clicked": "behavior_snapshot_now" },
+                "children": []
+              },
+              {
+                "id": "btn_sync",
+                "type": "Button",
+                "properties": { "text": "Sync now", "enabled": true, "visible": true },
+                "layout": { "x": 1312, "y": 52, "width": 112, "height": 32 },
+                "events": { "clicked": "behavior_sync_now" },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "card_volumes",
+            "type": "Card",
+            "properties": { "padding": 16, "elevation": "low" },
+            "layout": { "x": 320, "y": 104, "width": 352, "height": 120 },
+            "events": {},
+            "children": [
+              {
+                "id": "c1_label",
+                "type": "Text",
+                "properties": { "text": "VOLUMES" },
+                "layout": { "x": 336, "y": 120, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c1_value",
+                "type": "Text",
+                "properties": { "text": "12" },
+                "layout": { "x": 336, "y": 144, "width": 200, "height": 36 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c1_sub",
+                "type": "Text",
+                "properties": { "text": "6 encrypted · 4 shared" },
+                "layout": { "x": 336, "y": 196, "width": 240, "height": 20 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "card_storage",
+            "type": "Card",
+            "properties": { "padding": 16, "elevation": "low" },
+            "layout": { "x": 688, "y": 104, "width": 352, "height": 120 },
+            "events": {},
+            "children": [
+              {
+                "id": "c2_label",
+                "type": "Text",
+                "properties": { "text": "STORAGE USED" },
+                "layout": { "x": 704, "y": 120, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c2_value",
+                "type": "Text",
+                "properties": { "text": "3.2 GiB" },
+                "layout": { "x": 704, "y": 144, "width": 200, "height": 36 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c2_bar",
+                "type": "ProgressBar",
+                "properties": { "value": 64, "min": 0, "max": 100 },
+                "layout": { "x": 704, "y": 188, "width": 320, "height": 8 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c2_sub",
+                "type": "Text",
+                "properties": { "text": "of 5 GiB budget" },
+                "layout": { "x": 704, "y": 200, "width": 280, "height": 20 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "card_quota",
+            "type": "Card",
+            "properties": { "padding": 16, "elevation": "low" },
+            "layout": { "x": 1056, "y": 104, "width": 352, "height": 120 },
+            "events": {},
+            "children": [
+              {
+                "id": "c3_label",
+                "type": "Text",
+                "properties": { "text": "QUOTA ALERTS" },
+                "layout": { "x": 1072, "y": 120, "width": 240, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c3_value",
+                "type": "Text",
+                "properties": { "text": "2" },
+                "layout": { "x": 1072, "y": 144, "width": 200, "height": 36 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "c3_sub",
+                "type": "Text",
+                "properties": { "text": "1 near · 1 at limit" },
+                "layout": { "x": 1072, "y": 196, "width": 240, "height": 20 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "list_volumes",
+            "type": "Container",
+            "properties": { "padding": 16, "background": "Surface" },
+            "layout": { "x": 320, "y": 240, "width": 1120, "height": 304 },
+            "events": {},
+            "children": [
+              {
+                "id": "list_header",
+                "type": "Text",
+                "properties": { "text": "VOLUMES" },
+                "layout": { "x": 336, "y": 256, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_1_icon",
+                "type": "Icon",
+                "properties": { "glyph": "▣" },
+                "layout": { "x": 336, "y": 296, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_1_name",
+                "type": "Text",
+                "properties": { "text": "assets · encrypted · mounted" },
+                "layout": { "x": 368, "y": 296, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_1_size",
+                "type": "Text",
+                "properties": { "text": "1.8 GiB" },
+                "layout": { "x": 1264, "y": 296, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_2_icon",
+                "type": "Icon",
+                "properties": { "glyph": "◈" },
+                "layout": { "x": 336, "y": 336, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_2_name",
+                "type": "Text",
+                "properties": { "text": "builds · plaintext · mounted" },
+                "layout": { "x": 368, "y": 336, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_2_size",
+                "type": "Text",
+                "properties": { "text": "892 MiB" },
+                "layout": { "x": 1264, "y": 336, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_3_icon",
+                "type": "Icon",
+                "properties": { "glyph": "⇄" },
+                "layout": { "x": 336, "y": 376, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_3_name",
+                "type": "Text",
+                "properties": { "text": "shared · granted to app-b" },
+                "layout": { "x": 368, "y": 376, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_3_size",
+                "type": "Text",
+                "properties": { "text": "410 MiB" },
+                "layout": { "x": 1264, "y": 376, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_4_icon",
+                "type": "Icon",
+                "properties": { "glyph": "⚠" },
+                "layout": { "x": 336, "y": 416, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_4_name",
+                "type": "Text",
+                "properties": { "text": "backups · quota at 98%" },
+                "layout": { "x": 368, "y": 416, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_4_size",
+                "type": "Text",
+                "properties": { "text": "4.9 GiB" },
+                "layout": { "x": 1264, "y": 416, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_5_icon",
+                "type": "Icon",
+                "properties": { "glyph": "☁" },
+                "layout": { "x": 336, "y": 456, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_5_name",
+                "type": "Text",
+                "properties": { "text": "archives · cold storage" },
+                "layout": { "x": 368, "y": 456, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_5_size",
+                "type": "Text",
+                "properties": { "text": "2.4 GiB" },
+                "layout": { "x": 1264, "y": 456, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_6_icon",
+                "type": "Icon",
+                "properties": { "glyph": "❖" },
+                "layout": { "x": 336, "y": 496, "width": 24, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_6_name",
+                "type": "Text",
+                "properties": { "text": "scratch · ephemeral" },
+                "layout": { "x": 368, "y": 496, "width": 560, "height": 24 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vol_6_size",
+                "type": "Text",
+                "properties": { "text": "128 MiB" },
+                "layout": { "x": 1264, "y": 496, "width": 160, "height": 20 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "quick_actions",
+            "type": "Container",
+            "properties": { "padding": 16, "background": "Surface" },
+            "layout": { "x": 320, "y": 560, "width": 1120, "height": 232 },
+            "events": {},
+            "children": [
+              {
+                "id": "qa_header",
+                "type": "Text",
+                "properties": { "text": "QUICK ACTIONS" },
+                "layout": { "x": 336, "y": 576, "width": 200, "height": 20 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "qa_volume",
+                "type": "Button",
+                "properties": { "text": "New volume", "enabled": true, "visible": true },
+                "layout": { "x": 336, "y": 608, "width": 256, "height": 88 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "qa_snapshot",
+                "type": "Button",
+                "properties": { "text": "Take snapshot", "enabled": true, "visible": true },
+                "layout": { "x": 608, "y": 608, "width": 256, "height": 88 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "qa_grant",
+                "type": "Button",
+                "properties": { "text": "Manage grants", "enabled": true, "visible": true },
+                "layout": { "x": 880, "y": 608, "width": 256, "height": 88 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "qa_quotas",
+                "type": "Button",
+                "properties": { "text": "Quota policies", "enabled": true, "visible": true },
+                "layout": { "x": 1152, "y": 608, "width": 256, "height": 88 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "footer_status",
+            "type": "Text",
+            "properties": { "text": "Nyrqis Vault Workspace 0.1.0 · sync current" },
+            "layout": { "x": 320, "y": 816, "width": 440, "height": 24 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "footer_version",
+            "type": "Text",
+            "properties": { "text": "Nyrqis 0.14.23" },
+            "layout": { "x": 1240, "y": 816, "width": 184, "height": 24 },
+            "events": {},
+            "children": []
+          }
+        ]
+      }
+    }
+  ]
+}

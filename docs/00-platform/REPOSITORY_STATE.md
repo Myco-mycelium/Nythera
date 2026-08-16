@@ -226,17 +226,20 @@ Two things now, not one:
   `rust-nyui` + `rust-nyui-conformance` (required gate).
 
   **2026-08-16 (0.14.23): the import gate rides the control plane.**
-  `NuiService` (`ui/service.py`) exposes `nui_validate` / `nui_load`
-  over the datagram control plane — operator-only (registered
-  containers refused), per-call document budget, `nui_load` persists
-  the design as the daemon's shell UI — with `nyrqisctl nui
-  validate|load` as the CLI (e2e verified against a live daemon with
-  the Rust crate as the engine). The Security Center screen
-  (`security-center.nstudio`, the second NyForge design: 71 components,
-  4 behaviors, 1 binding) joins the fixtures with shape + `$state:`
-  tests. `tests/benchmarks.py --nui` (§30) A/Bs the gate floor-vs-crate:
-  crate ~2.1× faster at the median (242 µs vs 502 µs p50). Suite 524 →
-  **533**.
+  `NuiService` (`ui/service.py`) exposes `nui_validate` / `nui_load` /
+  `nui_current` over the datagram control plane — operator-only
+  (registered containers refused), per-call document budget, `nui_load`
+  persists the design as the daemon's shell UI, `nui_current` surfaces
+  what is loaded (re-imported through the gate on every call; stale
+  persisted designs reported honestly as `valid: false`) — with
+  `nyrqisctl nui validate|load|current` as the CLI (e2e verified
+  against a live daemon with the Rust crate as the engine). The
+  Security Center (`security-center.nstudio`) and Vault Workspace
+  (`vault-workspace.nstudio`) screens — the second and third NyForge
+  designs, 71 components / 4 behaviors / 1 binding each — join the
+  fixtures with shape + `$state:` tests. `tests/benchmarks.py --nui`
+  (§30) A/Bs the gate floor-vs-crate: crate ~2.1× faster at the median
+  (242 µs vs 502 µs p50). Suite 524 → **538**.
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

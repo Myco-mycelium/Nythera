@@ -1159,18 +1159,20 @@ fixtures). 500 iterations, p50/p95/mean per document:
 
 | Side | p50 | p95 | mean | min | max |
 |------|-----|-----|------|-----|-----|
-| Python floor (ui/nstudio.py) | 502.19 µs | 994.14 µs | 601.62 µs | 461.90 µs | 1382.12 µs |
-| Rust crate (nyrqis_nyui, FFI) | 241.90 µs | 427.75 µs | 272.55 µs | 234.88 µs | 519.38 µs |
+| Python floor (ui/nstudio.py) | 472.67 µs | 713.33 µs | 508.66 µs | 457.17 µs | 1556.76 µs |
+| Rust crate (nyrqis_nyui, FFI) | 249.58 µs | 344.65 µs | 261.76 µs | 245.56 µs | 494.14 µs |
 
-Reading: **the Rust import gate is ~2.1× faster at the median (242 µs
-vs 502 µs) and ~2.3× at the tail (428 µs vs 994 µs p95)** — the
+Reading: **the Rust import gate is ~1.9× faster at the median (250 µs
+vs 473 µs) and ~2.1× at the tail (345 µs vs 713 µs p95)** — the
 per-document gate stays sub-millisecond on the floor and the crate
 halves it, with the crate's variance roughly a third of the floor's
-(237 µs min→max spread vs 920 µs). The UI layer's shipped hot path
-per ADR-0020 runs on the crate behind the byte-identical conformance
-gate (ADR-0025 §Differential); the floor remains the reference and
-the tooling path. No gate declared met — this is evidence the
-Architecture Group reviews with ADR-0025.
+(249 µs min→max spread vs 1100 µs). (An earlier same-day run measured
+502/242 µs — the floor is the noisier side, the crate is stable in the
+240–250 µs range.) The UI layer's shipped hot path per ADR-0020 runs
+on the crate behind the byte-identical conformance gate (ADR-0025
+§Differential); the floor remains the reference and the tooling path.
+No gate declared met — this is evidence the Architecture Group
+reviews with ADR-0025.
 
 ## Status vs BENCHMARK_PLAN
 

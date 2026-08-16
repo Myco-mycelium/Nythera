@@ -30,26 +30,42 @@ ai_assisted: true
   document budget (`NUI_DOCUMENT_MAX_BYTES`, ~60 KiB datagram budget
   minus envelope) and unknown-op rejection. Wired into the daemon's
   `ServiceRouter` under `service: nui`.
-- **`nyrqisctl nui`** — `nui validate <file>` (gate only) and
-  `nui load <file>` (gate + persist) with the usual `--socket`/`--timeout`
-  flags and human-readable summary output; a real end-to-end CLI run
-  drives a live daemon with the **Rust crate as the engine** and rejects
-  a bad design over the wire.
+- **`nui_current` — the loaded-design surface.** `NuiService` gains the
+  read op `nui_current` so the daemon can answer "what shell UI is
+  loaded?": `loaded: false` before any design is persisted (honest, not
+  an error), or the persisted design's summary re-imported through the
+  gate on every call, plus its path. A persisted design that no longer
+  re-imports cleanly is reported as `loaded: true, valid: false` with
+  the validation message — the operator sees the stale design instead
+  of a silent failure.
+- **`nyrqisctl nui`** — `nui validate <file>` (gate only),
+  `nui load <file>` (gate + persist), and `nui current` (loaded-design
+  query) with the usual `--socket`/`--timeout` flags and human-readable
+  summary output; a real end-to-end CLI run drives a live daemon with
+  the **Rust crate as the engine** — `nui current` before any load
+  reports "no shell design loaded", and after `nui load` reports the
+  persisted design's summary.
 - **Second NyForge screen — Security Center.** `security-center.nstudio`
   joins `tests/fixtures/nstudio/` (71 components, 4 behaviors, 1
   binding — lockdown Toggle bound to state, conditional lockdown
   behavior, posture `$state:` substitution) and the fixture lists in
   `TestNstudioImport` + `TestNstudioCodecConformance`.
+- **Third NyForge screen — Vault Workspace.** `vault-workspace.nstudio`
+  joins the fixtures (71 components, 4 behaviors, 1 binding —
+  auto-snapshot Toggle bound to state, conditional pause behavior,
+  sync `$state:` substitution, volume list with quota indicators) with
+  shape + `$state:` resolution tests.
 - **§30 benchmark — the NUI import gate A/B.** `--nui` measures the
   parse+validate gate on the security-center fixture, Python floor vs
   Rust crate in the same process: crate **~2.1× faster at the median**
   (242 µs vs 502 µs p50) with ~1/3 the variance — evidence for
   ADR-0025's ADR-0020 performance claim. Results in §30 of
   `tests/BENCHMARK_RESULTS.md`.
-- **Tests.** `TestNuiService` (8 tests: operator validate/load happy
+- **Tests.** `TestNuiService` (12 tests: operator validate/load happy
   paths, bad design, wrong version, oversized document, load without a
-  state dir, container refusal, unknown op) plus the security-center
-  shape + `$state:` resolution tests — suite 524 → **533**.
+  state dir, container refusal, unknown op, and the four `nui_current`
+  cases) plus the security-center and vault-workspace shape +
+  `$state:` resolution tests — suite 524 → **538**.
 
 ## [0.14.22] — 2026-08-16
 
