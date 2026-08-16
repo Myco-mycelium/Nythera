@@ -193,13 +193,21 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         )
     if command == "status":
         caps = resp.get("capabilities") or []
-        return "\n".join([
+        lines = [
             f"backend:      {resp.get('backend_version')}",
             f"service:      {resp.get('service')} v{resp.get('service_version')}",
             f"uptime:       {resp.get('uptime_s')}s",
             f"caller:       {resp.get('container')}",
             f"capabilities: {', '.join(caps) if caps else '(none)'}",
-        ])
+        ]
+        vault = resp.get("vault")
+        if isinstance(vault, dict):
+            lines.append(
+                f"vault:        {vault.get('volumes')} volume(s), "
+                f"{vault.get('logical_bytes')} logical / "
+                f"{vault.get('physical_bytes')} physical bytes, "
+                f"{vault.get('warned_containers')} warned")
+        return "\n".join(lines)
     if command == "health":
         lines = [
             f"backend:        {resp.get('backend_version')}",
@@ -230,6 +238,13 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             )
         else:
             lines.append("recovery:       none")
+        vault = resp.get("vault")
+        if isinstance(vault, dict):
+            lines.append(
+                f"vault:          {vault.get('volumes')} volume(s), "
+                f"{vault.get('logical_bytes')} logical / "
+                f"{vault.get('physical_bytes')} physical bytes, "
+                f"{vault.get('warned_containers')} warned")
         return "\n".join(lines)
     if command == "containers-list":
         containers: List[Dict[str, Any]] = resp.get("containers") or []

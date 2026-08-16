@@ -16,6 +16,26 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.13] — 2026-08-16
+
+### The vault at a glance: status/health carry the aggregate
+
+- **`status` and `health` now report the vault aggregate** — volumes,
+  total LOGICAL + PHYSICAL bytes, and warned containers — read from
+  the CACHED ledger figures (no tree walk: status stays O(volumes)
+  instead of paying the §28 refresh, which is what `volume_summary`
+  is for). The status service already holds the daemon reference, so
+  the block rides both the main-socket and health-socket status
+  services with zero host wiring; a bare service (no daemon/storage)
+  reports `vault: null`. `nyrqisctl status`/`health` print the line
+  when present.
+- **Warning levels verified through a REAL kernel mount**: a kernel
+  write past 80% of a quota on the live encrypted mount commits at
+  fsync, the refresh computes `near`, and `vault quota-get` reports
+  it — the same end-to-end path as the EDQUOT verification.
+- Suite 454 → **456** (status-vault-aggregate test + the live-mount
+  warning test + CLI status/health vault formatting).
+
 ## [0.14.12] — 2026-08-16
 
 ### Quota warnings — the operational signal on top of the hard EDQUOT stop

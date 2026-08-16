@@ -252,6 +252,7 @@ nyrqisctl vault create smoke
 H=$(nyrqisctl vault open --name smoke | cut -d' ' -f2)
 echo hello | nyrqisctl vault write "$H" /greeting.txt
 nyrqisctl vault read "$H" /greeting.txt  # -> hello
+nyrqisctl status                        # vault: 1 volume(s), ... logical / ... physical bytes
 find /var/lib/nyrqis -type f | xargs grep -l hello || echo "no plaintext at rest"
 ```
 
@@ -259,5 +260,5 @@ find /var/lib/nyrqis -type f | xargs grep -l hello || echo "no plaintext at rest
 
 - ADR-0022 (NyVault — storage as a daemon-hosted service)
 - ADR-0023 (NyVault key manager — envelope encryption, rotation, custody)
-- `tests/BENCHMARK_RESULTS.md` §26 (byte path) and §27 (live mount)
-- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.9 (the increments this guide covers)
+- `tests/BENCHMARK_RESULTS.md` §26 (byte path), §27 (live mount) and §28 (ledger refresh)
+- `CHANGELOG_LINUX_BACKEND.md` 0.14.4–0.14.13 (the increments this guide covers)

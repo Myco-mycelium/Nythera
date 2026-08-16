@@ -957,6 +957,59 @@ class TestStatusServiceHost(unittest.TestCase):
             host.stop()
         self.assertFalse(os.path.exists(self.sock))
 
+    def test_status_reports_vault_aggregate(self):
+        # The operator's at-a-glance vault view rides status: the
+        # CACHED ledger figures (volumes, logical/physical totals,
+        # warned containers) — no tree walk, so status stays cheap
+        # (the §28 refresh cost is only paid by volume_summary).
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            vault_dir=os.path.join(self.tmp, "vault"))
+        host.start()
+        try:
+            client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+            try:
+                def call(payload):
+                    reply = client.call(self.sock,
+                                        json.dumps(payload).encode(),
+                                        timeout_s=5.0)
+                    return json.loads(reply.payload.decode())
+
+                # Empty vault first.
+                resp = call({"op": "status"})
+                self.assertTrue(resp["ok"], resp)
+                self.assertEqual(resp["vault"], {
+                    "volumes": 0, "logical_bytes": 0,
+                    "physical_bytes": 0, "warned_containers": 0})
+                vid = call({"service": "storage", "op": "volume_create",
+                            "name": "a"})["volume_id"]
+                handle = call({"service": "storage", "op": "volume_open",
+                               "volume_id": vid})["handle"]
+                call({"service": "storage", "op": "volume_write",
+                      "handle": handle, "path": "/f",
+                      "data_b64": base64.b64encode(b"W" * 900)
+                      .decode("ascii"), "offset": 0})
+                # The durable write committed: cached figures are set.
+                resp = call({"op": "status"})
+                self.assertEqual(resp["vault"]["volumes"], 1)
+                self.assertGreater(resp["vault"]["logical_bytes"], 0)
+                self.assertGreater(resp["vault"]["physical_bytes"], 0)
+                self.assertEqual(resp["vault"]["warned_containers"], 0)
+                # A container crossing into a warning shows up.
+                call({"service": "storage", "op": "volume_quota_set",
+                      "volume_id": vid,
+                      "container": DEFAULT_OPERATOR_ID, "bytes": 1000})
+                call({"service": "storage", "op": "volume_write",
+                      "handle": handle, "path": "/g",
+                      "data_b64": base64.b64encode(b"X" * 100)
+                      .decode("ascii"), "offset": 0})  # 1000/1000 = at
+                resp = call({"op": "status"})
+                self.assertEqual(resp["vault"]["warned_containers"], 1)
+            finally:
+                client.close()
+        finally:
+            host.stop()
+
     def test_host_main_socket_served_by_loop_when_crate_present(self):
         # ADR-0021 main-socket move: the daemon's PRIMARY service
         # socket (status + control) is served by the Rust serving loop
@@ -1895,6 +1948,21 @@ class TestOperatorCli(unittest.TestCase):
         self.assertIn("backend:      9.9.9", out)
         self.assertIn("caller:       host-operator", out)
         self.assertIn("CAP_SYSTEM_INFO, CAP_IPC_SEND", out)
+        # The vault aggregate line (when the daemon reports it).
+        out = nyrqisctl.format_human("status", dict(
+            status, vault={"volumes": 2, "logical_bytes": 100,
+                           "physical_bytes": 40,
+                           "warned_containers": 1}))
+        self.assertIn(
+            "vault:        2 volume(s), 100 logical / 40 physical "
+            "bytes, 1 warned", out)
+        out = nyrqisctl.format_human("health", {
+            "ok": True, "serve_loop_alive": True,
+            "vault": {"volumes": 1, "logical_bytes": 50,
+                       "physical_bytes": 20,
+                       "warned_containers": 0}})
+        self.assertIn("vault:          1 volume(s), 50 logical / "
+                      "20 physical bytes, 0 warned", out)
         health = {"ok": True, "backend_version": "9.9.9",
                   "serve_loop_alive": True,
                   "containers": {"known": 1, "running": 1},
@@ -8150,6 +8218,30 @@ class TestNyVaultLiveMount(unittest.TestCase):
             os.fsync(f.fileno())
         with open(ok_path) as f:
             self.assertEqual(f.read(), "tiny")
+
+    def test_warning_levels_through_the_live_mount(self):
+        # The ADR-0022 warning levels through the REAL kernel: a kernel
+        # write past 80% of a quota commits at fsync, the refresh
+        # computes the level, and it surfaces via quota-get (the
+        # passthrough's deferred writes make fsync the commit point).
+        self.assertTrue(self.mount.attach())
+        self.assertTrue(self.mount.mount(foreground=True, blocking=False))
+        time.sleep(2.0)
+        reply = self.client.call(self.sock, json.dumps({
+            "service": "storage", "op": "volume_quota_set",
+            "volume_id": self.vid, "container": DEFAULT_OPERATOR_ID,
+            "bytes": 100}).encode("utf-8"))
+        self.assertTrue(json.loads(reply.payload.decode("utf-8"))["ok"])
+        probe = os.path.join(self.mnt, "warn.bin")
+        with open(probe, "wb") as f:
+            f.write(b"x" * 90)  # 90% of 100 -> near
+            f.flush()
+            os.fsync(f.fileno())
+        reply = self.client.call(self.sock, json.dumps({
+            "service": "storage", "op": "volume_quota_get",
+            "volume_id": self.vid}).encode("utf-8"))
+        rows = json.loads(reply.payload.decode("utf-8"))["rows"]
+        self.assertEqual(rows[0]["warning"], "near")
 
 
 class TestNyFSSnapshotDiff(unittest.TestCase):

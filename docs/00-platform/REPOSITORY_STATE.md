@@ -790,6 +790,17 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-16 (**the vault at a glance — 0.14.13**): `status` and
+  `health` now report the vault aggregate (volumes, total logical +
+  physical bytes, warned containers) from the CACHED ledger figures
+  — no tree walk, so status stays O(volumes) (the §28 refresh is
+  what `volume_summary` is for). The status service already holds the
+  daemon reference, so the block rides both the main-socket and
+  health-socket status services with zero host wiring; a bare service
+  reports `vault: null`. `nyrqisctl status`/`health` print the line.
+  Warning levels verified through a REAL kernel mount (a kernel write
+  past 80% commits at fsync → `near` surfaces in `vault quota-get`).
+  Suite 454 → **456**.
 - 2026-08-16 (**quota warnings — 0.14.12**): warning levels
   (`near` ≥ 80%, `at` ≥ 95%, `over` > 100%) computed at every ledger
   refresh, logged only on a level transition (no spam), persisted

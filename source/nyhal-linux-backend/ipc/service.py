@@ -165,6 +165,30 @@ class BackendStatusService:
         return self.capability_manager.validate_operation(
             sender, capability)
 
+    def _vault_summary(self) -> Optional[Dict[str, Any]]:
+        """The vault aggregate for status/health — CACHED figures only
+        (the ledger + physical bytes as of the last commit; NO tree
+        walk, so status stays O(volumes) instead of paying the §28
+        refresh). None when the daemon has no storage service."""
+        storage = getattr(getattr(self, "daemon", None), "storage", None)
+        if storage is None:
+            return None
+        volumes = getattr(storage, "_volumes", None) or {}
+        total_logical = 0
+        total_physical = 0
+        warned = 0
+        for record in volumes.values():
+            total_logical += sum(record.get("usage", {}).values())
+            total_physical += int(record.get("physical_bytes", 0))
+            warned += sum(1 for w in record.get("warnings", {}).values()
+                          if w is not None)
+        return {
+            "volumes": len(volumes),
+            "logical_bytes": total_logical,
+            "physical_bytes": total_physical,
+            "warned_containers": warned,
+        }
+
     def _status(self, server, sender_path: str, call_id: str,
                 sender: str) -> None:
         from backend.capability import Capability
@@ -183,6 +207,7 @@ class BackendStatusService:
             "uptime_s": round(time.time() - self._started_at, 3),
             "container": sender,
             "capabilities": sorted(c.value for c in caps),
+            "vault": self._vault_summary(),
         })
 
     def _health(self, server, sender_path: str, call_id: str,
@@ -242,6 +267,7 @@ class BackendStatusService:
             ) if daemon is not None else False,
             "recovery": recovery,
             "container": sender,
+            "vault": self._vault_summary(),
         })
 
     @staticmethod
