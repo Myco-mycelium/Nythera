@@ -790,6 +790,15 @@ Documentation hygiene, fixed earlier this session:
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
   `EnvironmentFile` passphrase. Suite 427 → **432**.
+- 2026-08-16 (**the quota-event ring — 0.14.14**):
+  `volume_events` (OPERATOR-ONLY) + `nyrqisctl vault events` expose
+  the in-memory quota-event ring (bounded at 64, newest first):
+  warning-level transitions (near/at/over — the same points the log
+  lines fire) and every EDQUOT rejection (the hard stop, the most
+  actionable event). Honest scope: the ring is diagnostics, never
+  persisted — the ledger is the durable source of truth. A container
+  is refused the op even with the storage capability. Suite 456 →
+  **458**.
 - 2026-08-16 (**the vault at a glance — 0.14.13**): `status` and
   `health` now report the vault aggregate (volumes, total logical +
   physical bytes, warned containers) from the CACHED ledger figures

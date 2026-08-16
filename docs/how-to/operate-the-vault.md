@@ -154,6 +154,11 @@ Semantics to rely on:
   action. `over` only ever appears via re-derivation (a quota set
   below existing usage, or a restore to a larger snapshot) — the
   write path itself fails closed at 100% with EDQUOT.
+- **`vault events` (OPERATOR-ONLY) is the actionable history**: every
+  warning-level transition and every EDQUOT rejection, newest first
+  (`time\tvolume\tcontainer\tlevel\tusage/quota`). It is an
+  in-memory diagnostics ring (bounded at 64, not persisted) — the
+  quota/usage ledger is the durable source of truth.
 - Setting a quota never implies the storage capability, and a granted
   container cannot set (or read) quotas — that is creator/operator
   administration only.

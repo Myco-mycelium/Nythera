@@ -62,6 +62,7 @@ VAULT_COMMANDS = (
     "vault-volume-delete", "vault-volume-mount", "vault-volume-rekey",
     "vault-volume-quota-set", "vault-volume-quota-get",
     "vault-volume-usage", "vault-volume-summary",
+    "vault-volume-events",
 )
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
@@ -179,6 +180,8 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
                            args)
     if command == "vault-volume-summary":
         return {"service": "storage", "op": "volume_summary"}
+    if command == "vault-volume-events":
+        return {"service": "storage", "op": "volume_events"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -364,6 +367,15 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
              f"(logical {resp.get('total_logical_bytes')} B, "
              f"physical {resp.get('total_physical_bytes')} B)",
              "name\tlogical\tphysical\tconsumers\twarnings"] + rows)
+    if command == "vault-volume-events":
+        events = resp.get("events") or []
+        if not events:
+            return "no quota events"
+        rows = [f"{e.get('t')}\t{e.get('volume')}\t{e.get('container')}\t"
+                f"{e.get('level')}\t{e.get('usage')}/{e.get('quota')}"
+                for e in events]
+        return "\n".join(
+            ["time\tvolume\tcontainer\tlevel\tusage/quota"] + rows)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -796,6 +808,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "per-volume logical + physical bytes and "
                          "consumer counts")
     vsm.set_defaults(command="vault-volume-summary")
+
+    vev = vsub.add_parser(
+        "events", help="OPERATOR-ONLY: the quota-event ring — warning-"
+                        "level transitions and EDQUOT rejections, "
+                        "newest first (in-memory diagnostics)")
+    vev.set_defaults(command="vault-volume-events")
 
     vi = vsub.add_parser(
         "init", help="LOCAL: initialize the vault KEK envelope (ADR-0023) "

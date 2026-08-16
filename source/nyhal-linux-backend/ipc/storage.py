@@ -74,6 +74,10 @@ Quota & accounting (ADR-0022 follow-on, shipped with 0.14.10):
   per-volume row (logical, physical, consumer count). Re-derives the
   ledger on demand (one walk per volume — the §28-measured cost), so
   the figures are fresh even for uncommitted deferred writes.
+- ``{"op": "volume_events"}`` — OPERATOR-ONLY: the quota-event ring
+  (warning-level transitions and EDQUOT rejections, newest first).
+  In-memory diagnostics, bounded and never persisted — the ledger is
+  the durable source of truth.
 
 Deferred-write ops (the FUSE passthrough's data plane):
 
@@ -99,7 +103,8 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, Optional
+from collections import deque
+from typing import Any, Deque, Dict, Optional
 
 from .transport import DEFAULT_OPERATOR_ID  # the server is the auth boundary
 
@@ -124,6 +129,11 @@ _PATH_RE = re.compile(r"^/(?:[^/]+/)*[^/]+$")
 # a restore or a quota set below existing usage).
 _QUOTA_NEAR_RATIO = 0.8
 _QUOTA_AT_RATIO = 0.95
+
+# Quota-event ring bound: the in-memory history of warning-level
+# transitions and EDQUOT rejections (diagnostics — never persisted;
+# the ledger itself is the durable source of truth).
+_EVENT_RING_SIZE = 64
 
 
 class StorageLockedError(Exception):
@@ -175,6 +185,9 @@ class StorageService:
         self._by_name: Dict[str, str] = {}
         # handle -> {"volume_id", "container"}
         self._handles: Dict[str, Dict[str, str]] = {}
+        # Quota-event ring (diagnostics): warning-level transitions and
+        # EDQUOT rejections, newest last. Bounded; never persisted.
+        self._events: Deque[Dict[str, Any]] = deque(maxlen=_EVENT_RING_SIZE)
         self._load_state()
 
     # -- persistence -------------------------------------------------
@@ -394,6 +407,9 @@ class StorageService:
             elif op == "volume_summary":
                 self._volume_summary(server, sender_path,
                                      msg.message_id, sender)
+            elif op == "volume_events":
+                self._volume_events(server, sender_path,
+                                    msg.message_id, sender)
             elif op == "volume_delete":
                 self._volume_delete(server, sender_path, msg.message_id,
                                     sender, request)
@@ -541,6 +557,8 @@ class StorageService:
                         "ipc: %s container %s is %s quota on volume %s "
                         "(%d/%d bytes)", self.SERVICE_NAME, cid, level,
                         record["name"], usage.get(cid, 0), quota)
+                    self._record_event(record["name"], cid, level,
+                                       usage.get(cid, 0), quota)
                 warnings[cid] = level
 
     def _commit_dirty(self) -> None:
@@ -579,6 +597,20 @@ class StorageService:
             return
         self._commit_dirty()
         self._last_commit = time.monotonic()
+
+    def _record_event(self, volume: str, container: str, level: str,
+                      usage: int, quota: Optional[int]) -> None:
+        """Append one quota event to the ring (bounded diagnostics:
+        warning-level transitions and EDQUOT rejections). The ledger
+        itself — not this ring — is the durable source of truth."""
+        self._events.append({
+            "t": round(time.time(), 3),
+            "volume": volume,
+            "container": container,
+            "level": level,
+            "usage": usage,
+            "quota": quota,
+        })
 
     @staticmethod
     def _warning_level(used: int, quota: int) -> Optional[str]:
@@ -1126,6 +1158,35 @@ class StorageService:
             "total_physical_bytes": total_physical,
         })
 
+    def _volume_events(self, server, sender_path: str, call_id: str,
+                       sender: str) -> None:
+        """The quota-event ring: warning-level transitions (near/at/
+        over) and EDQUOT rejections, newest first. OPERATOR-ONLY —
+        quota events reveal per-container accounting. In-memory
+        diagnostics (bounded ring, never persisted; the ledger is the
+        durable source of truth)."""
+        from backend.capability import Capability
+        if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: CAP_STORAGE_VOLUME required",
+            })
+            return
+        if sender != DEFAULT_OPERATOR_ID:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "forbidden: volume_events is operator-only "
+                          "(quota events reveal per-container accounting)",
+            })
+            return
+        events = list(self._events)
+        events.reverse()  # newest first
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "events": events,
+            "event_count": len(events),
+        })
+
     def _volume_close(self, server, sender_path: str, call_id: str,
                       sender: str, request: Dict[str, Any]) -> None:
         from backend.capability import Capability
@@ -1435,6 +1496,10 @@ class StorageService:
         if quota_bytes is not None:
             used = record.get("usage", {}).get(sender, 0)
             if used + len(data) > quota_bytes:
+                # The hard stop is the most actionable event an
+                # operator can see — record it in the event ring.
+                self._record_event(record["name"], sender, "edquot",
+                                   used, quota_bytes)
                 self._reply(server, sender_path, call_id, {
                     "ok": False,
                     "error": "quota exceeded: %d bytes accounted, "

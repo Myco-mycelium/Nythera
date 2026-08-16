@@ -1937,6 +1937,20 @@ class TestOperatorCli(unittest.TestCase):
                                                    "warning_count": 1}]})
         self.assertIn("assets\t100\t40\t1\t1", out)
         self.assertIn("logical 100 B", out)
+        # The quota-event ring.
+        args = parser.parse_args(["vault", "events"])
+        self.assertEqual(args.command, "vault-volume-events")
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args),
+            {"service": "storage", "op": "volume_events"})
+        self.assertEqual(nyrqisctl.format_human(
+            "vault-volume-events", {"ok": True, "events": []}),
+            "no quota events")
+        out = nyrqisctl.format_human(
+            "vault-volume-events", {"ok": True, "events": [
+                {"t": 1.5, "volume": "assets", "container": "container-x",
+                 "level": "at", "usage": 95, "quota": 100}]})
+        self.assertIn("assets\tcontainer-x\tat\t95/100", out)
 
     def test_cli_formats_human_output(self):
         status = {"ok": True, "backend_version": "9.9.9",
@@ -4497,6 +4511,100 @@ class TestStorageService(unittest.TestCase):
         self.assertTrue(last(stub)["ok"])
         self.assertIsNone(storage2._volumes[vid]["warnings"]
                           .get("container-a"))
+
+    def test_quota_events_record_transitions_and_edquot(self):
+        # The operator's actionable history: warning-level transitions
+        # AND the EDQUOT hard stop are recorded in the event ring and
+        # surfaced newest-first via volume_events (OPERATOR-ONLY).
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "events-vault"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "e"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_open(stub, "p", "2", "container-a",
+                             {"volume_id": vid})
+        handle = last(stub)["handle"]
+        stub = _Stub()
+        storage._volume_quota_set(stub, "p", "3", "container-a",
+                                  {"volume_id": vid,
+                                   "container": "container-a", "bytes": 100})
+        self.assertTrue(last(stub)["ok"])
+
+        def write(path, n):
+            stub = _Stub()
+            storage._volume_write(stub, "p", "w", "container-a", {
+                "handle": handle, "path": path,
+                "data_b64": base64.b64encode(b"E" * n).decode("ascii"),
+                "offset": 0})
+            return last(stub)
+
+        def levels():
+            stub = _Stub()
+            storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+            return [e["level"] for e in last(stub)["events"]]
+
+        # 81% -> near transition, then 95% -> at transition.
+        self.assertTrue(write("/a", 81)["ok"])
+        self.assertTrue(write("/b", 14)["ok"])
+        # The EDQUOT hard stop is the third event.
+        over = write("/c", 6)
+        self.assertFalse(over["ok"])
+        self.assertEqual(over["errno"], errno.EDQUOT)
+        events = levels()
+        # Newest first: edquot, at, near.
+        self.assertEqual(events, ["edquot", "at", "near"])
+        # The event ring reveals per-container accounting: a container
+        # is refused even with the storage capability.
+        stub = _Stub()
+        storage._volume_events(stub, "p", "ev", "container-a")
+        self.assertFalse(last(stub)["ok"])
+        self.assertIn("operator-only", last(stub)["error"])
+
+    def test_quota_event_ring_is_bounded(self):
+        # The ring is bounded diagnostics, not a log file: past the
+        # bound, the newest events displace the oldest.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        storage = StorageService(
+            capability_manager=caps,
+            vault_dir=os.path.join(self.tmp, "events-bound"))
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a", {"name": "b"})
+        vid = last(stub)["volume_id"]
+        for _ in range(70):
+            storage._record_event("b", "container-a", "edquot", 100, 100)
+        self.assertEqual(len(storage._events), 64)
+        stub = _Stub()
+        storage._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+        reply = last(stub)
+        self.assertEqual(reply["event_count"], 64)
+        self.assertEqual(len(reply["events"]), 64)
 
     def test_granted_container_drives_the_mount_ops(self):
         # The access matrix through the REAL data plane: a seccomp

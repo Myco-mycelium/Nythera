@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.14] — 2026-08-16
+
+### The quota-event ring — the operator's actionable history
+
+- **`volume_events` (OPERATOR-ONLY) + `nyrqisctl vault events`**: the
+  in-memory quota-event ring (bounded at 64, newest first) recording
+  warning-level TRANSITIONS (`near`/`at`/`over` — the same points the
+  log lines fire) and every **EDQUOT rejection** (the hard stop, the
+  most actionable event an operator can see). Honest scope: the ring
+  is diagnostics, never persisted — the ledger is the durable source
+  of truth (the runbook says so). A container is refused the op even
+  with the storage capability (it reveals per-container accounting).
+- Format: `time\tvolume\tcontainer\tlevel\tusage/quota`, e.g.
+  `edquot` at `95/100`.
+- Suite 456 → **458** (transition + EDQUOT event test, ring-bound
+  test; the CLI quota payload test gained the events payload/format).
+
 ## [0.14.13] — 2026-08-16
 
 ### The vault at a glance: status/health carry the aggregate
