@@ -4782,6 +4782,46 @@ class TestStorageService(unittest.TestCase):
         self.assertFalse(last(stub)["ok"])
         self.assertIn("operator-only", last(stub)["error"])
 
+    def test_event_ring_survives_a_restart(self):
+        # 0.14.18: the ring is persisted with the registry at each
+        # commit, so the operator's recent history (grant/revoke AND
+        # quota transitions) survives a daemon restart. Still bounded
+        # diagnostics — the registry is the source of truth for the
+        # current state.
+        class _Stub:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append(json.loads(payload.decode("utf-8")))
+
+        def last(stub):
+            return stub.replies[-1]
+
+        caps = CapabilityManager()
+        caps.initialize_container("container-a")
+        caps.grant_capability("container-a", Capability.CAP_STORAGE_VOLUME)
+        vault = os.path.join(self.tmp, "ev-persist")
+        storage = StorageService(capability_manager=caps, vault_dir=vault)
+        stub = _Stub()
+        storage._volume_create(stub, "p", "1", "container-a",
+                               {"name": "assets"})
+        vid = last(stub)["volume_id"]
+        stub = _Stub()
+        storage._volume_grant(stub, "p", "2", "container-a",
+                              {"volume_id": vid, "container": "container-b",
+                               "path": "/assets"})
+        self.assertTrue(last(stub)["ok"])
+        # The grant op persists the registry (and with it, the ring).
+        storage2 = StorageService(capability_manager=caps, vault_dir=vault)
+        stub = _Stub()
+        storage2._volume_events(stub, "p", "ev", DEFAULT_OPERATOR_ID)
+        events = last(stub)["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["kind"], "grant")
+        self.assertEqual(events[0]["scope"], "/assets")
+        self.assertEqual(events[0]["container"], "container-b")
+
     def test_quota_warnings_persist_and_clear(self):
         # Warnings ride the registry persistence (each commit), so a
         # container parked near its quota is still flagged after a

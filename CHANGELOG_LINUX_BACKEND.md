@@ -16,6 +16,27 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.18] — 2026-08-16
+
+### The event ring survives a restart
+
+- **Durable history**: the ring is now persisted with the registry at
+  every commit — a grant/revoke or quota transition recorded today is
+  still there after a daemon restart (the grant and revoke ops record
+  the event BEFORE the persist so it rides the same registry write;
+  quota events ride the commit path's save). The ring stays **bounded
+  diagnostics** (64, newest first) — the registry remains the source
+  of truth for the current state; this is durability for the
+  operator's recent history, not a log file.
+- **Honest boundary (kernel-mount EACCES)**: the FUSE kernel mount is
+  operator/host-only by design and the operator is never
+  path-restricted — so a kernel mount can never hold a scoped grant.
+  A scoped grant's EACCES is exercised by the grantee's own data
+  plane (its CALLs), verified end-to-end in 0.14.16; the runbook now
+  says so.
+- Suite 463 → **464** (restart-persistence test: a scoped grant's
+  event survives a fresh StorageService over the same registry).
+
 ## [0.14.17] — 2026-08-16
 
 ### The access matrix joins the event ring

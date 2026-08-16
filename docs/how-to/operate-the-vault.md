@@ -176,9 +176,15 @@ Semantics to rely on:
   grant/revoke action — newest first. Quota rows print
   `time\tvolume\tcontainer\tlevel\tusage/quota`; grant/revoke rows
   print `time\tvolume\tcontainer\tgrant|revoke\tscope=...` (the
-  scope the grantee held, `/` for whole-volume). It is an in-memory
-  diagnostics ring (bounded at 64, not persisted) — the registry and
-  the quota/usage ledger are the durable source of truth.
+  scope the grantee held, `/` for whole-volume). It is a bounded
+  diagnostics ring (64, newest first), **persisted with the registry
+  at each commit** so the recent history survives a daemon restart
+  (0.14.18) — the registry and the quota/usage ledger are still the
+  source of truth for the current state. One honest boundary: the
+  FUSE kernel mount is the operator's whole-volume view (the operator
+  is never path-restricted), so a scoped grant's `EACCES` shows up in
+  the grantee's own data plane — its CALLs — not through a kernel
+  mount.
 - Setting a quota never implies the storage capability, and a granted
   container cannot set (or read) quotas — that is creator/operator
   administration only.

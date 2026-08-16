@@ -839,8 +839,8 @@ def build_parser() -> argparse.ArgumentParser:
     vev = vsub.add_parser(
         "events", help="OPERATOR-ONLY: the event ring — quota warning-"
                         "level transitions, EDQUOT rejections, and "
-                        "grant/revoke actions, newest first "
-                        "(in-memory diagnostics)")
+                        "grant/revoke actions, newest first (bounded "
+                        "diagnostics, persisted with the registry)")
     vev.set_defaults(command="vault-volume-events")
 
     vi = vsub.add_parser(

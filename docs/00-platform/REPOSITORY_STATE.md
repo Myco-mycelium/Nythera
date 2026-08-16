@@ -789,7 +789,17 @@ Documentation hygiene, fixed earlier this session:
   foreground until unmounted). `volume_open` canonicalizes id-or-name
   resolution. New `TestNyVaultLiveMount` (2, skip-gated). systemd unit:
   `StateDirectory=nyrqis` + `--vault-dir`/`--vault-key-file`/optional
-  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**the access matrix joins the event ring — 0.14.17**):
+  `EnvironmentFile` passphrase. Suite 427 → **432**.- 2026-08-16 (**the event ring survives a restart — 0.14.18**): the
+  ring persists with the registry at every commit — grant/revoke and
+  quota-transition events ride the same registry write, so the
+  operator's recent history survives a daemon restart (tested). It
+  stays bounded diagnostics (64, newest first); the registry is still
+  the source of truth for current state. Honest boundary: the FUSE
+  kernel mount is operator-only and the operator is never
+  path-restricted, so a scoped grant's EACCES is exercised by the
+  grantee's own data plane (0.14.16), never through a kernel mount.
+  Suite 463 → **464**.
+- 2026-08-16 (**the access matrix joins the event ring — 0.14.17**):
   the ring records grant/revoke actions alongside the quota signal —
   a `grant` logs who, when, and how wide the scope; a `revoke` logs
   what was actually withdrawn (the scope the grantee held). Events

@@ -185,8 +185,10 @@ class StorageService:
         self._by_name: Dict[str, str] = {}
         # handle -> {"volume_id", "container"}
         self._handles: Dict[str, Dict[str, str]] = {}
-        # Quota-event ring (diagnostics): warning-level transitions and
-        # EDQUOT rejections, newest last. Bounded; never persisted.
+        # Event ring (diagnostics): quota warning-level transitions,
+        # EDQUOT rejections, and grant/revoke actions, newest last.
+        # Bounded, and persisted with the registry at each commit so a
+        # daemon restart keeps the operator's recent history (0.14.18).
         self._events: Deque[Dict[str, Any]] = deque(maxlen=_EVENT_RING_SIZE)
         self._load_state()
 
@@ -212,6 +214,9 @@ class StorageService:
             logger.error("ipc: %s could not read %s: %s",
                          self.SERVICE_NAME, path, e)
             return
+        for ev in state.get("events") or []:
+            if isinstance(ev, dict):
+                self._events.append(ev)
         for rec in state.get("volumes", []):
             try:
                 volume_id = rec["id"]
@@ -265,7 +270,7 @@ class StorageService:
              "usage": dict(r.get("usage") or {}),
              "warnings": dict(r.get("warnings") or {})}
             for r in self._volumes.values()
-        ]}
+        ], "events": list(self._events)}
         os.makedirs(self.vault_dir, exist_ok=True)
         path = self._state_path()
         tmp = path + ".tmp"
@@ -604,8 +609,11 @@ class StorageService:
                       **fields: Any) -> None:
         """Append one event to the ring (bounded diagnostics: quota
         warning-level transitions, EDQUOT rejections, and
-        grant/revoke actions with their scope). The registry — not
-        this ring — is the durable source of truth."""
+        grant/revoke actions with their scope). The ring is persisted
+        with the registry at each commit (0.14.18) so the operator's
+        recent history survives a restart, but it stays bounded
+        diagnostics — the registry is the source of truth for the
+        current state."""
         event: Dict[str, Any] = {
             "t": round(time.time(), 3),
             "volume": volume,
@@ -960,15 +968,17 @@ class StorageService:
         else:
             # Whole-volume grant (the 0.14.8 shape, back-compatible).
             record["grants"][container] = True
-        self._save_state()
         scope = scope_path or "/"
         logger.info("ipc: %s granted %s access to volume %s (%s) "
                     "scope=%s", self.SERVICE_NAME, container,
                     record["name"], volume_id[:8], scope)
         # The access matrix belongs in the same event ring as the
         # quota signal: who was granted what, and how wide the scope.
+        # Recorded BEFORE the persist so the event rides the same
+        # registry write (0.14.18: the ring survives a restart).
         self._record_event(record["name"], container, "grant",
                            scope=scope)
+        self._save_state()
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
@@ -1009,8 +1019,6 @@ class StorageService:
         container = container.strip()
         old = record["grants"].pop(container, None)
         was_granted = old is not None
-        if was_granted:
-            self._save_state()
         scope = (old.get("path") if isinstance(old, dict) else "/")
         logger.info("ipc: %s revoked %s's access to volume %s (%s)",
                     self.SERVICE_NAME, container, record["name"],
@@ -1018,8 +1026,10 @@ class StorageService:
         if was_granted:
             # The ring records what was actually withdrawn (the scope
             # the grantee held), so the audit shows the full action.
+            # Recorded BEFORE the persist (0.14.18).
             self._record_event(record["name"], container, "revoke",
                                scope=scope)
+            self._save_state()
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "volume_id": record["id"],
@@ -1250,9 +1260,10 @@ class StorageService:
         """The event ring: quota warning-level transitions (near/at/
         over), EDQUOT rejections, and grant/revoke actions (with
         scope), newest first. OPERATOR-ONLY — the events reveal
-        per-container accounting and grant scopes. In-memory
-        diagnostics (bounded ring, never persisted; the registry is
-        the durable source of truth)."""
+        per-container accounting and grant scopes. Bounded
+        diagnostics, persisted with the registry at each commit
+        (0.14.18); the registry remains the source of truth for the
+        current state."""
         from backend.capability import Capability
         if not self._authorized(sender, Capability.CAP_STORAGE_VOLUME):
             self._reply(server, sender_path, call_id, {
