@@ -258,6 +258,14 @@ Two things now, not one:
   automatically; import-gate tests that used `Taskbar` as the unknown-type
   example now use `BogusWidget`. Suite stays 538.
 
+  **2026-08-17 (0.14.26): the real desktop shell screen.**
+  `desktop.nstudio` — a 1440×900 desktop (DesktopSurface/DesktopIcons,
+  Taskbar, StartMenu, CommandPalette, NotificationCenter, QuickSettings,
+  WorkspaceSwitcher) plus a `lock` screen (LockScreen) — 30 components, 8
+  behaviors, 6 bindings, authored with the shell vocabulary and accepted
+  by the floor, the Rust crate, and Nyforge's own serializer. Suite
+  538 → **539**.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

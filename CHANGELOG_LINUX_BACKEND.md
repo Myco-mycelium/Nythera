@@ -16,6 +16,25 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.26] — 2026-08-17
+
+### The real desktop shell screen — authored with the shell vocabulary
+
+- **`desktop.nstudio` joins the fixtures** — the first reference shell
+  screen built from the 0.14.25 vocabulary: a 1440×900 desktop with
+  DesktopSurface + DesktopIcons, a Taskbar (Start/Search buttons, pinned
+  apps List, WorkspaceSwitcher, clock, SystemTray), StartMenu, Search,
+  CommandPalette, NotificationCenter, QuickSettings (Wi-Fi/DND toggles,
+  volume slider, Eclipse/Solar theme buttons) — plus a second `lock`
+  screen with a LockScreen component. 30 components, 8 behaviors, 6
+  bindings across 2 screens.
+- Behaviors exercise the shell actions (`StartMenu.Toggle`,
+  `CommandPalette.Open`, `DesktopIcon.Launch`) and the conditional DND
+  notification, all through the import gate.
+- `desktop.nstudio` is validated by the floor and the Rust crate
+  (differential, byte-identical) and opens in Nyforge itself
+  (serializer round-trip test on the editor side). Suite 538 → **539**.
+
 ## [0.14.25] — 2026-08-17
 
 ### The first real Shell component set lands in the registry

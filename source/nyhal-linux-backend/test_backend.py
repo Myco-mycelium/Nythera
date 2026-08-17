@@ -13130,7 +13130,8 @@ class TestNstudioImport(unittest.TestCase):
 
     def test_all_fixtures_load(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
-                     "nyrqis-shell", "security-center", "vault-workspace"):
+                     "nyrqis-shell", "security-center", "vault-workspace",
+                     "desktop"):
             doc = self._load(name + ".nstudio")
             self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
             self.assertTrue(doc.screens)
@@ -13179,6 +13180,34 @@ class TestNstudioImport(unittest.TestCase):
         target, name, args = doc.resolve_action("behavior_sync_now")
         self.assertEqual(name, "Nyrqis.Notification.Show")
         self.assertEqual(args["message"], "22:41")
+
+    def test_desktop_shell_fixture_shape(self):
+        """The real desktop shell screen (0.14.25 shell vocabulary): the
+        fixture exercises the Shell/Data/Form/Media/Developer components
+        and must pass the same gate as every other design."""
+        doc = self._load("desktop.nstudio")
+        self.assertEqual(len(doc.component_ids()), 30)
+        self.assertEqual(len(doc.behaviors), 8)
+        self.assertEqual(len(doc.bindings), 6)
+        self.assertEqual([s.id for s in doc.screens], ["desktop", "lock"])
+        self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
+        # The shell vocabulary resolves through the contract tables.
+        taskbar = doc.find_component("taskbar")
+        self.assertIsNotNone(taskbar)
+        self.assertEqual(taskbar.type, "Taskbar")
+        start_menu = doc.find_component("start_menu")
+        self.assertEqual(start_menu.type, "StartMenu")
+        # A component-targeted action (DesktopIcon -> Launch).
+        target, name, _args = doc.resolve_action("behavior_launch_terminal")
+        self.assertEqual(target, "icon_terminal")
+        self.assertEqual(name, "Launch")
+        # The conditional DND behavior resolves $state: substitution.
+        target, name, args = doc.resolve_action("behavior_dnd_on")
+        self.assertEqual(name, "Nyrqis.Notification.Show")
+        self.assertEqual(args["message"], "Notifications paused until disabled")
+        # The lock screen screen carries a LockScreen root child.
+        lock_screen = doc.find_component("lock_screen")
+        self.assertEqual(lock_screen.type, "LockScreen")
 
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13333,7 +13362,8 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
     def test_crate_accepts_all_fixtures(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
-                     "nyrqis-shell", "security-center", "vault-workspace"):
+                     "nyrqis-shell", "security-center", "vault-workspace",
+                     "desktop"):
             nstudio_codec.validate(self._text(name + ".nstudio"))
 
     def test_crate_version_gate(self):

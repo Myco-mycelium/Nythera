@@ -280,6 +280,18 @@ Nyforge regenerates its C#). The import-gate tests that used `Taskbar`
 as their "unknown type" example now use `BogusWidget` — the old example
 became real. Suite stays **538**.
 
+**2026-08-17 (0.14.26): the real desktop shell screen — authored with
+the shell vocabulary.** `desktop.nstudio` joins the fixtures: a 1440×900
+desktop (DesktopSurface + DesktopIcons, Taskbar with Start/Search /
+pinned List / WorkspaceSwitcher / clock / SystemTray, StartMenu, Search,
+CommandPalette, NotificationCenter, QuickSettings with theme buttons)
+plus a `lock` screen (LockScreen component) — 30 components, 8
+behaviors, 6 bindings. Behaviors exercise the shell actions
+(`StartMenu.Toggle`, `CommandPalette.Open`, `DesktopIcon.Launch`) and a
+conditional DND notification. Validated by floor + crate (differential)
+and opens in Nyforge itself (serializer test on the editor side). Suite
+538 → **539**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.
