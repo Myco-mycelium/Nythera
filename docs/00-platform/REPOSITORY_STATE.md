@@ -250,6 +250,14 @@ Two things now, not one:
   passes unchanged (floor↔crate cannot diverge — same file). Full
   suite: **538** (unchanged — the migration is behavior-preserving).
 
+  **2026-08-17 (0.14.25): the first real Shell component set.** The
+  registry grows to 63 components across five new categories — Shell,
+  Data, Form, Media, Developer — each with a real semantic contract
+  (Taskbar position/alignment/autoHide/…, WindowFrame
+  Minimize/Maximize/Restore/Close, …). All three consumers pick it up
+  automatically; import-gate tests that used `Taskbar` as the unknown-type
+  example now use `BogusWidget`. Suite stays 538.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

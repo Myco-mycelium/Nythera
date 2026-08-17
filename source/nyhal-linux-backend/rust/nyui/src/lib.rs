@@ -561,9 +561,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_component_type() {
-        let text = VALID_SHELL.replace("\"type\": \"Toggle\"", "\"type\": \"Taskbar\"");
+        let text = VALID_SHELL.replace("\"type\": \"Toggle\"", "\"type\": \"BogusWidget\"");
         let err = validate(&text).unwrap_err();
-        assert!(err.contains("unknown type 'Taskbar'"), "{err}");
+        assert!(err.contains("unknown type 'BogusWidget'"), "{err}");
     }
 
     #[test]

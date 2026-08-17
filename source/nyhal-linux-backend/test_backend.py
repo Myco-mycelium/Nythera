@@ -13191,10 +13191,10 @@ class TestNstudioImport(unittest.TestCase):
 
     def test_unknown_component_type(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
-        text = self._mutate(text, '"type": "Toggle"', '"type": "Taskbar"')
+        text = self._mutate(text, '"type": "Toggle"', '"type": "BogusWidget"')
         with self.assertRaises(nstudio.NstudioValidationError) as ctx:
             nstudio.loads(text)
-        self.assertIn("unknown type 'Taskbar'", str(ctx.exception))
+        self.assertIn("unknown type 'BogusWidget'", str(ctx.exception))
 
     def test_unknown_event(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13343,8 +13343,8 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
     def test_crate_rejects_unknown_type(self):
         text = self._mutate(self._text("nyrqis-shell.nstudio"),
-                            '"type": "Toggle"', '"type": "Taskbar"')
-        self._rejects(text, "unknown type 'Taskbar'")
+                            '"type": "Toggle"', '"type": "BogusWidget"')
+        self._rejects(text, "unknown type 'BogusWidget'")
 
     def test_crate_rejects_unknown_event(self):
         text = self._mutate(self._text("nyrqis-shell.nstudio"),
@@ -13396,7 +13396,7 @@ class TestNstudioCodecConformance(unittest.TestCase):
         documents they are identical). The ADR-0020 migration contract:
         the suite passes through the FFI unchanged."""
         cases = [
-            ('"type": "Toggle"', '"type": "Taskbar"', "unknown type 'Taskbar'"),
+            ('"type": "Toggle"', '"type": "BogusWidget"', "unknown type 'BogusWidget'"),
             ("Nyrqis.Notification.Show", "Nyrqis.System.Shutdown",
              "unknown system action 'Nyrqis.System.Shutdown'"),
             ('"component": "toggle_dnd"', '"component": "ghost"', "component 'ghost' does not exist"),

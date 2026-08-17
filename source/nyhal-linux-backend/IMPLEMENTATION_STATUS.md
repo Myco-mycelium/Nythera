@@ -266,6 +266,20 @@ passes unchanged — both consumers read the same file, so floor↔crate
 cannot diverge. Full suite: **538** (unchanged — the migration is
 behavior-preserving by construction).
 
+**2026-08-17 (0.14.25): the first real Shell component set lands in
+the registry.** 63 components (was 29) across five new categories —
+Shell (Taskbar, StartMenu, WindowFrame, CommandPalette, LockScreen, …),
+Data (List, DataTable, TreeView, Menu, …), Form (DatePicker, FilePicker,
+SettingsPanel, …), Media (Video, Audio, MediaPlayer) and Developer
+(Terminal, CodeEditor, LogViewer) — each with a real semantic contract
+(Taskbar: position/alignment/autoHide/pinnedApps/runningApps/showClock/
+showTray; WindowFrame: Minimize/Maximize/Restore/Close actions). All
+three consumers pick it up automatically (floor at import, crate at
+compile — a vocabulary change not compiled in is a build failure,
+Nyforge regenerates its C#). The import-gate tests that used `Taskbar`
+as their "unknown type" example now use `BogusWidget` — the old example
+became real. Suite stays **538**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

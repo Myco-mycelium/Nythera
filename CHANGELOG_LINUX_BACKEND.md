@@ -16,6 +16,32 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.25] — 2026-08-17
+
+### The first real Shell component set lands in the registry
+
+- **63 components (was 29).** The Nyrqis API Registry
+  (`ui/contracts/nui-api-v1.json`) grows by 34 components across five
+  new categories — **Shell** (DesktopSurface, DesktopIcon, Taskbar,
+  StartMenu, SystemTray, NotificationCenter, QuickSettings,
+  WorkspaceSwitcher, WindowFrame, WindowControls, ContextMenu,
+  CommandPalette, Launcher, Search, PowerMenu, LockScreen,
+  Application), **Data** (List, ListItem, DataTable, TreeView, Menu,
+  MenuItem), **Form** (Form, DatePicker, TimePicker, FilePicker,
+  SettingsPanel), **Media** (Video, Audio, MediaPlayer) and
+  **Developer** (Terminal, CodeEditor, LogViewer).
+- Each carries a real semantic contract — e.g. `Taskbar` declares
+  `position`/`alignment`/`autoHide`/`pinnedApps`/`runningApps`/
+  `showClock`/`showTray` and `WindowFrame` declares
+  `Minimize`/`Maximize`/`Restore`/`Close` actions — so Nyforge's palette
+  and Behaviors dropdowns know what the shell actually supports.
+- All three consumers pick it up automatically: the Python floor loads
+  the file at import, the Rust crate embeds it at compile time (a
+  vocabulary change that isn't compiled in is a build failure), and
+  Nyforge regenerates its C# tables. The import-gate tests that used
+  `Taskbar` as their "unknown type" example were switched to
+  `BogusWidget` — the old example became real. Suite stays **538**.
+
 ## [0.14.24] — 2026-08-17
 
 ### The Nyrqis API Registry — one machine-readable contract, three consumers
