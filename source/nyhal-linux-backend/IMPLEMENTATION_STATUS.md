@@ -335,6 +335,18 @@ the same with byte-identical messages (new differential tests). The
 overrides + instance children) and FEATURE_STATUS `ComponentReuse` →
 implemented. Suite 541 → **546**.
 
+**2026-08-17 (0.14.31): responsive layout constraints (NUI-SCHEMA
+§4.1).** `layout` gains optional constraint fields — anchors
+(`anchorLeft/Right/Top/Bottom`, booleans, all default false),
+min/max bounds (non-negative ints, `min* <= max*`), and `aspectRatio`
+(positive) — validated identically by both gates (new differential
+tests). `resolve_layout()` applies them for any container size (both
+horizontal anchors stretch the width; a single `anchorBottom` docks
+from the bottom; aspect derives the non-stretched axis) and
+`text_preview()` now shows adapted bounds. The `desktop.nstudio`
+taskbar stretches full-width and docks with min/max bounds; a desktop
+icon carries `aspectRatio: 1.0`. Suite 546 → **562**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

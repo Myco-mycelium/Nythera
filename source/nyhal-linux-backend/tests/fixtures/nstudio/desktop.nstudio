@@ -146,7 +146,7 @@
                 "id": "icon_files",
                 "type": "DesktopIcon",
                 "properties": { "glyph": "Folder", "label": "Files", "target": "files" },
-                "layout": { "x": 24, "y": 24, "width": 96, "height": 96 },
+                "layout": { "x": 24, "y": 24, "width": 96, "height": 96, "aspectRatio": 1.0 },
                 "events": {},
                 "children": []
               },
@@ -179,8 +179,9 @@
               "runningApps": ["Terminal"],
               "showClock": true,
               "showTray": true
-            },
-            "layout": { "x": 0, "y": 820, "width": 1440, "height": 80 },
+            },            "layout": { "x": 0, "y": 0, "width": 1440, "height": 80, "anchorLeft": true, "anchorRight": true, "anchorBottom": true, "minWidth": 1200, "maxWidth": 1600, "maxHeight": 96 },
+
+
             "events": {},
             "children": [
               {

@@ -371,15 +371,49 @@ fn validate_component(
     }
 
     if let Some(layout) = node.get("layout").and_then(Value::as_object) {
-        for key in ["x", "y", "width", "height"] {
-            let ok = matches!(
-                layout.get(key),
-                Some(Value::Number(n)) if n.is_i64() && n.as_i64().unwrap_or(-1) >= 0
-            );
+        // Responsive constraints (NUI-SCHEMA §4): bounds and ratios are
+        // validated identically to the floor (differential-tested).
+        for key in ["x", "y", "width", "height", "minWidth", "maxWidth",
+                    "minHeight", "maxHeight"]
+        {
+            let ok = match layout.get(key) {
+                None => true,
+                Some(Value::Number(n)) =>
+                    n.is_i64() && n.as_i64().unwrap_or(-1) >= 0,
+                Some(_) => false,
+            };
             if !ok {
                 return Err(format!(
                     "component '{id}': layout '{key}' must be a non-negative integer"
                 ));
+            }
+        }
+        for (lo_key, hi_key) in [("minWidth", "maxWidth"), ("minHeight", "maxHeight")] {
+            let lo = layout.get(lo_key).and_then(Value::as_i64);
+            let hi = layout.get(hi_key).and_then(Value::as_i64);
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                if lo > hi {
+                    return Err(format!(
+                        "component '{id}': layout '{lo_key}' must be <= '{hi_key}'"
+                    ));
+                }
+            }
+        }
+        if let Some(ratio) = layout.get("aspectRatio") {
+            let ok = matches!(ratio, Value::Number(n) if n.as_f64().unwrap_or(0.0) > 0.0);
+            if !ok {
+                return Err(format!(
+                    "component '{id}': layout 'aspectRatio' must be a positive number"
+                ));
+            }
+        }
+        for key in ["anchorLeft", "anchorTop", "anchorRight", "anchorBottom"] {
+            if let Some(flag) = layout.get(key) {
+                if !flag.is_boolean() {
+                    return Err(format!(
+                        "component '{id}': layout '{key}' must be a boolean"
+                    ));
+                }
             }
         }
     }

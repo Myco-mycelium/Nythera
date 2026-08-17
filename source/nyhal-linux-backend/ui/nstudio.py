@@ -259,9 +259,12 @@ class NstudioDocument:
         screen = self._screen(screen_id)
         lines = [f"screen {screen.id} {screen.size.get('width')}x{screen.size.get('height')}"]
 
+        size = screen.size
+        cw, ch = size.get("width", 0), size.get("height", 0)
+
         def walk(c: NstudioComponent, depth: int) -> None:
-            l = c.layout
-            bounds = f"({l.get('x', 0)},{l.get('y', 0)} {l.get('width', 0)}x{l.get('height', 0)})"
+            r = resolve_layout(c.layout, cw, ch)
+            bounds = f"({r['x']},{r['y']} {r['width']}x{r['height']})"
             lines.append("  " * depth + f"{c.type} {c.id} {bounds}")
             for child in c.children:
                 walk(child, depth + 1)
@@ -513,6 +516,101 @@ def _check_layout(c: NstudioComponent, issues: List[str]) -> None:
             issues.append(
                 f"component '{c.id}': layout '{key}' must be a "
                 f"non-negative integer")
+    # Responsive constraints (NUI-SCHEMA §4): bounds and ratios are
+    # validated the same way on both gates (differential-tested).
+    for key in ("minWidth", "maxWidth", "minHeight", "maxHeight"):
+        value = c.layout.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, int) or value < 0:
+            issues.append(
+                f"component '{c.id}': layout '{key}' must be a "
+                f"non-negative integer")
+    for dim in ("Width", "Height"):
+        lo, hi = c.layout.get(f"min{dim}"), c.layout.get(f"max{dim}")
+        if lo is not None and hi is not None and isinstance(lo, int) \
+                and isinstance(hi, int) and lo > hi:
+            issues.append(
+                f"component '{c.id}': layout 'min{dim}' must be <= "
+                f"'max{dim}'")
+    ratio = c.layout.get("aspectRatio")
+    if ratio is not None and (not isinstance(ratio, (int, float))
+                              or isinstance(ratio, bool) or ratio <= 0):
+        issues.append(
+            f"component '{c.id}': layout 'aspectRatio' must be a "
+            f"positive number")
+    for key in ("anchorLeft", "anchorTop", "anchorRight", "anchorBottom"):
+        value = c.layout.get(key)
+        if value is not None and not isinstance(value, bool):
+            issues.append(
+                f"component '{c.id}': layout '{key}' must be a boolean")
+
+
+def resolve_layout(layout: Dict[str, Any], container_w: int,
+                   container_h: int) -> Dict[str, int]:
+    """Apply responsive layout constraints (NUI-SCHEMA §4) to an authored
+    layout and return the effective ``x/y/width/height`` for a container
+    of the given size — the shape a shell actually lays out.
+
+    Rules:
+    - All anchors default **false** — a document without constraint
+      fields keeps its absolute authored coordinates exactly as before.
+    - ``anchorLeft`` fixes the left edge at ``x``; ``anchorRight`` fixes
+      the right edge at ``container_w - x`` (so ``x`` doubles as the
+      right inset). **Both together** make the width stretch:
+      ``width = container_w - 2*x``, clamped to min/max width.
+    - Vertical is the mirror: ``anchorTop``/``anchorBottom`` with ``y``
+      as the top/bottom inset; both together make the height stretch.
+    - ``minWidth``/``maxWidth``/``minHeight``/``maxHeight`` clamp the
+      computed (or authored) size.
+    - ``aspectRatio`` derives the non-stretched dimension when one axis
+      stretches; otherwise the authored size stands (the designer
+      chose it)."""
+    x = layout.get("x", 0)
+    y = layout.get("y", 0)
+    w = layout.get("width", 0)
+    h = layout.get("height", 0)
+    min_w = layout.get("minWidth")
+    max_w = layout.get("maxWidth")
+    min_h = layout.get("minHeight")
+    max_h = layout.get("maxHeight")
+    ratio = layout.get("aspectRatio")
+
+    anchor_l = layout.get("anchorLeft", False)
+    anchor_r = layout.get("anchorRight", False)
+    anchor_t = layout.get("anchorTop", False)
+    anchor_b = layout.get("anchorBottom", False)
+
+    stretch_w = bool(anchor_l and anchor_r)
+    stretch_h = bool(anchor_t and anchor_b)
+
+    if stretch_w:
+        w = container_w - 2 * x
+    elif anchor_r:
+        x = container_w - x - w
+    if stretch_h:
+        h = container_h - 2 * y
+    elif anchor_b:
+        y = container_h - y - h
+
+    # Aspect ratio derives the non-stretched axis (width-driven when
+    # both stretch).
+    if ratio is not None and ratio > 0:
+        if stretch_w and not stretch_h:
+            h = int(w / ratio)
+        elif stretch_h and not stretch_w:
+            w = int(h * ratio)
+
+    if min_w is not None:
+        w = max(w, min_w)
+    if max_w is not None:
+        w = min(w, max_w)
+    if min_h is not None:
+        h = max(h, min_h)
+    if max_h is not None:
+        h = min(h, max_h)
+
+    return {"x": x, "y": y, "width": w, "height": h}
 
 
 def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,

@@ -16,6 +16,25 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.31] — 2026-08-17
+
+### Responsive layout constraints (NUI-SCHEMA §4.1)
+
+- **Constraint fields on `layout`.** `anchorLeft/Right/Top/Bottom`
+  (booleans, all default false), `minWidth`/`maxWidth`/`minHeight`/
+  `maxHeight` (non-negative ints, `min* <= max*`), and `aspectRatio`
+  (positive number). Both import gates validate them with byte-identical
+  messages (new differential tests).
+- **`resolve_layout()`** applies them — the runtime-facing adaptation:
+  both horizontal anchors stretch the width (`container_w - 2*x`,
+  clamped); a single `anchorBottom` docks from the bottom (`y` is the
+  bottom inset); `aspectRatio` derives the non-stretched axis.
+  `text_preview()` (the stand-in renderer) now shows adapted bounds.
+- **Shell fixture proves it:** the `desktop.nstudio` taskbar stretches
+  full-width and docks to the bottom with min/max bounds; a desktop
+  icon carries `aspectRatio: 1.0`. Suite 546 → **562** (new
+  `TestResponsiveLayout`, 12 tests + 4 conformance).
+
 ## [0.14.30] — 2026-08-17
 
 ### Reusable component masters — `components[]` is no longer reserved (NFS-006 §9)

@@ -13389,6 +13389,113 @@ class TestNstudioImport(unittest.TestCase):
             doc.render("ghost")
 
 
+class TestResponsiveLayout(unittest.TestCase):
+    """Responsive layout constraints (NUI-SCHEMA §4): anchors, min/max
+    bounds, and aspect ratio — validated on the floor and applied by
+    resolve_layout(), which text_preview() (the stand-in renderer) uses."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+
+    def _load(self, name):
+        return nstudio.loads(open(os.path.join(self.FIXTURES, name)).read())
+
+    def _mutate(self, name, old, new):
+        text = open(os.path.join(self.FIXTURES, name)).read()
+        assert old in text, f"anchor not found: {old[:60]}"
+        return text.replace(old, new)
+
+    # ---- resolve_layout -----------------------------------------------------
+
+    def test_no_constraints_is_absolute(self):
+        r = nstudio.resolve_layout({"x": 24, "y": 36, "width": 200, "height": 50},
+                                   1000, 500)
+        self.assertEqual(r, {"x": 24, "y": 36, "width": 200, "height": 50})
+
+    def test_both_horizontal_anchors_stretch_and_clamp(self):
+        r = nstudio.resolve_layout(
+            {"x": 0, "y": 0, "width": 100, "height": 20,
+             "anchorLeft": True, "anchorRight": True,
+             "minWidth": 500, "maxWidth": 800}, 1000, 500)
+        self.assertEqual(r, {"x": 0, "y": 0, "width": 800, "height": 20})
+
+    def test_bottom_anchor_docks_from_bottom(self):
+        r = nstudio.resolve_layout(
+            {"x": 0, "y": 0, "width": 1000, "height": 80,
+             "anchorBottom": True}, 1000, 500)
+        self.assertEqual(r, {"x": 0, "y": 420, "width": 1000, "height": 80})
+
+    def test_right_anchor_measures_from_right_edge(self):
+        r = nstudio.resolve_layout(
+            {"x": 24, "y": 10, "width": 200, "height": 50,
+             "anchorRight": True}, 1000, 500)
+        self.assertEqual(r, {"x": 776, "y": 10, "width": 200, "height": 50})
+
+    def test_aspect_ratio_keeps_authored_size_when_not_stretched(self):
+        r = nstudio.resolve_layout(
+            {"x": 0, "y": 0, "width": 96, "height": 96, "aspectRatio": 1.0},
+            1000, 500)
+        self.assertEqual(r, {"x": 0, "y": 0, "width": 96, "height": 96})
+
+    def test_aspect_ratio_derives_stretched_axis(self):
+        r = nstudio.resolve_layout(
+            {"x": 0, "y": 0, "width": 96, "height": 10,
+             "anchorLeft": True, "anchorRight": True, "aspectRatio": 2.0},
+            1000, 500)
+        # width stretches to 1000; height derives to 1000/2.
+        self.assertEqual(r["width"], 1000)
+        self.assertEqual(r["height"], 500)
+
+    # ---- validation ---------------------------------------------------------
+
+    def test_min_greater_than_max_rejected(self):
+        text = self._mutate("desktop.nstudio",
+                            '"minWidth": 1200', '"minWidth": 2000')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("layout 'minWidth' must be <= 'maxWidth'", str(ctx.exception))
+
+    def test_negative_aspect_ratio_rejected(self):
+        text = self._mutate("desktop.nstudio", '"aspectRatio": 1.0',
+                            '"aspectRatio": -1')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("layout 'aspectRatio' must be a positive number",
+                      str(ctx.exception))
+
+    def test_non_boolean_anchor_rejected(self):
+        text = self._mutate("desktop.nstudio", '"anchorLeft": true',
+                            '"anchorLeft": 1')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("layout 'anchorLeft' must be a boolean", str(ctx.exception))
+
+    def test_negative_constraint_bound_rejected(self):
+        text = self._mutate("desktop.nstudio", '"maxHeight": 96',
+                            '"maxHeight": -1')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("layout 'maxHeight' must be a non-negative integer",
+                      str(ctx.exception))
+
+    # ---- fixture end-to-end -------------------------------------------------
+
+    def test_desktop_fixture_taskbar_stretches_and_docks(self):
+        doc = self._load("desktop.nstudio")
+        preview = doc.text_preview("desktop")
+        self.assertIn("Taskbar taskbar (0,820 1440x80)", preview)
+        self.assertIn("DesktopIcon icon_files (24,24 96x96)", preview)
+
+    def test_resolve_desktop_taskbar_constraints(self):
+        doc = self._load("desktop.nstudio")
+        taskbar = doc.find_component("taskbar")
+        r = nstudio.resolve_layout(taskbar.layout, 1440, 900)
+        self.assertEqual(r, {"x": 0, "y": 820, "width": 1440, "height": 80})
+        # On a narrower window the min-width keeps it usable.
+        r = nstudio.resolve_layout(taskbar.layout, 800, 600)
+        self.assertEqual(r["width"], 1200)  # minWidth floor
+        self.assertEqual(r["y"], 520)        # still docked to the bottom
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -13508,6 +13615,26 @@ class TestNstudioCodecConformance(unittest.TestCase):
                             '"componentRef": "TaskbarButton", "type": "Button",')
         self._rejects(text, "reusable instance must not declare its own type")
 
+    def test_crate_rejects_min_greater_than_max(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"minWidth": 1200', '"minWidth": 2000')
+        self._rejects(text, "layout 'minWidth' must be <= 'maxWidth'")
+
+    def test_crate_rejects_negative_aspect_ratio(self):
+        text = self._mutate(self._text("desktop.nstudio"), '"aspectRatio": 1.0',
+                            '"aspectRatio": -1')
+        self._rejects(text, "layout 'aspectRatio' must be a positive number")
+
+    def test_crate_rejects_non_boolean_anchor(self):
+        text = self._mutate(self._text("desktop.nstudio"), '"anchorLeft": true',
+                            '"anchorLeft": 1')
+        self._rejects(text, "layout 'anchorLeft' must be a boolean")
+
+    def test_crate_rejects_negative_constraint_bound(self):
+        text = self._mutate(self._text("desktop.nstudio"), '"maxHeight": 96',
+                            '"maxHeight": -1')
+        self._rejects(text, "layout 'maxHeight' must be a non-negative integer")
+
     def test_error_messages_match_floor_reusable(self):
         """Differential: the reusable-component gates report the same
         first failure as the floor."""
@@ -13615,6 +13742,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestNuiService))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
+    suite.addTests(loader.loadTestsFromTestCase(TestResponsiveLayout))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

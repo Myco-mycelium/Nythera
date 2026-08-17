@@ -296,6 +296,15 @@ Two things now, not one:
   instances via `ReusableComponentResolver`. Suite 541 → **546**; Nyforge
   71/71.
 
+  **2026-08-17 (0.14.31): responsive layout constraints (NUI-SCHEMA
+  §4.1).** `layout` gains optional anchors (all default false), min/max
+  bounds, and `aspectRatio`, validated identically by both gates
+  (differential). `resolve_layout()` adapts any container size (stretch
+  on both-horizontal anchors, bottom-dock, aspect derivation) and
+  `text_preview()` shows adapted bounds. The desktop shell's taskbar
+  stretches and docks itself; an icon carries `aspectRatio: 1.0`.
+  Suite 546 → **562**; Nyforge 118/118.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust
