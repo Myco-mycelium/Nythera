@@ -42,7 +42,7 @@
 //! | `-4096` | internal error                     |
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::cell::RefCell;
 use std::ffi::c_char;
 use std::ptr;
@@ -213,6 +213,46 @@ fn validate_document(raw: &Value) -> Result<(), String> {
 
     let states = raw.get("states").and_then(Value::as_object);
 
+    // Localization (NUI-SCHEMA §8.1): resolve $localize: refs against
+    // the ACTIVE locale's table; a missing key is a validation error
+    // (fail-closed, byte-identical to the floor). No locales section =
+    // no $localize: refs allowed anywhere.
+    let locale_keys: Option<(&str, &Map<String, Value>)> =
+        match raw.get("locales").and_then(Value::as_object) {
+            None => None,
+            Some(locales) => {
+                let active = locales
+                    .get("active")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        "locales section must declare a string 'active' and a 'tables' object"
+                            .to_string()
+                    })?;
+                let tables = locales
+                    .get("tables")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        "locales section must declare a string 'active' and a 'tables' object"
+                            .to_string()
+                    })?;
+                for (name, table) in tables {
+                    let ok = matches!(table, Value::Object(m) if m.values().all(Value::is_string));
+                    if !ok {
+                        return Err(format!(
+                            "locale '{name}' table must map string keys to string values"
+                        ));
+                    }
+                }
+                let table = tables
+                    .get(active)
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        format!("locales: active locale '{active}' has no table")
+                    })?;
+                Some((active, table))
+            }
+        };
+
     // Pass 1: collect ids.
     let mut component_ids: Vec<String> = Vec::new();
     if let Some(screens) = raw.get("screens").and_then(Value::as_array) {
@@ -263,7 +303,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
                 return Err(format!("duplicate reusable component id '{id}'"));
             }
             master_ids.push(id.to_string());
-            validate_component(master, &behavior_ids, &master_ids, raw)?;
+            validate_component(master, &behavior_ids, &master_ids, raw, locale_keys)?;
         }
     }
 
@@ -271,7 +311,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     if let Some(screens) = raw.get("screens").and_then(Value::as_array) {
         for screen in screens {
             if let Some(root) = screen.get("root") {
-                validate_component(root, &behavior_ids, &master_ids, raw)?;
+                validate_component(root, &behavior_ids, &master_ids, raw, locale_keys)?;
             }
         }
     }
@@ -279,7 +319,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     // Pass 5: behaviors (full context).
     if let Some(behaviors) = raw.get("behaviors").and_then(Value::as_array) {
         for behavior in behaviors {
-            validate_behavior(behavior, states, &component_ids, raw)?;
+            validate_behavior(behavior, states, &component_ids, raw, locale_keys)?;
         }
     }
 
@@ -298,6 +338,7 @@ fn validate_component(
     behavior_ids: &[String],
     master_ids: &[String],
     raw: &Value,
+    locale_keys: Option<(&str, &Map<String, Value>)>,
 ) -> Result<(), String> {
     let id = node
         .get("id")
@@ -418,10 +459,60 @@ fn validate_component(
         }
     }
 
+    // Localization (NUI-SCHEMA §8.1): $localize: refs in properties
+    // (instances: overrides) must exist in the active locale's table.
+    if let Some((active, table)) = locale_keys {
+        let container = if reference.is_some() {
+            node.get("overrides")
+        } else {
+            node.get("properties")
+        };
+        if let Some(props) = container.and_then(Value::as_object) {
+            let what = if reference.is_some() { "override" } else { "property" };
+            for value in props.values() {
+                check_localize_refs(
+                    value, active, table,
+                    &format!("component '{id}' {what}"))?;
+            }
+        }
+    }
+
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
-            validate_component(child, behavior_ids, master_ids, raw)?;
+            validate_component(child, behavior_ids, master_ids, raw, locale_keys)?;
         }
+    }
+    Ok(())
+}
+
+/// A ``$localize:key`` reference must exist in the active locale's table
+/// (fail-closed at the import gate, mirroring the floor). Plain text and
+/// non-string values pass through.
+fn check_localize_refs(
+    value: &Value,
+    active: &str,
+    table: &Map<String, Value>,
+    where_: &str,
+) -> Result<(), String> {
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    if !text.contains("$localize:") {
+        return Ok(());
+    }
+    let mut rest = text;
+    while let Some(pos) = rest.find("$localize:") {
+        let after = &rest[pos + "$localize:".len()..];
+        let key: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '-')
+            .collect();
+        if !key.is_empty() && !table.contains_key(&key) {
+            return Err(format!(
+                "{where_}: localize key '{key}' not in locale '{active}'"
+            ));
+        }
+        rest = after;
     }
     Ok(())
 }
@@ -442,6 +533,7 @@ fn validate_behavior(
     states: Option<&serde_json::Map<String, Value>>,
     component_ids: &[String],
     raw: &Value,
+    locale_keys: Option<(&str, &Map<String, Value>)>,
 ) -> Result<(), String> {
     let id = behavior
         .get("id")
@@ -514,7 +606,18 @@ fn validate_behavior(
             "behavior '{id}': action target '{target}' is neither 'System' nor a component id"
         ));
     }
-    let _ = component_ids;
+
+    // Localization (NUI-SCHEMA §8.1): $localize: refs in action
+    // arguments must exist in the active locale's table.
+    if let Some((active, table)) = locale_keys {
+        if let Some(args) = action.get("arguments").and_then(Value::as_object) {
+            for value in args.values() {
+                check_localize_refs(
+                    value, active, table,
+                    &format!("behavior '{id}' argument"))?;
+            }
+        }
+    }
     Ok(())
 }
 

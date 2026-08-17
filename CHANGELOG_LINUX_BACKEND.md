@@ -16,6 +16,27 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.32] — 2026-08-17
+
+### Localization — `$localize:key` through the document's locales (NUI-SCHEMA §8.1)
+
+- **`locales` section.** A document may carry
+  `{"active": "en", "tables": {"en": {"key": "text"}, ...}}`; the
+  active locale must have a table, and tables must map string keys to
+  string values (validated by both gates).
+- **`$localize:key` references** in component properties, reusable
+  overrides, and behavior action arguments must exist in the ACTIVE
+  locale's table — fail-closed at both import gates with byte-identical
+  messages (new differential tests). `resolve_text()` resolves them
+  (missing keys stay literal — fail-soft at resolution; the gate
+  already rejected them).
+- **Shell fixture proves it:** `desktop.nstudio` carries en/af tables;
+  the search button's label and the DND notification message are
+  `$localize:` references, verified resolving to "Search" and
+  "Notifications paused until disabled" (and to the af strings when the
+  active locale switches). Suite 562 → **573** (new `TestLocalization`,
+  7 tests + 4 conformance).
+
 ## [0.14.31] — 2026-08-17
 
 ### Responsive layout constraints (NUI-SCHEMA §4.1)

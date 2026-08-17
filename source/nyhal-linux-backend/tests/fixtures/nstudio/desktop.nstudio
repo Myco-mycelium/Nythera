@@ -20,6 +20,13 @@
       "children": []
     }
   ],
+  "locales": {
+    "active": "en",
+    "tables": {
+      "en": { "search.label": "Search", "start.label": "Start", "lock.welcome": "Welcome", "notif.dnd": "Notifications paused until disabled" },
+      "af": { "search.label": "Soek", "start.label": "Begin", "lock.welcome": "Welkom", "notif.dnd": "Kennisgewings onderbreek" }
+    }
+  },
   "states": {
     "startMenuOpen": false,
     "quickSettingsOpen": false,
@@ -110,7 +117,7 @@
         "name": "Nyrqis.Notification.Show",
         "arguments": {
           "title": "Do not disturb enabled",
-          "message": "Notifications paused until disabled",
+          "message": "$localize:notif.dnd",
           "severity": "info"
         }
       }
@@ -195,7 +202,7 @@
               {
                 "id": "btn_search",
                 "componentRef": "TaskbarButton",
-                "overrides": { "text": "Search" },
+                "overrides": { "text": "$localize:search.label" },
                 "layout": { "x": 112, "y": 16, "width": 96, "height": 48 },
                 "events": { "clicked": "behavior_search_open" },
                 "children": []

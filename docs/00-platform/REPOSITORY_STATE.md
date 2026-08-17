@@ -305,6 +305,15 @@ Two things now, not one:
   stretches and docks itself; an icon carries `aspectRatio: 1.0`.
   Suite 546 → **562**; Nyforge 118/118.
 
+  **2026-08-17 (0.14.32): localization (NUI-SCHEMA §8.1).** A document's
+  `locales` section (`active` + per-locale string tables) resolves
+  `$localize:key` references in component properties, reusable
+  overrides, and behavior arguments; refs must exist in the active
+  locale's table, enforced fail-closed by both gates with byte-identical
+  messages. `resolve_text()` resolves them. The shell fixture's search
+  label and DND message are localized (en/af). Suite 562 → **573**;
+  Nyforge 127/127.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

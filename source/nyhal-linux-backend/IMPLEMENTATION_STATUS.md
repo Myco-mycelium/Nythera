@@ -347,6 +347,18 @@ from the bottom; aspect derives the non-stretched axis) and
 taskbar stretches full-width and docks with min/max bounds; a desktop
 icon carries `aspectRatio: 1.0`. Suite 546 → **562**.
 
+**2026-08-17 (0.14.32): localization — `$localize:key` through the
+`locales` section (NUI-SCHEMA §8.1).** A document carries
+`{"active": ..., "tables": {...}}`; the active locale must have a
+table and tables map string keys to string values. `$localize:key`
+references in component properties, reusable overrides, and behavior
+action arguments must exist in the ACTIVE locale's table — fail-closed
+at both gates with byte-identical messages (differential).
+`resolve_text()` resolves them (missing keys stay literal at
+resolution; the gate rejects them up front). The `desktop.nstudio`
+search label and DND message are `$localize:` references (en/af
+verified). Suite 562 → **573**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

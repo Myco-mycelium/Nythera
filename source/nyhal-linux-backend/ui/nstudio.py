@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -173,6 +174,10 @@ class NstudioDocument:
     project: Dict[str, Any]
     themes: Dict[str, Any]
     states: Dict[str, Any]
+    # Localization (NUI-SCHEMA §8.1): ``{"active": "en", "tables":
+    # {"en": {"settings.save": "Save"}, ...}}`` — ``$localize:key``
+    # string references resolve through the active locale's table.
+    locales: Dict[str, Any]
     behaviors: List[NstudioBehavior]
     bindings: List[NstudioBinding]
     screens: List[NstudioScreen]
@@ -317,6 +322,7 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         project=raw.get("project") or {},
         themes=raw.get("themes") or {},
         states=raw.get("states") or {},
+        locales=raw.get("locales") or {},
         behaviors=[_parse_behavior(b) for b in raw.get("behaviors") or []],
         bindings=[_parse_binding(b) for b in raw.get("bindings") or []],
         reusable_components=[
@@ -395,6 +401,29 @@ def _parse_component(raw: Any) -> NstudioComponent:
 def _validate(doc: NstudioDocument) -> List[str]:
     issues: List[str] = []
 
+    # Localization section (NUI-SCHEMA §8.1): if present, it must be
+    # {"active": str, "tables": {locale: {key: str}}} and the active
+    # locale must have a table.
+    locales = doc.locales or {}
+    if locales:
+        active = locales.get("active")
+        tables = locales.get("tables")
+        if not isinstance(active, str) or not isinstance(tables, dict):
+            issues.append(
+                "locales section must declare a string 'active' and a "
+                "'tables' object")
+        else:
+            for locale_name, table in tables.items():
+                if not isinstance(table, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str)
+                        for k, v in table.items()):
+                    issues.append(
+                        f"locale '{locale_name}' table must map string "
+                        f"keys to string values")
+            if active not in tables:
+                issues.append(
+                    f"locales: active locale '{active}' has no table")
+
     component_ids = doc.component_ids()
     seen: set = set()
     for cid in component_ids:
@@ -469,6 +498,10 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                     issues.append(
                         f"component '{c.id}': override '{key}' not in "
                         f"the '{master.type}' contract")
+            for value in c.overrides.values():
+                _check_localize_ref(
+                    value, doc, issues,
+                    f"component '{c.id}' override")
             for event, behavior_id in c.events.items():
                 if event not in events:
                     issues.append(
@@ -492,6 +525,9 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                 issues.append(
                     f"component '{c.id}': property '{key}' not in the "
                     f"'{c.type}' contract")
+        for value in c.properties.values():
+            _check_localize_ref(
+                value, doc, issues, f"component '{c.id}' property")
         for event, behavior_id in c.events.items():
             if event not in events:
                 issues.append(
@@ -613,6 +649,48 @@ def resolve_layout(layout: Dict[str, Any], container_w: int,
     return {"x": x, "y": y, "width": w, "height": h}
 
 
+def resolve_text(text: str, locales: Dict[str, Any]) -> str:
+    """Resolve ``$localize:key`` references through the active locale's
+    table (NUI-SCHEMA §8.1). A missing key is left as the literal
+    placeholder (fail-soft at resolution — the import gate rejects
+    missing keys up front). Plain text with no references is returned
+    unchanged."""
+    if "$localize:" not in text or not locales:
+        return text
+    active = locales.get("active")
+    table = (locales.get("tables") or {}).get(active) or {}
+    out = text
+    for key, value in table.items():
+        out = out.replace(f"$localize:{key}", value)
+    return out
+
+
+def _check_localize_ref(value: Any, doc: NstudioDocument, issues: List[str],
+                        where: str) -> None:
+    """A ``$localize:key`` reference must exist in the ACTIVE locale's
+    table (fail-closed at the import gate, like every other dangling
+    reference). Missing/empty locales section is itself an error."""
+    if not isinstance(value, str) or "$localize:" not in value:
+        return
+    locales = doc.locales
+    tables = locales.get("tables") if isinstance(locales, dict) else None
+    active = locales.get("active") if isinstance(locales, dict) else None
+    if not isinstance(tables, dict) or not isinstance(active, str):
+        issues.append(
+            f"{where}: '$localize:' reference requires a 'locales' "
+            f"section with 'active' and 'tables'")
+        return
+    table = tables.get(active)
+    if not isinstance(table, dict):
+        issues.append(
+            f"{where}: locale '{active}' has no table")
+        return
+    for key in re.findall(r"\$localize:([A-Za-z0-9_.-]+)", value):
+        if key not in table:
+            issues.append(
+                f"{where}: localize key '{key}' not in locale '{active}'")
+
+
 def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                        issues: List[str], component_ids: List[str]) -> None:
     condition = behavior.condition
@@ -654,6 +732,10 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
             f"behavior '{behavior.id}': action target '{target}' is "
             f"neither 'System' nor a component id")
 
+    for value in (behavior.action.get("arguments") or {}).values():
+        _check_localize_ref(
+            value, doc, issues, f"behavior '{behavior.id}' argument")
+
 
 def _validate_binding(binding: NstudioBinding, doc: NstudioDocument,
                       issues: List[str], component_ids: List[str]) -> None:
@@ -678,5 +760,5 @@ __all__ = [
     "COMPONENT_CONTRACTS", "SYSTEM_ACTIONS",
     "NstudioError", "NstudioVersionError", "NstudioValidationError",
     "NstudioComponent", "NstudioScreen", "NstudioBehavior", "NstudioBinding",
-    "NstudioDocument", "loads", "load",
+    "NstudioDocument", "loads", "load", "resolve_text",
 ]

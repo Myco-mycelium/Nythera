@@ -13201,10 +13201,14 @@ class TestNstudioImport(unittest.TestCase):
         target, name, _args = doc.resolve_action("behavior_launch_terminal")
         self.assertEqual(target, "icon_terminal")
         self.assertEqual(name, "Launch")
-        # The conditional DND behavior resolves $state: substitution.
+        # The conditional DND behavior resolves $state: substitution and
+        # $localize: references (the message is a locale key).
         target, name, args = doc.resolve_action("behavior_dnd_on")
         self.assertEqual(name, "Nyrqis.Notification.Show")
-        self.assertEqual(args["message"], "Notifications paused until disabled")
+        self.assertEqual(args["message"], "$localize:notif.dnd")
+        self.assertEqual(
+            nstudio.resolve_text(args["message"], doc.locales),
+            "Notifications paused until disabled")
         # The lock screen screen carries a LockScreen root child.
         lock_screen = doc.find_component("lock_screen")
         self.assertEqual(lock_screen.type, "LockScreen")
@@ -13220,7 +13224,13 @@ class TestNstudioImport(unittest.TestCase):
         self.assertEqual(btn_start.overrides, {"text": "Start"})
         btn_search = doc.find_component("btn_search")
         self.assertEqual(btn_search.component_ref, "TaskbarButton")
-        self.assertEqual(btn_search.overrides, {"text": "Search"})
+        # The search label is localized through the document's locales.
+        self.assertEqual(btn_search.overrides, {"text": "$localize:search.label"})
+        self.assertEqual(
+            nstudio.resolve_text("$localize:search.label", doc.locales), "Search")
+        af = dict(doc.locales); af["active"] = "af"
+        self.assertEqual(
+            nstudio.resolve_text("$localize:search.label", af), "Soek")
 
     def test_windows_shell_fixture_shape(self):
         """The window-system + power-UI shell screens (0.14.25 shell
@@ -13496,6 +13506,88 @@ class TestResponsiveLayout(unittest.TestCase):
         self.assertEqual(r["y"], 520)        # still docked to the bottom
 
 
+class TestLocalization(unittest.TestCase):
+    """Localization (NUI-SCHEMA §8.1): the locales section and
+    $localize:key references — resolved through the active locale's
+    table, and validated fail-closed on the floor."""
+
+    LOC = {"active": "en", "tables": {
+        "en": {"settings.save": "Save"},
+        "af": {"settings.save": "Stoor"},
+    }}
+
+    def _doc(self, extra=""):
+        return nstudio.loads("""{
+          "version": "0.4.0",
+          "project": {"name": "t", "id": "t"},
+          "themes": {"active": "Eclipse"},
+          "locales": {"active": "en", "tables": {"en": {"search.label": "Search"}}},
+          "states": {},
+          "behaviors": [],
+          "bindings": [],
+          "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+            "root": {"id": "r", "type": "Button",
+              "properties": {"text": "$localize:search.label"},
+              "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+              "events": {}, "children": []}}]%s
+        }""" % extra)
+
+    def test_resolve_text_active_locale(self):
+        self.assertEqual(nstudio.resolve_text("$localize:settings.save", self.LOC), "Save")
+        af = dict(self.LOC); af["active"] = "af"
+        self.assertEqual(nstudio.resolve_text("$localize:settings.save", af), "Stoor")
+
+    def test_resolve_text_plain_and_missing(self):
+        self.assertEqual(nstudio.resolve_text("Hello", self.LOC), "Hello")
+        # Missing key stays literal (fail-soft at resolution; the gate
+        # rejects it up front).
+        self.assertEqual(nstudio.resolve_text("$localize:ghost", self.LOC), "$localize:ghost")
+
+    def test_resolve_text_no_locales_section(self):
+        self.assertEqual(nstudio.resolve_text("$localize:settings.save", {}), "$localize:settings.save")
+
+    def test_missing_localize_key_rejected(self):
+        raw = open("tests/fixtures/nstudio/desktop.nstudio").read()
+        bad = raw.replace('"$localize:search.label"', '"$localize:ghost.key"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(bad)
+        self.assertIn("localize key 'ghost.key' not in locale 'en'", str(ctx.exception))
+
+    def test_active_locale_without_table_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads("""{
+              "version": "0.4.0",
+              "project": {"name": "t", "id": "t"},
+              "themes": {"active": "Eclipse"},
+              "locales": {"active": "fr", "tables": {"en": {"a": "b"}}},
+              "states": {}, "behaviors": [], "bindings": [], "screens": []
+            }""")
+        self.assertIn("active locale 'fr' has no table", str(ctx.exception))
+
+    def test_localize_without_locales_section_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads("""{
+              "version": "0.4.0",
+              "project": {"name": "t", "id": "t"},
+              "themes": {"active": "Eclipse"},
+              "states": {}, "behaviors": [], "bindings": [],
+              "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "r", "type": "Button",
+                  "properties": {"text": "$localize:search.label"},
+                  "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                  "events": {}, "children": []}}]
+            }""")
+        self.assertIn("requires a 'locales' section", str(ctx.exception))
+
+    def test_fixture_localizes_both_override_and_action_argument(self):
+        doc = nstudio.loads(open("tests/fixtures/nstudio/desktop.nstudio").read())
+        self.assertEqual(nstudio.resolve_text("$localize:search.label", doc.locales), "Search")
+        _t, _n, args = doc.resolve_action("behavior_dnd_on")
+        self.assertEqual(
+            nstudio.resolve_text(args["message"], doc.locales),
+            "Notifications paused until disabled")
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -13635,6 +13727,30 @@ class TestNstudioCodecConformance(unittest.TestCase):
                             '"maxHeight": -1')
         self._rejects(text, "layout 'maxHeight' must be a non-negative integer")
 
+    def test_crate_accepts_localized_desktop(self):
+        nstudio_codec.validate(self._text("desktop.nstudio"))
+        nstudio.loads(self._text("desktop.nstudio"))
+
+    def test_crate_rejects_missing_localize_key(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"$localize:search.label"', '"$localize:ghost.key"')
+        self._rejects(text, "localize key 'ghost.key' not in locale 'en'")
+
+    def test_crate_rejects_active_locale_without_table(self):
+        text = self._text("desktop.nstudio").replace(
+            '"active": "en",', '"active": "fr",')
+        self._rejects(text, "active locale 'fr' has no table")
+
+    def test_error_messages_match_floor_localize(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"$localize:search.label"', '"$localize:ghost.key"')
+        with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+            nstudio.loads(text)
+        with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+            nstudio_codec.validate(text)
+        first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+        self.assertEqual(str(crate_ctx.exception), first_floor_issue)
+
     def test_error_messages_match_floor_reusable(self):
         """Differential: the reusable-component gates report the same
         first failure as the floor."""
@@ -13743,6 +13859,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNuiService))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
     suite.addTests(loader.loadTestsFromTestCase(TestResponsiveLayout))
+    suite.addTests(loader.loadTestsFromTestCase(TestLocalization))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
