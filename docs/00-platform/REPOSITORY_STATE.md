@@ -275,9 +275,16 @@ Two things now, not one:
 
   **2026-08-17 (0.14.28): widgets + OSD + login.** `WidgetHost`,
   `OSD`, `Login` join the registry (66 components); `widgets.nstudio`
-  — WidgetHost cards, a volume OSD, a Login form — 19 components, 5
+  — WidgetHost cards, a volume OSD, a Login form  — 19 components, 5
   behaviors, 2 bindings across 3 screens; accepted by floor, crate,
   and Nyforge's serializer. Suite 540 → **541**.
+
+  **2026-08-17 (0.14.29): typed property metadata in the registry.**
+  `properties` become metadata objects (name/type/default/bindable/
+  required + min/max/enumValues/units where meaningful); vocabulary
+  unchanged. Floor parses names, the crate's serde structs carry the
+  full PropertyDefinition, Nyforge regenerates ComponentContracts.cs
+  + the new PropertyDefinitions.cs. Suite stays 541.
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

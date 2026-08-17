@@ -63,6 +63,39 @@ const ERR_VERSION: i32 = -3;
 const ERR_VALIDATION: i32 = -4;
 const ERR_INTERNAL: i32 = -4096;
 
+/// The Nyrqis API Registry — one property metadata entry (NFS-006:
+/// name/type/default/bindable/required, plus optional min/max/
+/// enumValues/units). The validator only needs the name; the rest is
+/// carried for Inspector/editor consumers.
+#[derive(Debug, Deserialize)]
+struct PropertyDefinition {
+    name: String,
+    #[allow(dead_code)]
+    #[serde(rename = "type", default)]
+    property_type: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    default: Option<serde_json::Value>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    bindable: bool,
+    #[allow(dead_code)]
+    #[serde(default)]
+    required: bool,
+    #[allow(dead_code)]
+    #[serde(default)]
+    min: Option<i64>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    max: Option<i64>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    enum_values: Option<Vec<String>>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    units: Option<String>,
+}
+
 /// The Nyrqis API Registry — one component entry.
 #[derive(Debug, Deserialize)]
 struct ComponentContract {
@@ -70,7 +103,7 @@ struct ComponentContract {
     type_name: String,
     #[allow(dead_code)]
     category: String,
-    properties: Vec<String>,
+    properties: Vec<PropertyDefinition>,
     events: Vec<String>,
     actions: Vec<String>,
 }
@@ -257,7 +290,7 @@ fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), Strin
 
     if let Some(props) = node.get("properties").and_then(Value::as_object) {
         for key in props.keys() {
-            if !contract.properties.iter().any(|p| p == key) {
+            if !contract.properties.iter().any(|p| p.name == *key) {
                 return Err(format!(
                     "component '{id}': property '{key}' not in the '{type_name}' contract"
                 ));
@@ -429,7 +462,7 @@ fn validate_binding(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("binding: component '{component}' has no type"))?;
         let properties = contract(type_name).map(|c| c.properties.as_slice()).unwrap_or(&[]);
-        if !properties.iter().any(|p| p == property) {
+        if !properties.iter().any(|p| p.name == property) {
             return Err(format!(
                 "binding: property '{property}' not in the '{component}' contract"
             ));

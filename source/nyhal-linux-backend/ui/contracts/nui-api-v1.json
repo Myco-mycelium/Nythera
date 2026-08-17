@@ -1,81 +1,2264 @@
 {
   "registryVersion": "1.0",
   "nuiSchemaVersion": "0.4.0",
-  "purpose": "The Nyrqis API Registry — the single machine-readable source of truth for the NUI component vocabulary, per NFS-006 (Nyforge) / the platform ADR-0025 pipeline. The Nyrqis NUI import gate (ui/nstudio.py, rust/nyui) and Nyforge's palette/Inspector/Behaviors contract tables all derive from this file. Add a component or action HERE first; never edit a consumer's tables by hand. registryVersion majors on breaking contract changes, alongside the NUI schema version.",
+  "purpose": "The Nyrqis API Registry \u2014 the single machine-readable source of truth for the NUI component vocabulary, per NFS-006 (Nyforge) / the platform ADR-0025 pipeline. The Nyrqis NUI import gate (ui/nstudio.py, rust/nyui) and Nyforge's palette/Inspector/Behaviors contract tables all derive from this file. Add a component or action HERE first; never edit a consumer's tables by hand. registryVersion majors on breaking contract changes, alongside the NUI schema version.",
   "components": [
-    { "type": "Text", "category": "Basic", "properties": ["text", "visible"], "events": [], "actions": [] },
-    { "type": "Icon", "category": "Basic", "properties": ["glyph", "visible"], "events": [], "actions": [] },
-    { "type": "Image", "category": "Basic", "properties": ["source", "visible"], "events": [], "actions": [] },
-    { "type": "Button", "category": "Basic", "properties": ["text", "icon", "enabled", "visible"], "events": ["clicked", "pressed", "released"], "actions": [] },
-    { "type": "Link", "category": "Basic", "properties": ["text", "target", "enabled"], "events": ["clicked"], "actions": [] },
-    { "type": "Input", "category": "Basic", "properties": ["value", "placeholder", "enabled"], "events": ["changed", "submitted"], "actions": [] },
-    { "type": "PasswordField", "category": "Basic", "properties": ["value", "placeholder", "enabled"], "events": ["changed", "submitted"], "actions": [] },
-    { "type": "Checkbox", "category": "Basic", "properties": ["checked", "label", "enabled"], "events": ["changed"], "actions": [] },
-    { "type": "Radio", "category": "Basic", "properties": ["selected", "label", "group", "enabled"], "events": ["changed"], "actions": [] },
-    { "type": "Toggle", "category": "Basic", "properties": ["value", "label", "enabled"], "events": ["changed"], "actions": [] },
-    { "type": "Slider", "category": "Basic", "properties": ["value", "min", "max", "enabled"], "events": ["changed"], "actions": [] },
-    { "type": "ProgressBar", "category": "Basic", "properties": ["value", "min", "max"], "events": [], "actions": [] },
-    { "type": "Container", "category": "Layout", "properties": ["padding", "background"], "events": [], "actions": [] },
-    { "type": "Stack", "category": "Layout", "properties": ["orientation", "spacing"], "events": [], "actions": [] },
-    { "type": "Grid", "category": "Layout", "properties": ["columns", "rows", "spacing"], "events": [], "actions": [] },
-    { "type": "FlexLayout", "category": "Layout", "properties": ["direction", "wrap", "gap"], "events": [], "actions": [] },
-    { "type": "SplitView", "category": "Layout", "properties": ["orientation", "splitRatio"], "events": [], "actions": [] },
-    { "type": "ScrollView", "category": "Layout", "properties": ["direction"], "events": [], "actions": [] },
-    { "type": "Card", "category": "Layout", "properties": ["elevation", "padding"], "events": [], "actions": [] },
-    { "type": "Panel", "category": "Layout", "properties": ["background", "padding"], "events": [], "actions": [] },
-    { "type": "Toolbar", "category": "Layout", "properties": ["background"], "events": [], "actions": [] },
-    { "type": "StatusBar", "category": "Layout", "properties": ["background"], "events": [], "actions": [] },
-    { "type": "Window", "category": "System", "properties": ["title", "resizable", "width", "height"], "events": ["opened", "closed"], "actions": ["Close"] },
-    { "type": "Dialog", "category": "System", "properties": ["title", "modal"], "events": ["opened", "closed"], "actions": ["Open", "Close"] },
-    { "type": "Notification", "category": "System", "properties": ["title", "message", "severity"], "events": ["dismissed"], "actions": ["Dismiss"] },
-    { "type": "Sidebar", "category": "Navigation", "properties": ["width", "collapsible"], "events": [], "actions": ["Toggle"] },
-    { "type": "NavigationRail", "category": "Navigation", "properties": ["collapsible"], "events": [], "actions": ["Toggle"] },
-    { "type": "Tabs", "category": "Navigation", "properties": ["selectedIndex"], "events": ["changed"], "actions": ["SetSelectedIndex"] },
-    { "type": "Breadcrumbs", "category": "Navigation", "properties": ["items"], "events": ["itemClicked"], "actions": [] },
-    { "type": "DesktopSurface", "category": "Shell", "properties": ["wallpaper", "accent", "iconSize"], "events": [], "actions": [] },
-    { "type": "DesktopIcon", "category": "Shell", "properties": ["glyph", "label", "target"], "events": ["activated"], "actions": ["Launch"] },
-    { "type": "Taskbar", "category": "Shell", "properties": ["position", "alignment", "autoHide", "pinnedApps", "runningApps", "showClock", "showTray"], "events": [], "actions": [] },
-    { "type": "StartMenu", "category": "Shell", "properties": ["open", "pinnedApps", "recommendedApps"], "events": ["opened", "closed"], "actions": ["Open", "Close", "Toggle"] },
-    { "type": "SystemTray", "category": "Shell", "properties": ["icons", "visible"], "events": [], "actions": [] },
-    { "type": "NotificationCenter", "category": "Shell", "properties": ["open", "notifications"], "events": ["opened", "closed", "notificationClicked"], "actions": ["Open", "Close", "Clear"] },
-    { "type": "QuickSettings", "category": "Shell", "properties": ["open", "toggles"], "events": ["opened", "closed", "toggleChanged"], "actions": ["Open", "Close", "Toggle"] },
-    { "type": "WorkspaceSwitcher", "category": "Shell", "properties": ["workspaces", "currentWorkspace"], "events": ["changed"], "actions": ["SetCurrentWorkspace"] },
-    { "type": "WindowFrame", "category": "Shell", "properties": ["title", "resizable", "movable", "minimized", "maximized"], "events": ["opened", "closed", "moved", "resized"], "actions": ["Minimize", "Maximize", "Restore", "Close"] },
-    { "type": "WindowControls", "category": "Shell", "properties": ["showMinimize", "showMaximize", "showClose"], "events": ["minimizeClicked", "maximizeClicked", "closeClicked"], "actions": [] },
-    { "type": "ContextMenu", "category": "Shell", "properties": ["open", "items"], "events": ["opened", "closed", "itemClicked"], "actions": ["Open", "Close"] },
-    { "type": "CommandPalette", "category": "Shell", "properties": ["open", "query", "results"], "events": ["opened", "closed", "queryChanged", "commandExecuted"], "actions": ["Open", "Close", "SetQuery"] },
-    { "type": "Launcher", "category": "Shell", "properties": ["open", "query"], "events": ["opened", "closed", "appLaunched"], "actions": ["Open", "Close", "Launch"] },
-    { "type": "Search", "category": "Shell", "properties": ["query", "placeholder", "results"], "events": ["changed", "submitted"], "actions": ["Clear", "Submit"] },
-    { "type": "PowerMenu", "category": "Shell", "properties": ["open"], "events": ["opened", "closed", "actionSelected"], "actions": ["Open", "Close"] },
-    { "type": "LockScreen", "category": "Shell", "properties": ["open", "clockFormat", "wallpaper"], "events": ["opened", "closed", "unlocked"], "actions": ["Open", "Close", "Lock"] },
-    { "type": "Application", "category": "Shell", "properties": ["appId", "title", "icon", "running", "focused"], "events": ["activated", "deactivated"], "actions": ["Launch", "Close", "Focus"] },
-    { "type": "WidgetHost", "category": "Shell", "properties": ["widgets", "layout", "visible"], "events": ["widgetClicked"], "actions": ["AddWidget", "RemoveWidget"] },
-    { "type": "OSD", "category": "Shell", "properties": ["open", "message", "timeout", "icon"], "events": ["opened", "closed"], "actions": ["Open", "Close", "Dismiss"] },
-    { "type": "Login", "category": "Shell", "properties": ["open", "username", "avatar", "hint"], "events": ["submitted", "canceled"], "actions": ["Submit", "Cancel"] },
-    { "type": "List", "category": "Data", "properties": ["items", "selectedIndex", "multiple"], "events": ["selectionChanged", "itemActivated"], "actions": ["SetSelectedIndex"] },
-    { "type": "ListItem", "category": "Data", "properties": ["label", "icon", "selected", "enabled"], "events": ["clicked", "activated"], "actions": [] },
-    { "type": "DataTable", "category": "Data", "properties": ["columns", "rows", "selectedRow"], "events": ["selectionChanged", "cellActivated"], "actions": ["SetSelectedRow"] },
-    { "type": "TreeView", "category": "Data", "properties": ["nodes", "selectedNode", "expandedNodes"], "events": ["selectionChanged", "nodeExpanded", "nodeCollapsed"], "actions": ["Expand", "Collapse"] },
-    { "type": "Menu", "category": "Data", "properties": ["items", "open"], "events": ["opened", "closed", "itemClicked"], "actions": ["Open", "Close"] },
-    { "type": "MenuItem", "category": "Data", "properties": ["label", "icon", "shortcut", "enabled", "checked"], "events": ["clicked"], "actions": [] },
-    { "type": "Form", "category": "Form", "properties": ["fields", "submitLabel", "valid"], "events": ["submitted", "reset"], "actions": ["Submit", "Reset"] },
-    { "type": "DatePicker", "category": "Form", "properties": ["value", "min", "max", "format"], "events": ["changed", "submitted"], "actions": ["Clear"] },
-    { "type": "TimePicker", "category": "Form", "properties": ["value", "format"], "events": ["changed", "submitted"], "actions": ["Clear"] },
-    { "type": "FilePicker", "category": "Form", "properties": ["value", "filter", "multiple", "folder"], "events": ["selected", "canceled"], "actions": ["Open", "Clear"] },
-    { "type": "SettingsPanel", "category": "Form", "properties": ["sections", "selectedSection", "searchable"], "events": ["sectionChanged"], "actions": ["SetSection", "Search"] },
-    { "type": "Video", "category": "Media", "properties": ["source", "autoplay", "loop", "muted", "volume"], "events": ["played", "paused", "ended", "error"], "actions": ["Play", "Pause", "Seek", "SetVolume"] },
-    { "type": "Audio", "category": "Media", "properties": ["source", "autoplay", "loop", "volume"], "events": ["played", "paused", "ended", "error"], "actions": ["Play", "Pause", "Seek", "SetVolume"] },
-    { "type": "MediaPlayer", "category": "Media", "properties": ["source", "playing", "volume", "position", "muted"], "events": ["played", "paused", "ended", "positionChanged", "error"], "actions": ["Play", "Pause", "Seek", "SetVolume"] },
-    { "type": "Terminal", "category": "Developer", "properties": ["command", "cwd", "history", "prompt"], "events": ["commandEntered", "outputReady"], "actions": ["Write", "Clear", "RunCommand", "SetCwd"] },
-    { "type": "CodeEditor", "category": "Developer", "properties": ["value", "language", "readOnly", "theme", "lineNumbers"], "events": ["changed", "cursorMoved"], "actions": ["SetValue", "SetLanguage", "Format"] },
-    { "type": "LogViewer", "category": "Developer", "properties": ["entries", "filter", "level", "follow"], "events": ["filterChanged"], "actions": ["Clear", "SetFilter"] }
+    {
+      "type": "Text",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "text",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Icon",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "glyph",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Image",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "source",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Button",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "text",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "clicked",
+        "pressed",
+        "released"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Link",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "text",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "target",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "clicked"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Input",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "placeholder",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed",
+        "submitted"
+      ],
+      "actions": []
+    },
+    {
+      "type": "PasswordField",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "placeholder",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed",
+        "submitted"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Checkbox",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "checked",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Radio",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "selected",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "group",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Toggle",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Slider",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 100
+        },
+        {
+          "name": "min",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 1000000
+        },
+        {
+          "name": "max",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 100,
+          "min": 0,
+          "max": 1000000
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": []
+    },
+    {
+      "type": "ProgressBar",
+      "category": "Basic",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 100
+        },
+        {
+          "name": "min",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "max",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 100
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Container",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "padding",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "background",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Stack",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "orientation",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "vertical",
+            "horizontal"
+          ],
+          "default": "vertical"
+        },
+        {
+          "name": "spacing",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Grid",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "columns",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "rows",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "spacing",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "FlexLayout",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "direction",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "row",
+            "column"
+          ],
+          "default": "row"
+        },
+        {
+          "name": "wrap",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "gap",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "SplitView",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "orientation",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "vertical",
+            "horizontal"
+          ],
+          "default": "vertical"
+        },
+        {
+          "name": "splitRatio",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0.5
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "ScrollView",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "direction",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "row",
+            "column"
+          ],
+          "default": "row"
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Card",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "elevation",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "units": "dp"
+        },
+        {
+          "name": "padding",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Panel",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "background",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "padding",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Toolbar",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "background",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "StatusBar",
+      "category": "Layout",
+      "properties": [
+        {
+          "name": "background",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Window",
+      "category": "System",
+      "properties": [
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "resizable",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "width",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "units": "px"
+        },
+        {
+          "name": "height",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "units": "px"
+        }
+      ],
+      "events": [
+        "opened",
+        "closed"
+      ],
+      "actions": [
+        "Close"
+      ]
+    },
+    {
+      "type": "Dialog",
+      "category": "System",
+      "properties": [
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "modal",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "opened",
+        "closed"
+      ],
+      "actions": [
+        "Open",
+        "Close"
+      ]
+    },
+    {
+      "type": "Notification",
+      "category": "System",
+      "properties": [
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "message",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "severity",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "info"
+        }
+      ],
+      "events": [
+        "dismissed"
+      ],
+      "actions": [
+        "Dismiss"
+      ]
+    },
+    {
+      "type": "Sidebar",
+      "category": "Navigation",
+      "properties": [
+        {
+          "name": "width",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "units": "px"
+        },
+        {
+          "name": "collapsible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": [
+        "Toggle"
+      ]
+    },
+    {
+      "type": "NavigationRail",
+      "category": "Navigation",
+      "properties": [
+        {
+          "name": "collapsible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": [
+        "Toggle"
+      ]
+    },
+    {
+      "type": "Tabs",
+      "category": "Navigation",
+      "properties": [
+        {
+          "name": "selectedIndex",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": -1
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": [
+        "SetSelectedIndex"
+      ]
+    },
+    {
+      "type": "Breadcrumbs",
+      "category": "Navigation",
+      "properties": [
+        {
+          "name": "items",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "itemClicked"
+      ],
+      "actions": []
+    },
+    {
+      "type": "DesktopSurface",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "wallpaper",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "accent",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "iconSize",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 96,
+          "units": "px"
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "DesktopIcon",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "glyph",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "target",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "activated"
+      ],
+      "actions": [
+        "Launch"
+      ]
+    },
+    {
+      "type": "Taskbar",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "position",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ],
+          "default": "top"
+        },
+        {
+          "name": "alignment",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "start",
+            "center",
+            "end"
+          ],
+          "default": "start"
+        },
+        {
+          "name": "autoHide",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pinnedApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "runningApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "showClock",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "showTray",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "StartMenu",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pinnedApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "recommendedApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "opened",
+        "closed"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Toggle"
+      ]
+    },
+    {
+      "type": "SystemTray",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "icons",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "NotificationCenter",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "notifications",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "notificationClicked"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Clear"
+      ]
+    },
+    {
+      "type": "QuickSettings",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "toggles",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "toggleChanged"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Toggle"
+      ]
+    },
+    {
+      "type": "WorkspaceSwitcher",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "workspaces",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 3
+        },
+        {
+          "name": "currentWorkspace",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 1
+        }
+      ],
+      "events": [
+        "changed"
+      ],
+      "actions": [
+        "SetCurrentWorkspace"
+      ]
+    },
+    {
+      "type": "WindowFrame",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "resizable",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "movable",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "minimized",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "maximized",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "moved",
+        "resized"
+      ],
+      "actions": [
+        "Minimize",
+        "Maximize",
+        "Restore",
+        "Close"
+      ]
+    },
+    {
+      "type": "WindowControls",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "showMinimize",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "showMaximize",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "showClose",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "minimizeClicked",
+        "maximizeClicked",
+        "closeClicked"
+      ],
+      "actions": []
+    },
+    {
+      "type": "ContextMenu",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "items",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "itemClicked"
+      ],
+      "actions": [
+        "Open",
+        "Close"
+      ]
+    },
+    {
+      "type": "CommandPalette",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "query",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "results",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "queryChanged",
+        "commandExecuted"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "SetQuery"
+      ]
+    },
+    {
+      "type": "Launcher",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "query",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "appLaunched"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Launch"
+      ]
+    },
+    {
+      "type": "Search",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "query",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "placeholder",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "results",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "changed",
+        "submitted"
+      ],
+      "actions": [
+        "Clear",
+        "Submit"
+      ]
+    },
+    {
+      "type": "PowerMenu",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "actionSelected"
+      ],
+      "actions": [
+        "Open",
+        "Close"
+      ]
+    },
+    {
+      "type": "LockScreen",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "clockFormat",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "12h",
+            "24h"
+          ],
+          "default": "12h"
+        },
+        {
+          "name": "wallpaper",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "unlocked"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Lock"
+      ]
+    },
+    {
+      "type": "Application",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "appId",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "running",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "focused",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "activated",
+        "deactivated"
+      ],
+      "actions": [
+        "Launch",
+        "Close",
+        "Focus"
+      ]
+    },
+    {
+      "type": "WidgetHost",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "widgets",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "layout",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "grid",
+            "list"
+          ],
+          "default": "grid"
+        },
+        {
+          "name": "visible",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "widgetClicked"
+      ],
+      "actions": [
+        "AddWidget",
+        "RemoveWidget"
+      ]
+    },
+    {
+      "type": "OSD",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "message",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "timeout",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 2
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "opened",
+        "closed"
+      ],
+      "actions": [
+        "Open",
+        "Close",
+        "Dismiss"
+      ]
+    },
+    {
+      "type": "Login",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "username",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "avatar",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "hint",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "submitted",
+        "canceled"
+      ],
+      "actions": [
+        "Submit",
+        "Cancel"
+      ]
+    },
+    {
+      "type": "List",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "items",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "selectedIndex",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": -1
+        },
+        {
+          "name": "multiple",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "selectionChanged",
+        "itemActivated"
+      ],
+      "actions": [
+        "SetSelectedIndex"
+      ]
+    },
+    {
+      "type": "ListItem",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "selected",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "clicked",
+        "activated"
+      ],
+      "actions": []
+    },
+    {
+      "type": "DataTable",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "columns",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "rows",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "selectedRow",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "selectionChanged",
+        "cellActivated"
+      ],
+      "actions": [
+        "SetSelectedRow"
+      ]
+    },
+    {
+      "type": "TreeView",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "nodes",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "selectedNode",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "expandedNodes",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        }
+      ],
+      "events": [
+        "selectionChanged",
+        "nodeExpanded",
+        "nodeCollapsed"
+      ],
+      "actions": [
+        "Expand",
+        "Collapse"
+      ]
+    },
+    {
+      "type": "Menu",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "items",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "open",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "opened",
+        "closed",
+        "itemClicked"
+      ],
+      "actions": [
+        "Open",
+        "Close"
+      ]
+    },
+    {
+      "type": "MenuItem",
+      "category": "Data",
+      "properties": [
+        {
+          "name": "label",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "shortcut",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "enabled",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "checked",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "clicked"
+      ],
+      "actions": []
+    },
+    {
+      "type": "Form",
+      "category": "Form",
+      "properties": [
+        {
+          "name": "fields",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "submitLabel",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "valid",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "submitted",
+        "reset"
+      ],
+      "actions": [
+        "Submit",
+        "Reset"
+      ]
+    },
+    {
+      "type": "DatePicker",
+      "category": "Form",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "min",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "max",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 100
+        },
+        {
+          "name": "format",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "changed",
+        "submitted"
+      ],
+      "actions": [
+        "Clear"
+      ]
+    },
+    {
+      "type": "TimePicker",
+      "category": "Form",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "format",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "changed",
+        "submitted"
+      ],
+      "actions": [
+        "Clear"
+      ]
+    },
+    {
+      "type": "FilePicker",
+      "category": "Form",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "filter",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "multiple",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "folder",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "selected",
+        "canceled"
+      ],
+      "actions": [
+        "Open",
+        "Clear"
+      ]
+    },
+    {
+      "type": "SettingsPanel",
+      "category": "Form",
+      "properties": [
+        {
+          "name": "sections",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "selectedSection",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "searchable",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "sectionChanged"
+      ],
+      "actions": [
+        "SetSection",
+        "Search"
+      ]
+    },
+    {
+      "type": "Video",
+      "category": "Media",
+      "properties": [
+        {
+          "name": "source",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "autoplay",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "loop",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "muted",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "volume",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 50,
+          "min": 0,
+          "max": 100
+        }
+      ],
+      "events": [
+        "played",
+        "paused",
+        "ended",
+        "error"
+      ],
+      "actions": [
+        "Play",
+        "Pause",
+        "Seek",
+        "SetVolume"
+      ]
+    },
+    {
+      "type": "Audio",
+      "category": "Media",
+      "properties": [
+        {
+          "name": "source",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "autoplay",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "loop",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "volume",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 50,
+          "min": 0,
+          "max": 100
+        }
+      ],
+      "events": [
+        "played",
+        "paused",
+        "ended",
+        "error"
+      ],
+      "actions": [
+        "Play",
+        "Pause",
+        "Seek",
+        "SetVolume"
+      ]
+    },
+    {
+      "type": "MediaPlayer",
+      "category": "Media",
+      "properties": [
+        {
+          "name": "source",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "playing",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "volume",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 50,
+          "min": 0,
+          "max": 100
+        },
+        {
+          "name": "position",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "min": 0
+        },
+        {
+          "name": "muted",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [
+        "played",
+        "paused",
+        "ended",
+        "positionChanged",
+        "error"
+      ],
+      "actions": [
+        "Play",
+        "Pause",
+        "Seek",
+        "SetVolume"
+      ]
+    },
+    {
+      "type": "Terminal",
+      "category": "Developer",
+      "properties": [
+        {
+          "name": "command",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "cwd",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "history",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "prompt",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "commandEntered",
+        "outputReady"
+      ],
+      "actions": [
+        "Write",
+        "Clear",
+        "RunCommand",
+        "SetCwd"
+      ]
+    },
+    {
+      "type": "CodeEditor",
+      "category": "Developer",
+      "properties": [
+        {
+          "name": "value",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "language",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "readOnly",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "theme",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "lineNumbers",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "changed",
+        "cursorMoved"
+      ],
+      "actions": [
+        "SetValue",
+        "SetLanguage",
+        "Format"
+      ]
+    },
+    {
+      "type": "LogViewer",
+      "category": "Developer",
+      "properties": [
+        {
+          "name": "entries",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "filter",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "level",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "debug",
+            "info",
+            "warning",
+            "error"
+          ],
+          "default": "debug"
+        },
+        {
+          "name": "follow",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "filterChanged"
+      ],
+      "actions": [
+        "Clear",
+        "SetFilter"
+      ]
+    }
   ],
   "systemActions": [
-    { "name": "Nyrqis.Theme.Set", "arguments": ["theme"] },
-    { "name": "Nyrqis.Settings.Commit", "arguments": [] },
-    { "name": "Nyrqis.Window.Close", "arguments": ["windowId"] },
-    { "name": "Nyrqis.Dialog.Open", "arguments": ["dialogId"] },
-    { "name": "Nyrqis.Dialog.Close", "arguments": ["dialogId"] },
-    { "name": "Nyrqis.Notification.Show", "arguments": ["title", "message", "severity"] }
+    {
+      "name": "Nyrqis.Theme.Set",
+      "arguments": [
+        "theme"
+      ]
+    },
+    {
+      "name": "Nyrqis.Settings.Commit",
+      "arguments": []
+    },
+    {
+      "name": "Nyrqis.Window.Close",
+      "arguments": [
+        "windowId"
+      ]
+    },
+    {
+      "name": "Nyrqis.Dialog.Open",
+      "arguments": [
+        "dialogId"
+      ]
+    },
+    {
+      "name": "Nyrqis.Dialog.Close",
+      "arguments": [
+        "dialogId"
+      ]
+    },
+    {
+      "name": "Nyrqis.Notification.Show",
+      "arguments": [
+        "title",
+        "message",
+        "severity"
+      ]
+    }
   ]
 }

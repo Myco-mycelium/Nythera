@@ -310,6 +310,17 @@ and a Login with username/password inputs — 19 components, 5 behaviors,
 2 bindings across 3 screens. Validated by floor + crate (differential)
 and opens in Nyforge itself. Suite 540 → **541**.
 
+**2026-08-17 (0.14.29): typed property metadata in the registry.**
+`properties` become metadata objects (`name`/`type`/`default`/
+`bindable`/`required`, plus `min`/`max`/`enumValues`/`units` where
+meaningful — Slider value 0–100, Taskbar position enum, MediaPlayer
+position stays a number) — the vocabulary is unchanged, the
+representation is richer (NFS-006's reserved fields). The floor
+parses names for validation; the crate's serde structs carry the full
+`PropertyDefinition`; Nyforge regenerates `ComponentContracts.cs`
+(names) and the new `PropertyDefinitions.cs` (typed metadata). Suite
+stays **541** (behavior-preserving).
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

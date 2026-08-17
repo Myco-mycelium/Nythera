@@ -78,9 +78,15 @@ def _load_registry() -> Tuple[
         if not type_name:
             raise RuntimeError(
                 "Nyrqis API Registry: a component entry is missing its 'type'")
+        # properties are metadata objects (NFS-006: name/type/default/
+        # bindable/required + optional min/max/enumValues/units); the
+        # historical table keeps the property NAMES.
+        props = entry.get("properties") or []
+        names = tuple(
+            str(p["name"]) if isinstance(p, dict) else str(p) for p in props)
         components[type_name] = (
             str(entry.get("category", "")),
-            tuple(str(p) for p in entry.get("properties") or []),
+            names,
             tuple(str(e) for e in entry.get("events") or []),
             tuple(str(a) for a in entry.get("actions") or []),
         )

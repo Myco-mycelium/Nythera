@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.29] — 2026-08-17
+
+### Typed property metadata in the registry (NFS-006's reserved fields)
+
+- **`properties` become metadata objects.** Every property in
+  `nui-api-v1.json` now carries `name`/`type`/`default`/`bindable`/
+  `required`, plus `min`/`max`/`enumValues`/`units` where meaningful
+  (Slider value 0–100, Taskbar position enum, MediaPlayer position is a
+  number not an enum — component-specific typing preserved). The
+  vocabulary (names) is unchanged.
+- **All three consumers parse the richer shape.** The Python floor
+  extracts names for validation; the Rust crate's serde structs carry
+  the full `PropertyDefinition` (name + typed metadata); Nyforge
+  regenerates both `ComponentContracts.cs` (names) and a new
+  `PropertyDefinitions.cs` (typed metadata for the Inspector). The
+  conformance gate (floor vs crate, byte-identical) passes unchanged.
+
 ## [0.14.28] — 2026-08-17
 
 ### Widgets + OSD + login — third reference shell screen; registry 63 → 66
