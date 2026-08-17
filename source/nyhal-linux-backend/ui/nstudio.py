@@ -15,10 +15,13 @@ with its conformance gate (``ui/nstudio_codec.py``), mirroring the
 seccomp/transport/ipcd migrations. The conformance bar: this floor's
 test suite must pass through the FFI unchanged.
 
-Contract tables are mirrored from NyForge's single source of truth
-(``ComponentContracts.cs`` / ``NuiSystemActions.cs``) per the anti-drift
-rule (NFS-001 §5, NFC-001 §4.3): any component type, event, or action
-used here must exist in those tables.
+Contract tables are loaded from the **Nyrqis API Registry**
+(``ui/contracts/nui-api-v1.json``) — the single machine-readable source
+of truth for the NUI component vocabulary (NFS-006, ADR-0025). The Rust
+crate (``rust/nyui``) embeds the same registry, and NyForge's C# tables
+are regenerated from it. Add a component or action to the registry
+first; never edit a consumer's tables by hand (NFC-001 §4.3
+anti-drift).
 
 Schema: NFS-001 0.4.0. A document records the schema version it was
 written against; a version this module does not understand raises
@@ -34,58 +37,70 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
-# Contract tables — mirrored from NyForge's source of truth (NFS-001 §4/§5)
+# Contract tables — from the Nyrqis API Registry (NFS-006 / ADR-0025)
 # ---------------------------------------------------------------------------
 
 NSTUDIO_SCHEMA_VERSION = "0.4.0"
 SUPPORTED_SCHEMA_VERSIONS = ("0.4.0",)
 
-# type -> (category, properties, events, instance-actions)
-COMPONENT_CONTRACTS: Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]] = {
-    # Basic
-    "Text": ("Basic", ("text", "visible"), (), ()),
-    "Icon": ("Basic", ("glyph", "visible"), (), ()),
-    "Image": ("Basic", ("source", "visible"), (), ()),
-    "Button": ("Basic", ("text", "icon", "enabled", "visible"), ("clicked", "pressed", "released"), ()),
-    "Link": ("Basic", ("text", "target", "enabled"), ("clicked",), ()),
-    "Input": ("Basic", ("value", "placeholder", "enabled"), ("changed", "submitted"), ()),
-    "PasswordField": ("Basic", ("value", "placeholder", "enabled"), ("changed", "submitted"), ()),
-    "Checkbox": ("Basic", ("checked", "label", "enabled"), ("changed",), ()),
-    "Radio": ("Basic", ("selected", "label", "group", "enabled"), ("changed",), ()),
-    "Toggle": ("Basic", ("value", "label", "enabled"), ("changed",), ()),
-    "Slider": ("Basic", ("value", "min", "max", "enabled"), ("changed",), ()),
-    "ProgressBar": ("Basic", ("value", "min", "max"), (), ()),
-    # Layout
-    "Container": ("Layout", ("padding", "background"), (), ()),
-    "Stack": ("Layout", ("orientation", "spacing"), (), ()),
-    "Grid": ("Layout", ("columns", "rows", "spacing"), (), ()),
-    "FlexLayout": ("Layout", ("direction", "wrap", "gap"), (), ()),
-    "SplitView": ("Layout", ("orientation", "splitRatio"), (), ()),
-    "ScrollView": ("Layout", ("direction",), (), ()),
-    "Card": ("Layout", ("elevation", "padding"), (), ()),
-    "Panel": ("Layout", ("background", "padding"), (), ()),
-    "Toolbar": ("Layout", ("background",), (), ()),
-    "StatusBar": ("Layout", ("background",), (), ()),
-    # System
-    "Window": ("System", ("title", "resizable", "width", "height"), ("opened", "closed"), ("Close",)),
-    "Dialog": ("System", ("title", "modal"), ("opened", "closed"), ("Open", "Close")),
-    "Notification": ("System", ("title", "message", "severity"), ("dismissed",), ("Dismiss",)),
-    # Navigation
-    "Sidebar": ("Navigation", ("width", "collapsible"), (), ("Toggle",)),
-    "NavigationRail": ("Navigation", ("collapsible",), (), ("Toggle",)),
-    "Tabs": ("Navigation", ("selectedIndex",), ("changed",), ("SetSelectedIndex",)),
-    "Breadcrumbs": ("Navigation", ("items",), ("itemClicked",), ()),
-}
+# The registry lives next to this module (ui/contracts/nui-api-v1.json).
+# Both this floor and the Rust crate (rust/nyui, which embeds the same
+# file) read it; NyForge regenerates its C# tables from it. A missing or
+# malformed registry is a hard error at import — the tables are never
+# silently empty.
+_REGISTRY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "contracts", "nui-api-v1.json")
 
-# System actions: name -> allowed argument names (NuiSystemActions.cs)
-SYSTEM_ACTIONS: Dict[str, Tuple[str, ...]] = {
-    "Nyrqis.Theme.Set": ("theme",),
-    "Nyrqis.Settings.Commit": (),
-    "Nyrqis.Window.Close": ("windowId",),
-    "Nyrqis.Dialog.Open": ("dialogId",),
-    "Nyrqis.Dialog.Close": ("dialogId",),
-    "Nyrqis.Notification.Show": ("title", "message", "severity"),
-}
+
+def _load_registry() -> Tuple[
+        Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]],
+        Dict[str, Tuple[str, ...]]]:
+    """Load the component and system-action tables from the registry.
+
+    Returns ``(COMPONENT_CONTRACTS, SYSTEM_ACTIONS)`` with the historical
+    shapes — ``type -> (category, properties, events, instance-actions)``
+    and ``name -> argument-names`` — so the rest of this module is
+    unchanged.
+    """
+    try:
+        with open(_REGISTRY_PATH, "r", encoding="utf-8") as handle:
+            registry = json.load(handle)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot load the Nyrqis API Registry at '{_REGISTRY_PATH}': {exc}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Nyrqis API Registry at '{_REGISTRY_PATH}' is malformed JSON: {exc}")
+
+    components: Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]] = {}
+    for entry in registry.get("components") or []:
+        type_name = str(entry.get("type", ""))
+        if not type_name:
+            raise RuntimeError(
+                "Nyrqis API Registry: a component entry is missing its 'type'")
+        components[type_name] = (
+            str(entry.get("category", "")),
+            tuple(str(p) for p in entry.get("properties") or []),
+            tuple(str(e) for e in entry.get("events") or []),
+            tuple(str(a) for a in entry.get("actions") or []),
+        )
+
+    system_actions: Dict[str, Tuple[str, ...]] = {}
+    for entry in registry.get("systemActions") or []:
+        name = str(entry.get("name", ""))
+        if not name:
+            raise RuntimeError(
+                "Nyrqis API Registry: a system-action entry is missing its 'name'")
+        system_actions[name] = tuple(str(a) for a in entry.get("arguments") or [])
+
+    return components, system_actions
+
+
+# type -> (category, properties, events, instance-actions)
+COMPONENT_CONTRACTS: Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]]
+# System actions: name -> allowed argument names
+SYSTEM_ACTIONS: Dict[str, Tuple[str, ...]]
+COMPONENT_CONTRACTS, SYSTEM_ACTIONS = _load_registry()
 
 
 # ---------------------------------------------------------------------------

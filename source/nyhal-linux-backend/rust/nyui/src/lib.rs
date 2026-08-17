@@ -8,12 +8,16 @@
 //! conformance gate (`TestNstudioCodecConformance`) forces the floor's
 //! suite through this FFI unchanged — the ADR-0020 migration contract.
 //!
-//! The contract tables here mirror NyForge's single source of truth
-//! (`ComponentContracts.cs`, `NuiSystemActions.cs`) per the anti-drift
-//! rule (NFS-001 §5, NFC-001 §4.3). Schema versioning per NFS-001 §9:
-//! a document must declare `version == "0.4.0"` (this crate's
-//! `SUPPORTED_SCHEMA_VERSION`), else validation fails loudly instead of
-//! silently misinterpreting the file.
+//! The contract tables are embedded from the **Nyrqis API Registry**
+//! (`ui/contracts/nui-api-v1.json`, `include_str!`-ed at compile time) —
+//! the single machine-readable source of truth for the NUI component
+//! vocabulary (NFS-006, ADR-0025). The pure-Python reference floor
+//! (`ui/nstudio.py`) reads the same file, and NyForge regenerates its C#
+//! tables from it. A registry change that isn't compiled into this crate
+//! is a build failure, not a silent drift. Schema versioning per
+//! NFS-001 §9: a document must declare `version == "0.4.0"` (this
+//! crate's `SUPPORTED_SCHEMA_VERSION`), else validation fails loudly
+//! instead of silently misinterpreting the file.
 //!
 //! **FFI surface (ABI 1.0.0).** Caller-supplied input only — the JSON
 //! text is read in place, nothing is allocated on the Rust side, and
@@ -37,13 +41,15 @@
 //! | `-4`    | validation failed (see last error) |
 //! | `-4096` | internal error                     |
 
+use serde::Deserialize;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::ffi::c_char;
 use std::ptr;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
-// Contract tables — mirrored from NyForge (NFS-001 §4/§5)
+// Contract tables — from the Nyrqis API Registry (NFS-006 / ADR-0025)
 // ---------------------------------------------------------------------------
 
 const SUPPORTED_SCHEMA_VERSION: &str = "0.4.0";
@@ -57,52 +63,62 @@ const ERR_VERSION: i32 = -3;
 const ERR_VALIDATION: i32 = -4;
 const ERR_INTERNAL: i32 = -4096;
 
-// Component vocabulary — (type, properties, events, instance-actions).
-const CONTRACTS: &[(&str, &[&str], &[&str], &[&str])] = &[
-    // Basic
-    ("Text", &["text", "visible"], &[], &[]),
-    ("Icon", &["glyph", "visible"], &[], &[]),
-    ("Image", &["source", "visible"], &[], &[]),
-    ("Button", &["text", "icon", "enabled", "visible"], &["clicked", "pressed", "released"], &[]),
-    ("Link", &["text", "target", "enabled"], &["clicked"], &[]),
-    ("Input", &["value", "placeholder", "enabled"], &["changed", "submitted"], &[]),
-    ("PasswordField", &["value", "placeholder", "enabled"], &["changed", "submitted"], &[]),
-    ("Checkbox", &["checked", "label", "enabled"], &["changed"], &[]),
-    ("Radio", &["selected", "label", "group", "enabled"], &["changed"], &[]),
-    ("Toggle", &["value", "label", "enabled"], &["changed"], &[]),
-    ("Slider", &["value", "min", "max", "enabled"], &["changed"], &[]),
-    ("ProgressBar", &["value", "min", "max"], &[], &[]),
-    // Layout
-    ("Container", &["padding", "background"], &[], &[]),
-    ("Stack", &["orientation", "spacing"], &[], &[]),
-    ("Grid", &["columns", "rows", "spacing"], &[], &[]),
-    ("FlexLayout", &["direction", "wrap", "gap"], &[], &[]),
-    ("SplitView", &["orientation", "splitRatio"], &[], &[]),
-    ("ScrollView", &["direction"], &[], &[]),
-    ("Card", &["elevation", "padding"], &[], &[]),
-    ("Panel", &["background", "padding"], &[], &[]),
-    ("Toolbar", &["background"], &[], &[]),
-    ("StatusBar", &["background"], &[], &[]),
-    // System
-    ("Window", &["title", "resizable", "width", "height"], &["opened", "closed"], &["Close"]),
-    ("Dialog", &["title", "modal"], &["opened", "closed"], &["Open", "Close"]),
-    ("Notification", &["title", "message", "severity"], &["dismissed"], &["Dismiss"]),
-    // Navigation
-    ("Sidebar", &["width", "collapsible"], &[], &["Toggle"]),
-    ("NavigationRail", &["collapsible"], &[], &["Toggle"]),
-    ("Tabs", &["selectedIndex"], &["changed"], &["SetSelectedIndex"]),
-    ("Breadcrumbs", &["items"], &["itemClicked"], &[]),
-];
+/// The Nyrqis API Registry — one component entry.
+#[derive(Debug, Deserialize)]
+struct ComponentContract {
+    #[serde(rename = "type")]
+    type_name: String,
+    #[allow(dead_code)]
+    category: String,
+    properties: Vec<String>,
+    events: Vec<String>,
+    actions: Vec<String>,
+}
 
-// System actions — name -> allowed argument names.
-const SYSTEM_ACTIONS: &[(&str, &[&str])] = &[
-    ("Nyrqis.Theme.Set", &["theme"]),
-    ("Nyrqis.Settings.Commit", &[]),
-    ("Nyrqis.Window.Close", &["windowId"]),
-    ("Nyrqis.Dialog.Open", &["dialogId"]),
-    ("Nyrqis.Dialog.Close", &["dialogId"]),
-    ("Nyrqis.Notification.Show", &["title", "message", "severity"]),
-];
+/// The Nyrqis API Registry — one system action entry.
+#[derive(Debug, Deserialize)]
+struct SystemAction {
+    name: String,
+    arguments: Vec<String>,
+}
+
+/// The Nyrqis API Registry, embedded at compile time.
+///
+/// The registry file (``ui/contracts/nui-api-v1.json``, one directory up
+/// from the crate's parent) is the single machine-readable source of
+/// truth for the NUI component vocabulary; both this crate and the
+/// pure-Python reference floor derive their tables from it. Parsing once
+/// on first use: a registry that fails to parse is a hard internal
+/// error, never a silently empty table.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Registry {
+    #[allow(dead_code)]
+    registry_version: String,
+    #[allow(dead_code)]
+    nui_schema_version: String,
+    #[allow(dead_code)]
+    purpose: String,
+    components: Vec<ComponentContract>,
+    system_actions: Vec<SystemAction>,
+}
+
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
+
+fn registry() -> &'static Registry {
+    REGISTRY.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../ui/contracts/nui-api-v1.json"))
+            .expect("embedded Nyrqis API Registry must parse; check ui/contracts/nui-api-v1.json")
+    })
+}
+
+fn contract(type_name: &str) -> Option<&'static ComponentContract> {
+    registry().components.iter().find(|c| c.type_name == type_name)
+}
+
+fn system_action(name: &str) -> Option<&'static SystemAction> {
+    registry().system_actions.iter().find(|a| a.name == name)
+}
 
 // ---------------------------------------------------------------------------
 // Last-error slot (single-threaded FFI contract, like the other crates)
@@ -120,13 +136,7 @@ fn set_last_error(msg: impl AsRef<str>) {
 // Validation
 // ---------------------------------------------------------------------------
 
-fn contract(type_name: &str) -> Option<&'static (&'static str, &'static [&'static str], &'static [&'static str], &'static [&'static str])> {
-    CONTRACTS.iter().find(|(t, _, _, _)| *t == type_name)
-}
 
-fn system_action(name: &str) -> Option<&'static (&'static str, &'static [&'static str])> {
-    SYSTEM_ACTIONS.iter().find(|(n, _)| *n == name)
-}
 
 /// Collect every component id in the document, document order.
 fn collect_ids<'v>(node: &'v Value, out: &mut Vec<String>) {
@@ -244,11 +254,10 @@ fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), Strin
 
     let contract = contract(type_name)
         .ok_or_else(|| format!("component '{id}': unknown type '{type_name}'"))?;
-    let (_, properties, events, _actions) = *contract;
 
     if let Some(props) = node.get("properties").and_then(Value::as_object) {
         for key in props.keys() {
-            if !properties.contains(&key.as_str()) {
+            if !contract.properties.iter().any(|p| p == key) {
                 return Err(format!(
                     "component '{id}': property '{key}' not in the '{type_name}' contract"
                 ));
@@ -258,7 +267,7 @@ fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), Strin
 
     if let Some(events_map) = node.get("events").and_then(Value::as_object) {
         for (event, behavior) in events_map {
-            if !events.contains(&event.as_str()) {
+            if !contract.events.iter().any(|e| e == event) {
                 return Err(format!(
                     "component '{id}': event '{event}' not in the '{type_name}' contract"
                 ));
@@ -343,10 +352,10 @@ fn validate_behavior(
 
     if target == "System" {
         match system_action(name) {
-            Some((_, allowed)) => {
+            Some(sys_action) => {
                 if let Some(args) = action.get("arguments").and_then(Value::as_object) {
                     for arg in args.keys() {
-                        if !allowed.contains(&arg.as_str()) {
+                        if !sys_action.arguments.iter().any(|a| a == arg) {
                             return Err(format!(
                                 "behavior '{id}': argument '{arg}' not in the '{name}' contract"
                             ));
@@ -361,8 +370,8 @@ fn validate_behavior(
             .get("type")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("behavior '{id}': target component '{target}' has no type"))?;
-        let actions = contract(type_name).map(|c| c.3).unwrap_or(&[]);
-        if !actions.contains(&name) {
+        let actions = contract(type_name).map(|c| c.actions.as_slice()).unwrap_or(&[]);
+        if !actions.iter().any(|a| a == name) {
             return Err(format!(
                 "behavior '{id}': action '{name}' not declared by component '{target}'"
             ));
@@ -419,8 +428,8 @@ fn validate_binding(
             .get("type")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("binding: component '{component}' has no type"))?;
-        let properties = contract(type_name).map(|c| c.1).unwrap_or(&[]);
-        if !properties.contains(&property) {
+        let properties = contract(type_name).map(|c| c.properties.as_slice()).unwrap_or(&[]);
+        if !properties.iter().any(|p| p == property) {
             return Err(format!(
                 "binding: property '{property}' not in the '{component}' contract"
             ));

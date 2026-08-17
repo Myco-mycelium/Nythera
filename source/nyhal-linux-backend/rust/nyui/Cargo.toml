@@ -11,9 +11,11 @@ name = "nyrqis_nyui"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# JSON parsing for .nstudio documents. Everything else is std: the
-# crate validates against the NUI contract tables (NFS-001 §4/§5)
-# embedded here and mirrors the pure-Python reference floor
-# (ui/nstudio.py) — the conformance gate forces the floor's suite
-# through this FFI unchanged (ADR-0025).
+# JSON parsing for .nstudio documents, plus serde derive for typed
+# access to the embedded Nyrqis API Registry (ui/contracts/nui-api-v1.json
+# — the single machine-readable source of truth for the NUI component
+# vocabulary, NFS-006 / ADR-0025). The pure-Python reference floor
+# (ui/nstudio.py) reads the same registry file; the conformance gate
+# forces the floor's suite through this FFI unchanged.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
