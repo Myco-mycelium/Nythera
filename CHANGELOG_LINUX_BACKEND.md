@@ -16,6 +16,37 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.36] — 2026-08-17
+
+### State scopes (NUI-SCHEMA §8.4)
+
+- **`stateScopes` section.** A document may carry the five named state
+  tables — `global` / `screen` / `component` / `session` /
+  `persistent` — referenced as dotted `scope.key` names in
+  expressions, conditions, bindings, and `$expr:` arguments. `global`
+  is the named form of the flat `states` section: a bare reference
+  resolves against `states` first, then `global`.
+- **Scope-aware resolution.** `resolve_state`/`resolve_states` on the
+  floor resolve dotted references through the declared tables (the
+  flattened view: flat keys plus every scope's entries under their
+  dotted names, flat wins on collision); `_state_known` gates
+  conditions and bindings; expression validation is scope-aware
+  (`_scoped_state_keys`).
+- **Fail-closed at both import gates.** Unknown scope names and
+  non-object tables are rejected (`stateScopes: unknown scope
+  'bogus'` / `stateScopes: scope 'persistent' must be an object`),
+  and dotted references to undeclared scoped keys are unknown-state
+  errors — byte-identical messages between the floor and the Rust
+  crate (differential-tested); Nyforge mirrors the section check as
+  ER-NUI-023 and threads scope-awareness through its expression,
+  condition, and binding checks before Preview.
+- **Proven with the shell:** `desktop.nstudio` declares `persistent`
+  (theme) and `session` (clockTime) scopes; the theme toggle is an
+  `if` expression over the persistent theme and the DND title formats
+  the session clock.
+- New `TestStateScopes` (13) + 2 differential conformance cases. Suite
+  619 → **635**.
+
 ## [0.14.35] — 2026-08-17
 
 ### Declarative animations (NUI-SCHEMA §8.3)

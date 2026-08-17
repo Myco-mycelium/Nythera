@@ -350,6 +350,25 @@ Two things now, not one:
   the registry). Suite 604 → **619**; Nyforge 173/173. Keyframes are
   the documented follow-on.
 
+  **2026-08-17 (0.14.36): state scopes (NUI-SCHEMA §8.4).** A
+  document's `stateScopes` section carries the five named state tables
+  (global/screen/component/session/persistent) referenced as dotted
+  `scope.key` names in expressions, conditions, bindings, and `$expr:`
+  arguments; `global` is the named form of the flat `states` section
+  (a bare reference resolves against `states` first, then `global`).
+  `resolve_state`/`resolve_states` resolve dotted references through
+  the declared tables (flattened view, flat wins on collision);
+  `_state_known` gates conditions and bindings; expression validation
+  is scope-aware. Unknown scope names and non-object tables are
+  rejected by **both gates** with byte-identical messages, and dotted
+  references to undeclared scoped keys are unknown-state errors
+  (differential). The shell fixture's theme is a `persistent` state
+  and its clock a `session` state; Nyforge mirrors the section check
+  as ER-NUI-023 and threads scope-awareness through its expression /
+  condition / binding checks (FlattenedStates/IsStateKnown mirror the
+  floor). Suite 619 → **635**; Nyforge 187/187. Scope lifecycle (what
+  persists) is the runtime's follow-on.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

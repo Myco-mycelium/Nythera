@@ -216,6 +216,27 @@ fn validate_document(raw: &Value) -> Result<(), String> {
 
     let states = raw.get("states").and_then(Value::as_object);
 
+    // State scopes (NUI-SCHEMA §8.4): every scope name must be one of
+    // the known scopes and hold an object. References are dotted
+    // (`state.persistent.theme`); `global` is the named form of the
+    // flat `states` section. Mirror of the floor's `_state_known`.
+    const STATE_SCOPES: [&str; 5] =
+        ["component", "global", "persistent", "screen", "session"];
+    let state_scopes: Option<&Map<String, Value>> =
+        raw.get("stateScopes").and_then(Value::as_object);
+    if let Some(scopes) = state_scopes {
+        for (scope_name, table) in scopes {
+            if !STATE_SCOPES.contains(&scope_name.as_str()) {
+                return Err(format!("stateScopes: unknown scope '{scope_name}'"));
+            }
+            if !table.is_object() {
+                return Err(format!(
+                    "stateScopes: scope '{scope_name}' must be an object"
+                ));
+            }
+        }
+    }
+
     // Localization (NUI-SCHEMA §8.1): resolve $localize: refs against
     // the ACTIVE locale's table; a missing key is a validation error
     // (fail-closed, byte-identical to the floor). No locales section =
@@ -411,7 +432,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
             }
             master_ids.push(id.to_string());
             validate_component(master, &behavior_ids, &master_ids, raw, locale_keys,
-                               &asset_ids, states)?;
+                               &asset_ids, states, state_scopes)?;
         }
     }
 
@@ -420,7 +441,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
         for screen in screens {
             if let Some(root) = screen.get("root") {
                 validate_component(root, &behavior_ids, &master_ids, raw, locale_keys,
-                                   &asset_ids, states)?;
+                                   &asset_ids, states, state_scopes)?;
             }
         }
     }
@@ -428,15 +449,15 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     // Pass 5: behaviors (full context).
     if let Some(behaviors) = raw.get("behaviors").and_then(Value::as_array) {
         for behavior in behaviors {
-            validate_behavior(behavior, states, &component_ids, raw, locale_keys,
-                              &animation_ids)?;
+            validate_behavior(behavior, states, state_scopes, &component_ids, raw,
+                              locale_keys, &animation_ids)?;
         }
     }
 
     // Pass 6: bindings.
     if let Some(bindings) = raw.get("bindings").and_then(Value::as_array) {
         for binding in bindings {
-            validate_binding(binding, states, &component_ids, raw)?;
+            validate_binding(binding, states, state_scopes, &component_ids, raw)?;
         }
     }
 
@@ -451,6 +472,7 @@ fn validate_component(
     locale_keys: Option<(&str, &Map<String, Value>)>,
     asset_ids: &[String],
     states: Option<&Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
 ) -> Result<(), String> {
     let id = node
         .get("id")
@@ -617,9 +639,10 @@ fn validate_component(
         };
         if let Some(props) = container.and_then(Value::as_object) {
             let what = if reference.is_some() { "override" } else { "property" };
+            let known = merged_state_keys(states, state_scopes);
             for value in props.values() {
                 nexpr::check_expr_refs(
-                    value, states, &format!("component '{id}' {what}"))?;
+                    value, Some(&known), &format!("component '{id}' {what}"))?;
             }
         }
     }
@@ -627,7 +650,7 @@ fn validate_component(
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
             validate_component(child, behavior_ids, master_ids, raw, locale_keys,
-                               asset_ids, states)?;
+                               asset_ids, states, state_scopes)?;
         }
     }
     Ok(())
@@ -711,9 +734,61 @@ fn master_type_for<'v>(raw: &'v Value, id: &str) -> Option<&'v str> {
     })
 }
 
+/// A state reference exists when it is a flat key or a dotted
+/// reference into a declared scope (NUI-SCHEMA §8.4) — mirror of the
+/// floor's `_state_known`.
+fn state_known(
+    state_key: &str,
+    states: Option<&Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
+) -> bool {
+    if state_key.is_empty() {
+        return false;
+    }
+    if let Some(dot) = state_key.find('.') {
+        let scope = &state_key[..dot];
+        let rest = &state_key[dot + 1..];
+        if let Some(scopes) = state_scopes {
+            if let Some(table) = scopes.get(scope) {
+                if let Some(map) = table.as_object() {
+                    return map.contains_key(rest);
+                }
+            }
+        }
+        return false;
+    }
+    if states.is_some_and(|s| s.contains_key(state_key)) {
+        return true;
+    }
+    if let Some(scopes) = state_scopes {
+        if let Some(table) = scopes.get("global") {
+            if let Some(map) = table.as_object() {
+                return map.contains_key(state_key);
+            }
+        }
+    }
+    false
+}
+
+/// Every dotted `scope.key` name declared in stateScopes.
+fn scoped_state_keys(state_scopes: Option<&Map<String, Value>>) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(scopes) = state_scopes {
+        for (scope, table) in scopes {
+            if let Some(map) = table.as_object() {
+                for key in map.keys() {
+                    keys.push(format!("{scope}.{key}"));
+                }
+            }
+        }
+    }
+    keys
+}
+
 fn validate_behavior(
     behavior: &Value,
     states: Option<&serde_json::Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
     component_ids: &[String],
     raw: &Value,
     locale_keys: Option<(&str, &Map<String, Value>)>,
@@ -733,7 +808,8 @@ fn validate_behavior(
                     .as_str()
                     .ok_or_else(|| format!(
                         "behavior '{id}': condition expression must be a string"))?;
-                nexpr::validate_expr(expr_text, states).map_err(|err| {
+                let known = merged_state_keys(states, state_scopes);
+                nexpr::validate_expr(expr_text, Some(&known)).map_err(|err| {
                     format!("behavior '{id}' condition expression: {err}")
                 })?;
             } else {
@@ -741,7 +817,7 @@ fn validate_behavior(
                     .get("state")
                     .and_then(Value::as_str)
                     .ok_or_else(|| format!("behavior '{id}': condition must declare a 'state'"))?;
-                if !states.map(|s| s.contains_key(state_key)).unwrap_or(false) {
+                if !state_known(state_key, states, state_scopes) {
                     return Err(format!(
                         "behavior '{id}': condition references unknown state '{state_key}'"
                     ));
@@ -831,12 +907,31 @@ fn validate_behavior(
 
     // Expressions (NUI-SCHEMA §7.2): $expr: values in action arguments.
     if let Some(args) = action.get("arguments").and_then(Value::as_object) {
+        let known = merged_state_keys(states, state_scopes);
         for value in args.values() {
             nexpr::check_expr_refs(
-                value, states, &format!("behavior '{id}' argument"))?;
+                value, Some(&known), &format!("behavior '{id}' argument"))?;
         }
     }
     Ok(())
+}
+
+/// Flat state keys plus every dotted `scope.key` name (NUI-SCHEMA §8.4)
+/// — the combined known-state set for expression validation.
+fn merged_state_keys(
+    states: Option<&Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
+) -> Map<String, Value> {
+    let mut merged = Map::new();
+    if let Some(states) = states {
+        for (key, value) in states {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    for key in scoped_state_keys(state_scopes) {
+        merged.entry(key).or_insert(Value::Null);
+    }
+    merged
 }
 
 fn find_component_in_doc<'v>(raw: &'v Value, id: &str) -> Option<&'v Value> {
@@ -855,6 +950,7 @@ fn find_component_in_doc<'v>(raw: &'v Value, id: &str) -> Option<&'v Value> {
 fn validate_binding(
     binding: &Value,
     states: Option<&serde_json::Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
     component_ids: &[String],
     raw: &Value,
 ) -> Result<(), String> {
@@ -874,7 +970,7 @@ fn validate_binding(
     if !component_ids.iter().any(|cid| cid == component) {
         return Err(format!("binding: component '{component}' does not exist"));
     }
-    if !states.map(|s| s.contains_key(state)).unwrap_or(false) {
+    if !state_known(state, states, state_scopes) {
         return Err(format!("binding: state '{state}' does not exist"));
     }
     if let Some(node) = find_component_in_doc(raw, component) {

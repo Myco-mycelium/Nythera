@@ -220,7 +220,12 @@ render the `.nstudio` documents NyForge produces (NFS-001).
   (NUI-SCHEMA §8.3):** the `animations` section (unique ids, targets
   that name components, non-empty properties, timing parameters) is
   validated and the `Nyrqis.Animation.Play` system action's reference
-  is checked fail-closed.
+  is checked fail-closed. **State scopes (NUI-SCHEMA §8.4):** the
+  `stateScopes` section (global/screen/component/session/persistent
+  tables) is validated — unknown scope names and non-object tables
+  rejected — and dotted `scope.key` references resolve through the
+  declared tables (`resolve_state`/`resolve_states`, `_state_known`,
+  scope-aware expression validation).
 - **Rust import gate** (`rust/nyui/`, ABI 1.0.0): parse/validate behind
   the versioned FFI (`nyrqis_nyui_validate`/`_version`/`_last_error`),
   caller-supplied input, zero Rust-side allocation, serde_json-only. 13

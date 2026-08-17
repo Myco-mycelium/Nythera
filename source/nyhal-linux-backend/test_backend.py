@@ -13881,6 +13881,120 @@ class TestAnimations(unittest.TestCase):
         self.assertEqual(args["animation"], "start_menu_fade")
 
 
+class TestStateScopes(unittest.TestCase):
+    """State scopes (NUI-SCHEMA §8.4): the stateScopes section —
+    global/screen/component/session/persistent — referenced as dotted
+    ``scope.key`` names in expressions, conditions, bindings, and
+    arguments; validated fail-closed on the floor and resolved at
+    runtime. ``global`` is the named form of the flat ``states``
+    section."""
+
+    def _doc(self, scopes, cond=None, bind=None, arg=None):
+        return nstudio.loads(json.dumps({
+            "version": "0.4.0",
+            "project": {"name": "t", "id": "t"},
+            "themes": {"active": "Eclipse"},
+            "states": {"volume": 60},
+            "stateScopes": scopes,
+            "behaviors": [{"id": "b1", "condition": cond,
+                "action": {"target": "System",
+                            "name": "Nyrqis.Notification.Show",
+                            "arguments": arg or {"message": "x",
+                                                   "severity": "info"}}}],
+            "bindings": [{"component": "r", "property": "text",
+                           "state": bind}] if bind else [],
+            "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "r", "type": "Button",
+                    "properties": {"text": "hi"},
+                    "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                    "events": {}, "children": []}}],
+        }))
+
+    SCOPES = {"persistent": {"theme": "Eclipse"},
+              "session": {"clockTime": "14:32"}}
+
+    # ---- resolution ---------------------------------------------------------
+
+    def test_scoped_reference_resolves(self):
+        doc = self._doc(self.SCOPES)
+        self.assertEqual(doc.resolve_state("persistent.theme"), "Eclipse")
+        self.assertEqual(doc.resolve_state("session.clockTime"), "14:32")
+        # A missing scoped key falls back to the default.
+        self.assertEqual(doc.resolve_state("session.ghost", "fallback"), "fallback")
+
+    def test_flat_states_still_resolve(self):
+        doc = self._doc(self.SCOPES)
+        self.assertEqual(doc.resolve_state("volume"), 60)
+
+    def test_global_scope_is_named_flat(self):
+        doc = self._doc({"global": {"volume": 60}},
+                        {"expression": "state.global.volume > 50"})
+        self.assertEqual(doc.resolve_state("volume"), 60)
+        self.assertTrue(doc.resolve_condition("b1"))
+
+    def test_expression_uses_scoped_states(self):
+        doc = self._doc(self.SCOPES,
+                        {"expression": "state.persistent.theme == \"Eclipse\""})
+        self.assertTrue(doc.resolve_condition("b1"))
+
+    def test_expr_argument_uses_scoped_states(self):
+        doc = self._doc(self.SCOPES, arg={
+            "message": "$expr:state.persistent.theme", "severity": "info"})
+        _t, _n, args = doc.resolve_action("b1")
+        self.assertEqual(args["message"], "Eclipse")
+
+    def test_scoped_binding_validates(self):
+        doc = self._doc(self.SCOPES, bind="persistent.theme")
+        self.assertEqual(doc.bindings[0].state, "persistent.theme")
+
+    # ---- validation ---------------------------------------------------------
+
+    def test_unknown_scope_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"bogus": {"a": 1}})
+        self.assertIn("unknown scope 'bogus'", str(ctx.exception))
+
+    def test_non_object_scope_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"persistent": 5})
+        self.assertIn("scope 'persistent' must be an object", str(ctx.exception))
+
+    def test_expression_unknown_scoped_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(self.SCOPES,
+                      {"expression": "state.persistent.ghost == \"x\""})
+        self.assertIn("unknown state 'state.persistent.ghost'",
+                      str(ctx.exception))
+
+    def test_binding_unknown_scoped_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(self.SCOPES, bind="persistent.ghost")
+        self.assertIn("state 'persistent.ghost' does not exist",
+                      str(ctx.exception))
+
+    def test_expr_argument_unknown_scoped_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(self.SCOPES, arg={
+                "message": "$expr:state.session.ghost", "severity": "info"})
+        self.assertIn("unknown state 'state.session.ghost'",
+                      str(ctx.exception))
+
+    # ---- fixture ------------------------------------------------------------
+
+    def test_desktop_fixture_scopes(self):
+        doc = nstudio.loads(open(
+            "tests/fixtures/nstudio/desktop.nstudio").read())
+        self.assertEqual(sorted(doc.state_scopes.keys()),
+                         ["persistent", "session"])
+        self.assertEqual(doc.resolve_state("persistent.theme"), "Eclipse")
+        # The theme toggle flips the PERSISTENT theme (an `if` expression
+        # over the scoped state); the DND title formats the SESSION clock.
+        _t, _n, args = doc.resolve_action("behavior_theme_solar")
+        self.assertEqual(args["theme"], "Solar")
+        _t, _n, args = doc.resolve_action("behavior_dnd_on")
+        self.assertEqual(args["title"], "14:32")
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -14188,6 +14302,42 @@ class TestNstudioCodecConformance(unittest.TestCase):
             self.assertEqual(str(crate_ctx.exception), first_floor_issue,
                              f"message drift for {expected}")
 
+    def test_crate_accepts_scoped_desktop(self):
+        nstudio_codec.validate(self._text("desktop.nstudio"))
+        nstudio.loads(self._text("desktop.nstudio"))
+
+    def test_crate_rejects_unknown_scope(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"persistent": {', '"bogus": {')
+        self._rejects(text, "unknown scope 'bogus'")
+
+    def test_crate_rejects_unknown_scoped_state(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"expression": "state.doNotDisturb == true"',
+            '"expression": "state.session.ghost"')
+        self._rejects(text, "unknown state 'state.session.ghost'")
+
+    def test_error_messages_match_floor_state_scopes(self):
+        """Differential: the state-scope gates report the same first
+        failure as the floor."""
+        cases = [
+            ('"persistent": {', '"bogus": {', "unknown scope 'bogus'"),
+            ('"expression": "state.doNotDisturb == true"',
+             '"expression": "state.session.ghost"',
+             "unknown state 'state.session.ghost'"),
+        ]
+        for old, new, expected in cases:
+            text = self._mutate(self._text("desktop.nstudio"), old, new)
+            with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+                nstudio.loads(text)
+            with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+                nstudio_codec.validate(text)
+            first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+            self.assertEqual(str(crate_ctx.exception), first_floor_issue,
+                             f"message drift for {expected}")
+
     def test_crate_rejects_malformed_json(self):
         self._rejects("{not json", "malformed JSON")
 
@@ -14281,6 +14431,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResources))
     suite.addTests(loader.loadTestsFromTestCase(TestExpressions))
     suite.addTests(loader.loadTestsFromTestCase(TestAnimations))
+    suite.addTests(loader.loadTestsFromTestCase(TestStateScopes))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

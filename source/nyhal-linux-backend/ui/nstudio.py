@@ -46,6 +46,15 @@ from . import nexpr
 NSTUDIO_SCHEMA_VERSION = "0.4.0"
 SUPPORTED_SCHEMA_VERSIONS = ("0.4.0",)
 
+# State scopes (NUI-SCHEMA §8.4): the ``stateScopes`` section maps a
+# scope name to its state dictionary. ``global`` is the named form of
+# the flat ``states`` section (same precedence — a bare reference
+# resolves against the flat section first, then ``global``); ``screen``
+# and ``component`` are per-screen/per-component maps (dot-qualified:
+# ``state.component.<id>.<key>``); ``session`` and ``persistent`` are
+# flat maps referenced as ``state.session.<key>`` / ``state.persistent.<key>``.
+STATE_SCOPES = ("global", "screen", "component", "session", "persistent")
+
 # The registry lives next to this module (ui/contracts/nui-api-v1.json).
 # Both this floor and the Rust crate (rust/nyui, which embeds the same
 # file) read it; NyForge regenerates its C# tables from it. A missing or
@@ -192,6 +201,11 @@ class NstudioDocument:
     project: Dict[str, Any]
     themes: Dict[str, Any]
     states: Dict[str, Any]
+    # State scopes (NUI-SCHEMA §8.4): ``{"screen": {...}, "component":
+    # {...}, "session": {...}, "persistent": {...}}`` — references are
+    # dotted: ``state.session.foo``. ``global`` is the named form of the
+    # flat ``states`` section.
+    state_scopes: Dict[str, Any]
     # Localization (NUI-SCHEMA §8.1): ``{"active": "en", "tables":
     # {"en": {"settings.save": "Save"}, ...}}`` — ``$localize:key``
     # string references resolve through the active locale's table.
@@ -260,10 +274,11 @@ class NstudioDocument:
         for key, value in (action.get("arguments") or {}).items():
             if isinstance(value, str) and value.startswith("$state:"):
                 state_key = value[len("$state:"):]
-                args[key] = self.states.get(state_key, value)
+                args[key] = self.resolve_state(state_key, value)
             elif isinstance(value, str) and value.startswith("$expr:"):
                 expression = value[len("$expr:"):]
-                args[key] = nexpr.eval_expr(nexpr.parse(expression), self.states)
+                args[key] = nexpr.eval_expr(
+                    nexpr.parse(expression), self.resolve_states())
             else:
                 args[key] = value
         return action.get("target", ""), action.get("name", ""), args
@@ -283,13 +298,47 @@ class NstudioDocument:
             return None
         expression = condition.get("expression")
         if isinstance(expression, str):
-            return nexpr.eval_expr(nexpr.parse(expression), self.states)
+            return nexpr.eval_expr(
+                nexpr.parse(expression), self.resolve_states())
         state_key = condition.get("state")
         operator = condition.get("operator")
-        actual = self.states.get(state_key)
+        actual = self.resolve_state(state_key)
         expected = condition.get("value")
         equal = actual == expected
         return (not equal) if operator == "notEquals" else equal
+
+    def resolve_state(self, state_key: str, default: Any = None) -> Any:
+        """Resolve a state reference. A dotted reference
+        ``<scope>.<key>`` resolves through the ``stateScopes`` section
+        (NUI-SCHEMA §8.4); a bare key resolves against the flat
+        ``states`` section first, then the ``global`` scope. Returns
+        ``default`` when the reference doesn't exist."""
+        if "." in state_key:
+            scope, _, rest = state_key.partition(".")
+            scoped = self.state_scopes.get(scope)
+            if isinstance(scoped, dict):
+                return scoped.get(rest, default)
+            return default
+        if state_key in self.states:
+            return self.states[state_key]
+        global_scope = self.state_scopes.get("global")
+        if isinstance(global_scope, dict):
+            return global_scope.get(state_key, default)
+        return default
+
+    def resolve_states(self) -> Dict[str, Any]:
+        """The flattened state view used by the expression evaluator:
+        flat ``states`` keys merged with every scope's entries under
+        their dotted names (``persistent.volume`` etc.), so
+        ``state.persistent.volume`` resolves and bare references keep
+        working. Flat keys win on collision."""
+        merged = dict(self.states)
+        for scope, table in self.state_scopes.items():
+            if not isinstance(table, dict):
+                continue
+            for key, value in table.items():
+                merged.setdefault(f"{scope}.{key}", value)
+        return merged
 
     def render(self, screen_id: Optional[str] = None) -> List[Tuple[NstudioComponent, int]]:
         """Flatten the given screen's component tree into depth-ordered
@@ -374,6 +423,7 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         project=raw.get("project") or {},
         themes=raw.get("themes") or {},
         states=raw.get("states") or {},
+        state_scopes=raw.get("stateScopes") or {},
         locales=raw.get("locales") or {},
         resources=raw.get("resources") or {},
         animations=[_parse_animation(a) for a in raw.get("animations") or []],
@@ -509,6 +559,21 @@ def _validate(doc: NstudioDocument) -> List[str]:
                         f"resource '{aid}': 'sha256' must be a 64-char hex "
                         f"string")
 
+    # State scopes section (NUI-SCHEMA §8.4): every scope name must be
+    # one of the known scopes and hold an object.
+    state_scopes = doc.state_scopes or {}
+    if state_scopes:
+        if not isinstance(state_scopes, dict):
+            issues.append("stateScopes section must be an object")
+            state_scopes = {}
+        for scope_name, table in state_scopes.items():
+            if scope_name not in STATE_SCOPES:
+                issues.append(
+                    f"stateScopes: unknown scope '{scope_name}'")
+            elif not isinstance(table, dict):
+                issues.append(
+                    f"stateScopes: scope '{scope_name}' must be an object")
+
     # Animations section (NUI-SCHEMA §8.3): a list of declarative
     # animations — unique ids, a target that names a component, a
     # non-empty property, and validated timing parameters.
@@ -569,6 +634,12 @@ def _validate(doc: NstudioDocument) -> List[str]:
             issues.append(
                 f"animation '{anim.id}': target '{anim.target}' does "
                 f"not exist")
+
+    scoped_states = {}
+    for scope, table in state_scopes.items():
+        if isinstance(table, dict):
+            for key in table:
+                scoped_states[f"{scope}.{key}"] = True
 
     seen: set = set()
     for cid in component_ids:
@@ -871,6 +942,31 @@ def _check_localize_ref(value: Any, doc: NstudioDocument, issues: List[str],
                 f"{where}: localize key '{key}' not in locale '{active}'")
 
 
+def _state_known(state_key: Any, doc: NstudioDocument) -> bool:
+    """A state reference exists when it is a flat key or a dotted
+    reference into a declared scope (NUI-SCHEMA §8.4)."""
+    if not isinstance(state_key, str) or not state_key:
+        return False
+    if "." in state_key:
+        scope, _, rest = state_key.partition(".")
+        table = (doc.state_scopes or {}).get(scope)
+        return isinstance(table, dict) and rest in table
+    if state_key in doc.states:
+        return True
+    global_scope = (doc.state_scopes or {}).get("global")
+    return isinstance(global_scope, dict) and state_key in global_scope
+
+
+def _scoped_state_keys(doc: NstudioDocument) -> set:
+    """Every dotted ``scope.key`` name declared in stateScopes."""
+    keys: set = set()
+    for scope, table in (doc.state_scopes or {}).items():
+        if isinstance(table, dict):
+            for key in table:
+                keys.add(f"{scope}.{key}")
+    return keys
+
+
 def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                        issues: List[str], component_ids: List[str]) -> None:
     condition = behavior.condition
@@ -891,7 +987,7 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                         f"behavior '{behavior.id}' condition expression: "
                         f"{exc}")
                 else:
-                    problem = nexpr.validate(node, set(doc.states))
+                    problem = nexpr.validate(node, _scoped_state_keys(doc) | set(doc.states))
                     if problem is not None:
                         issues.append(
                             f"behavior '{behavior.id}' condition "
@@ -903,7 +999,7 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                     f"behavior '{behavior.id}': condition operator must be "
                     f"'equals' or 'notEquals'")
             state_key = condition.get("state")
-            if state_key not in doc.states:
+            if not _state_known(state_key, doc):
                 issues.append(
                     f"behavior '{behavior.id}': condition references "
                     f"unknown state '{state_key}'")
@@ -969,7 +1065,7 @@ def _check_expr_ref(value: Any, doc: NstudioDocument, issues: List[str],
     except nexpr.ExprError as exc:
         issues.append(f"{where}: {exc}")
         return
-    problem = nexpr.validate(node, set(doc.states))
+    problem = nexpr.validate(node, _scoped_state_keys(doc) | set(doc.states))
     if problem is not None:
         issues.append(f"{where}: {problem}")
 
@@ -979,7 +1075,7 @@ def _validate_binding(binding: NstudioBinding, doc: NstudioDocument,
     if binding.component not in component_ids:
         issues.append(
             f"binding: component '{binding.component}' does not exist")
-    if binding.state not in doc.states:
+    if not _state_known(binding.state, doc):
         issues.append(
             f"binding: state '{binding.state}' does not exist")
     component = doc.find_component(binding.component)
@@ -998,5 +1094,5 @@ __all__ = [
     "NstudioError", "NstudioVersionError", "NstudioValidationError",
     "NstudioComponent", "NstudioScreen", "NstudioBehavior", "NstudioBinding",
     "NstudioAnimation", "NstudioDocument", "loads", "load", "resolve_text",
-    "nexpr",
+    "nexpr", "STATE_SCOPES",
 ]

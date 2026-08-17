@@ -46,6 +46,15 @@
     "currentWorkspace": 1,
     "clockTime": "14:32"
   },
+  "stateScopes": {
+    "persistent": {
+      "theme": "Eclipse",
+      "volume": 60
+    },
+    "session": {
+      "clockTime": "14:32"
+    }
+  },
   "behaviors": [
     {
       "id": "behavior_start_toggle",
@@ -101,7 +110,7 @@
         "target": "System",
         "name": "Nyrqis.Theme.Set",
         "arguments": {
-          "theme": "Solar"
+          "theme": "$expr:if(state.persistent.theme == \"Eclipse\", \"Solar\", \"Eclipse\")"
         }
       }
     },
@@ -123,7 +132,7 @@
         "target": "System",
         "name": "Nyrqis.Notification.Show",
         "arguments": {
-          "title": "$expr:format(state.clockTime, \"{0}\")",
+          "title": "$expr:format(state.session.clockTime, \"{0}\")",
           "message": "$localize:notif.dnd",
           "severity": "info"
         }
