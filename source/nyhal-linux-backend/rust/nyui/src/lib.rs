@@ -326,6 +326,61 @@ fn validate_document(raw: &Value) -> Result<(), String> {
         }
     }
 
+    // Pass 2.5: animations (NUI-SCHEMA §8.3) — unique ids, targets that
+    // name components, non-empty properties, and validated timing.
+    const ANIM_EASINGS: [&str; 5] =
+        ["ease-in", "ease-in-out", "ease-out", "linear", "steps"];
+    const ANIM_DIRECTIONS: [&str; 3] = ["alternate", "forward", "reverse"];
+    let mut animation_ids: Vec<String> = Vec::new();
+    if let Some(animations) = raw.get("animations").and_then(Value::as_array) {
+        for animation in animations {
+            let aid = animation
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "animation entries must declare a string 'id'".to_string())?;
+            if animation_ids.iter().any(|a| a == aid) {
+                return Err(format!("duplicate animation id '{aid}'"));
+            }
+            animation_ids.push(aid.to_string());
+            let target = animation.get("target").and_then(Value::as_str);
+            if let Some(target) = target {
+                if !component_ids.iter().any(|c| c == target) {
+                    return Err(format!(
+                        "animation '{aid}': target '{target}' does not exist"
+                    ));
+                }
+            }
+            let property = animation.get("property").and_then(Value::as_str);
+            if property.is_none_or(|p| p.is_empty()) {
+                return Err(format!("animation '{aid}': must declare a 'property'"));
+            }
+            for key in ["duration", "delay", "repeat"] {
+                if let Some(value) = animation.get(key) {
+                    let ok = matches!(value, Value::Number(n) if n.is_i64() && n.as_i64().unwrap_or(-1) >= 0);
+                    if !ok {
+                        return Err(format!(
+                            "animation '{aid}': '{key}' must be a non-negative integer"
+                        ));
+                    }
+                }
+            }
+            if let Some(easing) = animation.get("easing").and_then(Value::as_str) {
+                if !ANIM_EASINGS.contains(&easing) {
+                    return Err(format!(
+                        "animation '{aid}': easing '{easing}' not in ['ease-in', 'ease-in-out', 'ease-out', 'linear', 'steps']"
+                    ));
+                }
+            }
+            if let Some(direction) = animation.get("direction").and_then(Value::as_str) {
+                if !ANIM_DIRECTIONS.contains(&direction) {
+                    return Err(format!(
+                        "animation '{aid}': direction '{direction}' not in ['alternate', 'forward', 'reverse']"
+                    ));
+                }
+            }
+        }
+    }
+
     // Pass 2: behaviors (ids first so component event refs can check them).
     let mut behavior_ids: Vec<String> = Vec::new();
     if let Some(behaviors) = raw.get("behaviors").and_then(Value::as_array) {
@@ -373,7 +428,8 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     // Pass 5: behaviors (full context).
     if let Some(behaviors) = raw.get("behaviors").and_then(Value::as_array) {
         for behavior in behaviors {
-            validate_behavior(behavior, states, &component_ids, raw, locale_keys)?;
+            validate_behavior(behavior, states, &component_ids, raw, locale_keys,
+                              &animation_ids)?;
         }
     }
 
@@ -661,6 +717,7 @@ fn validate_behavior(
     component_ids: &[String],
     raw: &Value,
     locale_keys: Option<(&str, &Map<String, Value>)>,
+    animation_ids: &[String],
 ) -> Result<(), String> {
     let id = behavior
         .get("id")
@@ -724,6 +781,20 @@ fn validate_behavior(
                                 "behavior '{id}': argument '{arg}' not in the '{name}' contract"
                             ));
                         }
+                    }
+                }
+                // Animations (NUI-SCHEMA §8.3): the reference must name
+                // a declared animation — fail-closed like the floor.
+                if name == "Nyrqis.Animation.Play" {
+                    let anim_id = action
+                        .get("arguments")
+                        .and_then(|a| a.get("animation"))
+                        .and_then(Value::as_str);
+                    if anim_id.is_none_or(|a| !animation_ids.iter().any(|id| id == a)) {
+                        let shown = anim_id.unwrap_or("");
+                        return Err(format!(
+                            "behavior '{id}': animation '{shown}' is not declared in 'animations'"
+                        ));
                     }
                 }
             }
@@ -907,10 +978,14 @@ mod tests {
       "version": "0.4.0",
       "project": { "name": "Nyrqis Shell" },
       "states": { "doNotDisturb": false, "lastRefresh": "12:04" },
+      "animations": [
+        { "id": "fade_in", "target": "toggle_dnd", "property": "opacity",
+          "duration": 200, "easing": "ease-out" }
+      ],
       "behaviors": [
         { "id": "behavior_refresh", "condition": null,
-          "action": { "target": "System", "name": "Nyrqis.Notification.Show",
-                      "arguments": { "title": "Workspace refreshed", "message": "$state:lastRefresh", "severity": "info" } } }
+          "action": { "target": "System", "name": "Nyrqis.Animation.Play",
+                      "arguments": { "animation": "fade_in" } } }
       ],
       "bindings": [ { "component": "toggle_dnd", "property": "value", "state": "doNotDisturb" } ],
       "screens": [ { "id": "main", "size": { "width": 1440, "height": 900 }, "root": {
@@ -967,16 +1042,16 @@ mod tests {
 
     #[test]
     fn rejects_unknown_system_action() {
-        let text = VALID_SHELL.replace("Nyrqis.Notification.Show", "Nyrqis.System.Shutdown");
+        let text = VALID_SHELL.replace("Nyrqis.Animation.Play", "Nyrqis.System.Shutdown");
         let err = validate(&text).unwrap_err();
         assert!(err.contains("unknown system action 'Nyrqis.System.Shutdown'"), "{err}");
     }
 
     #[test]
     fn rejects_unknown_action_argument() {
-        let text = VALID_SHELL.replace("\"severity\": \"info\"", "\"severity\": \"info\", \"bogus\": 1");
+        let text = VALID_SHELL.replace("\"animation\": \"fade_in\"", "\"animation\": \"fade_in\", \"bogus\": 1");
         let err = validate(&text).unwrap_err();
-        assert!(err.contains("argument 'bogus' not in the 'Nyrqis.Notification.Show' contract"), "{err}");
+        assert!(err.contains("argument 'bogus' not in the 'Nyrqis.Animation.Play' contract"), "{err}");
     }
 
     #[test]

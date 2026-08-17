@@ -216,14 +216,18 @@ render the `.nstudio` documents NyForge produces (NFS-001).
   `if`/`min`/`max`/`contains`/`format`, position-tagged syntax errors)
   for `$expr:` values and condition `expression` fields, `resolve_action()`,
   `resolve_condition()`, layout `render()` (absolute coordinates), and a
-  deterministic `text_preview()` stand-in renderer.
+  deterministic `text_preview()` stand-in renderer. **Animations
+  (NUI-SCHEMA §8.3):** the `animations` section (unique ids, targets
+  that name components, non-empty properties, timing parameters) is
+  validated and the `Nyrqis.Animation.Play` system action's reference
+  is checked fail-closed.
 - **Rust import gate** (`rust/nyui/`, ABI 1.0.0): parse/validate behind
   the versioned FFI (`nyrqis_nyui_validate`/`_version`/`_last_error`),
   caller-supplied input, zero Rust-side allocation, serde_json-only. 13
   crate unit tests (incl. `nexpr` — the byte-for-byte expression
-  mirror, differential-tested). **This is the first compiled artifact
-  of the UI layer** — the platform-critical execution path per
-  ADR-0020.
+  mirror — and the animations validation, differential-tested).
+  **This is the first compiled artifact of the UI layer** — the
+  platform-critical execution path per ADR-0020.
 - **FFI loader** (`ui/nstudio_codec.py`): the standard crate-loader
   contract (`$NYRQIS_RUST_LIB` → `target/release/` → `LD_LIBRARY_PATH`,
   ABI check, `NYRQIS_RUST_FORCE=1` semantics, error-class mapping back

@@ -337,6 +337,19 @@ Two things now, not one:
   mirrors the gate as ER-NUI-021 before Preview (one semantics across
   Nyforge / floor / crate). Suite 585 → **604**; Nyforge 163/163.
 
+  **2026-08-17 (0.14.35): declarative animations (NUI-SCHEMA §8.3).**
+  The document's `animations` section — unique ids, a target that must
+  name an existing component, a non-empty property, and timing
+  (duration/delay/repeat non-negative; easing linear|ease-in|ease-out|
+  ease-in-out|steps; direction forward|reverse|alternate) — is
+  validated identically by both gates. The registry gains the
+  `Nyrqis.Animation.Play` system action; a behavior using it must
+  reference a declared animation (byte-identical messages,
+  differential). The desktop shell's Start menu fade plays on toggle;
+  Nyforge mirrors the gate as ER-NUI-022 (contracts regenerated from
+  the registry). Suite 604 → **619**; Nyforge 173/173. Keyframes are
+  the documented follow-on.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

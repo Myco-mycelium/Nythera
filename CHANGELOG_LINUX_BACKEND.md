@@ -16,6 +16,29 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.35] — 2026-08-17
+
+### Declarative animations (NUI-SCHEMA §8.3)
+
+- **`animations` section.** A document may carry a list of declarative
+  animations — unique `id`s, a `target` that must name an existing
+  component (optional — defaults to the triggering component), a
+  non-empty `property`, and validated timing: `duration`/`delay`/`repeat`
+  non-negative integers, `easing` one of linear / ease-in / ease-out /
+  ease-in-out / steps, `direction` one of forward / reverse / alternate
+  (defaults: 300 / 0 / 0 / ease-in-out / forward).
+- **`Nyrqis.Animation.Play`** — a new Nyrqis API Registry system action
+  (its only argument is `animation`): a behavior triggers a declared
+  animation by id, and the reference is validated fail-closed at both
+  import gates (byte-identical messages, differential-tested). The
+  Rust crate mirrors the section validation and reference check;
+  Nyforge mirrors it as ER-NUI-022 before Preview.
+- **Proven with the shell:** `desktop.nstudio` declares a
+  `start_menu_fade` animation (opacity, 200 ms, ease-out) and
+  `behavior_start_toggle` plays it via `Nyrqis.Animation.Play`.
+- New `TestAnimations` (10) + 4 differential conformance cases. Suite
+  604 → **619**.
+
 ## [0.14.34] — 2026-08-17
 
 ### The NUI expression language (NUI-SCHEMA §7.2)

@@ -2225,29 +2225,19 @@
   ],
   "systemActions": [
     {
-      "name": "Nyrqis.Theme.Set",
+      "name": "Nyrqis.Animation.Play",
       "arguments": [
-        "theme"
+        "animation"
       ]
     },
     {
-      "name": "Nyrqis.Settings.Commit",
-      "arguments": []
-    },
-    {
-      "name": "Nyrqis.Window.Close",
-      "arguments": [
-        "windowId"
-      ]
-    },
-    {
-      "name": "Nyrqis.Dialog.Open",
+      "name": "Nyrqis.Dialog.Close",
       "arguments": [
         "dialogId"
       ]
     },
     {
-      "name": "Nyrqis.Dialog.Close",
+      "name": "Nyrqis.Dialog.Open",
       "arguments": [
         "dialogId"
       ]
@@ -2258,6 +2248,22 @@
         "title",
         "message",
         "severity"
+      ]
+    },
+    {
+      "name": "Nyrqis.Settings.Commit",
+      "arguments": []
+    },
+    {
+      "name": "Nyrqis.Theme.Set",
+      "arguments": [
+        "theme"
+      ]
+    },
+    {
+      "name": "Nyrqis.Window.Close",
+      "arguments": [
+        "windowId"
       ]
     }
   ]

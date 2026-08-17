@@ -13775,6 +13775,112 @@ class TestExpressions(unittest.TestCase):
         self.assertEqual(args["title"], "14:32")  # format(state.clockTime, "{0}")
 
 
+class TestAnimations(unittest.TestCase):
+    """Declarative animations (NUI-SCHEMA §8.3): the document's
+    `animations` section — unique ids, targets that name components,
+    non-empty properties, validated timing parameters — and the
+    Nyrqis.Animation.Play behavior reference, enforced fail-closed on
+    the floor."""
+
+    def _doc(self, animations, behavior_args=None):
+        return nstudio.loads(json.dumps({
+            "version": "0.4.0",
+            "project": {"name": "t", "id": "t"},
+            "themes": {"active": "Eclipse"},
+            "states": {},
+            "animations": animations,
+            "behaviors": [{"id": "b1", "condition": None,
+                "action": {"target": "System",
+                            "name": "Nyrqis.Animation.Play",
+                            "arguments": behavior_args
+                            or {"animation": "fade"}}}],
+            "bindings": [],
+            "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "menu", "type": "StartMenu",
+                    "properties": {},
+                    "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                    "events": {}, "children": []}}],
+        }))
+
+    ANIM = {"id": "fade", "target": "menu", "property": "opacity",
+            "duration": 200, "easing": "ease-out"}
+
+    def test_declared_animation_accepted(self):
+        doc = self._doc([self.ANIM])
+        self.assertEqual(len(doc.animations), 1)
+        anim = doc.animations[0]
+        self.assertEqual((anim.id, anim.target, anim.property),
+                         ("fade", "menu", "opacity"))
+        self.assertEqual(anim.duration, 200)
+        self.assertEqual(anim.easing, "ease-out")
+        self.assertEqual(anim.direction, "forward")
+        _t, _n, args = doc.resolve_action("b1")
+        self.assertEqual(args["animation"], "fade")
+
+    def test_defaults_applied(self):
+        doc = self._doc([{"id": "f", "target": "menu", "property": "opacity"}],
+                        {"animation": "f"})
+        anim = doc.animations[0]
+        self.assertEqual(anim.duration, 300)
+        self.assertEqual(anim.delay, 0)
+        self.assertEqual(anim.easing, "ease-in-out")
+        self.assertEqual(anim.repeat, 0)
+        self.assertEqual(anim.direction, "forward")
+
+    def test_undeclared_animation_reference_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([self.ANIM], {"animation": "ghost"})
+        self.assertIn("animation 'ghost' is not declared in 'animations'",
+                      str(ctx.exception))
+
+    def test_unknown_easing_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "menu", "property": "opacity",
+                        "easing": "bounce"}], {"animation": "f"})
+        self.assertIn("easing 'bounce' not in", str(ctx.exception))
+
+    def test_unknown_direction_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "menu", "property": "opacity",
+                        "direction": "sideways"}], {"animation": "f"})
+        self.assertIn("direction 'sideways' not in", str(ctx.exception))
+
+    def test_negative_duration_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "menu", "property": "opacity",
+                        "duration": -5}], {"animation": "f"})
+        self.assertIn("'duration' must be a non-negative integer",
+                      str(ctx.exception))
+
+    def test_unknown_target_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "ghost", "property": "opacity"}],
+                      {"animation": "f"})
+        self.assertIn("target 'ghost' does not exist", str(ctx.exception))
+
+    def test_missing_property_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "menu"}], {"animation": "f"})
+        self.assertIn("must declare a 'property'", str(ctx.exception))
+
+    def test_duplicate_animation_id_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "f", "target": "menu", "property": "opacity"},
+                       {"id": "f", "target": "menu", "property": "scale"}],
+                      {"animation": "f"})
+        self.assertIn("duplicate animation id 'f'", str(ctx.exception))
+
+    def test_desktop_fixture_animation(self):
+        doc = nstudio.loads(open(
+            "tests/fixtures/nstudio/desktop.nstudio").read())
+        self.assertEqual(
+            [(a.id, a.target, a.property, a.duration, a.easing)
+             for a in doc.animations],
+            [("start_menu_fade", "start_menu", "opacity", 200, "ease-out")])
+        _t, _n, args = doc.resolve_action("behavior_start_toggle")
+        self.assertEqual(args["animation"], "start_menu_fade")
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -14039,6 +14145,49 @@ class TestNstudioCodecConformance(unittest.TestCase):
             self.assertEqual(str(crate_ctx.exception), first_floor_issue,
                              f"message drift for {expected}")
 
+    def test_crate_accepts_animation_desktop(self):
+        nstudio_codec.validate(self._text("desktop.nstudio"))
+        nstudio.loads(self._text("desktop.nstudio"))
+
+    def test_crate_rejects_undeclared_animation(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"animation": "start_menu_fade"', '"animation": "ghost_anim"')
+        self._rejects(text, "animation 'ghost_anim' is not declared in 'animations'")
+
+    def test_crate_rejects_unknown_easing(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"easing": "ease-out"', '"easing": "bounce"')
+        self._rejects(text, "easing 'bounce' not in")
+
+    def test_crate_rejects_unknown_animation_target(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"target": "start_menu"', '"target": "ghost"')
+        self._rejects(text, "target 'ghost' does not exist")
+
+    def test_error_messages_match_floor_animation(self):
+        """Differential: the animation gates report the same first
+        failure as the floor."""
+        cases = [
+            ('"animation": "start_menu_fade"', '"animation": "ghost_anim"',
+             "animation 'ghost_anim' is not declared in 'animations'"),
+            ('"easing": "ease-out"', '"easing": "bounce"',
+             "easing 'bounce' not in ['ease-in', 'ease-in-out', 'ease-out', 'linear', 'steps']"),
+            ('"target": "start_menu"', '"target": "ghost"',
+             "target 'ghost' does not exist"),
+        ]
+        for old, new, expected in cases:
+            text = self._mutate(self._text("desktop.nstudio"), old, new)
+            with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+                nstudio.loads(text)
+            with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+                nstudio_codec.validate(text)
+            first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+            self.assertEqual(str(crate_ctx.exception), first_floor_issue,
+                             f"message drift for {expected}")
+
     def test_crate_rejects_malformed_json(self):
         self._rejects("{not json", "malformed JSON")
 
@@ -14131,6 +14280,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestLocalization))
     suite.addTests(loader.loadTestsFromTestCase(TestResources))
     suite.addTests(loader.loadTestsFromTestCase(TestExpressions))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnimations))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

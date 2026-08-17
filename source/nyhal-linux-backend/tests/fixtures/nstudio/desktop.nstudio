@@ -25,6 +25,10 @@
       { "id": "wallpaper", "kind": "image", "path": "assets/wallpaper.png" }
     ]
   },
+  "animations": [
+    { "id": "start_menu_fade", "target": "start_menu", "property": "opacity",
+      "duration": 200, "easing": "ease-out" }
+  ],
   "locales": {
     "active": "en",
     "tables": {
@@ -47,9 +51,9 @@
       "id": "behavior_start_toggle",
       "condition": null,
       "action": {
-        "target": "start_menu",
-        "name": "Toggle",
-        "arguments": {}
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_fade" }
       }
     },
     {

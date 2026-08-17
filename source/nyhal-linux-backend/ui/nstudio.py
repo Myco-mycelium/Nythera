@@ -171,6 +171,22 @@ class NstudioBinding:
 
 
 @dataclass
+class NstudioAnimation:
+    """One declarative animation (NUI-SCHEMA §8.3): a timed transition
+    of one of a target component's properties, triggered by a behavior's
+    ``Nyrqis.Animation.Play`` action."""
+
+    id: str
+    target: str
+    property: str
+    duration: int = 300
+    delay: int = 0
+    easing: str = "ease-in-out"
+    repeat: int = 0
+    direction: str = "forward"
+
+
+@dataclass
 class NstudioDocument:
     version: str
     project: Dict[str, Any]
@@ -184,6 +200,10 @@ class NstudioDocument:
     # sha256?}]}`` — ``$asset:id`` string references (e.g. an Image's
     # ``source``) name declared assets.
     resources: Dict[str, Any]
+    # Animations (NUI-SCHEMA §8.3): a list of NstudioAnimation — timed
+    # property transitions a behavior triggers via the
+    # ``Nyrqis.Animation.Play`` system action.
+    animations: List[NstudioAnimation]
     behaviors: List[NstudioBehavior]
     bindings: List[NstudioBinding]
     screens: List[NstudioScreen]
@@ -356,6 +376,7 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         states=raw.get("states") or {},
         locales=raw.get("locales") or {},
         resources=raw.get("resources") or {},
+        animations=[_parse_animation(a) for a in raw.get("animations") or []],
         behaviors=[_parse_behavior(b) for b in raw.get("behaviors") or []],
         bindings=[_parse_binding(b) for b in raw.get("bindings") or []],
         reusable_components=[
@@ -381,6 +402,22 @@ def _parse_behavior(raw: Any) -> NstudioBehavior:
         raise NstudioValidationError(
             f"behavior '{raw['id']}' condition must be null or an object")
     return NstudioBehavior(id=raw["id"], condition=condition, action=action)
+
+
+def _parse_animation(raw: Any) -> NstudioAnimation:
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+        raise NstudioValidationError(
+            "animation entries must be objects with a string 'id'")
+    return NstudioAnimation(
+        id=raw["id"],
+        target=str(raw.get("target", "")),
+        property=str(raw.get("property", "")),
+        duration=int(raw.get("duration", 300)),
+        delay=int(raw.get("delay", 0)),
+        easing=str(raw.get("easing", "ease-in-out")),
+        repeat=int(raw.get("repeat", 0)),
+        direction=str(raw.get("direction", "forward")),
+    )
 
 
 def _parse_binding(raw: Any) -> NstudioBinding:
@@ -472,6 +509,37 @@ def _validate(doc: NstudioDocument) -> List[str]:
                         f"resource '{aid}': 'sha256' must be a 64-char hex "
                         f"string")
 
+    # Animations section (NUI-SCHEMA §8.3): a list of declarative
+    # animations — unique ids, a target that names a component, a
+    # non-empty property, and validated timing parameters.
+    ANIM_EASINGS = ("linear", "ease-in", "ease-out", "ease-in-out",
+                    "steps")
+    ANIM_DIRECTIONS = ("forward", "reverse", "alternate")
+    animation_ids: set = set()
+    for anim in doc.animations:
+        if not anim.id:
+            issues.append("animation with empty id")
+            continue
+        if anim.id in animation_ids:
+            issues.append(f"duplicate animation id '{anim.id}'")
+        animation_ids.add(anim.id)
+        if not anim.property:
+            issues.append(f"animation '{anim.id}': must declare a 'property'")
+        for key in ("duration", "delay", "repeat"):
+            value = getattr(anim, key)
+            if not isinstance(value, int) or value < 0:
+                issues.append(
+                    f"animation '{anim.id}': '{key}' must be a "
+                    f"non-negative integer")
+        if anim.easing not in ANIM_EASINGS:
+            issues.append(
+                f"animation '{anim.id}': easing '{anim.easing}' not in "
+                f"{sorted(ANIM_EASINGS)}")
+        if anim.direction not in ANIM_DIRECTIONS:
+            issues.append(
+                f"animation '{anim.id}': direction '{anim.direction}' not in "
+                f"{sorted(ANIM_DIRECTIONS)}")
+
     # Localization section (NUI-SCHEMA §8.1): if present, it must be
     # {"active": str, "tables": {locale: {key: str}}} and the active
     # locale must have a table.
@@ -496,6 +564,12 @@ def _validate(doc: NstudioDocument) -> List[str]:
                     f"locales: active locale '{active}' has no table")
 
     component_ids = doc.component_ids()
+    for anim in doc.animations:
+        if anim.target and anim.target not in component_ids:
+            issues.append(
+                f"animation '{anim.id}': target '{anim.target}' does "
+                f"not exist")
+
     seen: set = set()
     for cid in component_ids:
         if not cid:
@@ -847,6 +921,16 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                     issues.append(
                         f"behavior '{behavior.id}': argument '{arg}' not "
                         f"in the '{name}' contract")
+            if name == "Nyrqis.Animation.Play":
+                # The animation reference must name a declared animation
+                # (NUI-SCHEMA §8.3) — fail-closed like every other
+                # dangling reference.
+                anim_id = (behavior.action.get("arguments") or {}).get(
+                    "animation")
+                if anim_id not in {a.id for a in doc.animations}:
+                    issues.append(
+                        f"behavior '{behavior.id}': animation "
+                        f"'{anim_id}' is not declared in 'animations'")
     elif target in component_ids:
         component = doc.find_component(target)
         contract = COMPONENT_CONTRACTS.get(component.type) if component else None
@@ -913,5 +997,6 @@ __all__ = [
     "COMPONENT_CONTRACTS", "SYSTEM_ACTIONS",
     "NstudioError", "NstudioVersionError", "NstudioValidationError",
     "NstudioComponent", "NstudioScreen", "NstudioBehavior", "NstudioBinding",
-    "NstudioDocument", "loads", "load", "resolve_text", "nexpr",
+    "NstudioAnimation", "NstudioDocument", "loads", "load", "resolve_text",
+    "nexpr",
 ]
