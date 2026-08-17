@@ -13588,6 +13588,84 @@ class TestLocalization(unittest.TestCase):
             "Notifications paused until disabled")
 
 
+class TestResources(unittest.TestCase):
+    """Resources (NUI-SCHEMA §8.2): the managed asset catalog — unique
+    ids, allowed kinds, non-empty paths, optional 64-hex sha256, and
+    fail-closed $asset: reference checks on the floor."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+    SHA = "a" * 64
+
+    def _doc(self, assets, props):
+        return nstudio.loads(json.dumps({
+            "version": "0.4.0",
+            "project": {"name": "t", "id": "t"},
+            "themes": {"active": "Eclipse"},
+            "locales": {},
+            "resources": {"assets": assets},
+            "states": {}, "behaviors": [], "bindings": [],
+            "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "r", "type": "Image",
+                    "properties": props,
+                    "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                    "events": {}, "children": []}}],
+        }))
+
+    def test_fixture_declares_wallpaper_asset(self):
+        doc = nstudio.loads(open(os.path.join(self.FIXTURES, "desktop.nstudio")).read())
+        self.assertEqual([a["id"] for a in doc.resources["assets"]], ["wallpaper"])
+        self.assertEqual(doc.resources["assets"][0]["kind"], "image")
+        self.assertEqual(doc.resources["assets"][0]["path"], "assets/wallpaper.png")
+
+    def test_declared_asset_ref_accepted(self):
+        doc = self._doc(
+            [{"id": "wallpaper", "kind": "image", "path": "a.png",
+              "sha256": self.SHA}],
+            {"source": "$asset:wallpaper"})
+        self.assertEqual(doc.screens[0].root.properties["source"], "$asset:wallpaper")
+
+    def test_undeclared_asset_ref_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(
+                [{"id": "wallpaper", "kind": "image", "path": "a.png"}],
+                {"source": "$asset:ghost"})
+        self.assertIn("asset 'ghost' is not declared in resources", str(ctx.exception))
+
+    def test_asset_ref_without_resources_rejected(self):
+        text = open(os.path.join(self.FIXTURES, "desktop.nstudio")).read()
+        bad = text.replace('"resources": {\n    "assets": [\n      { "id": "wallpaper", "kind": "image", "path": "assets/wallpaper.png" }\n    ]\n  },', "")
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(bad)
+        self.assertIn("requires a 'resources' section", str(ctx.exception))
+
+    def test_duplicate_resource_id_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(
+                [{"id": "w", "kind": "image", "path": "a.png"},
+                 {"id": "w", "kind": "icon", "path": "b.png"}],
+                {"source": "$asset:w"})
+        self.assertIn("duplicate resource id 'w'", str(ctx.exception))
+
+    def test_unknown_kind_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "w", "kind": "bogus", "path": "a.png"}],
+                      {"source": "$asset:w"})
+        self.assertIn("kind 'bogus' not in", str(ctx.exception))
+
+    def test_empty_path_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "w", "kind": "image", "path": ""}],
+                      {"source": "$asset:w"})
+        self.assertIn("non-empty 'path'", str(ctx.exception))
+
+    def test_bad_sha256_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "w", "kind": "image", "path": "a.png",
+                        "sha256": "xyz"}],
+                      {"source": "$asset:w"})
+        self.assertIn("64-char hex", str(ctx.exception))
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -13751,6 +13829,31 @@ class TestNstudioCodecConformance(unittest.TestCase):
         first_floor_issue = str(floor_ctx.exception).split("; ")[0]
         self.assertEqual(str(crate_ctx.exception), first_floor_issue)
 
+    def test_crate_accepts_resources_desktop(self):
+        nstudio_codec.validate(self._text("desktop.nstudio"))
+        nstudio.loads(self._text("desktop.nstudio"))
+
+    def test_crate_rejects_undeclared_asset(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"$asset:wallpaper"', '"$asset:ghost"')
+        self._rejects(text, "asset 'ghost' is not declared in resources")
+
+    def test_crate_rejects_duplicate_resource_id(self):
+        text = self._text("desktop.nstudio").replace(
+            '"path": "assets/wallpaper.png" }',
+            '"path": "assets/wallpaper.png" }, { "id": "wallpaper", "kind": "icon", "path": "x.png" }')
+        self._rejects(text, "duplicate resource id 'wallpaper'")
+
+    def test_error_messages_match_floor_asset(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"$asset:wallpaper"', '"$asset:ghost"')
+        with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+            nstudio.loads(text)
+        with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+            nstudio_codec.validate(text)
+        first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+        self.assertEqual(str(crate_ctx.exception), first_floor_issue)
+
     def test_error_messages_match_floor_reusable(self):
         """Differential: the reusable-component gates report the same
         first failure as the floor."""
@@ -13860,6 +13963,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
     suite.addTests(loader.loadTestsFromTestCase(TestResponsiveLayout))
     suite.addTests(loader.loadTestsFromTestCase(TestLocalization))
+    suite.addTests(loader.loadTestsFromTestCase(TestResources))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

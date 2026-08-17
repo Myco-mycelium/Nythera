@@ -20,6 +20,11 @@
       "children": []
     }
   ],
+  "resources": {
+    "assets": [
+      { "id": "wallpaper", "kind": "image", "path": "assets/wallpaper.png" }
+    ]
+  },
   "locales": {
     "active": "en",
     "tables": {
@@ -145,7 +150,7 @@
           {
             "id": "desktop",
             "type": "DesktopSurface",
-            "properties": { "wallpaper": "NyrqisDefault", "accent": "Primary", "iconSize": 96 },
+            "properties": { "wallpaper": "$asset:wallpaper", "accent": "Primary", "iconSize": 96 },
             "layout": { "x": 0, "y": 0, "width": 1440, "height": 820 },
             "events": {},
             "children": [

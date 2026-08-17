@@ -178,6 +178,10 @@ class NstudioDocument:
     # {"en": {"settings.save": "Save"}, ...}}`` — ``$localize:key``
     # string references resolve through the active locale's table.
     locales: Dict[str, Any]
+    # Resources (NUI-SCHEMA §8.2): ``{"assets": [{id, kind, path,
+    # sha256?}]}`` — ``$asset:id`` string references (e.g. an Image's
+    # ``source``) name declared assets.
+    resources: Dict[str, Any]
     behaviors: List[NstudioBehavior]
     bindings: List[NstudioBinding]
     screens: List[NstudioScreen]
@@ -323,6 +327,7 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         themes=raw.get("themes") or {},
         states=raw.get("states") or {},
         locales=raw.get("locales") or {},
+        resources=raw.get("resources") or {},
         behaviors=[_parse_behavior(b) for b in raw.get("behaviors") or []],
         bindings=[_parse_binding(b) for b in raw.get("bindings") or []],
         reusable_components=[
@@ -400,6 +405,44 @@ def _parse_component(raw: Any) -> NstudioComponent:
 
 def _validate(doc: NstudioDocument) -> List[str]:
     issues: List[str] = []
+
+    # Resources section (NUI-SCHEMA §8.2): if present, it must be
+    # {"assets": [{id, kind, path, sha256?}]} with unique ids, an
+    # allowed kind, and a non-empty path.
+    resources = doc.resources or {}
+    if resources:
+        if not isinstance(resources, dict) or not isinstance(
+                resources.get("assets"), list):
+            issues.append(
+                "resources section must declare an 'assets' list")
+        else:
+            asset_ids: set = set()
+            for asset in resources["assets"]:
+                if not isinstance(asset, dict):
+                    issues.append("resource entries must be objects")
+                    continue
+                aid = asset.get("id")
+                if not isinstance(aid, str) or not aid:
+                    issues.append("resource entries must declare a string 'id'")
+                elif aid in asset_ids:
+                    issues.append(f"duplicate resource id '{aid}'")
+                asset_ids.add(aid)
+                kind = asset.get("kind")
+                if kind not in ASSET_KINDS:
+                    issues.append(
+                        f"resource '{aid}': kind '{kind}' not in "
+                        f"{sorted(ASSET_KINDS)}")
+                path = asset.get("path")
+                if not isinstance(path, str) or not path:
+                    issues.append(
+                        f"resource '{aid}': must declare a non-empty 'path'")
+                sha = asset.get("sha256")
+                if sha is not None and (
+                        not isinstance(sha, str) or len(sha) != 64
+                        or not all(c in "0123456789abcdef" for c in sha)):
+                    issues.append(
+                        f"resource '{aid}': 'sha256' must be a 64-char hex "
+                        f"string")
 
     # Localization section (NUI-SCHEMA §8.1): if present, it must be
     # {"active": str, "tables": {locale: {key: str}}} and the active
@@ -502,6 +545,9 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                 _check_localize_ref(
                     value, doc, issues,
                     f"component '{c.id}' override")
+                _check_asset_ref(
+                    value, doc, issues,
+                    f"component '{c.id}' override")
             for event, behavior_id in c.events.items():
                 if event not in events:
                     issues.append(
@@ -527,6 +573,8 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                     f"'{c.type}' contract")
         for value in c.properties.values():
             _check_localize_ref(
+                value, doc, issues, f"component '{c.id}' property")
+            _check_asset_ref(
                 value, doc, issues, f"component '{c.id}' property")
         for event, behavior_id in c.events.items():
             if event not in events:
@@ -663,6 +711,31 @@ def resolve_text(text: str, locales: Dict[str, Any]) -> str:
     for key, value in table.items():
         out = out.replace(f"$localize:{key}", value)
     return out
+
+
+ASSET_KINDS = ("image", "svg", "icon", "font", "audio", "video",
+               "material", "animation")
+
+
+def _check_asset_ref(value: Any, doc: NstudioDocument, issues: List[str],
+                     where: str) -> None:
+    """A ``$asset:id`` reference must name a declared resource in the
+    document's ``resources.assets`` (fail-closed, like every other
+    dangling reference)."""
+    if not isinstance(value, str) or "$asset:" not in value:
+        return
+    resources = doc.resources or {}
+    assets = resources.get("assets") if isinstance(resources, dict) else None
+    declared = {a.get("id") for a in assets} if isinstance(assets, list) else set()
+    if not declared:
+        issues.append(
+            f"{where}: '$asset:' reference requires a 'resources' "
+            f"section with an 'assets' list")
+        return
+    for key in re.findall(r"\$asset:([A-Za-z0-9_.-]+)", value):
+        if key not in declared:
+            issues.append(
+                f"{where}: asset '{key}' is not declared in resources")
 
 
 def _check_localize_ref(value: Any, doc: NstudioDocument, issues: List[str],

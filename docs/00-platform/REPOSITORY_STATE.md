@@ -311,8 +311,16 @@ Two things now, not one:
   overrides, and behavior arguments; refs must exist in the active
   locale's table, enforced fail-closed by both gates with byte-identical
   messages. `resolve_text()` resolves them. The shell fixture's search
-  label and DND message are localized (en/af). Suite 562 → **573**;
+  label and DND message are localized (en/af).  Suite 562 → **573**;
   Nyforge 127/127.
+
+  **2026-08-17 (0.14.33): resources — the managed asset catalog
+  (NUI-SCHEMA §8.2).** A document's `resources` section (unique ids,
+  allowed kinds, non-empty paths, optional 64-hex sha256) is validated
+  by both gates; `$asset:id` references in properties and overrides
+  must name a declared resource (fail-closed, byte-identical messages).
+  The shell fixture's wallpaper is a declared image asset referenced
+  via `$asset:wallpaper`. Suite 573 → **585**; Nyforge 135/135.
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

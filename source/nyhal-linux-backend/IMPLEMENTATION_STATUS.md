@@ -359,6 +359,16 @@ resolution; the gate rejects them up front). The `desktop.nstudio`
 search label and DND message are `$localize:` references (en/af
 verified). Suite 562 → **573**.
 
+**2026-08-17 (0.14.33): resources — the managed asset catalog
+(NUI-SCHEMA §8.2).** A document's `resources` section (`assets` list:
+unique ids, allowed kind image/svg/icon/font/audio/video/material/
+animation, non-empty path, optional 64-hex sha256) is validated by
+both gates; `$asset:id` references in component properties and
+reusable overrides must name a declared resource — fail-closed with
+byte-identical messages (differential). The `desktop.nstudio`
+wallpaper is a declared image asset referenced via `$asset:wallpaper`.
+Suite 573 → **585**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

@@ -16,6 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.33] — 2026-08-17
+
+### Resources — the managed asset catalog (NUI-SCHEMA §8.2)
+
+- **`resources` section.** A document may carry `{"assets": [{id,
+  kind, path, sha256?}]}`; ids are unique, `kind` must be one of
+  image/svg/icon/font/audio/video/material/animation, `path` is
+  non-empty, and `sha256` (optional) must be a 64-char hex string —
+  validated by both gates.
+- **`$asset:id` references** in component properties and reusable
+  overrides must name a declared resource — fail-closed at both import
+  gates with byte-identical messages (new differential tests).
+- **Shell fixture proves it:** `desktop.nstudio` declares a
+  `wallpaper` image asset and the DesktopSurface's `wallpaper`
+  property references it via `$asset:wallpaper`. Suite 573 → **585**
+  (new `TestResources`, 8 tests + 4 conformance).
+
 ## [0.14.32] — 2026-08-17
 
 ### Localization — `$localize:key` through the document's locales (NUI-SCHEMA §8.1)

@@ -253,6 +253,55 @@ fn validate_document(raw: &Value) -> Result<(), String> {
             }
         };
 
+    // Resources (NUI-SCHEMA §8.2): unique ids, an allowed kind, a
+    // non-empty path, and an optional 64-char hex sha256.
+    const ASSET_KINDS: [&str; 8] =
+        ["audio", "font", "icon", "image", "material", "svg", "video", "animation"];
+    let asset_ids: Vec<String> = match raw.get("resources").and_then(Value::as_object) {
+        None => Vec::new(),
+        Some(resources) => {
+            let assets = resources
+                .get("assets")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "resources section must declare an 'assets' list".to_string())?;
+            let mut ids: Vec<String> = Vec::new();
+            for asset in assets {
+                let aid = asset
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "resource entries must declare a string 'id'".to_string())?;
+                if ids.iter().any(|i| i == aid) {
+                    return Err(format!("duplicate resource id '{aid}'"));
+                }
+                ids.push(aid.to_string());
+                let kind = asset.get("kind").and_then(Value::as_str);
+                if let Some(kind) = kind {
+                    if !ASSET_KINDS.contains(&kind) {
+                        return Err(format!(
+                            "resource '{aid}': kind '{kind}' not in {ASSET_KINDS:?}"
+                        ));
+                    }
+                } else {
+                    return Err(format!("resource '{aid}': kind must be one of {ASSET_KINDS:?}"));
+                }
+                let path = asset.get("path").and_then(Value::as_str);
+                if path.is_none_or(|p| p.is_empty()) {
+                    return Err(format!("resource '{aid}': must declare a non-empty 'path'"));
+                }
+                if let Some(sha) = asset.get("sha256").and_then(Value::as_str) {
+                    let ok = sha.len() == 64
+                        && sha.chars().all(|c| c.is_ascii_hexdigit());
+                    if !ok {
+                        return Err(format!(
+                            "resource '{aid}': 'sha256' must be a 64-char hex string"
+                        ));
+                    }
+                }
+            }
+            ids
+        }
+    };
+
     // Pass 1: collect ids.
     let mut component_ids: Vec<String> = Vec::new();
     if let Some(screens) = raw.get("screens").and_then(Value::as_array) {
@@ -303,7 +352,8 @@ fn validate_document(raw: &Value) -> Result<(), String> {
                 return Err(format!("duplicate reusable component id '{id}'"));
             }
             master_ids.push(id.to_string());
-            validate_component(master, &behavior_ids, &master_ids, raw, locale_keys)?;
+            validate_component(master, &behavior_ids, &master_ids, raw, locale_keys,
+                               &asset_ids)?;
         }
     }
 
@@ -311,7 +361,8 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     if let Some(screens) = raw.get("screens").and_then(Value::as_array) {
         for screen in screens {
             if let Some(root) = screen.get("root") {
-                validate_component(root, &behavior_ids, &master_ids, raw, locale_keys)?;
+                validate_component(root, &behavior_ids, &master_ids, raw, locale_keys,
+                                   &asset_ids)?;
             }
         }
     }
@@ -339,6 +390,7 @@ fn validate_component(
     master_ids: &[String],
     raw: &Value,
     locale_keys: Option<(&str, &Map<String, Value>)>,
+    asset_ids: &[String],
 ) -> Result<(), String> {
     let id = node
         .get("id")
@@ -477,10 +529,63 @@ fn validate_component(
         }
     }
 
+    // Resources (NUI-SCHEMA §8.2): $asset: refs must name a declared
+    // resource (fail-closed, like the floor).
+    {
+        let container = if reference.is_some() {
+            node.get("overrides")
+        } else {
+            node.get("properties")
+        };
+        if let Some(props) = container.and_then(Value::as_object) {
+            let what = if reference.is_some() { "override" } else { "property" };
+            for value in props.values() {
+                check_asset_refs(
+                    value, asset_ids, &format!("component '{id}' {what}"))?;
+            }
+        }
+    }
+
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
-            validate_component(child, behavior_ids, master_ids, raw, locale_keys)?;
+            validate_component(child, behavior_ids, master_ids, raw, locale_keys,
+                               asset_ids)?;
         }
+    }
+    Ok(())
+}
+
+/// A ``$asset:id`` reference must name a declared resource (fail-closed
+/// at the import gate, mirroring the floor).
+fn check_asset_refs(
+    value: &Value,
+    asset_ids: &[String],
+    where_: &str,
+) -> Result<(), String> {
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    if !text.contains("$asset:") {
+        return Ok(());
+    }
+    if asset_ids.is_empty() {
+        return Err(format!(
+            "{where_}: '$asset:' reference requires a 'resources' section with an 'assets' list"
+        ));
+    }
+    let mut rest = text;
+    while let Some(pos) = rest.find("$asset:") {
+        let after = &rest[pos + "$asset:".len()..];
+        let key: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '-')
+            .collect();
+        if !key.is_empty() && !asset_ids.iter().any(|a| a == &key) {
+            return Err(format!(
+                "{where_}: asset '{key}' is not declared in resources"
+            ));
+        }
+        rest = after;
     }
     Ok(())
 }
