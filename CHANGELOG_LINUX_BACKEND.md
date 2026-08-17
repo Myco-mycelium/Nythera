@@ -16,6 +16,20 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.27] — 2026-08-17
+
+### The window system + power UI — second reference shell screen
+
+- **`windows.nstudio` joins the fixtures** — the window-system and
+  power-UI shell screens: WindowFrame + WindowControls drive
+  component-targeted actions (`Minimize`/`Maximize`/`Close` on the
+  frame), stacked windows (Vault behind Files) with a toolbar and lists,
+  and a PowerMenu with Sleep/Restart/Shutdown wired to system
+  notifications. 21 components, 8 behaviors, 1 binding across 2
+  screens.
+- Validated by floor + crate (differential) and opens in Nyforge itself
+  (serializer test). Suite 539 → **540**.
+
 ## [0.14.26] — 2026-08-17
 
 ### The real desktop shell screen — authored with the shell vocabulary

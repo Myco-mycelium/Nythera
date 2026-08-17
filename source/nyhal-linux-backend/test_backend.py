@@ -13131,7 +13131,7 @@ class TestNstudioImport(unittest.TestCase):
     def test_all_fixtures_load(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
                      "nyrqis-shell", "security-center", "vault-workspace",
-                     "desktop"):
+                     "desktop", "windows"):
             doc = self._load(name + ".nstudio")
             self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
             self.assertTrue(doc.screens)
@@ -13208,6 +13208,31 @@ class TestNstudioImport(unittest.TestCase):
         # The lock screen screen carries a LockScreen root child.
         lock_screen = doc.find_component("lock_screen")
         self.assertEqual(lock_screen.type, "LockScreen")
+
+    def test_windows_shell_fixture_shape(self):
+        """The window-system + power-UI shell screens (0.14.25 shell
+        vocabulary): WindowFrame/WindowControls drive component-targeted
+        actions; the PowerMenu carries a bound open state."""
+        doc = self._load("windows.nstudio")
+        self.assertEqual(len(doc.component_ids()), 21)
+        self.assertEqual(len(doc.behaviors), 8)
+        self.assertEqual(len(doc.bindings), 1)
+        self.assertEqual([s.id for s in doc.screens], ["windows", "power"])
+        # WindowControls wire to WindowFrame actions.
+        controls = doc.find_component("files_controls")
+        self.assertEqual(controls.type, "WindowControls")
+        target, name, _args = doc.resolve_action("behavior_files_maximize")
+        self.assertEqual(target, "app_files")
+        self.assertEqual(name, "Maximize")
+        target, name, _args = doc.resolve_action("behavior_vault_minimize")
+        self.assertEqual(target, "app_vault")
+        self.assertEqual(name, "Minimize")
+        # The power menu is a real PowerMenu with a bound open state.
+        power = doc.find_component("power_menu")
+        self.assertEqual(power.type, "PowerMenu")
+        binding = doc.bindings[0]
+        self.assertEqual(binding.component, "power_menu")
+        self.assertEqual(binding.state, "powerMenuOpen")
 
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13363,7 +13388,7 @@ class TestNstudioCodecConformance(unittest.TestCase):
     def test_crate_accepts_all_fixtures(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
                      "nyrqis-shell", "security-center", "vault-workspace",
-                     "desktop"):
+                     "desktop", "windows"):
             nstudio_codec.validate(self._text(name + ".nstudio"))
 
     def test_crate_version_gate(self):

@@ -266,6 +266,13 @@ Two things now, not one:
   by the floor, the Rust crate, and Nyforge's own serializer. Suite
   538 → **539**.
 
+  **2026-08-17 (0.14.27): the window system + power UI.**
+  `windows.nstudio` — WindowFrame/WindowControls driving
+  component-targeted actions (Minimize/Maximize/Close), stacked
+  windows, and a PowerMenu with Sleep/Restart/Shutdown — 21 components,
+  8 behaviors, 1 binding across 2 screens; accepted by the floor, the
+  crate, and Nyforge's serializer. Suite 539 → **540**.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

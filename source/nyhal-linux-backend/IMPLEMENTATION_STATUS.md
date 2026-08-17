@@ -292,6 +292,15 @@ conditional DND notification. Validated by floor + crate (differential)
 and opens in Nyforge itself (serializer test on the editor side). Suite
 538 → **539**.
 
+**2026-08-17 (0.14.27): the window system + power UI — second
+reference shell screen.** `windows.nstudio`: WindowFrame +
+WindowControls drive component-targeted actions (`Minimize`/
+`Maximize`/`Close` on the frame), stacked windows (Vault behind Files)
+with a toolbar and lists, and a PowerMenu with Sleep/Restart/Shutdown
+wired to system notifications — 21 components, 8 behaviors, 1 binding
+across 2 screens. Validated by floor + crate (differential) and opens
+in Nyforge itself. Suite 539 → **540**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

@@ -1,0 +1,298 @@
+{
+  "version": "0.4.0",
+  "project": {
+    "name": "Nyrqis Window System + Power UI",
+    "id": "example-nyrqis-windows-shell",
+    "created": "2026-08-17T00:00:00+00:00",
+    "updated": "2026-08-17T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "components": [],
+  "states": {
+    "powerMenuOpen": false,
+    "lastPowerAction": "none"
+  },
+  "behaviors": [
+    {
+      "id": "behavior_files_minimize",
+      "condition": null,
+      "action": {
+        "target": "app_files",
+        "name": "Minimize",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_files_maximize",
+      "condition": null,
+      "action": {
+        "target": "app_files",
+        "name": "Maximize",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_files_close",
+      "condition": null,
+      "action": {
+        "target": "app_files",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_vault_minimize",
+      "condition": null,
+      "action": {
+        "target": "app_vault",
+        "name": "Minimize",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_vault_close",
+      "condition": null,
+      "action": {
+        "target": "app_vault",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_power_sleep",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Power",
+          "message": "Sleep requested",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_power_restart",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Power",
+          "message": "Restart requested",
+          "severity": "warning"
+        }
+      }
+    },
+    {
+      "id": "behavior_power_shutdown",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Power",
+          "message": "Shutdown requested",
+          "severity": "warning"
+        }
+      }
+    }
+  ],
+  "bindings": [
+    { "component": "power_menu", "property": "open", "state": "powerMenuOpen" }
+  ],
+  "screens": [
+    {
+      "id": "windows",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_windows",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Window System", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "desktop",
+            "type": "DesktopSurface",
+            "properties": { "wallpaper": "NyrqisDefault", "accent": "Primary", "iconSize": 96 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "app_vault",
+            "type": "WindowFrame",
+            "properties": { "title": "Vault", "resizable": true, "movable": true, "minimized": false, "maximized": false },
+            "layout": { "x": 240, "y": 160, "width": 640, "height": 440 },
+            "events": {},
+            "children": [
+              {
+                "id": "vault_title",
+                "type": "Text",
+                "properties": { "text": "Vault" },
+                "layout": { "x": 24, "y": 20, "width": 300, "height": 32 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_controls",
+                "type": "WindowControls",
+                "properties": { "showMinimize": true, "showMaximize": false, "showClose": true },
+                "layout": { "x": 512, "y": 16, "width": 104, "height": 40 },
+                "events": {
+                  "minimizeClicked": "behavior_vault_minimize",
+                  "closeClicked": "behavior_vault_close"
+                },
+                "children": []
+              },
+              {
+                "id": "vault_bar",
+                "type": "ProgressBar",
+                "properties": { "value": 62, "min": 0, "max": 100 },
+                "layout": { "x": 24, "y": 80, "width": 592, "height": 8 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "vault_list",
+                "type": "List",
+                "properties": { "items": ["Volumes", "Snapshots", "Grants"], "selectedIndex": 0, "multiple": false },
+                "layout": { "x": 24, "y": 104, "width": 592, "height": 280 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "app_files",
+            "type": "WindowFrame",
+            "properties": { "title": "Files", "resizable": true, "movable": true, "minimized": false, "maximized": false },
+            "layout": { "x": 120, "y": 80, "width": 760, "height": 520 },
+            "events": {},
+            "children": [
+              {
+                "id": "files_title",
+                "type": "Text",
+                "properties": { "text": "Files" },
+                "layout": { "x": 24, "y": 20, "width": 300, "height": 32 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "files_controls",
+                "type": "WindowControls",
+                "properties": { "showMinimize": true, "showMaximize": true, "showClose": true },
+                "layout": { "x": 632, "y": 16, "width": 104, "height": 40 },
+                "events": {
+                  "minimizeClicked": "behavior_files_minimize",
+                  "maximizeClicked": "behavior_files_maximize",
+                  "closeClicked": "behavior_files_close"
+                },
+                "children": []
+              },
+              {
+                "id": "files_toolbar",
+                "type": "Toolbar",
+                "properties": { "background": "Surface" },
+                "layout": { "x": 0, "y": 56, "width": 760, "height": 40 },
+                "events": {},
+                "children": [
+                  {
+                    "id": "btn_new",
+                    "type": "Button",
+                    "properties": { "text": "New" },
+                    "layout": { "x": 16, "y": 6, "width": 88, "height": 28 },
+                    "events": {},
+                    "children": []
+                  },
+                  {
+                    "id": "btn_open",
+                    "type": "Button",
+                    "properties": { "text": "Open" },
+                    "layout": { "x": 112, "y": 6, "width": 88, "height": 28 },
+                    "events": {},
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "file_list",
+                "type": "List",
+                "properties": { "items": ["Documents", "Pictures", "Downloads", "Music"], "selectedIndex": -1, "multiple": false },
+                "layout": { "x": 24, "y": 112, "width": 712, "height": 360 },
+                "events": {},
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "power",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_power",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Power UI", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "desktop_power",
+            "type": "DesktopSurface",
+            "properties": { "wallpaper": "NyrqisDefault", "accent": "Primary", "iconSize": 96 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "power_menu",
+            "type": "PowerMenu",
+            "properties": { "open": true },
+            "layout": { "x": 540, "y": 300, "width": 360, "height": 300 },
+            "events": {},
+            "children": [
+              {
+                "id": "btn_lock",
+                "type": "Button",
+                "properties": { "text": "Lock" },
+                "layout": { "x": 40, "y": 32, "width": 280, "height": 40 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "btn_sleep",
+                "type": "Button",
+                "properties": { "text": "Sleep" },
+                "layout": { "x": 40, "y": 84, "width": 280, "height": 40 },
+                "events": { "clicked": "behavior_power_sleep" },
+                "children": []
+              },
+              {
+                "id": "btn_restart",
+                "type": "Button",
+                "properties": { "text": "Restart" },
+                "layout": { "x": 40, "y": 136, "width": 280, "height": 40 },
+                "events": { "clicked": "behavior_power_restart" },
+                "children": []
+              },
+              {
+                "id": "btn_shutdown",
+                "type": "Button",
+                "properties": { "text": "Shutdown" },
+                "layout": { "x": 40, "y": 188, "width": 280, "height": 40 },
+                "events": { "clicked": "behavior_power_shutdown" },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
