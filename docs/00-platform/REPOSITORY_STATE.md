@@ -322,6 +322,21 @@ Two things now, not one:
   The shell fixture's wallpaper is a declared image asset referenced
   via `$asset:wallpaper`. Suite 573 → **585**; Nyforge 135/135.
 
+  **2026-08-17 (0.14.34): the NUI expression language (NUI-SCHEMA
+  §7.2).** `ui/nexpr.py` is the deterministic expression language
+  (`state.name` refs, comparisons, `&&`/`||`/`!`, and
+  `if`/`min`/`max`/`contains`/`format`) with position-tagged syntax
+  errors. `$expr:` values (properties, overrides, action arguments) and
+  condition `expression` fields (superseding the legacy equality form)
+  are validated fail-closed by **both gates** with byte-identical
+  messages and evaluated at resolution time (`resolve_action` /
+  `resolve_condition`). `rust/nyui/src/nexpr.rs` is the byte-for-byte
+  Rust mirror (differential-tested; crate 9 → 13 unit tests). The shell
+  fixture's DND condition is `state.doNotDisturb == true` and its
+  notification title is `$expr:format(state.clockTime, "{0}")`; Nyforge
+  mirrors the gate as ER-NUI-021 before Preview (one semantics across
+  Nyforge / floor / crate). Suite 585 → **604**; Nyforge 163/163.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

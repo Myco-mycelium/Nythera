@@ -37,6 +37,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import nexpr
+
 # ---------------------------------------------------------------------------
 # Contract tables — from the Nyrqis API Registry (NFS-006 / ADR-0025)
 # ---------------------------------------------------------------------------
@@ -226,9 +228,9 @@ class NstudioDocument:
 
     def resolve_action(self, behavior_id: str) -> Tuple[str, str, Dict[str, Any]]:
         """Resolve a behavior to ``(target, name, arguments)`` with any
-        ``$state:key`` arguments substituted from the current document
-        state (NFS-001 §7.1: plain substitution, missing keys left as the
-        literal placeholder)."""
+        ``$state:key`` and ``$expr:`` arguments substituted from the
+        current document state (NFS-001 §7.1/§7.2: plain substitution,
+        missing keys left as the literal placeholder)."""
         behavior = self.behavior_by_id(behavior_id)
         if behavior is None:
             raise NstudioValidationError(
@@ -239,9 +241,35 @@ class NstudioDocument:
             if isinstance(value, str) and value.startswith("$state:"):
                 state_key = value[len("$state:"):]
                 args[key] = self.states.get(state_key, value)
+            elif isinstance(value, str) and value.startswith("$expr:"):
+                expression = value[len("$expr:"):]
+                args[key] = nexpr.eval_expr(nexpr.parse(expression), self.states)
             else:
                 args[key] = value
         return action.get("target", ""), action.get("name", ""), args
+
+    def resolve_condition(self, behavior_id: str) -> Optional[bool]:
+        """Evaluate a behavior's condition against the current document
+        state. Returns ``None`` when the behavior has no condition (its
+        action always runs). An ``expression`` condition is evaluated by
+        the expression language (NUI-SCHEMA §7.2); the legacy
+        ``state/operator/value`` equality form is evaluated here too."""
+        behavior = self.behavior_by_id(behavior_id)
+        if behavior is None:
+            raise NstudioValidationError(
+                f"behavior '{behavior_id}' does not exist")
+        condition = behavior.condition
+        if condition is None:
+            return None
+        expression = condition.get("expression")
+        if isinstance(expression, str):
+            return nexpr.eval_expr(nexpr.parse(expression), self.states)
+        state_key = condition.get("state")
+        operator = condition.get("operator")
+        actual = self.states.get(state_key)
+        expected = condition.get("value")
+        equal = actual == expected
+        return (not equal) if operator == "notEquals" else equal
 
     def render(self, screen_id: Optional[str] = None) -> List[Tuple[NstudioComponent, int]]:
         """Flatten the given screen's component tree into depth-ordered
@@ -548,6 +576,9 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                 _check_asset_ref(
                     value, doc, issues,
                     f"component '{c.id}' override")
+                _check_expr_ref(
+                    value, doc, issues,
+                    f"component '{c.id}' override")
             for event, behavior_id in c.events.items():
                 if event not in events:
                     issues.append(
@@ -575,6 +606,8 @@ def _validate_component(c: NstudioComponent, issues: List[str],
             _check_localize_ref(
                 value, doc, issues, f"component '{c.id}' property")
             _check_asset_ref(
+                value, doc, issues, f"component '{c.id}' property")
+            _check_expr_ref(
                 value, doc, issues, f"component '{c.id}' property")
         for event, behavior_id in c.events.items():
             if event not in events:
@@ -768,16 +801,38 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                        issues: List[str], component_ids: List[str]) -> None:
     condition = behavior.condition
     if condition is not None:
-        operator = condition.get("operator")
-        if operator not in ("equals", "notEquals"):
-            issues.append(
-                f"behavior '{behavior.id}': condition operator must be "
-                f"'equals' or 'notEquals'")
-        state_key = condition.get("state")
-        if state_key not in doc.states:
-            issues.append(
-                f"behavior '{behavior.id}': condition references unknown "
-                f"state '{state_key}'")
+        expression = condition.get("expression")
+        if expression is not None:
+            # Expression conditions (NUI-SCHEMA §7.2) supersede the
+            # legacy state/operator/value equality form.
+            if not isinstance(expression, str):
+                issues.append(
+                    f"behavior '{behavior.id}': condition expression must "
+                    f"be a string")
+            else:
+                try:
+                    node = nexpr.parse(expression)
+                except nexpr.ExprError as exc:
+                    issues.append(
+                        f"behavior '{behavior.id}' condition expression: "
+                        f"{exc}")
+                else:
+                    problem = nexpr.validate(node, set(doc.states))
+                    if problem is not None:
+                        issues.append(
+                            f"behavior '{behavior.id}' condition "
+                            f"expression: {problem}")
+        else:
+            operator = condition.get("operator")
+            if operator not in ("equals", "notEquals"):
+                issues.append(
+                    f"behavior '{behavior.id}': condition operator must be "
+                    f"'equals' or 'notEquals'")
+            state_key = condition.get("state")
+            if state_key not in doc.states:
+                issues.append(
+                    f"behavior '{behavior.id}': condition references "
+                    f"unknown state '{state_key}'")
 
     target = behavior.action.get("target")
     name = behavior.action.get("name")
@@ -808,6 +863,31 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
     for value in (behavior.action.get("arguments") or {}).values():
         _check_localize_ref(
             value, doc, issues, f"behavior '{behavior.id}' argument")
+        _check_expr_ref(
+            value, doc, issues, f"behavior '{behavior.id}' argument")
+
+
+def _check_expr_ref(value: Any, doc: NstudioDocument, issues: List[str],
+                    where: str) -> None:
+    """An expression-valued reference (NUI-SCHEMA §7.2) must parse, use
+    only known functions with correct arity, and reference only states
+    that exist in the document (fail-closed at the import gate).
+    Expressions appear as whole-string ``$expr:...`` values (in action
+    arguments, properties, and overrides) and as a condition's
+    ``expression`` field."""
+    # Only whole-string ``$expr:`` values are expressions; the rest are
+    # ordinary values (literals, ``$state:``/``$localize:`` refs, ...).
+    if not isinstance(value, str) or not value.startswith("$expr:"):
+        return
+    expression = value[len("$expr:"):]
+    try:
+        node = nexpr.parse(expression)
+    except nexpr.ExprError as exc:
+        issues.append(f"{where}: {exc}")
+        return
+    problem = nexpr.validate(node, set(doc.states))
+    if problem is not None:
+        issues.append(f"{where}: {problem}")
 
 
 def _validate_binding(binding: NstudioBinding, doc: NstudioDocument,
@@ -833,5 +913,5 @@ __all__ = [
     "COMPONENT_CONTRACTS", "SYSTEM_ACTIONS",
     "NstudioError", "NstudioVersionError", "NstudioValidationError",
     "NstudioComponent", "NstudioScreen", "NstudioBehavior", "NstudioBinding",
-    "NstudioDocument", "loads", "load", "resolve_text",
+    "NstudioDocument", "loads", "load", "resolve_text", "nexpr",
 ]

@@ -113,15 +113,13 @@
     {
       "id": "behavior_dnd_on",
       "condition": {
-        "state": "doNotDisturb",
-        "operator": "equals",
-        "value": true
+        "expression": "state.doNotDisturb == true"
       },
       "action": {
         "target": "System",
         "name": "Nyrqis.Notification.Show",
         "arguments": {
-          "title": "Do not disturb enabled",
+          "title": "$expr:format(state.clockTime, \"{0}\")",
           "message": "$localize:notif.dnd",
           "severity": "info"
         }

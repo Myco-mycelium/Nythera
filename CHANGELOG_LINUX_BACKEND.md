@@ -16,6 +16,32 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.34] — 2026-08-17
+
+### The NUI expression language (NUI-SCHEMA §7.2)
+
+- **`ui/nexpr.py`** — the deterministic NUI expression language: a
+  recursive-descent parser for `state.name` references, comparisons,
+  `&&`/`||`/`!`, and the `if`/`min`/`max`/`contains`/`format` functions,
+  with position-tagged syntax errors (byte offsets, so messages are
+  stable across implementations).
+- **`$expr:` values** in component properties, reusable overrides, and
+  action arguments — and condition `expression` fields (which supersede
+  the legacy `state`/`operator`/`value` equality form) — are validated
+  fail-closed at **both import gates** and evaluated against document
+  state at resolution time (`resolve_action` / `resolve_condition`).
+- **Rust mirror** — `rust/nyui/src/nexpr.rs` is a byte-for-byte
+  behavioral mirror of the floor's parser (same grammar, same error
+  messages); the conformance gate differential-tests the two and reports
+  the same first failure. The crate now enforces expressions in
+  conditions, arguments, properties, and overrides.
+- **Proven with the shell:** `desktop.nstudio`'s DND condition is now
+  `state.doNotDisturb == true` and its notification title is
+  `$expr:format(state.clockTime, "{0}")` (resolves to the clock time).
+  NyForge mirrors the gate as `ER-NUI-021` (before Preview).
+- New `TestExpressions` (13) + 5 differential conformance cases. Suite
+  585 → **604**; crate 9 → 13 unit tests.
+
 ## [0.14.33] — 2026-08-17
 
 ### Resources — the managed asset catalog (NUI-SCHEMA §8.2)

@@ -28,6 +28,7 @@
 //!   negative = failure, one of the status codes below.
 //! - `nyrqis_nyui_last_error(buf, cap) -> i32` — copies the last error
 //!   message into a caller buffer (best-effort, for diagnostics).
+
 //!
 //! Status codes (all negative, outside the errno range 1..=4095, so the
 //! loader's mapping can never collide with a real syscall error):
@@ -40,6 +41,8 @@
 //! | `-3`    | unsupported schema version         |
 //! | `-4`    | validation failed (see last error) |
 //! | `-4096` | internal error                     |
+
+mod nexpr;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -353,7 +356,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
             }
             master_ids.push(id.to_string());
             validate_component(master, &behavior_ids, &master_ids, raw, locale_keys,
-                               &asset_ids)?;
+                               &asset_ids, states)?;
         }
     }
 
@@ -362,7 +365,7 @@ fn validate_document(raw: &Value) -> Result<(), String> {
         for screen in screens {
             if let Some(root) = screen.get("root") {
                 validate_component(root, &behavior_ids, &master_ids, raw, locale_keys,
-                                   &asset_ids)?;
+                                   &asset_ids, states)?;
             }
         }
     }
@@ -391,6 +394,7 @@ fn validate_component(
     raw: &Value,
     locale_keys: Option<(&str, &Map<String, Value>)>,
     asset_ids: &[String],
+    states: Option<&Map<String, Value>>,
 ) -> Result<(), String> {
     let id = node
         .get("id")
@@ -546,10 +550,28 @@ fn validate_component(
         }
     }
 
+    // Expressions (NUI-SCHEMA §7.2): whole-string `$expr:` values in
+    // properties (instances: overrides) must parse, use only known
+    // functions with correct arity, and reference only declared states.
+    {
+        let container = if reference.is_some() {
+            node.get("overrides")
+        } else {
+            node.get("properties")
+        };
+        if let Some(props) = container.and_then(Value::as_object) {
+            let what = if reference.is_some() { "override" } else { "property" };
+            for value in props.values() {
+                nexpr::check_expr_refs(
+                    value, states, &format!("component '{id}' {what}"))?;
+            }
+        }
+    }
+
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
             validate_component(child, behavior_ids, master_ids, raw, locale_keys,
-                               asset_ids)?;
+                               asset_ids, states)?;
         }
     }
     Ok(())
@@ -647,23 +669,35 @@ fn validate_behavior(
 
     if let Some(condition) = behavior.get("condition") {
         if !condition.is_null() {
-            let state_key = condition
-                .get("state")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("behavior '{id}': condition must declare a 'state'"))?;
-            if !states.map(|s| s.contains_key(state_key)).unwrap_or(false) {
-                return Err(format!(
-                    "behavior '{id}': condition references unknown state '{state_key}'"
-                ));
-            }
-            let operator = condition
-                .get("operator")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("behavior '{id}': condition must declare an 'operator'"))?;
-            if operator != "equals" && operator != "notEquals" {
-                return Err(format!(
-                    "behavior '{id}': condition operator must be 'equals' or 'notEquals'"
-                ));
+            // Expression conditions (NUI-SCHEMA §7.2) supersede the
+            // legacy state/operator/value equality form.
+            if let Some(expression) = condition.get("expression") {
+                let expr_text = expression
+                    .as_str()
+                    .ok_or_else(|| format!(
+                        "behavior '{id}': condition expression must be a string"))?;
+                nexpr::validate_expr(expr_text, states).map_err(|err| {
+                    format!("behavior '{id}' condition expression: {err}")
+                })?;
+            } else {
+                let state_key = condition
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("behavior '{id}': condition must declare a 'state'"))?;
+                if !states.map(|s| s.contains_key(state_key)).unwrap_or(false) {
+                    return Err(format!(
+                        "behavior '{id}': condition references unknown state '{state_key}'"
+                    ));
+                }
+                let operator = condition
+                    .get("operator")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("behavior '{id}': condition must declare an 'operator'"))?;
+                if operator != "equals" && operator != "notEquals" {
+                    return Err(format!(
+                        "behavior '{id}': condition operator must be 'equals' or 'notEquals'"
+                    ));
+                }
             }
         }
     }
@@ -721,6 +755,14 @@ fn validate_behavior(
                     value, active, table,
                     &format!("behavior '{id}' argument"))?;
             }
+        }
+    }
+
+    // Expressions (NUI-SCHEMA §7.2): $expr: values in action arguments.
+    if let Some(args) = action.get("arguments").and_then(Value::as_object) {
+        for value in args.values() {
+            nexpr::check_expr_refs(
+                value, states, &format!("behavior '{id}' argument"))?;
         }
     }
     Ok(())

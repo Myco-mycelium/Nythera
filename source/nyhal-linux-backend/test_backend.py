@@ -13666,6 +13666,115 @@ class TestResources(unittest.TestCase):
         self.assertIn("64-char hex", str(ctx.exception))
 
 
+class TestExpressions(unittest.TestCase):
+    """The NUI expression language (NUI-SCHEMA §7.2, ui/nexpr.py):
+    ``$expr:`` values in properties/overrides and action arguments, and
+    condition ``expression`` fields — parsed, validated fail-closed at
+    the import gate, and evaluated against document state."""
+
+    def _doc(self, condition=None, args=None, props=None, extra_states=None):
+        states = {"volume": 60, "clockTime": "14:32", "dnd": False}
+        if extra_states:
+            states.update(extra_states)
+        return nstudio.loads(json.dumps({
+            "version": "0.4.0",
+            "project": {"name": "t", "id": "t"},
+            "themes": {"active": "Eclipse"},
+            "states": states,
+            "behaviors": [{"id": "b1", "condition": condition,
+                "action": {"target": "System",
+                            "name": "Nyrqis.Notification.Show",
+                            "arguments": args or {"message": "x",
+                                                   "severity": "info"}}}],
+            "bindings": [],
+            "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "r", "type": "Button",
+                    "properties": props or {"text": "hi"},
+                    "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                    "events": {}, "children": []}}],
+        }))
+
+    # ---- evaluation --------------------------------------------------------
+
+    def test_condition_expression_evaluates(self):
+        doc = self._doc({"expression": "state.volume > 50 && !state.dnd"})
+        self.assertTrue(doc.resolve_condition("b1"))
+        doc2 = self._doc({"expression": "state.volume < 10"})
+        self.assertFalse(doc2.resolve_condition("b1"))
+
+    def test_legacy_condition_still_works(self):
+        doc = self._doc({"state": "dnd", "operator": "equals", "value": False})
+        self.assertTrue(doc.resolve_condition("b1"))
+
+    def test_no_condition_returns_none(self):
+        self.assertIsNone(self._doc(None).resolve_condition("b1"))
+
+    def test_expr_argument_evaluates(self):
+        doc = self._doc(None, {"title": "$expr:format(state.clockTime, \"{0}\")",
+                               "message": "x", "severity": "info"})
+        _t, _n, args = doc.resolve_action("b1")
+        self.assertEqual(args["title"], "14:32")
+
+    def test_expr_argument_with_if(self):
+        doc = self._doc(None, {"title": "$expr:if(state.volume > 50, \"loud\", \"quiet\")",
+                               "message": "x", "severity": "info"})
+        _t, _n, args = doc.resolve_action("b1")
+        self.assertEqual(args["title"], "loud")
+
+    # ---- validation --------------------------------------------------------
+
+    def test_unknown_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"expression": "state.ghost > 1"})
+        self.assertIn("unknown state 'state.ghost'", str(ctx.exception))
+
+    def test_syntax_error_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"expression": "state.volume >"})
+        self.assertIn("syntax error at 14", str(ctx.exception))
+
+    def test_unknown_function_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"expression": "bogus(state.volume)"})
+        self.assertIn("unknown function 'bogus'", str(ctx.exception))
+
+    def test_wrong_arity_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc({"expression": "if(state.volume > 1)"})
+        self.assertIn("function 'if' expects 3 argument(s), got 1",
+                      str(ctx.exception))
+
+    def test_expr_argument_unknown_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(None, {"message": "$expr:state.ghost", "severity": "info"})
+        self.assertIn("argument: expr: unknown state 'state.ghost'",
+                      str(ctx.exception))
+
+    def test_expr_property_unknown_state_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc(None, None, {"text": "$expr:state.ghost > 1"})
+        self.assertIn("property: expr: unknown state 'state.ghost'",
+                      str(ctx.exception))
+
+    def test_plain_strings_are_not_expressions(self):
+        doc = self._doc(None, {"message": "just text", "severity": "info"},
+                        {"text": "state.volume > 50"})
+        self.assertEqual(doc.screens[0].root.properties["text"],
+                         "state.volume > 50")
+
+    # ---- fixture -----------------------------------------------------------
+
+    def test_desktop_fixture_expression_condition_and_argument(self):
+        doc = nstudio.loads(open(
+            "tests/fixtures/nstudio/desktop.nstudio").read())
+        b = doc.behavior_by_id("behavior_dnd_on")
+        self.assertEqual(b.condition["expression"],
+                         "state.doNotDisturb == true")
+        self.assertFalse(doc.resolve_condition("behavior_dnd_on"))
+        _t, _n, args = doc.resolve_action("behavior_dnd_on")
+        self.assertEqual(args["title"], "14:32")  # format(state.clockTime, "{0}")
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -13873,6 +13982,63 @@ class TestNstudioCodecConformance(unittest.TestCase):
             self.assertEqual(str(crate_ctx.exception), first_floor_issue,
                              f"message drift for {expected}")
 
+    def test_crate_accepts_expression_desktop(self):
+        nstudio_codec.validate(self._text("desktop.nstudio"))
+        nstudio.loads(self._text("desktop.nstudio"))
+
+    def test_crate_rejects_expression_unknown_state(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"expression": "state.doNotDisturb == true"',
+            '"expression": "state.ghost == true"')
+        self._rejects(text, "unknown state 'state.ghost'")
+
+    def test_crate_rejects_expression_syntax(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"expression": "state.doNotDisturb == true"',
+            '"expression": "state.doNotDisturb >"')
+        self._rejects(text, "syntax error at 20")
+
+    def test_crate_rejects_expression_unknown_function(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"expression": "state.doNotDisturb == true"',
+            '"expression": "bogus(state.doNotDisturb)"')
+        self._rejects(text, "unknown function 'bogus'")
+
+    def test_crate_rejects_expression_bad_arity(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"expression": "state.doNotDisturb == true"',
+            '"expression": "if(state.doNotDisturb)"')
+        self._rejects(text, "function 'if' expects 3 argument(s), got 1")
+
+    def test_error_messages_match_floor_expression(self):
+        """Differential: the expression gates report the same first
+        failure as the floor (syntax, unknown state, unknown function,
+        arity — byte offsets included)."""
+        cases = [
+            ('"expression": "state.doNotDisturb == true"',
+             '"expression": "state.ghost == true"',
+             "unknown state 'state.ghost'"),
+            ('"expression": "state.doNotDisturb == true"',
+             '"expression": "state.doNotDisturb >"',
+             "syntax error at 20"),
+            ('"expression": "state.doNotDisturb == true"',
+             '"expression": "bogus(state.doNotDisturb)"',
+             "unknown function 'bogus'"),
+        ]
+        for old, new, expected in cases:
+            text = self._mutate(self._text("desktop.nstudio"), old, new)
+            with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+                nstudio.loads(text)
+            with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+                nstudio_codec.validate(text)
+            first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+            self.assertEqual(str(crate_ctx.exception), first_floor_issue,
+                             f"message drift for {expected}")
+
     def test_crate_rejects_malformed_json(self):
         self._rejects("{not json", "malformed JSON")
 
@@ -13964,6 +14130,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResponsiveLayout))
     suite.addTests(loader.loadTestsFromTestCase(TestLocalization))
     suite.addTests(loader.loadTestsFromTestCase(TestResources))
+    suite.addTests(loader.loadTestsFromTestCase(TestExpressions))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)
