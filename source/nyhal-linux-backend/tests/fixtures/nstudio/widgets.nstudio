@@ -1,0 +1,251 @@
+{
+  "version": "0.4.0",
+  "project": {
+    "name": "Nyrqis Widgets + OSD + Login",
+    "id": "example-nyrqis-widgets-shell",
+    "created": "2026-08-17T00:00:00+00:00",
+    "updated": "2026-08-17T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "components": [],
+  "states": {
+    "osdOpen": false,
+    "loginOpen": true,
+    "volume": 40
+  },
+  "behaviors": [
+    {
+      "id": "behavior_osd_volume",
+      "condition": null,
+      "action": {
+        "target": "osd_volume",
+        "name": "Open",
+        "arguments": {
+          "message": "$state:volume"
+        }
+      }
+    },
+    {
+      "id": "behavior_osd_dismiss",
+      "condition": null,
+      "action": {
+        "target": "osd_volume",
+        "name": "Dismiss",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_login_submit",
+      "condition": null,
+      "action": {
+        "target": "login_screen",
+        "name": "Submit",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_login_cancel",
+      "condition": null,
+      "action": {
+        "target": "login_screen",
+        "name": "Cancel",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_widget_add",
+      "condition": null,
+      "action": {
+        "target": "widget_host",
+        "name": "AddWidget",
+        "arguments": {
+          "widget": "Weather"
+        }
+      }
+    }
+  ],
+  "bindings": [
+    { "component": "osd_volume", "property": "open", "state": "osdOpen" },
+    { "component": "login_screen", "property": "open", "state": "loginOpen" }
+  ],
+  "screens": [
+    {
+      "id": "widgets",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_widgets",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Widgets", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "desktop",
+            "type": "DesktopSurface",
+            "properties": { "wallpaper": "NyrqisDefault", "accent": "Primary", "iconSize": 96 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "widget_host",
+            "type": "WidgetHost",
+            "properties": { "widgets": ["Clock", "Calendar", "System Monitor"], "layout": "grid", "visible": true },
+            "layout": { "x": 24, "y": 24, "width": 1392, "height": 852 },
+            "events": { "widgetClicked": "behavior_widget_add" },
+            "children": [
+              {
+                "id": "widget_clock",
+                "type": "Card",
+                "properties": { "elevation": 1, "padding": 16 },
+                "layout": { "x": 16, "y": 16, "width": 320, "height": 200 },
+                "events": {},
+                "children": [
+                  {
+                    "id": "clock_time",
+                    "type": "Text",
+                    "properties": { "text": "14:32" },
+                    "layout": { "x": 16, "y": 16, "width": 288, "height": 64 },
+                    "events": {},
+                    "children": []
+                  },
+                  {
+                    "id": "clock_date",
+                    "type": "Text",
+                    "properties": { "text": "Mon 17 Aug" },
+                    "layout": { "x": 16, "y": 88, "width": 288, "height": 32 },
+                    "events": {},
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "widget_monitor",
+                "type": "Card",
+                "properties": { "elevation": 1, "padding": 16 },
+                "layout": { "x": 352, "y": 16, "width": 320, "height": 200 },
+                "events": {},
+                "children": [
+                  {
+                    "id": "monitor_label",
+                    "type": "Text",
+                    "properties": { "text": "System Monitor" },
+                    "layout": { "x": 16, "y": 16, "width": 288, "height": 32 },
+                    "events": {},
+                    "children": []
+                  },
+                  {
+                    "id": "monitor_cpu",
+                    "type": "ProgressBar",
+                    "properties": { "value": 34, "min": 0, "max": 100 },
+                    "layout": { "x": 16, "y": 64, "width": 288, "height": 8 },
+                    "events": {},
+                    "children": []
+                  },
+                  {
+                    "id": "monitor_mem",
+                    "type": "ProgressBar",
+                    "properties": { "value": 62, "min": 0, "max": 100 },
+                    "layout": { "x": 16, "y": 88, "width": 288, "height": 8 },
+                    "events": {},
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "osd",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_osd",
+        "type": "Window",
+        "properties": { "title": "Nyrqis OSD", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "desktop_osd",
+            "type": "DesktopSurface",
+            "properties": { "wallpaper": "NyrqisDefault", "accent": "Primary", "iconSize": 96 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+            "events": {},
+            "children": []
+          },
+          {
+            "id": "osd_volume",
+            "type": "OSD",
+            "properties": { "open": false, "message": "Volume 40%", "timeout": 2, "icon": "Volume" },
+            "layout": { "x": 520, "y": 700, "width": 400, "height": 96 },
+            "events": { "opened": "behavior_osd_dismiss" },
+            "children": [
+              {
+                "id": "osd_slider",
+                "type": "Slider",
+                "properties": { "value": 40, "min": 0, "max": 100 },
+                "layout": { "x": 16, "y": 24, "width": 368, "height": 24 },
+                "events": {},
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "login",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_login",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Login", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "login_screen",
+            "type": "Login",
+            "properties": { "open": true, "username": "zeus", "avatar": "User", "hint": "Sign in to continue" },
+            "layout": { "x": 440, "y": 240, "width": 560, "height": 420 },
+            "events": {
+              "submitted": "behavior_login_submit",
+              "canceled": "behavior_login_cancel"
+            },
+            "children": [
+              {
+                "id": "login_username",
+                "type": "Input",
+                "properties": { "value": "zeus", "placeholder": "Username" },
+                "layout": { "x": 64, "y": 120, "width": 432, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "login_password",
+                "type": "PasswordField",
+                "properties": { "value": "", "placeholder": "Password" },
+                "layout": { "x": 64, "y": 184, "width": 432, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "btn_login",
+                "type": "Button",
+                "properties": { "text": "Sign in" },
+                "layout": { "x": 64, "y": 256, "width": 432, "height": 48 },
+                "events": { "clicked": "behavior_login_submit" },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

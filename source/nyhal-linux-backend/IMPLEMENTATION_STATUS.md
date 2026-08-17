@@ -301,6 +301,15 @@ wired to system notifications — 21 components, 8 behaviors, 1 binding
 across 2 screens. Validated by floor + crate (differential) and opens
 in Nyforge itself. Suite 539 → **540**.
 
+**2026-08-17 (0.14.28): widgets + OSD + login — third reference shell
+screen; registry 63 → 66.** `WidgetHost`, `OSD`, and `Login` join the
+registry (66 components) for the remaining Phase F pieces; all three
+consumers regenerated. `widgets.nstudio`: WidgetHost holding Clock +
+System Monitor cards, a volume OSD with `$state:`-substituted message,
+and a Login with username/password inputs — 19 components, 5 behaviors,
+2 bindings across 3 screens. Validated by floor + crate (differential)
+and opens in Nyforge itself. Suite 540 → **541**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

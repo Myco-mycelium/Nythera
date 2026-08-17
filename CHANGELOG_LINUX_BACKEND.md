@@ -16,6 +16,24 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.28] — 2026-08-17
+
+### Widgets + OSD + login — third reference shell screen; registry 63 → 66
+
+- **`WidgetHost`, `OSD`, `Login` join the registry** — three more Shell
+  components (66 total) for the remaining Phase F pieces, each with a
+  real semantic contract (`AddWidget`/`RemoveWidget` on WidgetHost,
+  `Open`/`Close`/`Dismiss` on OSD, `Submit`/`Cancel` on Login). All
+  three consumers regenerated: floor at import, crate at compile, Nyforge
+  C# from the vendored copy.
+- **`widgets.nstudio` joins the fixtures** — the widgets screen
+  (WidgetHost holding Clock + System Monitor cards), the OSD screen
+  (volume OSD with a `$state:`-substituted message + slider), and the
+  login screen (Login with username/password inputs and submit/cancel
+  wiring). 19 components, 5 behaviors, 2 bindings across 3 screens.
+- Validated by floor + crate (differential) and opens in Nyforge itself.
+  Suite 540 → **541**.
+
 ## [0.14.27] — 2026-08-17
 
 ### The window system + power UI — second reference shell screen

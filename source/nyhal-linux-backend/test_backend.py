@@ -13131,7 +13131,7 @@ class TestNstudioImport(unittest.TestCase):
     def test_all_fixtures_load(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
                      "nyrqis-shell", "security-center", "vault-workspace",
-                     "desktop", "windows"):
+                     "desktop", "windows", "widgets"):
             doc = self._load(name + ".nstudio")
             self.assertEqual(doc.version, nstudio.NSTUDIO_SCHEMA_VERSION)
             self.assertTrue(doc.screens)
@@ -13233,6 +13233,29 @@ class TestNstudioImport(unittest.TestCase):
         binding = doc.bindings[0]
         self.assertEqual(binding.component, "power_menu")
         self.assertEqual(binding.state, "powerMenuOpen")
+
+    def test_widgets_shell_fixture_shape(self):
+        """The widgets + OSD + login shell screens (0.14.25 shell
+        vocabulary): WidgetHost/OSD/Login carry real actions, and the OSD
+        message resolves $state: substitution at action time."""
+        doc = self._load("widgets.nstudio")
+        self.assertEqual(len(doc.component_ids()), 19)
+        self.assertEqual(len(doc.behaviors), 5)
+        self.assertEqual(len(doc.bindings), 2)
+        self.assertEqual([s.id for s in doc.screens], ["widgets", "osd", "login"])
+        host = doc.find_component("widget_host")
+        self.assertEqual(host.type, "WidgetHost")
+        target, name, args = doc.resolve_action("behavior_widget_add")
+        self.assertEqual(target, "widget_host")
+        self.assertEqual(name, "AddWidget")
+        self.assertEqual(args["widget"], "Weather")
+        # The OSD's message is a $state: substitution of the volume.
+        target, name, args = doc.resolve_action("behavior_osd_volume")
+        self.assertEqual(target, "osd_volume")
+        self.assertEqual(name, "Open")
+        self.assertEqual(args["message"], 40)
+        login = doc.find_component("login_screen")
+        self.assertEqual(login.type, "Login")
 
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
@@ -13388,7 +13411,7 @@ class TestNstudioCodecConformance(unittest.TestCase):
     def test_crate_accepts_all_fixtures(self):
         for name in ("forge-home", "settings-app", "vault-dashboard",
                      "nyrqis-shell", "security-center", "vault-workspace",
-                     "desktop", "windows"):
+                     "desktop", "windows", "widgets"):
             nstudio_codec.validate(self._text(name + ".nstudio"))
 
     def test_crate_version_gate(self):
