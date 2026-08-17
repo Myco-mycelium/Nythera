@@ -139,6 +139,11 @@ class NstudioComponent:
     layout: Dict[str, int] = field(default_factory=dict)
     events: Dict[str, Optional[str]] = field(default_factory=dict)
     children: List["NstudioComponent"] = field(default_factory=list)
+    # Reusable-component instance (NFS-006 §9): when component_ref is
+    # set, this node references a master in the document's components[]
+    # section; overrides apply on top of the master's properties.
+    component_ref: Optional[str] = None
+    overrides: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -171,6 +176,7 @@ class NstudioDocument:
     behaviors: List[NstudioBehavior]
     bindings: List[NstudioBinding]
     screens: List[NstudioScreen]
+    reusable_components: List[NstudioComponent] = field(default_factory=list)
 
     # ---- helpers ----------------------------------------------------------
 
@@ -310,6 +316,8 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         states=raw.get("states") or {},
         behaviors=[_parse_behavior(b) for b in raw.get("behaviors") or []],
         bindings=[_parse_binding(b) for b in raw.get("bindings") or []],
+        reusable_components=[
+            _parse_component(c) for c in raw.get("components") or []],
         screens=[_parse_screen(s) for s in raw.get("screens") or []],
     )
 
@@ -361,13 +369,19 @@ def _parse_screen(raw: Any) -> NstudioScreen:
 def _parse_component(raw: Any) -> NstudioComponent:
     if not isinstance(raw, dict):
         raise NstudioValidationError("component nodes must be objects")
+    component_ref = raw.get("componentRef")
     return NstudioComponent(
         id=str(raw.get("id", "")),
+        # A reusable-component instance (NFS-006 §9) omits 'type' — its
+        # contract is the referenced master's, resolved during
+        # validation (a node declaring both is rejected).
         type=str(raw.get("type", "")),
         properties=raw.get("properties") or {},
         layout=raw.get("layout") or {},
         events=raw.get("events") or {},
         children=[_parse_component(c) for c in raw.get("children") or []],
+        component_ref=str(component_ref) if component_ref else None,
+        overrides=raw.get("overrides") or {},
     )
 
 
@@ -387,8 +401,21 @@ def _validate(doc: NstudioDocument) -> List[str]:
             issues.append(f"duplicate component id '{cid}'")
         seen.add(cid)
 
+    # Reusable-component masters (NFS-006 §9): validate the master tree
+    # like any component (its properties/events must fit its contract),
+    # and its id must be unique among all component ids.
+    master_ids: set = set()
+    for master in doc.reusable_components:
+        if not master.id:
+            issues.append("reusable component with empty id")
+            continue
+        if master.id in master_ids or master.id in seen:
+            issues.append(f"duplicate reusable component id '{master.id}'")
+        master_ids.add(master.id)
+        _validate_component(master, issues, doc, component_ids)
+
     for screen in doc.screens:
-        _validate_component(screen.root, issues, doc, component_ids)
+        _validate_component(screen.root, issues, doc, component_ids, master_ids)
 
     behavior_ids: set = set()
     for behavior in doc.behaviors:
@@ -407,7 +434,51 @@ def _validate(doc: NstudioDocument) -> List[str]:
 
 
 def _validate_component(c: NstudioComponent, issues: List[str],
-                        doc: NstudioDocument, component_ids: List[str]) -> None:
+                        doc: NstudioDocument, component_ids: List[str],
+                        master_ids: Optional[set] = None) -> None:
+    master_ids = master_ids or set()
+    # Reusable-component instance (NFS-006 §9): the ref must name a
+    # master in components[], and its contract is the master's type —
+    # overrides are the only properties an instance may carry.
+    if c.component_ref is not None:
+        if c.type:
+            issues.append(
+                f"component '{c.id}': reusable instance must not "
+                f"declare its own type")
+        if c.component_ref not in master_ids:
+            issues.append(
+                f"component '{c.id}': componentRef '{c.component_ref}' "
+                f"does not name a reusable component")
+            return
+        master = next(
+            (m for m in doc.reusable_components
+             if m.id == c.component_ref), None)
+        if master is not None:
+            contract = COMPONENT_CONTRACTS.get(master.type)
+            if contract is None:
+                issues.append(
+                    f"component '{c.id}': componentRef '{c.component_ref}' "
+                    f"has unknown type '{master.type}'")
+                return
+            _category, properties, events, _actions = contract
+            for key in c.overrides:
+                if key not in properties:
+                    issues.append(
+                        f"component '{c.id}': override '{key}' not in "
+                        f"the '{master.type}' contract")
+            for event, behavior_id in c.events.items():
+                if event not in events:
+                    issues.append(
+                        f"component '{c.id}': event '{event}' not in "
+                        f"the '{master.type}' contract")
+                elif behavior_id is not None and \
+                        behavior_id not in {b.id for b in doc.behaviors}:
+                    issues.append(
+                        f"component '{c.id}': event '{event}' references "
+                        f"unknown behavior '{behavior_id}'")
+        _check_layout(c, issues)
+        return
+
     contract = COMPONENT_CONTRACTS.get(c.type)
     if contract is None:
         issues.append(f"component '{c.id}': unknown type '{c.type}'")
@@ -429,15 +500,19 @@ def _validate_component(c: NstudioComponent, issues: List[str],
                     f"component '{c.id}': event '{event}' references "
                     f"unknown behavior '{behavior_id}'")
 
+    _check_layout(c, issues)
+
+    for child in c.children:
+        _validate_component(child, issues, doc, component_ids, master_ids)
+
+
+def _check_layout(c: NstudioComponent, issues: List[str]) -> None:
     for key in ("x", "y", "width", "height"):
         value = c.layout.get(key)
         if not isinstance(value, int) or value < 0:
             issues.append(
                 f"component '{c.id}': layout '{key}' must be a "
                 f"non-negative integer")
-
-    for child in c.children:
-        _validate_component(child, issues, doc, component_ids)
 
 
 def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,

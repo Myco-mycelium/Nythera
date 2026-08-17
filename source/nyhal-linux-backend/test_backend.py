@@ -13208,6 +13208,19 @@ class TestNstudioImport(unittest.TestCase):
         # The lock screen screen carries a LockScreen root child.
         lock_screen = doc.find_component("lock_screen")
         self.assertEqual(lock_screen.type, "LockScreen")
+        # Reusable-component masters (NFS-006 §9): the taskbar buttons are
+        # instances of a single TaskbarButton master carrying overrides.
+        self.assertEqual(len(doc.reusable_components), 1)
+        master = doc.reusable_components[0]
+        self.assertEqual(master.id, "TaskbarButton")
+        self.assertEqual(master.type, "Button")
+        btn_start = doc.find_component("btn_start")
+        self.assertIsNotNone(btn_start)
+        self.assertEqual(btn_start.component_ref, "TaskbarButton")
+        self.assertEqual(btn_start.overrides, {"text": "Start"})
+        btn_search = doc.find_component("btn_search")
+        self.assertEqual(btn_search.component_ref, "TaskbarButton")
+        self.assertEqual(btn_search.overrides, {"text": "Search"})
 
     def test_windows_shell_fixture_shape(self):
         """The window-system + power-UI shell screens (0.14.25 shell
@@ -13463,6 +13476,56 @@ class TestNstudioCodecConformance(unittest.TestCase):
         text = self._mutate(self._text("nyrqis-shell.nstudio"),
                             '"x": 16, "y": 12', '"x": -1, "y": 12')
         self._rejects(text, "layout 'x' must be a non-negative integer")
+
+    def test_crate_accepts_reusable_master_desktop(self):
+        """The desktop fixture carries a reusable TaskbarButton master
+        (NFS-006 §9) with componentRef instances — the crate must accept
+        it exactly like the floor."""
+        text = self._text("desktop.nstudio")
+        nstudio_codec.validate(text)
+        doc = nstudio.loads(text)
+        self.assertEqual(len(doc.reusable_components), 1)
+        self.assertEqual(doc.reusable_components[0].id, "TaskbarButton")
+
+    def test_crate_rejects_unknown_component_ref(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"componentRef": "TaskbarButton"',
+                            '"componentRef": "GhostMaster"')
+        self._rejects(
+            text, "componentRef 'GhostMaster' does not name a reusable component")
+
+    def test_crate_rejects_override_outside_master_contract(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"overrides": { "text": "Start" }',
+                            '"overrides": { "bogus": true }')
+        self._rejects(text, "override 'bogus' not in the 'Button' contract")
+
+    def test_crate_rejects_instance_with_own_type(self):
+        """Instances omit 'type' — a node declaring both componentRef and
+        a type is invalid in both gates."""
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"componentRef": "TaskbarButton",',
+                            '"componentRef": "TaskbarButton", "type": "Button",')
+        self._rejects(text, "reusable instance must not declare its own type")
+
+    def test_error_messages_match_floor_reusable(self):
+        """Differential: the reusable-component gates report the same
+        first failure as the floor."""
+        cases = [
+            ('"componentRef": "TaskbarButton"', '"componentRef": "GhostMaster"',
+             "componentRef 'GhostMaster' does not name a reusable component"),
+            ('"overrides": { "text": "Start" }', '"overrides": { "bogus": true }',
+             "override 'bogus' not in the 'Button' contract"),
+        ]
+        for old, new, expected in cases:
+            text = self._mutate(self._text("desktop.nstudio"), old, new)
+            with self.assertRaises(nstudio.NstudioValidationError) as floor_ctx:
+                nstudio.loads(text)
+            with self.assertRaises(nstudio.NstudioValidationError) as crate_ctx:
+                nstudio_codec.validate(text)
+            first_floor_issue = str(floor_ctx.exception).split("; ")[0]
+            self.assertEqual(str(crate_ctx.exception), first_floor_issue,
+                             f"message drift for {expected}")
 
     def test_crate_rejects_malformed_json(self):
         self._rejects("{not json", "malformed JSON")

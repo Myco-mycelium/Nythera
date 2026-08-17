@@ -10,7 +10,16 @@
     "active": "Eclipse",
     "overrides": {}
   },
-  "components": [],
+  "components": [
+    {
+      "id": "TaskbarButton",
+      "type": "Button",
+      "properties": { "text": "Taskbar", "icon": "NyrqisMark", "enabled": true },
+      "layout": { "x": 0, "y": 0, "width": 96, "height": 48 },
+      "events": {},
+      "children": []
+    }
+  ],
   "states": {
     "startMenuOpen": false,
     "quickSettingsOpen": false,
@@ -176,16 +185,16 @@
             "children": [
               {
                 "id": "btn_start",
-                "type": "Button",
-                "properties": { "text": "Start", "icon": "NyrqisMark" },
+                "componentRef": "TaskbarButton",
+                "overrides": { "text": "Start" },
                 "layout": { "x": 8, "y": 16, "width": 96, "height": 48 },
                 "events": { "clicked": "behavior_start_toggle" },
                 "children": []
               },
               {
                 "id": "btn_search",
-                "type": "Button",
-                "properties": { "text": "Search" },
+                "componentRef": "TaskbarButton",
+                "overrides": { "text": "Search" },
                 "layout": { "x": 112, "y": 16, "width": 96, "height": 48 },
                 "events": { "clicked": "behavior_search_open" },
                 "children": []

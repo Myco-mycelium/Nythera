@@ -321,6 +321,20 @@ parses names for validation; the crate's serde structs carry the full
 (names) and the new `PropertyDefinitions.cs` (typed metadata). Suite
 stays **541** (behavior-preserving).
 
+**2026-08-17 (0.14.30): reusable component masters — `components[]`
+stops being reserved (NFS-006 §9).** A document's `components[]` now
+holds reusable masters (validated like any component); a node
+referencing one declares `componentRef` + `overrides` and omits `type`
+— both gates reject an instance that declares its own type, and
+overrides must be properties the master's type contract declares. The
+floor resolves the instance's contract from the master; the crate does
+the same with byte-identical messages (new differential tests). The
+`desktop.nstudio` shell fixture builds its taskbar from one
+`TaskbarButton` master with two `componentRef` instances; Nyforge's
+`ReusableComponentResolver` materializes instances (master clone +
+overrides + instance children) and FEATURE_STATUS `ComponentReuse` →
+implemented. Suite 541 → **546**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

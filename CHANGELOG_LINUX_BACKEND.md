@@ -16,6 +16,27 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.30] — 2026-08-17
+
+### Reusable component masters — `components[]` is no longer reserved (NFS-006 §9)
+
+- **Masters + instances.** A document's `components[]` now holds reusable
+  masters (validated like any component); a node referencing one
+  declares `componentRef` + `overrides` and **omits `type`** (both gates
+  reject an instance that declares its own type — a type conflicting
+  with the master is a bug). Overrides must be properties the master's
+  type contract declares.
+- **Both import gates enforce it.** The Python floor resolves the
+  instance's contract from the master and validates refs/overrides;
+  the Rust crate does the same (serde + pass), with byte-identical
+  error messages (differential-tested). The `desktop.nstudio` shell
+  fixture builds its taskbar from one `TaskbarButton` master with two
+  `componentRef` instances.
+- **Nyforge side:** `NuiComponent` serializes `componentRef`/`overrides`;
+  `ReusableComponentResolver` materializes an instance as the master's
+  clone + overrides + instance children. FEATURE_STATUS `ComponentReuse`
+  → implemented (suite 541 → **546**; Nyforge 71/71).
+
 ## [0.14.29] — 2026-08-17
 
 ### Typed property metadata in the registry (NFS-006's reserved fields)

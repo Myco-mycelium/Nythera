@@ -286,6 +286,16 @@ Two things now, not one:
   full PropertyDefinition, Nyforge regenerates ComponentContracts.cs
   + the new PropertyDefinitions.cs. Suite stays 541.
 
+  **2026-08-17 (0.14.30): reusable component masters (NFS-006 §9).**
+  `components[]` holds reusable masters; instances declare
+  `componentRef` + `overrides` and omit `type` (both gates reject an
+  instance with its own type; overrides must fit the master's contract)
+  — enforced identically by the floor and the crate (differential
+  tests). The `desktop.nstudio` taskbar is built from one
+  `TaskbarButton` master with two instances; Nyforge materializes
+  instances via `ReusableComponentResolver`. Suite 541 → **546**; Nyforge
+  71/71.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

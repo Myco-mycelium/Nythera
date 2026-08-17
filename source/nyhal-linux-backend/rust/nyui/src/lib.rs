@@ -249,23 +249,41 @@ fn validate_document(raw: &Value) -> Result<(), String> {
         }
     }
 
-    // Pass 3: components.
+    // Pass 3: reusable-component masters (components[] — NFS-006 §9).
+    // Master ids must be unique (and not collide with instance ids);
+    // each master tree is validated like any component.
+    let mut master_ids: Vec<String> = Vec::new();
+    if let Some(masters) = raw.get("components").and_then(Value::as_array) {
+        for master in masters {
+            let id = master
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "reusable components must declare a string 'id'".to_string())?;
+            if master_ids.iter().any(|m| m == id) || component_ids.iter().any(|c| c == id) {
+                return Err(format!("duplicate reusable component id '{id}'"));
+            }
+            master_ids.push(id.to_string());
+            validate_component(master, &behavior_ids, &master_ids, raw)?;
+        }
+    }
+
+    // Pass 4: components.
     if let Some(screens) = raw.get("screens").and_then(Value::as_array) {
         for screen in screens {
             if let Some(root) = screen.get("root") {
-                validate_component(root, &behavior_ids)?;
+                validate_component(root, &behavior_ids, &master_ids, raw)?;
             }
         }
     }
 
-    // Pass 4: behaviors (full context).
+    // Pass 5: behaviors (full context).
     if let Some(behaviors) = raw.get("behaviors").and_then(Value::as_array) {
         for behavior in behaviors {
             validate_behavior(behavior, states, &component_ids, raw)?;
         }
     }
 
-    // Pass 5: bindings.
+    // Pass 6: bindings.
     if let Some(bindings) = raw.get("bindings").and_then(Value::as_array) {
         for binding in bindings {
             validate_binding(binding, states, &component_ids, raw)?;
@@ -275,24 +293,61 @@ fn validate_document(raw: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), String> {
+fn validate_component(
+    node: &Value,
+    behavior_ids: &[String],
+    master_ids: &[String],
+    raw: &Value,
+) -> Result<(), String> {
     let id = node
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| "component nodes must declare a string 'id'".to_string())?;
-    let type_name = node
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("component '{id}' must declare a string 'type'"))?;
-
-    let contract = contract(type_name)
-        .ok_or_else(|| format!("component '{id}': unknown type '{type_name}'"))?;
-
-    if let Some(props) = node.get("properties").and_then(Value::as_object) {
-        for key in props.keys() {
-            if !contract.properties.iter().any(|p| p.name == *key) {
+    // Reusable-component instance (NFS-006 §9): the ref must name a
+    // master in components[] and the contract is the master's type —
+    // instances carry overrides (never a type/properties of their own).
+    let reference = node.get("componentRef").and_then(Value::as_str);
+    let (type_name, cc) = match reference {
+        Some(reference) => {
+            if node.get("type").is_some() {
                 return Err(format!(
-                    "component '{id}': property '{key}' not in the '{type_name}' contract"
+                    "component '{id}': reusable instance must not declare its own type"
+                ));
+            }
+            if !master_ids.iter().any(|m| m == reference) {
+                return Err(format!(
+                    "component '{id}': componentRef '{reference}' does not name a reusable component"
+                ));
+            }
+            let master_type = master_type_for(raw, reference)
+                .ok_or_else(|| format!("component '{id}': componentRef '{reference}' has no type"))?;
+            let cc = contract(master_type)
+                .ok_or_else(|| format!("component '{id}': componentRef '{reference}' has unknown type '{master_type}'"))?;
+            (master_type, cc)
+        }
+        None => {
+            let type_name = node
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("component '{id}' must declare a string 'type'"))?;
+            let cc = contract(type_name)
+                .ok_or_else(|| format!("component '{id}': unknown type '{type_name}'"))?;
+            (type_name, cc)
+        }
+    };
+
+    // Instances validate overrides; plain components validate properties.
+    let prop_container = if reference.is_some() {
+        node.get("overrides")
+    } else {
+        node.get("properties")
+    };
+    if let Some(container) = prop_container.and_then(Value::as_object) {
+        let label = if reference.is_some() { "override" } else { "property" };
+        for key in container.keys() {
+            if !cc.properties.iter().any(|p| p.name == *key) {
+                return Err(format!(
+                    "component '{id}': {label} '{key}' not in the '{type_name}' contract"
                 ));
             }
         }
@@ -300,7 +355,7 @@ fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), Strin
 
     if let Some(events_map) = node.get("events").and_then(Value::as_object) {
         for (event, behavior) in events_map {
-            if !contract.events.iter().any(|e| e == event) {
+            if !cc.events.iter().any(|e| e == event) {
                 return Err(format!(
                     "component '{id}': event '{event}' not in the '{type_name}' contract"
                 ));
@@ -331,10 +386,21 @@ fn validate_component(node: &Value, behavior_ids: &[String]) -> Result<(), Strin
 
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
-            validate_component(child, behavior_ids)?;
+            validate_component(child, behavior_ids, master_ids, raw)?;
         }
     }
     Ok(())
+}
+
+/// Find a reusable master's type by id in the document's components[].
+fn master_type_for<'v>(raw: &'v Value, id: &str) -> Option<&'v str> {
+    raw.get("components").and_then(Value::as_array)?.iter().find_map(|master| {
+        if master.get("id").and_then(Value::as_str) == Some(id) {
+            master.get("type").and_then(Value::as_str)
+        } else {
+            None
+        }
+    })
 }
 
 fn validate_behavior(
