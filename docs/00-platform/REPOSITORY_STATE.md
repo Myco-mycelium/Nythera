@@ -241,6 +241,15 @@ Two things now, not one:
   (§30) A/Bs the gate floor-vs-crate: crate ~2.1× faster at the median
   (242 µs vs 502 µs p50). Suite 524 → **538**.
 
+  **2026-08-17 (0.14.24): the Nyrqis API Registry lands (one
+  machine-readable contract, three consumers).** The NUI component
+  vocabulary now lives in `ui/contracts/nui-api-v1.json` — the Python
+  floor loads its tables from it at import time, the Rust crate embeds
+  the same file (`include_str!` → `OnceLock<Registry>`), and Nyforge
+  regenerates its C# tables from a vendored copy. `TestNstudioCodecConformance`
+  passes unchanged (floor↔crate cannot diverge — same file). Full
+  suite: **538** (unchanged — the migration is behavior-preserving).
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

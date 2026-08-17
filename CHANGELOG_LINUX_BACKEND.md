@@ -16,6 +16,30 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.24] — 2026-08-17
+
+### The Nyrqis API Registry — one machine-readable contract, three consumers
+
+- **`ui/contracts/nui-api-v1.json` — the registry lands.** The NUI
+  component vocabulary (29 components, 6 system actions) now lives in a
+  single machine-readable file instead of three hand-maintained tables.
+  The Python floor (`ui/nstudio.py`), the Rust crate (`rust/nyui`), and
+  Nyforge's C# tables all derive from it; the crate embeds the same file
+  via `include_str!`, so a registry change that isn't compiled in is a
+  build failure, not silent drift.
+- **Python floor migrated.** `COMPONENT_CONTRACTS` / `SYSTEM_ACTIONS` are
+  loaded from the registry at import time (missing/malformed registry is
+  a hard import error — never silently empty tables).
+- **Rust crate migrated.** `serde` derive + `OnceLock<Registry>` parse the
+  embedded registry on first use; the const `CONTRACTS`/`SYSTEM_ACTIONS`
+  tables are gone. 9/9 unit tests pass; release build clean.
+- **Conformance intact.** `TestNstudioCodecConformance` (floor vs crate,
+  byte-identical messages) passes unchanged — the two consumers read the
+  same file, so behavior cannot diverge.
+- **Nyforge derives from the same registry.** The editor's
+  `ComponentContracts.cs`/`NuiSystemActions.cs` are regenerated from a
+  vendored copy by `tools/generate_contracts.py`, with a CI drift gate.
+
 ## [0.14.23] — 2026-08-16
 
 ### NUI follow-on — the import gate over the control plane, a second screen, and §30

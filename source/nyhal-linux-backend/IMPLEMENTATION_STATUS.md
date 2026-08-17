@@ -248,9 +248,23 @@ gone stale) rides alongside via `nyrqisctl nui current`. The Security
 Center screen (`security-center.nstudio`, the second NyForge design) and
 the Vault Workspace (`vault-workspace.nstudio`, the third) join the
 fixtures with shape + `$state:` tests. `tests/benchmarks.py --nui` (§30)
-A/Bs the gate floor-vs-crate on the largest fixture: crate **~2.1×
+A/Bs the gate floor-vs-crate on the largest fixture:  crate **~2.1×
 faster at the median** (242 µs vs 502 µs p50, ~1/3 the variance). Suite
 524 → **538**.
+
+**2026-08-17 (0.14.24): the Nyrqis API Registry — one machine-readable
+contract, three consumers.** The NUI component vocabulary (29
+components, 6 system actions) moves out of the three hand-maintained
+tables and into `ui/contracts/nui-api-v1.json`. `ui/nstudio.py` loads
+`COMPONENT_CONTRACTS`/`SYSTEM_ACTIONS` from it at import time (a missing
+or malformed registry is a hard import error — never silently empty);
+`rust/nyui` embeds the same file via `include_str!` and parses it into a
+`OnceLock<Registry>` with serde derive (const tables deleted; a registry
+change that isn't compiled in is a build failure). Nyforge regenerates
+its C# tables from a vendored copy with a CI drift gate. `TestNstudioCodecConformance`
+passes unchanged — both consumers read the same file, so floor↔crate
+cannot diverge. Full suite: **538** (unchanged — the migration is
+behavior-preserving by construction).
 
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
