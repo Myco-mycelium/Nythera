@@ -193,6 +193,10 @@ class NstudioAnimation:
     easing: str = "ease-in-out"
     repeat: int = 0
     direction: str = "forward"
+    # Keyframes (NUI-SCHEMA §8.3): an optional multi-point curve —
+    # [{"offset": 0.0–1.0, "value": number|string|boolean}] with
+    # strictly increasing offsets. Absent = a single-segment transition.
+    keyframes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -458,6 +462,14 @@ def _parse_animation(raw: Any) -> NstudioAnimation:
     if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
         raise NstudioValidationError(
             "animation entries must be objects with a string 'id'")
+    keyframes_raw = raw.get("keyframes")
+    if keyframes_raw is None:
+        keyframes: List[Dict[str, Any]] = []
+    elif isinstance(keyframes_raw, list):
+        keyframes = keyframes_raw
+    else:
+        raise NstudioValidationError(
+            f"animation '{raw['id']}': keyframes must be a list")
     return NstudioAnimation(
         id=raw["id"],
         target=str(raw.get("target", "")),
@@ -467,6 +479,7 @@ def _parse_animation(raw: Any) -> NstudioAnimation:
         easing=str(raw.get("easing", "ease-in-out")),
         repeat=int(raw.get("repeat", 0)),
         direction=str(raw.get("direction", "forward")),
+        keyframes=keyframes,
     )
 
 
@@ -604,6 +617,35 @@ def _validate(doc: NstudioDocument) -> List[str]:
             issues.append(
                 f"animation '{anim.id}': direction '{anim.direction}' not in "
                 f"{sorted(ANIM_DIRECTIONS)}")
+        # Keyframes (NUI-SCHEMA §8.3): optional multi-point curve — each
+        # keyframe has a numeric offset in [0, 1] and a value, and the
+        # offsets must be strictly increasing (the runtime interpolates
+        # between them; the crate mirrors these messages byte-for-byte).
+        prev_offset: Optional[float] = None
+        for idx, kf in enumerate(anim.keyframes):
+            if not isinstance(kf, dict):
+                issues.append(
+                    f"animation '{anim.id}': keyframe {idx} must be "
+                    f"an object")
+                continue
+            offset = kf.get("offset")
+            if not isinstance(offset, (int, float)) \
+                    or isinstance(offset, bool) \
+                    or not (0.0 <= offset <= 1.0):
+                issues.append(
+                    f"animation '{anim.id}': keyframe {idx} 'offset' must "
+                    f"be a number in [0, 1]")
+            elif prev_offset is not None and offset <= prev_offset:
+                issues.append(
+                    f"animation '{anim.id}': keyframe {idx} 'offset' must "
+                    f"be greater than the previous offset")
+            else:
+                prev_offset = float(offset)
+            value = kf.get("value")
+            if value is None or isinstance(value, (dict, list)):
+                issues.append(
+                    f"animation '{anim.id}': keyframe {idx} 'value' must "
+                    f"be a number, string, or boolean")
 
     # Localization section (NUI-SCHEMA §8.1): if present, it must be
     # {"active": str, "tables": {locale: {key: str}}} and the active

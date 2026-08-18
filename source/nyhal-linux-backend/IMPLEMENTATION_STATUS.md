@@ -402,6 +402,20 @@ the window's `Close` action. Unknown properties/events on the new types
 fail both gates with byte-identical messages (differential). Suite 635
 → **642**.
 
+**2026-08-18 (0.14.38): animation keyframes (NUI-SCHEMA §8.3).** An
+animation may carry an optional `keyframes` list — `[{"offset":
+0.0–1.0, "value": …}]` stops with strictly increasing offsets and a
+number/string/boolean value — giving the runtime the actual multi-point
+curve to interpolate (without it the animation stays a single-segment
+transition). Both gates validate the shape fail-closed with
+byte-identical messages (keyframes must be a list; each entry an object
+with a numeric offset in [0, 1] and a present value; offsets strictly
+increasing) — 6 differential cases verified; Nyforge mirrors as
+ER-NUI-022. The Start menu fade in `desktop.nstudio` is now a
+3-keyframe curve (0 → 0.75 at 60 % → 1) played by
+`behavior_start_toggle`. Floor `TestAnimations` +6, crate unit tests 13
+→ 16 (+3 keyframe cases), crate conformance +3. Suite 642 → **651**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.

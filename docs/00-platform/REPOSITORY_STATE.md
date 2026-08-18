@@ -383,6 +383,18 @@ Two things now, not one:
   cases; unknown properties/events fail both gates byte-identically.
   Suite 635 → **642**; Nyforge 195/195.
 
+  **2026-08-18 (0.14.38): animation keyframes (NUI-SCHEMA §8.3).** An
+  animation may carry an optional `keyframes` list — `[{"offset":
+  0.0–1.0, "value": …}]` stops with strictly increasing offsets and a
+  number/string/boolean value — the multi-point curve the runtime
+  interpolates between (absent = single-segment transition). Both gates
+  validate the shape fail-closed with byte-identical messages (list,
+  object entries, numeric offset in [0, 1], present value, strictly
+  increasing); Nyforge mirrors as ER-NUI-022. The Start menu fade in
+  `desktop.nstudio` is now a 3-keyframe curve played by
+  `behavior_start_toggle`. Floor `TestAnimations` +6, crate unit tests
+  13 → 16, crate conformance +3. Suite 642 → **651**; Nyforge 200/200.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

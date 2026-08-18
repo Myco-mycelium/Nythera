@@ -27,7 +27,10 @@
   },
   "animations": [
     { "id": "start_menu_fade", "target": "start_menu", "property": "opacity",
-      "duration": 200, "easing": "ease-out" }
+      "duration": 200, "easing": "ease-out",
+      "keyframes": [ { "offset": 0.0, "value": 0.0 },
+                       { "offset": 0.6, "value": 0.75 },
+                       { "offset": 1.0, "value": 1.0 } ] }
   ],
   "locales": {
     "active": "en",

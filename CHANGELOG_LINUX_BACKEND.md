@@ -16,6 +16,28 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.38] — 2026-08-18
+
+### Animation keyframes (NUI-SCHEMA §8.3)
+
+- **Multi-point curves.** An animation may carry an optional
+  `keyframes` array — `[{"offset": 0.0–1.0, "value": …}]` stops the
+  runtime interpolates between (a number, string, or boolean value at
+  each normalized time). Without keyframes the animation stays a
+  single-segment transition.
+- **Fail-closed, byte-identical on both gates:** keyframes must be a
+  list; each entry must be an object with a numeric `offset` in [0, 1]
+  and a present `value`; offsets must be strictly increasing. The Rust
+  crate mirrors the floor's messages exactly (6 differential cases
+  verified) and Nyforge mirrors them as ER-NUI-022 before Preview.
+- **Proven with the shell:** the Start menu fade in `desktop.nstudio`
+  is now a 3-keyframe curve (0 → 0.75 at 60 % → 1), played by
+  `behavior_start_toggle` — the same semantic wiring as before, with
+  the actual values the runtime needs.
+- **Tests:** floor `TestAnimations` +6 keyframe cases (incl. the
+  fixture curve), crate unit tests 13 → 16, crate conformance +3
+  differential cases. Suite 642 → **651**.
+
 ## [0.14.37] — 2026-08-18
 
 ### Extended Shell vocabulary (AppGrid, Clock, Dock, TitleBar)

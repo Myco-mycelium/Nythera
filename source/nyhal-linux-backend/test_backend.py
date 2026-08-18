@@ -13986,6 +13986,59 @@ class TestAnimations(unittest.TestCase):
                       {"animation": "f"})
         self.assertIn("duplicate animation id 'f'", str(ctx.exception))
 
+    def test_keyframes_accepted(self):
+        doc = self._doc([{"id": "fade", "target": "menu",
+                          "property": "opacity",
+                          "keyframes": [{"offset": 0.0, "value": 0.0},
+                                         {"offset": 0.6, "value": 0.75},
+                                         {"offset": 1.0, "value": 1.0}]}])
+        anim = doc.animations[0]
+        self.assertEqual(
+            anim.keyframes,
+            [{"offset": 0.0, "value": 0.0},
+             {"offset": 0.6, "value": 0.75},
+             {"offset": 1.0, "value": 1.0}])
+
+    def test_keyframes_must_be_a_list(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "fade", "target": "menu",
+                        "property": "opacity", "keyframes": "nope"}])
+        self.assertIn("keyframes must be a list", str(ctx.exception))
+
+    def test_keyframe_offset_out_of_range(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "fade", "target": "menu",
+                        "property": "opacity",
+                        "keyframes": [{"offset": 1.5, "value": 1}]}])
+        self.assertIn("keyframe 0 'offset' must be a number in [0, 1]",
+                      str(ctx.exception))
+
+    def test_keyframe_offsets_strictly_increasing(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "fade", "target": "menu",
+                        "property": "opacity",
+                        "keyframes": [{"offset": 0.5, "value": 1},
+                                       {"offset": 0.5, "value": 2}]}])
+        self.assertIn("keyframe 1 'offset' must be greater than "
+                      "the previous offset", str(ctx.exception))
+
+    def test_keyframe_missing_value(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "fade", "target": "menu",
+                        "property": "opacity",
+                        "keyframes": [{"offset": 0.0, "value": 0},
+                                       {"offset": 1.0}]}])
+        self.assertIn("keyframe 1 'value' must be a number, string, "
+                      "or boolean", str(ctx.exception))
+
+    def test_keyframe_non_object_entry(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "fade", "target": "menu",
+                        "property": "opacity",
+                        "keyframes": [{"offset": 0.0, "value": 0},
+                                       "junk"]}])
+        self.assertIn("keyframe 1 must be an object", str(ctx.exception))
+
     def test_desktop_fixture_animation(self):
         doc = nstudio.loads(open(
             "tests/fixtures/nstudio/desktop.nstudio").read())
@@ -13993,6 +14046,12 @@ class TestAnimations(unittest.TestCase):
             [(a.id, a.target, a.property, a.duration, a.easing)
              for a in doc.animations],
             [("start_menu_fade", "start_menu", "opacity", 200, "ease-out")])
+        # The fixture's start-menu fade is a multi-point curve.
+        self.assertEqual(
+            doc.animations[0].keyframes,
+            [{"offset": 0.0, "value": 0.0},
+             {"offset": 0.6, "value": 0.75},
+             {"offset": 1.0, "value": 1.0}])
         _t, _n, args = doc.resolve_action("behavior_start_toggle")
         self.assertEqual(args["animation"], "start_menu_fade")
 
@@ -14239,6 +14298,26 @@ class TestNstudioCodecConformance(unittest.TestCase):
         text = self._mutate(self._text("desktop.nstudio"), '"aspectRatio": 1.0',
                             '"aspectRatio": -1')
         self._rejects(text, "layout 'aspectRatio' must be a positive number")
+
+    def test_crate_rejects_out_of_range_keyframe_offset(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"offset": 0.0, "value": 0.0',
+                            '"offset": 1.5, "value": 0.0')
+        self._rejects(text, "keyframe 0 'offset' must be a number in [0, 1]")
+
+    def test_crate_rejects_non_increasing_keyframe_offsets(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"offset": 0.6, "value": 0.75',
+                            '"offset": 0.0, "value": 0.75')
+        self._rejects(text, "keyframe 1 'offset' must be greater than "
+                            "the previous offset")
+
+    def test_crate_rejects_keyframe_without_value(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"offset": 1.0, "value": 1.0',
+                            '"offset": 1.0')
+        self._rejects(text, "keyframe 2 'value' must be a number, "
+                            "string, or boolean")
 
     def test_crate_rejects_unknown_property_on_appgrid(self):
         """The new Shell vocabulary is gated identically: a bogus

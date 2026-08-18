@@ -399,6 +399,52 @@ fn validate_document(raw: &Value) -> Result<(), String> {
                     ));
                 }
             }
+            // Keyframes (NUI-SCHEMA §8.3): optional multi-point curve —
+            // each keyframe has a numeric offset in [0, 1] and a value,
+            // and the offsets must be strictly increasing.
+            if let Some(keyframes) = animation.get("keyframes") {
+                if !keyframes.is_array() {
+                    return Err(format!(
+                        "animation '{aid}': keyframes must be a list"
+                    ));
+                }
+                let mut prev_offset: Option<f64> = None;
+                for (idx, kf) in keyframes.as_array().unwrap().iter().enumerate() {
+                    if !kf.is_object() {
+                        return Err(format!(
+                            "animation '{aid}': keyframe {idx} must be an object"
+                        ));
+                    }
+                    let offset = kf.get("offset").and_then(Value::as_f64);
+                    let offset_ok = match offset {
+                        Some(o) => (0.0..=1.0).contains(&o),
+                        None => false,
+                    };
+                    if !offset_ok {
+                        return Err(format!(
+                            "animation '{aid}': keyframe {idx} 'offset' must be a number in [0, 1]"
+                        ));
+                    }
+                    let offset = offset.unwrap();
+                    if let Some(prev) = prev_offset {
+                        if offset <= prev {
+                            return Err(format!(
+                                "animation '{aid}': keyframe {idx} 'offset' must be greater than the previous offset"
+                            ));
+                        }
+                    }
+                    prev_offset = Some(offset);
+                    let value_ok = match kf.get("value") {
+                        Some(v) => v.is_number() || v.is_string() || v.is_boolean(),
+                        None => false,
+                    };
+                    if !value_ok {
+                        return Err(format!(
+                            "animation '{aid}': keyframe {idx} 'value' must be a number, string, or boolean"
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1076,7 +1122,9 @@ mod tests {
       "states": { "doNotDisturb": false, "lastRefresh": "12:04" },
       "animations": [
         { "id": "fade_in", "target": "toggle_dnd", "property": "opacity",
-          "duration": 200, "easing": "ease-out" }
+          "duration": 200, "easing": "ease-out",
+          "keyframes": [ { "offset": 0.0, "value": 0.0 },
+                           { "offset": 1.0, "value": 1.0 } ] }
       ],
       "behaviors": [
         { "id": "behavior_refresh", "condition": null,
@@ -1164,5 +1212,27 @@ mod tests {
             "\"condition\": { \"state\": \"nope\", \"operator\": \"equals\", \"value\": true }");
         let err = validate(&text).unwrap_err();
         assert!(err.contains("condition references unknown state 'nope'"), "{err}");
+    }
+
+    #[test]
+    fn rejects_out_of_range_keyframe_offset() {
+        let text = VALID_SHELL.replace("\"offset\": 0.0", "\"offset\": 1.5");
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains("keyframe 0 'offset' must be a number in [0, 1]"), "{err}");
+    }
+
+    #[test]
+    fn rejects_non_increasing_keyframe_offsets() {
+        let text = VALID_SHELL.replace("\"offset\": 1.0", "\"offset\": 0.0");
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains("keyframe 1 'offset' must be greater than the previous offset"), "{err}");
+    }
+
+    #[test]
+    fn rejects_keyframe_without_value() {
+        let text = VALID_SHELL.replace(
+            "\"offset\": 1.0, \"value\": 1.0", "\"offset\": 1.0");
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains("keyframe 1 'value' must be a number, string, or boolean"), "{err}");
     }
 }
