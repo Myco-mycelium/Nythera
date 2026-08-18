@@ -845,45 +845,146 @@ fn validate_behavior(
         .and_then(Value::as_str)
         .ok_or_else(|| "behavior entries must declare a string 'id'".to_string())?;
 
+    // Condition — a leaf (expression or the legacy state/operator/value
+    // equality form) or an AND/OR logic group (NUI-SCHEMA §7.3),
+    // recursively. Null = always runs.
     if let Some(condition) = behavior.get("condition") {
         if !condition.is_null() {
-            // Expression conditions (NUI-SCHEMA §7.2) supersede the
-            // legacy state/operator/value equality form.
-            if let Some(expression) = condition.get("expression") {
-                let expr_text = expression
-                    .as_str()
-                    .ok_or_else(|| format!(
-                        "behavior '{id}': condition expression must be a string"))?;
-                let known = merged_state_keys(states, state_scopes);
-                nexpr::validate_expr(expr_text, Some(&known)).map_err(|err| {
-                    format!("behavior '{id}' condition expression: {err}")
-                })?;
-            } else {
-                let state_key = condition
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("behavior '{id}': condition must declare a 'state'"))?;
-                if !state_known(state_key, states, state_scopes) {
-                    return Err(format!(
-                        "behavior '{id}': condition references unknown state '{state_key}'"
-                    ));
-                }
-                let operator = condition
-                    .get("operator")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("behavior '{id}': condition must declare an 'operator'"))?;
-                if operator != "equals" && operator != "notEquals" {
-                    return Err(format!(
-                        "behavior '{id}': condition operator must be 'equals' or 'notEquals'"
-                    ));
-                }
-            }
+            validate_condition(id, "", condition, states, state_scopes)?;
         }
     }
 
-    let action = behavior
-        .get("action")
-        .ok_or_else(|| format!("behavior '{id}' must declare an 'action'"))?;
+    // Action — exactly one of `action` (single) / `actions` (a non-empty
+    // chain run in order). Each entry validates like a single action.
+    let single = behavior.get("action");
+    let chain = behavior.get("actions");
+    match (single, chain) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "behavior '{id}': must declare either 'action' or 'actions', not both"
+            ));
+        }
+        (None, None) => {
+            return Err(format!(
+                "behavior '{id}' must declare an 'action' or 'actions'"
+            ));
+        }
+        (Some(action), None) => {
+            validate_behavior_action(
+                id, action, states, state_scopes, raw, locale_keys, animation_ids)?;
+        }
+        (None, Some(actions)) => {
+            let list = actions.as_array().ok_or_else(|| {
+                format!("behavior '{id}': 'actions' must be a non-empty list")
+            })?;
+            if list.is_empty() {
+                return Err(format!(
+                    "behavior '{id}': 'actions' must be a non-empty list"
+                ));
+            }
+            for action in list {
+                if !action.is_object()
+                    || action.get("name").and_then(Value::as_str).is_none()
+                {
+                    return Err(format!(
+                        "behavior '{id}': each 'actions' entry must declare a 'name'"
+                    ));
+                }
+                validate_behavior_action(
+                    id, action, states, state_scopes, raw, locale_keys, animation_ids)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate one condition dict — a leaf or an AND/OR logic group — with
+/// byte-identical messages to the reference floor. `path` is the element
+/// path inside groups ("", " 0", " 0.1") for nested conditions.
+fn validate_condition(
+    id: &str,
+    path: &str,
+    condition: &Value,
+    states: Option<&Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
+) -> Result<(), String> {
+    if let Some(logic) = condition.get("logic") {
+        let logic_text = logic.as_str().ok_or_else(|| {
+            format!("behavior '{id}': condition{path} 'logic' must be 'and' or 'or'")
+        })?;
+        if logic_text != "and" && logic_text != "or" {
+            return Err(format!(
+                "behavior '{id}': condition{path} 'logic' must be 'and' or 'or'"
+            ));
+        }
+        let conditions = condition.get("conditions").and_then(Value::as_array)
+            .ok_or_else(|| {
+                format!("behavior '{id}': condition{path} 'conditions' must be a non-empty list")
+            })?;
+        if conditions.is_empty() {
+            return Err(format!(
+                "behavior '{id}': condition{path} 'conditions' must be a non-empty list"
+            ));
+        }
+        for (i, sub) in conditions.iter().enumerate() {
+            if !sub.is_object() {
+                return Err(format!(
+                    "behavior '{id}': condition{path} {i} must be an object"
+                ));
+            }
+            validate_condition(id, &format!("{path} {i}"), sub, states, state_scopes)?;
+        }
+        return Ok(());
+    }
+    // Leaf: expression conditions (NUI-SCHEMA §7.2) supersede the
+    // legacy state/operator/value equality form.
+    if let Some(expression) = condition.get("expression") {
+        let expr_text = expression.as_str().ok_or_else(|| {
+            format!("behavior '{id}': condition{path} expression must be a string")
+        })?;
+        let known = merged_state_keys(states, state_scopes);
+        nexpr::validate_expr(expr_text, Some(&known)).map_err(|err| {
+            format!("behavior '{id}' condition{path} expression: {err}")
+        })?;
+        return Ok(());
+    }
+    let state_key = condition
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("behavior '{id}': condition{path} must declare a 'state'")
+        })?;
+    if !state_known(state_key, states, state_scopes) {
+        return Err(format!(
+            "behavior '{id}': condition{path} references unknown state '{state_key}'"
+        ));
+    }
+    let operator = condition
+        .get("operator")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("behavior '{id}': condition{path} must declare an 'operator'")
+        })?;
+    if operator != "equals" && operator != "notEquals" {
+        return Err(format!(
+            "behavior '{id}': condition{path} operator must be 'equals' or 'notEquals'"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate one action dict — the single `action` or one entry of an
+/// `actions` chain — against the component/system contracts, including
+/// $localize: and $expr: references in its arguments.
+fn validate_behavior_action(
+    id: &str,
+    action: &Value,
+    states: Option<&Map<String, Value>>,
+    state_scopes: Option<&Map<String, Value>>,
+    raw: &Value,
+    locale_keys: Option<(&str, &Map<String, Value>)>,
+    animation_ids: &[String],
+) -> Result<(), String> {
     let name = action
         .get("name")
         .and_then(Value::as_str)
@@ -1234,5 +1335,34 @@ mod tests {
             "\"offset\": 1.0, \"value\": 1.0", "\"offset\": 1.0");
         let err = validate(&text).unwrap_err();
         assert!(err.contains("keyframe 1 'value' must be a number, string, or boolean"), "{err}");
+    }
+
+    #[test]
+    fn rejects_both_action_and_actions() {
+        let text = VALID_SHELL.replace(
+            "\"arguments\": { \"animation\": \"fade_in\" } } }",
+            "\"arguments\": { \"animation\": \"fade_in\" } },\n          \"actions\": [ { \"target\": \"System\", \"name\": \"Nyrqis.Animation.Play\" } ] }");
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains("must declare either 'action' or 'actions', not both"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_condition_logic() {
+        let text = VALID_SHELL.replace(
+            "\"condition\": null",
+            "\"condition\": { \"logic\": \"xor\", \"conditions\": [ { \"expression\": \"state.doNotDisturb == true\" } ] }");
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains("condition 'logic' must be 'and' or 'or'"), "{err}");
+    }
+
+    #[test]
+    fn accepts_logic_group_and_action_chain() {
+        let text = VALID_SHELL
+            .replace("\"condition\": null",
+                "\"condition\": { \"logic\": \"and\", \"conditions\": [ { \"expression\": \"state.doNotDisturb == true\" } ] }")
+            .replace(
+                "\"action\": { \"target\": \"System\", \"name\": \"Nyrqis.Animation.Play\",\n                      \"arguments\": { \"animation\": \"fade_in\" } }",
+                "\"actions\": [ { \"target\": \"System\", \"name\": \"Nyrqis.Animation.Play\",\n                          \"arguments\": { \"animation\": \"fade_in\" } } ]");
+        validate(&text).unwrap();
     }
 }

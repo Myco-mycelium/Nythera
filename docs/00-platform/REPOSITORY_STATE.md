@@ -394,6 +394,20 @@ Two things now, not one:
   `desktop.nstudio` is now a 3-keyframe curve played by
   `behavior_start_toggle`. Floor `TestAnimations` +6, crate unit tests
   13 → 16, crate conformance +3. Suite 642 → **651**; Nyforge 200/200.
+  **2026-08-18 (0.14.39): behavior logic graphs (NUI-SCHEMA §7.3).** A
+  behavior's `condition` is a leaf or a recursively-nested `logic:
+  and|or` group (non-empty `conditions` list, each entry a leaf or a
+  group) and its `DO` is exactly one of a single `action` / a non-empty
+  `actions` chain run in order — both or neither rejected at parse.
+  Groups evaluate with all/any recursion; `resolve_actions` returns the
+  chain with per-step `$state:`/`$expr:` substitution. Both gates
+  validate the shapes fail-closed with byte-identical messages
+  (unknown logic, empty/non-object entries, unknown states in nested
+  groups, both-or-neither action forms); Nyforge mirrors as ER-NUI-024
+  / ER-NUI-005 and evaluates groups identically. `desktop.nstudio`
+  exercises a real 2-action theme chain and an AND quiet-hours guard.
+  Floor `TestBehaviorLogicGraphs` +11, crate conformance +4. Suite
+  651 → **666**; Nyforge 213/213.
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

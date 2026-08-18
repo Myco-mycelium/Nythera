@@ -170,6 +170,9 @@ class NstudioBehavior:
     id: str
     condition: Optional[Dict[str, Any]]
     action: Dict[str, Any]
+    # Action chains (NUI-SCHEMA §7.3): a non-empty list of actions run
+    # in order. Exactly one of `action` (single) / `actions` (chain).
+    actions: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -264,8 +267,9 @@ class NstudioDocument:
                 return found
         return None
 
-    def resolve_action(self, behavior_id: str) -> Tuple[str, str, Dict[str, Any]]:
-        """Resolve a behavior to ``(target, name, arguments)`` with any
+    def resolve_actions(self, behavior_id: str) -> List[Tuple[str, str, Dict[str, Any]]]:
+        """Resolve a behavior to its action list — the single ``action``
+        or the ``actions`` chain (NUI-SCHEMA §7.3) — with any
         ``$state:key`` and ``$expr:`` arguments substituted from the
         current document state (NFS-001 §7.1/§7.2: plain substitution,
         missing keys left as the literal placeholder)."""
@@ -273,26 +277,37 @@ class NstudioDocument:
         if behavior is None:
             raise NstudioValidationError(
                 f"behavior '{behavior_id}' does not exist")
-        action = behavior.action
-        args: Dict[str, Any] = {}
-        for key, value in (action.get("arguments") or {}).items():
-            if isinstance(value, str) and value.startswith("$state:"):
-                state_key = value[len("$state:"):]
-                args[key] = self.resolve_state(state_key, value)
-            elif isinstance(value, str) and value.startswith("$expr:"):
-                expression = value[len("$expr:"):]
-                args[key] = nexpr.eval_expr(
-                    nexpr.parse(expression), self.resolve_states())
-            else:
-                args[key] = value
-        return action.get("target", ""), action.get("name", ""), args
+        actions = behavior.actions or [behavior.action]
+        resolved = []
+        for action in actions:
+            args: Dict[str, Any] = {}
+            for key, value in (action.get("arguments") or {}).items():
+                if isinstance(value, str) and value.startswith("$state:"):
+                    state_key = value[len("$state:"):]
+                    args[key] = self.resolve_state(state_key, value)
+                elif isinstance(value, str) and value.startswith("$expr:"):
+                    expression = value[len("$expr:"):]
+                    args[key] = nexpr.eval_expr(
+                        nexpr.parse(expression), self.resolve_states())
+                else:
+                    args[key] = value
+            resolved.append(
+                (action.get("target", ""), action.get("name", ""), args))
+        return resolved
+
+    def resolve_action(self, behavior_id: str) -> Tuple[str, str, Dict[str, Any]]:
+        """Resolve a behavior to its first action's ``(target, name,
+        arguments)`` — back-compatible with the single ``action`` form;
+        a chain resolves to its first step."""
+        return self.resolve_actions(behavior_id)[0]
 
     def resolve_condition(self, behavior_id: str) -> Optional[bool]:
         """Evaluate a behavior's condition against the current document
         state. Returns ``None`` when the behavior has no condition (its
-        action always runs). An ``expression`` condition is evaluated by
-        the expression language (NUI-SCHEMA §7.2); the legacy
-        ``state/operator/value`` equality form is evaluated here too."""
+        action always runs). A leaf condition is an ``expression``
+        (NUI-SCHEMA §7.2) or the legacy ``state/operator/value`` equality
+        form; a ``logic`` group (NUI-SCHEMA §7.3) combines its
+        sub-conditions with AND/OR, recursively."""
         behavior = self.behavior_by_id(behavior_id)
         if behavior is None:
             raise NstudioValidationError(
@@ -300,6 +315,16 @@ class NstudioDocument:
         condition = behavior.condition
         if condition is None:
             return None
+        return self._eval_condition(condition)
+
+    def _eval_condition(self, condition: Dict[str, Any]) -> bool:
+        """Evaluate one condition dict — leaf (expression or equality)
+        or AND/OR logic group — against the current document state."""
+        logic = condition.get("logic")
+        if logic is not None:
+            sub = [self._eval_condition(c)
+                   for c in condition.get("conditions") or []]
+            return all(sub) if logic == "and" else any(sub)
         expression = condition.get("expression")
         if isinstance(expression, str):
             return nexpr.eval_expr(
@@ -448,14 +473,39 @@ def _parse_behavior(raw: Any) -> NstudioBehavior:
     if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
         raise NstudioValidationError("behavior entries must be objects with a string 'id'")
     action = raw.get("action")
-    if not isinstance(action, dict) or not isinstance(action.get("name"), str):
+    actions = raw.get("actions")
+    if action is not None and actions is not None:
+        raise NstudioValidationError(
+            f"behavior '{raw['id']}': must declare either 'action' or "
+            f"'actions', not both")
+    if action is None and actions is None:
+        raise NstudioValidationError(
+            f"behavior '{raw['id']}' must declare an 'action' or 'actions'")
+    if action is None:
+        # Action chain (NUI-SCHEMA §7.3): a non-empty list of actions
+        # run in order; the model keeps the first as `action` for the
+        # back-compatible single-action surface.
+        if not isinstance(actions, list) or not actions:
+            raise NstudioValidationError(
+                f"behavior '{raw['id']}': 'actions' must be a non-empty "
+                f"list")
+        if not all(isinstance(a, dict) and isinstance(a.get("name"), str)
+                   for a in actions):
+            raise NstudioValidationError(
+                f"behavior '{raw['id']}': each 'actions' entry must "
+                f"declare a 'name'")
+        action = actions[0]
+    elif not isinstance(action, dict) or not isinstance(action.get("name"), str):
         raise NstudioValidationError(
             f"behavior '{raw['id']}' action must declare a 'name'")
+    else:
+        actions = []
     condition = raw.get("condition")
     if condition is not None and not isinstance(condition, dict):
         raise NstudioValidationError(
             f"behavior '{raw['id']}' condition must be null or an object")
-    return NstudioBehavior(id=raw["id"], condition=condition, action=action)
+    return NstudioBehavior(id=raw["id"], condition=condition, action=action,
+                           actions=actions)
 
 
 def _parse_animation(raw: Any) -> NstudioAnimation:
@@ -1011,63 +1061,100 @@ def _scoped_state_keys(doc: NstudioDocument) -> set:
 
 def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
                        issues: List[str], component_ids: List[str]) -> None:
-    condition = behavior.condition
-    if condition is not None:
-        expression = condition.get("expression")
-        if expression is not None:
-            # Expression conditions (NUI-SCHEMA §7.2) supersede the
-            # legacy state/operator/value equality form.
-            if not isinstance(expression, str):
-                issues.append(
-                    f"behavior '{behavior.id}': condition expression must "
-                    f"be a string")
-            else:
-                try:
-                    node = nexpr.parse(expression)
-                except nexpr.ExprError as exc:
-                    issues.append(
-                        f"behavior '{behavior.id}' condition expression: "
-                        f"{exc}")
-                else:
-                    problem = nexpr.validate(node, _scoped_state_keys(doc) | set(doc.states))
-                    if problem is not None:
-                        issues.append(
-                            f"behavior '{behavior.id}' condition "
-                            f"expression: {problem}")
-        else:
-            operator = condition.get("operator")
-            if operator not in ("equals", "notEquals"):
-                issues.append(
-                    f"behavior '{behavior.id}': condition operator must be "
-                    f"'equals' or 'notEquals'")
-            state_key = condition.get("state")
-            if not _state_known(state_key, doc):
-                issues.append(
-                    f"behavior '{behavior.id}': condition references "
-                    f"unknown state '{state_key}'")
+    if behavior.condition is not None:
+        _validate_condition(
+            f"behavior '{behavior.id}'", behavior.condition, doc, issues)
+    actions = behavior.actions or [behavior.action]
+    for action in actions:
+        _validate_behavior_action(
+            behavior.id, action, doc, issues, component_ids)
 
-    target = behavior.action.get("target")
-    name = behavior.action.get("name")
+
+def _validate_condition(where: str, condition: Dict[str, Any],
+                        doc: NstudioDocument, issues: List[str],
+                        prefix: str = "") -> None:
+    """Validate one condition dict — a leaf (an ``expression`` or the
+    legacy ``state/operator/value`` equality form) or an AND/OR ``logic``
+    group (NUI-SCHEMA §7.3) — with byte-identical messages to the Rust
+    crate. ``prefix`` is the element path inside groups (" 0", " 0.1")
+    for nested conditions."""
+    logic = condition.get("logic")
+    if logic is not None:
+        if logic not in ("and", "or"):
+            issues.append(
+                f"{where}: condition{prefix} 'logic' must be 'and' or 'or'")
+        conditions = condition.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
+            issues.append(
+                f"{where}: condition{prefix} 'conditions' must be a "
+                f"non-empty list")
+            return
+        for i, sub in enumerate(conditions):
+            if not isinstance(sub, dict):
+                issues.append(
+                    f"{where}: condition{prefix} {i} must be an object")
+            else:
+                _validate_condition(
+                    where, sub, doc, issues, prefix=f"{prefix} {i}")
+        return
+    expression = condition.get("expression")
+    if expression is not None:
+        # Expression conditions (NUI-SCHEMA §7.2) supersede the legacy
+        # state/operator/value equality form.
+        if not isinstance(expression, str):
+            issues.append(
+                f"{where}: condition{prefix} expression must be a string")
+        else:
+            try:
+                node = nexpr.parse(expression)
+            except nexpr.ExprError as exc:
+                issues.append(
+                    f"{where} condition{prefix} expression: {exc}")
+            else:
+                problem = nexpr.validate(
+                    node, _scoped_state_keys(doc) | set(doc.states))
+                if problem is not None:
+                    issues.append(
+                        f"{where} condition{prefix} expression: {problem}")
+        return
+    operator = condition.get("operator")
+    if operator not in ("equals", "notEquals"):
+        issues.append(
+            f"{where}: condition{prefix} operator must be "
+            f"'equals' or 'notEquals'")
+    state_key = condition.get("state")
+    if not _state_known(state_key, doc):
+        issues.append(
+            f"{where}: condition{prefix} references "
+            f"unknown state '{state_key}'")
+
+
+def _validate_behavior_action(behavior_id: str, action: Dict[str, Any],
+                              doc: NstudioDocument, issues: List[str],
+                              component_ids: List[str]) -> None:
+    """Validate one action dict — the single ``action`` or one entry of
+    an ``actions`` chain — against the component/system contracts."""
+    target = action.get("target")
+    name = action.get("name")
     if target == "System":
         allowed = SYSTEM_ACTIONS.get(name)
         if allowed is None:
             issues.append(
-                f"behavior '{behavior.id}': unknown system action '{name}'")
+                f"behavior '{behavior_id}': unknown system action '{name}'")
         else:
-            for arg in (behavior.action.get("arguments") or {}):
+            for arg in (action.get("arguments") or {}):
                 if arg not in allowed:
                     issues.append(
-                        f"behavior '{behavior.id}': argument '{arg}' not "
+                        f"behavior '{behavior_id}': argument '{arg}' not "
                         f"in the '{name}' contract")
             if name == "Nyrqis.Animation.Play":
                 # The animation reference must name a declared animation
                 # (NUI-SCHEMA §8.3) — fail-closed like every other
                 # dangling reference.
-                anim_id = (behavior.action.get("arguments") or {}).get(
-                    "animation")
+                anim_id = (action.get("arguments") or {}).get("animation")
                 if anim_id not in {a.id for a in doc.animations}:
                     issues.append(
-                        f"behavior '{behavior.id}': animation "
+                        f"behavior '{behavior_id}': animation "
                         f"'{anim_id}' is not declared in 'animations'")
     elif target in component_ids:
         component = doc.find_component(target)
@@ -1075,18 +1162,18 @@ def _validate_behavior(behavior: NstudioBehavior, doc: NstudioDocument,
         actions = contract[3] if contract else ()
         if name not in actions:
             issues.append(
-                f"behavior '{behavior.id}': action '{name}' not declared "
+                f"behavior '{behavior_id}': action '{name}' not declared "
                 f"by component '{target}'")
     else:
         issues.append(
-            f"behavior '{behavior.id}': action target '{target}' is "
+            f"behavior '{behavior_id}': action target '{target}' is "
             f"neither 'System' nor a component id")
 
-    for value in (behavior.action.get("arguments") or {}).values():
+    for value in (action.get("arguments") or {}).values():
         _check_localize_ref(
-            value, doc, issues, f"behavior '{behavior.id}' argument")
+            value, doc, issues, f"behavior '{behavior_id}' argument")
         _check_expr_ref(
-            value, doc, issues, f"behavior '{behavior.id}' argument")
+            value, doc, issues, f"behavior '{behavior_id}' argument")
 
 
 def _check_expr_ref(value: Any, doc: NstudioDocument, issues: List[str],

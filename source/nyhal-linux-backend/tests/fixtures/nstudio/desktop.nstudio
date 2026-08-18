@@ -99,13 +99,22 @@
     {
       "id": "behavior_theme_eclipse",
       "condition": null,
-      "action": {
-        "target": "System",
-        "name": "Nyrqis.Theme.Set",
-        "arguments": {
-          "theme": "Eclipse"
+      "actions": [
+        {
+          "target": "System",
+          "name": "Nyrqis.Theme.Set",
+          "arguments": {
+            "theme": "Eclipse"
+          }
+        },
+        {
+          "target": "System",
+          "name": "Nyrqis.Animation.Play",
+          "arguments": {
+            "animation": "start_menu_fade"
+          }
         }
-      }
+      ]
     },
     {
       "id": "behavior_theme_solar",
@@ -138,6 +147,25 @@
         "arguments": {
           "title": "$expr:format(state.session.clockTime, \"{0}\")",
           "message": "$localize:notif.dnd",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_quiet_notify",
+      "condition": {
+        "logic": "and",
+        "conditions": [
+          { "expression": "state.doNotDisturb == true" },
+          { "expression": "state.volume > 50" }
+        ]
+      },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Volume",
+          "message": "Volume above 50%",
           "severity": "info"
         }
       }
@@ -432,7 +460,7 @@
                 "type": "Slider",
                 "properties": { "value": 60, "min": 0, "max": 100 },
                 "layout": { "x": 16, "y": 112, "width": 352, "height": 24 },
-                "events": {},
+                "events": { "changed": "behavior_quiet_notify" },
                 "children": []
               },
               {

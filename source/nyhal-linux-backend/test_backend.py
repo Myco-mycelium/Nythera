@@ -13187,7 +13187,7 @@ class TestNstudioImport(unittest.TestCase):
         and must pass the same gate as every other design."""
         doc = self._load("desktop.nstudio")
         self.assertEqual(len(doc.component_ids()), 37)
-        self.assertEqual(len(doc.behaviors), 10)
+        self.assertEqual(len(doc.behaviors), 11)
         self.assertEqual(len(doc.bindings), 6)
         self.assertEqual([s.id for s in doc.screens], ["desktop", "lock"])
         self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
@@ -13267,6 +13267,17 @@ class TestNstudioImport(unittest.TestCase):
         target, name, _args = doc.resolve_action("behavior_launcher_open")
         self.assertEqual(target, "launcher")
         self.assertEqual(name, "Open")
+        # Logic graphs (NUI-SCHEMA §7.3): the theme toggle is a 2-action
+        # chain (Theme.Set then Animation.Play) and the quiet-hours
+        # notification guard is an AND condition group.
+        chain = doc.resolve_actions("behavior_theme_eclipse")
+        self.assertEqual([c[1] for c in chain],
+                         ["Nyrqis.Theme.Set", "Nyrqis.Animation.Play"])
+        quiet = doc.behavior_by_id("behavior_quiet_notify").condition
+        self.assertEqual(quiet["logic"], "and")
+        self.assertEqual(len(quiet["conditions"]), 2)
+        # The AND group evaluates False by default (quiet hours off).
+        self.assertIs(doc.resolve_condition("behavior_quiet_notify"), False)
 
     def test_windows_shell_fixture_shape(self):
         """The window-system + power-UI shell screens (0.14.25 shell
@@ -14170,6 +14181,132 @@ class TestStateScopes(unittest.TestCase):
         self.assertEqual(args["title"], "14:32")
 
 
+class TestBehaviorLogicGraphs(unittest.TestCase):
+    """Behavior logic graphs (NUI-SCHEMA §7.3): nested AND/OR condition
+    groups and action chains — the internal representation the visual
+    logic-graph editor builds on. The floor evaluates groups with the
+    all/any recursion and enforces the group/chain shapes fail-closed,
+    with byte-identical messages to the Rust crate (conformance class)."""
+
+    def _doc(self, behaviors):
+        return nstudio.loads(json.dumps({
+            "version": "0.4.0",
+            "project": {"name": "t", "id": "t"},
+            "themes": {"active": "Eclipse"},
+            "states": {"dnd": True, "volume": 60, "theme": "Eclipse"},
+            "behaviors": behaviors,
+            "bindings": [],
+            "screens": [{"id": "s", "size": {"width": 100, "height": 100},
+                "root": {"id": "btn", "type": "Button",
+                    "properties": {"text": "Go"},
+                    "layout": {"x": 0, "y": 0, "width": 10, "height": 10},
+                    "events": {}, "children": []}}],
+        }))
+
+    @staticmethod
+    def _leaf(state, value, operator="equals"):
+        return {"state": state, "operator": operator, "value": value}
+
+    COMMIT = {"target": "System", "name": "Nyrqis.Settings.Commit"}
+
+    def test_and_group_evaluates_as_all(self):
+        doc = self._doc([{"id": "b1", "condition": {"logic": "and",
+            "conditions": [self._leaf("dnd", True),
+                            self._leaf("theme", "Eclipse")]},
+            "action": self.COMMIT}])
+        self.assertIs(doc.resolve_condition("b1"), True)
+
+        doc = self._doc([{"id": "b1", "condition": {"logic": "and",
+            "conditions": [self._leaf("dnd", True),
+                            self._leaf("theme", "Solar")]},
+            "action": self.COMMIT}])
+        self.assertIs(doc.resolve_condition("b1"), False)
+
+    def test_or_group_evaluates_as_any(self):
+        doc = self._doc([{"id": "b1", "condition": {"logic": "or",
+            "conditions": [self._leaf("dnd", False),
+                            self._leaf("theme", "Eclipse")]},
+            "action": self.COMMIT}])
+        self.assertIs(doc.resolve_condition("b1"), True)
+
+    def test_nested_groups_evaluate_recursively(self):
+        doc = self._doc([{"id": "b1", "condition": {"logic": "or",
+            "conditions": [
+                {"logic": "and", "conditions": [
+                    self._leaf("dnd", False), self._leaf("volume", 60)]},
+                self._leaf("theme", "Eclipse")]},
+            "action": self.COMMIT}])
+        self.assertIs(doc.resolve_condition("b1"), True)
+
+    def test_chain_resolves_in_order(self):
+        doc = self._doc([{"id": "b1", "condition": None, "actions": [
+            {"target": "System", "name": "Nyrqis.Theme.Set",
+             "arguments": {"theme": "Solar"}},
+            self.COMMIT]}])
+        chain = doc.resolve_actions("b1")
+        self.assertEqual([(t, n) for t, n, _ in chain],
+                         [("System", "Nyrqis.Theme.Set"),
+                          ("System", "Nyrqis.Settings.Commit")])
+        # The back-compatible single-action surface returns the first step.
+        target, name, _ = doc.resolve_action("b1")
+        self.assertEqual((target, name), ("System", "Nyrqis.Theme.Set"))
+
+    def test_unknown_logic_operator_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": {"logic": "xor",
+                "conditions": [self._leaf("dnd", True)]},
+                "action": self.COMMIT}])
+        self.assertIn("condition 'logic' must be 'and' or 'or'",
+                      str(ctx.exception))
+
+    def test_empty_conditions_group_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": {"logic": "and",
+                "conditions": []}, "action": self.COMMIT}])
+        self.assertIn("'conditions' must be a non-empty list",
+                      str(ctx.exception))
+
+    def test_non_object_sub_condition_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": {"logic": "and",
+                "conditions": ["nope"]}, "action": self.COMMIT}])
+        self.assertIn("condition 0 must be an object", str(ctx.exception))
+
+    def test_both_action_and_actions_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": None,
+                "action": self.COMMIT,
+                "actions": [self.COMMIT]}])
+        self.assertIn("must declare either 'action' or 'actions', not both",
+                      str(ctx.exception))
+
+    def test_neither_action_nor_actions_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": None}])
+        self.assertIn("must declare an 'action' or 'actions'",
+                      str(ctx.exception))
+
+    def test_unknown_state_in_nested_group_rejected(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": {"logic": "or",
+                "conditions": [
+                    {"logic": "and", "conditions": [
+                        self._leaf("dnd", True), self._leaf("ghost", 1)]},
+                    self._leaf("theme", "Eclipse")]},
+                "action": self.COMMIT}])
+        self.assertIn("condition 0 1 references unknown state 'ghost'",
+                      str(ctx.exception))
+
+    def test_nested_expression_condition_validated(self):
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            self._doc([{"id": "b1", "condition": {"logic": "and",
+                "conditions": [{"expression": "state.dnd == true"},
+                                {"expression": "state.ghost == 1"}]},
+                "action": self.COMMIT}])
+        self.assertIn("condition 1 expression: expr: unknown state "
+                      "'state.ghost'", str(ctx.exception))
+
+
 class TestNstudioCodecConformance(unittest.TestCase):
     """ADR-0025 differential: the Rust nyui crate (via the FFI loader
     ui/nstudio_codec.py) must reject exactly what the reference floor
@@ -14318,6 +14455,42 @@ class TestNstudioCodecConformance(unittest.TestCase):
                             '"offset": 1.0')
         self._rejects(text, "keyframe 2 'value' must be a number, "
                             "string, or boolean")
+
+    # ---- logic graphs (NUI-SCHEMA §7.3) ---------------------------------
+
+    def test_crate_rejects_unknown_logic_operator(self):
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"logic": "and"', '"logic": "xor"')
+        self._rejects(text, "condition 'logic' must be 'and' or 'or'")
+
+    def test_crate_rejects_empty_conditions_group(self):
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"conditions": [\n'
+            '          { "expression": "state.doNotDisturb == true" },\n'
+            '          { "expression": "state.volume > 50" }\n'
+            '        ]',
+            '"conditions": []')
+        self._rejects(text, "condition 'conditions' must be a non-empty list")
+
+    def test_crate_rejects_both_action_and_actions(self):
+        """A behavior declaring both the single `action` and an `actions`
+        chain fails identically on both gates."""
+        text = self._mutate(self._text("desktop.nstudio"), '"actions": [',
+                            '"action": {"target": "System", "name": '
+                            '"Nyrqis.Settings.Commit"}, "actions": [')
+        self._rejects(text, "must declare either 'action' or 'actions', "
+                            "not both")
+
+    def test_crate_rejects_unknown_state_in_nested_group(self):
+        """The quiet-hours AND group's second leaf references a state
+        that doesn't exist — the crate reports it at the group path,
+        byte-identical to the floor."""
+        text = self._mutate(self._text("desktop.nstudio"),
+                            '"expression": "state.volume > 50"',
+                            '"expression": "state.ghostState == true"')
+        self._rejects(text, "condition 1 expression: expr: unknown state "
+                            "'state.ghostState'")
 
     def test_crate_rejects_unknown_property_on_appgrid(self):
         """The new Shell vocabulary is gated identically: a bogus
@@ -14648,6 +14821,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestExpressions))
     suite.addTests(loader.loadTestsFromTestCase(TestAnimations))
     suite.addTests(loader.loadTestsFromTestCase(TestStateScopes))
+    suite.addTests(loader.loadTestsFromTestCase(TestBehaviorLogicGraphs))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
     
     runner = unittest.TextTestRunner(verbosity=2)

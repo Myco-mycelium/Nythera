@@ -16,6 +16,31 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.39] — 2026-08-18
+
+### Behavior logic graphs (NUI-SCHEMA §7.3)
+
+- **Nested AND/OR condition groups.** A behavior's `condition` is a
+  leaf (expression or the legacy `state`/`operator`/`value` equality
+  form) or a `logic: and|or` group whose `conditions` is a non-empty
+  list of condition objects — each itself a leaf or a group,
+  recursively. Groups evaluate with all/any recursion
+  (`resolve_condition` / `_eval_condition`).
+- **Ordered action chains.** A behavior declares **exactly one** of a
+  single `action` / a non-empty `actions` chain run in order — both,
+  or neither, is rejected at parse. `resolve_actions` returns the
+  chain (with `$state:`/`$expr:` substitution per step);
+  `resolve_action` stays back-compatible as the first step.
+- **Fail-closed, byte-identical on both gates:** unknown `logic`
+  values, empty/non-object group entries, unknown states inside
+  nested groups (with the space-separated element path, e.g.
+  `condition 0 1`), and the both-or-neither action forms are rejected
+  with identical messages on the floor and the Rust crate — 4 new
+  crate conformance cases verified. Nyforge mirrors as ER-NUI-024 /
+  ER-NUI-005 and evaluates groups identically in
+  `BehaviorEvaluator`; `desktop.nstudio` exercises a real 2-action
+  theme chain and an AND quiet-hours guard.
+
 ## [0.14.38] — 2026-08-18
 
 ### Animation keyframes (NUI-SCHEMA §8.3)

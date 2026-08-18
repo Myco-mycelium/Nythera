@@ -402,6 +402,24 @@ the window's `Close` action. Unknown properties/events on the new types
 fail both gates with byte-identical messages (differential). Suite 635
 → **642**.
 
+**2026-08-18 (0.14.39): behavior logic graphs (NUI-SCHEMA §7.3).** A
+behavior's `condition` is now a leaf or a recursively-nested
+`logic: and|or` group (non-empty `conditions` list, each entry a leaf or
+a group), and its `DO` is exactly one of a single `action` / a non-empty
+`actions` chain run in order — both or neither rejected at parse. Groups
+evaluate with all/any recursion (`resolve_condition`/`_eval_condition`);
+`resolve_actions` returns the chain with per-step `$state:`/`$expr:`
+substitution, `resolve_action` stays the back-compatible first step.
+Both gates validate the shapes fail-closed with byte-identical messages
+(unknown logic, empty/non-object group entries, unknown states in nested
+groups with the space-separated element path, both-or-neither action
+forms) — 4 new crate conformance cases; Nyforge mirrors as ER-NUI-024 /
+ER-NUI-005 with `BehaviorEvaluator` all/any recursion and serializer
+output free of empty `actions`/`conditions` noise. `desktop.nstudio`
+exercises a real 2-action theme chain (Theme.Set then Animation.Play)
+and an AND quiet-hours guard. Floor `TestBehaviorLogicGraphs` +11, crate
+conformance +4. Suite 651 → **666**.
+
 **2026-08-18 (0.14.38): animation keyframes (NUI-SCHEMA §8.3).** An
 animation may carry an optional `keyframes` list — `[{"offset":
 0.0–1.0, "value": …}]` stops with strictly increasing offsets and a
