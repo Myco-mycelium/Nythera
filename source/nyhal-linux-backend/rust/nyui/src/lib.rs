@@ -15,7 +15,7 @@
 //! (`ui/nstudio.py`) reads the same file, and NyForge regenerates its C#
 //! tables from it. A registry change that isn't compiled into this crate
 //! is a build failure, not a silent drift. Schema versioning per
-//! NFS-001 §9: a document must declare `version == "0.4.0"` (this
+//! NFS-001 §9: a document must declare `version == "1.0.0"` (this
 //! crate's `SUPPORTED_SCHEMA_VERSION`), else validation fails loudly
 //! instead of silently misinterpreting the file.
 //!
@@ -55,7 +55,7 @@ use std::sync::OnceLock;
 // Contract tables — from the Nyrqis API Registry (NFS-006 / ADR-0025)
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_SCHEMA_VERSION: &str = "0.4.0";
+const SUPPORTED_SCHEMA_VERSION: &str = "1.0.0";
 
 const ABI_VERSION: u32 = 0x0001_0000;
 
@@ -1218,7 +1218,7 @@ mod tests {
     use super::*;
 
     const VALID_SHELL: &str = r#"{
-      "version": "0.4.0",
+      "version": "1.0.0",
       "project": { "name": "Nyrqis Shell" },
       "states": { "doNotDisturb": false, "lastRefresh": "12:04" },
       "animations": [
@@ -1257,7 +1257,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_schema_version() {
-        let text = VALID_SHELL.replace("\"version\": \"0.4.0\"", "\"version\": \"0.3.0\"");
+        let text = VALID_SHELL.replace("\"version\": \"1.0.0\"", "\"version\": \"0.3.0\"");
         let err = validate(&text).unwrap_err();
         assert!(err.contains("unsupported schema version '0.3.0'"), "{err}");
     }

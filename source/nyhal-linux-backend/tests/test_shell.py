@@ -19,7 +19,7 @@ _DESKTOP_FIXTURE = os.path.join(
     _NYFORGE_ROOT, "examples", "nyrqis-shell", "desktop.nstudio")
 
 _MINIMAL_SHELL = json.dumps({
-    "version": "0.4.0",
+    "version": "1.0.0",
     "project": {"name": "Shell", "id": "shell", "created": "2026-01-01T00:00:00Z", "updated": "2026-01-01T00:00:00Z"},
     "themes": {"active": "Eclipse", "overrides": {}},
     "states": {"volume": 60, "startMenuOpen": False, "doNotDisturb": False},

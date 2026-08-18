@@ -17,7 +17,7 @@ from ui.runtime import NyrqisRuntime
 # ---- fixtures -----------------------------------------------------------
 
 _MINIMAL_DOC = json.dumps({
-    "version": "0.4.0",
+    "version": "1.0.0",
     "project": {"name": "Test", "id": "test", "created": "2026-01-01T00:00:00Z", "updated": "2026-01-01T00:00:00Z"},
     "themes": {"active": "Eclipse", "overrides": {}},
     "states": {"volume": 60, "startMenuOpen": False, "doNotDisturb": False},

@@ -12907,7 +12907,7 @@ class TestNuiService(unittest.TestCase):
                 "document": self._shell()}).encode())
             self.assertTrue(resp["ok"], resp)
             summary = resp["summary"]
-            self.assertEqual(summary["version"], "0.4.0")
+            self.assertEqual(summary["version"], "1.0.0")
             self.assertIn(summary["engine"], ("rust", "python"))
             self.assertEqual(summary["screens"], ["main"])
             self.assertEqual(summary["components"], 71)
@@ -12939,7 +12939,7 @@ class TestNuiService(unittest.TestCase):
         client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
         try:
             bad = self._shell().replace(
-                '"version": "0.4.0"', '"version": "0.2.0"')
+                '"version": "1.0.0"', '"version": "0.2.0"')
             resp = self._call(client, json.dumps({
                 "service": "nui", "op": "nui_validate",
                 "document": bad}).encode())
@@ -13330,7 +13330,7 @@ class TestNstudioImport(unittest.TestCase):
     def test_version_gate(self):
         text = open(self._fixture("nyrqis-shell.nstudio")).read()
         with self.assertRaises(nstudio.NstudioVersionError):
-            nstudio.loads(text.replace('"version": "0.4.0"', '"version": "0.2.0"'))
+            nstudio.loads(text.replace('"version": "1.0.0"', '"version": "0.2.0"'))
 
     def test_malformed_json(self):
         with self.assertRaises(nstudio.NstudioValidationError):
@@ -13645,7 +13645,7 @@ class TestLocalization(unittest.TestCase):
 
     def _doc(self, extra=""):
         return nstudio.loads("""{
-          "version": "0.4.0",
+          "version": "1.0.0",
           "project": {"name": "t", "id": "t"},
           "themes": {"active": "Eclipse"},
           "locales": {"active": "en", "tables": {"en": {"search.label": "Search"}}},
@@ -13683,7 +13683,7 @@ class TestLocalization(unittest.TestCase):
     def test_active_locale_without_table_rejected(self):
         with self.assertRaises(nstudio.NstudioValidationError) as ctx:
             nstudio.loads("""{
-              "version": "0.4.0",
+              "version": "1.0.0",
               "project": {"name": "t", "id": "t"},
               "themes": {"active": "Eclipse"},
               "locales": {"active": "fr", "tables": {"en": {"a": "b"}}},
@@ -13694,7 +13694,7 @@ class TestLocalization(unittest.TestCase):
     def test_localize_without_locales_section_rejected(self):
         with self.assertRaises(nstudio.NstudioValidationError) as ctx:
             nstudio.loads("""{
-              "version": "0.4.0",
+              "version": "1.0.0",
               "project": {"name": "t", "id": "t"},
               "themes": {"active": "Eclipse"},
               "states": {}, "behaviors": [], "bindings": [],
@@ -13725,7 +13725,7 @@ class TestResources(unittest.TestCase):
 
     def _doc(self, assets, props):
         return nstudio.loads(json.dumps({
-            "version": "0.4.0",
+            "version": "1.0.0",
             "project": {"name": "t", "id": "t"},
             "themes": {"active": "Eclipse"},
             "locales": {},
@@ -13804,7 +13804,7 @@ class TestExpressions(unittest.TestCase):
         if extra_states:
             states.update(extra_states)
         return nstudio.loads(json.dumps({
-            "version": "0.4.0",
+            "version": "1.0.0",
             "project": {"name": "t", "id": "t"},
             "themes": {"active": "Eclipse"},
             "states": states,
@@ -13911,7 +13911,7 @@ class TestAnimations(unittest.TestCase):
 
     def _doc(self, animations, behavior_args=None):
         return nstudio.loads(json.dumps({
-            "version": "0.4.0",
+            "version": "1.0.0",
             "project": {"name": "t", "id": "t"},
             "themes": {"active": "Eclipse"},
             "states": {},
@@ -14077,7 +14077,7 @@ class TestStateScopes(unittest.TestCase):
 
     def _doc(self, scopes, cond=None, bind=None, arg=None):
         return nstudio.loads(json.dumps({
-            "version": "0.4.0",
+            "version": "1.0.0",
             "project": {"name": "t", "id": "t"},
             "themes": {"active": "Eclipse"},
             "states": {"volume": 60},
@@ -14190,7 +14190,7 @@ class TestBehaviorLogicGraphs(unittest.TestCase):
 
     def _doc(self, behaviors):
         return nstudio.loads(json.dumps({
-            "version": "0.4.0",
+            "version": "1.0.0",
             "project": {"name": "t", "id": "t"},
             "themes": {"active": "Eclipse"},
             "states": {"dnd": True, "volume": 60, "theme": "Eclipse"},
@@ -14347,7 +14347,7 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
     def test_crate_version_gate(self):
         text = self._mutate(self._text("nyrqis-shell.nstudio"),
-                            '"version": "0.4.0"', '"version": "0.2.0"')
+                            '"version": "1.0.0"', '"version": "0.2.0"')
         self._rejects(text, "unsupported schema version '0.2.0'", nstudio.NstudioVersionError)
 
     def test_crate_rejects_unknown_type(self):

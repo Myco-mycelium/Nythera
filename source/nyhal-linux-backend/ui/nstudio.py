@@ -43,8 +43,8 @@ from . import nexpr
 # Contract tables — from the Nyrqis API Registry (NFS-006 / ADR-0025)
 # ---------------------------------------------------------------------------
 
-NSTUDIO_SCHEMA_VERSION = "0.4.0"
-SUPPORTED_SCHEMA_VERSIONS = ("0.4.0",)
+NSTUDIO_SCHEMA_VERSION = "1.0.0"
+SUPPORTED_SCHEMA_VERSIONS = ("0.4.0", "1.0.0")
 
 # State scopes (NUI-SCHEMA §8.4): the ``stateScopes`` section maps a
 # scope name to its state dictionary. ``global`` is the named form of
