@@ -54,6 +54,7 @@ from typing import Any, Dict, Optional
 from ipc.transport import DEFAULT_OPERATOR_ID  # operator carve-out (below)
 from . import nstudio
 from . import nstudio_codec
+from .runtime import NyrqisRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,9 @@ class NuiService:
             elif op == "nui_current":
                 self._nui_current(server, sender_path, msg.message_id,
                                   request)
+            elif op == "shell_run":
+                self._shell_run(server, sender_path, msg.message_id,
+                                request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -267,6 +271,41 @@ class NuiService:
             "service_version": self.SERVICE_VERSION,
             "summary": detail,
         })
+
+    def _shell_run(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        """Run the loaded shell design: exercise all behaviors,
+        apply all bindings, and return the runtime state.
+
+        Request: {"op": "shell_run", "document": "..."}
+        Response: {"ok": true, "summary": {...}, "behaviors_executed": N,
+                   "final_states": {...}, "text_preview": "...",
+                   "log": [...]}"""
+        document = request.get("document")
+        if not isinstance(document, str):
+            # Try loading the persisted design
+            persisted = os.path.join(
+                self.state_dir or "", "ui", "shell.nstudio")
+            if self.state_dir and os.path.exists(persisted):
+                with open(persisted, "r", encoding="utf-8") as f:
+                    document = f.read()
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "no document provided and no persisted design",
+                })
+                return
+
+        try:
+            from .shell import NyrqisShell
+            shell = NyrqisShell.from_json(document)
+            result = shell.run()
+            self._reply(server, sender_path, call_id, result)
+        except nstudio.NstudioError as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"shell_run failed: {exc}",
+            })
 
     def _validate_document(self, document: str):
         """Run the import gate (crate when available, floor otherwise)
