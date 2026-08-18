@@ -132,6 +132,9 @@ class NuiService:
             elif op == "shell_run":
                 self._shell_run(server, sender_path, msg.message_id,
                                 request)
+            elif op == "shell_render":
+                self._shell_render(server, sender_path, msg.message_id,
+                                   request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -271,6 +274,80 @@ class NuiService:
             "service_version": self.SERVICE_VERSION,
             "summary": detail,
         })
+
+    def _shell_render(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        """Render the loaded shell design to PNG images.
+
+        Request: {"op": "shell_render", "document": "...",
+                  "theme": "Eclipse", "scale": 1.0,
+                  "screens": ["screen_id"]}
+        Response: {"ok": true, "screens": {"screen_id": "base64_png"},
+                   "summary": {...}}
+        """
+        document = request.get("document")
+        if not isinstance(document, str):
+            persisted = os.path.join(
+                self.state_dir or "", "ui", "shell.nstudio")
+            if self.state_dir and os.path.exists(persisted):
+                with open(persisted, "r", encoding="utf-8") as f:
+                    document = f.read()
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "no document provided and no persisted design",
+                })
+                return
+
+        theme = request.get("theme", "Eclipse")
+        scale = float(request.get("scale", 1.0))
+        screen_ids = request.get("screens")  # None = all screens
+
+        try:
+            doc = nstudio.loads(document)
+        except nstudio.NstudioError as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"render failed: {exc}",
+            })
+            return
+
+        try:
+            import base64
+            from .compositor import Compositor
+            comp = Compositor(theme_name=theme, scale=scale)
+            rendered = {}
+            target_screens = doc.screens
+            if screen_ids:
+                target_screens = [s for s in doc.screens if s.id in screen_ids]
+            for screen in target_screens:
+                img = comp.render_screen(doc, screen_id=screen.id)
+                import io
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                rendered[screen.id] = base64.b64encode(buf.getvalue()).decode("ascii")
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "service": self.SERVICE_NAME,
+                "service_version": self.SERVICE_VERSION,
+                "screens": rendered,
+                "summary": {
+                    "version": doc.version,
+                    "screens": [s.id for s in target_screens],
+                    "theme": theme,
+                    "scale": scale,
+                },
+            })
+        except ImportError:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "PIL/Pillow is required for shell_render",
+            })
+        except Exception as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"render error: {exc}",
+            })
 
     def _shell_run(self, server, sender_path: str, call_id: str,
                     request: Dict[str, Any]) -> None:

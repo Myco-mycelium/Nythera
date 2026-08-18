@@ -16,7 +16,23 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
-## [0.14.39] — 2026-08-18
+## [0.14.40] — 2026-08-18
+
+### Nyrqis Compositor (`ui/compositor.py`)
+
+- **`Compositor`** — PIL-based visual renderer that converts a loaded
+  `NstudioDocument` into PNG images. Supports Eclipse and Solar themes,
+  configurable scale factor (1x, 2x retina), and renders all 30+
+  NUI component types (Window, Taskbar, StartMenu, Button, Text,
+  Input, Toggle, Slider, ProgressBar, DesktopIcon, Clock, LockScreen,
+  ContextMenu, etc.).
+- **`shell_render` IPC operation** — new NuiService operation that
+  renders the loaded (or provided) shell design to base64-encoded PNG
+  images per screen. Request: `{"op": "shell_render", "theme": "Eclipse",
+  "scale": 1.0}`. Response: `{"screens": {"desktop": "base64..."}}`.
+- **22 new tests** (`tests/test_compositor.py`): theme completeness (6),
+  render operations (12), save to file (1), fixture rendering (3 —
+  loads and renders the real 290-component desktop shell). All green.
 
 ### Nyrqis UI Runtime (`ui/runtime.py`)
 

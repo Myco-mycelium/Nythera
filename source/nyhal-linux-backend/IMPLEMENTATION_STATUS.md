@@ -273,6 +273,25 @@ dispatch, condition evaluation (AND/OR groups), action chains,
 binding application, system actions, and summary. All green on the
 floor path.
 
+**2026-08-18: the Nyrqis Compositor lands.** `ui/compositor.py`
+(`Compositor`) — PIL-based visual renderer that converts a loaded
+`NstudioDocument` into PNG images. Supports:
+
+- **Themes**: Eclipse (dark) and Solar (light), with full RGB palettes
+  for all component types.
+- **Scale factor**: 1.0 (native) and 2.0 (retina) rendering.
+- **30+ component renderers**: Window, Taskbar, StartMenu, Button,
+  Text, Input, Toggle, Slider, ProgressBar, DesktopIcon, Clock,
+  SystemTray, LockScreen, ContextMenu, MenuItem, Notification,
+  QuickSettings, WorkspaceSwitcher, CommandPalette, Launcher, etc.
+- **`shell_render` IPC operation**: new NuiService op that renders the
+  loaded (or provided) shell design to base64-encoded PNG images.
+
+22 new tests (`tests/test_compositor.py`) — theme completeness,
+render operations, save to file, and fixture rendering (loads and
+renders the real 290-component desktop shell in both themes). All
+green.
+
 **2026-08-16 (0.14.23): the import gate rides the control plane + a
 second screen + §30.** `NuiService` (`ui/service.py`) exposes
 `nui_validate` (gate only) and `nui_load` (gate + persist as the daemon's
