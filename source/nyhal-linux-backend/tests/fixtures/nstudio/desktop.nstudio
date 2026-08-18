@@ -44,7 +44,8 @@
     "volume": 60,
     "themeName": "Eclipse",
     "currentWorkspace": 1,
-    "clockTime": "14:32"
+    "clockTime": "14:32",
+    "clockFormat": "24h"
   },
   "stateScopes": {
     "persistent": {
@@ -137,6 +138,24 @@
           "severity": "info"
         }
       }
+    },
+    {
+      "id": "behavior_launcher_open",
+      "condition": null,
+      "action": {
+        "target": "launcher",
+        "name": "Open",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_close_files",
+      "condition": null,
+      "action": {
+        "target": "files_window",
+        "name": "Close",
+        "arguments": {}
+      }
     }
   ],
   "bindings": [
@@ -145,7 +164,7 @@
     { "component": "notif_center", "property": "open", "state": "notifCenterOpen" },
     { "component": "toggle_dnd", "property": "value", "state": "doNotDisturb" },
     { "component": "slider_volume", "property": "value", "state": "volume" },
-    { "component": "clock", "property": "text", "state": "clockTime" }
+    { "component": "clock", "property": "format", "state": "clockFormat" }
   ],
   "screens": [
     {
@@ -188,6 +207,39 @@
                 "layout": { "x": 24, "y": 248, "width": 96, "height": 96 },
                 "events": {},
                 "children": []
+              },
+              {
+                "id": "dock",
+                "type": "Dock",
+                "properties": { "position": "bottom", "pinnedApps": ["Files", "Vault", "Settings", "Media"], "runningApps": ["Terminal"], "autoHide": false, "iconSize": 48, "magnify": true },
+                "layout": { "x": 520, "y": 700, "width": 400, "height": 64 },
+                "events": { "appClicked": "behavior_launch_terminal" },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "files_window",
+            "type": "WindowFrame",
+            "properties": { "title": "Files", "resizable": true, "movable": true, "minimized": false, "maximized": false },
+            "layout": { "x": 520, "y": 140, "width": 480, "height": 360 },
+            "events": {},
+            "children": [
+              {
+                "id": "files_titlebar",
+                "type": "TitleBar",
+                "properties": { "title": "Files", "icon": "Folder" },
+                "layout": { "x": 0, "y": 0, "width": 480, "height": 40 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "files_controls",
+                "type": "WindowControls",
+                "properties": { "showMinimize": true, "showMaximize": true, "showClose": true },
+                "layout": { "x": 400, "y": 4, "width": 72, "height": 32 },
+                "events": { "closeClicked": "behavior_close_files" },
+                "children": []
               }
             ]
           },
@@ -220,7 +272,7 @@
                 "componentRef": "TaskbarButton",
                 "overrides": { "text": "$localize:search.label" },
                 "layout": { "x": 112, "y": 16, "width": 96, "height": 48 },
-                "events": { "clicked": "behavior_search_open" },
+                "events": { "clicked": "behavior_launcher_open" },
                 "children": []
               },
               {
@@ -241,9 +293,9 @@
               },
               {
                 "id": "clock",
-                "type": "Text",
-                "properties": { "text": "14:32" },
-                "layout": { "x": 1216, "y": 24, "width": 80, "height": 32 },
+                "type": "Clock",
+                "properties": { "format": "24h", "showSeconds": false },
+                "layout": { "x": 1216, "y": 16, "width": 80, "height": 48 },
                 "events": {},
                 "children": []
               },
@@ -302,6 +354,31 @@
                 "type": "Input",
                 "properties": { "value": "", "placeholder": "Type a command…" },
                 "layout": { "x": 16, "y": 16, "width": 768, "height": 40 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "launcher",
+            "type": "Launcher",
+            "properties": { "open": false, "query": "" },
+            "layout": { "x": 320, "y": 120, "width": 800, "height": 620 },
+            "events": {},
+            "children": [
+              {
+                "id": "launcher_search",
+                "type": "Search",
+                "properties": { "query": "", "placeholder": "Search apps", "results": [] },
+                "layout": { "x": 32, "y": 32, "width": 736, "height": 40 },
+                "events": { "submitted": "behavior_search_open" },
+                "children": []
+              },
+              {
+                "id": "launcher_grid",
+                "type": "AppGrid",
+                "properties": { "apps": ["Calculator", "Notes", "Weather", "Clock", "Files", "Vault", "Settings", "Terminal"], "columns": 4, "iconSize": 48 },
+                "layout": { "x": 32, "y": 96, "width": 736, "height": 480 },
                 "events": {},
                 "children": []
               }

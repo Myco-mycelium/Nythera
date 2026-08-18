@@ -13186,8 +13186,8 @@ class TestNstudioImport(unittest.TestCase):
         fixture exercises the Shell/Data/Form/Media/Developer components
         and must pass the same gate as every other design."""
         doc = self._load("desktop.nstudio")
-        self.assertEqual(len(doc.component_ids()), 30)
-        self.assertEqual(len(doc.behaviors), 8)
+        self.assertEqual(len(doc.component_ids()), 37)
+        self.assertEqual(len(doc.behaviors), 10)
         self.assertEqual(len(doc.bindings), 6)
         self.assertEqual([s.id for s in doc.screens], ["desktop", "lock"])
         self.assertEqual(doc.screens[0].size, {"width": 1440, "height": 900})
@@ -13231,6 +13231,42 @@ class TestNstudioImport(unittest.TestCase):
         af = dict(doc.locales); af["active"] = "af"
         self.assertEqual(
             nstudio.resolve_text("$localize:search.label", af), "Soek")
+        # The extended Shell vocabulary (AppGrid/Clock/Dock/TitleBar):
+        # the taskbar clock is a real Clock bound to a clockFormat state.
+        clock = doc.find_component("clock")
+        self.assertEqual(clock.type, "Clock")
+        self.assertEqual(clock.properties["format"], "24h")
+        self.assertEqual(doc.bindings[-1].component, "clock")
+        self.assertEqual(doc.bindings[-1].property, "format")
+        self.assertEqual(doc.bindings[-1].state, "clockFormat")
+        # The Dock sits on the desktop surface and launches on appClicked.
+        dock = doc.find_component("dock")
+        self.assertEqual(dock.type, "Dock")
+        self.assertEqual(dock.properties["position"], "bottom")
+        self.assertEqual(dock.events.get("appClicked"),
+                         "behavior_launch_terminal")
+        # The Launcher overlay hosts an AppGrid of all apps.
+        launcher = doc.find_component("launcher")
+        self.assertEqual(launcher.type, "Launcher")
+        grid = doc.find_component("launcher_grid")
+        self.assertEqual(grid.type, "AppGrid")
+        self.assertEqual(grid.properties["columns"], 4)
+        # A real app window: WindowFrame with TitleBar + WindowControls,
+        # whose close button targets the window's Close action.
+        window = doc.find_component("files_window")
+        self.assertEqual(window.type, "WindowFrame")
+        titlebar = doc.find_component("files_titlebar")
+        self.assertEqual(titlebar.type, "TitleBar")
+        controls = doc.find_component("files_controls")
+        self.assertEqual(controls.type, "WindowControls")
+        self.assertEqual(controls.events.get("closeClicked"),
+                         "behavior_close_files")
+        target, name, _args = doc.resolve_action("behavior_close_files")
+        self.assertEqual(target, "files_window")
+        self.assertEqual(name, "Close")
+        target, name, _args = doc.resolve_action("behavior_launcher_open")
+        self.assertEqual(target, "launcher")
+        self.assertEqual(name, "Open")
 
     def test_windows_shell_fixture_shape(self):
         """The window-system + power-UI shell screens (0.14.25 shell
@@ -13397,6 +13433,86 @@ class TestNstudioImport(unittest.TestCase):
         doc = self._load("nyrqis-shell.nstudio")
         with self.assertRaises(nstudio.NstudioValidationError):
             doc.render("ghost")
+
+
+class TestShellComponents(unittest.TestCase):
+    """The extended Shell vocabulary — AppGrid, Clock, Dock, TitleBar
+    (NUI-SCHEMA §2 component table): the registry carries typed
+    contracts, the fixture exercises them through both gates, and the
+    floor rejects unknown properties/events exactly like the crate."""
+
+    FIXTURES = os.path.join(os.path.dirname(__file__), "tests", "fixtures", "nstudio")
+
+    def _fixture(self, name):
+        return os.path.join(self.FIXTURES, name)
+
+    def _load(self, name):
+        return nstudio.load(self._fixture(name))
+
+    def test_shell_vocabulary_in_registry(self):
+        for type_name in ("AppGrid", "Clock", "Dock", "TitleBar"):
+            contract = nstudio.COMPONENT_CONTRACTS.get(type_name)
+            self.assertIsNotNone(contract, type_name)
+            category, properties, events, actions = contract
+            self.assertEqual(category, "Shell")
+            self.assertTrue(properties)
+        # Typed contracts: the Dock's semantic surface is not a generic
+        # rectangle — position/autoHide/magnify are real properties.
+        _cat, dock_props, _ev, dock_actions = \
+            nstudio.COMPONENT_CONTRACTS["Dock"]
+        for prop in ("position", "pinnedApps", "runningApps",
+                     "autoHide", "iconSize", "magnify"):
+            self.assertIn(prop, dock_props)
+        self.assertEqual(dock_actions, ("Launch",))
+        _cat, _p, clock_events, _a = nstudio.COMPONENT_CONTRACTS["Clock"]
+        self.assertEqual(clock_events, ())
+        _cat, _p, title_events, _a = nstudio.COMPONENT_CONTRACTS["TitleBar"]
+        self.assertIn("doubleClicked", title_events)
+        _cat, _p, grid_events, grid_actions = \
+            nstudio.COMPONENT_CONTRACTS["AppGrid"]
+        self.assertIn("appClicked", grid_events)
+        self.assertEqual(grid_actions, ("Launch",))
+
+    def test_desktop_fixture_uses_new_vocabulary(self):
+        doc = self._load("desktop.nstudio")
+        for cid, type_name in (("clock", "Clock"), ("dock", "Dock"),
+                               ("launcher_grid", "AppGrid"),
+                               ("files_titlebar", "TitleBar"),
+                               ("files_window", "WindowFrame"),
+                               ("files_controls", "WindowControls"),
+                               ("launcher", "Launcher")):
+            comp = doc.find_component(cid)
+            self.assertIsNotNone(comp, cid)
+            self.assertEqual(comp.type, type_name)
+
+    def test_floor_rejects_unknown_property_on_new_types(self):
+        text = open(self._fixture("desktop.nstudio")).read()
+        text = text.replace(
+            '"apps": ["Calculator", "Notes", "Weather", "Clock", '
+            '"Files", "Vault", "Settings", "Terminal"], "columns": 4, '
+            '"iconSize": 48',
+            '"apps": [], "columns": 4, "bogus": true')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn(
+            "property 'bogus' not in the 'AppGrid' contract",
+            str(ctx.exception))
+
+    def test_floor_rejects_unknown_event_on_new_types(self):
+        text = open(self._fixture("desktop.nstudio")).read()
+        text = text.replace('"appClicked": "behavior_launch_terminal"',
+                            '"clicked": "behavior_launch_terminal"')
+        with self.assertRaises(nstudio.NstudioValidationError) as ctx:
+            nstudio.loads(text)
+        self.assertIn("event 'clicked' not in the 'Dock' contract",
+                      str(ctx.exception))
+
+    def test_resolve_new_component_targeted_actions(self):
+        doc = self._load("desktop.nstudio")
+        target, name, _args = doc.resolve_action("behavior_close_files")
+        self.assertEqual((target, name), ("files_window", "Close"))
+        target, name, _args = doc.resolve_action("behavior_launcher_open")
+        self.assertEqual((target, name), ("launcher", "Open"))
 
 
 class TestResponsiveLayout(unittest.TestCase):
@@ -14124,6 +14240,26 @@ class TestNstudioCodecConformance(unittest.TestCase):
                             '"aspectRatio": -1')
         self._rejects(text, "layout 'aspectRatio' must be a positive number")
 
+    def test_crate_rejects_unknown_property_on_appgrid(self):
+        """The new Shell vocabulary is gated identically: a bogus
+        AppGrid property fails on the crate with the floor's message."""
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"apps": ["Calculator", "Notes", "Weather", "Clock", '
+            '"Files", "Vault", "Settings", "Terminal"], "columns": 4, '
+            '"iconSize": 48',
+            '"apps": [], "columns": 4, "bogus": true')
+        self._rejects(text, "property 'bogus' not in the 'AppGrid' contract")
+
+    def test_crate_rejects_unknown_event_on_dock(self):
+        """The Dock's only event is appClicked — a generic clicked fails
+        the same way on both gates."""
+        text = self._mutate(
+            self._text("desktop.nstudio"),
+            '"appClicked": "behavior_launch_terminal"',
+            '"clicked": "behavior_launch_terminal"')
+        self._rejects(text, "event 'clicked' not in the 'Dock' contract")
+
     def test_crate_rejects_non_boolean_anchor(self):
         text = self._mutate(self._text("desktop.nstudio"), '"anchorLeft": true',
                             '"anchorLeft": 1')
@@ -14426,6 +14562,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerPrimitivesConformance))
     suite.addTests(loader.loadTestsFromTestCase(TestNuiService))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioImport))
+    suite.addTests(loader.loadTestsFromTestCase(TestShellComponents))
     suite.addTests(loader.loadTestsFromTestCase(TestResponsiveLayout))
     suite.addTests(loader.loadTestsFromTestCase(TestLocalization))
     suite.addTests(loader.loadTestsFromTestCase(TestResources))

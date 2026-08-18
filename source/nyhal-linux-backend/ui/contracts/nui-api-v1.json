@@ -1526,6 +1526,152 @@
       ]
     },
     {
+      "type": "AppGrid",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "apps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "columns",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 4,
+          "min": 1
+        },
+        {
+          "name": "iconSize",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 48,
+          "units": "px"
+        }
+      ],
+      "events": [
+        "appClicked"
+      ],
+      "actions": [
+        "Launch"
+      ]
+    },
+    {
+      "type": "Clock",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "format",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "12h",
+            "24h"
+          ],
+          "default": "24h"
+        },
+        {
+          "name": "showSeconds",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "events": [],
+      "actions": []
+    },
+    {
+      "type": "Dock",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "position",
+          "bindable": true,
+          "required": false,
+          "type": "enum",
+          "enumValues": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ],
+          "default": "bottom"
+        },
+        {
+          "name": "pinnedApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "runningApps",
+          "bindable": true,
+          "required": false,
+          "type": "array",
+          "default": []
+        },
+        {
+          "name": "autoHide",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "iconSize",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 48,
+          "units": "px"
+        },
+        {
+          "name": "magnify",
+          "bindable": true,
+          "required": false,
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "events": [
+        "appClicked"
+      ],
+      "actions": [
+        "Launch"
+      ]
+    },
+    {
+      "type": "TitleBar",
+      "category": "Shell",
+      "properties": [
+        {
+          "name": "title",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "icon",
+          "bindable": true,
+          "required": false,
+          "type": "string",
+          "default": ""
+        }
+      ],
+      "events": [
+        "doubleClicked"
+      ],
+      "actions": []
+    },
+    {
       "type": "List",
       "category": "Data",
       "properties": [

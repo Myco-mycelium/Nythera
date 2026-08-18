@@ -369,6 +369,20 @@ Two things now, not one:
   floor). Suite 619 → **635**; Nyforge 187/187. Scope lifecycle (what
   persists) is the runtime's follow-on.
 
+  **2026-08-18 (0.14.37): the extended Shell vocabulary — AppGrid,
+  Clock, Dock, TitleBar.** Four more desktop-specific primitives
+  (doc #15's list is now complete: 24 Shell types) join the registry
+  with typed semantic contracts; the crate embeds the same file and
+  Nyforge regenerates its C# tables. The desktop fixture exercises
+  them: the taskbar clock is a real `Clock` bound to a `clockFormat`
+  state, a `Dock` sits on the desktop, a `Launcher` hosts an `AppGrid`,
+  and a Files window is framed by `WindowFrame` + `TitleBar` +
+  `WindowControls` (close → `Close` action) — 37 components / 10
+  behaviors / 6 bindings, accepted by the floor, the crate, and
+  Nyforge's serializer. New `TestShellComponents` (5) + 2 conformance
+  cases; unknown properties/events fail both gates byte-identically.
+  Suite 635 → **642**; Nyforge 195/195.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

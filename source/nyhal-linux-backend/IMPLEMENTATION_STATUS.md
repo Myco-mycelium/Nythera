@@ -384,6 +384,24 @@ byte-identical messages (differential). The `desktop.nstudio`
 wallpaper is a declared image asset referenced via `$asset:wallpaper`.
 Suite 573 → **585**.
 
+**2026-08-18 (0.14.37): the extended Shell vocabulary — AppGrid, Clock,
+Dock, TitleBar.** Four more desktop-specific primitives join the
+registry (doc #15's "desktop-specific primitives" list is now complete:
+24 Shell types), each with a typed semantic contract — `AppGrid` lays
+`apps` out on a `columns` grid and `Launch`es on `appClicked`; `Clock`
+renders a `format` (12h/24h) with optional `showSeconds`; `Dock` knows
+`position`/`pinnedApps`/`runningApps`/`autoHide`/`iconSize`/`magnify`
+and `Launch`es on `appClicked`; `TitleBar` carries `title`/`icon` and a
+`doubleClicked` event. All three consumers pick the new types up
+automatically (the crate embeds the same registry file); the desktop
+fixture exercises them — the taskbar clock is a real `Clock` bound to a
+`clockFormat` state, a `Dock` sits on the desktop surface, a `Launcher`
+overlay hosts an `AppGrid`, and a real Files window is framed by
+`WindowFrame` + `TitleBar` + `WindowControls` whose close button targets
+the window's `Close` action. Unknown properties/events on the new types
+fail both gates with byte-identical messages (differential). Suite 635
+→ **642**.
+
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.
