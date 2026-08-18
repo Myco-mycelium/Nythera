@@ -980,6 +980,14 @@
           "required": false,
           "type": "boolean",
           "default": true
+        },
+        {
+          "name": "badge",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "description": "Notification badge count shown on the tray icon"
         }
       ],
       "events": [],
