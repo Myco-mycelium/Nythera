@@ -409,6 +409,19 @@ Two things now, not one:
   Floor `TestBehaviorLogicGraphs` +11, crate conformance +4. Suite
   651 → **666**; Nyforge 213/213.
 
+  **2026-08-18: the Nyrqis UI Runtime lands (`ui/runtime.py`).**
+  `NyrqisRuntime` wraps a loaded `NstudioDocument` and provides the
+  real OS runtime operations: state management (`set_state`/
+  `resolve_state`/`resolve_states`), event dispatch (`fire_event` —
+  find behavior, evaluate condition including AND/OR groups, execute
+  action chain), binding application (`apply_binding`/
+  `apply_all_bindings`), and action execution (system actions:
+  `Theme.Set`/`Animation.Play`/`Notification.Show`; component actions:
+  `Open`/`Close`/`Toggle`). This is the Nyrqis-side counterpart of
+  Nyforge's `ForgePreviewRuntime` — both implement the same semantics
+  (NUI-SCHEMA §7.3, §8.4). 26 new tests (`tests/test_runtime.py`).
+  Suite 666 → **692**.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

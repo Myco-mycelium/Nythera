@@ -18,6 +18,23 @@ ai_assisted: true
 
 ## [0.14.39] — 2026-08-18
 
+### Nyrqis UI Runtime (`ui/runtime.py`)
+
+- **`NyrqisRuntime`** — the real OS runtime counterpart of Nyforge's
+  `ForgePreviewRuntime`. Wraps a loaded `NstudioDocument` and provides
+  state management (`set_state`/`resolve_state`/`resolve_states`),
+  event dispatch (`fire_event` — find behavior, evaluate condition,
+  execute action chain), binding application (`apply_binding`/
+  `apply_all_bindings`), and action execution (system actions:
+  `Theme.Set`/`Animation.Play`/`Notification.Show`; component actions:
+  `Open`/`Close`/`Toggle`).
+- **`_execute_actions_for_behavior`** — internal helper for executing a
+  behavior's actions directly by ID (used by tests and internal
+  dispatch).
+- **26 new tests** (`tests/test_runtime.py`): state management (5),
+  event dispatch (8), action chains (2), binding application (3),
+  system actions (3), summary (3), document access (2). All green.
+
 ### Behavior logic graphs (NUI-SCHEMA §7.3)
 
 - **Nested AND/OR condition groups.** A behavior's `condition` is a

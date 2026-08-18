@@ -14823,6 +14823,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStateScopes))
     suite.addTests(loader.loadTestsFromTestCase(TestBehaviorLogicGraphs))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
+    suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

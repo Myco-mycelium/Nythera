@@ -249,6 +249,30 @@ render the `.nstudio` documents NyForge produces (NFS-001).
 - **CI**: `rust-nyui` (build + tests) and `rust-nyui-conformance`
   (required gate, forces the two classes through the FFI).
 
+**2026-08-18: the Nyrqis UI Runtime lands.** `ui/runtime.py`
+(`NyrqisRuntime`) — the real OS runtime counterpart of Nyforge's
+`ForgePreviewRuntime`. Wraps a loaded `NstudioDocument` and provides:
+
+- **State management**: `set_state()`, `resolve_state()`,
+  `resolve_states()` (flat + scoped, identical semantics to the floor
+  and the Rust crate).
+- **Event dispatch**: `fire_event(component_id, event_name)` — finds
+  the behavior attached to the component's event, evaluates its
+  condition (including AND/OR logic groups and expression language),
+  and executes its action chain. Returns the list of executed
+  `(target, name, arguments)` tuples.
+- **Binding application**: `apply_binding()` / `apply_all_bindings()`
+  — syncs state values to component properties.
+- **Action execution**: handles built-in system actions (`Theme.Set`,
+  `Animation.Play`, `Notification.Show`) and component-targeted actions
+  (`Open`, `Close`, `Toggle`).
+- **Diagnostics**: `summary()` and `text_preview()` for the compositor.
+
+26 new tests (`tests/test_runtime.py`) — state management, event
+dispatch, condition evaluation (AND/OR groups), action chains,
+binding application, system actions, and summary. All green on the
+floor path.
+
 **2026-08-16 (0.14.23): the import gate rides the control plane + a
 second screen + §30.** `NuiService` (`ui/service.py`) exposes
 `nui_validate` (gate only) and `nui_load` (gate + persist as the daemon's
