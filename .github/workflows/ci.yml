@@ -437,3 +437,24 @@ jobs:
           python-version: "3.12"
       - run: pip install pynacl
       - run: python3 -B test_backend.py
+
+  generators:
+    name: Code generator validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Nyrqis
+      - uses: actions/checkout@v4
+        with:
+          repository: Myco-mycelium/Nyforge
+          path: Nyforge
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install Pillow pysdl2 pysdl2-dll pynacl
+      - name: Validate all generators + compositor
+        run: python3 tools/validate_generators.py --verbose
+        working-directory: Nyrqis
