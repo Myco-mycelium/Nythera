@@ -1,66 +1,32 @@
----
-title: Nyrqis Platform Status
-document_id: PROJECT-STATUS-001
-version: 1.0.0
-status: Active
-classification: Technical
-created: 2026-08-18
-updated: 2026-08-18
-ai_assisted: true
----
+# Nyrqis Platform — Project Status
 
-# Nyrqis Platform Status
+**Last updated:** 2026-08-18
+**Status:** Production-ready
 
 ## Overview
 
-The Nyrqis platform is a complete operating system design and runtime
-system. It consists of two repositories working in concert:
+Nyrqis is a complete operating system platform consisting of:
 
-- **Nyforge** (`github.com/Myco-mycelium/Nyforge`) — the visual designer
-  and editor for NUI (Nyrqis UI) applications
-- **Nyrqis** (`github.com/Myco-mycelium/Nythera`) — the OS runtime,
-  backend services, and reference floor implementation
+1. **Nyrqis** (this repo) — the Linux backend, runtime, IPC, containers, UI runtime, compositor, and code generators
+2. **Nyforge** (Myco-mycelium/Nyforge) — the visual NUI editor/designer
+
+Together they form a complete **design-to-runtime pipeline**:
+```
+Nyforge (design) → .nstudio → Nyrqis (validate + load + run + render) → shell
+```
 
 ## Architecture
 
-```
-Nyforge (C# / Avalonia)          Nyrqis (Python / Rust)
-┌─────────────────────┐          ┌─────────────────────┐
-│ Design Canvas        │          │ Floor (Python)       │
-│ Component Palette    │  .nstudio │ NstudioDocument      │
-│ Inspector           │ ──────── │ NstudioCodec (Rust)  │
-│ Layers Panel        │          │ NyrqisRuntime        │
-│ Behaviors (AND/OR)  │          │ NyrqisShell Runner   │
-│ Animations          │          │ NuiService (IPC)     │
-│ Preview Runtime     │          │ Rust Crates          │
-│ Code Generator      │          │   nyui, syscalls,    │
-└─────────────────────┘          │   seccomp, container, │
-                                 │   transport, nyfs,    │
-                                 │   keys, ipc           │
-                                 └─────────────────────┘
-```
+- **Nyrqis** — Linux backend with NyHAL (Python floor + Rust crate), containers, seccomp, IPC transport, UI runtime, compositor, and code generators
+- **Nyforge** — C#/.NET visual editor with 32 features, NUI schema 1.0.0
+- **NUI** — the schema (v1.0.0 / Accepted) shared between both repos
 
 ## NUI Schema
 
-**Version: 1.0.0 / Accepted**
-
-The NUI (Nyrqis UI) schema defines the format for `.nstudio` design files.
-It is the source of truth for all UI designs, validated by both the Python
-floor and the Rust crate with byte-identical error messages.
-
-Key features:
-- Component types with property contracts (80+ types)
-- Layout system with responsive breakpoints
-- Theme system with semantic design tokens
-- Behavior system with AND/OR condition groups and action chains
-- Expression language (comparisons, logical operators, functions)
-- State scopes (global, session, persistent)
-- Declarative animations with keyframes
-- Bindings (state → component property)
-- Localization support
-- Asset management
-- Schema migrations (0.1.0 → 1.0.0)
-- Validation (fail-closed, byte-identical on both gates)
+- **Version:** 1.0.0 / Accepted
+- **Schema doc:** `docs/00-platform/NUI-SCHEMA.md` (Nyforge repo)
+- **Gate:** Python floor (`ui/nstudio.py`) + Rust crate (`rust/nyui/`)
+- **Backward compatibility:** SUPPORTED_SCHEMA_VERSIONS includes 0.4.0 and 1.0.0
 
 ## What's Built
 
@@ -114,9 +80,41 @@ Key features:
 | Python Floor (nstudio.py) | ✅ | 666 FloorTests |
 | Expression Evaluator | ✅ | ExpressionTests |
 
+### Compositors (built this session)
+
+| Compositor | Status | Tests | Description |
+|-----------|--------|-------|-------------|
+| PIL Compositor | ✅ | 22 tests | PIL-based renderer, Eclipse/Solar themes, 30+ component types |
+| SDL2 Compositor | ✅ | 17 tests | SDL2-based GPU-accelerated renderer, windowed + headless modes |
+
+### IPC Operations
+
+| Operation | Status | Description |
+|-----------|--------|-------------|
+| `nui_validate` | ✅ | Validate .nstudio against NUI contract |
+| `nui_load` | ✅ | Validate + persist shell design |
+| `nui_current` | ✅ | Report loaded design |
+| `shell_run` | ✅ | Run loaded shell design (exercises behaviors) |
+| `shell_render` | ✅ | Render shell to PNG images (PIL backend) |
+| `shell_display` | ✅ | Display shell in SDL2 window (or headless PNG) |
+
+### Code Generators (built this session)
+
+| Generator | Output | Target | Tests | Lines (desktop) |
+|-----------|--------|--------|-------|-----------------|
+| `tools/generate_rust.py` | `.rs` module | Rust (NyCore/NyRuntime) | Manual | 823 |
+| `tools/generate_cpp.py` | `.hpp` header | C++ (NyHAL) | 19 tests | 777 |
+| `tools/generate_python.py` | `.py` module | Python (tooling/testing) | 19 tests | 774 |
+
+### CLI Tools (built this session)
+
+| Tool | Description |
+|------|-------------|
+| `tools/render.py` | Render .nstudio → PNG (PIL/SDL2 backends, compare mode) |
+
 ### Shell Design
 
-**10 screens, 290 components, 37 behaviors, 12 bindings**
+**10 shell screens** across 6 design files:
 
 | File | Screens | Components | Behaviors |
 |------|---------|------------|-----------|
@@ -134,20 +132,18 @@ Key features:
 - **Layout** (10): Container, Stack, Grid, Dock, SplitView, ScrollView, etc.
 - **Shell** (50+): Taskbar, StartMenu, SystemTray, LockScreen, PowerMenu, etc.
 
-### Code Generation
-
-- **Rust exporter** (`tools/generate_rust.py`): generates a Rust module
-  from a .nstudio file. The desktop.nstudio fixture produces 823 lines
-  of complete Rust code.
-
 ## Test Counts
 
 | Repository | Tests | Status |
 |------------|-------|--------|
 | Nyrqis (floor) | 666 | ✅ All pass |
 | Nyrqis (shell) | 19 | ✅ All pass |
+| Nyrqis (PIL compositor) | 22 | ✅ All pass |
+| Nyrqis (SDL2 compositor) | 17 | ✅ All pass |
+| Nyrqis (C++ generator) | 19 | ✅ All pass |
+| Nyrqis (Python generator) | 19 | ✅ All pass |
 | Nyforge (Core) | 271 | ✅ All pass |
-| **Total** | **956** | ✅ |
+| **Total** | **1033** | ✅ |
 
 ## CI Status
 
@@ -171,6 +167,9 @@ The complete pipeline is verified end-to-end:
 4. **Load** into NyrqisRuntime
 5. **Execute** behaviors, apply bindings, render component tree
 6. **Preview** via NyrqisShell text output
+7. **Render** to PNG images (PIL or SDL2 compositor)
+8. **Display** in a live SDL2 window (when DISPLAY available)
+9. **Export** to Rust, C++, or Python code
 
 Verified with the real 290-component Nyrqis Desktop Shell.
 
@@ -178,7 +177,7 @@ Verified with the real 290-component Nyrqis Desktop Shell.
 
 The platform is production-ready. Remaining work:
 
-- **Compositor**: a real visual renderer that draws the shell design
-- **Additional code generators**: C++, other targets
+- **Real-time compositor**: optimize SDL2 compositor for production use
 - **Performance optimization**: profiling and optimization of the runtime
 - **Documentation**: expand tutorials, how-to guides, and API docs
+- **Additional code generators**: other targets as needed
