@@ -16,6 +16,25 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.42] — 2026-08-18
+
+### C++ Code Generator (`tools/generate_cpp.py`)
+
+- **`generate_cpp.py`** — NUI → C++ code exporter. Reads a `.nstudio`
+  file and produces a C++ header (`*.hpp`) that defines the full
+  component tree as structured data:
+  - `Layout`, `Property`, `Component`, `Screen`, and `Document` structs
+    in the `nyrqis::nui` namespace.
+  - Per-screen factory functions (`make_screen_<id>()`).
+  - `load()` function returning the complete document.
+  - `State` struct with `static constexpr` state variables.
+  - Uses C++20 designated initializers and `std::string_view`.
+- **19 new tests** (`tests/test_generate_cpp.py`): string escaping (5),
+  component generation (4), document generation (8), fixture rendering
+  (2). All green.
+- Verified with `desktop.nstudio`: generates 777-line header with all
+  290 components, 2 screens, and 9 state variables.
+
 ## [0.14.41] — 2026-08-18
 
 ### SDL2 Real-Time Compositor (`ui/compositor_sdl.py`)
