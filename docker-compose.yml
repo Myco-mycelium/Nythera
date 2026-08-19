@@ -1,0 +1,31 @@
+# Nyrqis Docker Compose
+#
+# Quick start:
+#   docker compose up
+#
+# This starts the NUI preview server on http://localhost:8080
+# with live reload enabled (edits to .nstudio files auto-refresh).
+
+services:
+  preview:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount local .nstudio files for live editing
+      - ./source/nyhal-linux-backend/tests/fixtures/nstudio:/app/nstudio:ro
+    command: ["8080", "--file", "/app/nstudio/desktop.nstudio"]
+    restart: unless-stopped
+
+  # Run backend tests
+  test:
+    build: .
+    command: ["-c", "cd /app/source/nyhal-linux-backend && python3 -B test_backend.py"]
+    entrypoint: ["python3"]
+    profiles: ["test"]
+
+  # Run generator validation
+  validate:
+    build: .
+    command: ["tools/validate_generators.py", "--verbose"]
+    profiles: ["validate"]
