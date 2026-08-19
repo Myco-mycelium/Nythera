@@ -28,6 +28,8 @@ import io
 import json
 import os
 import sys
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 
@@ -37,11 +39,35 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "source", "nyha
 from ui.nstudio import load as nstudio_load, NstudioDocument
 from ui.compositor import Compositor
 
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    HAS_WATCHDOG = True
+except ImportError:
+    HAS_WATCHDOG = False
+
 
 # Global state
 _document: Optional[NstudioDocument] = None
 _compositor: Optional[Compositor] = None
 _file_path: str = ""
+_file_mtime: float = 0.0  # last modification time
+_reload_counter: int = 0  # increments on each file change
+
+
+class _FileChangeHandler(FileSystemEventHandler):
+    """Watches the .nstudio file for changes and reloads."""
+
+    def on_modified(self, event):
+        global _document, _file_mtime, _reload_counter
+        if event.src_path == os.path.abspath(_file_path):
+            try:
+                _document = nstudio_load(_file_path)
+                _file_mtime = os.path.getmtime(_file_path)
+                _reload_counter += 1
+                print(f"  [reload] {_reload_counter}: reloaded {_document.component_ids().__len__()} components")
+            except Exception as e:
+                print(f"  [reload] ERROR: {e}")
 
 
 class PreviewHandler(BaseHTTPRequestHandler):
@@ -63,6 +89,8 @@ class PreviewHandler(BaseHTTPRequestHandler):
             self._serve_api_screens()
         elif self.path == "/api/state":
             self._serve_api_state()
+        elif self.path == "/api/changes":
+            self._serve_api_changes()
         else:
             self.send_error(404)
 
@@ -142,6 +170,20 @@ class PreviewHandler(BaseHTTPRequestHandler):
         fetch('/api/info')
             .then(r => r.json())
             .then(d => {{ info.textContent = JSON.stringify(d, null, 2); }});
+
+        // Auto-refresh: poll /api/changes every 2 seconds
+        let lastCounter = 0;
+        setInterval(() => {{
+            fetch('/api/changes')
+                .then(r => r.json())
+                .then(d => {{
+                    if (d.counter > lastCounter && lastCounter > 0) {{
+                        console.log('File changed, refreshing...');
+                        refresh();
+                    }}
+                    lastCounter = d.counter;
+                }});
+        }}, 2000);
     </script>
 </body>
 </html>"""
@@ -205,6 +247,11 @@ class PreviewHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._serve_json({"error": str(e)})
 
+    def _serve_api_changes(self):
+        """Poll for file changes. Returns counter that increments on reload."""
+        global _reload_counter
+        self._serve_json({"counter": _reload_counter})
+
     def _serve_json(self, data):
         """Serve JSON response."""
         body = json.dumps(data, indent=2).encode("utf-8")
@@ -262,6 +309,9 @@ def main():
 
     print(f"Screens: {len(_document.screens)}")
     print(f"Components: {len(_document.component_ids())}")
+    global _file_mtime
+    _file_mtime = os.path.getmtime(_file_path)
+
     print(f"Theme: {args.theme} | Scale: {args.scale}x")
     print(f"\nPreview server running at http://localhost:{args.port}")
     print(f"  /              — HTML preview page")
@@ -269,6 +319,20 @@ def main():
     print(f"  /api/info      — JSON metadata")
     print(f"  /api/screens   — JSON screen list")
     print(f"  /api/state     — JSON runtime state")
+    print(f"  /api/changes   — Poll for file changes")
+
+    # Start file watcher
+    observer = None
+    if HAS_WATCHDOG:
+        observer = Observer()
+        handler = _FileChangeHandler()
+        watch_dir = os.path.dirname(os.path.abspath(_file_path))
+        observer.schedule(handler, watch_dir, recursive=False)
+        observer.start()
+        print(f"  [watch] Watching {watch_dir} for changes")
+    else:
+        print(f"  [watch] watchdog not installed — auto-reload disabled")
+
     print(f"\nPress Ctrl+C to stop.\n")
 
     server = HTTPServer(("0.0.0.0", args.port), PreviewHandler)
@@ -277,6 +341,9 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down.")
         server.shutdown()
+    if observer:
+        observer.stop()
+        observer.join()
     return 0
 
 
