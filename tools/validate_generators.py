@@ -79,27 +79,9 @@ def _comp_to_dict(comp):
     }
 
 
-def _find_nyforge_tools() -> str:
-    """Find the Nyforge tools directory (may be sibling checkout)."""
-    # Try multiple paths: local dev, CI checkout, sibling repo
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(script_dir, "..", "..", "Nyforge", "Nyforge", "tools"),
-        os.path.join(script_dir, "..", "..", "..", "Nyforge", "Nyforge", "tools"),
-        os.path.join(script_dir, "..", "..", "Nyforge", "tools"),
-    ]
-    for p in candidates:
-        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "generate_rust.py")):
-            return os.path.abspath(p)
-    return ""
-
-
 def validate_rust(doc_dict, fixture_name: str) -> Tuple[bool, str]:
     """Validate Rust generator output."""
     try:
-        nyforge_tools = _find_nyforge_tools()
-        if nyforge_tools and nyforge_tools not in sys.path:
-            sys.path.insert(0, nyforge_tools)
         from generate_rust import generate_document
         code = generate_document(doc_dict)
         if not code or len(code) < 100:
@@ -109,8 +91,6 @@ def validate_rust(doc_dict, fixture_name: str) -> Tuple[bool, str]:
         if "pub fn load()" not in code:
             return False, "Rust output missing load() function"
         return True, f"OK ({len(code)} lines)"
-    except ImportError:
-        return True, "SKIPPED (Nyforge not available)"
     except Exception as e:
         return False, f"Rust generator error: {e}"
 
