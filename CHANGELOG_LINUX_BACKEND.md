@@ -16,6 +16,53 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## Session Summary — 2026-08-18 (25 features, 1069 tests)
+
+This session built the complete visual and export layers of the Nyrqis
+platform on top of the existing backend foundation:
+
+### Compositors (39 tests)
+- **PIL Compositor** (`ui/compositor.py`): Eclipse/Solar themes, 30+
+  component types, font caching optimization.
+- **SDL2 Compositor** (`ui/compositor_sdl.py`): GPU-accelerated rendering,
+  windowed + headless modes, built-in bitmap font.
+- **Font caching**: class-level TrueType font cache, ~2ms faster per render.
+
+### Code Generators (54 tests)
+- **Rust** (`tools/generate_rust.py`): Layout/Component/Screen/Document
+  structs, per-screen factories, load() constructor, state module.
+- **C++** (`tools/generate_cpp.py`): C++20 designated initializers,
+  nyrqis::nui namespace, 777-line output.
+- **Python** (`tools/generate_python.py`): dataclasses, importable module,
+  774-line output.
+
+### CLI Tools
+- **render.py**: .nstudio → PNG (PIL/SDL2 backends, compare mode, batch).
+- **preview_server.py**: HTTP server with live reload, auto-reload on
+  file changes (watchdog), screen selector, JSON API.
+- **validate_generators.py**: CI gate validating all generators on all
+  fixtures (36/36 pass across 9 fixtures).
+- **benchmarks_all.py**: Profiles all backends against all fixtures.
+
+### CI/CD
+- **GitHub Actions `generators` job**: validates all generators + compositor.
+- **Docker**: Dockerfile + docker-compose.yml for preview server, tests,
+  and validation.
+
+### Documentation
+- **Getting started tutorial** (`docs/getting-started.md`)
+- **CLI API reference** (`docs/api/CLI.md`)
+- **IPC API reference** (`docs/api/IPC.md`)
+- **Contributing guide** (`CONTRIBUTING.md`)
+- **Project status** (`docs/00-platform/PROJECT_STATUS.md`)
+
+### Numbers
+- **43 total commits** this session
+- **1069 total tests** (692 floor + 19 shell + 39 compositor + 54 generators)
+- **9 .nstudio fixtures** validated across all generators
+- **NUI schema 1.0.0** / Accepted
+- **ROADMAP: 0 unchecked items**
+
 ## [0.14.43] — 2026-08-18
 
 ### Python Code Generator (`tools/generate_python.py`)
