@@ -458,3 +458,23 @@ jobs:
       - name: Validate all generators + compositor
         run: python3 tools/validate_generators.py --verbose
         working-directory: Nyrqis
+
+  benchmarks:
+    name: Performance benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install Pillow pysdl2 pysdl2-dll pynacl numpy watchdog pyyaml
+      - name: Run benchmarks
+        run: python3 tests/benchmarks_all.py --repeat 3
+      - name: Run benchmarks (JSON)
+        run: python3 tests/benchmarks_all.py --repeat 3 --json > /tmp/benchmarks.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: /tmp/benchmarks.json
+          retention-days: 30
