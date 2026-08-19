@@ -478,4 +478,17 @@ jobs:
           name: benchmarks
           path: /tmp/benchmarks.json
           retention-days: 30
+      - name: Compare with previous run
+        if: always()
+        run: |
+          # Download previous benchmark artifact
+          PREV_ID=$(gh run list --workflow=ci.yml --limit=2 --json databaseId --jq '.[1].databaseId' 2>/dev/null || echo '')
+          if [ -n "$PREV_ID" ]; then
+            gh run download $PREV_ID -n benchmarks -D /tmp/prev 2>/dev/null && \
+            python3 tools/compare_benchmarks.py --current /tmp/benchmarks.json --baseline /tmp/prev/benchmarks.json || echo 'No previous baseline found'
+          else
+            echo 'No previous run found, skipping comparison'
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
