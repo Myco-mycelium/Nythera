@@ -84,6 +84,10 @@ class Compositor:
         Rendering scale factor (1.0 = native, 2.0 = retina).
     """
 
+    # Class-level font cache: keyed by (family_path, size) to avoid
+    # reloading TrueType files on every render_screen call.
+    _font_cache: Dict[Tuple[str, int], ImageFont.FreeTypeFont] = {}
+
     def __init__(
         self,
         theme_name: str = "Eclipse",
@@ -92,6 +96,17 @@ class Compositor:
         self.theme_name = theme_name
         self.theme = THEMES.get(theme_name, THEMES["Eclipse"])
         self.scale = scale
+
+    @classmethod
+    def _get_font(cls, path: str, size: int) -> ImageFont.FreeTypeFont:
+        """Return a cached font, loading from disk on first use."""
+        key = (path, size)
+        if key not in cls._font_cache:
+            try:
+                cls._font_cache[key] = ImageFont.truetype(path, size)
+            except (OSError, IOError):
+                cls._font_cache[key] = ImageFont.load_default()
+        return cls._font_cache[key]
 
     def render_screen(
         self,
@@ -120,18 +135,13 @@ class Compositor:
         img = Image.new("RGB", (w, h), self.theme["background"])
         draw = ImageDraw.Draw(img)
 
-        # Try to load a font
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                      int(14 * self.scale))
-            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                             int(11 * self.scale))
-            font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                                             int(16 * self.scale))
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-            font_small = font
-            font_title = font
+        # Load fonts (cached at class level to avoid reloading TrueType
+        # files on every render_screen call — saves ~5ms per call).
+        _sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        _sans_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        font = self._get_font(_sans, int(14 * self.scale))
+        font_small = self._get_font(_sans, int(11 * self.scale))
+        font_title = self._get_font(_sans_bold, int(16 * self.scale))
 
         # Render the component tree
         self._render_component(img, draw, screen.root, font, font_small, font_title,
