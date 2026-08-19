@@ -135,6 +135,9 @@ class NuiService:
             elif op == "shell_render":
                 self._shell_render(server, sender_path, msg.message_id,
                                    request)
+            elif op == "shell_display":
+                self._shell_display(server, sender_path, msg.message_id,
+                                    request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -347,6 +350,98 @@ class NuiService:
             self._reply(server, sender_path, call_id, {
                 "ok": False,
                 "error": f"render error: {exc}",
+            })
+
+    def _shell_display(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        """Display the loaded shell design in a live SDL2 window.
+
+        Request: {"op": "shell_display", "document": "...",
+                  "theme": "Eclipse", "scale": 1.0}
+        Response: {"ok": true, "displayed": true, "screens": [...],
+                   "window": {"width": N, "height": N}}
+
+        When no DISPLAY is available, falls back to headless rendering
+        and returns the PNG images (same as shell_render).
+        """
+        document = request.get("document")
+        if not isinstance(document, str):
+            persisted = os.path.join(
+                self.state_dir or "", "ui", "shell.nstudio")
+            if self.state_dir and os.path.exists(persisted):
+                with open(persisted, "r", encoding="utf-8") as f:
+                    document = f.read()
+            else:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "no document provided and no persisted design",
+                })
+                return
+
+        theme = request.get("theme", "Eclipse")
+        scale = float(request.get("scale", 1.0))
+
+        try:
+            doc = nstudio.loads(document)
+        except nstudio.NstudioError as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"display failed: {exc}",
+            })
+            return
+
+        # Check if a display is available
+        has_display = bool(os.environ.get("DISPLAY"))
+
+        try:
+            from .compositor_sdl import SDLCompositor, HAS_SDL2
+            if not HAS_SDL2:
+                raise ImportError("pysdl2 not installed")
+
+            if has_display:
+                # Live window mode
+                comp = SDLCompositor(theme_name=theme, scale=scale,
+                                     headless=False)
+                for screen in doc.screens:
+                    comp.render_screen(doc, screen_id=screen.id)
+                self._reply(server, sender_path, call_id, {
+                    "ok": True,
+                    "service": self.SERVICE_NAME,
+                    "service_version": self.SERVICE_VERSION,
+                    "displayed": True,
+                    "screens": [s.id for s in doc.screens],
+                })
+            else:
+                # Headless fallback — return PNG images
+                import base64
+                comp = SDLCompositor(theme_name=theme, scale=scale,
+                                     headless=True)
+                rendered = {}
+                for screen in doc.screens:
+                    img = comp.render_screen(doc, screen_id=screen.id)
+                    if img is not None:
+                        import io
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG")
+                        rendered[screen.id] = base64.b64encode(
+                            buf.getvalue()).decode("ascii")
+                self._reply(server, sender_path, call_id, {
+                    "ok": True,
+                    "service": self.SERVICE_NAME,
+                    "service_version": self.SERVICE_VERSION,
+                    "displayed": False,
+                    "reason": "no DISPLAY — headless fallback",
+                    "screens": rendered,
+                })
+        except ImportError:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "pysdl2 is required for shell_display",
+            })
+        except Exception as exc:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"display error: {exc}",
             })
 
     def _shell_run(self, server, sender_path: str, call_id: str,

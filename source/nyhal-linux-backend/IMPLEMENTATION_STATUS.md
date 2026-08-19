@@ -292,6 +292,26 @@ render operations, save to file, and fixture rendering (loads and
 renders the real 290-component desktop shell in both themes). All
 green.
 
+**2026-08-18: the SDL2 Real-Time Compositor lands.**
+`ui/compositor_sdl.py` (`SDLCompositor`) — SDL2-based high-performance
+renderer using pysdl2 for GPU-accelerated rendering:
+
+- **Windowed mode**: renders the Nyrqis shell in a live SDL2 window
+  when DISPLAY is available.
+- **Headless mode**: renders to an off-screen SDL2 surface and exports
+  to PNG via ctypes pointer access (for CI/testing).
+- **Bitmap font**: built-in 5×7 bitmap font for all ASCII printable
+  characters — no external font dependencies.
+- Same 30+ component types and Eclipse/Solar themes as the PIL
+  compositor.
+- **`shell_display` IPC operation**: new NuiService op that renders
+  the shell in a live window (when DISPLAY is available) or falls
+  back to headless PNG export.
+
+17 new tests (`tests/test_compositor_sdl.py`) — initialization,
+render operations, save to file, fixture rendering, bitmap font.
+All green.
+
 **2026-08-16 (0.14.23): the import gate rides the control plane + a
 second screen + §30.** `NuiService` (`ui/service.py`) exposes
 `nui_validate` (gate only) and `nui_load` (gate + persist as the daemon's

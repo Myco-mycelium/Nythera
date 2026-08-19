@@ -16,6 +16,28 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.41] — 2026-08-18
+
+### SDL2 Real-Time Compositor (`ui/compositor_sdl.py`)
+
+- **`SDLCompositor`** — SDL2-based high-performance renderer that uses
+  GPU-accelerated rendering via pysdl2. Supports:
+  - **Windowed mode**: renders the Nyrqis shell in a live SDL2 window
+    when DISPLAY is available.
+  - **Headless mode**: renders to an off-screen surface and exports to
+    PNG (for CI/testing without a display server).
+  - **Bitmap font**: built-in 5×7 bitmap font for all ASCII printable
+    characters — no external font dependencies.
+  - Same 30+ component types and Eclipse/Solar themes as the PIL
+    compositor.
+- **`shell_display` IPC operation** — new NuiService operation that
+  renders the shell design in a live window (when DISPLAY is available)
+  or falls back to headless PNG export. Request: `{"op": "shell_display",
+  "theme": "Eclipse", "scale": 1.0}`.
+- **17 new tests** (`tests/test_compositor_sdl.py`): initialization (5),
+  render operations (7), save to file (1), fixture rendering (2),
+  bitmap font (2). All green.
+
 ## [0.14.40] — 2026-08-18
 
 ### Nyrqis Compositor (`ui/compositor.py`)
