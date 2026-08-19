@@ -16,6 +16,26 @@ ai_assisted: true
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
 
+## [0.14.43] — 2026-08-18
+
+### Python Code Generator (`tools/generate_python.py`)
+
+- **`generate_python.py`** — NUI → Python code exporter. Reads a
+  `.nstudio` file and produces a Python module with the full component
+  tree as dataclasses:
+  - `Layout` (frozen), `Component`, `Screen`, `Document` dataclasses.
+  - Per-screen factory functions (`make_screen_<id>()`).
+  - `load()` function returning the complete document.
+  - `State` frozen dataclass with `STATE` singleton.
+  - Generated module is importable and `load()` returns a live object
+    graph (verified in tests).
+- **19 new tests** (`tests/test_generate_python.py`): string escaping (5),
+  component generation (4), document generation (8), fixture rendering
+  and module loading (2). All green.
+- Verified with `desktop.nstudio`: generates 774-line module, importable,
+  `load()` returns 2 screens, 37 components, 9 state variables.
+- **Triple-target code generation complete**: Rust + C++ + Python.
+
 ## [0.14.42] — 2026-08-18
 
 ### C++ Code Generator (`tools/generate_cpp.py`)
