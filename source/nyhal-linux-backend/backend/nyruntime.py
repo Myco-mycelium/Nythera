@@ -140,6 +140,7 @@ class NyRuntime:
     """
 
     def __init__(self):
+        self._destroyed = True
         lib = _get_lib()
         self._ptr = lib.nyrqis_nyruntime_create()
         self._destroyed = False
@@ -213,7 +214,7 @@ class NyRuntime:
 
     def destroy(self) -> None:
         """Destroy the runtime instance and free resources."""
-        if not self._destroyed:
+        if getattr(self, '_destroyed', True):
             lib = _get_lib()
             lib.nyrqis_nyruntime_destroy(self._ptr)
             self._destroyed = True

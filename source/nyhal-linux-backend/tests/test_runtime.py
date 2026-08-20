@@ -457,7 +457,11 @@ class TestNyrqisApps(unittest.TestCase):
                 capture_output=True, cwd=_BACKEND_DIR,
             )
             data = open(outpath, 'rb').read()
-            with NyRuntime() as rt:
+            try:
+                rt = NyRuntime()
+            except (ImportError, OSError):
+                self.skipTest("NyRuntime crate not built")
+            with rt:
                 rt.init()
                 rt.load_napp(data)
                 self.assertEqual(rt.state, 2)  # Loaded
@@ -482,7 +486,11 @@ class TestNyrqisApps(unittest.TestCase):
                 capture_output=True, cwd=_BACKEND_DIR,
             )
             data = open(outpath, 'rb').read()
-            with NyRuntime() as rt:
+            try:
+                rt = NyRuntime()
+            except (ImportError, OSError):
+                self.skipTest("NyRuntime crate not built")
+            with rt:
                 rt.init()
                 rt.load_napp(data)
                 exit_code = rt.execute()
