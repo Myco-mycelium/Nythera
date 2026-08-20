@@ -286,5 +286,100 @@ class TestRuntimeSummary(unittest.TestCase):
         self.assertIs(self.rt.document, self.doc)
 
 
+class TestNyRuntimeLauncher(unittest.TestCase):
+    """Tests for NyRuntime launcher integration (backend/nyruntime.py)."""
+
+    def test_nyruntime_loader_importable(self):
+        """The NyRuntime Python loader is importable."""
+        from backend.nyruntime import NyRuntime
+        self.assertTrue(hasattr(NyRuntime, 'init'))
+        self.assertTrue(hasattr(NyRuntime, 'state'))
+        self.assertTrue(hasattr(NyRuntime, 'destroy'))
+
+    def test_nyruntime_create_and_destroy(self):
+        """Create and destroy a NyRuntime instance."""
+        from backend.nyruntime import NyRuntime
+        rt = NyRuntime()
+        self.assertIsNotNone(rt)
+        rt.destroy()
+        self.assertTrue(rt._destroyed)
+
+    def test_nyruntime_context_manager(self):
+        """NyRuntime works as a context manager."""
+        from backend.nyruntime import NyRuntime
+        with NyRuntime() as rt:
+            self.assertIsNotNone(rt)
+        self.assertTrue(rt._destroyed)
+
+    def test_nyruntime_init(self):
+        """Initialize the runtime."""
+        from backend.nyruntime import NyRuntime
+        try:
+            with NyRuntime() as rt:
+                rt.init()
+                self.assertEqual(rt.state, 1)  # Ready
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
+
+    def test_nyruntime_state_uninitialized(self):
+        """Runtime starts in Uninitialized state."""
+        from backend.nyruntime import NyRuntime
+        try:
+            with NyRuntime() as rt:
+                self.assertEqual(rt.state, 0)  # Uninitialized
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
+
+    def test_container_config_app_path(self):
+        """ContainerConfig supports app_path field."""
+        from backend.container import ContainerConfig
+        cfg = ContainerConfig(app_path="/tmp/test.napp")
+        self.assertEqual(cfg.app_path, "/tmp/test.napp")
+
+    def test_container_config_app_path_default(self):
+        """ContainerConfig app_path defaults to None."""
+        from backend.container import ContainerConfig
+        cfg = ContainerConfig()
+        self.assertIsNone(cfg.app_path)
+
+    def test_launcher_args_with_nyrqis_app(self):
+        """_launcher_args includes --nyrqis-app when app_path is set."""
+        from backend.container import ContainerManager, ContainerConfig
+        from pathlib import Path
+        import tempfile
+        mgr = ContainerManager(use_direct_syscalls=False)
+        cfg = ContainerConfig(
+            command=["echo", "test"],
+            app_path="/tmp/test.napp",
+            seccomp=False,
+            strict_seccomp=False,
+        )
+        container = mgr.create(cfg)
+        argv = mgr._launcher_args(container, Path("/tmp/launcher.py"))
+        self.assertIn("--nyrqis-app", argv)
+        self.assertIn("/tmp/test.napp", argv)
+
+    def test_build_napp_tool(self):
+        """The build_napp tool can create a .napp binary."""
+        import subprocess
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.napp', delete=False) as f:
+            outpath = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, 'tools/build_napp.py',
+                 '--output', outpath, '--code', '01,01,00', '--data', '42'],
+                capture_output=True, text=True,
+                cwd=_BACKEND_DIR,
+            )
+            self.assertEqual(result.returncode, 0)
+            data = open(outpath, 'rb').read()
+            self.assertEqual(data[0:4], b'NYAP')
+            self.assertEqual(len(data), 16 + 3 + 1)  # header + code + data
+        finally:
+            os.unlink(outpath)
+
+
 if __name__ == "__main__":
     unittest.main()

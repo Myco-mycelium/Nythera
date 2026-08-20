@@ -86,6 +86,7 @@ class ContainerConfig:
     strict_seccomp: bool = True
     default_deny: bool = False  # default-deny allowlist posture (opt-in)
     network: bool = False  # own network namespace (loopback only), opt-in
+    app_path: Optional[str] = None  # Nyrqis application path (.napp binary)
 
 
 class Container:
@@ -742,6 +743,11 @@ class ContainerManager:
             # unfiltered. Inserted AFTER the codec built the argv, so
             # the codec's byte-identical contract is untouched.
             argv.insert(argv.index("--"), "--strict-seccomp")
+        # If a Nyrqis application is specified, pass it to the launcher
+        # so it can execute through the NyRuntime instead of the raw command.
+        if container.config.app_path:
+            argv.insert(argv.index("--"), "--nyrqis-app")
+            argv.insert(argv.index("--"), container.config.app_path)
         return argv
 
     def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:
