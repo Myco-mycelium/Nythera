@@ -1,0 +1,15 @@
+[package]
+name = "nyrqis-nyruntime"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis minimal runtime — loads and executes Nyrqis programs via the NyCore protocol"
+
+[lib]
+name = "nyrqis_nyruntime"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+nyrqis-nycore = { path = "../nycore" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
