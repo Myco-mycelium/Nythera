@@ -376,14 +376,16 @@ class TestNyRuntimeLauncher(unittest.TestCase):
         try:
             result = subprocess.run(
                 [sys.executable, 'tools/build_napp.py',
+                 '--name', 'test', '--version', '1.0.0',
                  '--output', outpath, '--code', '01,01,00', '--data', '42'],
                 capture_output=True, text=True,
                 cwd=_BACKEND_DIR,
             )
-            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 0, result.stderr)
             data = open(outpath, 'rb').read()
             self.assertEqual(data[0:4], b'NYAP')
-            self.assertEqual(len(data), 16 + 3 + 1)  # header + code + data
+            # header (17) + manifest + code (3) + data (1)
+            self.assertGreater(len(data), 17 + 3 + 1)
         finally:
             os.unlink(outpath)
 
