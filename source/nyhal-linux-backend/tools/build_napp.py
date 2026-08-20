@@ -111,7 +111,7 @@ def build_napp(manifest: str, code: bytes, data: bytes) -> bytes:
     """Build a .napp binary."""
     manifest_bytes = manifest.encode("utf-8")
     header = struct.pack(
-        "<4sBIIII",
+        "<4sBIII",
         MAGIC,
         VERSION,
         len(manifest_bytes),
