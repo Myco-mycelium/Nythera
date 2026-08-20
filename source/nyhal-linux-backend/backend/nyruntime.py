@@ -85,6 +85,24 @@ def _load_library():
     lib.nyrqis_nyruntime_state.restype = ctypes.c_int32
     lib.nyrqis_nyruntime_state.argtypes = [ctypes.c_void_p]
 
+    # nyrqis_nyruntime_load_napp(*Runtime, *u8, u32) -> i32
+    lib.nyrqis_nyruntime_load_napp.restype = ctypes.c_int32
+    lib.nyrqis_nyruntime_load_napp.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32
+    ]
+
+    # nyrqis_nyruntime_execute(*Runtime, *i32) -> i32
+    lib.nyrqis_nyruntime_execute.restype = ctypes.c_int32
+    lib.nyrqis_nyruntime_execute.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32)
+    ]
+
+    # nyrqis_nyruntime_set_ipc(*Runtime, i32, *char, u32) -> i32
+    lib.nyrqis_nyruntime_set_ipc.restype = ctypes.c_int32
+    lib.nyrqis_nyruntime_set_ipc.argtypes = [
+        ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p, ctypes.c_uint32
+    ]
+
     return lib
 
 
@@ -127,6 +145,37 @@ class NyRuntime:
         """Get the current runtime state (0=Uninitialized, 1=Ready, 2=Loaded, 3=Running, 4=Failed)."""
         lib = _get_lib()
         return lib.nyrqis_nyruntime_state(self._ptr)
+
+    def load_napp(self, data: bytes) -> None:
+        """Load a .napp binary into the runtime."""
+        lib = _get_lib()
+        buf = (ctypes.c_uint8 * len(data))(*data)
+        result = lib.nyrqis_nyruntime_load_napp(self._ptr, buf, len(data))
+        if result != 0:
+            raise RuntimeError(f"NyRuntime load_napp failed: errno {result}")
+
+    def execute(self) -> int:
+        """Execute the loaded program. Returns the exit code."""
+        lib = _get_lib()
+        exit_code = ctypes.c_int32(0)
+        result = lib.nyrqis_nyruntime_execute(self._ptr, ctypes.byref(exit_code))
+        if result != 0:
+            raise RuntimeError(f"NyRuntime execute failed: errno {result}")
+        return exit_code.value
+
+    def set_ipc(self, peer_path: str) -> None:
+        """Wire IPC: bind a socket and set the daemon peer path."""
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+        fd = sock.fileno()
+        path_bytes = peer_path.encode("utf-8")
+        lib = _get_lib()
+        result = lib.nyrqis_nyruntime_set_ipc(
+            self._ptr, fd, path_bytes, len(path_bytes)
+        )
+        if result != 0:
+            raise RuntimeError(f"NyRuntime set_ipc failed: errno {result}")
+        self._ipc_sock = sock  # prevent GC
 
     def destroy(self) -> None:
         """Destroy the runtime instance and free resources."""

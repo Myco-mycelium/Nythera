@@ -313,22 +313,34 @@ def _run_nyrqis_app(app_path: str, arch: SyscallArch, args) -> int:
         rt.init()
     except Exception as e:
         logger.error("nyrqis runtime init failed: %s", e)
-        return 1
+        return 126
 
-    # The runtime executes in-process. For now, we return 0 as a
-    # placeholder — the actual execution will be wired through the
-    # Rust FFI when the crate is built.
-    logger.info("nyrqis app: runtime initialized, execution via Rust crate")
+    # Wire IPC if daemon socket exists
+    ipc_socket = getattr(args, 'ipc_socket', None) or '/run/nyrqis/status.sock'
+    try:
+        rt.set_ipc(ipc_socket)
+        logger.info("nyrqis runtime: IPC wired to %s", ipc_socket)
+    except Exception:
+        logger.debug("nyrqis runtime: IPC not wired (socket not available)")
 
     # Apply seccomp before executing the app
     apply_seccomp(args.policy_file, args.strict_seccomp, arch,
                   args.default_deny)
 
-    # Execute the app through the runtime (simplified: return exit code
-    # from the data segment, matching the Rust runtime's behavior)
-    exit_code = data[0] if data else 0
-    logger.info("nyrqis app: exit code %d", exit_code)
-    return exit_code
+    # Load and execute the .napp binary through the Rust runtime
+    try:
+        rt.load_napp(bytes(app_data))
+    except Exception as e:
+        logger.error("nyrqis app load failed: %s", e)
+        return 126
+
+    try:
+        exit_code = rt.execute()
+        logger.info("nyrqis app: exit code %d", exit_code)
+        return exit_code
+    except Exception as e:
+        logger.error("nyrqis app execution failed: %s", e)
+        return 126
 
 
 # Signals the init forwards to the container command — the set a
