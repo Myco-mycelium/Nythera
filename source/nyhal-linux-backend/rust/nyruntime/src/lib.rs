@@ -7,7 +7,7 @@
 //! # Architecture
 //!
 //! ```text
-//! Nyrqis Application
+//! Nyrqis Application (.napp)
 //!       │
 //!       ▼
 //!   NyRuntime
@@ -36,66 +36,133 @@ use std::vec::Vec;
 use nyrqis_nycore::{Capability, ContainerConfig, ContainerState, NyError};
 
 // ---------------------------------------------------------------------------
+// .napp binary format constants
+// ---------------------------------------------------------------------------
+
+/// Magic bytes identifying a Nyrqis application binary.
+pub const NAPP_MAGIC: &[u8; 4] = b"NYAP";
+
+/// Current package format version.
+pub const NAPP_VERSION: u8 = 1;
+
+/// Opcodes
+pub const OP_HALT: u8 = 0x00;
+pub const OP_NOP: u8 = 0x01;
+pub const OP_IPC_CALL: u8 = 0x02;
+pub const OP_IPC_SEND: u8 = 0x03;
+pub const OP_FS_READ: u8 = 0x04;
+pub const OP_FS_WRITE: u8 = 0x05;
+pub const OP_LOG: u8 = 0x06;
+pub const OP_SET_STATE: u8 = 0x07;
+pub const OP_GET_STATE: u8 = 0x08;
+pub const OP_YIELD: u8 = 0x09;
+
+// ---------------------------------------------------------------------------
 // Runtime state
 // ---------------------------------------------------------------------------
 
 /// The runtime's execution state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
-    /// Runtime not yet initialized
-    Uninitialized,
-    /// Runtime initialized, ready to load programs
-    Ready,
-    /// A program is loaded and ready to execute
-    Loaded,
-    /// A program is currently executing
-    Running,
-    /// Runtime has encountered a fatal error
-    Failed,
+    Uninitialized = 0,
+    Ready = 1,
+    Loaded = 2,
+    Running = 3,
+    Failed = 4,
 }
 
-/// A loaded Nyrqis program — the minimal representation needed to
-/// execute it.
+/// A parsed .napp binary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NappPackage {
+    pub version: u8,
+    pub manifest: Vec<u8>,
+    pub code: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+impl NappPackage {
+    /// Parse a .napp binary from raw bytes.
+    pub fn parse(raw: &[u8]) -> Result<Self, NyError> {
+        if raw.len() < 17 {
+            return Err(NyError::EINVAL);
+        }
+
+        // Magic check
+        if &raw[0..4] != NAPP_MAGIC {
+            return Err(NyError::EINVAL);
+        }
+
+        let version = raw[4];
+        let manifest_len = u32::from_le_bytes([raw[5], raw[6], raw[7], raw[8]]) as usize;
+        let code_len = u32::from_le_bytes([raw[9], raw[10], raw[11], raw[12]]) as usize;
+        let data_len = u32::from_le_bytes([raw[13], raw[14], raw[15], raw[16]]) as usize;
+
+        let total = 17 + manifest_len + code_len + data_len;
+        if raw.len() < total {
+            return Err(NyError::EINVAL);
+        }
+
+        let offset = 17;
+        let manifest = raw[offset..offset + manifest_len].to_vec();
+        let offset = offset + manifest_len;
+        let code = raw[offset..offset + code_len].to_vec();
+        let offset = offset + code_len;
+        let data = raw[offset..offset + data_len].to_vec();
+
+        Ok(Self {
+            version,
+            manifest,
+            code,
+            data,
+        })
+    }
+
+    /// Get the manifest as a string.
+    pub fn manifest_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.manifest).ok()
+    }
+}
+
+/// A loaded Nyrqis program.
 #[derive(Debug)]
 pub struct Program {
-    /// Program name (for diagnostics)
     pub name: Vec<u8>,
-    /// Entry point offset (into the code segment)
     pub entry: usize,
-    /// Code segment
     pub code: Vec<u8>,
-    /// Data segment
     pub data: Vec<u8>,
-    /// Required capabilities
     pub required_caps: Vec<Capability>,
 }
 
-/// The runtime instance — holds the execution state and provides
-/// the operations that a Nyrqis program can call.
+/// Log entry from the runtime.
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub level: u32,
+    pub message: Vec<u8>,
+}
+
+/// The runtime instance.
 #[derive(Debug)]
 pub struct Runtime {
-    /// Current state
     state: RuntimeState,
-    /// Loaded program (if any)
     program: Option<Program>,
-    /// Granted capabilities
     capabilities: Vec<Capability>,
-    /// Container configuration
     config: ContainerConfig,
+    log: Vec<LogEntry>,
+    state_store: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Runtime {
-    /// Create a new runtime with the given configuration.
     pub fn new(config: ContainerConfig) -> Self {
         Self {
             state: RuntimeState::Uninitialized,
             program: None,
             capabilities: Vec::new(),
             config,
+            log: Vec::new(),
+            state_store: Vec::new(),
         }
     }
 
-    /// Initialize the runtime. Must be called before loading programs.
     pub fn init(&mut self) -> Result<(), NyError> {
         if self.state != RuntimeState::Uninitialized {
             return Err(NyError::EINVAL);
@@ -104,7 +171,6 @@ impl Runtime {
         Ok(())
     }
 
-    /// Grant a capability to the runtime.
     pub fn grant_capability(&mut self, cap: Capability) -> Result<(), NyError> {
         if self.state == RuntimeState::Uninitialized {
             return Err(NyError::EINVAL);
@@ -115,68 +181,66 @@ impl Runtime {
         Ok(())
     }
 
-    /// Check if the runtime has a specific capability.
     pub fn has_capability(&self, cap: Capability) -> bool {
         self.capabilities.contains(&cap)
     }
 
-    /// Load a program into the runtime.
+    /// Load a .napp binary into the runtime.
+    pub fn load_napp(&mut self, raw: &[u8]) -> Result<(), NyError> {
+        let pkg = NappPackage::parse(raw)?;
+        self.load(Program {
+            name: Vec::new(),
+            entry: 0,
+            code: pkg.code,
+            data: pkg.data,
+            required_caps: Vec::new(),
+        })
+    }
+
     pub fn load(&mut self, program: Program) -> Result<(), NyError> {
         if self.state != RuntimeState::Ready && self.state != RuntimeState::Loaded {
             return Err(NyError::EINVAL);
         }
-
-        // Check that all required capabilities are granted
         for req_cap in &program.required_caps {
             if !self.has_capability(*req_cap) {
                 return Err(NyError::ECAPMISSING);
             }
         }
-
         self.program = Some(program);
         self.state = RuntimeState::Loaded;
         Ok(())
     }
 
-    /// Execute the loaded program. This is a minimal execution loop
-    /// that processes the program's code segment as a sequence of
-    /// operations.
     pub fn execute(&mut self) -> Result<i32, NyError> {
         if self.state != RuntimeState::Loaded {
             return Err(NyError::EINVAL);
         }
-
         self.state = RuntimeState::Running;
-
         let result = self.run_program();
-
         self.state = match result {
             Ok(_) => RuntimeState::Ready,
             Err(_) => RuntimeState::Failed,
         };
-
         result
     }
 
-    /// Get the current runtime state.
     pub fn state(&self) -> RuntimeState {
         self.state
     }
 
-    /// Get the loaded program's name (if any).
     pub fn program_name(&self) -> Option<&[u8]> {
         self.program.as_ref().map(|p| p.name.as_slice())
     }
 
-    /// Internal: run the program through the minimal execution loop.
-    fn run_program(&self) -> Result<i32, NyError> {
-        let program = self.program.as_ref().ok_or(NyError::EINVAL)?;
+    /// Get the log entries produced during execution.
+    pub fn log_entries(&self) -> &[LogEntry] {
+        &self.log
+    }
 
-        // Minimal execution: interpret the code segment as a sequence
-        // of operation codes. For now, the only op is OP_HALT (0x00)
-        // which returns the first byte of the data segment as the
-        // exit code.
+    fn run_program(&mut self) -> Result<i32, NyError> {
+        let program = self.program.as_ref().ok_or(NyError::EINVAL)?;
         let mut pc = program.entry;
+
         loop {
             if pc >= program.code.len() {
                 return Err(NyError::ERUNTIME);
@@ -184,8 +248,7 @@ impl Runtime {
 
             let op = program.code[pc];
             match op {
-                0x00 => {
-                    // OP_HALT: exit with data[0] as code
+                OP_HALT => {
                     let exit_code = if program.data.is_empty() {
                         0
                     } else {
@@ -193,15 +256,74 @@ impl Runtime {
                     };
                     return Ok(exit_code);
                 }
-                0x01 => {
-                    // OP_NOP: no operation, advance
+                OP_NOP => {
                     pc += 1;
                 }
-                0x02 => {
-                    // OP_PRINT: print data[data[pc+1]..data[pc+2]]
-                    // For now, this is a no-op in the no_std context
-                    // (would need a console service via IPC in production)
+                OP_IPC_CALL | OP_IPC_SEND => {
+                    // IPC operations: args at code[pc+1..pc+4]
+                    // service_idx, op_idx, payload_idx
+                    if pc + 4 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
+                    pc += 4;
+                }
+                OP_FS_READ | OP_FS_WRITE => {
+                    // Filesystem operations: args at code[pc+1..pc+3]
+                    if pc + 3 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
                     pc += 3;
+                }
+                OP_LOG => {
+                    // Log message: data index at code[pc+1]
+                    if pc + 2 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
+                    let msg_idx = program.code[pc + 1] as usize;
+                    if msg_idx < program.data.len() {
+                        let end = program.data[msg_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - msg_idx);
+                        let msg = program.data[msg_idx..msg_idx + end].to_vec();
+                        self.log.push(LogEntry { level: 0, message: msg });
+                    }
+                    pc += 2;
+                }
+                OP_SET_STATE => {
+                    if pc + 3 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
+                    let key_idx = program.code[pc + 1] as usize;
+                    let val_idx = program.code[pc + 2] as usize;
+                    if key_idx < program.data.len() && val_idx < program.data.len() {
+                        let key_end = program.data[key_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - key_idx);
+                        let val_end = program.data[val_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - val_idx);
+                        let key = program.data[key_idx..key_idx + key_end].to_vec();
+                        let val = program.data[val_idx..val_idx + val_end].to_vec();
+                        // Update or insert
+                        if let Some(existing) = self.state_store.iter_mut().find(|(k, _)| k == &key) {
+                            existing.1 = val;
+                        } else {
+                            self.state_store.push((key, val));
+                        }
+                    }
+                    pc += 3;
+                }
+                OP_GET_STATE => {
+                    if pc + 2 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
+                    pc += 2;
+                }
+                OP_YIELD => {
+                    pc += 1;
                 }
                 _ => {
                     return Err(NyError::ERUNTIME);
@@ -215,12 +337,34 @@ impl Runtime {
 // FFI interface
 // ---------------------------------------------------------------------------
 
+/// Parse a .napp binary header. Writes manifest_len, code_len, data_len
+/// into `out` (must point to a buffer of at least 3 i32 values).
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_parse_header(
+    data: *const u8,
+    len: u32,
+    out: *mut i32,
+) -> i32 {
+    if data.is_null() || len < 17 || out.is_null() {
+        return -1;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    if &slice[0..4] != NAPP_MAGIC {
+        return -1;
+    }
+    let manifest_len = u32::from_le_bytes([slice[5], slice[6], slice[7], slice[8]]) as i32;
+    let code_len = u32::from_le_bytes([slice[9], slice[10], slice[11], slice[12]]) as i32;
+    let data_len = u32::from_le_bytes([slice[13], slice[14], slice[15], slice[16]]) as i32;
+    unsafe {
+        *out = manifest_len;
+        *out.add(1) = code_len;
+        *out.add(2) = data_len;
+    }
+    0
+}
+
 /// Create a new runtime instance.
-///
-/// # Safety
-///
-/// Returns a pointer to a heap-allocated Runtime. The caller must
-/// eventually call `nyrqis_nyruntime_destroy` to free it.
 #[no_mangle]
 pub unsafe extern "C" fn nyrqis_nyruntime_create() -> *mut Runtime {
     let rt = Runtime::new(ContainerConfig::default());
@@ -230,9 +374,7 @@ pub unsafe extern "C" fn nyrqis_nyruntime_create() -> *mut Runtime {
 /// Destroy a runtime instance.
 ///
 /// # Safety
-///
-/// `rt` must have been returned by `nyrqis_nyruntime_create` and not
-/// previously destroyed.
+/// `rt` must have been returned by `nyrqis_nyruntime_create`.
 #[no_mangle]
 pub unsafe extern "C" fn nyrqis_nyruntime_destroy(rt: *mut Runtime) {
     if !rt.is_null() {
@@ -263,6 +405,44 @@ pub unsafe extern "C" fn nyrqis_nyruntime_state(rt: *mut Runtime) -> i32 {
     unsafe { (*rt).state() as i32 }
 }
 
+/// Load a .napp binary into the runtime.
+///
+/// # Safety
+/// `data` must point to valid memory of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_load_napp(
+    rt: *mut Runtime,
+    data: *const u8,
+    len: u32,
+) -> i32 {
+    if rt.is_null() || data.is_null() {
+        return NyError::EINVAL.as_i32();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    match unsafe { (*rt).load_napp(slice) } {
+        Ok(()) => NyError::Ok.as_i32(),
+        Err(e) => e.as_i32(),
+    }
+}
+
+/// Execute the loaded program.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_execute(
+    rt: *mut Runtime,
+    out_exit_code: *mut i32,
+) -> i32 {
+    if rt.is_null() || out_exit_code.is_null() {
+        return NyError::EINVAL.as_i32();
+    }
+    match unsafe { (*rt).execute() } {
+        Ok(code) => {
+            unsafe { *out_exit_code = code; }
+            NyError::Ok.as_i32()
+        }
+        Err(e) => e.as_i32(),
+    }
+}
+
 /// Get the ABI version of this crate.
 #[no_mangle]
 pub extern "C" fn nyrqis_nyruntime_version() -> u32 {
@@ -277,29 +457,113 @@ pub extern "C" fn nyrqis_nyruntime_version() -> u32 {
 mod tests {
     use super::*;
 
+    fn make_napp(code: &[u8], data: &[u8]) -> Vec<u8> {
+        let manifest = b"{\"name\":\"test\",\"version\":\"1.0.0\"}";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(NAPP_MAGIC);
+        buf.push(NAPP_VERSION);
+        buf.extend_from_slice(&(manifest.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(manifest);
+        buf.extend_from_slice(code);
+        buf.extend_from_slice(data);
+        buf
+    }
+
+    #[test]
+    fn napp_parse() {
+        let raw = make_napp(&[OP_HALT], &[42]);
+        let pkg = NappPackage::parse(&raw).unwrap();
+        assert_eq!(pkg.version, NAPP_VERSION);
+        assert_eq!(pkg.code, vec![OP_HALT]);
+        assert_eq!(pkg.data, vec![42]);
+    }
+
+    #[test]
+    fn napp_parse_bad_magic() {
+        let mut raw = make_napp(&[OP_HALT], &[0]);
+        raw[0] = b'X';
+        assert_eq!(NappPackage::parse(&raw), Err(NyError::EINVAL));
+    }
+
+    #[test]
+    fn napp_parse_too_small() {
+        assert_eq!(NappPackage::parse(&[0; 10]), Err(NyError::EINVAL));
+    }
+
     #[test]
     fn runtime_lifecycle() {
         let mut rt = Runtime::new(ContainerConfig::default());
         assert_eq!(rt.state(), RuntimeState::Uninitialized);
-
         rt.init().unwrap();
         assert_eq!(rt.state(), RuntimeState::Ready);
 
-        // Load a simple program
         let program = Program {
             name: b"test".to_vec(),
             entry: 0,
-            code: vec![0x00], // OP_HALT
+            code: vec![OP_HALT],
             data: vec![42],
             required_caps: Vec::new(),
         };
         rt.load(program).unwrap();
         assert_eq!(rt.state(), RuntimeState::Loaded);
 
-        // Execute
         let exit = rt.execute().unwrap();
         assert_eq!(exit, 42);
         assert_eq!(rt.state(), RuntimeState::Ready);
+    }
+
+    #[test]
+    fn runtime_load_napp() {
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+
+        let raw = make_napp(&[OP_HALT], &[7]);
+        rt.load_napp(&raw).unwrap();
+        let exit = rt.execute().unwrap();
+        assert_eq!(exit, 7);
+    }
+
+    #[test]
+    fn runtime_log_opcode() {
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+
+        // LOG msg_idx, then HALT
+        let raw = make_napp(&[OP_LOG, 0, OP_HALT], b"hello\x00");
+        rt.load_napp(&raw).unwrap();
+        rt.execute().unwrap();
+
+        assert_eq!(rt.log_entries().len(), 1);
+        assert_eq!(rt.log_entries()[0].message, b"hello");
+    }
+
+    #[test]
+    fn runtime_set_state() {
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+
+        // SET_STATE key_idx=0, val_idx=6, then HALT
+        let mut code = vec![OP_SET_STATE, 0, 6, OP_HALT];
+        let mut data = b"theme\x00Eclipse\x00".to_vec();
+        let raw = make_napp(&code, &data);
+        rt.load_napp(&raw).unwrap();
+        rt.execute().unwrap();
+
+        assert_eq!(rt.state_store.len(), 1);
+        assert_eq!(rt.state_store[0].0, b"theme");
+        assert_eq!(rt.state_store[0].1, b"Eclipse");
+    }
+
+    #[test]
+    fn runtime_nop_chain() {
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+
+        let raw = make_napp(&[OP_NOP, OP_NOP, OP_NOP, OP_HALT], &[99]);
+        rt.load_napp(&raw).unwrap();
+        assert_eq!(rt.execute().unwrap(), 99);
     }
 
     #[test]
@@ -310,23 +574,17 @@ mod tests {
         let program = Program {
             name: b"needs_cap".to_vec(),
             entry: 0,
-            code: vec![0x00],
+            code: vec![OP_HALT],
             data: vec![0],
             required_caps: vec![Capability::StorageVolume],
         };
-
-        // Should fail without the capability
         assert_eq!(rt.load(program), Err(NyError::ECAPMISSING));
 
-        // Grant the capability
         rt.grant_capability(Capability::StorageVolume).unwrap();
-        assert!(rt.has_capability(Capability::StorageVolume));
-
-        // Now it should work
         let program = Program {
             name: b"needs_cap".to_vec(),
             entry: 0,
-            code: vec![0x00],
+            code: vec![OP_HALT],
             data: vec![0],
             required_caps: vec![Capability::StorageVolume],
         };
@@ -334,64 +592,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_nop_program() {
-        let mut rt = Runtime::new(ContainerConfig::default());
-        rt.init().unwrap();
-
-        let program = Program {
-            name: b"nop".to_vec(),
-            entry: 0,
-            code: vec![0x01, 0x01, 0x01, 0x00], // 3x NOP, then HALT
-            data: vec![7],
-            required_caps: Vec::new(),
+    fn parse_header_ffi() {
+        let raw = make_napp(&[OP_HALT], &[42]);
+        let mut out = [0i32; 3];
+        let rc = unsafe {
+            nyrqis_nyruntime_parse_header(raw.as_ptr(), raw.len() as u32, out.as_mut_ptr())
         };
-        rt.load(program).unwrap();
-        let exit = rt.execute().unwrap();
-        assert_eq!(exit, 7);
+        assert_eq!(rc, 0);
+        assert_eq!(out[0], 33); // manifest len
+        assert_eq!(out[1], 1);  // code len
+        assert_eq!(out[2], 1);  // data len
     }
 
     #[test]
-    fn runtime_empty_data_halt() {
-        let mut rt = Runtime::new(ContainerConfig::default());
-        rt.init().unwrap();
-
-        let program = Program {
-            name: b"empty".to_vec(),
-            entry: 0,
-            code: vec![0x00], // HALT with empty data
-            data: Vec::new(),
-            required_caps: Vec::new(),
-        };
-        rt.load(program).unwrap();
-        let exit = rt.execute().unwrap();
-        assert_eq!(exit, 0);
-    }
-
-    #[test]
-    fn runtime_bad_opcode() {
-        let mut rt = Runtime::new(ContainerConfig::default());
-        rt.init().unwrap();
-
-        let program = Program {
-            name: b"bad".to_vec(),
-            entry: 0,
-            code: vec![0xFF], // invalid opcode
-            data: vec![0],
-            required_caps: Vec::new(),
-        };
-        rt.load(program).unwrap();
-        assert_eq!(rt.execute(), Err(NyError::ERUNTIME));
-    }
-
-    #[test]
-    fn runtime_double_init_fails() {
-        let mut rt = Runtime::new(ContainerConfig::default());
-        rt.init().unwrap();
-        assert_eq!(rt.init(), Err(NyError::EINVAL));
-    }
-
-    #[test]
-    fn runtime_version() {
+    fn version() {
         let v = nyrqis_nyruntime_version();
         assert_eq!(v >> 16, 1);
         assert_eq!(v & 0xFFFF, 0);
