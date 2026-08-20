@@ -390,5 +390,116 @@ class TestNyRuntimeLauncher(unittest.TestCase):
             os.unlink(outpath)
 
 
+
+
+class TestNyrqisApps(unittest.TestCase):
+    """Integration tests for Nyrqis applications (config_manager, status_client)."""
+
+    def test_config_manager_builds(self):
+        """config_manager.py builds a valid .napp binary."""
+        import subprocess
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.napp', delete=False) as f:
+            outpath = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, 'examples/config_manager.py',
+                 '--output', outpath],
+                capture_output=True, text=True,
+                cwd=_BACKEND_DIR,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = open(outpath, 'rb').read()
+            self.assertEqual(data[0:4], b'NYAP')
+            self.assertEqual(data[4], 1)  # version
+            self.assertGreater(len(data), 100)
+        finally:
+            os.unlink(outpath)
+
+    def test_status_client_builds(self):
+        """status_client.py builds a valid .napp binary."""
+        import subprocess
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.napp', delete=False) as f:
+            outpath = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, 'examples/status_client.py',
+                 '--output', outpath],
+                capture_output=True, text=True,
+                cwd=_BACKEND_DIR,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = open(outpath, 'rb').read()
+            self.assertEqual(data[0:4], b'NYAP')
+            self.assertEqual(data[4], 1)  # version
+            self.assertGreater(len(data), 50)
+        finally:
+            os.unlink(outpath)
+
+    def test_config_manager_napp_parsing(self):
+        """config_manager .napp can be parsed by the Rust runtime."""
+        try:
+            from backend.nyruntime import NyRuntime
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
+        import subprocess
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.napp', delete=False) as f:
+            outpath = f.name
+        try:
+            subprocess.run(
+                [sys.executable, 'examples/config_manager.py',
+                 '--output', outpath],
+                capture_output=True, cwd=_BACKEND_DIR,
+            )
+            data = open(outpath, 'rb').read()
+            with NyRuntime() as rt:
+                rt.init()
+                rt.load_napp(data)
+                self.assertEqual(rt.state, 2)  # Loaded
+        finally:
+            os.unlink(outpath)
+
+    def test_config_manager_executes(self):
+        """config_manager .napp executes successfully through NyRuntime."""
+        try:
+            from backend.nyruntime import NyRuntime
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
+        import subprocess
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.napp', delete=False) as f:
+            outpath = f.name
+        try:
+            subprocess.run(
+                [sys.executable, 'examples/config_manager.py',
+                 '--output', outpath],
+                capture_output=True, cwd=_BACKEND_DIR,
+            )
+            data = open(outpath, 'rb').read()
+            with NyRuntime() as rt:
+                rt.init()
+                rt.load_napp(data)
+                exit_code = rt.execute()
+                self.assertEqual(exit_code, 0)
+                # Should have log entries (level 0 = INFO)
+                logs = rt.log_entries()
+                self.assertGreater(len(logs), 0)
+        finally:
+            os.unlink(outpath)
+
+    def test_nyruntime_loader_has_new_methods(self):
+        """NyRuntime loader exposes load_napp, execute, set_ipc."""
+        from backend.nyruntime import NyRuntime
+        self.assertTrue(hasattr(NyRuntime, 'load_napp'))
+        self.assertTrue(hasattr(NyRuntime, 'execute'))
+        self.assertTrue(hasattr(NyRuntime, 'set_ipc'))
+
+
 if __name__ == "__main__":
     unittest.main()

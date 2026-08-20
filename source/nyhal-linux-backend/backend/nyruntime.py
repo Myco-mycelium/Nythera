@@ -103,6 +103,17 @@ def _load_library():
         ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p, ctypes.c_uint32
     ]
 
+    # nyrqis_nyruntime_log_count(*Runtime) -> i32
+    lib.nyrqis_nyruntime_log_count.restype = ctypes.c_int32
+    lib.nyrqis_nyruntime_log_count.argtypes = [ctypes.c_void_p]
+
+    # nyrqis_nyruntime_log_entry(*Runtime, i32, *i32, *u32) -> *u8
+    lib.nyrqis_nyruntime_log_entry.restype = ctypes.POINTER(ctypes.c_uint8)
+    lib.nyrqis_nyruntime_log_entry.argtypes = [
+        ctypes.c_void_p, ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_uint32)
+    ]
+
     return lib
 
 
@@ -162,6 +173,29 @@ class NyRuntime:
         if result != 0:
             raise RuntimeError(f"NyRuntime execute failed: errno {result}")
         return exit_code.value
+
+    def log_entries(self):
+        """Return log entries as a list of objects with `level` and `message`."""
+        lib = _get_lib()
+        count = lib.nyrqis_nyruntime_log_count(self._ptr)
+        if count <= 0:
+            return []
+        entries = []
+        for i in range(count):
+            level = ctypes.c_int32(0)
+            msg_len = ctypes.c_uint32(0)
+            ptr = lib.nyrqis_nyruntime_log_entry(
+                self._ptr, i, ctypes.byref(level), ctypes.byref(msg_len)
+            )
+            if ptr and msg_len.value > 0:
+                msg = bytes(ptr[:msg_len.value])
+            else:
+                msg = b""
+            entries.append(type('LogEntry', (), {
+                'level': level.value,
+                'message': msg,
+            })())
+        return entries
 
     def set_ipc(self, peer_path: str) -> None:
         """Wire IPC: bind a socket and set the daemon peer path."""

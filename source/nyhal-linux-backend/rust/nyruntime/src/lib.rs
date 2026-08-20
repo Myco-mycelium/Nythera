@@ -656,6 +656,44 @@ pub unsafe extern "C" fn nyrqis_nyruntime_set_ipc(
     NyError::Ok.as_i32()
 }
 
+/// Get the number of log entries.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_log_count(rt: *mut Runtime) -> i32 {
+    if rt.is_null() {
+        return -1;
+    }
+    unsafe { (*rt).log_entries().len() as i32 }
+}
+
+/// Get a log entry by index. Returns the log level and writes the
+/// message length into `out_msg_len`. Returns the message pointer,
+/// or NULL if the index is out of range.
+///
+/// # Safety
+/// The returned pointer is valid until the next call to the runtime
+/// (it borrows the internal log Vec). Caller must not free it.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_log_entry(
+    rt: *mut Runtime,
+    index: i32,
+    out_level: *mut i32,
+    out_msg_len: *mut u32,
+) -> *const u8 {
+    if rt.is_null() || out_level.is_null() || out_msg_len.is_null() || index < 0 {
+        return std::ptr::null();
+    }
+    let entries = unsafe { (*rt).log_entries() };
+    let idx = index as usize;
+    if idx >= entries.len() {
+        return std::ptr::null();
+    }
+    unsafe {
+        *out_level = entries[idx].level as i32;
+        *out_msg_len = entries[idx].message.len() as u32;
+    }
+    entries[idx].message.as_ptr()
+}
+
 /// Get the ABI version of this crate.
 #[no_mangle]
 pub extern "C" fn nyrqis_nyruntime_version() -> u32 {
