@@ -416,7 +416,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="Path to a Nyrqis application binary (.napp). When specified, "
              "the launcher loads and executes it through the NyRuntime "
-             "instead of running the raw command",\n    )
+             "instead of running the raw command",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 

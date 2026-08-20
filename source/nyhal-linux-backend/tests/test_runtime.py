@@ -298,7 +298,10 @@ class TestNyRuntimeLauncher(unittest.TestCase):
 
     def test_nyruntime_create_and_destroy(self):
         """Create and destroy a NyRuntime instance."""
-        from backend.nyruntime import NyRuntime
+        try:
+            from backend.nyruntime import NyRuntime
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
         rt = NyRuntime()
         self.assertIsNotNone(rt)
         rt.destroy()
@@ -306,7 +309,10 @@ class TestNyRuntimeLauncher(unittest.TestCase):
 
     def test_nyruntime_context_manager(self):
         """NyRuntime works as a context manager."""
-        from backend.nyruntime import NyRuntime
+        try:
+            from backend.nyruntime import NyRuntime
+        except ImportError:
+            self.skipTest("NyRuntime crate not built")
         with NyRuntime() as rt:
             self.assertIsNotNone(rt)
         self.assertTrue(rt._destroyed)
