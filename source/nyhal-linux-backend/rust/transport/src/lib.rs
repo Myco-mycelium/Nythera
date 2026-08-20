@@ -290,6 +290,50 @@ pub unsafe extern "C" fn nyrqis_transport_recv(
     0
 }
 
+/// Atomic CALL/REPLY round-trip: send `wire` to `peer_path`, then
+/// receive the reply into `reply_buf` with `timeout_ms`.
+/// Returns 0 on success (reply written to `reply_buf`, length to
+/// `*out_reply_len`), -errno on failure, or 0 with
+/// `*out_reply_len = 0` on timeout.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_transport_call(
+    fd: c_int,
+    wire: *const c_uchar,
+    wire_len: usize,
+    peer_path: *const c_char,
+    timeout_ms: i64,
+    reply_buf: *mut c_uchar,
+    reply_cap: usize,
+    out_reply_len: *mut usize,
+    out_pid: *mut i32,
+    out_uid: *mut i32,
+    out_gid: *mut i32,
+) -> i32 {
+    // Send the request frame
+    let rc = nyrqis_transport_send(fd, wire, wire_len, peer_path);
+    if rc != 0 {
+        return rc;
+    }
+    // Receive the reply into the caller's buffer
+    let recv_path_cap = MAX_SUN_PATH + 1;
+    let mut path_buf = [0i8; MAX_SUN_PATH + 1];
+    let mut path_len: usize = 0;
+    let rc = nyrqis_transport_recv(
+        fd,
+        timeout_ms,
+        reply_buf,
+        reply_cap,
+        out_reply_len,
+        path_buf.as_mut_ptr(),
+        recv_path_cap,
+        &mut path_len,
+        out_pid,
+        out_uid,
+        out_gid,
+    );
+    rc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +530,97 @@ mod tests {
         unsafe {
             libc::close(recv_fd);
             libc::unlink(recv_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn call_roundtrip() {
+        // A "server" that reads a request and sends a reply
+        let srv_path = temp_sock("call-srv");
+        let cli_path = temp_sock("call-cli");
+        let srv_fd = bind_socket(&srv_path);
+        let cli_fd = bind_socket(&cli_path);
+        enable_passcred(srv_fd);
+        enable_passcred(cli_fd);
+
+        let wire = b"NYRQ\x01\x02ping";
+        let reply = b"NYRQ\x01\x03pong";
+
+        // Server thread: recv request, send reply
+        let srv_clone = srv_path.clone();
+        let cli_clone = cli_path.clone();
+        let handle = std::thread::spawn(move || {
+            let mut rbuf = [0u8; TEST_WIRE_CAP];
+            let mut rlen: usize = 0;
+            let mut plen: usize = 0;
+            let mut pid = 0i32;
+            let mut uid = 0i32;
+            let mut gid = 0i32;
+            let mut pbuf = [0i8; TEST_PATH_CAP];
+            let rc = unsafe {
+                nyrqis_transport_recv(
+                    srv_fd,
+                    2000,
+                    rbuf.as_mut_ptr(),
+                    TEST_WIRE_CAP,
+                    &mut rlen,
+                    pbuf.as_mut_ptr(),
+                    TEST_PATH_CAP,
+                    &mut plen,
+                    &mut pid,
+                    &mut uid,
+                    &mut gid,
+                )
+            };
+            assert_eq!(rc, 0);
+            assert_eq!(rlen, wire.len());
+            // Send reply back to the client's bound path
+            let cli_cstr = CString::new(cli_clone.to_bytes()).unwrap();
+            let rc = unsafe {
+                nyrqis_transport_send(
+                    srv_fd,
+                    reply.as_ptr(),
+                    reply.len(),
+                    cli_cstr.as_ptr(),
+                )
+            };
+            assert_eq!(rc, 0);
+            unsafe {
+                libc::close(srv_fd);
+                libc::unlink(srv_clone.as_ptr());
+            }
+        });
+
+        // Client: atomic call (send + recv)
+        let mut reply_buf = [0u8; TEST_WIRE_CAP];
+        let mut reply_len: usize = 0;
+        let mut pid = 0i32;
+        let mut uid = 0i32;
+        let mut gid = 0i32;
+        let rc = unsafe {
+            nyrqis_transport_call(
+                cli_fd,
+                wire.as_ptr(),
+                wire.len(),
+                srv_path.as_ptr(),
+                2000,
+                reply_buf.as_mut_ptr(),
+                TEST_WIRE_CAP,
+                &mut reply_len,
+                &mut pid,
+                &mut uid,
+                &mut gid,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(reply_len, reply.len());
+        assert_eq!(&reply_buf[..reply_len], reply);
+        assert_eq!(pid, unsafe { libc::getpid() });
+
+        handle.join().unwrap();
+        unsafe {
+            libc::close(cli_fd);
+            libc::unlink(cli_path.as_ptr());
         }
     }
 }

@@ -31,7 +31,7 @@
 //!   inconsistent state; errors are propagated, not swallowed
 //! - **FFI-safe** — the runtime can be driven from Python via ctypes
 
-use std::fmt;
+use std::ffi::{c_char, c_int, c_uchar, c_void, CStr};
 use std::vec::Vec;
 use nyrqis_nycore::{Capability, ContainerConfig, ContainerState, NyError};
 
@@ -56,6 +56,9 @@ pub const OP_LOG: u8 = 0x06;
 pub const OP_SET_STATE: u8 = 0x07;
 pub const OP_GET_STATE: u8 = 0x08;
 pub const OP_YIELD: u8 = 0x09;
+
+/// Wire-frame sanity bound (16 MiB).
+const MAX_WIRE_BYTES: usize = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Runtime state
@@ -149,6 +152,10 @@ pub struct Runtime {
     config: ContainerConfig,
     log: Vec<LogEntry>,
     state_store: Vec<(Vec<u8>, Vec<u8>)>,
+    /// IPC socket fd (-1 = not connected)
+    ipc_fd: i32,
+    /// Peer socket path for IPC calls (the daemon's bound path)
+    ipc_peer: Vec<u8>,
 }
 
 impl Runtime {
@@ -160,6 +167,8 @@ impl Runtime {
             config,
             log: Vec::new(),
             state_store: Vec::new(),
+            ipc_fd: -1,
+            ipc_peer: Vec::new(),
         }
     }
 
@@ -183,6 +192,12 @@ impl Runtime {
 
     pub fn has_capability(&self, cap: Capability) -> bool {
         self.capabilities.contains(&cap)
+    }
+
+    /// Bind a Unix datagram socket for IPC and store the peer path.
+    pub fn set_ipc(&mut self, fd: i32, peer_path: &[u8]) {
+        self.ipc_fd = fd;
+        self.ipc_peer = peer_path.to_vec();
     }
 
     /// Load a .napp binary into the runtime.
@@ -264,6 +279,93 @@ impl Runtime {
                     // service_idx, op_idx, payload_idx
                     if pc + 4 > program.code.len() {
                         return Err(NyError::ERUNTIME);
+                    }
+                    let _service_idx = program.code[pc + 1] as usize;
+                    let _op_idx = program.code[pc + 2] as usize;
+                    let payload_idx = program.code[pc + 3] as usize;
+
+                    // Only execute the IPC syscall when a socket is wired
+                    if self.ipc_fd >= 0 && !self.ipc_peer.is_empty() {
+                        // Build the request payload from data segment
+                        let payload = if payload_idx < program.data.len() {
+                            let end = program.data[payload_idx..]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .unwrap_or(program.data.len() - payload_idx);
+                            &program.data[payload_idx..payload_idx + end]
+                        } else {
+                            b"{}"
+                        };
+
+                        // Pack: header (4B magic + 1B version + 1B type=CALL)
+                        //        + correlation id (2B LE) + payload
+                        let call_id = (pc as u16).wrapping_add(1);
+                        let mut frame = Vec::with_capacity(8 + payload.len());
+                        frame.extend_from_slice(b"NYRQ");
+                        frame.push(1); // version
+                        frame.push(0x01); // type = CALL
+                        frame.extend_from_slice(&call_id.to_le_bytes());
+                        frame.extend_from_slice(payload);
+
+                        // Build sockaddr_un for the peer
+                        let peer_len = self.ipc_peer.len();
+                        if peer_len > 0 && peer_len <= 107 {
+                            let mut sun: libc::sockaddr_un =
+                                unsafe { std::mem::zeroed() };
+                            sun.sun_family = libc::AF_UNIX as libc::sa_family_t;
+                            for (i, &b) in self.ipc_peer.iter().enumerate() {
+                                sun.sun_path[i] = b as i8;
+                            }
+                            let addr_len = (2 + peer_len + 1) as libc::socklen_t;
+
+                            // sendto
+                            let sent = unsafe {
+                                libc::sendto(
+                                    self.ipc_fd,
+                                    frame.as_ptr() as *const c_void,
+                                    frame.len(),
+                                    0,
+                                    &sun as *const libc::sockaddr_un
+                                        as *const libc::sockaddr,
+                                    addr_len,
+                                )
+                            };
+
+                            if sent > 0 && op == OP_IPC_CALL {
+                                // recv reply (non-blocking poll first)
+                                let mut pfd = libc::pollfd {
+                                    fd: self.ipc_fd,
+                                    events: libc::POLLIN,
+                                    revents: 0,
+                                };
+                                let prc = unsafe { libc::poll(&mut pfd, 1, 2000) };
+                                if prc > 0 {
+                                    let mut rbuf = [0u8; 65536];
+                                    let mut iov = libc::iovec {
+                                        iov_base: rbuf.as_mut_ptr() as *mut c_void,
+                                        iov_len: rbuf.len(),
+                                    };
+                                    let mut msg: libc::msghdr =
+                                        unsafe { std::mem::zeroed() };
+                                    msg.msg_iov = &mut iov;
+                                    msg.msg_iovlen = 1;
+                                    let n = unsafe {
+                                        libc::recvmsg(
+                                            self.ipc_fd,
+                                            &mut msg,
+                                            libc::MSG_DONTWAIT,
+                                        )
+                                    };
+                                    if n > 0 {
+                                        let reply = &rbuf[..n as usize];
+                                        self.log.push(LogEntry {
+                                            level: 1,
+                                            message: reply.to_vec(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
                     }
                     pc += 4;
                 }
@@ -443,6 +545,26 @@ pub unsafe extern "C" fn nyrqis_nyruntime_execute(
     }
 }
 
+/// Wire IPC: bind a socket fd and set the peer (daemon) path.
+///
+/// # Safety
+/// `peer_path` must point to a NUL-terminated C string of `peer_len`
+/// bytes (excluding the NUL).
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyruntime_set_ipc(
+    rt: *mut Runtime,
+    fd: c_int,
+    peer_path: *const c_char,
+    peer_len: u32,
+) -> i32 {
+    if rt.is_null() || peer_path.is_null() {
+        return NyError::EINVAL.as_i32();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(peer_path as *const u8, peer_len as usize) };
+    unsafe { (*rt).set_ipc(fd, slice) };
+    NyError::Ok.as_i32()
+}
+
 /// Get the ABI version of this crate.
 #[no_mangle]
 pub extern "C" fn nyrqis_nyruntime_version() -> u32 {
@@ -456,6 +578,8 @@ pub extern "C" fn nyrqis_nyruntime_version() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::ptr;
 
     fn make_napp(code: &[u8], data: &[u8]) -> Vec<u8> {
         let manifest = b"{\"name\":\"test\",\"version\":\"1.0.0\"}";
@@ -545,8 +669,8 @@ mod tests {
         rt.init().unwrap();
 
         // SET_STATE key_idx=0, val_idx=6, then HALT
-        let mut code = vec![OP_SET_STATE, 0, 6, OP_HALT];
-        let mut data = b"theme\x00Eclipse\x00".to_vec();
+        let code = vec![OP_SET_STATE, 0, 6, OP_HALT];
+        let data = b"theme\x00Eclipse\x00".to_vec();
         let raw = make_napp(&code, &data);
         rt.load_napp(&raw).unwrap();
         rt.execute().unwrap();
@@ -609,5 +733,149 @@ mod tests {
         let v = nyrqis_nyruntime_version();
         assert_eq!(v >> 16, 1);
         assert_eq!(v & 0xFFFF, 0);
+    }
+
+    #[test]
+    fn ipc_call_with_socket() {
+        use std::os::unix::io::FromRawFd;
+
+        // Create server socket
+        let srv_path = CString::new(format!(
+            "/tmp/nyrt-ipc-test-{}-srv.sock",
+            std::process::id()
+        ))
+        .unwrap();
+        let cli_path = CString::new(format!(
+            "/tmp/nyrt-ipc-test-{}-cli.sock",
+            std::process::id()
+        ))
+        .unwrap();
+
+        let srv_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
+        assert!(srv_fd >= 0);
+        let srv_sun = {
+            let mut s: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+            s.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            let p = srv_path.to_bytes();
+            for (i, &b) in p.iter().enumerate() {
+                s.sun_path[i] = b as i8;
+            }
+            s
+        };
+        let rc = unsafe {
+            libc::bind(
+                srv_fd,
+                &srv_sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(rc, 0, "srv bind failed");
+
+        // Create client socket
+        let cli_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
+        assert!(cli_fd >= 0);
+        let cli_sun = {
+            let mut s: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+            s.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            let p = cli_path.to_bytes();
+            for (i, &b) in p.iter().enumerate() {
+                s.sun_path[i] = b as i8;
+            }
+            s
+        };
+        let rc = unsafe {
+            libc::bind(
+                cli_fd,
+                &cli_sun as *const libc::sockaddr_un as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(rc, 0, "cli bind failed");
+
+        // Server thread: receive request, send reply
+        let srv_path_clone = srv_path.clone();
+        let cli_path_clone = cli_path.clone();
+        let handle = std::thread::spawn(move || {
+            let mut rbuf = [0u8; 65536];
+            let mut iov = libc::iovec {
+                iov_base: rbuf.as_mut_ptr() as *mut c_void,
+                iov_len: rbuf.len(),
+            };
+            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            let n = unsafe { libc::recvmsg(srv_fd, &mut msg, 0) };
+            assert!(n > 0, "srv recv failed");
+            // Send reply
+            let cli_sun2 = {
+                let mut s: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+                s.sun_family = libc::AF_UNIX as libc::sa_family_t;
+                let p = cli_path_clone.to_bytes();
+                for (i, &b) in p.iter().enumerate() {
+                    s.sun_path[i] = b as i8;
+                }
+                s
+            };
+            let reply = b"NYRQ\x01\x03pong";
+            let sent = unsafe {
+                libc::sendto(
+                    srv_fd,
+                    reply.as_ptr() as *const c_void,
+                    reply.len(),
+                    0,
+                    &cli_sun2 as *const libc::sockaddr_un as *const libc::sockaddr,
+                    (2 + cli_path_clone.to_bytes().len() + 1) as libc::socklen_t,
+                )
+            };
+            assert_eq!(sent as usize, reply.len());
+            unsafe {
+                libc::close(srv_fd);
+                libc::unlink(srv_path_clone.as_ptr());
+            }
+        });
+
+        // Set up the runtime with the IPC socket
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+        rt.set_ipc(cli_fd, srv_path.to_bytes());
+
+        // Build a program: IPC_CALL service=0 op=0 payload_idx=4, then HALT
+        // data layout: [0 (exit code), padding, payload, NUL]
+        let payload = b"{\"op\":\"ping\"}\x00";
+        let code = vec![OP_IPC_CALL, 0, 0, 4, OP_HALT];
+        let mut data = vec![0u8; 4]; // exit code + padding
+        data.extend_from_slice(payload);
+        let raw = make_napp(&code, &data);
+        rt.load_napp(&raw).unwrap();
+        let exit = rt.execute().unwrap();
+        assert_eq!(exit, 0);
+
+        // The reply should be in the log
+        assert!(!rt.log_entries().is_empty(), "expected IPC reply in log");
+        assert_eq!(rt.log_entries()[0].level, 1); // level=1 means IPC reply
+
+        handle.join().unwrap();
+        unsafe {
+            libc::close(cli_fd);
+            libc::unlink(cli_path.as_ptr());
+        }
+    }
+
+    #[test]
+    fn set_ipc_ffi() {
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+        let peer = CString::new("/tmp/test.sock").unwrap();
+        let rc = unsafe {
+            nyrqis_nyruntime_set_ipc(
+                &mut rt as *mut Runtime,
+                42,
+                peer.as_ptr(),
+                peer.to_bytes().len() as u32,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(rt.ipc_fd, 42);
+        assert_eq!(rt.ipc_peer, peer.to_bytes());
     }
 }
