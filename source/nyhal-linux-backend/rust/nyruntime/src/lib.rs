@@ -369,10 +369,101 @@ impl Runtime {
                     }
                     pc += 4;
                 }
-                OP_FS_READ | OP_FS_WRITE => {
-                    // Filesystem operations: args at code[pc+1..pc+3]
+                OP_FS_READ => {
+                    // FS_READ: path_idx at code[pc+1], dest_key_idx at code[pc+2]
                     if pc + 3 > program.code.len() {
                         return Err(NyError::ERUNTIME);
+                    }
+                    let path_idx = program.code[pc + 1] as usize;
+                    let dest_key_idx = program.code[pc + 2] as usize;
+                    if path_idx < program.data.len() {
+                        let path_end = program.data[path_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - path_idx);
+                        let path = &program.data[path_idx..path_idx + path_end];
+                        // Open, read, store in state
+                        let path_str = std::str::from_utf8(path)
+                            .map_err(|_| NyError::EINVAL)?;
+                        let fd = unsafe {
+                            libc::open(
+                                path.as_ptr() as *const c_char,
+                                libc::O_RDONLY,
+                                0,
+                            )
+                        };
+                        if fd >= 0 {
+                            let mut buf = [0u8; 65536];
+                            let n = unsafe {
+                                libc::read(fd, buf.as_mut_ptr() as *mut c_void, buf.len())
+                            };
+                            unsafe { libc::close(fd); }
+                            if n > 0 {
+                                let content = buf[..n as usize].to_vec();
+                                if dest_key_idx < program.data.len() {
+                                    let key_end = program.data[dest_key_idx..]
+                                        .iter()
+                                        .position(|&b| b == 0)
+                                        .unwrap_or(program.data.len() - dest_key_idx);
+                                    let key = program.data[dest_key_idx..dest_key_idx + key_end].to_vec();
+                                    if let Some(existing) = self.state_store.iter_mut().find(|(k, _)| k == &key) {
+                                        existing.1 = content;
+                                    } else {
+                                        self.state_store.push((key, content));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.log.push(LogEntry {
+                                level: 2, // error
+                                message: format!("FS_READ failed: {} errno={}", path_str, std::io::Error::last_os_error()).into_bytes(),
+                            });
+                        }
+                    }
+                    pc += 3;
+                }
+                OP_FS_WRITE => {
+                    // FS_WRITE: path_idx at code[pc+1], data_idx at code[pc+2]
+                    if pc + 3 > program.code.len() {
+                        return Err(NyError::ERUNTIME);
+                    }
+                    let path_idx = program.code[pc + 1] as usize;
+                    let data_idx = program.code[pc + 2] as usize;
+                    if path_idx < program.data.len() && data_idx < program.data.len() {
+                        let path_end = program.data[path_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - path_idx);
+                        let path = &program.data[path_idx..path_idx + path_end];
+                        let content_end = program.data[data_idx..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(program.data.len() - data_idx);
+                        let content = &program.data[data_idx..data_idx + content_end];
+                        let path_str = std::str::from_utf8(path)
+                            .map_err(|_| NyError::EINVAL)?;
+                        let fd = unsafe {
+                            libc::open(
+                                path.as_ptr() as *const c_char,
+                                libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                                0o644,
+                            )
+                        };
+                        if fd >= 0 {
+                            let written = unsafe {
+                                libc::write(fd, content.as_ptr() as *const c_void, content.len())
+                            };
+                            unsafe { libc::close(fd); }
+                            self.log.push(LogEntry {
+                                level: 0,
+                                message: format!("FS_WRITE {} bytes to {}", written, path_str).into_bytes(),
+                            });
+                        } else {
+                            self.log.push(LogEntry {
+                                level: 2,
+                                message: format!("FS_WRITE failed: {} errno={}", path_str, std::io::Error::last_os_error()).into_bytes(),
+                            });
+                        }
                     }
                     pc += 3;
                 }
@@ -877,5 +968,63 @@ mod tests {
         assert_eq!(rc, 0);
         assert_eq!(rt.ipc_fd, 42);
         assert_eq!(rt.ipc_peer, peer.to_bytes());
+    }
+
+    #[test]
+    fn fs_write_and_read() {
+        let dir = std::env::temp_dir().join(format!("nyrt-fs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        let path_str = path.to_str().unwrap();
+
+        // FS_WRITE: write "hello world" to the file
+        let mut data = Vec::new();
+        // data[0] = exit code (0 = success)
+        data.push(0);
+        // align to 4 bytes
+        while data.len() % 4 != 0 { data.push(0); }
+        let path_off = data.len();
+        data.extend_from_slice(path_str.as_bytes());
+        data.push(0);
+        let content_off = data.len();
+        data.extend_from_slice(b"hello world");
+        data.push(0);
+
+        let code = vec![OP_FS_WRITE, path_off as u8, content_off as u8, OP_HALT];
+        let raw = make_napp(&code, &data);
+
+        let mut rt = Runtime::new(ContainerConfig::default());
+        rt.init().unwrap();
+        rt.load_napp(&raw).unwrap();
+        let exit = rt.execute().unwrap();
+        assert_eq!(exit, 0);
+        assert!(path.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+
+        // FS_READ: read it back into state
+        let mut data2 = Vec::new();
+        data2.push(0); // exit code
+        while data2.len() % 4 != 0 { data2.push(0); }
+        let path_off2 = data2.len();
+        data2.extend_from_slice(path_str.as_bytes());
+        data2.push(0);
+        let dest_off = data2.len();
+        data2.extend_from_slice(b"content");
+        data2.push(0);
+
+        let code2 = vec![OP_FS_READ, path_off2 as u8, dest_off as u8, OP_HALT];
+        let raw2 = make_napp(&code2, &data2);
+
+        let mut rt2 = Runtime::new(ContainerConfig::default());
+        rt2.init().unwrap();
+        rt2.load_napp(&raw2).unwrap();
+        rt2.execute().unwrap();
+
+        // Check the state store has the content
+        assert!(rt2.state_store.iter().any(|(k, v)| k == b"content" && v == b"hello world"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
