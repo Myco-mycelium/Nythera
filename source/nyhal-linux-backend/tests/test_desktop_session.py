@@ -985,5 +985,110 @@ class TestFileManager(unittest.TestCase):
         self.assertFalse(self.fm.visible)
 
 
+class TestTerminalApp(unittest.TestCase):
+    """Tests for the terminal emulator application."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from examples.terminal_app import TerminalApp
+        self.term = TerminalApp(self.session)
+
+    def test_initial_state(self):
+        self.assertIsNotNone(self.term.history)
+        self.assertGreater(len(self.term.history), 0)
+
+    def test_execute_echo(self):
+        result = self.term.execute("echo hello")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("hello", result.stdout)
+
+    def test_execute_pwd(self):
+        result = self.term.execute("pwd")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout, self.term.cwd)
+
+    def test_execute_cd(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            result = self.term.execute(f"cd {d}")
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(self.term.cwd, d)
+
+    def test_execute_help(self):
+        result = self.term.execute("help")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Nyrqis Terminal", result.stdout)
+
+    def test_execute_clear(self):
+        self.term.execute("echo stuff")
+        self.term.execute("clear")
+        self.assertEqual(len(self.term.history), 0)
+
+    def test_execute_theme(self):
+        result = self.term.execute("theme Solar")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(
+            self.session.document.themes.get("active"), "Solar")
+
+    def test_execute_theme_invalid(self):
+        result = self.term.execute("theme Invalid")
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Unknown theme", result.stderr)
+
+    def test_execute_neofetch(self):
+        result = self.term.execute("neofetch")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Nyrqis", result.stdout)
+
+    def test_execute_history(self):
+        self.term.execute("echo a")
+        self.term.execute("echo b")
+        result = self.term.execute("history")
+        self.assertIn("echo a", result.stdout)
+        self.assertIn("echo b", result.stdout)
+
+    def test_execute_workspace_list(self):
+        result = self.term.execute("workspace list")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Workspace", result.stdout)
+
+    def test_history_navigation(self):
+        self.term.execute("echo first")
+        self.term.execute("echo second")
+        up = self.term.history_up()
+        self.assertEqual(up, "echo second")
+        up2 = self.term.history_up()
+        self.assertEqual(up2, "echo first")
+        down = self.term.history_down()
+        self.assertEqual(down, "echo second")
+
+    def test_execute_exit(self):
+        result = self.term.execute("exit")
+        self.assertEqual(result.exit_code, 0)
+        self.assertFalse(self.term.visible)
+
+    def test_execute_invalid_command(self):
+        result = self.term.execute("nonexistent_command_xyz")
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_to_nstudio(self):
+        nui = self.term.to_nstudio()
+        self.assertEqual(nui["id"], "terminal")
+        self.assertIn("children", nui)
+
+    def test_visibility(self):
+        self.assertFalse(self.term.visible)
+        self.term.show()
+        self.assertTrue(self.term.visible)
+        self.term.hide()
+        self.assertFalse(self.term.visible)
+
+    def test_cwd_expansion(self):
+        import os
+        self.term.execute("cd ~")
+        self.assertEqual(self.term.cwd, os.path.expanduser("~"))
+
+
 if __name__ == "__main__":
     unittest.main()
