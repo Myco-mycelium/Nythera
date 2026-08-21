@@ -789,5 +789,84 @@ class TestNotificationService(unittest.TestCase):
         self.assertEqual(img.size, (1920, 1080))
 
 
+class TestStartMenu(unittest.TestCase):
+    """Tests for the start menu launcher."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from examples.start_menu import StartMenu
+        self.menu = StartMenu(self.session)
+
+    def test_initial_apps(self):
+        self.assertGreaterEqual(len(self.menu.apps), 5)
+
+    def test_pinned_apps(self):
+        pinned = self.menu.pinned_apps
+        self.assertGreaterEqual(len(pinned), 3)
+        names = [a.name for a in pinned]
+        self.assertIn("Settings", names)
+        self.assertIn("Terminal", names)
+
+    def test_by_category(self):
+        cats = self.menu.by_category()
+        self.assertIn("System", cats)
+        self.assertIn("Developer", cats)
+
+    def test_find_app(self):
+        app = self.menu.find_app("settings")
+        self.assertIsNotNone(app)
+        self.assertEqual(app.name, "Settings")
+
+    def test_find_nonexistent(self):
+        app = self.menu.find_app("no-such-app")
+        self.assertIsNone(app)
+
+    def test_search(self):
+        results = self.menu.search("terminal")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "Terminal")
+
+    def test_search_empty(self):
+        results = self.menu.search("")
+        self.assertEqual(len(results), len(self.menu.apps))
+
+    def test_clear_search(self):
+        self.menu.search("terminal")
+        self.menu.clear_search()
+        self.assertEqual(len(self.menu.filtered_apps), len(self.menu.apps))
+
+    def test_launch_creates_window(self):
+        initial = len(self.session.windows)
+        result = self.menu.launch("settings")
+        self.assertTrue(result)
+        self.assertEqual(len(self.session.windows), initial + 1)
+
+    def test_launch_nonexistent(self):
+        result = self.menu.launch("no-such-app")
+        self.assertFalse(result)
+
+    def test_register_unregister(self):
+        from examples.start_menu import AppEntry
+        app = AppEntry(id="custom", name="Custom App")
+        self.menu.register_app(app)
+        self.assertIsNotNone(self.menu.find_app("custom"))
+        self.menu.unregister_app("custom")
+        self.assertIsNone(self.menu.find_app("custom"))
+
+    def test_visibility(self):
+        self.assertFalse(self.menu.visible)
+        self.menu.show()
+        self.assertTrue(self.menu.visible)
+        self.menu.hide()
+        self.assertFalse(self.menu.visible)
+
+    def test_toggle(self):
+        result = self.menu.toggle()
+        self.assertTrue(result)
+        result2 = self.menu.toggle()
+        self.assertFalse(result2)
+
+
 if __name__ == "__main__":
     unittest.main()

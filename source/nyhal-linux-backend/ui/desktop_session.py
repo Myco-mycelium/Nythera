@@ -235,6 +235,10 @@ class DesktopSession:
         self._workspaces: List[Workspace] = []
         self._active_workspace_id: Optional[str] = None
 
+        # Notification service
+        from .notifications import NotificationService
+        self._notifications = NotificationService()
+
         # Build initial window list from top-level Window components
         self._build_windows()
         self._build_monitors()
@@ -289,6 +293,8 @@ class DesktopSession:
         """Add a window to the top of the stack."""
         self._windows.append(window)
         self._focus_window(window.id)
+        self._notifications.info(
+            "Window opened", f"'{window.title or window.id}' opened")
         self._log(f"Window '{window.title or window.id}' added")
 
     def remove_window(self, window_id: str) -> bool:
@@ -345,7 +351,11 @@ class DesktopSession:
         return False
 
     def close_window(self, window_id: str) -> bool:
-        """Close a window — fires WINDOW_CLOSE event and removes it."""
+        """Close a window — fires WINDOW_CLOSE event, shows a toast,
+        and removes it."""
+        win = self._find_window(window_id)
+        title = win.title if win else window_id
+        self._notifications.info("Window closed", f"'{title}' was closed")
         event = InputEvent(type=EventType.WINDOW_CLOSE, window_id=window_id)
         self._dispatch_event(event)
         return self.remove_window(window_id)
@@ -630,6 +640,13 @@ class DesktopSession:
         img.save(path)
         return path
 
+    # -- Notifications ------------------------------------------------
+
+    @property
+    def notifications(self):
+        """The notification service for this session."""
+        return self._notifications
+
     def summary(self) -> Dict[str, Any]:
         """Session summary for diagnostics."""
         aws = self.active_workspace
@@ -641,6 +658,7 @@ class DesktopSession:
             "monitors": len(self._monitors),
             "workspaces": len(self._workspaces),
             "active_workspace": aws.name if aws else None,
+            "active_notifications": self._notifications.count,
             "events_processed": len(self._event_log),
             **self._runtime.summary(),
         }
