@@ -246,17 +246,74 @@ class Compositor:
     # ---- Component renderers -----------------------------------------------
 
     def _render_window(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
-        """Render a Window component."""
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["background"])
+        """Render a Window component with chrome."""
+        title_h = 32
+        # Shadow (subtle drop shadow)
+        for i in range(4):
+            alpha_color = tuple(
+                int(c * 0.7) for c in self.theme["border"])
+            draw.rectangle(
+                [x+i+2, y+i+2, x+w+i+2, y+h+i+2],
+                outline=alpha_color)
+        # Window body
+        draw.rectangle([x, y, x+w, y+h], fill=self.theme["background"],
+                       outline=self.theme["border"])
+        # Title bar
+        draw.rectangle([x, y, x+w, y+title_h],
+                       fill=self.theme["surface_overlay"])
+        title = props.get("title", "Window")
+        draw.text((x+12, y+8), title,
+                  fill=self.theme["text_primary"], font=fs)
+        # Window control buttons (close, minimize, maximize)
+        btn_y = y + 6
+        btn_size = 20
+        btn_gap = 6
+        controls = [
+            ("×", self.theme["text_secondary"]),
+            ("−", self.theme["text_secondary"]),
+            ("□", self.theme["text_secondary"]),
+        ]
+        for i, (glyph, color) in enumerate(controls):
+            bx = x + w - 12 - (i + 1) * (btn_size + btn_gap)
+            draw.rounded_rectangle(
+                [bx, btn_y, bx+btn_size, btn_y+btn_size],
+                radius=4, fill=self.theme["surface_elevated"])
+            draw.text((bx+5, btn_y+2), glyph, fill=color, font=fs)
 
     def _render_desktop_surface(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a DesktopSurface."""
         draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface"])
 
     def _render_taskbar(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
-        """Render a Taskbar."""
+        """Render a Taskbar with app buttons, clock, and system tray."""
         draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface_overlay"])
         draw.line([x, y, x+w, y], fill=self.theme["border"], width=1)
+        # Start button area
+        draw.rounded_rectangle(
+            [x+4, y+4, x+48, y+h-4], radius=6,
+            fill=self.theme["accent"])
+        draw.text((x+16, y+8), "N", fill=(255,255,255), font=ft)
+        # Running app indicators (dots)
+        app_x = x + 60
+        if doc:
+            windows = props.get("_session_windows", [])
+            for i, wtitle in enumerate(windows[:8]):
+                # Small pill for each running app
+                draw.rounded_rectangle(
+                    [app_x + i*28, y+6, app_x + i*28 + 24, y+h-6],
+                    radius=4, fill=self.theme["button_bg"])
+                draw.text((app_x + i*28 + 6, y+8),
+                          wtitle[:2].upper(),
+                          fill=self.theme["text_primary"], font=fs)
+        # System tray (right side)
+        tray_x = x + w - 120
+        draw.text((tray_x, y+8), "🔊  🔋  📶",
+                  fill=self.theme["text_secondary"], font=fs)
+        # Clock
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M")
+        draw.text((x + w - 48, y+8), now,
+                  fill=self.theme["text_primary"], font=fs)
 
     def _render_start_menu(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a StartMenu."""
