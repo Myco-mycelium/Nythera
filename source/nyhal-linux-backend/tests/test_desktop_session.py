@@ -1629,5 +1629,160 @@ class TestClipboardManager(unittest.TestCase):
         self.assertFalse(result)
 
 
+class TestSpotlight(unittest.TestCase):
+    """Tests for the spotlight search."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.spotlight import Spotlight
+        self.spot = Spotlight(self.session)
+
+    def test_initial_state(self):
+        self.assertFalse(self.spot.visible)
+        self.assertEqual(self.spot.query, "")
+        self.assertEqual(len(self.spot.results), 0)
+
+    def test_show_hide(self):
+        self.spot.show()
+        self.assertTrue(self.spot.visible)
+        self.spot.hide()
+        self.assertFalse(self.spot.visible)
+
+    def test_toggle(self):
+        self.spot.toggle()
+        self.assertTrue(self.spot.visible)
+        self.spot.toggle()
+        self.assertFalse(self.spot.visible)
+
+    def test_type_char(self):
+        self.spot.show()
+        self.spot.type_char("s")
+        self.assertEqual(self.spot.query, "s")
+        self.assertGreater(len(self.spot.results), 0)
+
+    def test_type_multiple(self):
+        self.spot.show()
+        for ch in "terminal":
+            self.spot.type_char(ch)
+        self.assertEqual(self.spot.query, "terminal")
+        self.assertGreater(len(self.spot.results), 0)
+        # Should find Terminal
+        titles = [r.title for r in self.spot.results]
+        self.assertIn("Terminal", titles)
+
+    def test_backspace(self):
+        self.spot.show()
+        self.spot.type_char("abc")
+        self.spot.backspace()
+        self.assertEqual(self.spot.query, "ab")
+
+    def test_backspace_empty(self):
+        self.spot.show()
+        self.spot.backspace()  # Should not crash
+        self.assertEqual(self.spot.query, "")
+
+    def test_clear_query(self):
+        self.spot.show()
+        self.spot.type_char("test")
+        self.spot.clear_query()
+        self.assertEqual(self.spot.query, "")
+        self.assertEqual(len(self.spot.results), 0)
+
+    def test_navigate_down(self):
+        self.spot.show()
+        self.spot.type_char("s")
+        initial = self.spot.selected_index
+        self.spot.navigate_down()
+        self.assertNotEqual(self.spot.selected_index, initial)
+
+    def test_navigate_up(self):
+        self.spot.show()
+        self.spot.type_char("s")
+        self.spot.navigate_down()
+        self.spot.navigate_up()
+        self.assertEqual(self.spot.selected_index, 0)
+
+    def test_navigate_wraps(self):
+        self.spot.show()
+        self.spot.type_char("s")
+        count = len(self.spot.results)
+        for _ in range(count + 2):
+            self.spot.navigate_down()
+        # Should still be valid
+        self.assertIsNotNone(self.spot.selected)
+
+    def test_execute_selected(self):
+        self.spot.show()
+        self.spot.type_char("theme")
+        # Navigate to the "Change Theme" command (index 1)
+        self.spot.navigate_down()
+        result = self.spot.execute_selected()
+        self.assertIsNotNone(result)
+        self.assertFalse(self.spot.visible)
+        # Theme should have changed
+        self.assertEqual(
+            self.session.document.themes.get("active"), "Solar")
+
+    def test_execute_none(self):
+        self.spot.show()
+        result = self.spot.execute_selected()
+        self.assertIsNone(result)
+
+    def test_fuzzy_score_exact(self):
+        score = self.spot._fuzzy_score("terminal", "Terminal")
+        self.assertGreater(score, 0.8)
+
+    def test_fuzzy_score_starts_with(self):
+        score = self.spot._fuzzy_score("term", "Terminal")
+        self.assertGreater(score, 0.7)
+
+    def test_fuzzy_score_contains(self):
+        score = self.spot._fuzzy_score("erm", "Terminal")
+        self.assertGreater(score, 0.5)
+
+    def test_fuzzy_score_no_match(self):
+        score = self.spot._fuzzy_score("xyz", "Terminal")
+        self.assertEqual(score, 0.0)
+
+    def test_results_sorted_by_score(self):
+        self.spot.show()
+        self.spot.type_char("s")
+        scores = [r.score for r in self.spot.results]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_render_returns_image(self):
+        self.spot.show()
+        self.spot.type_char("term")
+        img = self.spot.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_none_when_hidden(self):
+        img = self.spot.render()
+        self.assertIsNone(img)
+
+    def test_callback(self):
+        events = []
+        self.spot.on_event(lambda t, e: events.append(t))
+        self.spot.show()
+        self.spot.type_char("s")
+        self.spot.navigate_down()  # Navigate to a result with an action
+        self.spot.execute_selected()
+        self.assertIn("shown", events)
+        self.assertIn("searched", events)
+        self.assertIn("executed", events)
+
+    def test_type_when_hidden(self):
+        self.spot.type_char("s")  # Should not crash
+        self.assertEqual(self.spot.query, "")
+
+    def test_search_settings(self):
+        self.spot.show()
+        self.spot.type_char("theme")
+        categories = [r.category for r in self.spot.results]
+        self.assertIn("settings", categories)
+
+
 if __name__ == "__main__":
     unittest.main()
