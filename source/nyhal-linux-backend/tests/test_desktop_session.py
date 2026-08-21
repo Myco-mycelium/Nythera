@@ -558,5 +558,108 @@ class TestDesktopSessionFromFile(unittest.TestCase):
         self.assertEqual(len(session.windows), 0)  # No Window-type children
 
 
+class TestSettingsApp(unittest.TestCase):
+    """Tests for the Nyrqis settings application."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from examples.settings_app import SettingsApp
+        self.settings = SettingsApp(self.session)
+
+    def test_initial_settings(self):
+        self.assertEqual(self.settings.get("theme"), "Eclipse")
+        self.assertEqual(self.settings.get("volume"), 80)
+
+    def test_toggle_theme(self):
+        result = self.settings.toggle_theme()
+        self.assertEqual(result, "Solar")
+        self.assertEqual(self.settings.get("theme"), "Solar")
+        result2 = self.settings.toggle_theme()
+        self.assertEqual(result2, "Eclipse")
+
+    def test_set_volume_clamps(self):
+        self.settings.set_volume(150)
+        self.assertEqual(self.settings.get("volume"), 100)
+        self.settings.set_volume(-10)
+        self.assertEqual(self.settings.get("volume"), 0)
+
+    def test_set_brightness_clamps(self):
+        self.settings.set_brightness(200)
+        self.assertEqual(self.settings.get("brightness"), 100)
+
+    def test_toggle_taskbar(self):
+        result = self.settings.toggle_taskbar_autohide()
+        self.assertTrue(result)
+        result2 = self.settings.toggle_taskbar_autohide()
+        self.assertFalse(result2)
+
+    def test_toggle_animations(self):
+        result = self.settings.toggle_animations()
+        self.assertFalse(result)
+
+    def test_show_hide(self):
+        self.assertFalse(self.settings.visible)
+        self.settings.show()
+        self.assertTrue(self.settings.visible)
+        self.settings.hide()
+        self.assertFalse(self.settings.visible)
+
+    def test_toggle_visibility(self):
+        self.settings.show()
+        result = self.settings.toggle()
+        self.assertFalse(result)
+        result2 = self.settings.toggle()
+        self.assertTrue(result2)
+
+    def test_reset_to_defaults(self):
+        self.settings.toggle_theme()
+        self.settings.set_volume(10)
+        self.settings.reset()
+        self.assertEqual(self.settings.get("theme"), "Eclipse")
+        self.assertEqual(self.settings.get("volume"), 80)
+
+    def test_on_change_callback(self):
+        changes = []
+        self.settings.on_change(lambda k, v, o: changes.append((k, v, o)))
+        self.settings.set("theme", "Solar")
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0], ("theme", "Solar", "Eclipse"))
+
+    def test_get_windows(self):
+        windows = self.settings.get_windows()
+        self.assertIsInstance(windows, list)
+        self.assertEqual(len(windows), 2)
+
+    def test_get_workspaces(self):
+        workspaces = self.settings.get_workspaces()
+        self.assertIsInstance(workspaces, list)
+        self.assertGreaterEqual(len(workspaces), 2)
+        self.assertIn("name", workspaces[0])
+        self.assertIn("windows", workspaces[0])
+
+    def test_persistence(self):
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(
+                suffix='.json', delete=False) as f:
+            path = f.name
+        try:
+            from examples.settings_app import SettingsApp
+            s1 = SettingsApp(self.session, config_path=path)
+            s1.set("theme", "Solar")
+            s1.set_volume(42)
+            # Create a new instance that loads from the same file
+            s2 = SettingsApp(self.session, config_path=path)
+            self.assertEqual(s2.get("theme"), "Solar")
+            self.assertEqual(s2.get("volume"), 42)
+        finally:
+            os.unlink(path)
+
+    def test_minimize_all(self):
+        count = self.settings.minimize_all()
+        self.assertEqual(count, 2)  # Both windows minimized
+
+
 if __name__ == "__main__":
     unittest.main()
