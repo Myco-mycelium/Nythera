@@ -868,5 +868,122 @@ class TestStartMenu(unittest.TestCase):
         self.assertFalse(result2)
 
 
+class TestFileManager(unittest.TestCase):
+    """Tests for the file manager application."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp(prefix="nyrqis-fm-")
+        from examples.file_manager import FileManager
+        self.fm = FileManager(self.session, root_path=self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_initial_path(self):
+        self.assertEqual(self.fm.current_path, self.tmpdir)
+
+    def test_entries(self):
+        self.assertIsNotNone(self.fm.entries)
+
+    def test_create_file(self):
+        result = self.fm.create_file("test.txt", "hello")
+        self.assertTrue(result)
+        content = self.fm.read_file("test.txt")
+        self.assertEqual(content, "hello")
+
+    def test_create_directory(self):
+        result = self.fm.create_directory("subdir")
+        self.assertTrue(result)
+        import os
+        self.assertTrue(os.path.isdir(os.path.join(self.tmpdir, "subdir")))
+
+    def test_navigate(self):
+        import os
+        os.makedirs(os.path.join(self.tmpdir, "child"), exist_ok=True)
+        result = self.fm.navigate(os.path.join(self.tmpdir, "child"))
+        self.assertTrue(result)
+        self.assertIn("child", self.fm.current_path)
+
+    def test_go_up(self):
+        import os
+        child = os.path.join(self.tmpdir, "child")
+        os.makedirs(child, exist_ok=True)
+        self.fm.navigate(child)
+        self.fm.go_up()
+        self.assertEqual(self.fm.current_path, self.tmpdir)
+
+    def test_go_back(self):
+        import os
+        child = os.path.join(self.tmpdir, "child")
+        os.makedirs(child, exist_ok=True)
+        self.fm.navigate(child)
+        self.fm.go_back()
+        self.assertEqual(self.fm.current_path, self.tmpdir)
+
+    def test_delete(self):
+        self.fm.create_file("to-delete.txt", "bye")
+        result = self.fm.delete("to-delete.txt")
+        self.assertTrue(result)
+        import os
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, "to-delete.txt")))
+
+    def test_rename(self):
+        self.fm.create_file("old.txt", "content")
+        result = self.fm.rename("old.txt", "new.txt")
+        self.assertTrue(result)
+        content = self.fm.read_file("new.txt")
+        self.assertEqual(content, "content")
+
+    def test_select(self):
+        self.fm.create_file("selectable.txt")
+        self.fm.select("selectable.txt")
+        self.assertEqual(self.fm.state.selected, "selectable.txt")
+
+    def test_breadcrumb(self):
+        import os
+        child = os.path.join(self.tmpdir, "deep")
+        os.makedirs(child, exist_ok=True)
+        self.fm.navigate(child)
+        bc = self.fm.breadcrumb
+        self.assertGreaterEqual(len(bc), 2)
+        names = [name for name, _ in bc]
+        self.assertIn("deep", names)
+
+    def test_sort_by_size(self):
+        self.fm.create_file("small.txt", "a")
+        self.fm.create_file("big.txt", "a" * 1000)
+        self.fm.sort_by("size")
+        entries = self.fm.entries
+        names = [e.name for e in entries]
+        self.assertIn("small.txt", names)
+        self.assertIn("big.txt", names)
+
+    def test_toggle_hidden(self):
+        import os
+        open(os.path.join(self.tmpdir, ".hidden"), "w").close()
+        self.fm.toggle_hidden()  # Enable hidden
+        names = [e.name for e in self.fm.entries]
+        self.assertIn(".hidden", names)
+        self.fm.toggle_hidden()  # Disable hidden
+        names = [e.name for e in self.fm.entries]
+        self.assertNotIn(".hidden", names)
+
+    def test_to_nstudio(self):
+        nui = self.fm.to_nstudio()
+        self.assertEqual(nui["id"], "file-manager")
+        self.assertIn("children", nui)
+
+    def test_visibility(self):
+        self.assertFalse(self.fm.visible)
+        self.fm.show()
+        self.assertTrue(self.fm.visible)
+        self.fm.hide()
+        self.assertFalse(self.fm.visible)
+
+
 if __name__ == "__main__":
     unittest.main()
