@@ -1392,5 +1392,107 @@ class TestLockScreen(unittest.TestCase):
         self.assertFalse(result)
 
 
+class TestWidgetSystem(unittest.TestCase):
+    """Tests for the desktop widget system."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.widgets import WidgetSystem
+        self.ws = WidgetSystem(self.session)
+
+    def test_add_widget(self):
+        w = self.ws.add_widget("clock", x=100, y=100)
+        self.assertIsNotNone(w)
+        self.assertEqual(w.widget_type, "clock")
+        self.assertEqual(w.x, 100)
+        self.assertEqual(len(self.ws.widgets), 1)
+
+    def test_add_multiple_types(self):
+        self.ws.add_widget("clock")
+        self.ws.add_widget("cpu")
+        self.ws.add_widget("memory")
+        self.ws.add_widget("sticky", data={"text": "Hello"})
+        self.assertEqual(len(self.ws.widgets), 4)
+
+    def test_remove_widget(self):
+        w = self.ws.add_widget("clock")
+        result = self.ws.remove_widget(w.id)
+        self.assertTrue(result)
+        self.assertEqual(len(self.ws.widgets), 0)
+
+    def test_remove_nonexistent(self):
+        result = self.ws.remove_widget("no-such-id")
+        self.assertFalse(result)
+
+    def test_get_widget(self):
+        w = self.ws.add_widget("cpu")
+        found = self.ws.get_widget(w.id)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.id, w.id)
+
+    def test_by_type(self):
+        self.ws.add_widget("clock")
+        self.ws.add_widget("clock")
+        self.ws.add_widget("cpu")
+        clocks = self.ws.by_type("clock")
+        self.assertEqual(len(clocks), 2)
+
+    def test_update_all(self):
+        w = self.ws.add_widget("clock")
+        w.last_update = 0  # Force update
+        self.ws.update_all()
+        self.assertIn("time", w.data)
+
+    def test_update_cpu(self):
+        w = self.ws.add_widget("cpu")
+        w.last_update = 0
+        self.ws.update_all()
+        self.assertIn("usage", w.data)
+
+    def test_update_memory(self):
+        w = self.ws.add_widget("memory")
+        w.last_update = 0
+        self.ws.update_all()
+        self.assertIn("usage", w.data)
+
+    def test_update_sticky(self):
+        w = self.ws.add_widget("sticky", data={"text": "old"})
+        result = self.ws.update_sticky(w.id, "new text")
+        self.assertTrue(result)
+        self.assertEqual(w.data["text"], "new text")
+
+    def test_update_sticky_wrong_type(self):
+        w = self.ws.add_widget("clock")
+        result = self.ws.update_sticky(w.id, "text")
+        self.assertFalse(result)
+
+    def test_render_returns_image(self):
+        self.ws.add_widget("clock")
+        self.ws.add_widget("cpu")
+        self.ws.add_widget("memory")
+        img = self.ws.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_empty(self):
+        img = self.ws.render()
+        self.assertIsNotNone(img)
+
+    def test_callback(self):
+        events = []
+        self.ws.on_event(lambda t, w: events.append((t, w.widget_type)))
+        w = self.ws.add_widget("clock")
+        self.ws.remove_widget(w.id)
+        self.assertEqual(events, [("added", "clock"), ("removed", "clock")])
+
+    def test_sticky_word_wrap(self):
+        w = self.ws.add_widget("sticky", data={
+            "text": "This is a very long note that should be wrapped across multiple lines in the widget"
+        })
+        img = self.ws.render()
+        self.assertIsNotNone(img)
+
+
 if __name__ == "__main__":
     unittest.main()
