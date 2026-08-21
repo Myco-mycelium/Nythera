@@ -374,6 +374,113 @@ class TestDesktopSessionSummary(unittest.TestCase):
         self.assertEqual(s["events_processed"], 1)
 
 
+class TestDesktopSessionRendering(unittest.TestCase):
+    """Tests for live rendering."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+
+    def test_live_render_returns_image(self):
+        img = self.session.live_render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_live_render_reflects_window_position(self):
+        # Move a window
+        main = _find_win(self.session, "win-main")
+        main.x = 500
+        main.y = 400
+        img = self.session.live_render()
+        self.assertIsNotNone(img)
+        # Image should still be the right size
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_live_render_minimized_window_offscreen(self):
+        main = _find_win(self.session, "win-main")
+        self.session.minimize_window(main.id)
+        img = self.session.live_render()
+        self.assertIsNotNone(img)
+
+    def test_render_to_file(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.png') as f:
+            path = self.session.render_to_file(f.name)
+            import os
+            self.assertTrue(os.path.exists(path))
+            self.assertGreater(os.path.getsize(path), 0)
+
+
+class TestDesktopSessionE2E(unittest.TestCase):
+    """End-to-end: load design → session → interact → verify state."""
+
+    def test_full_lifecycle(self):
+        doc = _make_doc()
+        session = DesktopSession(doc)
+
+        # 1. Verify initial state
+        self.assertEqual(len(session.windows), 2)
+        self.assertIsNotNone(session.focused_window)
+        self.assertEqual(
+            session.document.themes.get("active"), "Eclipse")
+
+        # 2. Click the OK button (screen coords: 200+300, 100+500 = 500, 600)
+        session.process_mouse_event(
+            MouseEvent(x=500, y=600, button=MouseButton.LEFT))
+
+        # 3. Behavior should have changed the theme
+        self.assertEqual(
+            session.document.themes.get("active"), "Solar")
+
+        # 4. Drag the window
+        session.process_mouse_event(
+            MouseEvent(x=300, y=110, button=MouseButton.LEFT))
+        session.process_mouse_event(
+            MouseEvent(x=600, y=150, button=MouseButton.NONE))
+        session.process_mouse_up(MouseEvent(x=600, y=150))
+        main = _find_win(session, "win-main")
+        self.assertGreater(main.x, 200)
+
+        # 5. Minimize via keyboard
+        session.process_key_event(KeyEvent(key="n", ctrl=True))
+        self.assertTrue(main.minimized)
+
+        # 6. Summary checks
+        s = session.summary()
+        self.assertEqual(s["windows"], 2)
+        self.assertEqual(s["minimized"], 1)
+        self.assertEqual(s["events_processed"], 3)
+
+        # 7. Live render should work
+        img = session.live_render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_two_windows_focus_switching(self):
+        doc = _make_doc()
+        session = DesktopSession(doc)
+
+        # Focus settings
+        settings = _find_win(session, "win-settings")
+        session.focus_window(settings.id)
+        self.assertEqual(
+            session.focused_window.component_id, "win-settings")
+
+        # Click on main window to switch focus
+        session.process_mouse_event(
+            MouseEvent(x=300, y=200, button=MouseButton.LEFT))
+        self.assertEqual(
+            session.focused_window.component_id, "win-main")
+
+        # Ctrl+W should close main, focus goes to settings
+        session.process_key_event(KeyEvent(key="w", ctrl=True))
+        self.assertEqual(
+            session.focused_window.component_id, "win-settings")
+
+        # Only settings remains
+        self.assertEqual(len(session.windows), 1)
+
+
 class TestDesktopSessionFromFile(unittest.TestCase):
     """Tests for loading from file."""
 

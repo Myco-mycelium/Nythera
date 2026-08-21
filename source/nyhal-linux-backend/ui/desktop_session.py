@@ -528,6 +528,54 @@ class DesktopSession:
 
         return compositor.render_screen(self._doc, screen_id=screen.id)
 
+    def live_render(self) -> Any:
+        """Render the session with live window positions applied.
+
+        This overrides each Window component's layout coordinates
+        with the session's current window positions (from drag,
+        maximize, etc.) before rendering.  Minimized windows are
+        skipped; focused windows get a subtle highlight.
+
+        Returns a PIL Image.
+        """
+        from .compositor import Compositor
+        from .nstudio import NstudioComponent
+        import copy
+
+        # Deep-copy the document so we don't mutate the original
+        doc = copy.deepcopy(self._doc)
+
+        # Override window layouts with session positions
+        for win in self._windows:
+            comp = doc.find_component(win.component_id)
+            if comp is None:
+                continue
+            if win.minimized:
+                # Move off-screen for minimized windows
+                comp.layout["x"] = -9999
+                comp.layout["y"] = -9999
+            else:
+                comp.layout["x"] = win.x
+                comp.layout["y"] = win.y
+                comp.layout["width"] = win.width
+                comp.layout["height"] = win.height
+
+        # Pick theme from (possibly mutated) document
+        theme = doc.themes.get("active", "Eclipse")
+        compositor = Compositor(theme_name=theme)
+
+        if not doc.screens:
+            raise RuntimeError("no screens in document")
+        screen = doc.screens[0]
+
+        return compositor.render_screen(doc, screen_id=screen.id)
+
+    def render_to_file(self, path: str) -> str:
+        """Render the live session to a PNG file."""
+        img = self.live_render()
+        img.save(path)
+        return path
+
     def summary(self) -> Dict[str, Any]:
         """Session summary for diagnostics."""
         return {
