@@ -661,5 +661,133 @@ class TestSettingsApp(unittest.TestCase):
         self.assertEqual(count, 2)  # Both windows minimized
 
 
+class TestNotificationService(unittest.TestCase):
+    """Tests for the notification system."""
+
+    def setUp(self):
+        from ui.notifications import NotificationService, NotificationSeverity
+        self.ns = NotificationService()
+        self.severity = NotificationSeverity
+
+    def test_notify_creates_notification(self):
+        n = self.ns.notify("Test", "Body")
+        self.assertEqual(n.title, "Test")
+        self.assertEqual(n.message, "Body")
+        self.assertEqual(self.ns.count, 1)
+
+    def test_shorthand_methods(self):
+        self.ns.info("Info")
+        self.ns.success("OK")
+        self.ns.warning("Careful")
+        self.ns.error("Bad")
+        self.assertEqual(self.ns.count, 4)
+
+    def test_dismiss(self):
+        n = self.ns.notify("Test")
+        result = self.ns.dismiss(n.id)
+        self.assertTrue(result)
+        self.assertEqual(self.ns.count, 0)
+
+    def test_dismiss_nonexistent(self):
+        result = self.ns.dismiss("no-such-id")
+        self.assertFalse(result)
+
+    def test_dismiss_all(self):
+        self.ns.info("A")
+        self.ns.info("B")
+        self.ns.info("C")
+        count = self.ns.dismiss_all()
+        self.assertEqual(count, 3)
+        self.assertEqual(self.ns.count, 0)
+
+    def test_clear(self):
+        self.ns.info("A")
+        self.ns.info("B")
+        count = self.ns.clear()
+        self.assertEqual(count, 2)
+        self.assertEqual(len(self.ns.history), 0)
+
+    def test_tick_auto_dismiss(self):
+        from ui.notifications import Notification
+        import time
+        n = self.ns.notify("Expiring", timeout_ms=1)
+        # Simulate time passing
+        n.timestamp = time.time() - 0.01  # 10ms ago
+        dismissed = self.ns.tick()
+        self.assertEqual(len(dismissed), 1)
+        self.assertEqual(self.ns.count, 0)
+
+    def test_tick_no_timeout(self):
+        import time
+        n = self.ns.notify("Persistent", timeout_ms=0)
+        n.timestamp = time.time() - 1000
+        dismissed = self.ns.tick()
+        self.assertEqual(len(dismissed), 0)
+        self.assertEqual(self.ns.count, 1)
+
+    def test_layout(self):
+        self.ns.info("A")
+        self.ns.info("B")
+        self.ns.layout(1920, 1080)
+        active = self.ns.active
+        self.assertGreater(active[0]._x, 1000)  # Right side
+        self.assertLess(active[0]._y, 100)       # Top
+        self.assertGreater(active[1]._y, active[0]._y)  # Stacked
+
+    def test_hit_test(self):
+        self.ns.info("Test")
+        self.ns.layout(1920, 1080)
+        n = self.ns.active[0]
+        result = self.ns.hit_test(n._x + 10, n._y + 10)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.id, n.id)
+
+    def test_handle_click_dismiss(self):
+        self.ns.info("Clickable")
+        self.ns.layout(1920, 1080)
+        n = self.ns.active[0]
+        # Click on dismiss button (top-right corner)
+        result = self.ns.handle_click(
+            n._x + n._width - 10, n._y + 10)
+        self.assertTrue(result)
+        self.assertEqual(self.ns.count, 0)
+
+    def test_handle_click_action(self):
+        action_called = []
+        self.ns.info("Actionable", action=lambda n: action_called.append(True))
+        self.ns.layout(1920, 1080)
+        n = self.ns.active[0]
+        # Click in the body (not dismiss)
+        result = self.ns.handle_click(n._x + 50, n._y + 40)
+        self.assertTrue(result)
+        self.assertEqual(len(action_called), 1)
+
+    def test_callback(self):
+        events = []
+        self.ns.on_event(lambda n, e: events.append((n.title, e)))
+        n = self.ns.notify("CB Test")
+        self.ns.dismiss(n.id)
+        self.assertEqual(events, [
+            ("CB Test", "created"),
+            ("CB Test", "dismissed"),
+        ])
+
+    def test_by_severity(self):
+        self.ns.info("I")
+        self.ns.error("E")
+        self.ns.error("E2")
+        from ui.notifications import NotificationSeverity
+        errors = self.ns.by_severity(NotificationSeverity.ERROR)
+        self.assertEqual(len(errors), 2)
+        infos = self.ns.by_severity(NotificationSeverity.INFO)
+        self.assertEqual(len(infos), 1)
+
+    def test_render_returns_image(self):
+        self.ns.info("Render Test")
+        img = self.ns.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+
 if __name__ == "__main__":
     unittest.main()
