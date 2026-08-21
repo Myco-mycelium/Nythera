@@ -185,6 +185,8 @@ class DesktopSession:
         self._drag_offset: Tuple[int, int] = (0, 0)
         self._resizing: Optional[str] = None        # window id being resized
         self._resize_edge: str = ""                 # "right", "bottom", etc.
+        self._resize_start: Tuple[int, int] = (0, 0)
+        self._resize_orig: Tuple[int, int, int, int] = (0, 0, 0, 0)
         self._event_log: List[InputEvent] = []
         self._callbacks: Dict[EventType, List[Callable]] = {}
         self._running = False
@@ -671,6 +673,29 @@ class DesktopSession:
 
     # -- Internal: drag and resize -------------------------------------
 
+    def _hit_resize_edge(self, local_x: int, local_y: int, win: Window) -> Optional[str]:
+        """Detect if a point is on a resize edge. Returns edge name
+        like 'right', 'left', 'top', 'bottom', 'right-bottom', etc.
+        or None if not on any edge."""
+        margin = 8
+        w, h = win.width, win.height
+        on_left = local_x < margin
+        on_right = local_x >= w - margin
+        on_top = local_y < margin
+        on_bottom = local_y >= h - margin
+        parts = []
+        if on_left:
+            parts.append("left")
+        if on_right:
+            parts.append("right")
+        if on_top:
+            parts.append("top")
+        if on_bottom:
+            parts.append("bottom")
+        if not parts:
+            return None
+        return "-".join(parts)
+
     def _begin_drag_or_resize(self, hit: HitResult, event: MouseEvent) -> None:
         """Start a drag (title bar) or resize (edge)."""
         if hit.window is None:
@@ -684,14 +709,15 @@ class DesktopSession:
             self._log(f"Drag start: '{win.title or win.id}'")
             return
 
-        # Check if we're on the resize edge (bottom-right corner, last 8px)
-        edge_margin = 8
-        if (hit.local_x >= win.width - edge_margin
-                and hit.local_y >= win.height - edge_margin
-                and not win.maximized):
-            self._resizing = win.id
-            self._resize_edge = "right-bottom"
-            self._log(f"Resize start: '{win.title or win.id}'")
+        # Check if we're on a resize edge (all 4 edges + corners)
+        if not win.maximized:
+            edge = self._hit_resize_edge(hit.local_x, hit.local_y, win)
+            if edge:
+                self._resizing = win.id
+                self._resize_edge = edge
+                self._resize_start = (event.x, event.y)
+                self._resize_orig = (win.x, win.y, win.width, win.height)
+                self._log(f"Resize start: '{win.title or win.id}' ({edge})")
 
     def _continue_drag(self, event: MouseEvent) -> None:
         """Update window position during drag."""
@@ -713,16 +739,32 @@ class DesktopSession:
         self._drag_offset = (0, 0)
 
     def _continue_resize(self, event: MouseEvent) -> None:
-        """Update window size during resize."""
+        """Update window size during resize using delta from start."""
         if not self._resizing:
             return
         win = self._find_window(self._resizing)
-        if win is None:
+        if win is None or not hasattr(self, '_resize_orig'):
             return
-        if "right" in self._resize_edge:
-            win.width = max(win.min_width, event.x - win.x)
-        if "bottom" in self._resize_edge:
-            win.height = max(win.min_height, event.y - win.y)
+        ox, oy, ow, oh = self._resize_orig
+        dx = event.x - self._resize_start[0]
+        dy = event.y - self._resize_start[1]
+        edge = self._resize_edge
+        # Right edge
+        if "right" in edge:
+            win.width = max(win.min_width, ow + dx)
+        # Bottom edge
+        if "bottom" in edge:
+            win.height = max(win.min_height, oh + dy)
+        # Left edge (move x, shrink width)
+        if "left" in edge:
+            new_w = max(win.min_width, ow - dx)
+            win.x = ox + (ow - new_w)
+            win.width = new_w
+        # Top edge (move y, shrink height)
+        if "top" in edge and "title" not in edge:
+            new_h = max(win.min_height, oh - dy)
+            win.y = oy + (oh - new_h)
+            win.height = new_h
 
     def _end_resize(self) -> None:
         """Finish a resize operation."""

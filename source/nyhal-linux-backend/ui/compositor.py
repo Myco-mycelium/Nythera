@@ -279,6 +279,16 @@ class Compositor:
                 [bx, btn_y, bx+btn_size, btn_y+btn_size],
                 radius=4, fill=self.theme["surface_elevated"])
             draw.text((bx+5, btn_y+2), glyph, fill=color, font=fs)
+        # Resize grip indicators (subtle dots on edges)
+        grip = self.theme["border"]
+        # Right edge center
+        draw.rectangle([x+w-3, y+h//2-8, x+w-1, y+h//2+8], fill=grip)
+        # Bottom edge center
+        draw.rectangle([x+w//2-8, y+h-3, x+w//2+8, y+h-1], fill=grip)
+        # Bottom-right corner
+        for i in range(3):
+            draw.rectangle(
+                [x+w-4-i*3, y+h-4, x+w-2-i*3, y+h-2], fill=grip)
 
     def _render_desktop_surface(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a DesktopSurface."""
