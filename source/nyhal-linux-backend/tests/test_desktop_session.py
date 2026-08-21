@@ -1090,5 +1090,99 @@ class TestTerminalApp(unittest.TestCase):
         self.assertEqual(self.term.cwd, os.path.expanduser("~"))
 
 
+class TestWindowSwitcher(unittest.TestCase):
+    """Tests for the Alt+Tab window switcher."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.window_switcher import WindowSwitcher
+        self.switcher = WindowSwitcher(self.session)
+
+    def test_initial_state(self):
+        self.assertFalse(self.switcher.active)
+        self.assertIsNone(self.switcher.selected)
+
+    def test_start_with_two_windows(self):
+        result = self.switcher.start()
+        self.assertTrue(result)
+        self.assertTrue(self.switcher.active)
+        self.assertIsNotNone(self.switcher.selected)
+        self.assertEqual(len(self.switcher.entries), 2)
+
+    def test_start_with_one_window(self):
+        # Remove one window
+        win = self.session.windows[0]
+        self.session.remove_window(win.id)
+        result = self.switcher.start()
+        self.assertFalse(result)
+        self.assertFalse(self.switcher.active)
+
+    def test_stop_returns_window_id(self):
+        self.switcher.start()
+        win_id = self.switcher.stop()
+        self.assertIsNotNone(win_id)
+        self.assertFalse(self.switcher.active)
+        self.assertEqual(len(self.switcher.entries), 0)
+
+    def test_cycle_forward(self):
+        self.switcher.start()
+        initial = self.switcher.selected.window_id
+        self.switcher.cycle(backward=False)
+        next_id = self.switcher.selected.window_id
+        # Should have moved (or wrapped)
+        self.assertIsNotNone(next_id)
+
+    def test_cycle_backward(self):
+        self.switcher.start()
+        self.switcher.cycle(backward=True)
+        self.assertIsNotNone(self.switcher.selected)
+
+    def test_cycle_wraps(self):
+        self.switcher.start()
+        ids = set()
+        for _ in range(len(self.switcher.entries) + 2):
+            self.switcher.cycle(backward=False)
+            ids.add(self.switcher.selected.window_id)
+        # Should see all window IDs
+        self.assertEqual(len(ids), len(self.switcher.entries))
+
+    def test_layout_positions(self):
+        self.switcher.start()
+        self.switcher.layout(1920, 1080)
+        for entry in self.switcher.entries:
+            self.assertGreater(entry.x, 0)
+            self.assertGreater(entry.y, 0)
+
+    def test_render_returns_image(self):
+        self.switcher.start()
+        img = self.switcher.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_none_when_inactive(self):
+        img = self.switcher.render()
+        self.assertIsNone(img)
+
+    def test_callback(self):
+        events = []
+        self.switcher.on_event(lambda t, i: events.append((t, i)))
+        self.switcher.start()
+        self.switcher.cycle()
+        self.switcher.stop()
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0][0], "started")
+        self.assertEqual(events[1][0], "cycled")
+        self.assertEqual(events[2][0], "stopped")
+
+    def test_entries_populated(self):
+        self.switcher.start()
+        entries = self.switcher.entries
+        self.assertGreater(len(entries), 0)
+        for e in entries:
+            self.assertIsNotNone(e.window_id)
+            self.assertIsNotNone(e.title)
+
+
 if __name__ == "__main__":
     unittest.main()
