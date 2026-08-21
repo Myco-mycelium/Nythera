@@ -1494,5 +1494,140 @@ class TestWidgetSystem(unittest.TestCase):
         self.assertIsNotNone(img)
 
 
+class TestClipboardManager(unittest.TestCase):
+    """Tests for the clipboard manager."""
+
+    def setUp(self):
+        from ui.clipboard import ClipboardManager
+        self.cb = ClipboardManager(max_history=10)
+
+    def test_copy(self):
+        entry = self.cb.copy("hello")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.content, "hello")
+        self.assertEqual(self.cb.count, 1)
+
+    def test_paste(self):
+        self.cb.copy("world")
+        result = self.cb.paste()
+        self.assertEqual(result, "world")
+
+    def test_paste_empty(self):
+        result = self.cb.paste()
+        self.assertIsNone(result)
+
+    def test_copy_deduplicates(self):
+        self.cb.copy("same")
+        self.cb.copy("same")
+        self.assertEqual(self.cb.count, 1)
+
+    def test_copy_different(self):
+        self.cb.copy("a")
+        self.cb.copy("b")
+        self.assertEqual(self.cb.count, 2)
+
+    def test_paste_entry(self):
+        e1 = self.cb.copy("first")
+        self.cb.copy("second")
+        result = self.cb.paste_entry(e1.id)
+        self.assertEqual(result, "first")
+        self.assertEqual(self.cb.current_text, "first")
+
+    def test_search(self):
+        self.cb.copy("hello world")
+        self.cb.copy("foo bar")
+        results = self.cb.search("hello")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].content, "hello world")
+
+    def test_search_empty(self):
+        self.cb.copy("a")
+        self.cb.copy("b")
+        results = self.cb.search("")
+        self.assertEqual(len(results), 2)
+
+    def test_pin(self):
+        entry = self.cb.copy("pinned")
+        result = self.cb.pin(entry.id)
+        self.assertTrue(result)
+        self.assertTrue(entry.pinned)
+
+    def test_unpin(self):
+        entry = self.cb.copy("unpin")
+        self.cb.pin(entry.id)
+        self.cb.unpin(entry.id)
+        self.assertFalse(entry.pinned)
+
+    def test_delete(self):
+        entry = self.cb.copy("delete me")
+        result = self.cb.delete(entry.id)
+        self.assertTrue(result)
+        self.assertEqual(self.cb.count, 0)
+
+    def test_clear(self):
+        self.cb.copy("a")
+        self.cb.copy("b")
+        count = self.cb.clear()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.cb.count, 0)
+
+    def test_clear_keeps_pinned(self):
+        e1 = self.cb.copy("pinned")
+        self.cb.pin(e1.id)
+        self.cb.copy("unpinned")
+        self.cb.clear()
+        self.assertEqual(self.cb.count, 1)
+        self.assertTrue(self.cb.entries[0].pinned)
+
+    def test_max_history(self):
+        for i in range(15):
+            self.cb.copy(f"item {i}")
+        self.assertLessEqual(self.cb.count, 10)
+
+    def test_recent(self):
+        for i in range(5):
+            self.cb.copy(f"item {i}")
+        recent = self.cb.recent(3)
+        self.assertEqual(len(recent), 3)
+
+    def test_pinned_entries(self):
+        e1 = self.cb.copy("a")
+        self.cb.pin(e1.id)
+        self.cb.copy("b")
+        pinned = self.cb.pinned_entries()
+        self.assertEqual(len(pinned), 1)
+
+    def test_by_type(self):
+        self.cb.copy("text", content_type="text")
+        self.cb.copy("image", content_type="image")
+        text = self.cb.by_type("text")
+        self.assertEqual(len(text), 1)
+
+    def test_callback(self):
+        events = []
+        self.cb.on_event(lambda t, e: events.append(t))
+        self.cb.copy("test")
+        self.cb.paste()
+        self.assertIn("copied", events)
+        self.assertIn("pasted", events)
+
+    def test_visibility(self):
+        self.assertFalse(self.cb.visible)
+        self.cb.show()
+        self.assertTrue(self.cb.visible)
+        self.cb.hide()
+        self.assertFalse(self.cb.visible)
+
+    def test_get_entry(self):
+        entry = self.cb.copy("find me")
+        found = self.cb.get_entry(entry.id)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.content, "find me")
+
+    def test_delete_nonexistent(self):
+        result = self.cb.delete("no-such-id")
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()
