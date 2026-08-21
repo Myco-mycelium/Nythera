@@ -374,6 +374,52 @@ class TestDesktopSessionSummary(unittest.TestCase):
         self.assertEqual(s["events_processed"], 1)
 
 
+class TestDesktopSessionWorkspaces(unittest.TestCase):
+    """Tests for multi-monitor and workspace support."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+
+    def test_initial_monitors(self):
+        self.assertGreaterEqual(len(self.session.monitors), 1)
+        self.assertTrue(self.session.monitors[0].primary)
+
+    def test_initial_workspaces(self):
+        self.assertGreaterEqual(len(self.session.workspaces), 2)
+        self.assertIsNotNone(self.session.active_workspace)
+
+    def test_switch_workspace(self):
+        ws = self.session.workspaces[1]
+        result = self.session.switch_workspace(ws.id)
+        self.assertTrue(result)
+        self.assertEqual(self.session.active_workspace.id, ws.id)
+
+    def test_switch_nonexistent_workspace(self):
+        result = self.session.switch_workspace("no-such-ws")
+        self.assertFalse(result)
+
+    def test_cycle_workspace(self):
+        initial = self.session.active_workspace.id
+        self.session.cycle_workspace(1)
+        self.assertNotEqual(self.session.active_workspace.id, initial)
+
+    def test_cycle_workspace_wraps(self):
+        # Cycle forward through all workspaces
+        for _ in range(len(self.session.workspaces) + 1):
+            self.session.cycle_workspace(1)
+        # Should still have a valid active workspace
+        self.assertIsNotNone(self.session.active_workspace)
+
+    def test_summary_includes_workspaces(self):
+        s = self.session.summary()
+        self.assertIn("monitors", s)
+        self.assertIn("workspaces", s)
+        self.assertIn("active_workspace", s)
+        self.assertEqual(s["monitors"], 1)
+        self.assertGreaterEqual(s["workspaces"], 2)
+
+
 class TestDesktopSessionRendering(unittest.TestCase):
     """Tests for live rendering."""
 

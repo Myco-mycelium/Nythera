@@ -150,6 +150,45 @@ class HitResult:
 
 
 # ---------------------------------------------------------------------------
+# Monitor
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Monitor:
+    """A display monitor in the desktop shell.
+
+    Each monitor has its own coordinate space.  Windows are placed
+    in a monitor's local coordinates; the session maps them to
+    global screen coordinates when hit-testing.
+    """
+    id: str
+    x: int = 0                # global x offset
+    y: int = 0                # global y offset
+    width: int = 1920
+    height: int = 1080
+    scale: float = 1.0
+    primary: bool = True
+    name: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Workspace:
+    """A virtual desktop workspace.
+
+    Each workspace holds its own set of window IDs.  The active
+    workspace determines which windows are visible.
+    """
+    id: str
+    name: str = ""
+    window_ids: List[str] = field(default_factory=list)
+    monitor_id: str = "default"
+
+
+# ---------------------------------------------------------------------------
 # DesktopSession
 # ---------------------------------------------------------------------------
 
@@ -191,8 +230,15 @@ class DesktopSession:
         self._callbacks: Dict[EventType, List[Callable]] = {}
         self._running = False
 
+        # Multi-monitor support
+        self._monitors: List[Monitor] = []
+        self._workspaces: List[Workspace] = []
+        self._active_workspace_id: Optional[str] = None
+
         # Build initial window list from top-level Window components
         self._build_windows()
+        self._build_monitors()
+        self._build_workspaces()
 
     # -- Factory -------------------------------------------------------
 
@@ -456,6 +502,12 @@ class DesktopSession:
             if self._focused_window_id:
                 self.maximize_window(self._focused_window_id)
                 return inp
+        elif event.ctrl and event.super_key and event.key == "Left":
+            self.cycle_workspace(-1)
+            return inp
+        elif event.ctrl and event.super_key and event.key == "Right":
+            self.cycle_workspace(1)
+            return inp
 
         self._event_log.append(inp)
         self._dispatch_event(inp)
@@ -580,11 +632,15 @@ class DesktopSession:
 
     def summary(self) -> Dict[str, Any]:
         """Session summary for diagnostics."""
+        aws = self.active_workspace
         return {
             "windows": len(self._windows),
             "focused": self._focused_window_id,
             "visible": sum(1 for w in self._windows if w.visible and not w.minimized),
             "minimized": sum(1 for w in self._windows if w.minimized),
+            "monitors": len(self._monitors),
+            "workspaces": len(self._workspaces),
+            "active_workspace": aws.name if aws else None,
             "events_processed": len(self._event_log),
             **self._runtime.summary(),
         }
@@ -641,6 +697,98 @@ class DesktopSession:
         # Focus the topmost window
         if self._windows:
             self._focus_window(self._windows[-1].id)
+
+    def _build_monitors(self) -> None:
+        """Build the initial monitor list from the document's screens.
+
+        Each NUI screen becomes a Monitor.  The first screen is primary.
+        """
+        for i, screen in enumerate(self._doc.screens):
+            m = Monitor(
+                id=f"monitor-{i}",
+                width=screen.size.get("width", 1920),
+                height=screen.size.get("height", 1080),
+                primary=(i == 0),
+                name=screen.id,
+            )
+            self._monitors.append(m)
+        if not self._monitors:
+            self._monitors.append(Monitor(id="monitor-0"))
+
+    def _build_workspaces(self) -> None:
+        """Create the initial workspaces (one per monitor, plus one
+        additional workspace per monitor for overflow)."""
+        ws_id = 0
+        for monitor in self._monitors:
+            for ws_num in range(1, 3):  # 2 workspaces per monitor
+                ws = Workspace(
+                    id=f"ws-{ws_id}",
+                    name=f"Workspace {ws_num}",
+                    monitor_id=monitor.id,
+                )
+                self._workspaces.append(ws)
+                ws_id += 1
+        # Assign all initial windows to workspace 0 on the primary monitor
+        if self._workspaces and self._windows:
+            self._workspaces[0].window_ids = [w.id for w in self._windows]
+            self._active_workspace_id = self._workspaces[0].id
+
+    # -- Workspace management -------------------------------------------
+
+    def switch_workspace(self, workspace_id: str) -> bool:
+        """Switch to a different workspace.
+
+        Hides windows not belonging to the target workspace and shows
+        windows that do.  Returns True on success.
+        """
+        target = None
+        for ws in self._workspaces:
+            if ws.id == workspace_id:
+                target = ws
+                break
+        if target is None:
+            return False
+        old_ws = self.active_workspace
+        self._active_workspace_id = workspace_id
+        # Hide old workspace windows, show new
+        for w in self._windows:
+            if w.id in (target.window_ids if target else []):
+                w.visible = True
+            elif old_ws and w.id in old_ws.window_ids:
+                w.visible = False
+        self._log(f"Workspace → '{target.name}'")
+        # Focus topmost visible window
+        self._auto_focus_topmost()
+        return True
+
+    def cycle_workspace(self, direction: int = 1) -> None:
+        """Cycle to the next (+1) or previous (-1) workspace."""
+        if not self._workspaces:
+            return
+        idx = 0
+        for i, ws in enumerate(self._workspaces):
+            if ws.id == self._active_workspace_id:
+                idx = i
+                break
+        new_idx = (idx + direction) % len(self._workspaces)
+        self.switch_workspace(self._workspaces[new_idx].id)
+
+    @property
+    def active_workspace(self) -> Optional[Workspace]:
+        if self._active_workspace_id is None:
+            return None
+        for ws in self._workspaces:
+            if ws.id == self._active_workspace_id:
+                return ws
+        return None
+
+    @property
+    def monitors(self) -> List[Monitor]:
+        return list(self._monitors)
+
+    @property
+    def workspaces(self) -> List[Workspace]:
+        return list(self._workspaces)
 
     # -- Internal: focus management ------------------------------------
 
