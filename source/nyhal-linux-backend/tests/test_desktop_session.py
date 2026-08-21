@@ -1184,5 +1184,213 @@ class TestWindowSwitcher(unittest.TestCase):
             self.assertIsNotNone(e.title)
 
 
+class TestLockScreen(unittest.TestCase):
+    """Tests for the lock screen."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.lock_screen import LockScreen
+        self.lock = LockScreen(self.session)
+
+    def test_initial_state(self):
+        self.assertFalse(self.lock.locked)
+        self.assertFalse(self.lock.visible)
+
+    def test_lock(self):
+        self.lock.lock()
+        self.assertTrue(self.lock.locked)
+        self.assertTrue(self.lock.visible)
+
+    def test_unlock(self):
+        self.lock.lock()
+        result = self.lock.unlock()
+        self.assertTrue(result)
+        self.assertFalse(self.lock.locked)
+        self.assertFalse(self.lock.visible)
+
+    def test_toggle(self):
+        result = self.lock.toggle()
+        self.assertTrue(result)  # Now locked
+        result2 = self.lock.toggle()
+        self.assertFalse(result2)  # Now unlocked
+
+    def test_swipe_unlock(self):
+        self.lock.lock()
+        self.lock.handle_swipe_start(960, 800)
+        self.lock.handle_swipe_move(960, 500)  # Swipe up 300px
+        result = self.lock.handle_swipe_end(960, 500)
+        self.assertTrue(result)
+        self.assertFalse(self.lock.locked)
+
+    def test_swipe_insufficient(self):
+        self.lock.lock()
+        self.lock.handle_swipe_start(960, 800)
+        self.lock.handle_swipe_move(960, 700)  # Only 100px up
+        result = self.lock.handle_swipe_end(960, 700)
+        self.assertFalse(result)
+        self.assertTrue(self.lock.locked)
+
+    def test_time_display(self):
+        t = self.lock.current_time
+        self.assertIsNotNone(t)
+        self.assertIn(":", t)  # Should contain colon
+
+    def test_date_display(self):
+        d = self.lock.current_date
+        self.assertIsNotNone(d)
+        self.assertGreater(len(d), 0)
+
+    def test_render_returns_image(self):
+        self.lock.lock()
+        img = self.lock.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_none_when_unlocked(self):
+        img = self.lock.render()
+        self.assertIsNone(img)
+
+    def test_activity_resets_timeout(self):
+        import time
+        self.lock._last_activity = time.time() - 1000
+        self.lock.activity()
+        self.assertLess(time.time() - self.lock._last_activity, 1)
+
+    def test_auto_lock(self):
+        import time
+        self.lock = type(self.lock).__new__(type(self.lock))
+        self.lock._session = self.session
+        self.lock._timeout = 1
+        self.lock._state = type('S', (), {'locked': False, 'unlock_progress': 0.0})()
+        self.lock._last_activity = time.time() - 2
+        self.lock._visible = False
+        self.lock._callbacks = []
+        result = self.lock.check_timeout()
+        self.assertTrue(result)
+        self.assertTrue(self.lock.locked)
+
+    def test_callback(self):
+        events = []
+        self.lock.on_event(lambda e: events.append(e))
+        self.lock.lock()
+        self.lock.unlock()
+        self.assertEqual(events, ["locked", "unlocked"])
+
+
+class TestLockScreen(unittest.TestCase):
+    """Tests for the lock screen."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.lock_screen import LockScreen
+        self.lock = LockScreen(self.session, timeout_seconds=10)
+
+    def test_initial_state(self):
+        self.assertFalse(self.lock.locked)
+        self.assertFalse(self.lock.visible)
+
+    def test_lock(self):
+        self.lock.lock()
+        self.assertTrue(self.lock.locked)
+        self.assertTrue(self.lock.visible)
+
+    def test_unlock(self):
+        self.lock.lock()
+        result = self.lock.unlock()
+        self.assertTrue(result)
+        self.assertFalse(self.lock.locked)
+        self.assertFalse(self.lock.visible)
+
+    def test_toggle(self):
+        self.lock.toggle()
+        self.assertTrue(self.lock.locked)
+        self.lock.toggle()
+        self.assertFalse(self.lock.locked)
+
+    def test_swipe_unlock(self):
+        self.lock.lock()
+        self.lock.handle_swipe_start(960, 800)
+        self.lock.handle_swipe_move(960, 500)  # 300px up
+        result = self.lock.handle_swipe_end(960, 500)
+        self.assertTrue(result)
+        self.assertFalse(self.lock.locked)
+
+    def test_swipe_insufficient(self):
+        self.lock.lock()
+        self.lock.handle_swipe_start(960, 800)
+        self.lock.handle_swipe_move(960, 700)  # only 100px up
+        result = self.lock.handle_swipe_end(960, 700)
+        self.assertFalse(result)
+        self.assertTrue(self.lock.locked)
+
+    def test_unlock_progress(self):
+        self.lock.lock()
+        self.lock.handle_swipe_start(960, 800)
+        self.lock.handle_swipe_move(960, 700)
+        self.assertGreater(self.lock.state.unlock_progress, 0)
+        self.assertLess(self.lock.state.unlock_progress, 1)
+
+    def test_auto_lock_timeout(self):
+        self.lock._last_activity = 0  # Force timeout
+        result = self.lock.check_timeout()
+        self.assertTrue(result)
+        self.assertTrue(self.lock.locked)
+
+    def test_no_auto_lock_when_active(self):
+        self.lock.activity()  # Reset timer
+        result = self.lock.check_timeout()
+        self.assertFalse(result)
+        self.assertFalse(self.lock.locked)
+
+    def test_activity_resets_timer(self):
+        self.lock._last_activity = 0
+        self.lock.activity()
+        result = self.lock.check_timeout()
+        self.assertFalse(result)
+
+    def test_current_time(self):
+        t = self.lock.current_time
+        self.assertIsNotNone(t)
+        self.assertEqual(len(t), 5)  # HH:MM
+
+    def test_current_date(self):
+        d = self.lock.current_date
+        self.assertIsNotNone(d)
+        self.assertGreater(len(d), 0)
+
+    def test_render_returns_image(self):
+        self.lock.lock()
+        img = self.lock.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_none_when_unlocked(self):
+        img = self.lock.render()
+        self.assertIsNone(img)
+
+    def test_callback(self):
+        events = []
+        self.lock.on_event(lambda e: events.append(e))
+        self.lock.lock()
+        self.lock.unlock()
+        self.assertEqual(events, ["locked", "unlocked"])
+
+    def test_unlock_when_not_locked(self):
+        result = self.lock.unlock()
+        self.assertTrue(result)  # Should succeed (no-op)
+
+    def test_click_starts_swipe(self):
+        self.lock.lock()
+        result = self.lock.handle_click(960, 800)
+        self.assertTrue(result)
+        self.assertTrue(self.lock.state.swipe_active)
+
+    def test_click_when_unlocked(self):
+        result = self.lock.handle_click(960, 800)
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()
