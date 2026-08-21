@@ -1784,5 +1784,94 @@ class TestSpotlight(unittest.TestCase):
         self.assertIn("settings", categories)
 
 
+class TestPowerMenu(unittest.TestCase):
+    """Tests for the power menu."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+        from ui.power_menu import PowerMenu
+        self.pm = PowerMenu(self.session)
+
+    def test_initial_state(self):
+        self.assertFalse(self.pm.visible)
+        self.assertEqual(len(self.pm.options), 5)
+
+    def test_show_hide(self):
+        self.pm.show()
+        self.assertTrue(self.pm.visible)
+        self.pm.hide()
+        self.assertFalse(self.pm.visible)
+
+    def test_toggle(self):
+        self.pm.toggle()
+        self.assertTrue(self.pm.visible)
+        self.pm.toggle()
+        self.assertFalse(self.pm.visible)
+
+    def test_navigate(self):
+        self.pm.show()
+        initial = self.pm.selected.id
+        self.pm.navigate_down()
+        self.assertNotEqual(self.pm.selected.id, initial)
+        self.pm.navigate_up()
+        self.assertEqual(self.pm.selected.id, initial)
+
+    def test_execute_lock(self):
+        self.pm.show()
+        # Navigate to lock (index 0)
+        result = self.pm.execute()
+        self.assertIsNotNone(result)
+        self.assertEqual(result.id, "lock")
+        self.assertFalse(self.pm.visible)
+
+    def test_execute_dangerous_requires_confirm(self):
+        self.pm.show()
+        # Navigate to shutdown (index 4)
+        for _ in range(4):
+            self.pm.navigate_down()
+        result = self.pm.execute()
+        self.assertIsNone(result)  # Not executed yet
+        self.assertTrue(self.pm.confirming)
+        self.assertIsNotNone(self.pm.confirm_option)
+
+    def test_confirm_dangerous(self):
+        self.pm.show()
+        for _ in range(4):
+            self.pm.navigate_down()
+        self.pm.execute()  # Start confirmation
+        result = self.pm.execute()  # Confirm
+        self.assertIsNotNone(result)
+        self.assertFalse(self.pm.visible)
+        self.assertFalse(self.pm.confirming)
+
+    def test_cancel(self):
+        self.pm.show()
+        for _ in range(4):
+            self.pm.navigate_down()
+        self.pm.execute()  # Start confirmation
+        self.pm.cancel()
+        self.assertFalse(self.pm.confirming)
+        self.assertTrue(self.pm.visible)
+
+    def test_render(self):
+        self.pm.show()
+        img = self.pm.render()
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_render_none_when_hidden(self):
+        img = self.pm.render()
+        self.assertIsNone(img)
+
+    def test_callback(self):
+        events = []
+        self.pm.on_event(lambda t, e: events.append(t))
+        self.pm.show()
+        self.pm.execute()  # Lock
+        self.assertIn("shown", events)
+        self.assertIn("executed", events)
+
+
 if __name__ == "__main__":
     unittest.main()
