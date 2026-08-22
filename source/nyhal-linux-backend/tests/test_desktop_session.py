@@ -1873,5 +1873,263 @@ class TestPowerMenu(unittest.TestCase):
         self.assertIn("executed", events)
 
 
+class TestScreenCapture(unittest.TestCase):
+    """Tests for the screenshot tool."""
+
+    def setUp(self):
+        self.doc = _make_doc()
+        self.session = DesktopSession(self.doc)
+
+    def test_grab_fullscreen(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_fullscreen()
+        self.assertIsNotNone(result.image)
+        self.assertEqual(result.region.width, 1920)
+        self.assertEqual(result.region.height, 1080)
+        self.assertGreater(result.timestamp, 0)
+
+    def test_grab_region(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_region(100, 100, 800, 600)
+        self.assertEqual(result.region.width, 800)
+        self.assertEqual(result.region.height, 600)
+        self.assertEqual(result.image.size, (800, 600))
+
+    def test_save_to_file(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_fullscreen()
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            path = f.name
+        try:
+            saved = cap.save(result, path)
+            self.assertTrue(os.path.exists(saved))
+            self.assertGreater(os.path.getsize(saved), 0)
+        finally:
+            os.unlink(path)
+
+    def test_clipboard(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_fullscreen()
+        self.assertIsNone(cap.clipboard_image)
+        cap.copy_to_clipboard(result)
+        self.assertIsNotNone(cap.clipboard_image)
+
+    def test_history(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        self.assertEqual(len(cap.history), 0)
+        cap.grab_fullscreen()
+        self.assertEqual(len(cap.history), 1)
+        cap.grab_region(0, 0, 100, 100)
+        self.assertEqual(len(cap.history), 2)
+        self.assertEqual(cap.last_capture.region.width, 100)
+        cleared = cap.clear_history()
+        self.assertEqual(cleared, 2)
+        self.assertEqual(len(cap.history), 0)
+
+    def test_annotate(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_fullscreen()
+        original_size = result.image.size
+        cap.annotate(result, [
+            {"type": "rectangle", "x": 10, "y": 10, "width": 50, "height": 50},
+            {"type": "text", "x": 20, "y": 20, "text": "Test"},
+        ])
+        self.assertEqual(result.image.size, original_size)
+
+    def test_grab_and_save(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            path = f.name
+        try:
+            saved = cap.grab_and_save(path)
+            self.assertTrue(os.path.exists(saved))
+        finally:
+            os.unlink(path)
+
+    def test_monitor_capture(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        result = cap.grab_fullscreen(monitor_id="monitor-0")
+        self.assertIsNotNone(result)
+        self.assertGreater(result.region.width, 0)
+
+    def test_callback(self):
+        from ui.screenshot import ScreenCapture
+        cap = ScreenCapture(self.session)
+        events = []
+        cap.on_capture(lambda e, r: events.append(e))
+        cap.grab_fullscreen()
+        self.assertIn("capture", events)
+
+
+class TestTextEditor(unittest.TestCase):
+    """Tests for the text editor."""
+
+    def setUp(self):
+        from ui.text_editor import TextEditor
+        self.editor = TextEditor()
+
+    def test_new_file(self):
+        self.assertIsNone(self.editor.filename)
+        self.assertEqual(self.editor.line_count, 1)
+        self.assertFalse(self.editor.modified)
+
+    def test_insert_text(self):
+        self.editor.insert_text("hello world")
+        self.assertEqual(self.editor.text, "hello world")
+        self.assertEqual(self.editor.line_count, 1)
+        self.assertTrue(self.editor.modified)
+
+    def test_insert_multiline(self):
+        self.editor.insert_text("line1\nline2\nline3")
+        self.assertEqual(self.editor.line_count, 3)
+        self.assertEqual(self.editor.lines[0], "line1")
+        self.assertEqual(self.editor.lines[2], "line3")
+
+    def test_insert_newline(self):
+        self.editor.insert_text("hello")
+        self.editor.move_to_line_start()
+        self.editor.insert_newline()
+        self.assertEqual(self.editor.line_count, 2)
+
+    def test_delete_char_forward(self):
+        self.editor.insert_text("abc")
+        self.editor.move_to_file_start()
+        self.editor.delete_char(forward=True)
+        self.assertEqual(self.editor.text, "bc")
+
+    def test_delete_char_backward(self):
+        self.editor.insert_text("abc")
+        self.editor.move_to_file_end()
+        self.editor.delete_char(forward=False)
+        self.assertEqual(self.editor.text, "ab")
+
+    def test_undo_redo(self):
+        self.editor.insert_text("hello")
+        self.assertTrue(self.editor.undo())
+        self.assertEqual(self.editor.text, "")
+        self.assertTrue(self.editor.redo())
+        self.assertEqual(self.editor.text, "hello")
+
+    def test_undo_empty(self):
+        self.assertFalse(self.editor.undo())
+
+    def test_redo_empty(self):
+        self.assertFalse(self.editor.redo())
+
+    def test_find(self):
+        self.editor.insert_text("hello world\nhello again")
+        results = self.editor.find("hello")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0], (0, 0))
+        self.assertEqual(results[1], (1, 0))
+
+    def test_find_next(self):
+        self.editor.insert_text("hello world\nhello again")
+        self.editor.move_to_file_start()
+        # find_next returns the first match AFTER cursor position
+        self.editor.move_cursor(0, 1)  # move past first match
+        result = self.editor.find_next("hello")
+        self.assertEqual(result, (1, 0))
+
+    def test_replace(self):
+        self.editor.insert_text("hello world\nhello again")
+        count = self.editor.replace("hello", "hi")
+        self.assertEqual(count, 1)  # only first by default
+
+    def test_replace_all(self):
+        self.editor.insert_text("hello world\nhello again")
+        count = self.editor.replace("hello", "hi", all_occurrences=True)
+        self.assertEqual(count, 2)
+        self.assertEqual(self.editor.lines[0], "hi world")
+        self.assertEqual(self.editor.lines[1], "hi again")
+
+    def test_cursor_movement(self):
+        self.editor.insert_text("abc\ndef")
+        self.editor.move_to_file_start()
+        self.assertEqual(self.editor.cursor.line, 0)
+        self.assertEqual(self.editor.cursor.column, 0)
+        self.editor.move_cursor_right()
+        self.assertEqual(self.editor.cursor.column, 1)
+        self.editor.move_cursor_down()
+        self.assertEqual(self.editor.cursor.line, 1)
+        self.editor.move_cursor_left()
+        self.assertEqual(self.editor.cursor.column, 0)
+
+    def test_move_to_line_start_end(self):
+        self.editor.insert_text("hello world")
+        self.editor.move_to_line_end()
+        self.assertEqual(self.editor.cursor.column, 11)
+        self.editor.move_to_line_start()
+        self.assertEqual(self.editor.cursor.column, 0)
+
+    def test_selection(self):
+        self.editor.insert_text("hello world")
+        self.editor.move_to_file_start()  # cursor at (0, 0)
+        self.editor.start_selection()     # start = (0, 0)
+        self.editor.move_cursor(0, 5)     # cursor at (0, 5)
+        self.editor.end_selection()       # end = (0, 5)
+        self.assertTrue(self.editor.has_selection)
+        sel = self.editor.get_selection()
+        self.assertEqual(sel, (0, 0, 0, 5))
+        deleted = self.editor.delete_selection()
+        self.assertEqual(deleted, "hello")
+        self.assertEqual(self.editor.text, " world")
+
+    def test_file_operations(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write("print('hello')")
+            path = f.name
+        try:
+            self.assertTrue(self.editor.open_file(path))
+            self.assertEqual(self.editor.filename, path)
+            self.assertEqual(self.editor.language, "python")
+            self.assertFalse(self.editor.modified)
+            self.editor.insert_text("# comment")
+            self.assertTrue(self.editor.modified)
+            self.assertTrue(self.editor.save())
+            self.assertFalse(self.editor.modified)
+        finally:
+            os.unlink(path)
+
+    def test_language_detection(self):
+        from ui.text_editor import _detect_language
+        self.assertEqual(_detect_language("test.py"), "python")
+        self.assertEqual(_detect_language("test.rs"), "rust")
+        self.assertEqual(_detect_language("test.cpp"), "cpp")
+        self.assertEqual(_detect_language("test.json"), "json")
+        self.assertEqual(_detect_language("test.md"), "markdown")
+        self.assertEqual(_detect_language("test.txt"), "text")
+
+    def test_render(self):
+        self.editor.insert_text("hello world")
+        img = self.editor.render(800, 600)
+        self.assertEqual(img.size, (800, 600))
+
+    def test_tab_size(self):
+        self.editor.tab_size = 2
+        self.assertEqual(self.editor.tab_size, 2)
+        self.editor.tab_size = 0
+        self.assertEqual(self.editor.tab_size, 1)  # clamped
+
+    def test_word_wrap(self):
+        self.editor.word_wrap = False
+        self.assertFalse(self.editor.word_wrap)
+        self.editor.word_wrap = True
+        self.assertTrue(self.editor.word_wrap)
+
+    def test_properties(self):
+        self.editor.insert_text("hello world\nsecond line")
+        self.assertEqual(self.editor.char_count, 22)
+        self.assertEqual(self.editor.word_count, 4)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,22 @@ BUILTIN_APPS: List[AppEntry] = [
         icon="✦",
         category="Development",
     ),
+    AppEntry(
+        id="screenshot",
+        name="Screenshot",
+        description="Capture desktop screenshots",
+        icon="📷",
+        category="Utilities",
+        pinned=True,
+    ),
+    AppEntry(
+        id="text-editor",
+        name="Text Editor",
+        description="Edit text and code files",
+        icon="📝",
+        category="Development",
+        pinned=True,
+    ),
 ]
 
 
