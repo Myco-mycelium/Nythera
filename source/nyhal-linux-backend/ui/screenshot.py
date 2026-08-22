@@ -46,10 +46,28 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-try:
+# PIL imported lazily to avoid 5-15s import penalty in containers.
+_PIL_AVAILABLE: Optional[bool] = None
+
+
+def _ensure_pil():
+    global _PIL_AVAILABLE
+    if _PIL_AVAILABLE is not None:
+        if _PIL_AVAILABLE is False:
+            raise ImportError("PIL/Pillow is required: pip install Pillow")
+        return
+    try:
+        from PIL import Image as _Img  # noqa: F401
+        _PIL_AVAILABLE = True
+    except ImportError:
+        _PIL_AVAILABLE = False
+        raise ImportError("PIL/Pillow is required: pip install Pillow")
+
+
+def _pil():
+    _ensure_pil()
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    raise ImportError("PIL/Pillow is required: pip install Pillow")
+    return Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +356,7 @@ class ScreenCapture:
             The annotated capture (modifies in-place).
         """
         img = result.image.copy()
+        _, ImageDraw, ImageFont = _pil()
         draw = ImageDraw.Draw(img)
 
         for ann in annotations:

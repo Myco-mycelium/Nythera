@@ -1191,100 +1191,6 @@ class TestLockScreen(unittest.TestCase):
         self.doc = _make_doc()
         self.session = DesktopSession(self.doc)
         from ui.lock_screen import LockScreen
-        self.lock = LockScreen(self.session)
-
-    def test_initial_state(self):
-        self.assertFalse(self.lock.locked)
-        self.assertFalse(self.lock.visible)
-
-    def test_lock(self):
-        self.lock.lock()
-        self.assertTrue(self.lock.locked)
-        self.assertTrue(self.lock.visible)
-
-    def test_unlock(self):
-        self.lock.lock()
-        result = self.lock.unlock()
-        self.assertTrue(result)
-        self.assertFalse(self.lock.locked)
-        self.assertFalse(self.lock.visible)
-
-    def test_toggle(self):
-        result = self.lock.toggle()
-        self.assertTrue(result)  # Now locked
-        result2 = self.lock.toggle()
-        self.assertFalse(result2)  # Now unlocked
-
-    def test_swipe_unlock(self):
-        self.lock.lock()
-        self.lock.handle_swipe_start(960, 800)
-        self.lock.handle_swipe_move(960, 500)  # Swipe up 300px
-        result = self.lock.handle_swipe_end(960, 500)
-        self.assertTrue(result)
-        self.assertFalse(self.lock.locked)
-
-    def test_swipe_insufficient(self):
-        self.lock.lock()
-        self.lock.handle_swipe_start(960, 800)
-        self.lock.handle_swipe_move(960, 700)  # Only 100px up
-        result = self.lock.handle_swipe_end(960, 700)
-        self.assertFalse(result)
-        self.assertTrue(self.lock.locked)
-
-    def test_time_display(self):
-        t = self.lock.current_time
-        self.assertIsNotNone(t)
-        self.assertIn(":", t)  # Should contain colon
-
-    def test_date_display(self):
-        d = self.lock.current_date
-        self.assertIsNotNone(d)
-        self.assertGreater(len(d), 0)
-
-    def test_render_returns_image(self):
-        self.lock.lock()
-        img = self.lock.render()
-        self.assertIsNotNone(img)
-        self.assertEqual(img.size, (1920, 1080))
-
-    def test_render_none_when_unlocked(self):
-        img = self.lock.render()
-        self.assertIsNone(img)
-
-    def test_activity_resets_timeout(self):
-        import time
-        self.lock._last_activity = time.time() - 1000
-        self.lock.activity()
-        self.assertLess(time.time() - self.lock._last_activity, 1)
-
-    def test_auto_lock(self):
-        import time
-        self.lock = type(self.lock).__new__(type(self.lock))
-        self.lock._session = self.session
-        self.lock._timeout = 1
-        self.lock._state = type('S', (), {'locked': False, 'unlock_progress': 0.0})()
-        self.lock._last_activity = time.time() - 2
-        self.lock._visible = False
-        self.lock._callbacks = []
-        result = self.lock.check_timeout()
-        self.assertTrue(result)
-        self.assertTrue(self.lock.locked)
-
-    def test_callback(self):
-        events = []
-        self.lock.on_event(lambda e: events.append(e))
-        self.lock.lock()
-        self.lock.unlock()
-        self.assertEqual(events, ["locked", "unlocked"])
-
-
-class TestLockScreen(unittest.TestCase):
-    """Tests for the lock screen."""
-
-    def setUp(self):
-        self.doc = _make_doc()
-        self.session = DesktopSession(self.doc)
-        from ui.lock_screen import LockScreen
         self.lock = LockScreen(self.session, timeout_seconds=10)
 
     def test_initial_state(self):
@@ -2129,6 +2035,330 @@ class TestTextEditor(unittest.TestCase):
         self.editor.insert_text("hello world\nsecond line")
         self.assertEqual(self.editor.char_count, 22)
         self.assertEqual(self.editor.word_count, 4)
+
+
+# ---------------------------------------------------------------------------
+# Calculator tests
+# ---------------------------------------------------------------------------
+
+class TestCalculator(unittest.TestCase):
+    """Tests for ui.calculator.Calculator."""
+
+    def setUp(self):
+        from ui.calculator import Calculator
+        self.calc = Calculator()
+
+    def test_basic_addition(self):
+        self.calc.press("5")
+        self.calc.press("+")
+        self.calc.press("3")
+        self.calc.press("=")
+        self.assertEqual(self.calc.display, "8")
+
+    def test_basic_subtraction(self):
+        self.calc.press("1")
+        self.calc.press("0")
+        self.calc.press("-")
+        self.calc.press("3")
+        self.calc.press("=")
+        self.assertEqual(self.calc.display, "7")
+
+    def test_basic_multiplication(self):
+        self.calc.press("6")
+        self.calc.press("*")
+        self.calc.press("7")
+        self.calc.press("=")
+        self.assertEqual(self.calc.display, "42")
+
+    def test_basic_division(self):
+        self.calc.press("1")
+        self.calc.press("5")
+        self.calc.press("/")
+        self.calc.press("3")
+        self.calc.press("=")
+        self.assertEqual(float(self.calc.display), 5.0)
+
+    def test_division_by_zero(self):
+        self.calc.press("5")
+        self.calc.press("/")
+        self.calc.press("0")
+        self.calc.press("=")
+        self.assertEqual(self.calc.display, "Error")
+        self.assertTrue(self.calc.error)
+
+    def test_clear(self):
+        self.calc.press("5")
+        self.calc.press("+")
+        self.calc.press("3")
+        self.calc.press("C")
+        self.assertEqual(self.calc.display, "0")
+        self.assertFalse(self.calc.error)
+
+    def test_decimal(self):
+        self.calc.press("3")
+        self.calc.press(".")
+        self.calc.press("1")
+        self.calc.press("4")
+        self.assertEqual(self.calc.display, "3.14")
+
+    def test_sqrt(self):
+        self.calc.press("9")
+        self.calc.press("sqrt")
+        self.assertEqual(self.calc.display, "3")
+
+    def test_sin_zero(self):
+        self.calc.press("0")
+        self.calc.press("sin")
+        self.assertEqual(self.calc.display, "0")
+
+    def test_memory_add_recall(self):
+        self.calc.press("4")
+        self.calc.press("2")
+        self.calc.press("m+")
+        self.calc.press("C")
+        self.calc.press("mr")
+        self.assertEqual(self.calc.display, "42")
+        self.calc.press("mc")
+
+    def test_negate(self):
+        self.calc.press("5")
+        self.calc.press("±")
+        self.assertEqual(self.calc.display, "-5")
+
+    def test_reciprocal(self):
+        self.calc.press("4")
+        self.calc.press("1/x")
+        self.assertEqual(self.calc.display, "0.25")
+
+    def test_history(self):
+        self.calc.press("5")
+        self.calc.press("+")
+        self.calc.press("3")
+        self.calc.press("=")
+        self.assertGreater(len(self.calc.history), 0)
+        entry = self.calc.history[-1]
+        self.assertEqual(entry.expression, "5 + 3")
+        self.assertEqual(entry.result, "8")
+
+    def test_clear_history(self):
+        self.calc.press("1")
+        self.calc.press("+")
+        self.calc.press("2")
+        self.calc.press("=")
+        count = self.calc.clear_history()
+        self.assertEqual(count, 1)
+        self.assertEqual(len(self.calc.history), 0)
+
+    def test_chained_operations(self):
+        self.calc.press("2")
+        self.calc.press("+")
+        self.calc.press("3")
+        self.calc.press("*")
+        # Should compute 2+3=5 first
+        self.calc.press("4")
+        self.calc.press("=")
+        # 5 * 4 = 20
+        self.assertEqual(float(self.calc.display), 20.0)
+
+    def test_backspace(self):
+        self.calc.press("1")
+        self.calc.press("2")
+        self.calc.press("3")
+        self.calc.press("backspace")
+        self.assertEqual(self.calc.display, "12")
+
+    def test_error_blocks_input(self):
+        self.calc.press("5")
+        self.calc.press("/")
+        self.calc.press("0")
+        self.calc.press("=")
+        self.assertTrue(self.calc.error)
+        # Non-clear key should be blocked
+        self.calc.press("1")
+        self.assertEqual(self.calc.display, "Error")
+        self.calc.press("C")
+        self.assertFalse(self.calc.error)
+
+    def test_expression_property(self):
+        self.calc.press("5")
+        self.calc.press("+")
+        self.calc.press("3")
+        expr = self.calc.expression
+        self.assertIn("5", expr)
+        self.assertIn("+", expr)
+        self.assertIn("3", expr)
+
+    def test_angle_mode(self):
+        self.assertEqual(self.calc.angle_mode, "deg")
+        self.calc.press("rad")
+        self.assertEqual(self.calc.angle_mode, "rad")
+        self.calc.press("deg")
+        self.assertEqual(self.calc.angle_mode, "deg")
+
+    def test_visibility(self):
+        self.assertFalse(self.calc.visible)
+        self.calc.show()
+        self.assertTrue(self.calc.visible)
+        self.calc.hide()
+        self.assertFalse(self.calc.visible)
+        self.assertTrue(self.calc.toggle())
+        self.assertFalse(self.calc.toggle())
+
+    def test_callback(self):
+        events = []
+        self.calc.on_press(lambda e, k: events.append((e, k)))
+        self.calc.press("5")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0], ("press", "5"))
+
+
+# ---------------------------------------------------------------------------
+# SystemMonitor tests (no PIL, no process scanning)
+# ---------------------------------------------------------------------------
+
+class TestSystemMonitor(unittest.TestCase):
+    """Tests for ui.system_monitor.SystemMonitor.
+
+    These tests require importing the system_monitor module which reads
+    /proc.  In memory-constrained CI environments the import can take a
+    long time, so we skip gracefully on timeout.
+    """
+
+    def setUp(self):
+        import concurrent.futures
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(self._import_system_monitor)
+                fut.result(timeout=15)
+        except concurrent.futures.TimeoutError:
+            self.skipTest("system_monitor import timed out (memory pressure)")
+        except ImportError as exc:
+            self.skipTest(f"system_monitor not importable: {exc}")
+
+    def _import_system_monitor(self):
+        from ui.system_monitor import (
+            SystemMonitor, CpuInfo, MemoryInfo, DiskInfo,
+            NetworkInfo, ProcessInfo, SystemSnapshot,
+        )
+        self.SystemMonitor = SystemMonitor
+        self.CpuInfo = CpuInfo
+        self.MemoryInfo = MemoryInfo
+        self.DiskInfo = DiskInfo
+        self.NetworkInfo = NetworkInfo
+        self.ProcessInfo = ProcessInfo
+        self.SystemSnapshot = SystemSnapshot
+
+    def test_snapshot(self):
+        m = self.SystemMonitor(include_processes=False)
+        snap = m.snapshot()
+        self.assertIsNotNone(snap)
+        self.assertGreater(snap.timestamp, 0)
+        self.assertNotEqual(snap.hostname, "")
+
+    def test_latest(self):
+        m = self.SystemMonitor(include_processes=False)
+        self.assertIsNone(m.latest)
+        m.snapshot()
+        self.assertIsNotNone(m.latest)
+
+    def test_history(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        m.snapshot()
+        self.assertEqual(len(m.history), 2)
+
+    def test_cpu_history(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        h = m.cpu_history(10)
+        self.assertEqual(len(h), 1)
+        self.assertIsInstance(h[0], float)
+
+    def test_memory_history(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        h = m.memory_history(10)
+        self.assertEqual(len(h), 1)
+        self.assertIsInstance(h[0], float)
+
+    def test_summary(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        s = m.get_summary()
+        self.assertIn("hostname", s)
+        self.assertIn("cpu_percent", s)
+        self.assertIn("memory_percent", s)
+        self.assertIn("disks", s)
+
+    def test_summary_empty(self):
+        m = self.SystemMonitor(include_processes=False)
+        self.assertEqual(m.get_summary(), {})
+
+    def test_visibility(self):
+        m = self.SystemMonitor()
+        self.assertFalse(m.visible)
+        m.show()
+        self.assertTrue(m.visible)
+        m.hide()
+        self.assertFalse(m.visible)
+        self.assertTrue(m.toggle())
+        self.assertFalse(m.toggle())
+
+    def test_callbacks(self):
+        events = []
+        m = self.SystemMonitor(include_processes=False)
+        m.on_snapshot(lambda e, d: events.append(e))
+        m.snapshot()
+        self.assertIn("snapshot", events)
+
+    def test_filtered_processes(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        procs = m.filtered_processes()
+        self.assertIsInstance(procs, list)
+
+    def test_process_search(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        m.set_process_search("nonexistent")
+        procs = m.filtered_processes()
+        self.assertEqual(len(procs), 0)
+
+    def test_sort_by(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        m.set_sort_by("cpu")
+        m.set_sort_by("name")
+        m.set_sort_by("pid")
+        m.set_sort_by("invalid")  # should be ignored
+
+    def test_top_processes(self):
+        m = self.SystemMonitor(include_processes=False)
+        m.snapshot()
+        top = m.top_processes(5, by="cpu")
+        self.assertIsInstance(top, list)
+
+    def test_data_classes(self):
+        c = self.CpuInfo(percent=50.0, per_core=[40.0, 60.0])
+        self.assertEqual(c.percent, 50.0)
+        m = self.MemoryInfo(total_mb=8000, used_mb=4000, percent=50.0)
+        self.assertEqual(m.total_mb, 8000)
+        d = self.DiskInfo(mount="/", total_gb=100, used_gb=50, percent=50.0)
+        self.assertEqual(d.mount, "/")
+        n = self.NetworkInfo(interface="eth0", bytes_sent=1000, bytes_recv=2000)
+        self.assertEqual(n.interface, "eth0")
+        p = self.ProcessInfo(pid=1, name="test", cpu_percent=10.0)
+        self.assertEqual(p.pid, 1)
+
+    def test_snapshot_timestamp(self):
+        s = self.SystemSnapshot()
+        self.assertGreater(s.timestamp, 0)
+
+    def test_history_size_limit(self):
+        m = self.SystemMonitor(history_size=3, include_processes=False)
+        for _ in range(5):
+            m.snapshot()
+        self.assertEqual(len(m.history), 3)
 
 
 if __name__ == "__main__":

@@ -33,11 +33,19 @@ try:
 except ImportError:
     HAS_SDL2 = False
 
-try:
-    from PIL import Image
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
+# PIL imported lazily to avoid 5-15s import penalty in containers.
+HAS_PIL = False
+
+
+def _ensure_pil():
+    global HAS_PIL
+    try:
+        from PIL import Image as _Img  # noqa: F401
+        HAS_PIL = True
+        return True
+    except ImportError:
+        HAS_PIL = False
+        return False
 
 
 # ---- Theme definitions (mirrored from compositor.py) ---------------------
@@ -562,8 +570,9 @@ class SDLCompositor:
 
     def _surface_to_pil(self, surface, w: int, h: int):
         """Convert an SDL2 surface to a PIL Image."""
-        if not HAS_PIL:
+        if not _ensure_pil():
             raise ImportError("Pillow is required for surface_to_pil")
+        from PIL import Image as _PILImage
         import ctypes
         sdl2.SDL_LockSurface(surface)
         try:
@@ -571,7 +580,7 @@ class SDLCompositor:
             pitch = surface.contents.pitch
             buf = ctypes.string_at(ptr, pitch * h)
             # ARGB8888 in memory order (little-endian) = B, G, R, A
-            img = Image.frombytes("RGB", (w, h), buf, "raw", "BGRX", pitch)
+            img = _PILImage.frombytes("RGB", (w, h), buf, "raw", "BGRX", pitch)
         finally:
             sdl2.SDL_UnlockSurface(surface)
         return img

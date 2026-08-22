@@ -46,10 +46,28 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-try:
+# PIL imported lazily to avoid 5-15s import penalty in containers.
+_PIL_AVAILABLE: Optional[bool] = None
+
+
+def _ensure_pil():
+    global _PIL_AVAILABLE
+    if _PIL_AVAILABLE is not None:
+        if _PIL_AVAILABLE is False:
+            raise ImportError("PIL/Pillow is required: pip install Pillow")
+        return
+    try:
+        from PIL import Image as _Img  # noqa: F401
+        _PIL_AVAILABLE = True
+    except ImportError:
+        _PIL_AVAILABLE = False
+        raise ImportError("PIL/Pillow is required: pip install Pillow")
+
+
+def _pil():
+    _ensure_pil()
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    raise ImportError("PIL/Pillow is required: pip install Pillow")
+    return Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -689,6 +707,7 @@ class TextEditor:
         theme : dict, optional
             Color theme.  Defaults to Eclipse dark theme.
         """
+        Image, ImageDraw, ImageFont = _pil()
         if theme is None:
             theme = {
                 "background": (30, 30, 30),

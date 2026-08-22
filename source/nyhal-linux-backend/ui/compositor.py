@@ -16,13 +16,33 @@ References:
 - NFS-001 §4: component vocabulary
 """
 
+from __future__ import annotations
+
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
+# PIL imported lazily to avoid 5-15s import penalty in containers.
+_PIL_AVAILABLE: Optional[bool] = None
+
+
+def _ensure_pil():
+    global _PIL_AVAILABLE
+    if _PIL_AVAILABLE is not None:
+        if _PIL_AVAILABLE is False:
+            raise ImportError("PIL/Pillow is required: pip install Pillow")
+        return
+    try:
+        from PIL import Image as _Img  # noqa: F401
+        _PIL_AVAILABLE = True
+    except ImportError:
+        _PIL_AVAILABLE = False
+        raise ImportError("PIL/Pillow is required: pip install Pillow")
+
+
+def _pil():
+    _ensure_pil()
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    raise ImportError("PIL/Pillow is required: pip install Pillow")
+    return Image, ImageDraw, ImageFont
 
 
 # ---- Theme definitions (Eclipse / Solar) --------------------------------
@@ -86,7 +106,7 @@ class Compositor:
 
     # Class-level font cache: keyed by (family_path, size) to avoid
     # reloading TrueType files on every render_screen call.
-    _font_cache: Dict[Tuple[str, int], ImageFont.FreeTypeFont] = {}
+    _font_cache: Dict[Tuple[str, int], Any] = {}
 
     def __init__(
         self,
@@ -98,10 +118,11 @@ class Compositor:
         self.scale = scale
 
     @classmethod
-    def _get_font(cls, path: str, size: int) -> ImageFont.FreeTypeFont:
+    def _get_font(cls, path: str, size: int):
         """Return a cached font, loading from disk on first use."""
         key = (path, size)
         if key not in cls._font_cache:
+            _, _, ImageFont = _pil()
             try:
                 cls._font_cache[key] = ImageFont.truetype(path, size)
             except (OSError, IOError):
@@ -129,6 +150,7 @@ class Compositor:
         if screen is None:
             raise ValueError(f"Screen '{screen_id}' not found")
 
+        Image, ImageDraw, ImageFont = _pil()
         # Create the image
         w = int(screen.size.get("width", 1440) * self.scale)
         h = int(screen.size.get("height", 900) * self.scale)
