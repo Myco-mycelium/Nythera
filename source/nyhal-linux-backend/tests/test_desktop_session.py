@@ -2361,5 +2361,278 @@ class TestSystemMonitor(unittest.TestCase):
         self.assertEqual(len(m.history), 3)
 
 
+class TestNyforgeBridge(unittest.TestCase):
+    """Tests for NyforgeBridge — Nyforge ↔ Nyrqis integration."""
+
+    def _make_doc_json(self, windows=None, states=None, behaviors=None,
+                        bindings=None):
+        """Create a minimal .nstudio JSON dict."""
+        if windows is None:
+            windows = [{
+                'id': 'win-1', 'type': 'Window',
+                'layout': {'x': 100, 'y': 50, 'width': 600, 'height': 400},
+                'properties': {'title': 'Test Window'},
+            }]
+        return {
+            'version': '1.0.0',
+            'screens': [{
+                'id': 'desktop',
+                'size': {'width': 1920, 'height': 1080},
+                'root': {
+                    'id': 'root', 'type': 'DesktopSurface',
+                    'layout': {'x': 0, 'y': 0, 'width': 1920, 'height': 1080},
+                    'children': windows,
+                }
+            }],
+            'states': states or {},
+            'behaviors': behaviors or [],
+            'bindings': bindings or [],
+            'components': [],
+        }
+
+    def _make_session_and_bridge(self, doc_json=None):
+        """Create a DesktopSession and NyforgeBridge from JSON."""
+        from ui.nstudio import loads
+        from ui.desktop_session import DesktopSession
+        from ui.nyforge_bridge import NyforgeBridge
+        if doc_json is None:
+            doc_json = self._make_doc_json()
+        doc = loads(json.dumps(doc_json))
+        session = DesktopSession(doc)
+        bridge = NyforgeBridge(session)
+        return session, bridge
+
+    def test_load_json_single_window(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        result = bridge.load_json(json.dumps(doc_json))
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['windows_created'], 1)
+        self.assertEqual(len(bridge.mapped_windows), 1)
+        self.assertIn('win-1', bridge.mapped_windows)
+
+    def test_load_json_geometry(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        bridge.load_json(json.dumps(doc_json))
+        mapped = bridge.mapped_windows['win-1']
+        self.assertEqual(mapped.x, 100)
+        self.assertEqual(mapped.y, 50)
+        self.assertEqual(mapped.width, 600)
+        self.assertEqual(mapped.height, 400)
+        self.assertEqual(mapped.title, 'Test Window')
+
+    def test_load_json_role_detection(self):
+        """A Window with 'taskbar' in the title gets the taskbar role."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(windows=[{
+            'id': 'taskbar', 'type': 'Window',
+            'layout': {'x': 0, 'y': 1030, 'width': 1920, 'height': 50},
+            'properties': {'title': 'Taskbar'},
+        }])
+        bridge.load_json(json.dumps(doc_json))
+        mapped = bridge.mapped_windows['taskbar']
+        self.assertEqual(mapped.role, 'taskbar')
+
+    def test_load_json_multiple_windows(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(windows=[
+            {'id': 'w1', 'type': 'Window',
+             'layout': {'x': 10, 'y': 10, 'width': 300, 'height': 200},
+             'properties': {'title': 'First'}},
+            {'id': 'w2', 'type': 'Window',
+             'layout': {'x': 200, 'y': 100, 'width': 400, 'height': 300},
+             'properties': {'title': 'Second'}},
+        ])
+        result = bridge.load_json(json.dumps(doc_json))
+        self.assertEqual(result['windows_created'], 2)
+        self.assertEqual(len(bridge.mapped_windows), 2)
+
+    def test_load_json_invisible_window(self):
+        """A window with no visibility property defaults to visible."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(windows=[{
+            'id': 'win-a', 'type': 'Window',
+            'layout': {'x': 0, 'y': 0, 'width': 300, 'height': 200},
+            'properties': {'title': 'A'},
+        }])
+        bridge.load_json(json.dumps(doc_json))
+        mapped = bridge.mapped_windows['win-a']
+        self.assertTrue(mapped.visible)
+        self.assertEqual(mapped.width, 300)
+        self.assertEqual(mapped.height, 200)
+
+    def test_load_json_invalid_json(self):
+        session, bridge = self._make_session_and_bridge()
+        result = bridge.load_json('not valid json {{{')
+        self.assertFalse(result['ok'])
+        self.assertIn('error', result)
+        self.assertEqual(result['windows_created'], 0)
+
+    def test_load_document_from_file(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.nstudio',
+                                         delete=False) as f:
+            json.dump(doc_json, f)
+            tmppath = f.name
+        try:
+            result = bridge.load_document(tmppath)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['windows_created'], 1)
+            self.assertEqual(bridge.doc_path, os.path.abspath(tmppath))
+            self.assertIsNotNone(bridge.doc_hash)
+        finally:
+            os.unlink(tmppath)
+
+    def test_load_document_file_not_found(self):
+        session, bridge = self._make_session_and_bridge()
+        result = bridge.load_document('/nonexistent/file.nstudio')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['windows_created'], 0)
+
+    def test_summary(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        bridge.load_json(json.dumps(doc_json))
+        summary = bridge.summary()
+        self.assertEqual(summary['mapped_windows'], 1)
+        self.assertIn('win-1', summary['windows'])
+        w = summary['windows']['win-1']
+        self.assertEqual(w['role'], 'generic')
+        self.assertIn('Test Window', w['title'])
+
+    def test_refresh_unchanged(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        bridge.load_json(json.dumps(doc_json))
+        old_hash = bridge.doc_hash
+        # Refresh without file path returns error
+        result = bridge.refresh()
+        self.assertFalse(result['ok'])
+        self.assertIn('error', result)
+
+    def test_unmap_all(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(windows=[
+            {'id': 'a', 'type': 'Window',
+             'layout': {'x': 0, 'y': 0, 'width': 300, 'height': 200},
+             'properties': {'title': 'A'}},
+            {'id': 'b', 'type': 'Window',
+             'layout': {'x': 10, 'y': 10, 'width': 300, 'height': 200},
+             'properties': {'title': 'B'}},
+        ])
+        bridge.load_json(json.dumps(doc_json))
+        self.assertEqual(len(bridge.mapped_windows), 2)
+        bridge.unmap_all()
+        self.assertEqual(len(bridge.mapped_windows), 0)
+
+    def test_hot_reload_lifecycle(self):
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.nstudio',
+                                         delete=False) as f:
+            json.dump(doc_json, f)
+            tmppath = f.name
+        try:
+            bridge.load_document(tmppath)
+            self.assertFalse(bridge.is_hot_reload_active)
+            # Enable hot reload
+            bridge.enable_hot_reload(interval=0.1)
+            self.assertTrue(bridge.is_hot_reload_active)
+            # Disable
+            bridge.disable_hot_reload()
+            self.assertFalse(bridge.is_hot_reload_active)
+        finally:
+            bridge.disable_hot_reload()
+            os.unlink(tmppath)
+
+    def test_hot_reload_no_doc(self):
+        session, bridge = self._make_session_and_bridge()
+        with self.assertRaises(ValueError):
+            bridge.enable_hot_reload()
+
+    def test_event_callbacks(self):
+        session, bridge = self._make_session_and_bridge()
+        events = []
+        bridge.on_event(lambda e, d: events.append((e, d)))
+        # Trigger unmap_all which fires a notification
+        bridge.unmap_all()
+        self.assertTrue(any(e == 'unmap_all' for e, _ in events))
+
+    def test_wiring_behaviors(self):
+        """Behaviors with matching target should be wired."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(
+            behaviors=[{
+                'id': 'b1',
+                'condition': None,
+                'action': {
+                    'target': 'win-1',
+                    'name': 'Close',
+                    'arguments': {},
+                },
+            }]
+        )
+        result = bridge.load_json(json.dumps(doc_json))
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['behaviors_wired'], 1)
+
+    def test_wiring_behaviors_no_match(self):
+        """Behaviors with non-matching action name are not wired."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(
+            behaviors=[{
+                'id': 'b1',
+                'condition': None,
+                'action': {
+                    'target': 'win-1',
+                    'name': 'Close',
+                    'arguments': {},
+                },
+            }]
+        )
+        result = bridge.load_json(json.dumps(doc_json))
+        # The bridge wired it (Close maps to close_window)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['behaviors_wired'], 1)
+
+    def test_wiring_behaviors_system_target(self):
+        """System-target behaviors are skipped by the bridge."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(
+            behaviors=[{
+                'id': 'b1',
+                'condition': None,
+                'action': {
+                    'target': 'System',
+                    'name': 'Nyrqis.Notification.Show',
+                    'arguments': {'title': 'hi', 'message': 'test'},
+                },
+            }]
+        )
+        result = bridge.load_json(json.dumps(doc_json))
+        self.assertTrue(result['ok'])
+        # System targets are not in _mapped, so wired=0
+        self.assertEqual(result['behaviors_wired'], 0)
+
+    def test_apply_bindings(self):
+        """Bindings that match mapped windows should update properties."""
+        session, bridge = self._make_session_and_bridge()
+        doc_json = self._make_doc_json(
+            states={'title': 'Dynamic Title'},
+            bindings=[{
+                'component': 'win-1',
+                'property': 'title',
+                'state': 'title',
+            }]
+        )
+        result = bridge.load_json(json.dumps(doc_json))
+        self.assertEqual(result['bindings_applied'], 1)
+        # Check the window title was updated
+        win = [w for w in session.windows if w.id == bridge.mapped_windows['win-1'].window_id][0]
+        self.assertEqual(win.title, 'Dynamic Title')
+
+
 if __name__ == "__main__":
     unittest.main()
