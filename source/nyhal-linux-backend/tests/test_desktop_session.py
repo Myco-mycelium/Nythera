@@ -22,6 +22,13 @@ from ui.desktop_session import (
     Window,
 )
 
+# NyApp packager imports
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from tools.nyapp import (
+    NyAppPackager, build_napp, parse_napp, validate_napp,
+    compile_source, OP_HALT, OP_LOG, OP_SET_STATE,
+)
+
 
 def _make_doc(
     screens=None,
@@ -2753,6 +2760,108 @@ class TestNyrqisDesktopShell(unittest.TestCase):
         self.assertTrue(result)
         result = shell.toggle_start_menu()
         self.assertFalse(result)
+
+
+class TestNyAppPackager(unittest.TestCase):
+    """Tests for the NyApp packager."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="nyapp-test-")
+        self.packager = NyAppPackager(app_dir=self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_build_default(self):
+        """Build a minimal .napp with defaults."""
+        napp = self.packager.build(name="test-app", output=os.path.join(self.tmpdir, "test.napp"))
+        self.assertIsInstance(napp, bytes)
+        self.assertTrue(napp.startswith(b"NYAP"))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "test.napp")))
+
+    def test_build_from_source(self):
+        """Build a .napp from Python source."""
+        src_path = os.path.join(self.tmpdir, "hello.py")
+        with open(src_path, "w") as f:
+            f.write('print("hello")\n')
+        napp = self.packager.build(name="hello", source=src_path)
+        parsed = parse_napp(napp)
+        self.assertEqual(parsed["manifest"]["name"], "hello")
+        self.assertGreater(len(parsed["code"]), 0)
+
+    def test_parse_napp(self):
+        """Parse a .napp binary."""
+        napp = self.packager.build(name="parse-test")
+        parsed = parse_napp(napp)
+        self.assertEqual(parsed["version"], 1)
+        self.assertEqual(parsed["manifest"]["name"], "parse-test")
+        self.assertIn("code", parsed)
+        self.assertIn("data", parsed)
+
+    def test_validate_napp(self):
+        """Validate a .napp binary."""
+        napp = self.packager.build(name="validate-test")
+        issues = validate_napp(napp)
+        self.assertEqual(len(issues), 0)
+
+    def test_validate_bad_magic(self):
+        """Validate rejects bad magic bytes."""
+        issues = validate_napp(b"XXXX")
+        self.assertGreater(len(issues), 0)
+
+    def test_inspect(self):
+        """Inspect a .napp package."""
+        napp = self.packager.build(name="inspect-test")
+        path = os.path.join(self.tmpdir, "inspect.napp")
+        with open(path, "wb") as f:
+            f.write(napp)
+        result = self.packager.inspect(path)
+        self.assertEqual(result["manifest"]["name"], "inspect-test")
+        self.assertIn("disassembly", result)
+        self.assertIsInstance(result["disassembly"], list)
+
+    def test_run_python_backend(self):
+        """Run a .napp using the Python interpreter."""
+        napp = self.packager.build(name="run-test")
+        path = os.path.join(self.tmpdir, "run.napp")
+        with open(path, "wb") as f:
+            f.write(napp)
+        result = self.packager.run(path)
+        self.assertIn("exit_code", result)
+        self.assertIn("backend", result)
+        self.assertIn(result["backend"], ("rust", "python"))
+
+    def test_install_and_list(self):
+        """Install a .napp and list it."""
+        napp = self.packager.build(name="install-test", version="2.0.0", description="A test")
+        path = os.path.join(self.tmpdir, "install.napp")
+        with open(path, "wb") as f:
+            f.write(napp)
+        dest = self.packager.install(path)
+        self.assertTrue(os.path.exists(dest))
+        apps = self.packager.list_installed()
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["name"], "install-test")
+        self.assertEqual(apps[0]["version"], "2.0.0")
+
+    def test_compile_print(self):
+        """Compile a print statement to opcodes."""
+        code, data = compile_source('print("hello")', 'test')
+        self.assertGreater(len(code), 0)
+        self.assertEqual(code[0], OP_LOG)
+
+    def test_compile_state(self):
+        """Compile a state assignment to opcodes."""
+        code, data = compile_source('state["key"] = "value"', 'test')
+        self.assertGreater(len(code), 0)
+        self.assertEqual(code[0], OP_SET_STATE)
+
+    def test_compile_halt(self):
+        """Compiled source should end with HALT."""
+        code, data = compile_source('print("x")', 'test')
+        self.assertEqual(code[-2], OP_HALT)
+
 
 
 if __name__ == "__main__":
