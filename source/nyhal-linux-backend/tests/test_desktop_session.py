@@ -2634,5 +2634,126 @@ class TestNyforgeBridge(unittest.TestCase):
         self.assertEqual(win.title, 'Dynamic Title')
 
 
+class TestNyrqisDesktopShell(unittest.TestCase):
+    """Tests for the Nyrqis Desktop Shell."""
+
+    def test_shell_creation(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell(width=1920, height=1080, theme='Eclipse')
+        self.assertEqual(shell.theme, 'Eclipse')
+        self.assertGreater(len(shell.apps), 0)
+        self.assertIsNotNone(shell.session)
+
+    def test_shell_summary(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        s = shell.summary()
+        self.assertEqual(s['display'], '1920x1080')
+        self.assertEqual(s['theme'], 'Eclipse')
+        self.assertIn('windows', s)
+        self.assertIn('apps', s)
+
+    def test_open_app(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        wid = shell.open_app('terminal')
+        self.assertIsNotNone(wid)
+        self.assertEqual(len(shell.session.windows), 1)
+        self.assertEqual(shell.session.windows[0].title, '💻 Terminal')
+
+    def test_open_unknown_app(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        wid = shell.open_app('nonexistent')
+        self.assertIsNone(wid)
+
+    def test_open_multiple_apps(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        shell.open_app('terminal')
+        shell.open_app('settings')
+        shell.open_app('calculator')
+        self.assertEqual(len(shell.session.windows), 3)
+        self.assertEqual(shell._launch_count, 3)
+
+    def test_search_start_menu(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        results = shell.search_start_menu('calc')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, 'Calculator')
+
+    def test_search_start_menu_empty(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        results = shell.search_start_menu('')
+        self.assertEqual(len(results), len(shell.apps))
+
+    def test_pinned_apps(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        pinned = shell.get_pinned_apps()
+        self.assertGreater(len(pinned), 0)
+        for app in pinned:
+            self.assertTrue(app.pinned)
+
+    def test_apps_by_category(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        system_apps = shell.get_apps_by_category('System')
+        self.assertGreater(len(system_apps), 0)
+        for app in system_apps:
+            self.assertEqual(app.category, 'System')
+
+    def test_theme_switch(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell(theme='Eclipse')
+        self.assertEqual(shell.theme, 'Eclipse')
+        shell.theme = 'Solar'
+        self.assertEqual(shell.theme, 'Solar')
+        self.assertEqual(shell.session.document.themes['active'], 'Solar')
+
+    def test_build_shell_document(self):
+        from examples.nyrqis_shell import build_shell_document
+        import json
+        doc_json = build_shell_document(width=1920, height=1080)
+        doc = json.loads(doc_json)
+        self.assertEqual(doc['version'], '1.0.0')
+        self.assertEqual(len(doc['screens']), 1)
+        self.assertEqual(doc['screens'][0]['size']['width'], 1920)
+        self.assertIn('states', doc)
+        self.assertIn('behaviors', doc)
+        self.assertIn('bindings', doc)
+
+    def test_shell_uptime(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        import time
+        shell = NyrqisDesktopShell()
+        time.sleep(0.01)
+        self.assertGreater(shell.uptime, 0)
+
+    def test_shell_render(self):
+        """Shell render should return an image (or None if PIL unavailable)."""
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        img = shell.render()
+        # render returns PIL Image or None
+        self.assertTrue(img is None or hasattr(img, 'save'))
+
+    def test_open_file(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        wid = shell.open_file('/tmp/test.py')
+        self.assertIsNotNone(wid)
+
+    def test_start_menu_toggle(self):
+        from examples.nyrqis_shell import NyrqisDesktopShell
+        shell = NyrqisDesktopShell()
+        result = shell.toggle_start_menu()
+        self.assertTrue(result)
+        result = shell.toggle_start_menu()
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

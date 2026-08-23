@@ -1,0 +1,325 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "Nyrqis Desktop Shell",
+    "id": "nyrqis-shell",
+    "description": "The complete Nyrqis desktop environment — taskbar, start menu, notification center, quick settings, workspace switcher, system tray, and all built-in applications."
+  },
+  "themes": {
+    "active": "Eclipse",
+    "available": ["Eclipse", "Solar"]
+  },
+  "states": {
+    "volume": 75,
+    "brightness": 100,
+    "theme": "Eclipse",
+    "wifi": true,
+    "bluetooth": false,
+    "doNotDisturb": false,
+    "sidebarExpanded": true,
+    "startMenuOpen": false,
+    "spotlightOpen": false,
+    "lockScreenActive": false,
+    "activeWorkspace": 0,
+    "notificationCount": 0
+  },
+  "state_scopes": {
+    "global": {},
+    "session": {
+      "user": "zeus"
+    },
+    "persistent": {
+      "sidebarWidth": 240,
+      "taskbarHeight": 48,
+      "wallpaper": "default"
+    }
+  },
+  "locales": {
+    "active": "en",
+    "tables": {
+      "en": {
+        "shell.taskbar": "Taskbar",
+        "shell.startMenu": "Start Menu",
+        "shell.settings": "Settings",
+        "shell.files": "Files",
+        "shell.terminal": "Terminal",
+        "shell.lock": "Lock Screen",
+        "shell.power": "Power",
+        "shell.search": "Search",
+        "shell.notifications": "Notifications",
+        "shell.quickSettings": "Quick Settings",
+        "shell.workspace": "Workspace"
+      }
+    }
+  },
+  "resources": {
+    "assets": []
+  },
+  "animations": [
+    {
+      "id": "startMenuOpen",
+      "target": "start-menu",
+      "property": "opacity",
+      "duration": 200,
+      "delay": 0,
+      "easing": "ease-out",
+      "repeat": 0,
+      "direction": "forward",
+      "keyframes": [
+        {"offset": 0.0, "value": 0},
+        {"offset": 1.0, "value": 1}
+      ]
+    },
+    {
+      "id": "startMenuClose",
+      "target": "start-menu",
+      "property": "opacity",
+      "duration": 150,
+      "delay": 0,
+      "easing": "ease-in",
+      "repeat": 0,
+      "direction": "forward",
+      "keyframes": [
+        {"offset": 0.0, "value": 1},
+        {"offset": 1.0, "value": 0}
+      ]
+    },
+    {
+      "id": "spotlightOpen",
+      "target": "spotlight",
+      "property": "y",
+      "duration": 200,
+      "delay": 0,
+      "easing": "ease-out",
+      "repeat": 0,
+      "direction": "forward",
+      "keyframes": [
+        {"offset": 0.0, "value": -20},
+        {"offset": 1.0, "value": 0}
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "desktop",
+      "size": {"width": 1920, "height": 1080},
+      "root": {
+        "id": "desktop-root",
+        "type": "DesktopSurface",
+        "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+        "properties": {},
+        "children": [
+          {
+            "id": "taskbar",
+            "type": "Taskbar",
+            "layout": {"x": 0, "y": 1032, "width": 1920, "height": 48},
+            "properties": {
+              "position": "bottom",
+              "alignment": "left",
+              "showClock": true,
+              "showTray": true,
+              "showStartButton": true,
+              "showSearch": true,
+              "showTaskView": true
+            },
+            "children": [
+              {
+                "id": "taskbar-start",
+                "type": "Button",
+                "layout": {"x": 4, "y": 4, "width": 40, "height": 40},
+                "properties": {"text": "⊞", "tooltip": "Start Menu"}
+              },
+              {
+                "id": "taskbar-search",
+                "type": "SearchBox",
+                "layout": {"x": 52, "y": 8, "width": 240, "height": 32},
+                "properties": {"placeholder": "Search apps, files, settings..."}
+              },
+              {
+                "id": "taskbar-task-view",
+                "type": "Button",
+                "layout": {"x": 300, "y": 4, "width": 40, "height": 40},
+                "properties": {"text": "▦", "tooltip": "Task View"}
+              },
+              {
+                "id": "taskbar-pinned-apps",
+                "type": "Stack",
+                "layout": {"x": 348, "y": 4, "width": 1200, "height": 40},
+                "properties": {"direction": "horizontal", "spacing": 4}
+              },
+              {
+                "id": "taskbar-tray",
+                "type": "SystemTray",
+                "layout": {"x": 1700, "y": 4, "width": 216, "height": 40},
+                "properties": {"showClock": true, "showVolume": true, "showNetwork": true}
+              }
+            ]
+          },
+          {
+            "id": "start-menu",
+            "type": "StartMenu",
+            "layout": {"x": 0, "y": 700, "width": 600, "height": 332},
+            "properties": {
+              "visible": false,
+              "searchPlaceholder": "Type to search...",
+              "showCategories": true,
+              "showPinned": true,
+              "showRecent": true
+            },
+            "children": [
+              {
+                "id": "start-menu-search",
+                "type": "SearchBox",
+                "layout": {"x": 16, "y": 16, "width": 568, "height": 40},
+                "properties": {"placeholder": "Type to search..."}
+              },
+              {
+                "id": "start-menu-pinned",
+                "type": "Container",
+                "layout": {"x": 16, "y": 64, "width": 568, "height": 180},
+                "properties": {"title": "Pinned"}
+              },
+              {
+                "id": "start-menu-recommended",
+                "type": "Container",
+                "layout": {"x": 16, "y": 252, "width": 568, "height": 64},
+                "properties": {"title": "Recommended"}
+              }
+            ]
+          },
+          {
+            "id": "spotlight",
+            "type": "SearchBox",
+            "layout": {"x": 660, "y": 200, "width": 600, "height": 60},
+            "properties": {
+              "visible": false,
+              "placeholder": "Search everything...",
+              "mode": "overlay"
+            }
+          },
+          {
+            "id": "notification-center",
+            "type": "NotificationCenter",
+            "layout": {"x": 1520, "y": 60, "width": 400, "height": 972},
+            "properties": {
+              "visible": false,
+              "showQuickSettings": true,
+              "showNotifications": true,
+              "showCalendar": true
+            },
+            "children": [
+              {
+                "id": "quick-settings",
+                "type": "QuickSettings",
+                "layout": {"x": 16, "y": 16, "width": 368, "height": 120},
+                "properties": {
+                  "showWifi": true,
+                  "showBluetooth": true,
+                  "showBrightness": true,
+                  "showVolume": true,
+                  "showDoNotDisturb": true
+                }
+              },
+              {
+                "id": "notification-list",
+                "type": "Container",
+                "layout": {"x": 16, "y": 148, "width": 368, "height": 800},
+                "properties": {"title": "Notifications"}
+              }
+            ]
+          },
+          {
+            "id": "power-menu",
+            "type": "PowerMenu",
+            "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+            "properties": {
+              "visible": false,
+              "showShutdown": true,
+              "showRestart": true,
+              "showSleep": true,
+              "showLogout": true,
+              "showLock": true
+            }
+          },
+          {
+            "id": "lock-screen",
+            "type": "LockScreen",
+            "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+            "properties": {
+              "visible": false,
+              "showClock": true,
+              "showDate": true,
+              "unlockMethod": "swipe",
+              "autoLockTimeout": 300
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "behaviors": [
+    {
+      "id": "toggle-start-menu",
+      "condition": null,
+      "action": {
+        "target": "start-menu",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "toggle-spotlight",
+      "condition": null,
+      "action": {
+        "target": "spotlight",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "toggle-notification-center",
+      "condition": null,
+      "action": {
+        "target": "notification-center",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "close-power-menu",
+      "condition": null,
+      "action": {
+        "target": "power-menu",
+        "name": "Close",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "close-lock-screen",
+      "condition": null,
+      "action": {
+        "target": "lock-screen",
+        "name": "Close",
+        "arguments": {}
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "component": "start-menu",
+      "property": "visible",
+      "state": "startMenuOpen"
+    },
+    {
+      "component": "spotlight",
+      "property": "visible",
+      "state": "spotlightOpen"
+    },
+    {
+      "component": "lock-screen",
+      "property": "visible",
+      "state": "lockScreenActive"
+    }
+  ],
+  "components": []
+}
