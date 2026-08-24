@@ -2863,6 +2863,282 @@ class TestNyAppPackager(unittest.TestCase):
         self.assertEqual(code[-2], OP_HALT)
 
 
+# ---------------------------------------------------------------------------
+# Command system (undo/redo)
+# ---------------------------------------------------------------------------
+
+class TestCommandSystem(unittest.TestCase):
+    """Tests for the undo/redo command system."""
+
+    def setUp(self):
+        from ui.commands import (
+            UndoManager, AddWindowCommand, RemoveWindowCommand,
+            MoveWindowCommand, ResizeWindowCommand, FocusWindowCommand,
+            MinimizeWindowCommand, MaximizeWindowCommand,
+            ChangePropertyCommand, ChangeThemeCommand, Transaction,
+        )
+        self.UndoManager = UndoManager
+        self.AddWindowCommand = AddWindowCommand
+        self.RemoveWindowCommand = RemoveWindowCommand
+        self.MoveWindowCommand = MoveWindowCommand
+        self.ResizeWindowCommand = ResizeWindowCommand
+        self.FocusWindowCommand = FocusWindowCommand
+        self.MinimizeWindowCommand = MinimizeWindowCommand
+        self.MaximizeWindowCommand = MaximizeWindowCommand
+        self.ChangePropertyCommand = ChangePropertyCommand
+        self.ChangeThemeCommand = ChangeThemeCommand
+        self.Transaction = Transaction
+        self.doc = loads(json.dumps({
+            'version': '1.0.0',
+            'project': {'id': 'test'},
+            'themes': {'active': 'Eclipse'},
+            'states': {},
+            'screens': [{
+                'id': 'screen-1',
+                'size': {'width': 1920, 'height': 1080},
+                'root': {
+                    'id': 'root', 'type': 'DesktopSurface',
+                    'layout': {'x': 0, 'y': 0, 'width': 1920, 'height': 1080},
+                    'children': [],
+                },
+            }],
+        }))
+        from ui.commands import install_undo
+        self.session = DesktopSession(self.doc)
+        install_undo(self.session)
+
+    def _add_window(self, win_id='win-1', title='Test'):
+        from ui.desktop_session import Window
+        win = Window(id=win_id, component_id=win_id, title=title,
+                     x=100, y=100, width=600, height=400)
+        cmd = self.AddWindowCommand(self.session, win)
+        self.session.execute(cmd)
+        return win
+
+    def test_undo_manager_basic(self):
+        mgr = self.UndoManager()
+        self.assertFalse(mgr.can_undo)
+        self.assertFalse(mgr.can_redo)
+        self.assertIsNone(mgr.undo())
+        self.assertIsNone(mgr.redo())
+
+    def test_add_window_undo(self):
+        self._add_window()
+        self.assertEqual(len(self.session.windows), 1)
+        result = self.session.undo()
+        self.assertIsNotNone(result)
+        self.assertEqual(len(self.session.windows), 0)
+
+    def test_add_window_redo(self):
+        self._add_window()
+        self.session.undo()
+        self.assertEqual(len(self.session.windows), 0)
+        self.session.redo()
+        self.assertEqual(len(self.session.windows), 1)
+
+    def test_remove_window_undo(self):
+        self._add_window()
+        cmd = self.RemoveWindowCommand(self.session, 'win-1')
+        self.session.execute(cmd)
+        self.assertEqual(len(self.session.windows), 0)
+        self.session.undo()
+        self.assertEqual(len(self.session.windows), 1)
+
+    def test_move_window_undo(self):
+        self._add_window()
+        cmd = self.MoveWindowCommand(self.session, 'win-1', x=200, y=300)
+        self.session.execute(cmd)
+        win = self.session.windows[0]
+        self.assertEqual(win.x, 200)
+        self.assertEqual(win.y, 300)
+        self.session.undo()
+        self.assertEqual(win.x, 100)
+        self.assertEqual(win.y, 100)
+
+    def test_resize_window_undo(self):
+        self._add_window()
+        cmd = self.ResizeWindowCommand(self.session, 'win-1', width=800, height=600)
+        self.session.execute(cmd)
+        win = self.session.windows[0]
+        self.assertEqual(win.width, 800)
+        self.assertEqual(win.height, 600)
+        self.session.undo()
+        self.assertEqual(win.width, 600)
+        self.assertEqual(win.height, 400)
+
+    def test_minimize_window_undo(self):
+        self._add_window()
+        cmd = self.MinimizeWindowCommand(self.session, 'win-1')
+        self.session.execute(cmd)
+        win = self.session.windows[0]
+        self.assertTrue(win.minimized)
+        self.session.undo()
+        self.assertFalse(win.minimized)
+
+    def test_maximize_window_undo(self):
+        self._add_window()
+        cmd = self.MaximizeWindowCommand(self.session, 'win-1')
+        self.session.execute(cmd)
+        win = self.session.windows[0]
+        self.assertTrue(win.maximized)
+        self.session.undo()
+        self.assertFalse(win.maximized)
+
+    def test_change_property_undo(self):
+        # Use a component that exists in the document tree
+        comp = self.doc.find_component('root')
+        self.assertIsNotNone(comp)
+        cmd = self.ChangePropertyCommand(self.session, 'root', 'title', 'New Title')
+        self.session.execute(cmd)
+        self.assertEqual(comp.properties['title'], 'New Title')
+        self.session.undo()
+        self.assertNotEqual(comp.properties.get('title'), 'New Title')
+
+    def test_change_theme_undo(self):
+        cmd = self.ChangeThemeCommand(self.session, 'Solar')
+        self.session.execute(cmd)
+        self.assertEqual(self.doc.themes['active'], 'Solar')
+        self.session.undo()
+        self.assertEqual(self.doc.themes['active'], 'Eclipse')
+
+    def test_transaction_undo(self):
+        self._add_window()
+        txn = self.Transaction('move window')
+        txn.add(self.MoveWindowCommand(self.session, 'win-1', x=200, y=300))
+        txn.add(self.ChangeThemeCommand(self.session, 'Solar'))
+        self.session.execute(txn)
+        win = self.session.windows[0]
+        self.assertEqual(win.x, 200)
+        self.assertEqual(self.doc.themes['active'], 'Solar')
+        self.session.undo()
+        self.assertEqual(win.x, 100)
+        self.assertEqual(self.doc.themes['active'], 'Eclipse')
+
+    def test_undo_stack_depth(self):
+        mgr = self.UndoManager(max_depth=3)
+        from ui.desktop_session import Window
+        for i in range(5):
+            win = Window(id=f'w-{i}', component_id=f'w-{i}', title=f'W{i}')
+            cmd = self.AddWindowCommand(self.session, win)
+            mgr.push(cmd)
+        self.assertEqual(mgr.undo_depth, 3)  # trimmed
+        self.assertEqual(mgr.redo_depth, 0)
+
+    def test_new_action_clears_redo(self):
+        self._add_window()
+        self.session.undo()
+        self.assertTrue(self.session._undo_manager.can_redo)
+        self._add_window()
+        self.assertFalse(self.session._undo_manager.can_redo)
+
+    def test_undo_manager_summary(self):
+        self._add_window()
+        summary = self.session._undo_manager.summary()
+        self.assertTrue(summary['can_undo'])
+        self.assertFalse(summary['can_redo'])
+        self.assertEqual(summary['undo_depth'], 1)
+
+    def test_install_undo(self):
+        from ui.commands import install_undo
+        session = DesktopSession(self.doc)
+        mgr = install_undo(session)
+        self.assertIsNotNone(mgr)
+        self.assertTrue(hasattr(session, 'execute'))
+        self.assertTrue(hasattr(session, 'undo'))
+        self.assertTrue(hasattr(session, 'redo'))
+
+    def test_focus_window_undo(self):
+        w1 = self._add_window('w1', 'First')
+        w2 = self._add_window('w2', 'Second')
+        # Second window is focused
+        self.assertEqual(self.session.focused_window.id, 'w2')
+        cmd = self.FocusWindowCommand(self.session, 'w1')
+        self.session.execute(cmd)
+        self.assertEqual(self.session.focused_window.id, 'w1')
+        self.session.undo()
+        self.assertEqual(self.session.focused_window.id, 'w2')
+
+    def test_redo_reapply(self):
+        self._add_window()
+        cmd = self.MoveWindowCommand(self.session, 'win-1', x=500, y=500)
+        self.session.execute(cmd)
+        self.session.undo()
+        self.session.redo()
+        win = self.session.windows[0]
+        self.assertEqual(win.x, 500)
+        self.assertEqual(win.y, 500)
+
+    def test_clear_stacks(self):
+        self._add_window()
+        mgr = self.session._undo_manager
+        self.assertTrue(mgr.can_undo)
+        mgr.clear()
+        self.assertFalse(mgr.can_undo)
+        self.assertFalse(mgr.can_redo)
+
+
+# ---------------------------------------------------------------------------
+# Apple Compositor
+# ---------------------------------------------------------------------------
+
+class TestAppleCompositor(unittest.TestCase):
+    """Tests for the Apple-quality compositor."""
+
+    def setUp(self):
+        self.doc = loads(json.dumps({
+            'version': '1.0.0',
+            'project': {'id': 'test'},
+            'themes': {'active': 'Eclipse'},
+            'states': {},
+            'screens': [{
+                'id': 'screen-1',
+                'size': {'width': 1920, 'height': 1080},
+                'root': {
+                    'id': 'root', 'type': 'DesktopSurface',
+                    'layout': {'x': 0, 'y': 0, 'width': 1920, 'height': 1080},
+                    'children': [],
+                },
+            }],
+        }))
+
+    def test_import(self):
+        from ui.apple_compositor import AppleCompositor
+        comp = AppleCompositor()
+        self.assertIsNotNone(comp)
+
+    def test_dark_mode_colors(self):
+        from ui.apple_compositor import AppleCompositor, APPLE_COLORS_DARK
+        comp = AppleCompositor(dark_mode=True)
+        self.assertEqual(comp.colors, APPLE_COLORS_DARK)
+        self.assertEqual(comp._c('accent'), (10, 132, 255))
+
+    def test_light_mode_colors(self):
+        from ui.apple_compositor import AppleCompositor, APPLE_COLORS_LIGHT
+        comp = AppleCompositor(dark_mode=False)
+        self.assertEqual(comp.colors, APPLE_COLORS_LIGHT)
+        self.assertEqual(comp._c('accent'), (0, 122, 255))
+
+    def test_render_document(self):
+        """Render a simple document with the Apple compositor."""
+        from ui.apple_compositor import AppleCompositor
+        comp = AppleCompositor(dark_mode=True)
+        img = comp.render_document(self.doc)
+        self.assertIsNotNone(img)
+        self.assertEqual(img.size, (1920, 1080))
+
+    def test_color_helper(self):
+        from ui.apple_compositor import AppleCompositor
+        comp = AppleCompositor(dark_mode=True)
+        self.assertEqual(comp._c('text_primary'), (255, 255, 255))
+        self.assertEqual(comp._c('close_btn'), (255, 69, 58))
+        self.assertEqual(comp._c('nonexistent'), (128, 128, 128))
+
+    def test_scale_factor(self):
+        from ui.apple_compositor import AppleCompositor
+        comp = AppleCompositor(dark_mode=True, scale=2.0)
+        img = comp.render_document(self.doc)
+        self.assertEqual(img.size, (3840, 2160))
+
 
 if __name__ == "__main__":
     unittest.main()
