@@ -503,11 +503,21 @@ class UndoManager:
 def install_undo(session: Any, max_depth: int = 100) -> UndoManager:
     """Attach an UndoManager to a DesktopSession.
 
-    Monkey-patches the session with ``execute()``, ``undo()``,
-    ``redo()``, and ``undo_manager`` properties.
+    Sets ``session._undo_manager`` so the built-in ``undo_manager``,
+    ``execute()``, ``undo()``, and ``redo()`` methods work.  If the
+    session class does not already provide those, it also monkey-patches
+    them as a fallback.
     """
     manager = UndoManager(max_depth=max_depth)
+    session._undo_manager = manager
 
+    # If the session class already provides undo support (e.g.
+    # DesktopSession), we're done.
+    if hasattr(type(session), 'undo_manager') and isinstance(
+        getattr(type(session), 'undo_manager'), property):
+        return manager
+
+    # Fallback: monkey-patch for plain objects.
     def execute(cmd: Command) -> None:
         manager.push(cmd)
 
@@ -517,7 +527,6 @@ def install_undo(session: Any, max_depth: int = 100) -> UndoManager:
     def redo() -> Optional[Command]:
         return manager.redo()
 
-    session._undo_manager = manager
     session.execute = execute  # type: ignore[attr-defined]
     session.undo = undo  # type: ignore[attr-defined]
     session.redo = redo  # type: ignore[attr-defined]

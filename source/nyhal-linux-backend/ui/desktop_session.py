@@ -44,6 +44,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .nstudio import NstudioComponent, NstudioDocument, NstudioValidationError
 from .runtime import NyrqisRuntime
+from .commands import (
+    UndoManager, Command,
+    AddWindowCommand, RemoveWindowCommand, MoveWindowCommand,
+    ResizeWindowCommand, FocusWindowCommand, MinimizeWindowCommand,
+    MaximizeWindowCommand, ChangePropertyCommand, ChangeThemeCommand,
+    install_undo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +246,9 @@ class DesktopSession:
         from .notifications import NotificationService
         self._notifications = NotificationService()
 
+        # Undo/redo manager (install via install_undo())
+        self._undo_manager: Optional[UndoManager] = None
+
         # Build initial window list from top-level Window components
         self._build_windows()
         self._build_monitors()
@@ -287,18 +297,70 @@ class DesktopSession:
     def event_log(self) -> List[InputEvent]:
         return list(self._event_log)
 
+    # -- Undo / redo ---------------------------------------------------
+
+    def enable_undo(self, max_depth: int = 100) -> UndoManager:
+        """Enable undo/redo for this session.
+
+        Installs an UndoManager and monkey-patches execute/undo/redo
+        onto the session.  All subsequent mutations through the
+        command API will be tracked.
+
+        Returns the UndoManager for direct access.
+        """
+        return install_undo(self, max_depth=max_depth)
+
+    @property
+    def undo_manager(self) -> Optional[UndoManager]:
+        """The undo manager, or None if undo is not enabled."""
+        return self._undo_manager
+
+    def execute(self, cmd: Command) -> None:
+        """Execute a command (only if undo is enabled)."""
+        if self._undo_manager is None:
+            raise RuntimeError("Undo not enabled — call session.enable_undo() first")
+        self._undo_manager.push(cmd)
+
+    def undo(self) -> Optional[Command]:
+        """Undo the last command."""
+        if self._undo_manager is None:
+            return None
+        return self._undo_manager.undo()
+
+    def redo(self) -> Optional[Command]:
+        """Redo the last undone command."""
+        if self._undo_manager is None:
+            return None
+        return self._undo_manager.redo()
+
     # -- Window management ---------------------------------------------
 
-    def add_window(self, window: Window) -> None:
-        """Add a window to the top of the stack."""
+    def add_window(self, window: Window, *, track_undo: bool = False) -> None:
+        """Add a window to the top of the stack.
+
+        If *track_undo* is True and undo is enabled, the add is
+        routed through the command system so it can be undone.
+        """
+        if track_undo and self._undo_manager is not None:
+            self._undo_manager.push(
+                AddWindowCommand(self, window,
+                                description=f"Add '{window.title or window.id}'"))
+            self._notifications.info(
+                "Window opened", f"'{window.title or window.id}' opened")
+            return
         self._windows.append(window)
         self._focus_window(window.id)
         self._notifications.info(
             "Window opened", f"'{window.title or window.id}' opened")
         self._log(f"Window '{window.title or window.id}' added")
 
-    def remove_window(self, window_id: str) -> bool:
+    def remove_window(self, window_id: str, *, track_undo: bool = False) -> bool:
         """Remove a window from the session."""
+        if track_undo and self._undo_manager is not None:
+            self._undo_manager.push(
+                RemoveWindowCommand(self, window_id,
+                                   description=f"Remove '{window_id}'"))
+            return True
         for i, w in enumerate(self._windows):
             if w.id == window_id:
                 self._windows.pop(i)
@@ -350,7 +412,7 @@ class DesktopSession:
                 return True
         return False
 
-    def close_window(self, window_id: str) -> bool:
+    def close_window(self, window_id: str, *, track_undo: bool = False) -> bool:
         """Close a window — fires WINDOW_CLOSE event, shows a toast,
         and removes it."""
         win = self._find_window(window_id)
@@ -358,7 +420,7 @@ class DesktopSession:
         self._notifications.info("Window closed", f"'{title}' was closed")
         event = InputEvent(type=EventType.WINDOW_CLOSE, window_id=window_id)
         self._dispatch_event(event)
-        return self.remove_window(window_id)
+        return self.remove_window(window_id, track_undo=track_undo)
 
     # -- Hit-testing ---------------------------------------------------
 
