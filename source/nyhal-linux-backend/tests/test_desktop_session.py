@@ -3140,5 +3140,195 @@ class TestAppleCompositor(unittest.TestCase):
         self.assertEqual(img.size, (3840, 2160))
 
 
+class TestA11ySchema(unittest.TestCase):
+    """Tests for the NUI accessibility schema (ui/a11y.py)."""
+
+    def test_default_role_mapping(self):
+        from ui.a11y import A11yMetadata, _DEFAULT_ROLES
+        a = A11yMetadata()
+        self.assertEqual(a.effective_role("Button").value, "button")
+        self.assertEqual(a.effective_role("Slider").value, "slider")
+        self.assertEqual(a.effective_role("Notification").value, "alert")
+        self.assertEqual(a.effective_role("Taskbar").value, "banner")
+
+    def test_explicit_role_overrides_default(self):
+        from ui.a11y import A11yMetadata
+        a = A11yMetadata(role="navigation")
+        self.assertEqual(a.effective_role("Container").value, "navigation")
+
+    def test_invalid_role(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(role="notarole")
+        issues = validate_a11y(a, "Button", "btn-1")
+        self.assertTrue(any('ERROR' in i and 'invalid' in i.lower() for i in issues))
+
+    def test_button_requires_label(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(role="button")
+        issues = validate_a11y(a, "Button", "btn-1")
+        self.assertTrue(any('ERROR' in i and 'label' in i.lower() for i in issues))
+
+    def test_button_with_label_passes(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(role="button", label="Submit")
+        issues = validate_a11y(a, "Button", "btn-1")
+        self.assertFalse(any('ERROR' in i for i in issues))
+
+    def test_focusable_implies_label_warning(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(role="button")
+        issues = validate_a11y(a, "Button", "btn-1")
+        self.assertTrue(any('WARN' in i and 'label' in i.lower() for i in issues))
+
+    def test_tabindex_on_non_focusable_warns(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(tab_index=1)
+        issues = validate_a11y(a, "Text", "txt-1")
+        self.assertTrue(any('WARN' in i and 'tabindex' in i.lower() for i in issues))
+
+    def test_invalid_live_region(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        a = A11yMetadata(live_region="loud")
+        issues = validate_a11y(a, "Notification", "notif-1")
+        self.assertTrue(any('ERROR' in i and 'live_region' in i.lower() for i in issues))
+
+    def test_valid_live_region(self):
+        from ui.a11y import A11yMetadata, validate_a11y
+        for lr in ('polite', 'assertive', 'off'):
+            a = A11yMetadata(live_region=lr, label="Status")
+            issues = validate_a11y(a, "Notification", "notif-1")
+            self.assertFalse(any('ERROR' in i for i in issues))
+
+    def test_to_dict_from_dict_roundtrip(self):
+        from ui.a11y import A11yMetadata
+        a = A11yMetadata(role='button', label='OK', tab_index=0, live_region='polite')
+        d = a.to_dict()
+        self.assertEqual(d['role'], 'button')
+        self.assertNotIn('description', d)  # None omitted
+        b = A11yMetadata.from_dict(d)
+        self.assertEqual(b.role, 'button')
+        self.assertEqual(b.label, 'OK')
+        self.assertEqual(b.tab_index, 0)
+        self.assertEqual(b.live_region, 'polite')
+
+    def test_audit_tree(self):
+        from ui.a11y import audit_a11y_tree
+        tree = [
+            {'id': 'b1', 'type': 'Button', 'children': []},
+            {'id': 't1', 'type': 'Text', 'accessibility': {'role': 'heading'}},
+        ]
+        issues = audit_a11y_tree(tree)
+        # Button without label → ERROR
+        self.assertTrue(any('b1' in i and 'ERROR' in i for i in issues))
+        # Text without label → WARN (heading should have label)
+        self.assertTrue(any('t1' in i for i in issues))
+
+
+class TestLocalize(unittest.TestCase):
+    """Tests for the NUI localization system (ui/localize.py)."""
+
+    def setUp(self):
+        from ui.localize import LocaleManager
+        self.lm = LocaleManager()
+        self.lm.load_dict('en', {
+            'settings': {'save': 'Save', 'cancel': 'Cancel'},
+            'app': {'title': 'My App'},
+        })
+        self.lm.load_dict('af', {
+            'settings': {'save': 'Stoor', 'cancel': 'Kanselleer'},
+            'app': {'title': 'My Toepassing'},
+        })
+        self.lm.set_active('en')
+
+    def test_resolve_plain_string(self):
+        self.assertEqual(self.lm.resolve_string('hello'), 'hello')
+
+    def test_resolve_localize_ref(self):
+        self.assertEqual(
+            self.lm.resolve_string('$localize:settings.save'), 'Save')
+
+    def test_resolve_missing_key(self):
+        result = self.lm.resolve_string('$localize:missing.key')
+        self.assertIn('$localize:missing.key', result)
+
+    def test_switch_locale(self):
+        self.lm.set_active('af')
+        self.assertEqual(
+            self.lm.resolve_string('$localize:settings.save'), 'Stoor')
+
+    def test_resolve_recursive(self):
+        obj = {
+            'title': '$localize:app.title',
+            'items': ['$localize:settings.save', 'literal'],
+            'nested': {'label': '$localize:settings.cancel'},
+        }
+        result = self.lm.resolve_recursive(obj)
+        self.assertEqual(result['title'], 'My App')
+        self.assertEqual(result['items'][0], 'Save')
+        self.assertEqual(result['items'][1], 'literal')
+        self.assertEqual(result['nested']['label'], 'Cancel')
+
+    def test_load_inline(self):
+        from ui.localize import LocaleManager
+        lm = LocaleManager()
+        lm.load_inline({
+            'active': 'fr',
+            'tables': {'fr': {'hello': 'Bonjour'}},
+        })
+        self.assertEqual(lm.active_locale, 'fr')
+        self.assertEqual(lm.resolve_string('$localize:hello'), 'Bonjour')
+
+    def test_available_locales(self):
+        self.assertEqual(self.lm.available_locales, ['af', 'en'])
+
+    def test_summary(self):
+        s = self.lm.summary()
+        self.assertEqual(s['active'], 'en')
+        self.assertEqual(s['locales']['en'], 3)  # 3 flattened keys (settings.save, settings.cancel, app.title)
+
+    def test_flatten_nested(self):
+        from ui.localize import LocaleManager
+        lm = LocaleManager()
+        lm.load_dict('en', {'a': {'b': {'c': 'deep'}}})
+        self.assertEqual(lm.resolve_string('$localize:a.b.c'), 'deep')
+
+    def test_validate_document_missing_keys(self):
+        from ui.localize import LocaleManager
+        lm = LocaleManager()
+        lm.load_dict('en', {'greeting': 'Hello'})
+        lm.set_active('en')
+        # Walk screens manually for the mock
+        issues = []
+        def _walk(node, path):
+            props = getattr(node, 'properties', {})
+            if isinstance(props, dict):
+                for k, v in props.items():
+                    import re as _re
+                    for m in _re.finditer(r'\$localize:([A-Za-z0-9_.\-]+)', str(v)):
+                        key = m.group(1)
+                        if not lm.check_key_exists(key):
+                            issues.append(f'{path}.{k}: missing {key}')
+            for child in getattr(node, 'children', []):
+                _walk(child, f'{path}.{child.id}')
+        screen_root = type('R', (), {'id': 'root', 'type': 'DesktopSurface', 'children': [
+            type('C', (), {'id': 'c1', 'type': 'Text', 'children': [],
+                'properties': {'text': '$localize:missing'}})()
+        ]})()
+        _walk(screen_root, 'root')
+        self.assertTrue(len(issues) > 0)
+        self.assertTrue(any('missing' in i for i in issues))
+
+    def test_validate_no_locales_loaded(self):
+        from ui.localize import LocaleManager
+        lm = LocaleManager()  # empty
+        issues = lm.validate_document(type('Doc', (), {
+            'states': {},
+            'screens': [],
+            'behaviors': [],
+        })())
+        # No $localize refs in empty doc = no issues
+        self.assertEqual(len(issues), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
