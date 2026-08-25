@@ -29,7 +29,7 @@ References:
 """
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from . import nexpr
 from .nstudio import (
@@ -40,6 +40,9 @@ from .nstudio import (
     NstudioDocument,
     NstudioValidationError,
 )
+
+if TYPE_CHECKING:
+    from .animation import AnimationTimeline
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,11 @@ class NyrqisRuntime:
         self,
         document: NstudioDocument,
         log: Optional[LogCallback] = None,
+        timeline: Optional["AnimationTimeline"] = None,
     ) -> None:
         self._doc = document
         self._log = log or (lambda msg: None)
+        self._timeline = timeline
 
     # ---- state management ------------------------------------------------
 
@@ -202,10 +207,13 @@ class NyrqisRuntime:
     ) -> None:
         """Execute a resolved action.
 
-        For now this handles the built-in system actions:
+        Handles the built-in system actions:
         - ``Nyrqis.Theme.Set`` — mutate the active theme
-        - ``Nyrqis.Animation.Play`` — log the animation trigger
+        - ``Nyrqis.Animation.Play`` — start a declared animation on
+          the connected ``AnimationTimeline``
         - ``Nyrqis.Notification.Show`` — log the notification
+        - ``Nyrqis.State.Set`` — mutate a flat state value
+        - ``Nyrqis.State.Toggle`` — toggle a boolean state value
         - ``Open`` / ``Close`` / ``Toggle`` — mutate component properties
 
         Custom actions (targeting specific components) mutate the
@@ -237,7 +245,7 @@ class NyrqisRuntime:
 
         elif name == "Nyrqis.Animation.Play":
             anim_id = arguments.get("animation", "")
-            self._log(f"Animation '{anim_id}' triggered")
+            self._play_animation(anim_id)
 
         elif name == "Nyrqis.Notification.Show":
             title = arguments.get("title", "")
@@ -245,6 +253,22 @@ class NyrqisRuntime:
             severity = arguments.get("severity", "info")
             self._log(
                 f"Notification [{severity}]: {title} — {message}")
+
+        elif name == "Nyrqis.State.Set":
+            key = arguments.get("key", "")
+            value = arguments.get("value")
+            if key:
+                self.set_state(key, value)
+            else:
+                self._log("Nyrqis.State.Set: missing 'key'")
+
+        elif name == "Nyrqis.State.Toggle":
+            key = arguments.get("key", "")
+            if key:
+                current = self.resolve_state(key, False)
+                self.set_state(key, not current)
+            else:
+                self._log("Nyrqis.State.Toggle: missing 'key'")
 
         else:
             self._log(f"System action '{name}' (no-op on floor)")
@@ -305,6 +329,28 @@ class NyrqisRuntime:
             self._execute_action(target, name, arguments)
             executed.append((target, name, arguments))
         return executed
+
+    # ---- animation helpers -----------------------------------------------
+
+    def _play_animation(self, animation_id: str) -> None:
+        """Look up a declared animation by id and start it on the
+        connected timeline (if any)."""
+        anim = next(
+            (a for a in self._doc.animations if a.id == animation_id),
+            None,
+        )
+        if anim is None:
+            self._log(
+                f"Animation '{animation_id}' not found in document")
+            return
+        if self._timeline is not None:
+            self._timeline.play_from_nstudio(
+                anim, state=self._doc.states)
+            self._log(
+                f"Animation '{animation_id}' started on timeline")
+        else:
+            self._log(
+                f"Animation '{animation_id}' triggered (no timeline)")
 
     # ---- document access -------------------------------------------------
 

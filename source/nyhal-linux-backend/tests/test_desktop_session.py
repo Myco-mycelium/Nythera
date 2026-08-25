@@ -10,7 +10,8 @@ import unittest
 # Ensure the backend is on the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui.nstudio import NstudioDocument, loads
+from ui.nstudio import NstudioDocument, NstudioBehavior, loads
+from ui.runtime import NyrqisRuntime
 from ui.desktop_session import (
     DesktopSession,
     EventType,
@@ -3575,6 +3576,227 @@ class TestDesktopSessionAnimations(unittest.TestCase):
         w = session.focused_window
         if w and w.component_id == "w1":
             self.assertAlmostEqual(w.opacity, 0.5, places=1)
+
+
+# ---------------------------------------------------------------------------
+# Runtime Animation Wiring
+# ---------------------------------------------------------------------------
+
+class TestRuntimeAnimationWiring(unittest.TestCase):
+    """Tests that Nyrqis.Animation.Play actually starts animations
+    on the connected AnimationTimeline."""
+
+    def _make(self, animations=None):
+        from ui.animation import AnimationTimeline
+        doc = _make_doc(animations=animations or [
+            {"id": "fadeIn", "target": "win-main",
+             "property": "opacity", "duration": 200},
+        ])
+        timeline = AnimationTimeline()
+        rt = NyrqisRuntime(doc, timeline=timeline)
+        return rt, timeline
+
+    def test_animation_play_starts_on_timeline(self):
+        rt, timeline = self._make()
+        self.assertEqual(timeline.active_count, 0)
+        # Fire the system action manually
+        rt._execute_system_action(
+            "Nyrqis.Animation.Play", {"animation": "fadeIn"})
+        self.assertEqual(timeline.active_count, 1)
+
+    def test_animation_play_missing_id(self):
+        rt, timeline = self._make()
+        rt._execute_system_action(
+            "Nyrqis.Animation.Play", {"animation": "nope"})
+        self.assertEqual(timeline.active_count, 0)
+
+    def test_animation_play_no_timeline(self):
+        doc = _make_doc(animations=[
+            {"id": "fadeIn", "target": "win-main",
+             "property": "opacity", "duration": 200},
+        ])
+        rt = NyrqisRuntime(doc)  # no timeline
+        # Should not raise
+        rt._execute_system_action(
+            "Nyrqis.Animation.Play", {"animation": "fadeIn"})
+
+    def test_state_set_action(self):
+        rt, _ = self._make()
+        rt._execute_system_action(
+            "Nyrqis.State.Set", {"key": "volume", "value": 80})
+        self.assertEqual(rt.resolve_state("volume"), 80)
+
+    def test_state_toggle_action(self):
+        rt, _ = self._make()
+        rt.set_state("darkMode", False)
+        rt._execute_system_action(
+            "Nyrqis.State.Toggle", {"key": "darkMode"})
+        self.assertTrue(rt.resolve_state("darkMode"))
+        rt._execute_system_action(
+            "Nyrqis.State.Toggle", {"key": "darkMode"})
+        self.assertFalse(rt.resolve_state("darkMode"))
+
+    def test_animation_via_behavior_chain(self):
+        """A behavior with action chain: toggle state then play anim."""
+        rt, timeline = self._make()
+        doc = rt.document
+        # Add a behavior that sets state then plays animation
+        from ui.nstudio import NstudioBehavior
+        doc.behaviors.append(NstudioBehavior(
+            id="toggle-theme",
+            condition=None,
+            action={"name": "Nyrqis.State.Set",
+                    "target": "System",
+                    "arguments": {"key": "theme",
+                                   "value": "Eclipse"}},
+            actions=[
+                {"name": "Nyrqis.State.Set",
+                 "target": "System",
+                 "arguments": {"key": "theme", "value": "Eclipse"}},
+                {"name": "Nyrqis.Animation.Play",
+                 "target": "System",
+                 "arguments": {"animation": "fadeIn"}},
+            ],
+        ))
+        executed = rt.fire_event("win-main", "click")
+        # The behavior should execute both actions
+        # (win-main doesn't have a click event bound, so this tests
+        # the direct _execute_actions_for_behavior path)
+        executed = rt._execute_actions_for_behavior("toggle-theme")
+        self.assertEqual(len(executed), 2)
+        self.assertEqual(rt.resolve_state("theme"), "Eclipse")
+        self.assertEqual(timeline.active_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# NUI Asset Manager
+# ---------------------------------------------------------------------------
+
+class TestAssetManager(unittest.TestCase):
+    """Tests for the NUI asset manager (ui/assets.py)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="nyqis-assets-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_import_file(self):
+        from ui.assets import AssetManager
+        # Create a test file
+        test_file = os.path.join(self.tmpdir, "icon.png")
+        with open(test_file, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+        mgr = AssetManager(self.tmpdir)
+        meta = mgr.import_file(test_file, asset_id="icon")
+        self.assertEqual(meta.id, "icon")
+        self.assertEqual(meta.kind, "image")
+        self.assertIsNotNone(meta.sha256)
+        self.assertGreater(meta.size_bytes, 0)
+
+    def test_import_auto_detect_kind(self):
+        from ui.assets import AssetManager
+        test_file = os.path.join(self.tmpdir, "sound.wav")
+        with open(test_file, "wb") as f:
+            f.write(b"RIFF" + b"\x00" * 100)
+        mgr = AssetManager(self.tmpdir)
+        meta = mgr.import_file(test_file)
+        self.assertEqual(meta.id, "sound")
+        self.assertEqual(meta.kind, "audio")
+
+    def test_deduplication(self):
+        from ui.assets import AssetManager
+        test_file = os.path.join(self.tmpdir, "data.bin")
+        with open(test_file, "wb") as f:
+            f.write(b"hello world")
+        mgr = AssetManager(self.tmpdir)
+        m1 = mgr.import_file(test_file, asset_id="first")
+        m2 = mgr.import_file(test_file, asset_id="second")
+        # Same hash means dedup reused the existing file
+        self.assertEqual(m1.sha256, m2.sha256)
+        self.assertEqual(m1.path, m2.path)
+
+    def test_list_assets(self):
+        from ui.assets import AssetManager
+        mgr = AssetManager(self.tmpdir)
+        for i in range(3):
+            path = os.path.join(self.tmpdir, f"file{i}.txt")
+            with open(path, "w") as f:
+                f.write(f"content {i}")
+            mgr.import_file(path, kind="material")
+        assets = mgr.list_assets()
+        self.assertEqual(len(assets), 3)
+
+    def test_validate_references_missing(self):
+        from ui.assets import AssetManager
+        mgr = AssetManager(self.tmpdir)
+        issues = mgr.validate_references([
+            {"id": "bg", "path": "assets/bg.png",
+             "kind": "image"},
+        ])
+        self.assertTrue(any("not found" in i for i in issues))
+
+    def test_validate_references_ok(self):
+        from ui.assets import AssetManager
+        # Create a file
+        path = os.path.join(self.tmpdir, "assets")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "bg.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+        mgr = AssetManager(self.tmpdir)
+        issues = mgr.validate_references([
+            {"id": "bg", "path": "assets/bg.png",
+             "kind": "image"},
+        ])
+        self.assertEqual(len(issues), 0)
+
+    def test_find_missing(self):
+        from ui.assets import AssetManager
+        mgr = AssetManager(self.tmpdir)
+        missing = mgr.find_missing([
+            {"id": "a", "path": "assets/a.png"},
+            {"id": "b", "path": "assets/b.png"},
+        ])
+        self.assertEqual(missing, ["a", "b"])
+
+    def test_to_resources_dict(self):
+        from ui.assets import AssetManager
+        test_file = os.path.join(self.tmpdir, "data.json")
+        with open(test_file, "w") as f:
+            f.write('{"key": "value"}')
+        mgr = AssetManager(self.tmpdir)
+        mgr.import_file(test_file, asset_id="config", kind="material")
+        res = mgr.to_resources_dict()
+        self.assertIn("assets", res)
+        self.assertEqual(len(res["assets"]), 1)
+        self.assertEqual(res["assets"][0]["id"], "config")
+
+    def test_import_bytes(self):
+        from ui.assets import AssetManager
+        mgr = AssetManager(self.tmpdir)
+        meta = mgr.import_bytes(
+            b"<svg></svg>", "icon.svg", asset_id="icon")
+        self.assertEqual(meta.kind, "svg")
+        self.assertEqual(meta.size_bytes, 11)  # <svg></svg>
+
+    def test_orphan_detection(self):
+        from ui.assets import AssetManager
+        os.makedirs(os.path.join(self.tmpdir, "assets"), exist_ok=True)
+        with open(os.path.join(self.tmpdir, "assets", "orphan.png"), "wb") as f:
+            f.write(b"data")
+        mgr = AssetManager(self.tmpdir)
+        issues = mgr.validate_references([])  # empty declarations
+        self.assertTrue(any("orphan" in i for i in issues))
+
+    def test_detect_kind_helpers(self):
+        from ui.assets import detect_kind, sha256_bytes
+        self.assertEqual(detect_kind("photo.png"), "image")
+        self.assertEqual(detect_kind("song.mp3"), "audio")
+        self.assertEqual(detect_kind("font.ttf"), "font")
+        self.assertEqual(detect_kind("clip.mp4"), "video")
+        self.assertIsNone(detect_kind("data.xyz"))
+        self.assertEqual(len(sha256_bytes(b"test")), 64)
 
 
 if __name__ == "__main__":
