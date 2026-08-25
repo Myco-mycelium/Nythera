@@ -3330,5 +3330,252 @@ class TestLocalize(unittest.TestCase):
         self.assertEqual(len(issues), 0)
 
 
+# ---------------------------------------------------------------------------
+# Animation engine tests
+# ---------------------------------------------------------------------------
+
+class TestAnimationEasing(unittest.TestCase):
+    """Tests for easing functions."""
+
+    def test_linear(self):
+        from ui.animation import linear
+        self.assertAlmostEqual(linear(0.0), 0.0)
+        self.assertAlmostEqual(linear(0.5), 0.5)
+        self.assertAlmostEqual(linear(1.0), 1.0)
+
+    def test_ease_in_out(self):
+        from ui.animation import ease_in_out
+        self.assertAlmostEqual(ease_in_out(0.0), 0.0)
+        self.assertAlmostEqual(ease_in_out(1.0), 1.0)
+        self.assertGreater(ease_in_out(0.5), 0.0)
+        self.assertLess(ease_in_out(0.5), 1.0)
+
+    def test_spring(self):
+        from ui.animation import spring
+        s = spring(damping=0.3, stiffness=100)
+        self.assertAlmostEqual(s(0.0), 0.0)
+        self.assertAlmostEqual(s(1.0), 1.0, places=1)
+
+    def test_cubic_bezier(self):
+        from ui.animation import cubic_bezier
+        ease = cubic_bezier(0.25, 0.1, 0.25, 1.0)
+        self.assertAlmostEqual(ease(0.0), 0.0, places=2)
+        self.assertAlmostEqual(ease(1.0), 1.0, places=2)
+        self.assertGreater(ease(0.5), 0.0)
+
+    def test_get_easing_lookup(self):
+        from ui.animation import get_easing
+        self.assertIsNotNone(get_easing("linear"))
+        self.assertIsNotNone(get_easing("ease-in-out"))
+        self.assertIsNotNone(get_easing("cubic-bezier(0.25,0.1,0.25,1.0)"))
+        # Unknown falls back to linear
+        f = get_easing("unknown")
+        self.assertAlmostEqual(f(0.5), 0.5)
+
+
+class TestAnimationInterpolation(unittest.TestCase):
+    """Tests for keyframe and value interpolation."""
+
+    def test_numeric_lerp(self):
+        from ui.animation import interpolate_keyframes
+        result = interpolate_keyframes([], 0.5, from_value=0.0, to_value=100.0)
+        self.assertAlmostEqual(result, 50.0)
+
+    def test_color_interpolation(self):
+        from ui.animation import interpolate_keyframes
+        result = interpolate_keyframes([], 0.5, from_value="#000000", to_value="#ffffff")
+        self.assertEqual(result, "#808080")
+
+    def test_keyframe_multi_segment(self):
+        from ui.animation import interpolate_keyframes
+        kfs = [
+            {"offset": 0.0, "value": 0},
+            {"offset": 0.5, "value": 100},
+            {"offset": 1.0, "value": 50},
+        ]
+        self.assertAlmostEqual(interpolate_keyframes(kfs, 0.0), 0)
+        self.assertAlmostEqual(interpolate_keyframes(kfs, 0.25), 50)
+        self.assertAlmostEqual(interpolate_keyframes(kfs, 0.5), 100)
+        self.assertAlmostEqual(interpolate_keyframes(kfs, 0.75), 75)
+        self.assertAlmostEqual(interpolate_keyframes(kfs, 1.0), 50)
+
+    def test_keyframe_clamp(self):
+        from ui.animation import interpolate_keyframes
+        kfs = [{"offset": 0.0, "value": 0}, {"offset": 1.0, "value": 100}]
+        self.assertEqual(interpolate_keyframes(kfs, -0.5), 0)
+        self.assertEqual(interpolate_keyframes(kfs, 1.5), 100)
+
+
+class TestAnimationTimeline(unittest.TestCase):
+    """Tests for the AnimationTimeline."""
+
+    def test_play_and_tick(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(
+            animation_id="fade-in",
+            target_id="win-main",
+            property_name="opacity",
+            from_value=0.0,
+            to_value=1.0,
+            duration_ms=100,
+            easing="linear",
+        )
+        self.assertEqual(tl.active_count, 1)
+
+        # Tick halfway through
+        tl.tick(50.0)
+        snap = tl.snapshot()
+        self.assertIn("win-main.opacity", snap)
+        self.assertAlmostEqual(snap["win-main.opacity"], 0.5, places=1)
+
+        # Tick past completion
+        tl.tick(60.0)
+        snap = tl.snapshot()
+        self.assertEqual(snap["win-main.opacity"], 1.0)
+        self.assertEqual(tl.active_count, 0)
+
+    def test_delay(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(
+            animation_id="delayed",
+            target_id="w",
+            property_name="x",
+            from_value=0,
+            to_value=100,
+            duration_ms=100,
+            delay_ms=50,
+            easing="linear",
+        )
+        tl.tick(30.0)  # still in delay
+        snap = tl.snapshot()
+        self.assertEqual(snap["w.x"], 0)  # from_value during delay
+
+    def test_stop(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(animation_id="a", target_id="w", property_name="x",
+                from_value=0, to_value=100, duration_ms=100)
+        self.assertTrue(tl.stop("a"))
+        self.assertEqual(tl.active_count, 0)
+        self.assertFalse(tl.stop("nonexistent"))
+
+    def test_stop_target(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(animation_id="a1", target_id="w", property_name="x",
+                from_value=0, to_value=100, duration_ms=100)
+        tl.play(animation_id="a2", target_id="w", property_name="y",
+                from_value=0, to_value=100, duration_ms=100)
+        tl.play(animation_id="a3", target_id="other", property_name="x",
+                from_value=0, to_value=100, duration_ms=100)
+        stopped = tl.stop_target("w")
+        self.assertEqual(stopped, 2)
+        self.assertEqual(tl.active_count, 1)
+
+    def test_completion_callback(self):
+        from ui.animation import AnimationTimeline
+        completed = []
+        tl = AnimationTimeline()
+        tl.set_on_complete(lambda aid: completed.append(aid))
+        tl.play(animation_id="done", target_id="w", property_name="x",
+                from_value=0, to_value=100, duration_ms=50)
+        tl.tick(60.0)
+        self.assertEqual(completed, ["done"])
+
+    def test_summary(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(animation_id="s", target_id="w", property_name="x",
+                from_value=0, to_value=100, duration_ms=100)
+        s = tl.summary()
+        self.assertEqual(s["active"], 1)
+        self.assertEqual(len(s["animations"]), 1)
+        self.assertEqual(s["animations"][0]["id"], "s")
+
+    def test_repeating_animation(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(
+            animation_id="repeat",
+            target_id="w",
+            property_name="x",
+            from_value=0,
+            to_value=100,
+            duration_ms=50,
+            repeat=2,  # plays 3 times total (0 + 2 repeats)
+            easing="linear",
+        )
+        # After first iteration
+        tl.tick(50.0)
+        self.assertEqual(tl.active_count, 1)  # still running
+        # After second iteration
+        tl.tick(50.0)
+        self.assertEqual(tl.active_count, 1)  # still running
+        # After third iteration
+        tl.tick(50.0)
+        self.assertEqual(tl.active_count, 0)  # done
+
+    def test_get_property(self):
+        from ui.animation import AnimationTimeline
+        tl = AnimationTimeline()
+        tl.play(animation_id="g", target_id="w", property_name="opacity",
+                from_value=0.0, to_value=1.0, duration_ms=100, easing="linear")
+        tl.tick(50.0)
+        val = tl.get_property("w", "opacity")
+        self.assertAlmostEqual(val, 0.5, places=1)
+        self.assertIsNone(tl.get_property("w", "nonexistent"))
+
+
+class TestDesktopSessionAnimations(unittest.TestCase):
+    """Tests for animation integration in DesktopSession."""
+
+    def _make_session(self):
+        doc = _make_doc()
+        return DesktopSession(doc)
+
+    def test_timeline_property(self):
+        session = self._make_session()
+        self.assertIsNotNone(session.timeline)
+        self.assertEqual(session.timeline.active_count, 0)
+
+    def test_tick_returns_snapshot(self):
+        session = self._make_session()
+        result = session.tick(16.0)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(session.timeline.active_count, 0)
+
+    def test_play_document_animation(self):
+        doc = _make_doc(animations=[
+            {"id": "fadeIn", "target": "win-main",
+             "property": "opacity", "duration": 250},
+        ])
+        session = DesktopSession(doc)
+        session.play_animation("fadeIn")
+        self.assertGreater(session.timeline.active_count, 0)
+
+    def test_play_nonexistent_animation(self):
+        session = self._make_session()
+        session.play_animation("doesNotExist")  # should not raise
+
+    def test_tick_applies_opacity(self):
+        session = self._make_session()
+        # Manually add an animation targeting a window
+        session.timeline.play(
+            animation_id="fade",
+            target_id="w1",
+            property_name="opacity",
+            from_value=0.0,
+            to_value=1.0,
+            duration_ms=100,
+            easing="linear",
+        )
+        session.tick(50.0)
+        w = session.focused_window
+        if w and w.component_id == "w1":
+            self.assertAlmostEqual(w.opacity, 0.5, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()

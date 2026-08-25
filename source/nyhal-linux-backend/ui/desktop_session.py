@@ -51,6 +51,7 @@ from .commands import (
     MaximizeWindowCommand, ChangePropertyCommand, ChangeThemeCommand,
     install_undo,
 )
+from .animation import AnimationTimeline
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ class Window:
     min_width: int = 200
     min_height: int = 100
     visible: bool = True
+    opacity: float = 1.0
     minimized: bool = False
     maximized: bool = False
     focused: bool = False
@@ -249,6 +251,9 @@ class DesktopSession:
         # Undo/redo manager (install via install_undo())
         self._undo_manager: Optional[UndoManager] = None
 
+        # Animation timeline (NUI-SCHEMA §8.3)
+        self._timeline = AnimationTimeline()
+
         # Build initial window list from top-level Window components
         self._build_windows()
         self._build_monitors()
@@ -332,6 +337,52 @@ class DesktopSession:
         if self._undo_manager is None:
             return None
         return self._undo_manager.redo()
+
+    # -- Animation timeline --------------------------------------------
+
+    @property
+    def timeline(self) -> AnimationTimeline:
+        """The animation timeline managing all active animations."""
+        return self._timeline
+
+    def tick(self, elapsed_ms: float = 16.0) -> Dict[str, Any]:
+        """Advance the session by one frame.
+
+        Updates the animation timeline, applies animated property
+        values to windows, and returns the current animation snapshot.
+
+        Call this every frame in a render loop (typically ~16 ms
+        for 60 fps).
+        """
+        self._timeline.tick(elapsed_ms)
+        snapshot = self._timeline.snapshot()
+
+        # Apply animated properties to windows
+        for window in self._windows:
+            for key, value in snapshot.items():
+                prefix = f"{window.component_id}."
+                if key.startswith(prefix):
+                    prop = key[len(prefix):]
+                    if prop == "opacity":
+                        window.opacity = float(value) if value is not None else 1.0
+                    elif prop == "x":
+                        window.x = int(value) if value is not None else window.x
+                    elif prop == "y":
+                        window.y = int(value) if value is not None else window.y
+                    elif prop == "width":
+                        window.width = int(value) if value is not None else window.width
+                    elif prop == "height":
+                        window.height = int(value) if value is not None else window.height
+
+        return snapshot
+
+    def play_animation(self, animation_id: str, **kwargs: Any) -> None:
+        """Play an animation from the document's animation list."""
+        for anim in self._doc.animations:
+            if anim.id == animation_id:
+                self._timeline.play_from_nstudio(anim, state=self._doc.states)
+                return
+        self._log(f"Animation '{animation_id}' not found in document")
 
     # -- Window management ---------------------------------------------
 
