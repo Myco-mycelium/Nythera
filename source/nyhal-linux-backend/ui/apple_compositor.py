@@ -585,7 +585,7 @@ class AppleCompositor:
     def _render_standalone_window(self, img, draw, x, y, w, h, props, comp,
                                    font, fs, ft):
         """Render a standalone Window component (not managed by session)."""
-        Image, _, _, _ = _pil()
+        Image, ImageDraw, _, _ = _pil()
         r = int(APPLE_RADIUS_XL * self.scale)
         titlebar_h = int(38 * self.scale)
 
@@ -628,7 +628,7 @@ class AppleCompositor:
 
     def _render_taskbar(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a taskbar with Apple-quality styling."""
-        Image, _, _, _ = _pil()
+        Image, ImageDraw, _, _ = _pil()
         s = self.scale
 
         # Vibrancy background
@@ -682,7 +682,7 @@ class AppleCompositor:
 
     def _render_start_menu(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
         """Render a Start Menu with Apple-quality styling."""
-        Image, _, _, _ = _pil()
+        Image, ImageDraw, _, _ = _pil()
         s = self.scale
 
         # Vibrancy panel

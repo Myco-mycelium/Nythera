@@ -248,8 +248,10 @@ class DesktopSession:
         from .notifications import NotificationService
         self._notifications = NotificationService()
 
-        # Undo/redo manager (install via install_undo())
-        self._undo_manager: Optional[UndoManager] = None
+        # Undo/redo manager — enabled by default so all mutations are
+        # tracked automatically.  Call ``enable_undo()`` to reconfigure
+        # the depth, or ``disable_undo()`` to turn it off.
+        self._undo_manager: Optional[UndoManager] = UndoManager()
 
         # Animation timeline (NUI-SCHEMA §8.3)
         self._timeline = AnimationTimeline()
@@ -810,10 +812,10 @@ class DesktopSession:
             # Walk children of the root — DesktopSurface is the root
             # container, not a window itself.
             for child in root.children:
-                if child.type in ("Window", "StartMenu",
+                if child.type in ("Window", "Taskbar", "StartMenu",
                                   "NotificationCenter",
                                   "QuickSettings", "CommandPalette",
-                                  "LockScreen"):
+                                  "LockScreen", "WorkspaceSwitcher"):
                     w = Window(
                         id=f"win-{child.id}",
                         component_id=child.id,

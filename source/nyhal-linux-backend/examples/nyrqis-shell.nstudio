@@ -23,7 +23,7 @@
     "activeWorkspace": 0,
     "notificationCount": 0
   },
-  "state_scopes": {
+  "stateScopes": {
     "global": {},
     "session": {
       "user": "zeus"

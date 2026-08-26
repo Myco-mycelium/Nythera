@@ -130,7 +130,7 @@ _DEFAULT_ROLES: Dict[str, A11yRole] = {
     "Dialog": A11yRole.DIALOG,
     "Card": A11yRole.REGION,
     "Panel": A11yRole.REGION,
-    "Taskbar": A11yRole.BANNER,
+    "Taskbar": A11yRole.TOOLBAR,
     "StartMenu": A11yRole.MENU,
     "SystemTray": A11yRole.REGION,
     "NotificationCenter": A11yRole.COMPLEMENTARY,
@@ -308,4 +308,97 @@ def audit_a11y_tree(
     for comp in components:
         walk(comp)
 
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Document-level helpers (used by integration tests)
+# ---------------------------------------------------------------------------
+
+
+class ComponentA11y:
+    """Lightweight wrapper that extracts A11yMetadata from a
+    NstudioComponent (or raw dict) within a document context.
+
+    The test suite expects ``ComponentA11y.from_component(comp, doc)``
+    to return an object with a ``role`` property.
+    """
+
+    def __init__(self, a11y: A11yMetadata, component_type: str) -> None:
+        self._a11y = a11y
+        self._type = component_type
+        self.role: str = a11y.effective_role(component_type).value
+
+    @classmethod
+    def from_component(cls, comp: Any, doc: Any = None) -> "ComponentA11y":
+        """Build from a NstudioComponent (with .accessibility dict)
+        or a raw dict.
+        """
+        a11y_raw = getattr(comp, "accessibility", None)
+        if a11y_raw is None and hasattr(comp, "properties"):
+            # Some NstudioComponent models store it in properties
+            pass
+        if a11y_raw is None and hasattr(comp, "to_dict"):
+            d = comp.to_dict() if callable(comp.to_dict) else {}
+            a11y_raw = d.get("accessibility")
+        if a11y_raw is None and isinstance(comp, dict):
+            a11y_raw = comp.get("accessibility")
+
+        a11y = A11yMetadata.from_dict(a11y_raw) if a11y_raw else A11yMetadata()
+        comp_type = getattr(comp, "type", None) or (
+            comp.get("type", "") if isinstance(comp, dict) else "")
+        return cls(a11y, comp_type)
+
+
+def audit_document(doc: Any) -> List[Dict[str, Any]]:
+    """Audit all components in a NstudioDocument for accessibility issues.
+
+    Returns a list of issue dicts with ``severity`` and ``message`` keys.
+    """
+    all_components: List[Dict[str, Any]] = []
+
+    def collect(comp: Any) -> None:
+        # Support both NstudioComponent objects and raw dicts
+        if isinstance(comp, dict):
+            all_components.append(comp)
+            for child in comp.get("children", []):
+                collect(child)
+        elif hasattr(comp, "to_dict"):
+            d = comp.to_dict() if callable(comp.to_dict) else {}
+            all_components.append(d)
+            for child in getattr(comp, "children", []):
+                collect(child)
+        elif hasattr(comp, "children"):
+            d = {"id": getattr(comp, "id", ""),
+                 "type": getattr(comp, "type", ""),
+                 "properties": getattr(comp, "properties", {})}
+            a11y = getattr(comp, "accessibility", None)
+            if a11y:
+                if isinstance(a11y, dict):
+                    d["accessibility"] = a11y
+                elif hasattr(a11y, "to_dict"):
+                    d["accessibility"] = a11y.to_dict()
+            all_components.append(d)
+            for child in comp.children:
+                collect(child)
+
+    # Collect from screens
+    for screen in getattr(doc, "screens", []):
+        root = getattr(screen, "root", None)
+        if root is not None:
+            collect(root)
+
+    # Also collect top-level components if doc has them
+    components_list = getattr(doc, "components", None)
+    if components_list:
+        for c in components_list:
+            collect(c)
+
+    # Run audit and convert string issues to severity dicts
+    raw_issues = audit_a11y_tree(all_components)
+    issues: List[Dict[str, Any]] = []
+    for msg in raw_issues:
+        severity = "error" if msg.startswith("ERROR") else \
+                   "warning" if msg.startswith("WARNING") else "info"
+        issues.append({"severity": severity, "message": msg})
     return issues
