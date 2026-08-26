@@ -493,12 +493,12 @@ class AppleCompositor:
                 fill=color)
 
             # Glyph (white, small)
-            g_bbox = draw.textbbox((0, 0), glyph, font=font_small)
+            g_bbox = draw.textbbox((0, 0), glyph, font=fs)
             gw = g_bbox[2] - g_bbox[0]
             gh = g_bbox[3] - g_bbox[1]
             draw.text(
                 (bx - gw // 2, by - gh // 2 - int(1 * s)),
-                glyph, fill=(255, 255, 255), font=font_small)
+                glyph, fill=(255, 255, 255), font=fs)
 
         # Resize grip (bottom-right corner, subtle)
         grip_color = self._c("hairline")

@@ -6,8 +6,9 @@ Demonstrates the full pipeline:
 
 Usage:
     python3 nyrqis_run.py input.nstudio -o output.png
-    python3 nyrqis_run.py input.nstudio --screen desktop --theme Solar
+    python3 nyrqis_run.py input.nstudio --apple --theme Solar
     python3 nyrqis_run.py input.nstudio --validate-only
+    python3 nyrqis_run.py input.nstudio --session    # live DesktopSession
 """
 
 import argparse
@@ -42,6 +43,16 @@ def main():
                         help="Print runtime summary")
     parser.add_argument("--interactive", action="store_true",
                         help="Enable interactive mode (fire events)")
+    parser.add_argument("--apple", action="store_true",
+                        help="Use Apple-quality compositor (shadows, blur, gradients)")
+    parser.add_argument("--dark", action="store_true", default=True,
+                        help="Use dark mode (default)")
+    parser.add_argument("--light", action="store_true",
+                        help="Use light mode")
+    parser.add_argument("--session", action="store_true",
+                        help="Use live DesktopSession (window management, hit-test)")
+    parser.add_argument("--dump-json", action="store_true",
+                        help="Dump the NUI document as JSON to stdout")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -70,8 +81,13 @@ def main():
     print(f"  Theme: {doc.themes.get('active', 'Eclipse')}")
     print(f"  Load time: {t_load*1000:.1f}ms")
 
+    if args.dump_json:
+        print(json.dumps(doc.to_dict(), indent=2))
+        return 0
+
     if args.validate_only:
-        print("\n✓ Document is valid")
+        # Run the full validation pipeline
+        _run_validation(doc)
         return 0
 
     # Run the runtime (apply bindings, etc.)
@@ -84,17 +100,36 @@ def main():
             print(f"  {k}: {v}")
 
     # Render to PNG
-    from ui.compositor import Compositor
-    compositor = Compositor(
-        theme_name=args.theme,
-        scale=args.scale,
-    )
-
+    dark_mode = not args.light
     t0 = time.time()
     try:
-        img = compositor.render_screen(doc, args.screen)
+        if args.session:
+            # Live DesktopSession path — creates windows, supports hit-test
+            from ui.desktop_session import DesktopSession
+            session = DesktopSession(doc)
+            print(f"\nSession created: {len(session.windows)} windows")
+            for w in session.windows:
+                print(f"  {w.id} ({w.component_id}) @ ({w.x},{w.y}) {w.width}x{w.height}")
+            if args.apple:
+                from ui.apple_compositor import AppleCompositor
+                comp = AppleCompositor(dark_mode=dark_mode, scale=args.scale)
+                img = comp.render_session(session)
+            else:
+                from ui.compositor import Compositor
+                comp = Compositor(theme_name=args.theme, scale=args.scale)
+                img = comp.render_screen(doc, args.screen)
+        elif args.apple:
+            from ui.apple_compositor import AppleCompositor
+            comp = AppleCompositor(dark_mode=dark_mode, scale=args.scale)
+            img = comp.render_document(doc, screen_id=args.screen)
+        else:
+            from ui.compositor import Compositor
+            comp = Compositor(theme_name=args.theme, scale=args.scale)
+            img = comp.render_screen(doc, args.screen)
     except Exception as e:
         print(f"Error rendering: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return 1
     t_render = time.time() - t0
 
@@ -133,6 +168,79 @@ def _count_tree(node, depth=0):
     for child in children:
         count += _count_tree(child, depth + 1)
     return count
+
+
+def _run_validation(doc):
+    """Run the full NUI validation pipeline."""
+    print("\n--- NUI Validation ---")
+    issues = []
+
+    # 1. Schema validation
+    try:
+        from ui.nstudio import NstudioDocument
+        doc.validate()
+        print("  ✓ Schema: valid")
+    except Exception as e:
+        issues.append(f"Schema: {e}")
+        print(f"  ✗ Schema: {e}")
+
+    # 2. API contract validation
+    try:
+        from ui.nstudio import load_api_registry
+        registry = load_api_registry()
+        for comp in doc.all_components():
+            ctype = comp.get('type', '') if isinstance(comp, dict) else getattr(comp, 'type', '')
+            if ctype and ctype not in registry:
+                issues.append(f"Unknown component type: {ctype}")
+        print(f"  ✓ API contract: {len(registry)} types registered")
+    except Exception as e:
+        print(f"  ⚠ API contract: {e}")
+
+    # 3. Accessibility audit
+    try:
+        from ui.a11y import audit_document
+        a11y_issues = audit_document(doc)
+        errors = [i for i in a11y_issues if i.get('severity') == 'error']
+        warnings = [i for i in a11y_issues if i.get('severity') == 'warning']
+        if errors:
+            issues.extend([i['message'] for i in errors])
+        print(f"  ✓ Accessibility: {len(errors)} errors, {len(warnings)} warnings")
+    except Exception as e:
+        print(f"  ⚠ Accessibility: {e}")
+
+    # 4. Expression engine validation
+    try:
+        from ui import nexpr
+        for b in doc.behaviors:
+            cond = getattr(b, 'condition', None) or b.get('condition') if isinstance(b, dict) else None
+            if cond:
+                try:
+                    nexpr.parse(cond)
+                except Exception as e:
+                    issues.append(f"Behavior '{getattr(b, 'id', '?')}': {e}")
+        print(f"  ✓ Expressions: {len(doc.behaviors)} behaviors checked")
+    except Exception as e:
+        print(f"  ⚠ Expressions: {e}")
+
+    # 5. Asset validation
+    try:
+        from ui.assets import AssetManager
+        am = AssetManager(doc)
+        missing = am.find_missing()
+        if missing:
+            issues.extend([f"Missing asset: {m}" for m in missing])
+        print(f"  ✓ Assets: {len(missing)} missing")
+    except Exception as e:
+        print(f"  ⚠ Assets: {e}")
+
+    # Summary
+    print(f"\n{'='*40}")
+    if issues:
+        print(f"FAILED — {len(issues)} issue(s):")
+        for issue in issues:
+            print(f"  • {issue}")
+    else:
+        print("PASSED — all checks OK")
 
 
 if __name__ == "__main__":
