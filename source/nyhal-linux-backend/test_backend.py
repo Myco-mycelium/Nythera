@@ -13104,6 +13104,82 @@ class TestNuiService(unittest.TestCase):
             stop.set()
             server.close()
 
+    # -- validation pipeline unit tests ---------------------------------
+
+    def test_validate_document_all_fixtures(self):
+        """_validate_document succeeds on all shipped fixtures."""
+        svc = NuiService()
+        for name in ("forge-home", "settings-app", "vault-dashboard",
+                     "nyrqis-shell", "security-center", "vault-workspace",
+                     "desktop", "windows", "widgets"):
+            text = open(os.path.join(self.FIXTURES,
+                                     name + ".nstudio")).read()
+            ok, detail = svc._validate_document(text)
+            self.assertTrue(ok, f"{name}: {detail}")
+            self.assertEqual(detail["version"], "1.0.0")
+            self.assertIn(detail["engine"], ("rust", "python"))
+
+    def test_validate_document_accessibility_property(self):
+        """_validate_document accepts components with accessibility prop."""
+        import json as _json
+        svc = NuiService()
+        doc = {
+            "version": "1.0.0",
+            "screens": [{
+                "id": "s1", "size": {"width": 800, "height": 600},
+                "root": {
+                    "id": "btn", "type": "Button",
+                    "properties": {
+                        "text": "Click", "accessibility": {"label": "Click me"}
+                    },
+                    "layout": {"x": 0, "y": 0, "width": 100, "height": 30},
+                    "events": {}, "children": [],
+                },
+            }],
+        }
+        ok, detail = svc._validate_document(_json.dumps(doc))
+        self.assertTrue(ok, detail)
+
+    def test_validate_document_rejects_bad_property(self):
+        """_validate_document rejects unknown properties."""
+        import json as _json
+        svc = NuiService()
+        doc = {
+            "version": "1.0.0",
+            "screens": [{
+                "id": "s1", "size": {"width": 800, "height": 600},
+                "root": {
+                    "id": "btn", "type": "Button",
+                    "properties": {"text": "OK", "bogus": True},
+                    "layout": {"x": 0, "y": 0, "width": 100, "height": 30},
+                    "events": {}, "children": [],
+                },
+            }],
+        }
+        ok, detail = svc._validate_document(_json.dumps(doc))
+        self.assertFalse(ok)
+        self.assertIn("not in the", detail)
+
+    def test_validate_document_rejects_wrong_version(self):
+        """_validate_document rejects unsupported schema version."""
+        import json as _json
+        svc = NuiService()
+        doc = {
+            "version": "0.3.0",
+            "screens": [{
+                "id": "s1", "size": {"width": 800, "height": 600},
+                "root": {
+                    "id": "t1", "type": "Text",
+                    "properties": {"text": "hi"},
+                    "layout": {"x": 0, "y": 0, "width": 100, "height": 30},
+                    "events": {}, "children": [],
+                },
+            }],
+        }
+        ok, detail = svc._validate_document(_json.dumps(doc))
+        self.assertFalse(ok)
+        self.assertIn("unsupported schema version", detail)
+
 
 class TestNstudioImport(unittest.TestCase):
     """The pure-Python NUI (.nstudio) reference floor (ui/nstudio.py,
