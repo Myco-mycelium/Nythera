@@ -565,8 +565,12 @@ fn validate_component(
     };
     if let Some(container) = prop_container.and_then(Value::as_object) {
         let label = if reference.is_some() { "override" } else { "property" };
+        // Universal properties accepted on every component type
+        let universal = ["accessibility"];
         for key in container.keys() {
-            if !cc.properties.iter().any(|p| p.name == *key) {
+            if !cc.properties.iter().any(|p| p.name == *key)
+                && !universal.contains(&key.as_str())
+            {
                 return Err(format!(
                     "component '{id}': {label} '{key}' not in the '{type_name}' contract"
                 ));

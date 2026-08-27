@@ -192,6 +192,143 @@ class TestContainerPrimitives(unittest.TestCase):
         # (the container is created but may fail to spawn)
 
 
+class TestAppCLI(unittest.TestCase):
+    """Test the nyrqisctl app CLI commands: build_payload, format_human."""
+
+    def test_app_install_payload(self):
+        """app-install builds the correct payload."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            app_path="/tmp/test.apk",
+            name="Test App",
+            sandbox=True,
+        )
+        payload = build_payload("app-install", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "app_install")
+        self.assertEqual(payload["app_path"], "/tmp/test.apk")
+        self.assertEqual(payload["name"], "Test App")
+        self.assertTrue(payload["sandbox"])
+
+    def test_app_list_payload(self):
+        """app-list builds the correct payload."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace()
+        payload = build_payload("app-list", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "app_list")
+
+    def test_app_launch_payload(self):
+        """app-launch builds the correct payload."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(app_id="android:com.example.app")
+        payload = build_payload("app-launch", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "app_launch")
+        self.assertEqual(payload["app_id"], "android:com.example.app")
+
+    def test_app_terminate_payload(self):
+        """app-terminate builds the correct payload."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(app_id="windows:notepad.exe")
+        payload = build_payload("app-terminate", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "app_terminate")
+        self.assertEqual(payload["app_id"], "windows:notepad.exe")
+
+    def test_format_human_app_install(self):
+        """app-install renders human-readable output."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "app_id": "android:com.example",
+            "app": {
+                "name": "Example",
+                "version": "2.0",
+                "compatibility": {
+                    "platform": "android",
+                    "permissions": ["network", "storage"],
+                },
+            },
+            "sandbox": True,
+        }
+        text = format_human("app-install", resp)
+        self.assertIn("android:com.example", text)
+        self.assertIn("Example", text)
+        self.assertIn("sandbox:", text)
+
+    def test_format_human_app_list(self):
+        """app-list renders human-readable output."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "apps": [
+                {
+                    "app_id": "android:com.example",
+                    "name": "Example",
+                    "platform": "android",
+                    "status": "installed",
+                    "compatibility": {"platform": "android", "permissions": []},
+                },
+            ],
+        }
+        text = format_human("app-list", resp)
+        self.assertIn("android:com.example", text)
+        self.assertIn("Example", text)
+        self.assertIn("installed", text)
+
+    def test_format_human_app_list_empty(self):
+        """app-list with no apps."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "apps": []}
+        text = format_human("app-list", resp)
+        self.assertIn("no installed apps", text)
+
+    def test_format_human_app_launch(self):
+        """app-launch renders human-readable output."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "app_id": "android:com.example",
+            "container_id": "ctr-42",
+            "pid": 12345,
+        }
+        text = format_human("app-launch", resp)
+        self.assertIn("launched", text)
+        self.assertIn("ctr-42", text)
+
+    def test_format_human_app_terminate(self):
+        """app-terminate renders human-readable output."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "app_id": "android:com.example"}
+        text = format_human("app-terminate", resp)
+        self.assertIn("terminated", text)
+
+    def test_register_and_list_apps(self):
+        """register_app + list_apps round-trip."""
+        manager = ContainerManager()
+        info = {
+            "name": "TestApp",
+            "version": "1.0",
+            "compatibility": {
+                "platform": "android",
+                "permissions": ["network"],
+            },
+        }
+        app_id = manager.register_app(info, "/tmp/test.apk")
+        self.assertEqual(app_id, "android:TestApp")
+        apps = manager.list_apps()
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["app_id"], app_id)
+        self.assertEqual(apps[0]["name"], "TestApp")
+
+    def test_terminate_app_not_running(self):
+        """terminate_app returns False for non-running apps."""
+        manager = ContainerManager()
+        result = manager.terminate_app("nonexistent:app")
+        self.assertFalse(result)
+
+
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension
     (implementation_plan.md §4.1): suspend freezes the container's whole
@@ -15365,6 +15502,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestHIGDesignSystem))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCompatibility))
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
+    suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
     suite.addTests(loader.loadTestsFromTestCase(TestDaemonState))

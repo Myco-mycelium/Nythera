@@ -65,6 +65,7 @@ VAULT_COMMANDS = (
     "vault-volume-usage", "vault-volume-summary",
     "vault-volume-events",
 )
+APP_COMMANDS = ("app-install", "app-list", "app-launch", "app-terminate")
 # Vault ops ride the same 64 KiB datagram the transport serves, so a
 # single write/read is capped (the service enforces the same limit).
 MAX_IO_BYTES = 32 * 1024
@@ -199,6 +200,28 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "storage", "op": "volume_summary"}
     if command == "vault-volume-events":
         return {"service": "storage", "op": "volume_events"}
+    if command == "app-install":
+        return {
+            "service": "control",
+            "op": "app_install",
+            "app_path": args.app_path,
+            "name": args.name or None,
+            "sandbox": bool(args.sandbox),
+        }
+    if command == "app-list":
+        return {"service": "control", "op": "app_list"}
+    if command == "app-launch":
+        return {
+            "service": "control",
+            "op": "app_launch",
+            "app_id": args.app_id,
+        }
+    if command == "app-terminate":
+        return {
+            "service": "control",
+            "op": "app_terminate",
+            "app_id": args.app_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -437,6 +460,43 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                             f"{e.get('usage')}/{e.get('quota')}")
         return "\n".join(
             ["time\tvolume\tcontainer\tkind\tdetail"] + rows)
+    if command == "app-install":
+        app = resp.get("app") or {}
+        compat = app.get("compatibility") or {}
+        platform = compat.get("platform", "unknown")
+        lines = [
+            f"installed: {resp.get('app_id')}",
+            f"name:      {app.get('name')}",
+            f"version:   {app.get('version')}",
+            f"platform:  {platform}",
+            f"sandbox:   {'yes' if resp.get('sandbox') else 'no'}",
+        ]
+        perms = compat.get("permissions") or []
+        if perms:
+            lines.append(f"perms:     {', '.join(perms[:8])}"
+                         + (f" (+{len(perms)-8} more)"
+                            if len(perms) > 8 else ""))
+        return "\n".join(lines)
+    if command == "app-list":
+        apps = resp.get("apps") or []
+        if not apps:
+            return "no installed apps"
+        rows = []
+        for a in apps:
+            compat = a.get("compatibility") or {}
+            platform = compat.get("platform", "?")
+            status = a.get("status", "installed")
+            rows.append(
+                f"{a.get('app_id')}\t{a.get('name')}\t"
+                f"{platform}\t{status}")
+        return "\n".join(["id\tname\tplatform\tstatus"] + rows)
+    if command == "app-launch":
+        return (
+            f"app {resp.get('app_id')} launched "
+            f"(container {resp.get('container_id')}, "
+            f"pid {resp.get('pid')})")
+    if command == "app-terminate":
+        return f"app {resp.get('app_id')} terminated"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -487,7 +547,8 @@ def run(command: str, args: argparse.Namespace) -> int:
         target = args.health_socket
     elif (command in CONTROL_COMMANDS
           or command in VAULT_COMMANDS
-          or command in NUI_COMMANDS) and args.health_socket:
+          or command in NUI_COMMANDS
+          or command in APP_COMMANDS) and args.health_socket:
         print(
             "error: the health socket serves status/health only — "
             "control and vault commands use the main --socket",
@@ -920,6 +981,35 @@ def build_parser() -> argparse.ArgumentParser:
     vm.add_argument("--name", default="", help="Mount by volume name")
     vm.add_argument("mount_point", help="Mount point (created if missing)")
     vm.set_defaults(command="vault-volume-mount")
+
+    app = sub.add_parser(
+        "app", help="Install, list, and launch cross-platform apps "
+                    "(Android APK / Windows .exe/.msi)")
+    asub = app.add_subparsers(dest="app_cmd", required=True)
+
+    ai = asub.add_parser(
+        "install", help="Install an app from an APK or EXE/MSI file")
+    ai.add_argument("app_path", help="Path to the .apk / .exe / .msi file")
+    ai.add_argument("--name", default="",
+                    help="Override the app display name")
+    ai.add_argument("--sandbox", action="store_true", default=True,
+                    help="Run in a sandboxed container (default: true)")
+    ai.add_argument("--no-sandbox", dest="sandbox", action="store_false",
+                    help="Do not sandbox the app")
+    ai.set_defaults(command="app-install")
+
+    al = asub.add_parser("list", help="List installed apps")
+    al.set_defaults(command="app-list")
+
+    ar = asub.add_parser(
+        "launch", help="Launch an installed app by id")
+    ar.add_argument("app_id", help="The installed app id")
+    ar.set_defaults(command="app-launch")
+
+    at = asub.add_parser(
+        "terminate", help="Terminate a running app")
+    at.add_argument("app_id", help="The app id to terminate")
+    at.set_defaults(command="app-terminate")
 
     nui = sub.add_parser(
         "nui", help="NUI (.nstudio) import gate (ADR-0025) — validate or "

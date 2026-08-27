@@ -279,15 +279,15 @@ class ContainerManager:
     
     def app_launch(self, app_id: str) -> Optional[Container]:
         """Launch an app through the compatibility framework.
-        
+
         Resolves the app ID to a platform-specific launch configuration
         and creates a container with the appropriate command, capabilities,
         and settings.
-        
+
         Args:
-            app_id: App identifier (e.g. 'android:com.example.app', 
+            app_id: App identifier (e.g. 'android:com.example.app',
                     'windows:notepad.exe', 'nyrqis:calculator')
-        
+
         Returns:
             The running Container, or None if the app is not installed.
         """
@@ -297,14 +297,18 @@ class ContainerManager:
         if launch_info is None:
             logger.error(f"Cannot launch app: {app_id} not installed")
             return None
-        
+
         container_config = launch_info['container_config']
         # Attach overlay if rootfs is set
         if container_config.rootfs:
             self._setup_overlay_fn = self._setup_overlay
-        
+
         container = self.create(container_config)
         self.spawn(container)
+        # Track the running container in the app registry
+        if hasattr(self, "_apps") and app_id in self._apps:
+            self._apps[app_id]["container_id"] = container.id
+            self._apps[app_id]["status"] = "running"
         logger.info(f"Launched app {app_id} in container {container.id}")
         return container
     
@@ -634,6 +638,69 @@ class ContainerManager:
             os.waitpid(pid, os.WNOHANG)
         except (ChildProcessError, OSError):
             pass
+
+    # -- app compatibility --------------------------------------------
+
+    def register_app(self, app_info: dict, app_path: str,
+                     name: Optional[str] = None,
+                     sandbox: bool = True) -> str:
+        """Register an installed app in the manager's app registry.
+
+        Args:
+            app_info: Dict from ``analyze_apk`` or ``analyze_exe``.
+            app_path: Path to the binary on disk.
+            name: Optional display-name override.
+            sandbox: Whether to launch in a sandboxed container.
+
+        Returns:
+            The app_id string (e.g. ``android:com.example.app``).
+        """
+        if not hasattr(self, "_apps"):
+            self._apps = {}
+        compat = app_info.get("compatibility", {})
+        platform = compat.get("platform", "unknown")
+        package = app_info.get("package", app_info.get("name", "unknown"))
+        app_id = f"{platform}:{package}"
+        self._apps[app_id] = {
+            "app_id": app_id,
+            "name": name or app_info.get("name", package),
+            "version": app_info.get("version", "0.0.0"),
+            "path": app_path,
+            "platform": platform,
+            "compatibility": compat,
+            "sandbox": sandbox,
+            "status": "installed",
+            "container_id": None,
+        }
+        logger.info(f"Registered app {app_id} from {app_path}")
+        return app_id
+
+    def list_apps(self) -> list:
+        """Return a list of registered app dicts."""
+        if not hasattr(self, "_apps"):
+            return []
+        return list(self._apps.values())
+
+    def terminate_app(self, app_id: str) -> bool:
+        """Terminate a running app by id.
+
+        Returns True if the container was found and terminated, False if
+        the app is not running or not found.
+        """
+        if not hasattr(self, "_apps"):
+            return False
+        info = self._apps.get(app_id)
+        if info is None:
+            return False
+        cid = info.get("container_id")
+        if cid is None:
+            return False
+        container = self.containers.get(cid)
+        if container is not None and container.is_running():
+            self.terminate(container)
+        info["container_id"] = None
+        info["status"] = "installed"
+        return True
 
     def _cap_initialize(self, container: Container) -> None:
         """Initialize the container's control-plane capability grants.

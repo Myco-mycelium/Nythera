@@ -118,6 +118,17 @@ class ControlService:
             elif op == "container_kill":
                 self._container_kill(server, sender_path, msg.message_id,
                                      request)
+            elif op == "app_install":
+                self._app_install(server, sender_path, msg.message_id,
+                                  request)
+            elif op == "app_list":
+                self._app_list(server, sender_path, msg.message_id)
+            elif op == "app_launch":
+                self._app_launch(server, sender_path, msg.message_id,
+                                 request)
+            elif op == "app_terminate":
+                self._app_terminate(server, sender_path, msg.message_id,
+                                    request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -207,6 +218,157 @@ class ControlService:
             return
         self._save_state()
         self._reply(server, sender_path, call_id, {"ok": True})
+
+    def _app_install(self, server, sender_path: str, call_id: str,
+                      request: Dict[str, Any]) -> None:
+        app_path = request.get("app_path")
+        if not app_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "app_path is required",
+            })
+            return
+        try:
+            import os as _os
+            if not _os.path.isfile(app_path):
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "file not found: %s" % (app_path,),
+                })
+                return
+            from ui.app_compat import get_app_manager
+            mgr = get_app_manager()
+            app_id = mgr.install(app_path)
+            if app_id is None:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": "unsupported app format or install failed",
+                })
+                return
+            info = mgr.get_app(app_id)
+            app_dict = {
+                "name": info.name if info else app_path,
+                "version": info.version if info else "",
+                "compatibility": {
+                    "platform": info.platform.value if info else "unknown",
+                    "permissions": info.capabilities if info else [],
+                },
+            } if info else {}
+            # Also register in the container manager
+            if hasattr(self.container_manager, "register_app"):
+                self.container_manager.register_app(
+                    app_dict, app_path,
+                    name=request.get("name"),
+                    sandbox=request.get("sandbox", True),
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.error("ipc: app_install failed: %s", e)
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "app_install failed: %s" % (e,),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "app_id": app_id,
+            "app": app_dict,
+            "sandbox": request.get("sandbox", True),
+        })
+
+    def _app_list(self, server, sender_path: str, call_id: str) -> None:
+        try:
+            from ui.app_compat import get_app_manager
+            mgr = get_app_manager()
+            info_list = mgr.list_apps()
+            apps = [
+                {
+                    "app_id": a.app_id,
+                    "name": a.name,
+                    "platform": a.platform.value,
+                    "status": a.status.value,
+                    "compatibility": {
+                        "platform": a.platform.value,
+                        "permissions": a.capabilities,
+                    },
+                }
+                for a in info_list
+            ]
+        except Exception:
+            apps = []
+        # Merge with container manager's registry
+        if hasattr(self.container_manager, "list_apps"):
+            for a in self.container_manager.list_apps():
+                if not any(x.get("app_id") == a.get("app_id") for x in apps):
+                    apps.append(a)
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "apps": apps,
+        })
+
+    def _app_launch(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        app_id = request.get("app_id")
+        if not app_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "app_id is required",
+            })
+            return
+        # Try the container manager first (apps registered via register_app)
+        container = self.container_manager.app_launch(app_id)
+        if container is None:
+            # Fall back to the AppManager (apps installed via mgr.install)
+            try:
+                from ui.app_compat import get_app_manager
+                mgr = get_app_manager()
+                launch_info = mgr.launch(app_id)
+                if launch_info is not None:
+                    from backend.container import ContainerConfig
+                    config = launch_info.get("container_config")
+                    if config is not None:
+                        container = self.container_manager.create(config)
+                        self.container_manager.spawn(container)
+            except Exception:  # noqa: BLE001
+                pass
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown app: %r" % (app_id,),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "app_id": app_id,
+            "container_id": container.id,
+            "pid": container.pid,
+        })
+
+    def _app_terminate(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        app_id = request.get("app_id")
+        if not app_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "app_id is required",
+            })
+            return
+        ok = self.container_manager.terminate_app(app_id)
+        if not ok:
+            # Try the AppManager
+            try:
+                from ui.app_compat import get_app_manager
+                mgr = get_app_manager()
+                mgr.terminate(app_id)
+                ok = True
+            except Exception:  # noqa: BLE001
+                pass
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": ok,
+            "app_id": app_id,
+        })
 
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
