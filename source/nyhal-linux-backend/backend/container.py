@@ -84,7 +84,7 @@ class ContainerConfig:
     # hosts where enforcement is impossible and the operator accepts
     # the conformance consequence.
     strict_seccomp: bool = True
-    default_deny: bool = False  # default-deny allowlist posture (opt-in)
+    default_deny: bool = True   # default-deny allowlist posture (NPS-017 §5.1)
     network: bool = False  # own network namespace (loopback only), opt-in
     app_path: Optional[str] = None  # Nyrqis application path (.napp binary)
     # Overlay filesystem: when ``rootfs`` is set, the container gets a

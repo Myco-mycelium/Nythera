@@ -191,6 +191,16 @@ class TestContainerPrimitives(unittest.TestCase):
         # but the method should not crash
         # (the container is created but may fail to spawn)
 
+    def test_default_deny_is_default(self):
+        """ContainerConfig.default_deny defaults to True (NPS-017 §5.1)."""
+        config = ContainerConfig()
+        self.assertTrue(config.default_deny)
+
+    def test_default_deny_can_be_disabled(self):
+        """ContainerConfig.default_deny can be set to False."""
+        config = ContainerConfig(default_deny=False)
+        self.assertFalse(config.default_deny)
+
 
 class TestAppCLI(unittest.TestCase):
     """Test the nyrqisctl app CLI commands: build_payload, format_human."""
