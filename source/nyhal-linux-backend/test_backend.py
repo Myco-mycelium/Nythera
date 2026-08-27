@@ -6830,8 +6830,8 @@ class TestOverlayFilesystem(unittest.TestCase):
         self.ov.write("/shared/new.txt", b"changed")
         self.assertEqual(self.ov.read("/shared/new.txt"), b"changed")
 
-        # Restore snapshot
-        self.ov.restore_snapshot(snap)
+        # Restore overlay snapshot
+        self.ov.restore_snapshot_data(snap)
         self.assertEqual(self.ov.read("/shared/new.txt"), b"new")
         self.assertFalse(self.ov.exists("/shared/base.txt"))
 

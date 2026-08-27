@@ -532,7 +532,7 @@ class OverlayFilesystem:
                     }
             return {"container_id": self.container_id, "entries": snap}
 
-    def restore_snapshot(self, snap: Dict[str, Any]) -> None:
+    def restore_snapshot_data(self, snap: Dict[str, Any]) -> None:
         """Restore the upper layer from a snapshot dict."""
         with self._lock:
             self._upper.clear()
@@ -596,3 +596,66 @@ class OverlayFilesystem:
                 "deleted": deleted,
                 "dirs": dirs,
             }
+
+    # -- NyFS compatibility layer ----------------------------------------
+    # The vault storage service expects certain NyFS methods on the
+    # filesystem object.  These delegate to the lower NyFS so the
+    # overlay can be used transparently in the storage service.
+
+    @property
+    def dirty(self) -> bool:
+        """Whether the overlay has unsaved changes."""
+        return bool(self._upper)
+
+    @property
+    def base_path(self):
+        """Delegate to the lower filesystem's base_path."""
+        return self.lower.base_path
+
+    @property
+    def block_size(self) -> int:
+        """Delegate to the lower filesystem's block_size."""
+        return self.lower.block_size
+
+    @property
+    def dek(self):
+        """Delegate to the lower filesystem's dek."""
+        return self.lower.dek
+
+    def save(self, **kwargs) -> None:
+        """Save the lower filesystem (the overlay's upper layer is
+        in-memory only — persistence is a lower-layer concern."""
+        self.lower.save(**kwargs)
+
+    def walk(self) -> Dict[str, Any]:
+        """Walk the merged filesystem tree (delegates to lower with
+        upper modifications applied)."""
+        result = self.lower.walk()
+        # Apply upper-layer changes
+        for path, entry in self._upper.items():
+            if entry.deleted:
+                result.pop(path, None)
+            elif entry.kind == "file":
+                result[path] = entry  # simplified — real impl would
+                # need a full inode-like object
+        return result
+
+    def create_snapshot(self, snapshot_id=None):
+        """Delegate snapshot creation to the lower filesystem."""
+        return self.lower.create_snapshot(snapshot_id)
+
+    def restore_snapshot(self, snapshot_id):
+        """Restore from an overlay snapshot (dict) or delegate to lower."""
+        if isinstance(snapshot_id, dict):
+            # Overlay snapshot (from self.snapshot())
+            self.restore_snapshot_data(snapshot_id)
+            return
+        return self.lower.restore_snapshot(snapshot_id)
+
+    def list_snapshots(self):
+        """Delegate snapshot listing to the lower filesystem."""
+        return self.lower.list_snapshots()
+
+    def delete_snapshot(self, snapshot_id):
+        """Delegate snapshot deletion to the lower filesystem."""
+        return self.lower.delete_snapshot(snapshot_id)

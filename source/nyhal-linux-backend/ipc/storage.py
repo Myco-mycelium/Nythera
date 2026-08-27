@@ -936,12 +936,31 @@ class StorageService:
                 "ok": False, "error": str(e)})
             return
         handle = uuid.uuid4().hex
-        self._handles[handle] = {"volume_id": volume_id,
-                                 "container": sender}
+        # Overlay mode (container-specific writable layer): when the
+        # caller requests overlay:true, the handle wraps an
+        # OverlayFilesystem on top of the shared NyFS, giving the
+        # container its own writable view without mutating the base.
+        use_overlay = bool(request.get("overlay"))
+        overlay = None
+        if use_overlay:
+            try:
+                from fuse.overlay import OverlayFilesystem
+                nyfs = self._ensure_nyfs(record)
+                if nyfs is not None:
+                    overlay = OverlayFilesystem(nyfs,
+                                               container_id=sender)
+            except Exception as e:
+                logger.warning("volume_open overlay failed: %s", e)
+        self._handles[handle] = {
+            "volume_id": volume_id,
+            "container": sender,
+            "overlay": overlay,
+        }
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "handle": handle,
             "volume_id": volume_id,
+            "overlay": use_overlay and overlay is not None,
             # ADR-0024: the service advertises the streaming data
             # plane so a NEW client only streams against a peer that
             # understands it (a client that never sees the flag keeps
@@ -1661,6 +1680,12 @@ class StorageService:
                 "error": "volume has no byte backend (registry-only)",
             })
             return None
+        # Overlay mode: if the handle has an overlay, return it instead
+        # of the raw NyFS — all I/O goes through the container's
+        # writable layer.
+        overlay = binding.get("overlay")
+        if overlay is not None:
+            return record, overlay
         return record, nyfs
 
     @staticmethod
