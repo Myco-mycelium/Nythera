@@ -267,6 +267,103 @@ class NstudioDocument:
                 return found
         return None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the document back to a JSON-compatible dict.
+
+        This is the inverse of ``_from_dict``: a round-trip
+        ``loads(json.dumps(doc.to_dict()))`` produces an equivalent
+        document.
+        """
+        def _component_to_dict(c: NstudioComponent) -> Dict[str, Any]:
+            d: Dict[str, Any] = {
+                "id": c.id,
+                "type": c.type,
+            }
+            if c.properties:
+                d["properties"] = c.properties
+            if c.layout:
+                d["layout"] = c.layout
+            if c.events:
+                d["events"] = c.events
+            if c.children:
+                d["children"] = [_component_to_dict(ch) for ch in c.children]
+            if c.component_ref is not None:
+                d["componentRef"] = c.component_ref
+            if c.overrides:
+                d["overrides"] = c.overrides
+            return d
+
+        out: Dict[str, Any] = {
+            "version": self.version,
+        }
+        if self.project:
+            out["project"] = self.project
+        if self.themes:
+            out["themes"] = self.themes
+        if self.states:
+            out["states"] = self.states
+        if self.state_scopes:
+            out["stateScopes"] = self.state_scopes
+        if self.locales:
+            out["locales"] = self.locales
+        if self.resources:
+            out["resources"] = self.resources
+        if self.animations:
+            anims = []
+            for a in self.animations:
+                ad: Dict[str, Any] = {
+                    "id": a.id,
+                    "target": a.target,
+                    "property": a.property,
+                }
+                # Only include non-default timing values
+                if a.duration != 300:
+                    ad["duration"] = a.duration
+                if a.delay != 0:
+                    ad["delay"] = a.delay
+                if a.easing != "ease-in-out":
+                    ad["easing"] = a.easing
+                if a.repeat != 0:
+                    ad["repeat"] = a.repeat
+                if a.direction != "forward":
+                    ad["direction"] = a.direction
+                if a.keyframes:
+                    ad["keyframes"] = a.keyframes
+                anims.append(ad)
+            out["animations"] = anims
+        if self.behaviors:
+            behs = []
+            for b in self.behaviors:
+                bd: Dict[str, Any] = {"id": b.id}
+                if b.condition is not None:
+                    bd["condition"] = b.condition
+                if b.actions:
+                    bd["actions"] = b.actions
+                else:
+                    bd["action"] = b.action
+                behs.append(bd)
+            out["behaviors"] = behs
+        if self.bindings:
+            out["bindings"] = [
+                {"component": b.component, "property": b.property,
+                 "state": b.state}
+                for b in self.bindings
+            ]
+        if self.reusable_components:
+            out["components"] = [
+                _component_to_dict(c) for c in self.reusable_components
+            ]
+        if self.screens:
+            out["screens"] = [
+                {
+                    "id": s.id,
+                    "size": s.size,
+                    "root": _component_to_dict(s.root),
+                }
+                for s in self.screens
+            ]
+        return out
+
     def resolve_actions(self, behavior_id: str) -> List[Tuple[str, str, Dict[str, Any]]]:
         """Resolve a behavior to its action list — the single ``action``
         or the ``actions`` chain (NUI-SCHEMA §7.3) — with any

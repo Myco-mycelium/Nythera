@@ -585,13 +585,13 @@ class AppleCompositor:
     def _render_standalone_window(self, img, draw, x, y, w, h, props, comp,
                                    font, fs, ft):
         """Render a standalone Window component (not managed by session)."""
-        Image, ImageDraw, _, _ = _pil()
+        Image, ImageDraw, _, ImageFilter = _pil()
         r = int(APPLE_RADIUS_XL * self.scale)
         titlebar_h = int(38 * self.scale)
 
         # Shadow
         shadow = _create_shadow(
-            Image, Image.new("RGBA", (1, 1)).filter,
+            Image, ImageFilter,
             w, h, (0, 0, 0), 45, (0, int(6 * self.scale)),
             int(24 * self.scale), r)
 
