@@ -553,6 +553,74 @@ class TestLSMPolicy(unittest.TestCase):
         # Should still have deny paths
         self.assertIn("deny /proc/sysrq-trigger", text)
 
+    def test_reload_policy_refreshes_lsm(self):
+        """reload_policy regenerates LSM files from current capabilities."""
+        from backend.capability import CapabilityManager, Capability
+        cap_mgr = CapabilityManager()
+        manager = ContainerManager(capability_manager=cap_mgr)
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
+        )
+        container = manager.create(config)
+        # Grant initial capabilities
+        cap_mgr.grant_capability(container.id, Capability.CAP_FILESYSTEM_READ)
+        cap_mgr.grant_capability(container.id, Capability.CAP_NETWORK_SOCKET)
+        manager._setup_lsm(container)
+        old_aa = config.aa_profile
+        # Revoke network capability and reload
+        cap_mgr.revoke_capability(container.id, Capability.CAP_NETWORK_SOCKET)
+        result = manager.reload_policy(container)
+        self.assertTrue(result)
+        # New profile should be different (no network rules)
+        self.assertNotEqual(config.aa_profile, old_aa)
+        with open(config.aa_profile) as f:
+            text = f.read()
+        self.assertNotIn("network inet stream", text)
+        # Old file should have been cleaned up
+        import os
+        self.assertFalse(os.path.exists(old_aa))
+
+    def test_revoke_and_reload(self):
+        """revoke_and_reload revokes capability and refreshes LSM."""
+        from backend.capability import CapabilityManager, Capability
+        cap_mgr = CapabilityManager()
+        manager = ContainerManager(capability_manager=cap_mgr)
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
+        )
+        container = manager.create(config)
+        cap_mgr.grant_capability(container.id, Capability.CAP_FILESYSTEM_READ)
+        cap_mgr.grant_capability(container.id, Capability.CAP_NETWORK_SOCKET)
+        manager._setup_lsm(container)
+        # Revoke via the convenience method
+        result = manager.revoke_and_reload(
+            container, Capability.CAP_NETWORK_SOCKET
+        )
+        self.assertTrue(result)
+        self.assertNotIn(
+            Capability.CAP_NETWORK_SOCKET,
+            cap_mgr.get_capabilities(container.id),
+        )
+        # Verify the new profile reflects the revocation
+        with open(config.aa_profile) as f:
+            text = f.read()
+        self.assertNotIn("network inet stream", text)
+        self.assertIn("Network rules", text)  # section header still present
+
+    def test_reload_policy_returns_true(self):
+        """reload_policy returns True on success."""
+        from backend.capability import CapabilityManager, Capability
+        cap_mgr = CapabilityManager()
+        manager = ContainerManager(capability_manager=cap_mgr)
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ"],
+        )
+        container = manager.create(config)
+        cap_mgr.grant_capability(container.id, Capability.CAP_FILESYSTEM_READ)
+        manager._setup_lsm(container)
+        result = manager.reload_policy(container)
+        self.assertTrue(result)
+
 
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension

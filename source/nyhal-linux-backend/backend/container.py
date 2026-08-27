@@ -739,6 +739,68 @@ class ContainerManager:
             return
         self.capability_manager.reset_container(container.id)
 
+    def reload_policy(self, container: Container) -> bool:
+        """Regenerate and re-apply the LSM policy for a running container.
+
+        Called after a capability grant or revocation to update the
+        container's AppArmor / SELinux policy at runtime.  Seccomp-BPF
+        filters are one-shot (cannot be removed once installed), so this
+        only refreshes the LSM layer.
+
+        Returns True on success, False on failure (logged, never raises).
+        """
+        try:
+            from backend.lsm import (
+                build_lsm_policy, AppArmorProfile, SEPolicy, lsm_audit,
+            )
+            from backend.capability import Capability
+            # Clean up old LSM files
+            for path in list(self._lsm_files):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            self._lsm_files.clear()
+            # Derive current capability set from the capability manager
+            caps = set()
+            if self.capability_manager is not None:
+                for c in self.capability_manager.get_capabilities(container.id):
+                    caps.add(c)
+            policy = build_lsm_policy(container.id, caps)
+            warnings = lsm_audit(policy)
+            for w in warnings:
+                logger.warning(f"LSM audit ({container.id}): {w}")
+            # Write AppArmor profile
+            aa_dir = Path(tempfile.mkdtemp(prefix=f"nyrqis-aa-{container.id}-"))
+            aa_profile = AppArmorProfile(policy)
+            aa_path = str(aa_dir / f"nyrqis.{container.id}")
+            aa_profile.write(aa_path)
+            self._lsm_files.append(aa_path)
+            container.config.aa_profile = aa_path
+            # Write SELinux module
+            se_dir = Path(tempfile.mkdtemp(prefix=f"nyrqis-se-{container.id}-"))
+            se_policy = SEPolicy(policy)
+            se_paths = se_policy.write(str(se_dir))
+            for p in se_paths.values():
+                self._lsm_files.append(p)
+            container.config.se_module_dir = str(se_dir)
+            # Persist the policy for audit
+            policy_json = os.path.join(str(se_dir), "lsm_policy.json")
+            with open(policy_json, "w", encoding="utf-8") as f:
+                json.dump(policy.to_dict(), f, indent=2)
+            self._lsm_files.append(policy_json)
+            logger.info(
+                f"LSM policy reloaded for {container.id} "
+                f"({len(caps)} capabilities)"
+            )
+            return True
+        except ImportError:
+            logger.debug(f"LSM module not available for {container.id}")
+            return False
+        except Exception as e:
+            logger.warning(f"LSM policy reload failed for {container.id}: {e}")
+            return False
+
     def _ipc_register(self, container: Container) -> None:
         """Register a spawned container in the transport sender registry.
 
@@ -755,6 +817,36 @@ class ContainerManager:
             return
         if container.pid is not None:
             self.ipc_registry.register(container.pid, container.id)
+
+    def revoke_and_reload(self, container: Container,
+                          capability) -> bool:
+        """Revoke a capability from a running container and reload its LSM policy.
+
+        This is the runtime capability-revocation entry point: it updates
+        the capability manager's grant set AND regenerates the container's
+        AppArmor/SELinux policies so the new capability set takes effect
+        immediately.
+
+        Seccomp-BPF filters are one-shot (cannot be removed or weakened
+        once installed), so the seccomp layer is NOT changed — only the
+        LSM layer is updated.  A full seccomp reload requires a container
+        restart.
+
+        Args:
+            container: The running container.
+            capability: A ``Capability`` enum value to revoke.
+
+        Returns:
+            True if the revocation and reload succeeded.
+        """
+        from backend.capability import Capability
+        if isinstance(capability, str):
+            capability = Capability(capability)
+        if self.capability_manager is not None:
+            self.capability_manager.revoke_capability(
+                container.id, capability
+            )
+        return self.reload_policy(container)
 
     def _ipc_unregister(self, container: Container) -> None:
         """Drop the container's pid from the transport sender registry
