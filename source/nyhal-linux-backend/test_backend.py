@@ -516,6 +516,43 @@ class TestLSMPolicy(unittest.TestCase):
         self.assertTrue(len(policy.linux_capabilities) > 0)
         self.assertTrue(len(policy.deny_paths) > 0)
 
+    def test_container_setup_lsm_generates_files(self):
+        """_setup_lsm writes AppArmor and SELinux files to disk."""
+        import tempfile, os
+        manager = ContainerManager()
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
+        )
+        container = manager.create(config)
+        manager._setup_lsm(container)
+        # AppArmor profile should have been written
+        self.assertIsNotNone(config.aa_profile)
+        self.assertTrue(os.path.isfile(config.aa_profile))
+        with open(config.aa_profile) as f:
+            text = f.read()
+        self.assertIn("profile nyrqis.", text)
+        self.assertIn("network inet stream", text)
+        # SELinux module directory should exist
+        self.assertIsNotNone(config.se_module_dir)
+        self.assertTrue(os.path.isdir(config.se_module_dir))
+        # LSM files tracked for cleanup
+        self.assertTrue(len(manager._lsm_files) > 0)
+        # Cleanup
+        manager._cleanup_policy_files()
+        self.assertEqual(len(manager._lsm_files), 0)
+
+    def test_container_setup_lsm_no_caps(self):
+        """_setup_lsm works with no capabilities (minimal policy)."""
+        manager = ContainerManager()
+        config = ContainerConfig()  # no capabilities
+        container = manager.create(config)
+        manager._setup_lsm(container)
+        self.assertIsNotNone(config.aa_profile)
+        with open(config.aa_profile) as f:
+            text = f.read()
+        # Should still have deny paths
+        self.assertIn("deny /proc/sysrq-trigger", text)
+
 
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension

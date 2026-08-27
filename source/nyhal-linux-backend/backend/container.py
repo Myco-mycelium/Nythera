@@ -92,6 +92,11 @@ class ContainerConfig:
     # The overlay is a ``fuse.overlay.OverlayFilesystem`` instance
     # attached to ``container.overlay`` after spawn.
     rootfs: Optional[str] = None  # base path for overlay (None = no overlay)
+    # LSM (Linux Security Module) — set by _setup_lsm during spawn;
+    # the launcher uses these to apply the container's AppArmor/SELinux
+    # policy (second data-plane enforcement layer, NPS-017 §4.2).
+    aa_profile: Optional[str] = None   # path to AppArmor profile file
+    se_module_dir: Optional[str] = None  # path to SELinux module directory
 
 
 class Container:
@@ -230,6 +235,7 @@ class ContainerManager:
         self.cgroup_root = self._get_cgroup_root()
         self._policy_files: List[str] = []  # seccomp policy temp files to clean up
         self._bpf_files: List[str] = []  # serialized seccomp programs (Rust launcher)
+        self._lsm_files: List[str] = []  # LSM policy files (AppArmor/SELinux)
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
     
     def _detect_cgroups_v2(self) -> bool:
@@ -327,6 +333,7 @@ class ContainerManager:
         try:
             self._setup_cgroups(container)
             self._setup_overlay(container)
+            self._setup_lsm(container)
             self._spawn(container)  # sets container.pid
             self._ipc_register(container)
             self._cap_initialize(container)
@@ -965,14 +972,15 @@ class ContainerManager:
         return path
     
     def _cleanup_policy_files(self) -> None:
-        """Remove seccomp policy + BPF temp files."""
-        for path in self._policy_files + self._bpf_files:
+        """Remove seccomp policy + BPF + LSM temp files."""
+        for path in self._policy_files + self._bpf_files + self._lsm_files:
             try:
                 os.unlink(path)
             except OSError as e:
                 logger.warning(f"Failed to remove policy file {path}: {e}")
         self._policy_files.clear()
         self._bpf_files.clear()
+        self._lsm_files.clear()
     
     def _setup_overlay(self, container: Container) -> None:
         """Create an overlay filesystem for the container if rootfs is set.
@@ -1002,6 +1010,63 @@ class ContainerManager:
         except Exception as e:
             logger.warning(f"Container {container.id} overlay setup failed: "
                            f"{e} — running without overlay")
+
+    def _setup_lsm(self, container: Container) -> None:
+        """Generate and stage an LSM policy for the container.
+
+        Produces an AppArmor profile (and optionally an SELinux module)
+        from the container's capability set and writes them to the
+        container's policy directory.  The launcher picks them up via
+        ``--aa-profile`` / ``--se-module`` flags.
+
+        A failure here is logged and swallowed — the container still
+        runs without the LSM layer (seccomp + control plane still apply).
+        """
+        try:
+            from backend.lsm import (
+                build_lsm_policy,
+                AppArmorProfile,
+                SEPolicy,
+                lsm_audit,
+            )
+            from backend.capability import Capability
+            # Derive capabilities from the container config
+            caps = set()
+            for cap_name in (container.config.capabilities or []):
+                try:
+                    caps.add(Capability(cap_name))
+                except ValueError:
+                    pass
+            policy = build_lsm_policy(container.id, caps)
+            # Audit the policy
+            warnings = lsm_audit(policy)
+            for w in warnings:
+                logger.warning(f"LSM audit ({container.id}): {w}")
+            # Write AppArmor profile
+            aa_dir = Path(tempfile.mkdtemp(prefix=f"nyrqis-aa-{container.id}-"))
+            aa_profile = AppArmorProfile(policy)
+            aa_path = str(aa_dir / f"nyrqis.{container.id}")
+            aa_profile.write(aa_path)
+            self._lsm_files.append(aa_path)
+            container.config.aa_profile = aa_path
+            logger.info(f"AppArmor profile for {container.id}: {aa_path}")
+            # Write SELinux module
+            se_dir = Path(tempfile.mkdtemp(prefix=f"nyrqis-se-{container.id}-"))
+            se_policy = SEPolicy(policy)
+            se_paths = se_policy.write(str(se_dir))
+            for p in se_paths.values():
+                self._lsm_files.append(p)
+            container.config.se_module_dir = str(se_dir)
+            logger.info(f"SELinux module for {container.id}: {se_dir}")
+            # Persist the LSM policy as JSON for audit
+            policy_json = os.path.join(str(se_dir), "lsm_policy.json")
+            with open(policy_json, "w", encoding="utf-8") as f:
+                json.dump(policy.to_dict(), f, indent=2)
+            self._lsm_files.append(policy_json)
+        except ImportError:
+            logger.debug(f"LSM module not available for {container.id}")
+        except Exception as e:
+            logger.warning(f"LSM setup failed for {container.id}: {e}")
 
     def _spawn(self, container: Container):
         """Spawn the container's main process in isolated namespaces.
