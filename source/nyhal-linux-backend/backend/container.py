@@ -277,6 +277,37 @@ class ContainerManager:
             self._cleanup_cgroups(container)
             self._cleanup_policy_files()
     
+    def app_launch(self, app_id: str) -> Optional[Container]:
+        """Launch an app through the compatibility framework.
+        
+        Resolves the app ID to a platform-specific launch configuration
+        and creates a container with the appropriate command, capabilities,
+        and settings.
+        
+        Args:
+            app_id: App identifier (e.g. 'android:com.example.app', 
+                    'windows:notepad.exe', 'nyrqis:calculator')
+        
+        Returns:
+            The running Container, or None if the app is not installed.
+        """
+        from ui.app_compat import get_app_manager
+        manager = get_app_manager()
+        launch_info = manager.launch(app_id)
+        if launch_info is None:
+            logger.error(f"Cannot launch app: {app_id} not installed")
+            return None
+        
+        container_config = launch_info['container_config']
+        # Attach overlay if rootfs is set
+        if container_config.rootfs:
+            self._setup_overlay_fn = self._setup_overlay
+        
+        container = self.create(container_config)
+        self.spawn(container)
+        logger.info(f"Launched app {app_id} in container {container.id}")
+        return container
+    
     def spawn(self, container: Container) -> Container:
         """Start a container without waiting; the process runs detached.
         

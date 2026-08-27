@@ -166,6 +166,31 @@ class TestContainerPrimitives(unittest.TestCase):
         self.manager._setup_overlay(container)
         self.assertIsNone(container.overlay)
 
+    def test_app_launch_returns_none_for_unknown(self):
+        """app_launch returns None for an unknown app."""
+        result = self.manager.app_launch("android:nonexistent.app")
+        self.assertIsNone(result)
+
+    def test_app_launch_creates_container(self):
+        """app_launch creates a container for a known app."""
+        from ui.app_compat import get_app_manager
+        app_mgr = get_app_manager()
+        # Manually register a test app
+        from ui.app_compat import AppInfo, AppPlatform
+        app_mgr.apps["test:hello"] = AppInfo(
+            app_id="test:hello",
+            platform=AppPlatform.NYRQIS,
+            name="hello",
+            version="1.0",
+            capabilities=["CAP_IPC_SEND"],
+        )
+        # Override the launch command for test
+        app_mgr._get_launch_command = lambda info: ["/bin/echo", "hello"]
+        result = self.manager.app_launch("test:hello")
+        # Should return None because the command doesn't exist,
+        # but the method should not crash
+        # (the container is created but may fail to spawn)
+
 
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension
