@@ -57,10 +57,16 @@ def _pil():
 # Apple Design Tokens
 # ---------------------------------------------------------------------------
 
-APPLE_RADIUS = 12           # Standard corner radius
-APPLE_RADIUS_SM = 8         # Small radius (buttons, inputs)
-APPLE_RADIUS_LG = 16        # Large radius (modals, panels)
-APPLE_RADIUS_XL = 20        # Extra-large (windows, sheets)
+from ui.hig import (
+    CORNER_RADIUS_SM, CORNER_RADIUS_MD, CORNER_RADIUS_LG,
+    CORNER_RADIUS_XL, SPACING_SM, SPACING_MD, SPACING_LG,
+    MINIMUM_TAP_TARGET,
+)
+
+APPLE_RADIUS = CORNER_RADIUS_MD       # Standard corner radius
+APPLE_RADIUS_SM = CORNER_RADIUS_SM    # Small radius (buttons, inputs)
+APPLE_RADIUS_LG = CORNER_RADIUS_LG    # Large radius (modals, panels)
+APPLE_RADIUS_XL = CORNER_RADIUS_XL    # Extra-large (windows, sheets)
 
 APPLE_SHADOW_OFFSET = (0, 4)
 APPLE_SHADOW_BLUR = 16
@@ -73,27 +79,35 @@ VIBRANCY_ALPHA = 210        # 82% opacity for panels
 VIBRANCY_BLUR_RADIUS = 20   # Gaussian blur radius for background
 
 # Apple system colors (dark mode)
+from ui.hig import (
+    SYSTEM_BLUE, SYSTEM_GREEN, SYSTEM_RED, SYSTEM_ORANGE,
+    SYSTEM_YELLOW, SYSTEM_PURPLE, SYSTEM_PINK, SYSTEM_TEAL,
+    LABEL, SECONDARY_LABEL, TERTIARY_LABEL,
+    SYSTEM_BACKGROUND, SECONDARY_SYSTEM_BACKGROUND,
+    SYSTEM_GROUPED_BACKGROUND, SEPARATOR, OPAQUE_SEPARATOR,
+)
+
 APPLE_COLORS_DARK = {
-    "background":        (28,  28,  30),
-    "surface":           (44,  44,  46),
+    "background":        SYSTEM_BACKGROUND.dark,
+    "surface":           SECONDARY_SYSTEM_BACKGROUND.dark,
     "surface_elevated":  (58,  58,  60),
     "surface_overlay":   (36,  36,  38),
     "surface_vibrant":   (28,  28,  30, VIBRANCY_ALPHA),
-    "border":            (56,  56,  58),
+    "border":            OPAQUE_SEPARATOR.dark,
     "hairline":          (88,  88,  90),
-    "text_primary":      (255, 255, 255),
-    "text_secondary":    (142, 142, 147),
-    "text_tertiary":     (99,  99,  102),
-    "accent":            (10,  132, 255),
+    "text_primary":      LABEL.dark,
+    "text_secondary":    SECONDARY_LABEL.dark,
+    "text_tertiary":     TERTIARY_LABEL.dark,
+    "accent":            SYSTEM_BLUE.dark,
     "accent_hover":      (30,  152, 255),
     "accent_pressed":    (0,  112, 210),
-    "green":             (48,  209, 88),
-    "red":               (255, 69,  58),
-    "orange":            (255, 159, 10),
-    "yellow":            (255, 214, 10),
-    "purple":            (191, 90,  242),
-    "pink":              (255, 55,  95),
-    "teal":              (100, 210, 255),
+    "green":             SYSTEM_GREEN.dark,
+    "red":               SYSTEM_RED.dark,
+    "orange":            SYSTEM_ORANGE.dark,
+    "yellow":            SYSTEM_YELLOW.dark,
+    "purple":            SYSTEM_PURPLE.dark,
+    "pink":              SYSTEM_PINK.dark,
+    "teal":              SYSTEM_TEAL.dark,
     "button_bg":         (58,  58,  60),
     "button_text":       (255, 255, 255),
     "input_bg":          (28,  28,  30),
@@ -120,26 +134,26 @@ APPLE_COLORS_DARK = {
 
 # Apple system colors (light mode)
 APPLE_COLORS_LIGHT = {
-    "background":        (242, 242, 247),
-    "surface":           (255, 255, 255),
+    "background":        SYSTEM_BACKGROUND.light,
+    "surface":           SECONDARY_SYSTEM_BACKGROUND.light,
     "surface_elevated":  (255, 255, 255),
     "surface_overlay":   (242, 242, 247),
     "surface_vibrant":   (255, 255, 255, VIBRANCY_ALPHA),
-    "border":            (210, 210, 215),
+    "border":            OPAQUE_SEPARATOR.light,
     "hairline":          (200, 200, 205),
-    "text_primary":      (0,   0,   0),
-    "text_secondary":    (120, 120, 128),
-    "text_tertiary":     (174, 174, 178),
-    "accent":            (0,   122, 255),
+    "text_primary":      LABEL.light,
+    "text_secondary":    SECONDARY_LABEL.light,
+    "text_tertiary":     TERTIARY_LABEL.light,
+    "accent":            SYSTEM_BLUE.light,
     "accent_hover":      (0,   102, 235),
     "accent_pressed":    (0,   82,  215),
-    "green":             (52,  199, 89),
-    "red":               (255, 59,  48),
-    "orange":            (255, 149, 0),
-    "yellow":            (255, 204, 0),
-    "purple":            (175, 82,  222),
-    "pink":              (255, 45,  85),
-    "teal":              (90,  200, 250),
+    "green":             SYSTEM_GREEN.light,
+    "red":               SYSTEM_RED.light,
+    "orange":            SYSTEM_ORANGE.light,
+    "yellow":            SYSTEM_YELLOW.light,
+    "purple":            SYSTEM_PURPLE.light,
+    "pink":              SYSTEM_PINK.light,
+    "teal":              SYSTEM_TEAL.light,
     "button_bg":         (240, 240, 245),
     "button_text":       (0,   0,   0),
     "input_bg":          (255, 255, 255),
@@ -351,14 +365,15 @@ class AppleCompositor:
         # Render each visible window
         draw = ImageDraw.Draw(img)
 
-        # Load fonts
+        # Load fonts — Apple HIG typography system
+        from ui.hig import BODY, CAPTION_2, HEADLINE, TITLE_2, LARGE_TITLE
         _sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         _sans_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        font = self._get_font(_sans, int(13 * self.scale))
-        font_small = self._get_font(_sans, int(11 * self.scale))
-        font_title = self._get_font(_sans_bold, int(14 * self.scale))
-        font_large = self._get_font(_sans_bold, int(24 * self.scale))
-        font_huge = self._get_font(_sans_bold, int(48 * self.scale))
+        font = self._get_font(_sans, int(BODY.size * self.scale))
+        font_small = self._get_font(_sans, int(CAPTION_2.size * self.scale))
+        font_title = self._get_font(_sans_bold, int(HEADLINE.size * self.scale))
+        font_large = self._get_font(_sans_bold, int(TITLE_2.size * self.scale))
+        font_huge = self._get_font(_sans_bold, int(LARGE_TITLE.size * self.scale))
 
         # Render document component tree (non-window elements: taskbar, etc.)
         self._render_component_tree(img, draw, screen.root, font, font_small,
@@ -397,13 +412,14 @@ class AppleCompositor:
         draw = ImageDraw.Draw(img)
 
         # Fonts
+        from ui.hig import BODY, CAPTION_2, HEADLINE, TITLE_2, LARGE_TITLE
         _sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         _sans_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        font = self._get_font(_sans, int(13 * self.scale))
-        font_small = self._get_font(_sans, int(11 * self.scale))
-        font_title = self._get_font(_sans_bold, int(14 * self.scale))
-        font_large = self._get_font(_sans_bold, int(24 * self.scale))
-        font_huge = self._get_font(_sans_bold, int(48 * self.scale))
+        font = self._get_font(_sans, int(BODY.size * self.scale))
+        font_small = self._get_font(_sans, int(CAPTION_2.size * self.scale))
+        font_title = self._get_font(_sans_bold, int(HEADLINE.size * self.scale))
+        font_large = self._get_font(_sans_bold, int(TITLE_2.size * self.scale))
+        font_huge = self._get_font(_sans_bold, int(LARGE_TITLE.size * self.scale))
 
         self._render_component_tree(img, draw, screen.root, font, font_small,
                                      font_title, font_large, doc)

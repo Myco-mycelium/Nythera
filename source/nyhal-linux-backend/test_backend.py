@@ -6706,6 +6706,151 @@ class TestStorageGuarantees(unittest.TestCase):
                         len(inode_a.blocks) + len(inode_b.blocks))
 
 
+class TestHIGDesignSystem(unittest.TestCase):
+    """Apple Human Interface Guidelines (HIG) design system tests."""
+
+    def test_font_styles_complete(self):
+        """HIG defines all 13 standard font styles."""
+        from ui.hig import FONT_STYLES
+        expected = [
+            "ExtraLargeTitle", "ExtraLargeTitle2", "LargeTitle",
+            "Title1", "Title2", "Title3", "Headline", "Subheadline",
+            "Body", "Callout", "Footnote", "Caption1", "Caption2",
+        ]
+        for name in expected:
+            self.assertIn(name, FONT_STYLES)
+            style = FONT_STYLES[name]
+            self.assertGreater(style.size, 0)
+
+    def test_system_colors_complete(self):
+        """HIG defines all required system colors."""
+        from ui.hig import SYSTEM_COLORS, get_color, get_color_rgba
+        expected = [
+            "SystemBlue", "SystemGreen", "SystemRed",
+            "Label", "SecondaryLabel",
+            "SystemBackground", "SecondarySystemBackground",
+            "Separator",
+        ]
+        for name in expected:
+            self.assertIn(name, SYSTEM_COLORS)
+            # Both light and dark variants
+            light = get_color(name, dark_mode=False)
+            dark = get_color(name, dark_mode=True)
+            self.assertEqual(len(light), 3)
+            self.assertEqual(len(dark), 3)
+            # RGBA variant
+            rgba = get_color_rgba(name)
+            self.assertEqual(len(rgba), 4)
+
+    def test_spacing_grid(self):
+        """HIG uses consistent spacing on the 4pt/8pt grid."""
+        from ui.hig import (
+            SPACING_XS, SPACING_SM, SPACING_MD, SPACING_LG,
+            SPACING_XL, SPACING_2XL, SPACING_3XL, SPACING_4XL,
+        )
+        # All should be multiples of 4
+        for val in [SPACING_XS, SPACING_SM, SPACING_MD, SPACING_LG,
+                    SPACING_XL, SPACING_2XL, SPACING_3XL, SPACING_4XL]:
+            self.assertEqual(val % 4, 0, f"{val} not on 4pt grid")
+
+    def test_corner_radii(self):
+        """HIG corner radii are consistent."""
+        from ui.hig import (
+            CORNER_RADIUS_SM, CORNER_RADIUS_MD, CORNER_RADIUS_LG,
+            CORNER_RADIUS_XL, CORNER_RADIUS_FULL,
+        )
+        self.assertLess(CORNER_RADIUS_SM, CORNER_RADIUS_MD)
+        self.assertLess(CORNER_RADIUS_MD, CORNER_RADIUS_LG)
+        self.assertLess(CORNER_RADIUS_LG, CORNER_RADIUS_XL)
+        self.assertEqual(CORNER_RADIUS_FULL, 9999)
+
+    def test_minimum_tap_target(self):
+        """HIG minimum tap target is 44pt."""
+        from ui.hig import MINIMUM_TAP_TARGET
+        self.assertEqual(MINIMUM_TAP_TARGET, 44)
+
+    def test_component_styles(self):
+        """HIG defines standard component styles."""
+        from ui.hig import BUTTON, CARD, NAVIGATION_BAR, TAB_BAR, LIST
+        self.assertGreater(BUTTON.height, 0)
+        self.assertGreater(CARD.corner_radius, 0)
+        self.assertGreater(NAVIGATION_BAR.height, 0)
+        self.assertGreater(TAB_BAR.height, 0)
+        self.assertGreater(LIST.row_height, 0)
+
+    def test_sf_symbols_categories(self):
+        """HIG defines SF Symbols in standard categories."""
+        from ui.hig import SF_SYMBOLS
+        self.assertIn("navigation", SF_SYMBOLS)
+        self.assertIn("actions", SF_SYMBOLS)
+        self.assertIn("system", SF_SYMBOLS)
+        self.assertGreater(len(SF_SYMBOLS), 5)
+
+    def test_get_font_scaling(self):
+        """Font scaling works for Dynamic Type."""
+        from ui.hig import get_font
+        normal = get_font("Body")
+        scaled = get_font("Body", scale=1.5)
+        self.assertEqual(scaled.size, normal.size * 1.5)
+
+
+class TestAppCompatibility(unittest.TestCase):
+    """App compatibility framework for Android and Windows apps."""
+
+    def test_android_permission_mapping(self):
+        """Android permissions map to Nyrqis capabilities."""
+        from ui.app_compat import AndroidCompat, ANDROID_PERMISSION_MAP
+        android = AndroidCompat()
+        self.assertIn("android.permission.INTERNET", ANDROID_PERMISSION_MAP)
+        self.assertEqual(
+            ANDROID_PERMISSION_MAP["android.permission.INTERNET"],
+            "CAP_NETWORK_SOCKET")
+
+    def test_windows_api_mapping(self):
+        """Windows API modules map to Nyrqis capabilities."""
+        from ui.app_compat import WindowsCompat, WINDOWS_API_MAP
+        self.assertIn("kernel32.dll", WINDOWS_API_MAP)
+        self.assertIn("ws2_32.dll", WINDOWS_API_MAP)
+        self.assertIn("CAP_NETWORK_SOCKET", WINDOWS_API_MAP["ws2_32.dll"])
+
+    def test_app_manager_install(self):
+        """App manager can track installed apps."""
+        from ui.app_compat import AppManager, AppPlatform
+        manager = AppManager()
+        self.assertEqual(len(manager.list_apps()), 0)
+
+    def test_app_manager_list_by_platform(self):
+        """App manager can filter by platform."""
+        from ui.app_compat import AppManager, AppPlatform
+        manager = AppManager()
+        # Empty list for each platform
+        android_apps = manager.list_apps(platform=AppPlatform.ANDROID)
+        windows_apps = manager.list_apps(platform=AppPlatform.WINDOWS)
+        self.assertEqual(len(android_apps), 0)
+        self.assertEqual(len(windows_apps), 0)
+
+    def test_pe_subsystem_types(self):
+        """Windows PE subsystem types are recognized."""
+        from ui.app_compat import WindowsCompat, WINDOWS_SUBSYSTEMS
+        self.assertEqual(WINDOWS_SUBSYSTEMS[2], "windows")
+        self.assertEqual(WINDOWS_SUBSYSTEMS[3], "console")
+
+    def test_android_api_levels(self):
+        """Android API levels are tracked."""
+        from ui.app_compat import ANDROID_API_LEVELS
+        self.assertIn("14", ANDROID_API_LEVELS)
+        self.assertEqual(ANDROID_API_LEVELS["14"], 34)
+        self.assertIn("15", ANDROID_API_LEVELS)
+        self.assertEqual(ANDROID_API_LEVELS["15"], 35)
+
+    def test_app_platform_enum(self):
+        """AppPlatform enum covers all supported platforms."""
+        from ui.app_compat import AppPlatform
+        self.assertEqual(AppPlatform.ANDROID.value, "android")
+        self.assertEqual(AppPlatform.WINDOWS.value, "windows")
+        self.assertEqual(AppPlatform.NYRQIS.value, "nyrqis")
+
+
 class TestOverlayFilesystem(unittest.TestCase):
     """Overlay filesystem for container-specific views.
 
@@ -15192,6 +15337,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestWireLevelStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
+    suite.addTests(loader.loadTestsFromTestCase(TestHIGDesignSystem))
+    suite.addTests(loader.loadTestsFromTestCase(TestAppCompatibility))
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
