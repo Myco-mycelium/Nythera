@@ -6672,6 +6672,29 @@ class TestStorageGuarantees(unittest.TestCase):
                 self.assertEqual(decompressed, data,
                                  f"{desc}: roundtrip failed")
 
+    def test_content_hash_dedup(self):
+        """Identical files should share blocks via content-hash dedup."""
+        # Write the same content to two different files
+        content = b"Deduplicated content " * 500
+        self.fs.create_file("/file_a.txt", 0o644)
+        self.fs.write("/file_a.txt", content)
+        self.fs.create_file("/file_b.txt", 0o644)
+        self.fs.write("/file_b.txt", content)
+        # Both files should have the same block checksums and share
+        # compressed payloads (dedup), but have different block_ids
+        inode_a = self.fs.resolve("/file_a.txt")
+        inode_b = self.fs.resolve("/file_b.txt")
+        self.assertEqual(len(inode_a.blocks), len(inode_b.blocks))
+        for ba, bb in zip(inode_a.blocks, inode_b.blocks):
+            self.assertEqual(ba.checksum, bb.checksum)
+            self.assertEqual(ba.compressed_data, bb.compressed_data)
+            # Different block identities (each inode owns its own)
+            self.assertNotEqual(ba.block_id, bb.block_id)
+        # Verify dedup cache is populated
+        self.assertGreater(len(self.fs._block_dedup), 0)
+        # Dedup cache contains the shared block
+        self.assertGreater(len(self.fs._block_dedup), 0)
+
 
 class TestOverlayFilesystem(unittest.TestCase):
     """Overlay filesystem for container-specific views.

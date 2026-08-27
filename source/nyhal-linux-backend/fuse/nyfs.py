@@ -226,6 +226,12 @@ class NyFSFilesystem:
         # mutating operation, cleared by save() — the shutdown contract
         # uses it to decide whether a final commit is needed.
         self._dirty = False
+        # Content-hash dedup cache: checksum hex → NyFSBlock. When two
+        # blocks have identical uncompressed content, they share the
+        # same compressed payload and checksum — the second write
+        # reuses the existing block instead of recompressing.  The
+        # cache is rebuilt from on-disk blocks at load() time.
+        self._block_dedup: Dict[str, NyFSBlock] = {}
 
         logger.info(f"Initialized NyFS filesystem at {self.base_path}")
 
@@ -421,17 +427,52 @@ class NyFSFilesystem:
         For an at-rest-encrypted filesystem the block DATA is the AEAD
         envelope (nonce + ciphertext+tag) — the checksum covers the
         ciphertext (ADR-0023: a tampered block fails both the checksum
-        and the AEAD verification)."""
+        and the AEAD verification).
+
+        Content-hash dedup: if a block with identical uncompressed
+        content already exists in the dedup cache, the existing block
+        is returned — the second write reuses the compressed payload
+        instead of recompressing.  This saves both CPU (compression) and
+        disk space (identical blocks share one block file on save)."""
+        # Content-hash dedup: check cache before compressing
+        # (compute checksum on plaintext for dedup key)
+        if self.dek is None:
+            # Plaintext path: dedup on the raw content hash.
+            # Return a new NyFSBlock that shares the compressed payload
+            # (same checksum, same compressed_data) but has its own
+            # block_id — each inode owns its own block identity while
+            # save() deduplicates identical block files on disk.
+            checksum = nyfs_codec.checksum(data)
+            cached = self._block_dedup.get(checksum)
+            if cached is not None:
+                logger.debug(
+                    f"Dedup hit for block {checksum[:12]}... "
+                    f"({len(data)} bytes reused)")
+                dup = NyFSBlock(
+                    block_id=str(uuid.uuid4()),
+                    data=data,
+                    checksum=cached.checksum,
+                    compression_level=cached.compression_level,
+                )
+                dup.compressed_data = cached.compressed_data
+                return dup
+
         block = NyFSBlock(data=data, compression_level=3)
         if self.dek is not None:
-            # block_encrypt_any returns nonce + ciphertext+tag — the
-            # filesystem generates a FRESH random nonce per write, so
-            # an overwrite at the same index never reuses one.
+            # Encrypted path: block_encrypt_any returns nonce +
+            # ciphertext+tag — the filesystem generates a FRESH random
+            # nonce per write, so an overwrite at the same index never
+            # reuses one.  Dedup is skipped for encrypted blocks because
+            # the per-block nonce makes ciphertext unique even for
+            # identical plaintext.
             from backend.keys import NONCE_LEN, block_encrypt_any
             block.data = block_encrypt_any(
                 self.dek, os.urandom(NONCE_LEN), self._ad, data)
         block.compute_checksum()
         block.compress()
+        # Cache for future dedup (plaintext path only)
+        if self.dek is None:
+            self._block_dedup[block.checksum] = block
         return block
 
     def _normalize_blocks(self, inode: NyFSInode) -> None:
@@ -1422,6 +1463,20 @@ class NyFSFilesystem:
         # block_ids they cover so a later journal-mode save never
         # re-appends immutable blocks.
         fs._journal_ids = set(fs._scan_journal().keys())
+
+        # Rebuild the content-hash dedup cache from all blocks in the
+        # filesystem.  Only plaintext blocks (dek is None) are cached —
+        # encrypted blocks use per-block nonces, so identical plaintext
+        # yields different ciphertext.
+        if fs.dek is None:
+            seen: Dict[str, NyFSBlock] = {}
+            for inode in fs.inodes.values():
+                for blk in inode.blocks:
+                    if blk.checksum and blk.checksum not in seen:
+                        seen[blk.checksum] = blk
+            fs._block_dedup = seen
+            logger.debug(
+                f"Dedup cache: {len(seen)} unique blocks")
 
         logger.info(
             f"Loaded NyFS state from {meta_path}: "
