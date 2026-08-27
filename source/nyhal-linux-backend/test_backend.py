@@ -329,6 +329,194 @@ class TestAppCLI(unittest.TestCase):
         self.assertFalse(result)
 
 
+class TestLSMPolicy(unittest.TestCase):
+    """Test LSM (AppArmor/SELinux) policy generation."""
+
+    def test_build_lsm_policy_minimal(self):
+        """A minimal capability set produces a minimal policy."""
+        from backend.lsm import build_lsm_policy
+        policy = build_lsm_policy("test-minimal", set())
+        self.assertEqual(policy.container_id, "test-minimal")
+        self.assertEqual(len(policy.path_rules), 0)
+        self.assertEqual(len(policy.network_rules), 0)
+        self.assertEqual(len(policy.linux_capabilities), 0)
+        # Deny paths should always be present
+        self.assertTrue(len(policy.deny_paths) > 0)
+
+    def test_build_lsm_policy_filesystem_read(self):
+        """CAP_FILESYSTEM_READ grants read access to system paths."""
+        from backend.lsm import build_lsm_policy
+        from backend.capability import Capability
+        policy = build_lsm_policy(
+            "test-fsread", {Capability.CAP_FILESYSTEM_READ}
+        )
+        self.assertTrue(len(policy.path_rules) > 0)
+        # Should have /usr/** and /proc/** rules
+        paths = [r.path for r in policy.path_rules]
+        self.assertIn("/usr/**", paths)
+        self.assertIn("/proc/**", paths)
+        # All perms should be readable
+        for rule in policy.path_rules:
+            self.assertIn("r", rule.perms)
+
+    def test_build_lsm_policy_network(self):
+        """CAP_NETWORK_SOCKET grants network access rules."""
+        from backend.lsm import build_lsm_policy
+        from backend.capability import Capability
+        policy = build_lsm_policy(
+            "test-net", {Capability.CAP_NETWORK_SOCKET}
+        )
+        self.assertTrue(len(policy.network_rules) > 0)
+        families = {r.family for r in policy.network_rules}
+        self.assertIn("inet", families)
+        self.assertIn("unix", families)
+
+    def test_build_lsm_policy_deny_paths_always_present(self):
+        """Deny paths are always present regardless of capabilities."""
+        from backend.lsm import build_lsm_policy
+        policy = build_lsm_policy("test-deny", set())
+        self.assertIn("/proc/sysrq-trigger", policy.deny_paths)
+        self.assertIn("/sys/firmware/**", policy.deny_paths)
+        self.assertIn("/proc/sys/kernel/core_pattern", policy.deny_paths)
+
+    def test_apparmor_render(self):
+        """AppArmor profile renders valid syntax."""
+        from backend.lsm import build_lsm_policy, AppArmorProfile
+        from backend.capability import Capability
+        caps = {
+            Capability.CAP_FILESYSTEM_READ,
+            Capability.CAP_NETWORK_SOCKET,
+        }
+        policy = build_lsm_policy("test-aa", caps)
+        profile = AppArmorProfile(policy)
+        text = profile.render()
+        self.assertIn("profile nyrqis.test-aa", text)
+        self.assertIn("#include <tunables/global>", text)
+        self.assertIn("deny /proc/sysrq-trigger", text)
+        self.assertIn("network inet stream", text)
+        self.assertIn("network unix stream", text)
+
+    def test_apparmor_deny_always_blocked(self):
+        """AppArmor profile always denies dangerous paths."""
+        from backend.lsm import build_lsm_policy, AppArmorProfile
+        policy = build_lsm_policy("test-deny-aa", set())
+        profile = AppArmorProfile(policy)
+        text = profile.render()
+        self.assertIn("deny /proc/sysrq-trigger", text)
+        self.assertIn("deny /sys/firmware", text)
+        self.assertIn("deny /proc/sys/kernel/core_pattern", text)
+
+    def test_selinux_te_render(self):
+        """SELinux TE module renders valid syntax."""
+        from backend.lsm import build_lsm_policy, SEPolicy
+        from backend.capability import Capability
+        caps = {
+            Capability.CAP_FILESYSTEM_READ,
+            Capability.CAP_NETWORK_SOCKET,
+        }
+        policy = build_lsm_policy("test-se", caps)
+        se = SEPolicy(policy)
+        text = se.render_type_enforcement()
+        self.assertIn("policy_module", text)
+        self.assertIn("type nyrqis_test_se_t", text)
+        self.assertIn("neverallow", text)
+
+    def test_selinux_deny_privileged_caps(self):
+        """SELinux module always denies privileged operations."""
+        from backend.lsm import build_lsm_policy, SEPolicy
+        policy = build_lsm_policy("test-se-priv", set())
+        se = SEPolicy(policy)
+        text = se.render_type_enforcement()
+        self.assertIn("neverallow", text)
+        self.assertIn("sys_admin", text)
+        self.assertIn("sys_module", text)
+
+    def test_selinux_file_contexts(self):
+        """SELinux file contexts render for the container."""
+        from backend.lsm import build_lsm_policy, SEPolicy
+        policy = build_lsm_policy("test-se-fc", set())
+        se = SEPolicy(policy)
+        text = se.render_file_contexts()
+        self.assertIn("test-se-fc", text)
+        self.assertIn("gen_context", text)
+
+    def test_lsm_audit_clean(self):
+        """A well-scoped policy has no audit warnings."""
+        from backend.lsm import build_lsm_policy, lsm_audit
+        from backend.capability import Capability
+        caps = {
+            Capability.CAP_FILESYSTEM_READ,
+            Capability.CAP_IPC_SEND,
+        }
+        policy = build_lsm_policy("test-audit", caps)
+        warnings = lsm_audit(policy)
+        self.assertEqual(warnings, [])
+
+    def test_lsm_audit_warns_many_caps(self):
+        """Audit warns when too many capabilities are granted."""
+        from backend.lsm import build_lsm_policy, lsm_audit
+        from backend.capability import Capability
+        # Grant more than 15 capabilities
+        caps = {c for c in Capability if c.value.startswith("CAP_")}
+        policy = build_lsm_policy("test-many", caps)
+        warnings = lsm_audit(policy)
+        self.assertTrue(any("capabilities" in w for w in warnings))
+
+    def test_lsm_policy_to_dict(self):
+        """LSMPolicy serializes to dict."""
+        from backend.lsm import build_lsm_policy
+        from backend.capability import Capability
+        caps = {Capability.CAP_FILESYSTEM_READ}
+        policy = build_lsm_policy("test-dict", caps)
+        d = policy.to_dict()
+        self.assertEqual(d["container_id"], "test-dict")
+        self.assertIn("CAP_FILESYSTEM_READ", d["capabilities"])
+        self.assertIsInstance(d["path_rules"], list)
+        self.assertIsInstance(d["deny_paths"], list)
+
+    def test_apparmor_write(self):
+        """AppArmor profile can be written to disk."""
+        import tempfile
+        import os
+        from backend.lsm import build_lsm_policy, AppArmorProfile
+        policy = build_lsm_policy("test-write", set())
+        profile = AppArmorProfile(policy)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "test")
+            profile.write(path)
+            self.assertTrue(os.path.exists(path))
+            with open(path) as f:
+                content = f.read()
+            self.assertIn("profile nyrqis.test-write", content)
+
+    def test_selinux_write(self):
+        """SELinux policy files can be written to disk."""
+        import tempfile
+        from backend.lsm import build_lsm_policy, SEPolicy
+        policy = build_lsm_policy("test-se-write", set())
+        se = SEPolicy(policy)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = se.write(tmp)
+            self.assertIn(".te", paths)
+            self.assertIn(".fc", paths)
+            self.assertIn(".sp", paths)
+            import os
+            for p in paths.values():
+                self.assertTrue(os.path.exists(p))
+
+    def test_full_capability_policy(self):
+        """A policy with all capabilities covers all rule types."""
+        from backend.lsm import build_lsm_policy
+        from backend.capability import Capability
+        all_caps = set(Capability)
+        policy = build_lsm_policy("test-full", all_caps)
+        self.assertTrue(len(policy.path_rules) > 10)
+        self.assertTrue(len(policy.network_rules) > 2)
+        self.assertTrue(len(policy.device_rules) > 0)
+        self.assertTrue(len(policy.linux_capabilities) > 0)
+        self.assertTrue(len(policy.deny_paths) > 0)
+
+
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension
     (implementation_plan.md §4.1): suspend freezes the container's whole
@@ -15503,6 +15691,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAppCompatibility))
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
+    suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
     suite.addTests(loader.loadTestsFromTestCase(TestDaemonState))
