@@ -6616,6 +6616,182 @@ class TestStorageGuarantees(unittest.TestCase):
         self.assertEqual(len(self.fs.inodes), 2)  # root + file1
 
 
+class TestOverlayFilesystem(unittest.TestCase):
+    """Overlay filesystem for container-specific views.
+
+    Tests the merged-view semantics: reads fall through from upper
+    to lower; writes go to the upper layer only; deletions mask the
+    lower layer; and snapshot/restore captures the delta.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        # Create a lower NyFS filesystem with some content
+        from fuse.nyfs import NyFSFilesystem
+        self.lower = NyFSFilesystem(os.path.join(self.tmp, "lower"))
+        # Root dir already exists; create subdirs and files
+        self.lower.mkdir("/shared", 0o755)
+        self.lower.create_file("/shared/base.txt", 0o644)
+        self.lower.write("/shared/base.txt", b"base content")
+        self.lower.create_file("/shared/config.json", 0o644)
+        self.lower.write("/shared/config.json", b'{"key": "val"}')
+        self.lower.mkdir("/shared/data", 0o755)
+        self.lower.create_file("/shared/data/file.txt", 0o644)
+        self.lower.write("/shared/data/file.txt", b"nested data")
+        # Create overlay
+        from fuse.overlay import OverlayFilesystem
+        self.ov = OverlayFilesystem(self.lower, container_id="test-ctr")
+
+    def _lower_has(self, path):
+        try:
+            self.lower.getattr(path)
+            return True
+        except (OSError, Exception):
+            return False
+
+    def _stat_is_reg(self, mode):
+        import stat as _st
+        return bool(mode & _st.S_IFREG)
+
+    def _stat_is_dir(self, mode):
+        import stat as _st
+        return bool(mode & _st.S_IFDIR)
+
+    def test_read_falls_through_to_lower(self):
+        """Reading a file in the lower layer works via overlay."""
+        data = self.ov.read("/shared/base.txt")
+        self.assertEqual(data, b"base content")
+
+    def test_read_lower_directory(self):
+        """Readdir merges upper and lower entries."""
+        entries = self.ov.readdir("/shared")
+        self.assertIn("base.txt", entries)
+        self.assertIn("config.json", entries)
+        self.assertIn("data", entries)
+
+    def test_write_creates_upper_entry(self):
+        """Writing a new file goes to the upper layer only."""
+        self.ov.write("/shared/new.txt", b"new data")
+        self.assertEqual(self.ov.read("/shared/new.txt"), b"new data")
+        # Lower layer unchanged
+        self.assertFalse(self._lower_has("/shared/new.txt"))
+
+    def test_write_modifies_upper_entry(self):
+        """Writing to an existing file creates a modified upper copy."""
+        self.ov.write("/shared/base.txt", b"modified")
+        self.assertEqual(self.ov.read("/shared/base.txt"), b"modified")
+        # Lower layer unchanged
+        self.assertEqual(self.lower.read("/shared/base.txt"),
+                         b"base content")
+
+    def test_write_with_offset(self):
+        """Writing at an offset into a new file."""
+        self.ov.write("/shared/padded.txt", b"hello", offset=10)
+        data = self.ov.read("/shared/padded.txt")
+        self.assertEqual(len(data), 15)
+        self.assertEqual(data[10:], b"hello")
+
+    def test_unlink_masks_lower(self):
+        """Unlinking a lower file masks it in the merged view."""
+        self.assertTrue(self.ov.exists("/shared/base.txt"))
+        self.ov.unlink("/shared/base.txt")
+        self.assertFalse(self.ov.exists("/shared/base.txt"))
+        # Lower layer unchanged
+        self.assertTrue(self._lower_has("/shared/base.txt"))
+
+    def test_mkdir_and_readdir(self):
+        """Creating a directory in upper and listing merged contents."""
+        self.ov.mkdir("/shared/extra")
+        self.assertTrue(self.ov.is_dir("/shared/extra"))
+        entries = self.ov.readdir("/shared")
+        self.assertIn("extra", entries)
+        self.assertIn("base.txt", entries)  # from lower
+
+    def test_rmdir(self):
+        """Removing an upper directory."""
+        self.ov.mkdir("/shared/temp")
+        self.ov.rmdir("/shared/temp")
+        self.assertFalse(self.ov.exists("/shared/temp"))
+
+    def test_rename(self):
+        """Renaming a file within the overlay."""
+        self.ov.rename("/shared/base.txt", "/shared/renamed.txt")
+        self.assertTrue(self.ov.exists("/shared/renamed.txt"))
+        self.assertFalse(self.ov.exists("/shared/base.txt"))
+        self.assertEqual(self.ov.read("/shared/renamed.txt"),
+                         b"base content")
+
+    def test_truncate(self):
+        """Truncating a file from lower creates an upper copy."""
+        self.ov.truncate("/shared/base.txt", 4)
+        self.assertEqual(self.ov.read("/shared/base.txt"), b"base")
+        # Lower unchanged
+        self.assertEqual(self.lower.read("/shared/base.txt"),
+                         b"base content")
+
+    def test_snapshot_and_restore(self):
+        """Snapshot captures upper state; restore replays it."""
+        self.ov.write("/shared/new.txt", b"new")
+        self.ov.unlink("/shared/base.txt")
+        snap = self.ov.snapshot()
+
+        # Modify the overlay
+        self.ov.write("/shared/new.txt", b"changed")
+        self.assertEqual(self.ov.read("/shared/new.txt"), b"changed")
+
+        # Restore snapshot
+        self.ov.restore_snapshot(snap)
+        self.assertEqual(self.ov.read("/shared/new.txt"), b"new")
+        self.assertFalse(self.ov.exists("/shared/base.txt"))
+
+    def test_diff(self):
+        """Diff reports created/modified/deleted entries."""
+        self.ov.write("/shared/new.txt", b"new")
+        self.ov.write("/shared/base.txt", b"changed")
+        self.ov.unlink("/shared/config.json")
+        d = self.ov.diff()
+        self.assertEqual(d["/shared/new.txt"]["type"], "created")
+        self.assertEqual(d["/shared/base.txt"]["type"], "modified")
+        self.assertEqual(d["/shared/config.json"]["type"], "deleted")
+
+    def test_stats(self):
+        """Stats reports overlay statistics."""
+        self.ov.write("/shared/new.txt", b"new")
+        self.ov.write("/shared/base.txt", b"changed")
+        self.ov.unlink("/shared/config.json")
+        s = self.ov.stats()
+        self.assertEqual(s["container_id"], "test-ctr")
+        self.assertGreater(s["upper_entries"], 0)
+
+    def test_isolation_between_overlays(self):
+        """Two overlays on the same lower are independent."""
+        from fuse.overlay import OverlayFilesystem
+        ov2 = OverlayFilesystem(self.lower, container_id="other")
+        self.ov.write("/shared/ctr1.txt", b"from ctr1")
+        ov2.write("/shared/ctr2.txt", b"from ctr2")
+        # Each sees only its own writes
+        self.assertTrue(self.ov.exists("/shared/ctr1.txt"))
+        self.assertFalse(self.ov.exists("/shared/ctr2.txt"))
+        self.assertTrue(ov2.exists("/shared/ctr2.txt"))
+        self.assertFalse(ov2.exists("/shared/ctr1.txt"))
+        # Both see lower
+        self.assertTrue(self.ov.exists("/shared/base.txt"))
+        self.assertTrue(ov2.exists("/shared/base.txt"))
+
+    def test_getattr(self):
+        """getattr returns correct attributes from merged view."""
+        attr = self.ov.getattr("/shared/base.txt")
+        self.assertTrue(self._stat_is_reg(attr["st_mode"]))
+        self.assertEqual(attr["st_size"], len(b"base content"))
+
+        attr = self.ov.getattr("/shared")
+        self.assertTrue(self._stat_is_dir(attr["st_mode"]))
+
+
+import stat as _stat_mod  # noqa: E402
+
+
 class TestBootLifecycle(unittest.TestCase):
     """Test NPS-017 §4.5 (Boot and Lifecycle)."""
     
@@ -13112,8 +13288,8 @@ class TestNuiService(unittest.TestCase):
         for name in ("forge-home", "settings-app", "vault-dashboard",
                      "nyrqis-shell", "security-center", "vault-workspace",
                      "desktop", "windows", "widgets"):
-            text = open(os.path.join(self.FIXTURES,
-                                     name + ".nstudio")).read()
+            with open(os.path.join(self.FIXTURES, name + ".nstudio")) as f:
+                text = f.read()
             ok, detail = svc._validate_document(text)
             self.assertTrue(ok, f"{name}: {detail}")
             self.assertEqual(detail["version"], "1.0.0")
@@ -14921,6 +15097,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestWireLevelStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
+    suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
     suite.addTests(loader.loadTestsFromTestCase(TestDaemonState))
