@@ -336,8 +336,8 @@ class ComponentA11y:
         """
         a11y_raw = getattr(comp, "accessibility", None)
         if a11y_raw is None and hasattr(comp, "properties"):
-            # Some NstudioComponent models store it in properties
-            pass
+            # NstudioComponent stores it inside properties
+            a11y_raw = (comp.properties or {}).get("accessibility")
         if a11y_raw is None and hasattr(comp, "to_dict"):
             d = comp.to_dict() if callable(comp.to_dict) else {}
             a11y_raw = d.get("accessibility")
@@ -369,10 +369,14 @@ def audit_document(doc: Any) -> List[Dict[str, Any]]:
             for child in getattr(comp, "children", []):
                 collect(child)
         elif hasattr(comp, "children"):
+            props = getattr(comp, "properties", {}) or {}
             d = {"id": getattr(comp, "id", ""),
                  "type": getattr(comp, "type", ""),
-                 "properties": getattr(comp, "properties", {})}
+                 "properties": props}
+            # Read accessibility from attribute first, then from properties
             a11y = getattr(comp, "accessibility", None)
+            if a11y is None:
+                a11y = props.get("accessibility")
             if a11y:
                 if isinstance(a11y, dict):
                     d["accessibility"] = a11y

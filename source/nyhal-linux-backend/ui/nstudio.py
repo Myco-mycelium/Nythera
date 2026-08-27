@@ -931,8 +931,10 @@ def _validate_component(c: NstudioComponent, issues: List[str],
         issues.append(f"component '{c.id}': unknown type '{c.type}'")
     else:
         _category, properties, events, _actions = contract
+        # Universal properties accepted on every component type
+        _universal = frozenset(("accessibility",))
         for key in c.properties:
-            if key not in properties:
+            if key not in properties and key not in _universal:
                 issues.append(
                     f"component '{c.id}': property '{key}' not in the "
                     f"'{c.type}' contract")

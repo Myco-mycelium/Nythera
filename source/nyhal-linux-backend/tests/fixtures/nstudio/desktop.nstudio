@@ -383,7 +383,7 @@
               {
                 "id": "palette_input",
                 "type": "Input",
-                "properties": { "value": "", "placeholder": "Type a command…" },
+                "properties": { "value": "", "placeholder": "Type a command…", "accessibility": { "label": "Command palette search" } },
                 "layout": { "x": 16, "y": 16, "width": 768, "height": 40 },
                 "events": {},
                 "children": []
@@ -442,7 +442,7 @@
               {
                 "id": "toggle_wifi",
                 "type": "Toggle",
-                "properties": { "value": true, "label": "Wi-Fi" },
+                "properties": { "value": true, "label": "Wi-Fi", "accessibility": { "label": "Wi-Fi toggle" } },
                 "layout": { "x": 16, "y": 16, "width": 352, "height": 40 },
                 "events": {},
                 "children": []
@@ -450,7 +450,7 @@
               {
                 "id": "toggle_dnd",
                 "type": "Toggle",
-                "properties": { "value": false, "label": "Do not disturb" },
+                "properties": { "value": false, "label": "Do not disturb", "accessibility": { "label": "Do not disturb toggle" } },
                 "layout": { "x": 16, "y": 64, "width": 352, "height": 40 },
                 "events": { "changed": "behavior_dnd_on" },
                 "children": []
@@ -458,7 +458,7 @@
               {
                 "id": "slider_volume",
                 "type": "Slider",
-                "properties": { "value": 60, "min": 0, "max": 100 },
+                "properties": { "value": 60, "min": 0, "max": 100, "accessibility": { "label": "Volume control" } },
                 "layout": { "x": 16, "y": 112, "width": 352, "height": 24 },
                 "events": { "changed": "behavior_quiet_notify" },
                 "children": []
@@ -466,7 +466,7 @@
               {
                 "id": "btn_eclipse",
                 "type": "Button",
-                "properties": { "text": "Eclipse" },
+                "properties": { "text": "Eclipse", "accessibility": { "label": "Switch to Eclipse theme" } },
                 "layout": { "x": 16, "y": 160, "width": 160, "height": 40 },
                 "events": { "clicked": "behavior_theme_eclipse" },
                 "children": []
@@ -474,7 +474,7 @@
               {
                 "id": "btn_solar",
                 "type": "Button",
-                "properties": { "text": "Solar" },
+                "properties": { "text": "Solar", "accessibility": { "label": "Switch to Solar theme" } },
                 "layout": { "x": 192, "y": 160, "width": 160, "height": 40 },
                 "events": { "clicked": "behavior_theme_solar" },
                 "children": []
@@ -512,7 +512,7 @@
               {
                 "id": "btn_unlock",
                 "type": "Button",
-                "properties": { "text": "Unlock" },
+                "properties": { "text": "Unlock", "accessibility": { "label": "Unlock screen" } },
                 "layout": { "x": 640, "y": 560, "width": 160, "height": 48 },
                 "events": {},
                 "children": []
