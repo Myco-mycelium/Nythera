@@ -448,8 +448,12 @@ class NyFSFilesystem:
                 logger.debug(
                     f"Dedup hit for block {checksum[:12]}... "
                     f"({len(data)} bytes reused)")
+                # Return a lightweight copy: same block_id (so save()
+                # writes ONE file on disk for all identical blocks),
+                # shared compressed_data (no recompression), but own
+                # data reference for CoW safety.
                 dup = NyFSBlock(
-                    block_id=str(uuid.uuid4()),
+                    block_id=cached.block_id,
                     data=data,
                     checksum=cached.checksum,
                     compression_level=cached.compression_level,

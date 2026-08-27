@@ -6688,12 +6688,22 @@ class TestStorageGuarantees(unittest.TestCase):
         for ba, bb in zip(inode_a.blocks, inode_b.blocks):
             self.assertEqual(ba.checksum, bb.checksum)
             self.assertEqual(ba.compressed_data, bb.compressed_data)
-            # Different block identities (each inode owns its own)
-            self.assertNotEqual(ba.block_id, bb.block_id)
+            # Same block_id (dedup: one file on disk for all identical blocks)
+            self.assertEqual(ba.block_id, bb.block_id)
         # Verify dedup cache is populated
         self.assertGreater(len(self.fs._block_dedup), 0)
         # Dedup cache contains the shared block
         self.assertGreater(len(self.fs._block_dedup), 0)
+        # Both files reference the same block_id (dedup on disk)
+        self.assertEqual(inode_a.blocks[0].block_id,
+                         inode_b.blocks[0].block_id)
+        # Save writes fewer block files than total blocks
+        self.fs.save(use_journal=False)
+        blocks_dir = os.path.join(self.temp_dir, "state", "blocks")
+        block_files = [n for n in os.listdir(blocks_dir)
+                       if n.endswith(".bin")]
+        self.assertLess(len(block_files),
+                        len(inode_a.blocks) + len(inode_b.blocks))
 
 
 class TestOverlayFilesystem(unittest.TestCase):
@@ -9355,7 +9365,8 @@ class TestNyFSPersistence(unittest.TestCase):
         # holds exactly the live blocks.
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/t.bin")
-        fs.write(f, b"data" * 3000)
+        # Use unique data per block to avoid content-hash dedup
+        fs.write(f, os.urandom(12000))
         fs.save(batched_fsync=True, use_journal=False)
         blocks_dir = os.path.join(self.base, "state", "blocks")
         names = os.listdir(blocks_dir)
@@ -9376,10 +9387,12 @@ class TestNyFSPersistence(unittest.TestCase):
         # journal mode is the default (2026-08-12).
         fs = NyFSFilesystem(self.base, block_size=4096)
         f = fs.create_file("/c.sav")
-        fs.write(f, b"A" * 20000)  # 5 blocks
+        # Use unique data to avoid content-hash dedup
+        original = os.urandom(20000)  # 5 blocks
+        fs.write(f, original)
         fs.save(use_journal=False)
 
-        fs.write(f, b"B" * 20000)  # 5 new CoW blocks
+        fs.write(f, os.urandom(20000))  # 5 new CoW blocks
         calls = {"n": 0}
         # mock.patch replaces os.replace on the SHARED os module, so the
         # side-effect function must call a pre-captured reference or it
@@ -9413,7 +9426,7 @@ class TestNyFSPersistence(unittest.TestCase):
 
         del fs
         fs2 = NyFSFilesystem.load(self.base)
-        self.assertEqual(fs2.read(fs2.resolve("/c.sav")), b"A" * 20000)
+        self.assertEqual(fs2.read(fs2.resolve("/c.sav")), original)
 
     def test_journal_save_load_roundtrip(self):
         # Journal-mode commit (one fsync per transaction) must produce a
@@ -9555,7 +9568,8 @@ class TestNyFSPersistence(unittest.TestCase):
         fs = NyFSFilesystem(self.base, block_size=4096,
                             journal_compact_bytes=1 << 30)  # never auto-compact
         f = fs.create_file("/c.bin")
-        fs.write(f, b"J" * 9000)  # 3 blocks at 4096
+        # Use unique data to avoid content-hash dedup
+        fs.write(f, os.urandom(9000))  # 3 blocks at 4096
         fs.save(use_journal=True)
         self.assertGreater(fs.journal_bytes(), 0)
 
@@ -9576,14 +9590,15 @@ class TestNyFSPersistence(unittest.TestCase):
         self.assertEqual(fs.journal_bytes(), 0)
 
         # Forced compaction of a fresh journal (CoW orphans dropped).
-        fs.write(f, b"K" * 9000)  # CoW: 3 new blocks, old 3 orphaned
+        new_data = os.urandom(9000)  # CoW: 3 new blocks, old 3 orphaned
+        fs.write(f, new_data)
         fs.save(use_journal=True)
         self.assertGreater(fs.journal_bytes(), 0)
         self.assertEqual(fs.compact_journal(), 3)
         self.assertEqual(fs.journal_bytes(), 0)
         del fs
         fs2 = NyFSFilesystem.load(self.base)
-        self.assertEqual(fs2.read(fs2.resolve("/c.bin")), b"K" * 9000)
+        self.assertEqual(fs2.read(fs2.resolve("/c.bin")), new_data)
 
     def test_compaction_crash_mid_materialize_leaves_journal_intact(self):
         # Compaction's crash contract: block renames happen BEFORE the
