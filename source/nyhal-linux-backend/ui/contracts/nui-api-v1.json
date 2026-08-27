@@ -1,6 +1,6 @@
 {
   "registryVersion": "1.0",
-  "nuiSchemaVersion": "0.4.0",
+  "nuiSchemaVersion": "1.0.0",
   "purpose": "The Nyrqis API Registry — the single machine-readable source of truth for the NUI component vocabulary, per NFS-006 (Nyforge) / the platform ADR-0025 pipeline. The Nyrqis NUI import gate (ui/nstudio.py, rust/nyui) and Nyforge's palette/Inspector/Behaviors contract tables all derive from this file. Add a component or action HERE first; never edit a consumer's tables by hand. registryVersion majors on breaking contract changes, alongside the NUI schema version.",
   "components": [
     {
