@@ -40,7 +40,7 @@
           {
             "id": "cmd_new_project",
             "type": "Button",
-            "properties": { "text": "New Project" },
+            "properties": { "text": "New Project" , "accessibility": { "label": "Create new project" }},
             "layout": { "x": 24, "y": 140, "width": 160, "height": 40 },
             "events": {},
             "children": []
@@ -48,7 +48,7 @@
           {
             "id": "cmd_open_project",
             "type": "Button",
-            "properties": { "text": "Open Project..." },
+            "properties": { "text": "Open Project..." , "accessibility": { "label": "Open project" }},
             "layout": { "x": 200, "y": 140, "width": 160, "height": 40 },
             "events": {},
             "children": []
@@ -56,7 +56,7 @@
           {
             "id": "cmd_save_project",
             "type": "Button",
-            "properties": { "text": "Save Current Project" },
+            "properties": { "text": "Save Current Project" , "accessibility": { "label": "Save project" }},
             "layout": { "x": 376, "y": 140, "width": 200, "height": 40 },
             "events": {},
             "children": []

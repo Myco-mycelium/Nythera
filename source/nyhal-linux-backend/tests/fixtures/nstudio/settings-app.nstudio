@@ -33,7 +33,7 @@
               {
                 "id": "nav_appearance",
                 "type": "Link",
-                "properties": { "text": "Appearance", "target": "page_appearance" },
+                "properties": { "text": "Appearance", "target": "page_appearance" , "accessibility": { "label": "Appearance settings" }},
                 "layout": { "x": 16, "y": 24, "width": 188, "height": 32 },
                 "events": { "clicked": null },
                 "children": []
@@ -41,7 +41,7 @@
               {
                 "id": "nav_general",
                 "type": "Link",
-                "properties": { "text": "General", "target": "page_general" },
+                "properties": { "text": "General", "target": "page_general" , "accessibility": { "label": "General settings" }},
                 "layout": { "x": 16, "y": 64, "width": 188, "height": 32 },
                 "events": { "clicked": null },
                 "children": []
@@ -66,7 +66,7 @@
               {
                 "id": "toggle_eclipse",
                 "type": "Toggle",
-                "properties": { "value": true, "label": "Currently using a dark theme" },
+                "properties": { "value": true, "label": "Currently using a dark theme" , "accessibility": { "label": "Eclipse theme toggle" }},
                 "layout": { "x": 0, "y": 40, "width": 280, "height": 32 },
                 "events": {},
                 "children": []
@@ -82,7 +82,7 @@
               {
                 "id": "button_use_eclipse",
                 "type": "Button",
-                "properties": { "text": "Use Eclipse" },
+                "properties": { "text": "Use Eclipse" , "accessibility": { "label": "Use Eclipse theme" }},
                 "layout": { "x": 0, "y": 130, "width": 140, "height": 34 },
                 "events": {
                   "clicked": "behavior_use_eclipse"
@@ -92,7 +92,7 @@
               {
                 "id": "button_use_solar",
                 "type": "Button",
-                "properties": { "text": "Use Solar" },
+                "properties": { "text": "Use Solar" , "accessibility": { "label": "Use Solar theme" }},
                 "layout": { "x": 152, "y": 130, "width": 140, "height": 34 },
                 "events": {
                   "clicked": "behavior_use_solar"
@@ -102,7 +102,7 @@
               {
                 "id": "button_save",
                 "type": "Button",
-                "properties": { "text": "Save", "enabled": true },
+                "properties": { "text": "Save", "enabled": true , "accessibility": { "label": "Save settings" }},
                 "layout": { "x": 0, "y": 320, "width": 120, "height": 36 },
                 "events": {
                   "clicked": "behavior_commit_settings"

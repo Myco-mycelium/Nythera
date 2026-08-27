@@ -188,7 +188,7 @@
               {
                 "id": "osd_slider",
                 "type": "Slider",
-                "properties": { "value": 40, "min": 0, "max": 100 },
+                "properties": { "value": 40, "min": 0, "max": 100 , "accessibility": { "label": "OSD volume slider" }},
                 "layout": { "x": 16, "y": 24, "width": 368, "height": 24 },
                 "events": {},
                 "children": []
@@ -221,7 +221,7 @@
               {
                 "id": "login_username",
                 "type": "Input",
-                "properties": { "value": "zeus", "placeholder": "Username" },
+                "properties": { "value": "zeus", "placeholder": "Username" , "accessibility": { "label": "Username" }},
                 "layout": { "x": 64, "y": 120, "width": 432, "height": 48 },
                 "events": {},
                 "children": []
@@ -229,7 +229,7 @@
               {
                 "id": "login_password",
                 "type": "PasswordField",
-                "properties": { "value": "", "placeholder": "Password" },
+                "properties": { "value": "", "placeholder": "Password" , "accessibility": { "label": "Password" }},
                 "layout": { "x": 64, "y": 184, "width": 432, "height": 48 },
                 "events": {},
                 "children": []
@@ -237,7 +237,7 @@
               {
                 "id": "btn_login",
                 "type": "Button",
-                "properties": { "text": "Sign in" },
+                "properties": { "text": "Sign in" , "accessibility": { "label": "Log in" }},
                 "layout": { "x": 64, "y": 256, "width": 432, "height": 48 },
                 "events": { "clicked": "behavior_login_submit" },
                 "children": []

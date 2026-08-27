@@ -123,7 +123,7 @@
               {
                 "id": "toggle_dnd",
                 "type": "Toggle",
-                "properties": { "value": false, "label": "Do not disturb" },
+                "properties": { "value": false, "label": "Do not disturb" , "accessibility": { "label": "Do not disturb toggle" }},
                 "layout": { "x": 848, "y": 8, "width": 224, "height": 32 },
                 "events": { "changed": "behavior_dnd_on" },
                 "children": []
@@ -156,7 +156,7 @@
               {
                 "id": "rail_home_icon",
                 "type": "Icon",
-                "properties": { "glyph": "❖" },
+                "properties": { "glyph": "❖" , "accessibility": { "label": "Home" }},
                 "layout": { "x": 12, "y": 64, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -172,7 +172,7 @@
               {
                 "id": "rail_files_icon",
                 "type": "Icon",
-                "properties": { "glyph": "◈" },
+                "properties": { "glyph": "◈" , "accessibility": { "label": "Files" }},
                 "layout": { "x": 12, "y": 152, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -188,7 +188,7 @@
               {
                 "id": "rail_vault_icon",
                 "type": "Icon",
-                "properties": { "glyph": "▣" },
+                "properties": { "glyph": "▣" , "accessibility": { "label": "Vault" }},
                 "layout": { "x": 12, "y": 240, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -204,7 +204,7 @@
               {
                 "id": "rail_settings_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⚙" },
+                "properties": { "glyph": "⚙" , "accessibility": { "label": "Settings" }},
                 "layout": { "x": 12, "y": 328, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -310,7 +310,7 @@
               {
                 "id": "btn_eclipse",
                 "type": "Button",
-                "properties": { "text": "Eclipse", "enabled": true, "visible": true },
+                "properties": { "text": "Eclipse", "enabled": true, "visible": true , "accessibility": { "label": "Switch to Eclipse theme" }},
                 "layout": { "x": 1064, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_theme_eclipse" },
                 "children": []
@@ -318,7 +318,7 @@
               {
                 "id": "btn_solar",
                 "type": "Button",
-                "properties": { "text": "Solar", "enabled": true, "visible": true },
+                "properties": { "text": "Solar", "enabled": true, "visible": true , "accessibility": { "label": "Switch to Solar theme" }},
                 "layout": { "x": 1188, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_theme_solar" },
                 "children": []
@@ -326,7 +326,7 @@
               {
                 "id": "btn_refresh",
                 "type": "Button",
-                "properties": { "text": "Refresh", "enabled": true, "visible": true },
+                "properties": { "text": "Refresh", "enabled": true, "visible": true , "accessibility": { "label": "Refresh" }},
                 "layout": { "x": 1312, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_refresh" },
                 "children": []
@@ -466,7 +466,7 @@
               {
                 "id": "row_1_icon",
                 "type": "Icon",
-                "properties": { "glyph": "◈" },
+                "properties": { "glyph": "◈" , "accessibility": { "label": "Row 1 icon" }},
                 "layout": { "x": 336, "y": 296, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -490,7 +490,7 @@
               {
                 "id": "row_2_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⇄" },
+                "properties": { "glyph": "⇄" , "accessibility": { "label": "Row 2 icon" }},
                 "layout": { "x": 336, "y": 336, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -514,7 +514,7 @@
               {
                 "id": "row_3_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⚠" },
+                "properties": { "glyph": "⚠" , "accessibility": { "label": "Row 3 icon" }},
                 "layout": { "x": 336, "y": 376, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -538,7 +538,7 @@
               {
                 "id": "row_4_icon",
                 "type": "Icon",
-                "properties": { "glyph": "❖" },
+                "properties": { "glyph": "❖" , "accessibility": { "label": "Row 4 icon" }},
                 "layout": { "x": 336, "y": 416, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -562,7 +562,7 @@
               {
                 "id": "row_5_icon",
                 "type": "Icon",
-                "properties": { "glyph": "▣" },
+                "properties": { "glyph": "▣" , "accessibility": { "label": "Row 5 icon" }},
                 "layout": { "x": 336, "y": 456, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -586,7 +586,7 @@
               {
                 "id": "row_6_icon",
                 "type": "Icon",
-                "properties": { "glyph": "☁" },
+                "properties": { "glyph": "☁" , "accessibility": { "label": "Row 6 icon" }},
                 "layout": { "x": 336, "y": 496, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -627,7 +627,7 @@
               {
                 "id": "qa_appcenter",
                 "type": "Button",
-                "properties": { "text": "App Center", "enabled": true, "visible": true },
+                "properties": { "text": "App Center", "enabled": true, "visible": true , "accessibility": { "label": "App center" }},
                 "layout": { "x": 336, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -635,7 +635,7 @@
               {
                 "id": "qa_network",
                 "type": "Button",
-                "properties": { "text": "Network", "enabled": true, "visible": true },
+                "properties": { "text": "Network", "enabled": true, "visible": true , "accessibility": { "label": "Network settings" }},
                 "layout": { "x": 608, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -643,7 +643,7 @@
               {
                 "id": "qa_storage",
                 "type": "Button",
-                "properties": { "text": "Storage", "enabled": true, "visible": true },
+                "properties": { "text": "Storage", "enabled": true, "visible": true , "accessibility": { "label": "Storage settings" }},
                 "layout": { "x": 880, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -651,7 +651,7 @@
               {
                 "id": "qa_about",
                 "type": "Button",
-                "properties": { "text": "About", "enabled": true, "visible": true },
+                "properties": { "text": "About", "enabled": true, "visible": true , "accessibility": { "label": "About" }},
                 "layout": { "x": 1152, "y": 608, "width": 256, "height": 88 },
                 "events": { "clicked": "behavior_about" },
                 "children": []

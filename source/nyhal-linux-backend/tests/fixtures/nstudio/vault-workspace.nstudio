@@ -114,7 +114,7 @@
               {
                 "id": "toggle_auto",
                 "type": "Toggle",
-                "properties": { "value": true, "label": "Auto-snapshot" },
+                "properties": { "value": true, "label": "Auto-snapshot" , "accessibility": { "label": "Auto-sync toggle" }},
                 "layout": { "x": 848, "y": 8, "width": 200, "height": 32 },
                 "events": { "changed": "behavior_snapshot_off" },
                 "children": []
@@ -147,7 +147,7 @@
               {
                 "id": "rail_home_icon",
                 "type": "Icon",
-                "properties": { "glyph": "❖" },
+                "properties": { "glyph": "❖" , "accessibility": { "label": "Home" }},
                 "layout": { "x": 12, "y": 64, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -163,7 +163,7 @@
               {
                 "id": "rail_files_icon",
                 "type": "Icon",
-                "properties": { "glyph": "◈" },
+                "properties": { "glyph": "◈" , "accessibility": { "label": "Files" }},
                 "layout": { "x": 12, "y": 152, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -179,7 +179,7 @@
               {
                 "id": "rail_vault_icon",
                 "type": "Icon",
-                "properties": { "glyph": "▣" },
+                "properties": { "glyph": "▣" , "accessibility": { "label": "Vault" }},
                 "layout": { "x": 12, "y": 240, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -195,7 +195,7 @@
               {
                 "id": "rail_security_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⚠" },
+                "properties": { "glyph": "⚠" , "accessibility": { "label": "Security" }},
                 "layout": { "x": 12, "y": 328, "width": 48, "height": 48 },
                 "events": {},
                 "children": []
@@ -309,7 +309,7 @@
               {
                 "id": "btn_new",
                 "type": "Button",
-                "properties": { "text": "New volume", "enabled": true, "visible": true },
+                "properties": { "text": "New volume", "enabled": true, "visible": true , "accessibility": { "label": "New volume" }},
                 "layout": { "x": 1064, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_new_volume" },
                 "children": []
@@ -317,7 +317,7 @@
               {
                 "id": "btn_snapshot",
                 "type": "Button",
-                "properties": { "text": "Snapshot", "enabled": true, "visible": true },
+                "properties": { "text": "Snapshot", "enabled": true, "visible": true , "accessibility": { "label": "Create snapshot" }},
                 "layout": { "x": 1188, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_snapshot_now" },
                 "children": []
@@ -325,7 +325,7 @@
               {
                 "id": "btn_sync",
                 "type": "Button",
-                "properties": { "text": "Sync now", "enabled": true, "visible": true },
+                "properties": { "text": "Sync now", "enabled": true, "visible": true , "accessibility": { "label": "Sync volume" }},
                 "layout": { "x": 1312, "y": 52, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_sync_now" },
                 "children": []
@@ -457,7 +457,7 @@
               {
                 "id": "vol_1_icon",
                 "type": "Icon",
-                "properties": { "glyph": "▣" },
+                "properties": { "glyph": "▣" , "accessibility": { "label": "Volume 1" }},
                 "layout": { "x": 336, "y": 296, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -481,7 +481,7 @@
               {
                 "id": "vol_2_icon",
                 "type": "Icon",
-                "properties": { "glyph": "◈" },
+                "properties": { "glyph": "◈" , "accessibility": { "label": "Volume 2" }},
                 "layout": { "x": 336, "y": 336, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -505,7 +505,7 @@
               {
                 "id": "vol_3_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⇄" },
+                "properties": { "glyph": "⇄" , "accessibility": { "label": "Volume 3" }},
                 "layout": { "x": 336, "y": 376, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -529,7 +529,7 @@
               {
                 "id": "vol_4_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⚠" },
+                "properties": { "glyph": "⚠" , "accessibility": { "label": "Volume 4" }},
                 "layout": { "x": 336, "y": 416, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -553,7 +553,7 @@
               {
                 "id": "vol_5_icon",
                 "type": "Icon",
-                "properties": { "glyph": "☁" },
+                "properties": { "glyph": "☁" , "accessibility": { "label": "Volume 5" }},
                 "layout": { "x": 336, "y": 456, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -577,7 +577,7 @@
               {
                 "id": "vol_6_icon",
                 "type": "Icon",
-                "properties": { "glyph": "❖" },
+                "properties": { "glyph": "❖" , "accessibility": { "label": "Volume 6" }},
                 "layout": { "x": 336, "y": 496, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -618,7 +618,7 @@
               {
                 "id": "qa_volume",
                 "type": "Button",
-                "properties": { "text": "New volume", "enabled": true, "visible": true },
+                "properties": { "text": "New volume", "enabled": true, "visible": true , "accessibility": { "label": "Volume management" }},
                 "layout": { "x": 336, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -626,7 +626,7 @@
               {
                 "id": "qa_snapshot",
                 "type": "Button",
-                "properties": { "text": "Take snapshot", "enabled": true, "visible": true },
+                "properties": { "text": "Take snapshot", "enabled": true, "visible": true , "accessibility": { "label": "Snapshots" }},
                 "layout": { "x": 608, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -634,7 +634,7 @@
               {
                 "id": "qa_grant",
                 "type": "Button",
-                "properties": { "text": "Manage grants", "enabled": true, "visible": true },
+                "properties": { "text": "Manage grants", "enabled": true, "visible": true , "accessibility": { "label": "Access grants" }},
                 "layout": { "x": 880, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []
@@ -642,7 +642,7 @@
               {
                 "id": "qa_quotas",
                 "type": "Button",
-                "properties": { "text": "Quota policies", "enabled": true, "visible": true },
+                "properties": { "text": "Quota policies", "enabled": true, "visible": true , "accessibility": { "label": "Quotas" }},
                 "layout": { "x": 1152, "y": 608, "width": 256, "height": 88 },
                 "events": {},
                 "children": []

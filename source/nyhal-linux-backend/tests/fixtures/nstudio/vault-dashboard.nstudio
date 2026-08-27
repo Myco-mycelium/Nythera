@@ -95,7 +95,7 @@
               {
                 "id": "cmd_refresh",
                 "type": "Button",
-                "properties": { "text": "Refresh" },
+                "properties": { "text": "Refresh" , "accessibility": { "label": "Refresh" }},
                 "layout": { "x": 744, "y": 24, "width": 112, "height": 32 },
                 "events": { "clicked": "behavior_refresh" },
                 "children": []
@@ -103,7 +103,7 @@
               {
                 "id": "toggle_auto",
                 "type": "Toggle",
-                "properties": { "value": true, "label": "Auto-refresh" },
+                "properties": { "value": true, "label": "Auto-refresh" , "accessibility": { "label": "Auto-sync toggle" }},
                 "layout": { "x": 744, "y": 64, "width": 176, "height": 28 },
                 "events": { "changed": "behavior_auto_refresh_off" },
                 "children": []
@@ -235,7 +235,7 @@
               {
                 "id": "row_1_icon",
                 "type": "Icon",
-                "properties": { "glyph": "◈" },
+                "properties": { "glyph": "◈" , "accessibility": { "label": "Row 1 icon" }},
                 "layout": { "x": 16, "y": 56, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -259,7 +259,7 @@
               {
                 "id": "row_2_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⇄" },
+                "properties": { "glyph": "⇄" , "accessibility": { "label": "Row 2 icon" }},
                 "layout": { "x": 16, "y": 104, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -283,7 +283,7 @@
               {
                 "id": "row_3_icon",
                 "type": "Icon",
-                "properties": { "glyph": "⚠" },
+                "properties": { "glyph": "⚠" , "accessibility": { "label": "Row 3 icon" }},
                 "layout": { "x": 16, "y": 152, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
@@ -307,7 +307,7 @@
               {
                 "id": "row_4_icon",
                 "type": "Icon",
-                "properties": { "glyph": "❖" },
+                "properties": { "glyph": "❖" , "accessibility": { "label": "Row 4 icon" }},
                 "layout": { "x": 16, "y": 200, "width": 24, "height": 24 },
                 "events": {},
                 "children": []
