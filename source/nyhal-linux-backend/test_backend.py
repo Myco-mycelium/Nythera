@@ -8172,6 +8172,50 @@ class TestDefaultDenyAllowlist(unittest.TestCase):
             seccomp.SECCOMP_RET_ALLOW,
         )
 
+    def test_ipc_send_allows_sendto(self):
+        """CAP_IPC_SEND grants the IPC send syscalls."""
+        policy = self._policy(Capability.CAP_IPC_SEND)
+        for name in ("sendto", "sendmsg"):
+            self.assertEqual(
+                self._decision(policy, name),
+                seccomp.SECCOMP_RET_ALLOW, name,
+            )
+
+    def test_ipc_receive_allows_recvmsg(self):
+        """CAP_IPC_RECEIVE grants the IPC recv syscalls."""
+        policy = self._policy(Capability.CAP_IPC_RECEIVE)
+        for name in ("recvmsg", "recvfrom"):
+            self.assertEqual(
+                self._decision(policy, name),
+                seccomp.SECCOMP_RET_ALLOW, name,
+            )
+
+    def test_ipc_socket_syscalls(self):
+        """CAP_IPC_SEND grants the IPC socket syscalls (bind, socket, etc.)."""
+        policy = self._policy(Capability.CAP_IPC_SEND)
+        for name in ("socket", "bind", "getsockname", "setsockopt"):
+            self.assertEqual(
+                self._decision(policy, name),
+                seccomp.SECCOMP_RET_ALLOW, name,
+            )
+
+    def test_ipc_no_cap_denies_sendto(self):
+        """Without CAP_IPC_SEND, sendto is denied in default-deny mode."""
+        policy = self._policy()  # no IPC caps
+        self.assertEqual(
+            self._decision(policy, "sendto"),
+            seccomp.SECCOMP_RET_ERRNO | seccomp.EPERM,
+        )
+
+    def test_ipc_with_network_also_allowed(self):
+        """CAP_NETWORK_SOCKET also allows IPC transport syscalls."""
+        policy = self._policy(Capability.CAP_NETWORK_SOCKET)
+        for name in ("sendto", "recvmsg", "socket"):
+            self.assertEqual(
+                self._decision(policy, name),
+                seccomp.SECCOMP_RET_ALLOW, name,
+            )
+
     def test_syscall_tables_have_unique_numbers(self):
         # Syscall numbers are the FFI wire vocabulary (ADR-0020 seccomp
         # conformance): a collision makes the policy<->JSON round-trip

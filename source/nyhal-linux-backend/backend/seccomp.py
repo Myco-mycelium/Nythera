@@ -388,6 +388,24 @@ _NETWORK_INBOUND_SYSCALLS = [
 
 _PROCESS_SPAWN_SYSCALLS = ["clone", "fork", "vfork", "clone3"]
 
+# IPC transport syscalls (Unix datagram sockets for Nyrqis IPC).
+# Gated on CAP_IPC_SEND / CAP_IPC_RECEIVE: a container that has IPC
+# capabilities but not CAP_NETWORK_SOCKET can still use the IPC
+# transport.  These overlap with _NETWORK_GENERAL_SYSCALLS — whichever
+# cap grants them first wins.
+_IPC_SEND_SYSCALLS = [
+    "sendto", "sendmsg", "sendmmsg",
+]
+_IPC_RECV_SYSCALLS = [
+    "recvmsg", "recvmmsg", "recvfrom",
+]
+# Both IPC send and recv need the socket creation + binding syscalls.
+_IPC_SOCKET_SYSCALLS = [
+    "socket", "socketpair", "bind", "getsockname",
+    "getpeername", "setsockopt", "getsockopt", "connect",
+    "shutdown",
+]
+
 # Runtime baseline for the default-deny allowlist posture: what a
 # dynamically-linked process needs to start, run, and exit (glibc's
 # loader, signals, threads, timers, memory management, read-only
@@ -731,6 +749,17 @@ def build_allowlist_policy(
 
     if Capability.CAP_PROCESS_SPAWN.value in caps:
         policy.allow(*_PROCESS_SPAWN_SYSCALLS)
+
+    # IPC transport (Unix datagram sockets): gated on CAP_IPC_SEND /
+    # CAP_IPC_RECEIVE so a container with IPC capabilities but without
+    # CAP_NETWORK_SOCKET can still use the Nyrqis IPC transport.
+    if (Capability.CAP_IPC_SEND.value in caps
+            or Capability.CAP_IPC_RECEIVE.value in caps):
+        policy.allow(*_IPC_SOCKET_SYSCALLS)
+    if Capability.CAP_IPC_SEND.value in caps:
+        policy.allow(*_IPC_SEND_SYSCALLS)
+    if Capability.CAP_IPC_RECEIVE.value in caps:
+        policy.allow(*_IPC_RECV_SYSCALLS)
 
     return policy
 
