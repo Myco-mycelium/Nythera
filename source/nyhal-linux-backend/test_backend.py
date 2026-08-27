@@ -13445,6 +13445,75 @@ class TestNstudioImport(unittest.TestCase):
         with self.assertRaises(nstudio.NstudioValidationError):
             doc.render("ghost")
 
+    # -- to_dict round-trip tests ---------------------------------------
+
+    def test_to_dict_round_trip_desktop(self):
+        """Round-trip the desktop shell: load → to_dict → loads."""
+        import json
+        doc = self._load("desktop.nstudio")
+        d = doc.to_dict()
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d["version"], "1.0.0")
+        # Round-trip
+        doc2 = nstudio.loads(json.dumps(d))
+        self.assertEqual(doc2.version, doc.version)
+        self.assertEqual(len(doc2.screens), len(doc.screens))
+        self.assertEqual(len(doc2.behaviors), len(doc.behaviors))
+        self.assertEqual(len(doc2.bindings), len(doc.bindings))
+        self.assertEqual(len(doc2.component_ids()), len(doc.component_ids()))
+        self.assertEqual(len(doc2.animations), len(doc.animations))
+        self.assertEqual(doc2.states, doc.states)
+
+    def test_to_dict_round_trip_nyrqis_shell(self):
+        """Round-trip the nyrqis-shell fixture."""
+        import json
+        doc = self._load("nyrqis-shell.nstudio")
+        d = doc.to_dict()
+        doc2 = nstudio.loads(json.dumps(d))
+        self.assertEqual(len(doc2.component_ids()), 71)
+        self.assertEqual(len(doc2.behaviors), 5)
+        self.assertEqual(len(doc2.bindings), 1)
+
+    def test_to_dict_includes_accessibility(self):
+        """to_dict preserves accessibility metadata in properties."""
+        import json
+        doc = self._load("desktop.nstudio")
+        d = doc.to_dict()
+        doc2 = nstudio.loads(json.dumps(d))
+        # Find a component with accessibility
+        comp = doc2.find_component("btn_unlock")
+        self.assertIsNotNone(comp)
+        self.assertIn("accessibility", comp.properties)
+        self.assertEqual(comp.properties["accessibility"]["label"],
+                         "Unlock screen")
+
+    def test_to_dict_empty_document(self):
+        """to_dict works on a minimal document."""
+        import json
+        doc = nstudio.loads(json.dumps({
+            "version": "1.0.0",
+            "screens": [{"id": "s1", "size": {"width": 800, "height": 600},
+                          "root": {"id": "r1", "type": "Text", "properties": {"text": "hi"},
+                                    "layout": {"x": 0, "y": 0, "width": 100, "height": 30},
+                                    "events": {}, "children": []}}],
+        }))
+        d = doc.to_dict()
+        self.assertEqual(d["version"], "1.0.0")
+        self.assertEqual(len(d["screens"]), 1)
+        # Round-trip
+        doc2 = nstudio.loads(json.dumps(d))
+        self.assertEqual(len(doc2.screens), 1)
+        self.assertEqual(doc2.screens[0].root.type, "Text")
+
+    def test_to_dict_preserves_reusable_components(self):
+        """to_dict preserves reusable component masters."""
+        import json
+        doc = self._load("widgets.nstudio")
+        d = doc.to_dict()
+        doc2 = nstudio.loads(json.dumps(d))
+        self.assertEqual(len(doc2.reusable_components),
+                         len(doc.reusable_components))
+
 
 class TestShellComponents(unittest.TestCase):
     """The extended Shell vocabulary — AppGrid, Clock, Dock, TitleBar
