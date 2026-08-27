@@ -133,6 +133,39 @@ class TestContainerPrimitives(unittest.TestCase):
         self.assertEqual(container.config.limits.memory_mb, 512)
         self.assertEqual(container.config.limits.pid_limit, 128)
 
+    def test_container_overlay_setup(self):
+        """Test that overlay filesystem is attached when rootfs is set."""
+        import tempfile
+        from fuse.nyfs import NyFSFilesystem
+        from fuse.overlay import OverlayFilesystem
+        tmp = tempfile.mkdtemp()
+        # Create a base NyFS with content and save it
+        lower_dir = os.path.join(tmp, "lower")
+        lower = NyFSFilesystem(lower_dir)
+        lower.mkdir("/shared", 0o755)
+        lower.create_file("/shared/base.txt", 0o644)
+        lower.write("/shared/base.txt", b"base content")
+        lower.save()
+        # Container with rootfs — load the saved filesystem
+        config = ContainerConfig(rootfs=lower_dir)
+        container = self.manager.create(config)
+        # Overlay is not set until spawn
+        self.assertIsNone(container.overlay)
+        # Simulate overlay setup
+        self.manager._setup_overlay(container)
+        self.assertIsNotNone(container.overlay)
+        self.assertIsInstance(container.overlay, OverlayFilesystem)
+        # Overlay can read from lower
+        self.assertEqual(container.overlay.read("/shared/base.txt"),
+                         b"base content")
+
+    def test_container_overlay_none_when_no_rootfs(self):
+        """Test that no overlay is created when rootfs is not set."""
+        config = ContainerConfig()  # no rootfs
+        container = self.manager.create(config)
+        self.manager._setup_overlay(container)
+        self.assertIsNone(container.overlay)
+
 
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension

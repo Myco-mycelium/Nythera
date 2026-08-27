@@ -87,6 +87,11 @@ class ContainerConfig:
     default_deny: bool = False  # default-deny allowlist posture (opt-in)
     network: bool = False  # own network namespace (loopback only), opt-in
     app_path: Optional[str] = None  # Nyrqis application path (.napp binary)
+    # Overlay filesystem: when ``rootfs`` is set, the container gets a
+    # writable overlay layer on top of the shared base at ``rootfs``.
+    # The overlay is a ``fuse.overlay.OverlayFilesystem`` instance
+    # attached to ``container.overlay`` after spawn.
+    rootfs: Optional[str] = None  # base path for overlay (None = no overlay)
 
 
 class Container:
@@ -110,6 +115,9 @@ class Container:
         # container's exit status). Exactly one of the two is set.
         self._proc: Optional[subprocess.Popen] = None
         self._direct_launcher_pid: Optional[int] = None
+        # Overlay filesystem for this container (set by ContainerManager
+        # when config.rootfs is provided)
+        self.overlay = None
         # Direct path: the namespace's PID-1 — the launcher-init that
         # supervises the real command (``self.pid``). The init is what
         # suspend/freeze/terminate escalation addresses as belt-and-
@@ -283,6 +291,7 @@ class ContainerManager:
         
         try:
             self._setup_cgroups(container)
+            self._setup_overlay(container)
             self._spawn(container)  # sets container.pid
             self._ipc_register(container)
             self._cap_initialize(container)
@@ -318,6 +327,7 @@ class ContainerManager:
         container.transition_to(ContainerState.TERMINATED)
         self._cap_reset(container)
         self._ipc_unregister(container)
+        container.overlay = None  # release overlay reference
         return exit_code
 
     def _wait_direct(
@@ -355,6 +365,7 @@ class ContainerManager:
         container.transition_to(ContainerState.TERMINATED)
         self._cap_reset(container)
         self._ipc_unregister(container)
+        container.overlay = None  # release overlay reference
         return exit_code
     
     def _freeze_control(
@@ -865,6 +876,35 @@ class ContainerManager:
         self._policy_files.clear()
         self._bpf_files.clear()
     
+    def _setup_overlay(self, container: Container) -> None:
+        """Create an overlay filesystem for the container if rootfs is set.
+
+        When ``container.config.rootfs`` points to a valid NyFS base
+        directory, an ``OverlayFilesystem`` is attached to
+        ``container.overlay`` so the container's storage operations
+        can use a per-container writable view.
+        """
+        rootfs = container.config.rootfs
+        if not rootfs:
+            return
+        try:
+            from fuse.nyfs import NyFSFilesystem
+            from fuse.overlay import OverlayFilesystem
+            # Try to load an existing saved filesystem; fall back to
+            # creating a new one if no saved state exists.
+            meta = os.path.join(rootfs, "state", "metadata.json")
+            if os.path.exists(meta):
+                lower = NyFSFilesystem.load(rootfs)
+            else:
+                lower = NyFSFilesystem(rootfs)
+            overlay = OverlayFilesystem(lower, container_id=container.id)
+            container.overlay = overlay
+            logger.info(f"Container {container.id} overlay attached "
+                        f"(lower={rootfs})")
+        except Exception as e:
+            logger.warning(f"Container {container.id} overlay setup failed: "
+                           f"{e} — running without overlay")
+
     def _spawn(self, container: Container):
         """Spawn the container's main process in isolated namespaces.
 
