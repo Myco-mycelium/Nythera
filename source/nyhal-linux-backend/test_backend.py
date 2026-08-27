@@ -201,6 +201,80 @@ class TestContainerPrimitives(unittest.TestCase):
         config = ContainerConfig(default_deny=False)
         self.assertFalse(config.default_deny)
 
+    def test_container_has_network_ip_field(self):
+        """Container has a network_ip attribute for tracking assigned IPs."""
+        config = ContainerConfig()
+        container = self.manager.create(config)
+        self.assertIsNone(container.network_ip)
+
+
+class TestVethBridgeNetworking(unittest.TestCase):
+    """Test veth/bridge outbound connectivity for network=True containers.
+
+    These tests are hermetic — they test the logic and fallback paths
+    without requiring host CAP_NET_ADMIN or real bridge setup.
+    """
+
+    def test_ensure_bridge_exists_check(self):
+        """is_bridge_available returns a bool."""
+        from backend.network import is_bridge_available
+        result = is_bridge_available()
+        self.assertIsInstance(result, bool)
+
+    def test_alloc_ip_unique(self):
+        """_alloc_ip returns sequential IPs."""
+        from backend.network import _alloc_ip, _next_ip
+        old = _next_ip[0]
+        ip1 = _alloc_ip()
+        ip2 = _alloc_ip()
+        self.assertNotEqual(ip1, ip2)
+        self.assertTrue(ip1.startswith("172.16.0."))
+        self.assertTrue(ip2.startswith("172.16.0."))
+        _next_ip[0] = old  # restore
+
+    def test_teardown_container_network_best_effort(self):
+        """teardown_container_network is best-effort, never raises."""
+        from backend.network import teardown_container_network
+        # Should not raise even with a non-existent container
+        teardown_container_network("nonexistent-container")
+
+    def test_teardown_bridge_best_effort(self):
+        """teardown_bridge is best-effort, never raises."""
+        from backend.network import teardown_bridge
+        teardown_bridge()  # should not raise
+
+    def test_container_setup_network_skips_when_not_network(self):
+        """_setup_network is a no-op when network=False."""
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(network=False)
+        container = manager.create(config)
+        container.pid = 1  # fake pid
+        manager._setup_network(container)
+        self.assertIsNone(container.network_ip)
+
+    def test_container_setup_network_no_pid(self):
+        """_setup_network is a no-op when pid is None."""
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(network=True)
+        container = manager.create(config)
+        # pid is None by default
+        manager._setup_network(container)
+        self.assertIsNone(container.network_ip)
+
+    def test_container_cleanup_network_best_effort(self):
+        """_cleanup_network is best-effort, never raises."""
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(network=True)
+        container = manager.create(config)
+        manager._cleanup_network(container)  # should not raise
+
+    def test_container_cleanup_network_skips_when_not_network(self):
+        """_cleanup_network is a no-op when network=False."""
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(network=False)
+        container = manager.create(config)
+        manager._cleanup_network(container)  # should not raise
+
 
 class TestAppCLI(unittest.TestCase):
     """Test the nyrqisctl app CLI commands: build_payload, format_human."""
@@ -15807,6 +15881,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
+    suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestSystemdUnit))
     suite.addTests(loader.loadTestsFromTestCase(TestDaemonState))

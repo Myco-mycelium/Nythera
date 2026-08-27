@@ -133,7 +133,9 @@ class Container:
         # thaw before anything else, and terminate must thaw so SIGTERM
         # is deliverable (a frozen cgroup defers non-SIGKILL signals).
         self._frozen_via_cgroup: bool = False
-        
+        # Network IP assigned when network=True (set by _setup_network)
+        self.network_ip: Optional[str] = None
+
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
     
@@ -335,6 +337,7 @@ class ContainerManager:
             self._setup_overlay(container)
             self._setup_lsm(container)
             self._spawn(container)  # sets container.pid
+            self._setup_network(container)
             self._ipc_register(container)
             self._cap_initialize(container)
             self._attach_to_cgroups(container)
@@ -369,6 +372,7 @@ class ContainerManager:
         container.transition_to(ContainerState.TERMINATED)
         self._cap_reset(container)
         self._ipc_unregister(container)
+        self._cleanup_network(container)
         container.overlay = None  # release overlay reference
         return exit_code
 
@@ -407,9 +411,22 @@ class ContainerManager:
         container.transition_to(ContainerState.TERMINATED)
         self._cap_reset(container)
         self._ipc_unregister(container)
+        self._cleanup_network(container)
         container.overlay = None  # release overlay reference
         return exit_code
-    
+
+    def _cleanup_network(self, container: Container) -> None:
+        """Remove the veth pair for a terminated container."""
+        if not container.config.network:
+            return
+        try:
+            from backend.network import teardown_container_network
+            teardown_container_network(container.id)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Network cleanup failed for {container.id}: {e}")
+
     def _freeze_control(
         self, container: Container
     ) -> Optional[Tuple[Path, str, str]]:
@@ -1159,6 +1176,36 @@ class ContainerManager:
             logger.debug(f"LSM module not available for {container.id}")
         except Exception as e:
             logger.warning(f"LSM setup failed for {container.id}: {e}")
+
+    def _setup_network(self, container: Container) -> None:
+        """Set up veth/bridge outbound connectivity for network=True containers.
+
+        Creates a veth pair, attaches one end to the bridge, and moves
+        the other end into the container's network namespace.  Configures
+        an IP and default route so the container can reach the internet.
+
+        Best-effort: a failure means the container runs with loopback only
+        (the pre-existing behavior).
+        """
+        if not container.config.network or container.pid is None:
+            return
+        try:
+            from backend.network import setup_container_network
+            ip = setup_container_network(container.id, container.pid)
+            if ip is not None:
+                container.network_ip = ip
+                logger.info(
+                    f"Container {container.id} network: {ip}"
+                )
+            else:
+                logger.warning(
+                    f"Container {container.id} network setup failed "
+                    "— running with loopback only"
+                )
+        except ImportError:
+            logger.debug(f"network module not available for {container.id}")
+        except Exception as e:
+            logger.warning(f"Network setup failed for {container.id}: {e}")
 
     def _spawn(self, container: Container):
         """Spawn the container's main process in isolated namespaces.
