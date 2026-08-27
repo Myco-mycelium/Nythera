@@ -1459,6 +1459,218 @@ class TestIPCTransport(unittest.TestCase):
             server2.close()
 
 
+class TestSharedMemoryTransport(unittest.TestCase):
+    """Test the shared-memory IPC transport (ring buffer, create/attach,
+    send/recv, and cleanup)."""
+
+    def test_is_shm_available(self):
+        """is_shm_available returns a bool."""
+        from ipc.shm_transport import is_shm_available
+        result = is_shm_available()
+        self.assertIsInstance(result, bool)
+
+    def test_ring_buffer_write_read(self):
+        """RingBuffer write and read round-trips data."""
+        import mmap
+        from ipc.shm_transport import RingBuffer, _HEADER_SIZE, _next_pow2
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        capacity = _next_pow2(4096)
+        total = _HEADER_SIZE + capacity
+        mm = mmap.mmap(-1, total)
+        try:
+            header = ShmHeader(
+                magic=_SHM_MAGIC, version=_SHM_VERSION,
+                head=0, tail=0, capacity=capacity,
+            )
+            mm[:_HEADER_SIZE] = header.pack()
+            writer = RingBuffer(mm, capacity, is_writer=True)
+            reader = RingBuffer(mm, capacity, is_writer=False)
+            msg = b"hello shm world"
+            self.assertTrue(writer.write(msg, timeout_s=1.0))
+            result = reader.read(timeout_s=1.0)
+            self.assertEqual(result, msg)
+        finally:
+            mm.close()
+
+    def test_ring_buffer_multiple_messages(self):
+        """RingBuffer handles multiple messages in sequence."""
+        import mmap
+        from ipc.shm_transport import RingBuffer, _HEADER_SIZE, _next_pow2
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        capacity = _next_pow2(4096)
+        total = _HEADER_SIZE + capacity
+        mm = mmap.mmap(-1, total)
+        try:
+            header = ShmHeader(
+                magic=_SHM_MAGIC, version=_SHM_VERSION,
+                head=0, tail=0, capacity=capacity,
+            )
+            mm[:_HEADER_SIZE] = header.pack()
+            writer = RingBuffer(mm, capacity, is_writer=True)
+            reader = RingBuffer(mm, capacity, is_writer=False)
+            messages = [f"msg-{i}".encode() for i in range(10)]
+            for msg in messages:
+                self.assertTrue(writer.write(msg, timeout_s=1.0))
+            for expected in messages:
+                result = reader.read(timeout_s=1.0)
+                self.assertEqual(result, expected)
+        finally:
+            mm.close()
+
+    def test_ring_buffer_empty_read_returns_none(self):
+        """RingBuffer.read returns None on timeout when empty."""
+        import mmap
+        from ipc.shm_transport import RingBuffer, _HEADER_SIZE, _next_pow2
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        capacity = _next_pow2(4096)
+        total = _HEADER_SIZE + capacity
+        mm = mmap.mmap(-1, total)
+        try:
+            header = ShmHeader(
+                magic=_SHM_MAGIC, version=_SHM_VERSION,
+                head=0, tail=0, capacity=capacity,
+            )
+            mm[:_HEADER_SIZE] = header.pack()
+            reader = RingBuffer(mm, capacity, is_writer=False)
+            result = reader.read(timeout_s=0.01)
+            self.assertIsNone(result)
+        finally:
+            mm.close()
+
+    def test_ring_buffer_is_empty(self):
+        """RingBuffer.is_empty reports correctly."""
+        import mmap
+        from ipc.shm_transport import RingBuffer, _HEADER_SIZE, _next_pow2
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        capacity = _next_pow2(4096)
+        total = _HEADER_SIZE + capacity
+        mm = mmap.mmap(-1, total)
+        try:
+            header = ShmHeader(
+                magic=_SHM_MAGIC, version=_SHM_VERSION,
+                head=0, tail=0, capacity=capacity,
+            )
+            mm[:_HEADER_SIZE] = header.pack()
+            writer = RingBuffer(mm, capacity, is_writer=True)
+            reader = RingBuffer(mm, capacity, is_writer=False)
+            self.assertTrue(reader.is_empty())
+            writer.write(b"data", timeout_s=1.0)
+            self.assertFalse(reader.is_empty())
+        finally:
+            mm.close()
+
+    def test_shm_header_valid(self):
+        """ShmHeader.valid checks magic and version."""
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        h = ShmHeader(magic=_SHM_MAGIC, version=_SHM_VERSION)
+        self.assertTrue(h.valid())
+        h2 = ShmHeader(magic=0xDEAD, version=1)
+        self.assertFalse(h2.valid())
+
+    def test_shm_header_pack_unpack(self):
+        """ShmHeader pack/unpack round-trips."""
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        h = ShmHeader(
+            magic=_SHM_MAGIC, version=_SHM_VERSION,
+            head=100, tail=50, capacity=4096,
+        )
+        data = h.pack()
+        h2 = ShmHeader.unpack(data)
+        self.assertEqual(h2.magic, _SHM_MAGIC)
+        self.assertEqual(h2.version, _SHM_VERSION)
+        self.assertEqual(h2.head, 100)
+        self.assertEqual(h2.tail, 50)
+        self.assertEqual(h2.capacity, 4096)
+
+    def test_next_pow2(self):
+        """_next_pow2 returns the correct power of 2."""
+        from ipc.shm_transport import _next_pow2
+        self.assertEqual(_next_pow2(1), 1)
+        self.assertEqual(_next_pow2(2), 2)
+        self.assertEqual(_next_pow2(3), 4)
+        self.assertEqual(_next_pow2(4), 4)
+        self.assertEqual(_next_pow2(5), 8)
+        self.assertEqual(_next_pow2(1000), 1024)
+        self.assertEqual(_next_pow2(1024), 1024)
+        self.assertEqual(_next_pow2(1025), 2048)
+
+    def test_ring_buffer_large_message(self):
+        """RingBuffer handles messages larger than a single entry."""
+        import mmap
+        from ipc.shm_transport import RingBuffer, _HEADER_SIZE, _next_pow2
+        from ipc.shm_transport import ShmHeader, _SHM_MAGIC, _SHM_VERSION
+        capacity = _next_pow2(8192)
+        total = _HEADER_SIZE + capacity
+        mm = mmap.mmap(-1, total)
+        try:
+            header = ShmHeader(
+                magic=_SHM_MAGIC, version=_SHM_VERSION,
+                head=0, tail=0, capacity=capacity,
+            )
+            mm[:_HEADER_SIZE] = header.pack()
+            writer = RingBuffer(mm, capacity, is_writer=True)
+            reader = RingBuffer(mm, capacity, is_writer=False)
+            # Write a message that's ~4KB (larger than a cache line)
+            msg = bytes(range(256)) * 16  # 4096 bytes
+            self.assertTrue(writer.write(msg, timeout_s=1.0))
+            result = reader.read(timeout_s=1.0)
+            self.assertEqual(result, msg)
+        finally:
+            mm.close()
+
+    def test_shm_transport_create_close(self):
+        """ShmTransport create and close lifecycle."""
+        from ipc.shm_transport import ShmTransport, is_shm_available
+        if not is_shm_available():
+            self.skipTest("POSIX shm not available")
+        transport = ShmTransport("test-create", capacity=4096)
+        self.assertTrue(transport.create())
+        self.assertTrue(transport.available)
+        transport.close()
+
+    def test_shm_transport_send_recv(self):
+        """ShmTransport send and recv round-trip."""
+        from ipc.shm_transport import ShmTransport, is_shm_available
+        if not is_shm_available():
+            self.skipTest("POSIX shm not available")
+        # Server and client share the same channel_id
+        server = ShmTransport("test-sendrecv", capacity=4096)
+        client = ShmTransport("test-sendrecv", capacity=4096)
+        try:
+            self.assertTrue(server.create())
+            self.assertTrue(client.attach())
+            msg = b"hello from client"
+            self.assertTrue(client.send(msg, timeout_s=1.0))
+            result = server.recv(timeout_s=1.0)
+            self.assertEqual(result, msg)
+        finally:
+            server.close()
+            client.close()
+
+    def test_shm_transport_bidirectional(self):
+        """ShmTransport supports bidirectional communication."""
+        from ipc.shm_transport import ShmTransport, is_shm_available
+        if not is_shm_available():
+            self.skipTest("POSIX shm not available")
+        # Server and client share the same channel_id
+        server = ShmTransport("test-bidir", capacity=4096)
+        client = ShmTransport("test-bidir", capacity=4096)
+        try:
+            self.assertTrue(server.create())
+            self.assertTrue(client.attach())
+            # Client -> Server
+            msg1 = b"client msg"
+            self.assertTrue(client.send(msg1, timeout_s=1.0))
+            self.assertEqual(server.recv(timeout_s=1.0), msg1)
+            # Server -> Client
+            msg2 = b"server msg"
+            self.assertTrue(server.send(msg2, timeout_s=1.0))
+            self.assertEqual(client.recv(timeout_s=1.0), msg2)
+        finally:
+            server.close()
+            client.close()
+
+
 class TestBackendStatusService(unittest.TestCase):
     """Test the first real container-facing service on the transport
     (implementation_plan.md §4.3): CALL/REPLY over the datagram
@@ -15909,6 +16121,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCapabilityEnforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCSemantics))
     suite.addTests(loader.loadTestsFromTestCase(TestIPCTransport))
+    suite.addTests(loader.loadTestsFromTestCase(TestSharedMemoryTransport))
     suite.addTests(loader.loadTestsFromTestCase(TestBackendStatusService))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCapabilityLifecycle))
     suite.addTests(loader.loadTestsFromTestCase(TestStatusServiceHost))
