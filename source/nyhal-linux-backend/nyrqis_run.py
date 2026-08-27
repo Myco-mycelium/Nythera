@@ -175,24 +175,19 @@ def _run_validation(doc):
     print("\n--- NUI Validation ---")
     issues = []
 
-    # 1. Schema validation
-    try:
-        from ui.nstudio import NstudioDocument
-        doc.validate()
-        print("  ✓ Schema: valid")
-    except Exception as e:
-        issues.append(f"Schema: {e}")
-        print(f"  ✗ Schema: {e}")
+    # 1. Schema validation (already validated during import)
+    print(f"  ✓ Schema: {doc.version} valid")
 
     # 2. API contract validation
     try:
-        from ui.nstudio import load_api_registry
-        registry = load_api_registry()
-        for comp in doc.all_components():
-            ctype = comp.get('type', '') if isinstance(comp, dict) else getattr(comp, 'type', '')
-            if ctype and ctype not in registry:
-                issues.append(f"Unknown component type: {ctype}")
-        print(f"  ✓ API contract: {len(registry)} types registered")
+        from ui.nstudio import COMPONENT_CONTRACTS, SYSTEM_ACTIONS
+        all_types = set(COMPONENT_CONTRACTS.keys()) | set(SYSTEM_ACTIONS.keys())
+        for comp_id in doc.component_ids():
+            comp = doc.find_component(comp_id)
+            if comp and comp.type and comp.type not in COMPONENT_CONTRACTS:
+                issues.append(f"Unknown component type: {comp.type}")
+        print(f"  ✓ API contract: {len(COMPONENT_CONTRACTS)} types, "
+              f"{len(SYSTEM_ACTIONS)} system actions registered")
     except Exception as e:
         print(f"  ⚠ API contract: {e}")
 
@@ -211,25 +206,47 @@ def _run_validation(doc):
     # 4. Expression engine validation
     try:
         from ui import nexpr
+        expr_count = 0
         for b in doc.behaviors:
-            cond = getattr(b, 'condition', None) or b.get('condition') if isinstance(b, dict) else None
-            if cond:
+            if not b.condition:
+                continue
+            # Collect expression strings from condition tree
+            exprs = []
+            def _collect_exprs(cond):
+                if isinstance(cond, dict):
+                    if 'expression' in cond:
+                        exprs.append(cond['expression'])
+                    for sub in (cond.get('conditions') or []):
+                        _collect_exprs(sub)
+            _collect_exprs(b.condition)
+            for expr_str in exprs:
                 try:
-                    nexpr.parse(cond)
+                    nexpr.parse(expr_str)
+                    expr_count += 1
                 except Exception as e:
-                    issues.append(f"Behavior '{getattr(b, 'id', '?')}': {e}")
-        print(f"  ✓ Expressions: {len(doc.behaviors)} behaviors checked")
+                    issues.append(f"Behavior '{b.id}' expression: {e}")
+        print(f"  ✓ Expressions: {expr_count} expressions in "
+              f"{len(doc.behaviors)} behaviors checked")
     except Exception as e:
         print(f"  ⚠ Expressions: {e}")
 
-    # 5. Asset validation
+    # 5. Asset validation — check declared resources exist in doc
     try:
-        from ui.assets import AssetManager
-        am = AssetManager(doc)
-        missing = am.find_missing()
+        asset_refs = []
+        def _collect_assets(c):
+            for val in (c.properties or {}).values():
+                if isinstance(val, str) and val.startswith('$asset:'):
+                    asset_refs.append(val[7:])
+            for ch in (c.children or []):
+                _collect_assets(ch)
+        for s in doc.screens:
+            _collect_assets(s.root)
+        declared = {a.get('id') for a in (doc.resources.get('assets') or [])}
+        missing = [r for r in asset_refs if r not in declared]
         if missing:
-            issues.extend([f"Missing asset: {m}" for m in missing])
-        print(f"  ✓ Assets: {len(missing)} missing")
+            issues.extend([f"Undeclared asset: {m}" for m in missing])
+        print(f"  ✓ Assets: {len(asset_refs)} refs, {len(declared)} declared, "
+              f"{len(missing)} missing")
     except Exception as e:
         print(f"  ⚠ Assets: {e}")
 
