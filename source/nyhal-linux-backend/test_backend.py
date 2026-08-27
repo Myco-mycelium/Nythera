@@ -6648,6 +6648,30 @@ class TestStorageGuarantees(unittest.TestCase):
         # Should only have original file
         self.assertEqual(len(self.fs.inodes), 2)  # root + file1
 
+    def test_compression_ratio(self):
+        """Zstandard compression should achieve >30% ratio (ADR-007)."""
+        from fuse.nyfs import NyFSBlock
+        # Test with realistic data patterns
+        test_cases = [
+            (b"Hello, NyFS!" * 100, "repeated text"),
+            (b"\x00" * 10000, "zeros"),
+            (bytes(range(256)) * 40, "sequential bytes"),
+            (os.urandom(10000), "random data"),  # worst case
+        ]
+        for data, desc in test_cases:
+            block = NyFSBlock(data=data)
+            block.compute_checksum()  # must be called before compress
+            block.compress()
+            if block.compressed_data is not None:
+                ratio = len(block.compressed_data) / len(data)
+                # Random data won't compress well, but others should
+                if desc != "random data":
+                    self.assertLess(ratio, 0.7, f"{desc}: ratio {ratio:.2f}")
+                # All should decompress correctly
+                decompressed = block.decompress()
+                self.assertEqual(decompressed, data,
+                                 f"{desc}: roundtrip failed")
+
 
 class TestOverlayFilesystem(unittest.TestCase):
     """Overlay filesystem for container-specific views.
