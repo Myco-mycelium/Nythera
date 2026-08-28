@@ -293,6 +293,8 @@ class ContainerManager:
         self._lsm_files: List[str] = []  # LSM policy files (AppArmor/SELinux)
         # Container lifecycle event ring (bounded, newest first)
         self._events: RingBuffer = RingBuffer(max_lines=500)
+        # Resource quotas: owner → {"memory_mb": int, "pid_limit": int, "max_containers": int}
+        self._quotas: Dict[str, Dict[str, Any]] = {}
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
     def _record_event(self, kind: str, container_id: str,
@@ -336,6 +338,123 @@ class ContainerManager:
                 continue
             events.append(ev)
         return events
+
+    # -- resource quotas ------------------------------------------------
+
+    def set_quota(self, owner: str, memory_mb: Optional[int] = None,
+                  pid_limit: Optional[int] = None,
+                  max_containers: Optional[int] = None) -> Dict[str, Any]:
+        """Set resource quotas for an owner (user or group).
+
+        Args:
+            owner: The owner identifier (e.g. username or group).
+            memory_mb: Maximum total memory in MiB across all containers.
+            pid_limit: Maximum total PIDs across all containers.
+            max_containers: Maximum number of concurrent containers.
+
+        Returns:
+            The quota dict that was set.
+        """
+        quota: Dict[str, Any] = self._quotas.get(owner, {}).copy()
+        if memory_mb is not None:
+            quota["memory_mb"] = memory_mb
+        if pid_limit is not None:
+            quota["pid_limit"] = pid_limit
+        if max_containers is not None:
+            quota["max_containers"] = max_containers
+        self._quotas[owner] = quota
+        self._record_event("quota_set", owner, str(quota))
+        logger.info("quota set for %s: %s", owner, quota)
+        return quota
+
+    def get_quota(self, owner: str) -> Optional[Dict[str, Any]]:
+        """Get the resource quota for an owner."""
+        return self._quotas.get(owner)
+
+    def list_quotas(self) -> Dict[str, Dict[str, Any]]:
+        """List all resource quotas."""
+        return dict(self._quotas)
+
+    def delete_quota(self, owner: str) -> bool:
+        """Delete the resource quota for an owner."""
+        if owner in self._quotas:
+            del self._quotas[owner]
+            self._record_event("quota_deleted", owner)
+            logger.info("quota deleted for %s", owner)
+            return True
+        return False
+
+    def check_quota(self, owner: str, memory_mb: int = 0,
+                    pids: int = 0) -> Tuple[bool, str]:
+        """Check if creating a container would exceed the owner's quota.
+
+        Args:
+            owner: The owner identifier.
+            memory_mb: Memory request for the new container.
+            pids: PID request for the new container.
+
+        Returns:
+            Tuple of (allowed, reason). ``allowed`` is True if the
+            quota is not exceeded.
+        """
+        quota = self._quotas.get(owner)
+        if quota is None:
+            return True, "no quota set"
+
+        # Count existing containers for this owner
+        existing = [
+            c for c in self.containers.values()
+            if c.state != ContainerState.TERMINATED
+        ]
+
+        max_c = quota.get("max_containers")
+        if max_c is not None and len(existing) >= max_c:
+            return False, (
+                f"max_containers limit reached: {len(existing)}/{max_c}"
+            )
+
+        # Sum current resource usage
+        total_mem = memory_mb
+        total_pids = pids
+        for c in existing:
+            total_mem += c.config.limits.memory_mb
+            total_pids += c.config.limits.pid_limit
+
+        mem_limit = quota.get("memory_mb")
+        if mem_limit is not None and total_mem > mem_limit:
+            return False, (
+                f"memory quota exceeded: {total_mem}/{mem_limit} MiB"
+            )
+
+        pid_limit = quota.get("pid_limit")
+        if pid_limit is not None and total_pids > pid_limit:
+            return False, (
+                f"pid quota exceeded: {total_pids}/{pid_limit}"
+            )
+
+        return True, "within quota"
+
+    def quota_usage(self, owner: str) -> Dict[str, Any]:
+        """Get current quota usage for an owner."""
+        quota = self._quotas.get(owner, {})
+        existing = [
+            c for c in self.containers.values()
+            if c.state != ContainerState.TERMINATED
+        ]
+        total_mem = sum(c.config.limits.memory_mb for c in existing)
+        total_pids = sum(c.config.limits.pid_limit for c in existing)
+        return {
+            "owner": owner,
+            "quota": quota,
+            "containers": len(existing),
+            "memory_used_mb": total_mem,
+            "pid_used": total_pids,
+            "memory_limit_mb": quota.get("memory_mb"),
+            "pid_limit": quota.get("pid_limit"),
+            "max_containers": quota.get("max_containers"),
+        }
+
+    # -- health checks ---------------------------------------------------
 
     def start_health_check(self, container: Container) -> None:
         """Start a background health check thread for a container.
@@ -436,11 +555,30 @@ class ContainerManager:
             # For v1, we'll use the memory controller root
             return Path("/sys/fs/cgroup/memory")
     
-    def create(self, config: ContainerConfig) -> Container:
+    def create(self, config: ContainerConfig,
+               owner: Optional[str] = None) -> Container:
         """Create a new container (does not start it yet).
-        
+
         Per NPS-010 §4, creation transitions the container to CREATED state.
+        If an ``owner`` is provided and a quota exists, the quota is
+        checked before creation.
+
+        Args:
+            config: The container configuration.
+            owner: Optional owner for quota enforcement.
+
+        Raises:
+            ValueError: If the owner's quota would be exceeded.
         """
+        if owner:
+            allowed, reason = self.check_quota(
+                owner,
+                memory_mb=config.limits.memory_mb,
+                pids=config.limits.pid_limit,
+            )
+            if not allowed:
+                raise ValueError(f"Quota exceeded for {owner}: {reason}")
+
         container = Container(config)
         self.containers[container.id] = container
         self._record_event("created", container.id,

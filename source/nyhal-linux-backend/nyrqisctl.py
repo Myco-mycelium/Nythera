@@ -148,6 +148,35 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_network_stats",
             "container_id": args.container_id,
         }
+    if command == "quotas-set":
+        return {
+            "service": "control",
+            "op": "quota_set",
+            "owner": args.owner,
+            "memory_mb": args.memory,
+            "pid_limit": args.pids,
+            "max_containers": args.containers,
+        }
+    if command == "quotas-get":
+        return {
+            "service": "control",
+            "op": "quota_get",
+            "owner": args.owner,
+        }
+    if command == "quotas-list":
+        return {"service": "control", "op": "quota_list"}
+    if command == "quotas-delete":
+        return {
+            "service": "control",
+            "op": "quota_delete",
+            "owner": args.owner,
+        }
+    if command == "quotas-usage":
+        return {
+            "service": "control",
+            "op": "quota_usage",
+            "owner": args.owner,
+        }
     if command == "images-list":
         payload = {
             "service": "control",
@@ -506,6 +535,42 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"TX packets: {stats.get('tx_packets', 0):,}",
             f"TX errors:  {stats.get('tx_errors', 0)}",
             f"TX dropped: {stats.get('tx_dropped', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "quotas-set":
+        q = resp.get("quota") or {}
+        return (f"quota set for {resp.get('owner')}: "
+                + ", ".join(f"{k}={v}" for k, v in q.items()))
+    if command == "quotas-get":
+        q = resp.get("quota")
+        if q is None:
+            return f"no quota for {resp.get('owner')}"
+        return (f"quota for {resp.get('owner')}: "
+                + ", ".join(f"{k}={v}" for k, v in q.items()))
+    if command == "quotas-list":
+        quotas = resp.get("quotas") or {}
+        if not quotas:
+            return "no quotas set"
+        rows = []
+        for owner, q in quotas.items():
+            parts = [f"{k}={v}" for k, v in q.items()]
+            rows.append(f"{owner:<20} {' '.join(parts)}")
+        header = f"{'OWNER':<20} LIMITS"
+        return header + "\n" + "\n".join(rows)
+    if command == "quotas-delete":
+        ok = resp.get("ok")
+        if ok:
+            return f"quota deleted for {resp.get('owner')}"
+        return f"no quota found for {resp.get('owner')}"
+    if command == "quotas-usage":
+        lines = [
+            f"owner:       {resp.get('owner')}",
+            f"containers:  {resp.get('containers', 0)}"
+            + (f"/{resp['max_containers']}" if resp.get('max_containers') else ""),
+            f"memory:      {resp.get('memory_used_mb', 0)} MiB"
+            + (f"/{resp['memory_limit_mb']} MiB" if resp.get('memory_limit_mb') else ""),
+            f"pids:        {resp.get('pid_used', 0)}"
+            + (f"/{resp['pid_limit']}" if resp.get('pid_limit') else ""),
         ]
         return "\n".join(lines)
     if command == "images-list":
@@ -1232,6 +1297,34 @@ def build_parser() -> argparse.ArgumentParser:
     cnp = csub.add_parser("netpolicy", help="Show network policy rules for a container")
     cnp.add_argument("container_id")
     cnp.set_defaults(command="containers-netpolicy")
+
+    quotas = sub.add_parser("quotas", help="Manage resource quotas")
+    qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
+
+    qs = qsub.add_parser("set", help="Set a resource quota for an owner")
+    qs.add_argument("owner", help="Owner identifier (user or group)")
+    qs.add_argument("--memory", type=int, default=None,
+                    help="Max total memory in MiB")
+    qs.add_argument("--pids", type=int, default=None,
+                    help="Max total PIDs")
+    qs.add_argument("--containers", type=int, default=None,
+                    help="Max concurrent containers")
+    qs.set_defaults(command="quotas-set")
+
+    qg = qsub.add_parser("get", help="Get quota for an owner")
+    qg.add_argument("owner")
+    qg.set_defaults(command="quotas-get")
+
+    ql = qsub.add_parser("list", help="List all quotas")
+    ql.set_defaults(command="quotas-list")
+
+    qd = qsub.add_parser("delete", help="Delete a quota")
+    qd.add_argument("owner")
+    qd.set_defaults(command="quotas-delete")
+
+    qu = qsub.add_parser("usage", help="Show quota usage for an owner")
+    qu.add_argument("owner")
+    qu.set_defaults(command="quotas-usage")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

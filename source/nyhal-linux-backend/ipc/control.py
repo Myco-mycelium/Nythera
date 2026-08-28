@@ -169,6 +169,20 @@ class ControlService:
             elif op == "container_network_policy":
                 self._container_network_policy(server, sender_path,
                                                msg.message_id, request)
+            elif op == "quota_set":
+                self._quota_set(server, sender_path, msg.message_id,
+                                request)
+            elif op == "quota_get":
+                self._quota_get(server, sender_path, msg.message_id,
+                                request)
+            elif op == "quota_list":
+                self._quota_list(server, sender_path, msg.message_id)
+            elif op == "quota_delete":
+                self._quota_delete(server, sender_path, msg.message_id,
+                                   request)
+            elif op == "quota_usage":
+                self._quota_usage(server, sender_path, msg.message_id,
+                                  request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -696,12 +710,84 @@ class ControlService:
                 "ok": False,
                 "error": "container_network_policy failed: %s" % (e,),
             })
-            return
-        self._reply(server, sender_path, call_id, {
+            return        self._reply(server, sender_path, call_id, {
             "ok": True,
             "container_id": container.id,
             "policy": policy,
         })
+
+    def _quota_set(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        try:
+            quota = self.container_manager.set_quota(
+                owner,
+                memory_mb=request.get("memory_mb"),
+                pid_limit=request.get("pid_limit"),
+                max_containers=request.get("max_containers"),
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "quota_set failed: %s" % (e,),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "quota": quota,
+        })
+
+    def _quota_get(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        quota = self.container_manager.get_quota(owner)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "owner": owner, "quota": quota,
+        })
+
+    def _quota_list(self, server, sender_path: str, call_id: str) -> None:
+        quotas = self.container_manager.list_quotas()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "quotas": quotas, "count": len(quotas),
+        })
+
+    def _quota_delete(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        ok = self.container_manager.delete_quota(owner)
+        if ok:
+            self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": ok, "owner": owner,
+        })
+
+    def _quota_usage(self, server, sender_path: str, call_id: str,
+                      request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        usage = self.container_manager.quota_usage(owner)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **usage,
+        })
+
 
     def _app_install(self, server, sender_path: str, call_id: str,
                       request: Dict[str, Any]) -> None:

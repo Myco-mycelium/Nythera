@@ -2221,6 +2221,143 @@ class TestNetworkPolicy(unittest.TestCase):
         self.assertIn("no network policy", text)
 
 
+class TestResourceQuotas(unittest.TestCase):
+    """Test resource quotas (per-user limits across containers)."""
+
+    def test_set_and_get_quota(self):
+        """Set and retrieve a quota."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        q = manager.set_quota("alice", memory_mb=512, pid_limit=100)
+        self.assertEqual(q["memory_mb"], 512)
+        self.assertEqual(q["pid_limit"], 100)
+        retrieved = manager.get_quota("alice")
+        self.assertEqual(retrieved, q)
+
+    def test_list_quotas(self):
+        """List all quotas."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", memory_mb=512)
+        manager.set_quota("bob", max_containers=5)
+        quotas = manager.list_quotas()
+        self.assertEqual(len(quotas), 2)
+        self.assertIn("alice", quotas)
+        self.assertIn("bob", quotas)
+
+    def test_delete_quota(self):
+        """Delete a quota."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", memory_mb=512)
+        self.assertTrue(manager.delete_quota("alice"))
+        self.assertIsNone(manager.get_quota("alice"))
+        self.assertFalse(manager.delete_quota("alice"))
+
+    def test_check_quota_within(self):
+        """Check passes when within quota."""
+        from backend.container import ContainerManager, ContainerConfig
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", memory_mb=512, max_containers=3)
+        allowed, reason = manager.check_quota("alice", memory_mb=100)
+        self.assertTrue(allowed)
+        self.assertIn("within", reason)
+
+    def test_check_quota_exceeds_containers(self):
+        """Check fails when container count exceeds quota."""
+        from backend.container import (
+            ContainerManager, ContainerConfig, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", max_containers=2)
+        # Create 2 running containers
+        for _ in range(2):
+            c = manager.create(ContainerConfig(), owner="alice")
+            c.state = ContainerState.RUNNING
+        # Third should fail
+        allowed, reason = manager.check_quota("alice")
+        self.assertFalse(allowed)
+        self.assertIn("max_containers", reason)
+
+    def test_check_quota_no_quota(self):
+        """Check passes when no quota exists."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        allowed, reason = manager.check_quota("nobody")
+        self.assertTrue(allowed)
+        self.assertIn("no quota", reason)
+
+    def test_create_rejects_quota(self):
+        """Create raises ValueError when quota exceeded."""
+        from backend.container import (
+            ContainerManager, ContainerConfig, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", max_containers=1)
+        c1 = manager.create(ContainerConfig(), owner="alice")
+        c1.state = ContainerState.RUNNING
+        with self.assertRaises(ValueError) as ctx:
+            manager.create(ContainerConfig(), owner="alice")
+        self.assertIn("Quota exceeded", str(ctx.exception))
+
+    def test_quota_usage(self):
+        """Quota usage reports current resource consumption."""
+        from backend.container import (
+            ContainerManager, ContainerConfig, ContainerState,
+            ResourceLimits,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        manager.set_quota("alice", memory_mb=512, pid_limit=200)
+        c = manager.create(
+            ContainerConfig(limits=ResourceLimits(memory_mb=128, pid_limit=50)),
+            owner="alice",
+        )
+        c.state = ContainerState.RUNNING
+        usage = manager.quota_usage("alice")
+        self.assertEqual(usage["containers"], 1)
+        self.assertEqual(usage["memory_used_mb"], 128)
+        self.assertEqual(usage["pid_used"], 50)
+
+    def test_quota_cli_payloads(self):
+        """CLI build_payloads for quota commands."""
+        from nyrqisctl import build_payload
+        # set
+        args = argparse.Namespace(
+            owner="alice", memory=512, pids=100, containers=5)
+        p = build_payload("quotas-set", args)
+        self.assertEqual(p["op"], "quota_set")
+        self.assertEqual(p["owner"], "alice")
+        self.assertEqual(p["memory_mb"], 512)
+        # get
+        args = argparse.Namespace(owner="alice")
+        p = build_payload("quotas-get", args)
+        self.assertEqual(p["op"], "quota_get")
+        # list
+        p = build_payload("quotas-list", argparse.Namespace())
+        self.assertEqual(p["op"], "quota_list")
+        # delete
+        p = build_payload("quotas-delete", args)
+        self.assertEqual(p["op"], "quota_delete")
+        # usage
+        p = build_payload("quotas-usage", args)
+        self.assertEqual(p["op"], "quota_usage")
+
+    def test_quota_cli_format_human(self):
+        """CLI format_human for quota commands."""
+        from nyrqisctl import format_human
+        # usage
+        resp = {
+            "ok": True, "owner": "alice",
+            "containers": 2, "memory_used_mb": 256, "pid_used": 100,
+            "memory_limit_mb": 512, "pid_limit": 200,
+            "max_containers": 5,
+        }
+        text = format_human("quotas-usage", resp)
+        self.assertIn("alice", text)
+        self.assertIn("2/5", text)
+        self.assertIn("256 MiB/512 MiB", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17586,6 +17723,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicy))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
