@@ -112,6 +112,10 @@ class ContainerConfig:
     network_policy: Optional[Dict[str, Any]] = None  # ingress/egress rules
     # Dependency ordering
     depends_on: Optional[List[str]] = None  # container IDs this depends on
+    # Auto-restart policy
+    restart_policy: str = "no"  # "no" | "always" | "on-failure"
+    restart_max_retries: int = 5  # max restart attempts (for on-failure)
+    restart_delay: float = 1.0  # seconds between restart attempts
 
 
 class RingBuffer:
@@ -190,6 +194,9 @@ class Container:
         self.health_last_output: str = ""
         self._health_stop: Optional[threading.Event] = None
         self._health_thread: Optional[threading.Thread] = None
+        # Auto-restart state
+        self.restart_count: int = 0
+        self._restart_stop: Optional[threading.Event] = None
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -700,6 +707,8 @@ class ContainerManager:
         self._ipc_unregister(container)
         self._cleanup_network(container)
         container.overlay = None  # release overlay reference
+        # Auto-restart check
+        self._maybe_restart(container)
         return exit_code
 
     def _wait_direct(
@@ -739,6 +748,8 @@ class ContainerManager:
         self._ipc_unregister(container)
         self._cleanup_network(container)
         container.overlay = None  # release overlay reference
+        # Auto-restart check
+        self._maybe_restart(container)
         return exit_code
 
     def _cleanup_network(self, container: Container) -> None:
@@ -752,6 +763,147 @@ class ContainerManager:
             pass
         except Exception as e:
             logger.debug(f"Network cleanup failed for {container.id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Auto-restart policy
+    # ------------------------------------------------------------------
+
+    def _should_restart(self, container: Container) -> bool:
+        """Determine if a terminated container should be restarted.
+
+        Returns True when the restart policy warrants a restart:
+        - ``always``: restart regardless of exit code.
+        - ``on-failure``: restart only when exit_code != 0.
+        - ``no``: never restart.
+
+        Also respects ``restart_max_retries`` (0 = unlimited).
+        """
+        policy = container.config.restart_policy
+        if policy == "no":
+            return False
+        max_retries = container.config.restart_max_retries
+        if max_retries > 0 and container.restart_count >= max_retries:
+            logger.info(
+                "_should_restart: %s hit max retries (%d)",
+                container.id, max_retries,
+            )
+            return False
+        if policy == "always":
+            return True
+        if policy == "on-failure":
+            return (container.exit_code or 0) != 0
+        return False
+
+    def _maybe_restart(self, container: Container) -> None:
+        """Schedule a background restart if the policy allows it.
+
+        Called after a container terminates.  Spawns a daemon thread
+        that sleeps ``restart_delay`` seconds, re-creates the container
+        config, and re-spawns it.
+        """
+        if not self._should_restart(container):
+            return
+        # Check for explicit stop (terminate was called)
+        if container._restart_stop is not None and container._restart_stop.is_set():
+            return
+        container.restart_count += 1
+        logger.info(
+            "_maybe_restart: %s restarting (attempt %d)",
+            container.id, container.restart_count,
+        )
+        self._record_event(
+            "restart", container.id,
+            f"attempt={container.restart_count}",
+        )
+        # Create a new stop event for this restart cycle
+        container._restart_stop = threading.Event()
+
+        def _restart_worker():
+            delay = container.config.restart_delay
+            # Wait but allow cancellation
+            if container._restart_stop.wait(timeout=delay):
+                return  # stopped before delay elapsed
+            try:
+                # Reset state for re-spawn
+                container.state = ContainerState.CREATED
+                container.exit_code = None
+                container.pid = None
+                container._direct_launcher_pid = None
+                container._proc = None
+                container.started_at = None
+                container.terminated_at = None
+                container.overlay = None
+                self.spawn(container)
+                logger.info(
+                    "_maybe_restart: %s re-spawned (pid=%s)",
+                    container.id, container.pid,
+                )
+            except Exception as e:
+                logger.error(
+                    "_maybe_restart: %s re-spawn failed: %s",
+                    container.id, e,
+                )
+
+        t = threading.Thread(
+            target=_restart_worker,
+            name=f"restart-{container.id}",
+            daemon=True,
+        )
+        t.start()
+
+    def stop_restart(self, container: Container) -> None:
+        """Cancel any pending restart for a container.
+
+        Called by ``terminate()`` so that an explicit stop prevents
+        the auto-restart policy from re-launching the container.
+        """
+        if container._restart_stop is not None:
+            container._restart_stop.set()
+
+    def get_restart_info(self, container: Container) -> Dict[str, Any]:
+        """Return restart policy state for a container."""
+        return {
+            "restart_policy": container.config.restart_policy,
+            "restart_count": container.restart_count,
+            "restart_max_retries": container.config.restart_max_retries,
+            "restart_delay": container.config.restart_delay,
+        }
+
+    def set_restart_policy(
+        self, container: Container, policy: str,
+        max_retries: Optional[int] = None,
+        delay: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Change the restart policy for a running/created container.
+
+        Args:
+            container: Target container.
+            policy: One of "no", "always", "on-failure".
+            max_retries: Optional override for max restart attempts.
+            delay: Optional override for restart delay.
+
+        Returns:
+            The updated restart info dict.
+
+        Raises:
+            ValueError: On invalid policy.
+        """
+        valid = ("no", "always", "on-failure")
+        if policy not in valid:
+            raise ValueError(
+                f"invalid restart policy {policy!r}; "
+                f"must be one of {valid}"
+            )
+        # Use object.__setattr__ to bypass dataclass frozen-ness if any
+        object.__setattr__(container.config, "restart_policy", policy)
+        if max_retries is not None:
+            object.__setattr__(container.config, "restart_max_retries", max_retries)
+        if delay is not None:
+            object.__setattr__(container.config, "restart_delay", delay)
+        logger.info(
+            "set_restart_policy: %s → %s", container.id, policy,
+        )
+        return self.get_restart_info(container)
 
     def _freeze_control(
         self, container: Container
@@ -918,6 +1070,8 @@ class ContainerManager:
         if container.state == ContainerState.TERMINATED:
             return  # Already terminated
 
+        # Cancel any pending auto-restart so terminate prevents re-launch
+        self.stop_restart(container)
         self.stop_health_check(container)
         self.remove_network_policy(container)
 

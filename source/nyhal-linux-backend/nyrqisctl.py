@@ -104,6 +104,9 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "memory_mb": int(args.memory),
             "pids": int(args.pids),
             "name": args.name or None,
+            "restart_policy": args.restart_policy,
+            "restart_max_retries": args.restart_max_retries,
+            "restart_delay": args.restart_delay,
         }
     if command == "containers-kill":
         return {
@@ -307,6 +310,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_ids:
             payload["container_ids"] = args.container_ids
         return payload
+    if command == "containers-restart-info":
+        return {
+            "service": "control",
+            "op": "container_restart_info",
+            "container_id": args.container_id,
+        }
+    if command == "containers-restart-set":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "container_set_restart",
+            "container_id": args.container_id,
+            "policy": args.policy,
+        }
+        if args.max_retries is not None:
+            p["max_retries"] = args.max_retries
+        if args.delay is not None:
+            p["delay"] = args.delay
+        return p
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -787,6 +808,17 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             if dependents:
                 lines.append(f"  dependents: {', '.join(dependents)}")
         return "\n".join(lines)
+    if command in ("containers-restart-info", "containers-restart-set"):
+        policy = resp.get("restart_policy", "?")
+        count = resp.get("restart_count", 0)
+        max_r = resp.get("restart_max_retries", 0)
+        delay = resp.get("restart_delay", 1.0)
+        return (
+            f"policy:        {policy}\n"
+            f"restart_count: {count}\n"
+            f"max_retries:   {max_r} (0=unlimited)\n"
+            f"delay:         {delay}s"
+        )
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1285,6 +1317,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Memory limit in MiB (default: 256)")
     cr.add_argument("--pids", type=int, default=64,
                     help="PID limit (default: 64)")
+    cr.add_argument("--restart-policy", default="no",
+                    choices=["no", "always", "on-failure"],
+                    help="Auto-restart policy (default: no)")
+    cr.add_argument("--restart-max-retries", type=int, default=5,
+                    help="Max restart attempts (0=unlimited, default: 5)")
+    cr.add_argument("--restart-delay", type=float, default=1.0,
+                    help="Seconds between restart attempts (default: 1.0)")
     # Named ``run_command`` (NOT ``command``): a positional sharing the
     # subparsers' ``dest`` would clobber the ``command`` value the
     # subparser's ``set_defaults`` installed, so ``run`` would lose the
@@ -1380,6 +1419,21 @@ def build_parser() -> argparse.ArgumentParser:
     cdg.add_argument("container_ids", nargs="*",
                      help="Container IDs to include (default: all)")
     cdg.set_defaults(command="containers-dep-graph")
+
+    cri = csub.add_parser("restart-info", help="Show restart policy for a container")
+    cri.add_argument("container_id")
+    cri.set_defaults(command="containers-restart-info")
+
+    csr = csub.add_parser("restart-set", help="Set restart policy for a container")
+    csr.add_argument("container_id")
+    csr.add_argument("--policy", required=True,
+                     choices=["no", "always", "on-failure"],
+                     help="Restart policy")
+    csr.add_argument("--max-retries", type=int, default=None,
+                     help="Max restart attempts (0 = unlimited)")
+    csr.add_argument("--delay", type=float, default=None,
+                     help="Seconds between restart attempts")
+    csr.set_defaults(command="containers-restart-set")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

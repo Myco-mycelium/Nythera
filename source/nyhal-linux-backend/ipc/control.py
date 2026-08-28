@@ -242,6 +242,9 @@ class ControlService:
                     memory_mb=int(request.get("memory_mb") or 256),
                     pid_limit=int(request.get("pids") or 64),
                 ),
+                restart_policy=request.get("restart_policy", "no"),
+                restart_max_retries=int(request.get("restart_max_retries") or 5),
+                restart_delay=float(request.get("restart_delay") or 1.0),
             )
             container = self.container_manager.create(config)
             self.container_manager.spawn(container)
@@ -1064,6 +1067,63 @@ class ControlService:
             return
         self._reply(server, sender_path, call_id, {
             "ok": True, "graph": graph,
+        })
+
+    # ------------------------------------------------------------------
+    # Auto-restart policy
+    # ------------------------------------------------------------------
+
+    def _container_restart_info(self, server, sender_path: str,
+                                call_id: str,
+                                request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": f"container {container_id!r} not found",
+            })
+            return
+        info = self.container_manager.get_restart_info(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **info,
+        })
+
+    def _container_set_restart(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        policy = request.get("policy")
+        if not container_id or not policy:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and policy are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            info = self.container_manager.set_restart_policy(
+                c, policy,
+                max_retries=request.get("max_retries"),
+                delay=request.get("delay"),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **info,
         })
 
     def _save_state(self) -> None:

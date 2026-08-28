@@ -2583,6 +2583,159 @@ class TestDependencyOrdering(unittest.TestCase):
         self.assertIn("b", text2)
 
 
+class TestAutoRestart(unittest.TestCase):
+    """Test container auto-restart policy."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_default_policy_is_no(self):
+        """Default restart policy is 'no'."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertEqual(c.config.restart_policy, "no")
+        self.assertFalse(mgr._should_restart(c))
+
+    def test_should_restart_always(self):
+        """Policy 'always' triggers restart."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="always",
+        ))
+        c.state = ContainerState.TERMINATED
+        c.exit_code = 0
+        self.assertTrue(mgr._should_restart(c))
+
+    def test_should_restart_on_failure_with_error(self):
+        """Policy 'on-failure' restarts on non-zero exit."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="on-failure",
+        ))
+        c.state = ContainerState.TERMINATED
+        c.exit_code = 1
+        self.assertTrue(mgr._should_restart(c))
+
+    def test_should_not_restart_on_failure_with_zero(self):
+        """Policy 'on-failure' does NOT restart on exit 0."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="on-failure",
+        ))
+        c.state = ContainerState.TERMINATED
+        c.exit_code = 0
+        self.assertFalse(mgr._should_restart(c))
+
+    def test_max_retries_limit(self):
+        """Restart stops after max_retries."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="always",
+            restart_max_retries=2,
+        ))
+        c.state = ContainerState.TERMINATED
+        c.exit_code = 0
+        c.restart_count = 0
+        self.assertTrue(mgr._should_restart(c))  # 0 < 2
+        c.restart_count = 1
+        self.assertTrue(mgr._should_restart(c))  # 1 < 2
+        c.restart_count = 2
+        self.assertFalse(mgr._should_restart(c))  # 2 >= 2
+
+    def test_unlimited_retries(self):
+        """max_retries=0 means unlimited restarts."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="always",
+            restart_max_retries=0,
+        ))
+        c.state = ContainerState.TERMINATED
+        c.exit_code = 0
+        c.restart_count = 999
+        self.assertTrue(mgr._should_restart(c))
+
+    def test_stop_restart_cancels(self):
+        """stop_restart sets the event."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        import threading
+        c._restart_stop = threading.Event()
+        mgr.stop_restart(c)
+        self.assertTrue(c._restart_stop.is_set())
+
+    def test_get_restart_info(self):
+        """get_restart_info returns expected fields."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="a", restart_policy="on-failure",
+            restart_max_retries=10, restart_delay=2.5,
+        ))
+        info = mgr.get_restart_info(c)
+        self.assertEqual(info["restart_policy"], "on-failure")
+        self.assertEqual(info["restart_max_retries"], 10)
+        self.assertEqual(info["restart_delay"], 2.5)
+        self.assertEqual(info["restart_count"], 0)
+
+    def test_set_restart_policy(self):
+        """set_restart_policy updates the config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        info = mgr.set_restart_policy(
+            c, "always", max_retries=3, delay=0.5,
+        )
+        self.assertEqual(info["restart_policy"], "always")
+        self.assertEqual(info["restart_max_retries"], 3)
+        self.assertEqual(info["restart_delay"], 0.5)
+        self.assertEqual(c.config.restart_policy, "always")
+
+    def test_set_restart_policy_invalid(self):
+        """Invalid policy raises ValueError."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        with self.assertRaises(ValueError):
+            mgr.set_restart_policy(c, "invalid")
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for restart commands."""
+        from nyrqisctl import build_payload
+        # restart-info
+        args = argparse.Namespace(container_id="a")
+        p = build_payload("containers-restart-info", args)
+        self.assertEqual(p["op"], "container_restart_info")
+        self.assertEqual(p["container_id"], "a")
+        # restart-set
+        args2 = argparse.Namespace(
+            container_id="a", policy="always",
+            max_retries=5, delay=2.0,
+        )
+        p = build_payload("containers-restart-set", args2)
+        self.assertEqual(p["op"], "container_set_restart")
+        self.assertEqual(p["policy"], "always")
+
+    def test_cli_format_human(self):
+        """CLI format_human for restart commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "restart_policy": "always",
+            "restart_count": 3, "restart_max_retries": 10,
+            "restart_delay": 1.5,
+        }
+        text = format_human("containers-restart-info", resp)
+        self.assertIn("always", text)
+        self.assertIn("3", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17950,6 +18103,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyOrdering))
+    suite.addTests(loader.loadTestsFromTestCase(TestAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
