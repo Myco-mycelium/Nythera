@@ -338,12 +338,60 @@ def get_container_ip(container_id: str) -> Optional[str]:
     return None
 
 
+def get_network_stats(container_id: str) -> Optional[dict]:
+    """Get network interface stats for a container's veth pair.
+
+    Reads ``/sys/class/net/<iface>/statistics`` on the host side of
+    the veth pair to report bytes/packets in/out and errors.
+
+    Args:
+        container_id: The container identifier.
+
+    Returns:
+        Dict with rx/tx bytes, packets, errors, and the interface name,
+        or None if the interface doesn't exist.
+    """
+    short_id = container_id[:12].replace("-", "")
+    host_iface = f"veth-{short_id}"
+    sys_path = Path(f"/sys/class/net/{host_iface}/statistics")
+
+    if not sys_path.is_dir():
+        return None
+
+    def _read_stat(name: str) -> int:
+        try:
+            return int((sys_path / name).read_text().strip())
+        except (OSError, ValueError):
+            return 0
+
+    def _read_stat_str(name: str) -> str:
+        try:
+            return (sys_path.parent / name).read_text().strip()
+        except OSError:
+            return ""
+
+    return {
+        "interface": host_iface,
+        "rx_bytes": _read_stat("rx_bytes"),
+        "rx_packets": _read_stat("rx_packets"),
+        "rx_errors": _read_stat("rx_errors"),
+        "rx_dropped": _read_stat("rx_dropped"),
+        "tx_bytes": _read_stat("tx_bytes"),
+        "tx_packets": _read_stat("tx_packets"),
+        "tx_errors": _read_stat("tx_errors"),
+        "tx_dropped": _read_stat("tx_dropped"),
+        "mtu": _read_stat_str("mtu"),
+        "operstate": _read_stat_str("operstate"),
+    }
+
+
 __all__ = [
     "setup_container_network",
     "teardown_container_network",
     "teardown_bridge",
     "is_bridge_available",
     "get_container_ip",
+    "get_network_stats",
     "BRIDGE_NAME",
     "BRIDGE_SUBNET",
 ]

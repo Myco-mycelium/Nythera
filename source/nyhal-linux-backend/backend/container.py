@@ -1244,6 +1244,31 @@ class ContainerManager:
 
         return procs
 
+    def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:
+        """Get network interface stats for a container.
+
+        Reads the host-side veth interface statistics to report
+        bytes/packets in/out, errors, and drops.
+
+        Args:
+            container: The container to query.
+
+        Returns:
+            Dict with rx/tx stats or None if no veth exists.
+        """
+        if container.config.network and container.network_ip:
+            try:
+                from backend.network import get_network_stats
+                return get_network_stats(container.id)
+            except ImportError:
+                return None
+            except Exception as e:
+                logger.debug(
+                    "network_stats failed for %s: %s", container.id, e,
+                )
+                return None
+        return None
+
     def container_checkpoint(self, container: Container,
                              path: Optional[str] = None) -> Dict[str, Any]:
         """Checkpoint a container's filesystem state.

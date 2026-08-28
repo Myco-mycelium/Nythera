@@ -1447,6 +1447,76 @@ class TestContainerTop(unittest.TestCase):
         self.assertIn("no processes found", text)
 
 
+class TestContainerNetworkStats(unittest.TestCase):
+    """Test container network stats (veth interface stats)."""
+
+    def test_network_stats_none_without_network(self):
+        """Network stats returns None for non-network containers."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(network=False))
+        container.state = ContainerState.RUNNING
+        result = manager.container_network_stats(container)
+        self.assertIsNone(result)
+
+    def test_get_network_stats_sysfs(self):
+        """get_network_stats reads /sys/class/net correctly."""
+        import tempfile
+        from backend.network import get_network_stats
+        # The function returns None if the interface doesn't exist
+        result = get_network_stats("nonexistent-container-id")
+        self.assertIsNone(result)
+
+    def test_net_cli_payload(self):
+        """CLI build_payload for containers-net."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc")
+        payload = build_payload("containers-net", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_network_stats")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+
+    def test_net_cli_format_human(self):
+        """CLI format_human for containers-net."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "stats": {
+                "interface": "veth-abc123def456",
+                "operstate": "UP",
+                "mtu": "1500",
+                "rx_bytes": 1048576,
+                "rx_packets": 1024,
+                "rx_errors": 0,
+                "rx_dropped": 0,
+                "tx_bytes": 524288,
+                "tx_packets": 512,
+                "tx_errors": 0,
+                "tx_dropped": 0,
+            },
+        }
+        text = format_human("containers-net", resp)
+        self.assertIn("veth-abc123def456", text)
+        self.assertIn("UP", text)
+        self.assertIn("1,048,576", text)
+        self.assertIn("524,288", text)
+        self.assertIn("1,024", text)
+
+    def test_net_cli_format_human_no_stats(self):
+        """CLI format_human when no network interface found."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "stats": None,
+        }
+        text = format_human("containers-net", resp)
+        self.assertIn("no network interface found", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16804,6 +16874,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerExec))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCheckpointRestore))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTop))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworkStats))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

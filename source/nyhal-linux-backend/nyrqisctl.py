@@ -142,6 +142,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_top",
             "container_id": args.container_id,
         }
+    if command == "containers-net":
+        return {
+            "service": "control",
+            "op": "container_network_stats",
+            "container_id": args.container_id,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -407,6 +413,24 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             )
         header = f"{'PID':>8} {'S':>1} {'USER':>8} {'SYS':>8} {'RSS':>8}  CMD"
         return header + "\n" + "\n".join(rows)
+    if command == "containers-net":
+        stats = resp.get("stats")
+        if not stats:
+            return f"container {resp.get('container_id')}: no network interface found"
+        lines = [
+            f"interface:  {stats.get('interface')}",
+            f"state:      {stats.get('operstate', '?')}",
+            f"mtu:        {stats.get('mtu', '?')}",
+            f"RX bytes:   {stats.get('rx_bytes', 0):,}",
+            f"RX packets: {stats.get('rx_packets', 0):,}",
+            f"RX errors:  {stats.get('rx_errors', 0)}",
+            f"RX dropped: {stats.get('rx_dropped', 0)}",
+            f"TX bytes:   {stats.get('tx_bytes', 0):,}",
+            f"TX packets: {stats.get('tx_packets', 0):,}",
+            f"TX errors:  {stats.get('tx_errors', 0)}",
+            f"TX dropped: {stats.get('tx_dropped', 0)}",
+        ]
+        return "\n".join(lines)
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -953,6 +977,10 @@ def build_parser() -> argparse.ArgumentParser:
     ct = csub.add_parser("top", help="List processes inside a container")
     ct.add_argument("container_id")
     ct.set_defaults(command="containers-top")
+
+    cn = csub.add_parser("net", help="Show network interface stats for a container")
+    cn.add_argument("container_id")
+    cn.set_defaults(command="containers-net")
 
     cr = csub.add_parser("restore", help="Restore a container from a checkpoint file")
     cr.add_argument("checkpoint_file", help="Path to the checkpoint JSON file")

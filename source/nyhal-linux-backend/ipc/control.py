@@ -130,6 +130,9 @@ class ControlService:
             elif op == "container_top":
                 self._container_top(server, sender_path,
                                     msg.message_id, request)
+            elif op == "container_network_stats":
+                self._container_network_stats(server, sender_path,
+                                              msg.message_id, request)
             elif op == "container_checkpoint":
                 self._container_checkpoint(server, sender_path,
                                            msg.message_id, request)
@@ -349,6 +352,31 @@ class ControlService:
             "container_id": container.id,
             "processes": procs,
             "count": len(procs),
+        })
+
+    def _container_network_stats(self, server, sender_path: str,
+                                  call_id: str,
+                                  request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            stats = self.container_manager.container_network_stats(container)
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_network_stats failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container.id,
+            "stats": stats,
         })
 
     def _container_checkpoint(self, server, sender_path: str, call_id: str,
