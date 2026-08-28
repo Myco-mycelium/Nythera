@@ -339,17 +339,24 @@ Per NPS-017 §5.1, the Linux Backend is **NOT YET conformant** but provides:
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Container Primitives | ✓ Implemented | State machine, namespaces, cgroups, shell-free launcher |
-| Capability Enforcement | ✓ Implemented | Registry + data-plane seccomp (default-allow deny model; allowlist deferred) |
+| Capability Enforcement | ✓ Implemented | Registry + data-plane seccomp-BPF (default-deny allowlist is now the default; LSM policies generated and reloaded at runtime) |
 | IPC Semantics | ✓ Implemented | All primitives, rate limiting, receive-side capability check |
 | Storage Guarantees | ✓ Implemented | Core logic + FUSE operations + fusepy mount wiring |
 | Boot and Lifecycle | ✓ Implemented | Four-phase sequence, transition validation, Secure Boot reporting |
 
 **Outstanding Work:**
-- [ ] Make default-deny the default posture (currently opt-in via `--default-deny`; x86_64 baseline verified, arm64 pending)
-- [ ] LSM (AppArmor/SELinux) policy generation
+- [x] ~~Make default-deny the default posture~~ — **Landed 2026-08-28** (x86_64 baseline verified; arm64 pending)
+- [x] ~~LSM (AppArmor/SELinux) policy generation~~ — **Landed 2026-08-28** (`backend/lsm.py`; wired into container lifecycle + runtime reload)
 - [ ] FUSE overhead benchmarking (ADR-0016; decides FUSE vs kernel-module fallback)
-- [ ] Direct syscall optimization (currently uses `unshare(1)`)
-- [ ] Systemd integration
+- [x] ~~Direct syscall optimization~~ — **Landed 2026-08-13** (direct `unshare(2)`/`fork(2)` default; Rust `clone(2)` FFI landed 2026-08-15)
+- [x] ~~Systemd integration~~ — **Landed 2026-08-14** (`packaging/systemd/nyrqis-backend.service`)
+- [x] ~~Veth/bridge networking~~ — **Landed 2026-08-28** (`backend/network.py`)
+- [x] ~~IPC syscall filtering~~ — **Landed 2026-08-28** (seccomp rules gate IPC transport on CAP_IPC_SEND/RECEIVE)
+- [x] ~~Shared-memory IPC transport~~ — **Landed 2026-08-28** (`ipc/shm_transport.py`)
+- [x] ~~Overlay filesystem~~ — **Landed 2026-08-28** (`fuse/overlay.py`)
+- [x] ~~Content-hash block dedup~~ — **Landed 2026-08-28** (memory + disk level)
+- [x] ~~Runtime policy reload~~ — **Landed 2026-08-28** (`reload_policy()` + `revoke_and_reload()`)
+- [x] ~~App compatibility (Android APK/Windows .exe/.msi)~~ — **Landed 2026-08-28** (`ui/app_compat.py`)
 
 ## Performance Benchmarks
 
