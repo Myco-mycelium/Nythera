@@ -204,6 +204,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.kind:
             payload["kind"] = args.kind
         return payload
+    if command == "containers-health":
+        return {
+            "service": "control",
+            "op": "container_health",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -546,6 +552,23 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             )
         header = f"{'TIME':>8}  {'KIND':<12} {'CONTAINER':<24} DETAIL"
         return header + "\n" + "\n".join(rows)
+    if command == "containers-health":
+        status = resp.get("status", "unknown")
+        lines = [
+            f"container:  {resp.get('container_id')}",
+            f"status:     {status}",
+            f"failures:   {resp.get('failures', 0)}",
+            f"check_cmd:  {' '.join(resp.get('check_cmd') or []) or '(none)'}",
+        ]
+        last = resp.get("last_check")
+        if last:
+            import datetime as _dt
+            tstr = _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S")
+            lines.append(f"last_check: {tstr}")
+        output = resp.get("last_output", "")
+        if output:
+            lines.append(f"last_output: {output[:200]}")
+        return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1104,6 +1127,10 @@ def build_parser() -> argparse.ArgumentParser:
     ce.add_argument("--kind", default=None,
                     help="Filter by event kind (created, started, etc.)")
     ce.set_defaults(command="containers-events")
+
+    ch = csub.add_parser("health", help="Show container health status")
+    ch.add_argument("container_id")
+    ch.set_defaults(command="containers-health")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

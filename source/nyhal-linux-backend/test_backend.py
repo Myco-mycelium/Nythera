@@ -1844,6 +1844,94 @@ class TestContainerEvents(unittest.TestCase):
         self.assertIn("no events", text)
 
 
+class TestContainerHealthCheck(unittest.TestCase):
+    """Test container health checks (periodic liveness probes)."""
+
+    def test_health_default_starting(self):
+        """Health status starts as 'starting'."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        health = manager.container_health(container)
+        self.assertEqual(health["status"], "starting")
+        self.assertEqual(health["failures"], 0)
+        self.assertIsNone(health["check_cmd"])
+
+    def test_health_no_check_cmd(self):
+        """Health check does not start without a check command."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        container.pid = 99999
+        manager.start_health_check(container)
+        # No thread should have been started
+        self.assertIsNone(container._health_thread)
+        self.assertEqual(container.health_status, "starting")
+
+    def test_health_cli_payload(self):
+        """CLI build_payload for containers-health."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc")
+        payload = build_payload("containers-health", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_health")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+
+    def test_health_cli_format_human(self):
+        """CLI format_human for containers-health."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "status": "healthy",
+            "failures": 0,
+            "last_check": 1700000000.0,
+            "last_output": "OK",
+            "check_cmd": ["echo", "healthy"],
+        }
+        text = format_human("containers-health", resp)
+        self.assertIn("nyctr-test", text)
+        self.assertIn("healthy", text)
+        self.assertIn("echo healthy", text)
+        self.assertIn("OK", text)
+
+    def test_health_cli_format_human_unhealthy(self):
+        """CLI format_human shows unhealthy status."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "status": "unhealthy",
+            "failures": 3,
+            "last_check": None,
+            "last_output": "connection refused",
+            "check_cmd": ["curl", "-sf", "http://localhost:8080/health"],
+        }
+        text = format_human("containers-health", resp)
+        self.assertIn("unhealthy", text)
+        self.assertIn("3", text)
+        self.assertIn("connection refused", text)
+
+    def test_health_config_fields(self):
+        """ContainerConfig carries health check settings."""
+        from backend.container import ContainerConfig
+        config = ContainerConfig(
+            health_check_cmd=["echo", "ok"],
+            health_check_interval=10.0,
+            health_check_timeout=3.0,
+            health_check_retries=2,
+        )
+        self.assertEqual(config.health_check_cmd, ["echo", "ok"])
+        self.assertEqual(config.health_check_interval, 10.0)
+        self.assertEqual(config.health_check_timeout, 3.0)
+        self.assertEqual(config.health_check_retries, 2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17205,6 +17293,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

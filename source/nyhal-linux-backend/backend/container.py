@@ -100,6 +100,11 @@ class ContainerConfig:
     se_module_dir: Optional[str] = None  # path to SELinux module directory
     log_capture: bool = False  # capture stdout/stderr into a ring buffer
     log_max_lines: int = 1000  # max lines in the ring buffer per stream
+    # Health check: periodic liveness probe via nsenter into the container
+    health_check_cmd: Optional[List[str]] = None  # command to run
+    health_check_interval: float = 30.0  # seconds between checks
+    health_check_timeout: float = 5.0  # max seconds per check
+    health_check_retries: int = 3  # consecutive failures before unhealthy
 
 
 class RingBuffer:
@@ -171,6 +176,13 @@ class Container:
         self._stdout_buffer: Optional[RingBuffer] = None
         self._stderr_buffer: Optional[RingBuffer] = None
         self._log_threads: List[threading.Thread] = []
+        # Health check state
+        self.health_status: str = "starting"  # starting|healthy|unhealthy
+        self.health_failures: int = 0
+        self.health_last_check: Optional[float] = None
+        self.health_last_output: str = ""
+        self._health_stop: Optional[threading.Event] = None
+        self._health_thread: Optional[threading.Thread] = None
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -320,6 +332,83 @@ class ContainerManager:
             events.append(ev)
         return events
 
+    def start_health_check(self, container: Container) -> None:
+        """Start a background health check thread for a container.
+
+        Periodically runs the container's health check command via nsenter
+        and updates the container's ``health_status`` (healthy/unhealthy)
+        based on consecutive failures.
+
+        Only activates when ``config.health_check_cmd`` is set.
+        """
+        if not container.config.health_check_cmd:
+            return
+        if container.state != ContainerState.RUNNING:
+            return
+
+        container._health_stop = threading.Event()
+
+        def _probe() -> None:
+            stop = container._health_stop
+            while stop is not None and not stop.is_set():
+                try:
+                    result = self.container_exec(
+                        container,
+                        container.config.health_check_cmd,
+                        timeout_s=container.config.health_check_timeout,
+                    )
+                    ok = result.get("exit_code", -1) == 0
+                except Exception:
+                    ok = False
+
+                container.health_last_check = time.time()
+                container.health_last_output = (
+                    result.get("stdout", "") + result.get("stderr", "")
+                ) if isinstance(result, dict) else ""
+
+                if ok:
+                    container.health_failures = 0
+                    container.health_status = "healthy"
+                else:
+                    container.health_failures += 1
+                    if container.health_failures >= container.config.health_check_retries:
+                        container.health_status = "unhealthy"
+
+                stop.wait(container.config.health_check_interval)
+
+        t = threading.Thread(
+            target=_probe, daemon=True,
+            name=f"{container.id}-health",
+        )
+        t.start()
+        container._health_thread = t
+        self._record_event("health_check_started", container.id,
+                           f"interval={container.config.health_check_interval}s")
+
+    def stop_health_check(self, container: Container) -> None:
+        """Stop the background health check thread."""
+        if container._health_stop is not None:
+            container._health_stop.set()
+        container._health_thread = None
+        container._health_stop = None
+
+    def container_health(self, container: Container) -> Dict[str, Any]:
+        """Get the health status of a container.
+
+        Returns:
+            Dict with ``status`` (starting/healthy/unhealthy),
+            ``failures`` count, ``last_check`` timestamp,
+            ``last_output`` (truncated), and ``check_cmd``.
+        """
+        return {
+            "container_id": container.id,
+            "status": container.health_status,
+            "failures": container.health_failures,
+            "last_check": container.health_last_check,
+            "last_output": container.health_last_output[:500],
+            "check_cmd": container.config.health_check_cmd,
+        }
+
     def _detect_cgroups_v2(self) -> bool:
         """Detect if cgroups v2 is available on this system."""
         try:
@@ -425,13 +514,14 @@ class ContainerManager:
             self._ipc_register(container)
             self._cap_initialize(container)
             self._attach_to_cgroups(container)
+            self.start_health_check(container)
         except Exception as e:
             logger.error(f"Error starting container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
             raise
-        
+
         logger.info(f"Container {container.id} running (pid={container.pid})")
         return container
     
@@ -675,7 +765,9 @@ class ContainerManager:
         """
         if container.state == ContainerState.TERMINATED:
             return  # Already terminated
-        
+
+        self.stop_health_check(container)
+
         if container.pid is None:
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)  # idempotent; no registry entry to drop

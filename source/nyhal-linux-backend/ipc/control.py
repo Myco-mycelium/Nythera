@@ -151,6 +151,9 @@ class ControlService:
             elif op == "container_events":
                 self._container_events(server, sender_path,
                                        msg.message_id, request)
+            elif op == "container_health":
+                self._container_health(server, sender_path,
+                                       msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -529,6 +532,29 @@ class ControlService:
             "ok": True,
             "events": events,
             "count": len(events),
+        })
+
+    def _container_health(self, server, sender_path: str, call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            health = self.container_manager.container_health(container)
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_health failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            **health,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,
