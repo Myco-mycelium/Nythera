@@ -898,6 +898,19 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
             "resource": args.resource,
         }
+    if command == "capacity-plan":
+        return {
+            "service": "control",
+            "op": "capacity_plan",
+            "container_id": args.container_id,
+            "horizon_days": args.horizon_days,
+        }
+    if command == "capacity-plan-all":
+        return {
+            "service": "control",
+            "op": "capacity_plan_all",
+            "horizon_days": args.horizon_days,
+        }
     if command == "anomaly-detect":
         return {
             "service": "control",
@@ -2133,6 +2146,53 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"time:     {result.get('hours', 0)}h {result.get('minutes', 0)}m {result.get('seconds', 0)}s\n"
             f"total:    {result.get('total_seconds', 0):.1f}s"
         )
+    if command == "capacity-plan":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"horizon:  {resp.get('horizon_days', 30)} days",
+            resp.get("summary", ""),
+            "resources:"
+        ]
+        for res, plan in resp.get("resources", {}).items():
+            if not plan.get("sufficient_data"):
+                lines.append(f"  {res}: (insufficient data)")
+                continue
+            risk = plan.get("risk_level", "unknown")
+            icon = "!" if risk == "high" else ("~" if risk == "medium" else "ok")
+            lines.append(
+                f"  {res}: [{icon}] risk={risk} "
+                f"util={plan.get('current_utilization_pct', 0)}% "
+                f"predicted={plan.get('predicted_utilization_pct', 0)}% "
+                f"growth={plan.get('growth_rate_per_day', 0):+.1f}/day"
+            )
+            if plan.get("time_to_capacity"):
+                tc = plan["time_to_capacity"]
+                lines.append(
+                    f"    time_to_capacity: {tc.get('days', '?')} days"
+                )
+        rec = resp.get("recommended_limits", {})
+        if rec:
+            lines.append("recommended:")
+            for k, v in rec.items():
+                lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+    if command == "capacity-plan-all":
+        lines = [
+            f"horizon:  {resp.get('horizon_days', 30)} days",
+            f"containers: {resp.get('container_count', 0)}",
+            f"high_risk: {resp.get('high_risk_count', 0)}",
+            ""
+        ]
+        for c in resp.get("containers", []):
+            issues = []
+            for res, plan in c.get("resources", {}).items():
+                if plan.get("risk_level") in ("high", "medium"):
+                    issues.append(f"{res}:{plan.get('risk_level')}")
+            issue_str = ",".join(issues) if issues else "ok"
+            lines.append(
+                f"  {c.get('container_id', '?')}: [{issue_str}]"
+            )
+        return "\n".join(lines)
     if command == "anomaly-detect":
         if resp.get("insufficient_data"):
             return f"{resp.get('resource')}: insufficient data ({resp.get('sample_count', 0)} samples)"
@@ -3340,6 +3400,21 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=["memory", "cpu", "pids"],
                      help="Resource to check")
     fce.set_defaults(command="forecast-exhaustion")
+
+    # Capacity planning commands
+    cap = sub.add_parser("capacity", help="Capacity planning")
+    capsub = cap.add_subparsers(dest="capacity_cmd", required=True)
+
+    capc = capsub.add_parser("plan", help="Plan capacity for a container")
+    capc.add_argument("container_id")
+    capc.add_argument("--horizon", type=int, default=30,
+                      dest="horizon_days", help="Planning horizon in days")
+    capc.set_defaults(command="capacity-plan")
+
+    capa = capsub.add_parser("plan-all", help="Plan capacity for all containers")
+    capa.add_argument("--horizon", type=int, default=30,
+                      dest="horizon_days", help="Planning horizon in days")
+    capa.set_defaults(command="capacity-plan-all")
 
     # Anomaly detection commands
     anomaly = sub.add_parser("anomaly", help="Detect resource anomalies")

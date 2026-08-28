@@ -5876,6 +5876,120 @@ class TestCostBudget(unittest.TestCase):
         self.assertIn("monthly", text3)
 
 
+class TestCapacityPlanning(unittest.TestCase):
+    """Capacity planning and prediction."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_plan_capacity_insufficient_data(self):
+        """plan_capacity returns unknown risk with no data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="cap-test"))
+        result = mgr.plan_capacity(c)
+        self.assertIn("resources", result)
+        self.assertEqual(result["issue_count"], 0)
+        # Memory should be insufficient data
+        self.assertFalse(result["resources"]["memory"]["sufficient_data"])
+
+    def test_plan_capacity_with_data(self):
+        """plan_capacity analyzes data correctly."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="cap-test2"))
+        mgr._init_resource_history(c)
+        base = time.time() - 3600
+        # Add growing memory history
+        for i in range(20):
+            mgr._resource_history[c.id].append({
+                "timestamp": base + i * 180,
+                "memory_bytes": 10000000 + i * 500000,  # growing
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.plan_capacity(c, horizon_days=7)
+        self.assertTrue(result["resources"]["memory"]["sufficient_data"])
+        self.assertIn("growth_rate_per_day", result["resources"]["memory"])
+        self.assertIn("risk_level", result["resources"]["memory"])
+
+    def test_get_capacity_summary_all(self):
+        """get_capacity_summary_all returns aggregate stats."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="cap-all1"))
+        c2 = mgr.create(ContainerConfig(name="cap-all2"))
+        result = mgr.get_capacity_summary_all()
+        self.assertEqual(result["container_count"], 2)
+        self.assertIn("high_risk_count", result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for capacity commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="capacity-plan", container_id="a",
+            horizon_days=30,
+        )
+        p = build_payload("capacity-plan", args1)
+        self.assertEqual(p["op"], "capacity_plan")
+        self.assertEqual(p["horizon_days"], 30)
+        args2 = argparse.Namespace(
+            command="capacity-plan-all", horizon_days=7,
+        )
+        p2 = build_payload("capacity-plan-all", args2)
+        self.assertEqual(p2["op"], "capacity_plan_all")
+        self.assertEqual(p2["horizon_days"], 7)
+
+    def test_cli_format_human(self):
+        """CLI format_human for capacity commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "horizon_days": 30,
+            "summary": "Planning horizon: 30 days.",
+            "issue_count": 1,
+            "resources": {
+                "memory": {
+                    "sufficient_data": True,
+                    "risk_level": "high",
+                    "current_utilization_pct": 85.0,
+                    "predicted_utilization_pct": 95.0,
+                    "growth_rate_per_day": 100000.0,
+                    "time_to_capacity": {"days": 5.0, "hours": 120.0},
+                },
+                "cpu": {"sufficient_data": False},
+                "pids": {"sufficient_data": False},
+            },
+            "recommended_limits": {"memory_mb": 512},
+        }
+        text = format_human("capacity-plan", resp)
+        self.assertIn("high", text)
+        self.assertIn("95.0%", text)
+        self.assertIn("512", text)
+        # plan-all
+        resp2 = {
+            "ok": True, "horizon_days": 30,
+            "container_count": 2, "high_risk_count": 1,
+            "containers": [
+                {"container_id": "a", "resources": {
+                    "memory": {"risk_level": "high"},
+                    "cpu": {"risk_level": "low"},
+                    "pids": {"risk_level": "low"},
+                }},
+                {"container_id": "b", "resources": {
+                    "memory": {"risk_level": "low"},
+                    "cpu": {"risk_level": "low"},
+                    "pids": {"risk_level": "low"},
+                }},
+            ],
+        }
+        text2 = format_human("capacity-plan-all", resp2)
+        self.assertIn("high_risk: 1", text2)
+        self.assertIn("a", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -21268,6 +21382,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestHealthCheckAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
+    suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

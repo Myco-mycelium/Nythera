@@ -2740,6 +2740,43 @@ class ControlService:
             "result": result,
         })
 
+    # Capacity planning
+
+    def _capacity_plan(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        horizon_days = request.get("horizon_days", 30)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.plan_capacity(
+            c, horizon_days=horizon_days,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _capacity_plan_all(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        horizon_days = request.get("horizon_days", 30)
+        result = self.container_manager.get_capacity_summary_all(
+            horizon_days=horizon_days,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     # Anomaly detection
 
     def _anomaly_detect(self, server, sender_path: str,

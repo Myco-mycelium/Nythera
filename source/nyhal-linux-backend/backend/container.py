@@ -2918,8 +2918,216 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
-    # Anomaly detection (statistical outliers)
+    # Capacity planning (predict future needs)
     # ------------------------------------------------------------------
+
+    def plan_capacity(
+        self,
+        container: Container,
+        horizon_days: int = 30,
+    ) -> Dict[str, Any]:
+        """Plan capacity needs for the near future.
+
+        Analyzes current resource usage, growth trends, and forecasts
+        resource needs over the specified horizon.
+
+        Args:
+            container: Target container.
+            horizon_days: Number of days to plan for.
+
+        Returns:
+            Dict with ``resources`` (per-resource plans), ``summary``,
+            ``recommended_limits``.
+        """
+        resources = ["memory", "cpu", "pids"]
+        resource_plans: Dict[str, Any] = {}
+
+        for res in resources:
+            plan = self._plan_resource(container, res, horizon_days)
+            resource_plans[res] = plan
+
+        # Generate recommended limits
+        recommended = {}
+        cfg = container.config.limits
+
+        if "memory" in resource_plans:
+            mem_plan = resource_plans["memory"]
+            if mem_plan.get("predicted_peak"):
+                # Add 20% buffer
+                recommended["memory_mb"] = max(
+                    cfg.memory_mb,
+                    int(mem_plan["predicted_peak"] * 1.2 / (1024 * 1024)),
+                )
+
+        if "pids" in resource_plans:
+            pid_plan = resource_plans["pids"]
+            if pid_plan.get("predicted_peak"):
+                recommended["pid_limit"] = max(
+                    cfg.pid_limit,
+                    int(pid_plan["predicted_peak"] * 1.2),
+                )
+
+        # Summary
+        issues = []
+        for res, plan in resource_plans.items():
+            if plan.get("risk_level") == "high":
+                issues.append(f"{res}: high risk of exhaustion")
+            elif plan.get("risk_level") == "medium":
+                issues.append(f"{res}: moderate growth trend")
+
+        summary = (
+            f"Planning horizon: {horizon_days} days. "
+            f"{len(issues)} potential issues. "
+            f"Current: mem={cfg.memory_mb}MB pids={cfg.pid_limit}."
+        )
+
+        return {
+            "container_id": container.id,
+            "horizon_days": horizon_days,
+            "resources": resource_plans,
+            "recommended_limits": recommended,
+            "summary": summary,
+            "issue_count": len(issues),
+        }
+
+    def _plan_resource(
+        self,
+        container: Container,
+        resource: str,
+        horizon_days: int,
+    ) -> Dict[str, Any]:
+        """Plan capacity for a specific resource."""
+        history = self.get_resource_history(container)
+        if len(history) < 5:
+            return {
+                "resource": resource,
+                "sufficient_data": False,
+                "risk_level": "unknown",
+            }
+
+        values = self._extract_resource_values(history, resource)
+        timestamps = [s.get("timestamp", 0) for s in history]
+
+        if not values or not timestamps:
+            return {
+                "resource": resource,
+                "sufficient_data": False,
+                "risk_level": "unknown",
+            }
+
+        # Current stats
+        current = values[-1]
+        avg = sum(values) / len(values)
+        peak = max(values)
+        min_val = min(values)
+
+        # Growth trend
+        x = [float(t - timestamps[0]) for t in timestamps]
+        y = [float(v) for v in values]
+        regression = self._linear_regression(x, y)
+
+        if regression is None:
+            growth_rate_per_hour = 0
+        else:
+            slope = regression[0]
+            # Convert to per-day growth rate
+            growth_rate_per_hour = slope * 3600
+
+        growth_rate_per_day = growth_rate_per_hour * 24
+
+        # Predict future values
+        horizon_hours = horizon_days * 24
+        predicted_peak = current + (growth_rate_per_hour * horizon_hours)
+        predicted_avg = avg + (growth_rate_per_hour * horizon_hours / 2)
+
+        # Risk assessment
+        cfg = container.config.limits
+        if resource == "memory":
+            limit = cfg.memory_mb * 1024 * 1024
+            if limit > 0:
+                current_pct = current / limit * 100
+                predicted_pct = predicted_peak / limit * 100 if limit > 0 else 0
+            else:
+                current_pct = 0
+                predicted_pct = 0
+        elif resource == "pids":
+            limit = cfg.pid_limit
+            if limit > 0:
+                current_pct = current / limit * 100
+                predicted_pct = predicted_peak / limit * 100 if limit > 0 else 0
+            else:
+                current_pct = 0
+                predicted_pct = 0
+        else:
+            limit = None
+            current_pct = 0
+            predicted_pct = 0
+
+        # Determine risk level
+        if predicted_pct > 90:
+            risk_level = "high"
+        elif predicted_pct > 70:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        # Time to capacity
+        time_to_capacity = None
+        if growth_rate_per_hour > 0 and limit and limit > current:
+            remaining = limit - current
+            hours_to_full = remaining / growth_rate_per_hour
+            days_to_full = hours_to_full / 24
+            time_to_capacity = {
+                "days": round(days_to_full, 1),
+                "hours": round(hours_to_full, 1),
+            }
+
+        return {
+            "resource": resource,
+            "sufficient_data": True,
+            "current": round(current, 2),
+            "average": round(avg, 2),
+            "peak": round(peak, 2),
+            "min": round(min_val, 2),
+            "current_limit": limit,
+            "current_utilization_pct": round(current_pct, 1),
+            "growth_rate_per_day": round(growth_rate_per_day, 2),
+            "predicted_peak": round(predicted_peak, 2),
+            "predicted_avg": round(predicted_avg, 2),
+            "predicted_utilization_pct": round(predicted_pct, 1),
+            "time_to_capacity": time_to_capacity,
+            "risk_level": risk_level,
+            "horizon_days": horizon_days,
+        }
+
+    def get_capacity_summary_all(
+        self,
+        horizon_days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get capacity planning summary for all containers.
+
+        Returns:
+            Dict with per-container plans and aggregate stats.
+        """
+        plans = []
+        for cid, c in self.containers.items():
+            plan = self.plan_capacity(c, horizon_days)
+            plans.append(plan)
+
+        high_risk = sum(
+            1 for p in plans
+            if any(
+                r.get("risk_level") == "high"
+                for r in p.get("resources", {}).values()
+            )
+        )
+
+        return {
+            "horizon_days": horizon_days,
+            "container_count": len(plans),
+            "high_risk_count": high_risk,
+            "containers": plans,
+        }
 
     def _extract_resource_values(
         self,
