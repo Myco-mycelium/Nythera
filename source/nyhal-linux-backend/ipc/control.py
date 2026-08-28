@@ -1695,6 +1695,81 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # OOM killer protection
+    # ------------------------------------------------------------------
+
+    def _oom_status(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        status = self.container_manager.get_oom_status(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **status,
+        })
+
+    def _oom_set(self, server, sender_path: str,
+                 call_id: str,
+                 request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_oom_protection(
+            c,
+            oom_score_adj=request.get("oom_score_adj"),
+            oom_kill_disable=request.get("oom_kill_disable"),
+            memory_swap_max=request.get("memory_swap_max"),
+        )
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _oom_events(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        events = self.container_manager.get_oom_events(c, tail=tail)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "events": events, "count": len(events),
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

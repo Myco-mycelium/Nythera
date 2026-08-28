@@ -3820,6 +3820,143 @@ class TestResourceAlerts(unittest.TestCase):
         self.assertIn("95.0", text2)
 
 
+class TestOOMProtection(unittest.TestCase):
+    """Test OOM killer protection features."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_default_oom_fields(self):
+        """Default OOM fields are set correctly."""
+        from backend.container import ResourceLimits
+        r = ResourceLimits()
+        self.assertEqual(r.oom_score_adj, 0)
+        self.assertFalse(r.oom_kill_disable)
+        self.assertIsNone(r.memory_swap_max)
+
+    def test_apply_oom_protection_no_cgroups(self):
+        """apply_oom_protection returns False without cgroups."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertFalse(mgr.apply_oom_protection(c))
+
+    def test_get_oom_status(self):
+        """get_oom_status returns correct fields."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        status = mgr.get_oom_status(c)
+        self.assertIn("oom_score_adj", status)
+        self.assertIn("oom_kill_disable", status)
+        self.assertIn("memory_swap_max", status)
+        self.assertIn("oom_events", status)
+        self.assertIn("oom_event_count", status)
+
+    def test_record_oom_event(self):
+        """record_oom_event records an event."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        event = mgr.record_oom_event(c, "killed process 1234")
+        self.assertEqual(event["detail"], "killed process 1234")
+        self.assertEqual(len(c._oom_events), 1)
+
+    def test_record_oom_event_limit(self):
+        """OOM events are capped at 50."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        for i in range(55):
+            mgr.record_oom_event(c, f"event {i}")
+        self.assertEqual(len(c._oom_events), 50)
+        self.assertIn("event 54", c._oom_events[-1]["detail"])
+
+    def test_get_oom_events(self):
+        """get_oom_events returns events."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.record_oom_event(c, "event 1")
+        mgr.record_oom_event(c, "event 2")
+        events = mgr.get_oom_events(c)
+        self.assertEqual(len(events), 2)
+
+    def test_get_oom_events_tail(self):
+        """get_oom_events respects tail."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.record_oom_event(c, "event 1")
+        mgr.record_oom_event(c, "event 2")
+        events = mgr.get_oom_events(c, tail=1)
+        self.assertEqual(len(events), 1)
+
+    def test_set_oom_protection(self):
+        """set_oom_protection updates config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.set_oom_protection(
+            c, oom_score_adj=-500, memory_swap_max=0,
+        )
+        self.assertEqual(result["oom_score_adj"], -500)
+        self.assertEqual(result["memory_swap_max"], 0)
+        self.assertEqual(c.config.limits.oom_score_adj, -500)
+
+    def test_set_oom_protection_clamps(self):
+        """oom_score_adj is clamped to -1000..1000."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.set_oom_protection(c, oom_score_adj=2000)
+        self.assertEqual(result["oom_score_adj"], 1000)
+        result2 = mgr.set_oom_protection(c, oom_score_adj=-2000)
+        self.assertEqual(result2["oom_score_adj"], -1000)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for OOM commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="a")
+        p = build_payload("containers-oom-status", args)
+        self.assertEqual(p["op"], "oom_status")
+        args2 = argparse.Namespace(
+            container_id="a", oom_score_adj=-500,
+            oom_kill_disable=None, memory_swap_max=0,
+        )
+        p = build_payload("containers-oom-set", args2)
+        self.assertEqual(p["op"], "oom_set")
+        self.assertEqual(p["oom_score_adj"], -500)
+        args3 = argparse.Namespace(container_id="a", tail=None)
+        p = build_payload("containers-oom-events", args3)
+        self.assertEqual(p["op"], "oom_events")
+
+    def test_cli_format_human(self):
+        """CLI format_human for OOM commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "oom_score_adj": -500, "oom_kill_disable": False,
+            "memory_swap_max": 0, "oom_group": None,
+            "cgroup_swap_max": None, "oom_event_count": 2,
+        }
+        text = format_human("containers-oom-status", resp)
+        self.assertIn("-500", text)
+        self.assertIn("2", text)
+        # events
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "events": [
+                {"timestamp": 1000.0, "detail": "killed 1234"},
+            ],
+            "count": 1,
+        }
+        text2 = format_human("containers-oom-events", resp2)
+        self.assertIn("1 events", text2)
+        self.assertIn("killed 1234", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19197,6 +19334,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTopEnhanced))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLocks))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceAlerts))
+    suite.addTests(loader.loadTestsFromTestCase(TestOOMProtection))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

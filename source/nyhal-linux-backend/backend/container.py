@@ -73,6 +73,10 @@ class ResourceLimits:
     memory_high: Optional[int] = None  # soft limit in bytes (pressure)
     io_max_rbps: Optional[int] = None  # max read bytes/sec
     io_max_wbps: Optional[int] = None  # max write bytes/sec
+    # OOM killer protection
+    memory_swap_max: Optional[int] = None  # max swap in bytes (None=unlimited)
+    oom_score_adj: int = 0  # -1000 to 1000 (lower = less likely to OOM)
+    oom_kill_disable: bool = False  # True = disable OOM killer for container
 
 
 @dataclass
@@ -215,6 +219,8 @@ class Container:
         self._resource_thread: Optional[threading.Thread] = None
         # Alert history (bounded ring buffer)
         self._alert_history: List[Dict[str, Any]] = []
+        # OOM event tracking
+        self._oom_events: List[Dict[str, Any]] = []
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -775,6 +781,8 @@ class ContainerManager:
             self._attach_to_cgroups(container)
             # Apply advanced cgroup2 limits (cpu.weight, memory.high, io.max)
             self.apply_cgroup2_advanced(container)
+            # Apply OOM protection settings
+            self.apply_oom_protection(container)
             self.start_health_check(container)
             # Apply scheduling parameters if configured
             if container.config.nice_value != 0:
@@ -1841,6 +1849,192 @@ class ContainerManager:
             "alert_pid_warning": cfg.alert_pid_warning,
             "alert_pid_critical": cfg.alert_pid_critical,
             "alert_cpu_throttle": cfg.alert_cpu_throttle,
+        }
+
+    # ------------------------------------------------------------------
+    # OOM killer protection
+    # ------------------------------------------------------------------
+
+    def apply_oom_protection(self, container: Container) -> bool:
+        """Apply OOM killer protection settings to a container.
+
+        Writes oom_score_adj and oom_kill_disable to cgroup files.
+        Also configures memory.swap.max if specified.
+
+        Args:
+            container: Target container with cgroup paths.
+
+        Returns:
+            True if all settings were applied successfully.
+        """
+        if not container.cgroup_paths:
+            return False
+
+        cgroup_path = Path(container.cgroup_paths[0])
+        limits = container.config.limits
+        success = True
+
+        # oom_score_adj (controls OOM killer priority)
+        oom_adj = max(-1000, min(1000, limits.oom_score_adj))
+        try:
+            (cgroup_path / "memory.oom.group").write_text(
+                "1" if limits.oom_kill_disable else "0"
+            )
+            logger.debug(
+                "apply_oom_protection: %s oom.group=%s",
+                container.id, "1" if limits.oom_kill_disable else "0",
+            )
+        except OSError as e:
+            logger.debug(
+                "apply_oom_protection: %s oom.group failed: %s",
+                container.id, e,
+            )
+            # Not all kernels support this; not fatal
+
+        # Set oom_score_adj via /proc/<pid>/oom_score_adj
+        if container.pid is not None:
+            try:
+                oom_adj_path = f"/proc/{container.pid}/oom_score_adj"
+                with open(oom_adj_path, "w") as f:
+                    f.write(str(oom_adj))
+                logger.debug(
+                    "apply_oom_protection: %s oom_score_adj=%d",
+                    container.id, oom_adj,
+                )
+            except (OSError, IOError) as e:
+                logger.warning(
+                    "apply_oom_protection: %s oom_score_adj failed: %s",
+                    container.id, e,
+                )
+                success = False
+
+        # memory.swap.max (cgroup2 only)
+        if self.use_cgroups_v2 and limits.memory_swap_max is not None:
+            try:
+                swap_path = cgroup_path / "memory.swap.max"
+                swap_path.write_text(str(limits.memory_swap_max))
+                logger.debug(
+                    "apply_oom_protection: %s swap.max=%d",
+                    container.id, limits.memory_swap_max,
+                )
+            except OSError as e:
+                logger.debug(
+                    "apply_oom_protection: %s swap.max failed: %s",
+                    container.id, e,
+                )
+
+        return success
+
+    def get_oom_status(self, container: Container) -> Dict[str, Any]:
+        """Get OOM status and configuration for a container.
+
+        Returns:
+            Dict with OOM settings, events, and cgroup OOM stats.
+        """
+        cfg = container.config.limits
+        status: Dict[str, Any] = {
+            "container_id": container.id,
+            "oom_score_adj": cfg.oom_score_adj,
+            "oom_kill_disable": cfg.oom_kill_disable,
+            "memory_swap_max": cfg.memory_swap_max,
+            "oom_events": list(container._oom_events),
+            "oom_event_count": len(container._oom_events),
+        }
+
+        # Read cgroup OOM stats if available
+        if container.cgroup_paths:
+            cgroup_path = Path(container.cgroup_paths[0])
+            if self.use_cgroups_v2:
+                try:
+                    oom_group = (cgroup_path / "memory.oom.group").read_text().strip()
+                    status["oom_group"] = oom_group == "1"
+                except (OSError, IOError):
+                    status["oom_group"] = None
+                try:
+                    swap_max = (cgroup_path / "memory.swap.max").read_text().strip()
+                    status["cgroup_swap_max"] = swap_max
+                except (OSError, IOError):
+                    status["cgroup_swap_max"] = None
+
+        return status
+
+    def record_oom_event(
+        self, container: Container, detail: str = "",
+    ) -> Dict[str, Any]:
+        """Record an OOM event for a container.
+
+        Called when an OOM kill is detected (via dmesg monitoring
+        or cgroup memory events).
+
+        Args:
+            container: Target container.
+            detail: Optional detail about the OOM event.
+
+        Returns:
+            The recorded event dict.
+        """
+        event: Dict[str, Any] = {
+            "timestamp": time.time(),
+            "container_id": container.id,
+            "detail": detail,
+        }
+        container._oom_events.append(event)
+        # Keep at most 50 OOM events per container
+        if len(container._oom_events) > 50:
+            container._oom_events = container._oom_events[-50:]
+        self._record_event("oom", container.id, detail)
+        logger.warning("oom_event: %s %s", container.id, detail)
+        return event
+
+    def get_oom_events(
+        self, container: Container, tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get OOM events for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N events.
+
+        Returns:
+            List of OOM event dicts.
+        """
+        events = container._oom_events
+        if tail is not None:
+            return list(events[-tail:])
+        return list(events)
+
+    def set_oom_protection(
+        self, container: Container,
+        oom_score_adj: Optional[int] = None,
+        oom_kill_disable: Optional[bool] = None,
+        memory_swap_max: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update OOM protection settings for a container.
+
+        Args:
+            container: Target container.
+            oom_score_adj: -1000 to 1000 (lower = less likely to OOM).
+            oom_kill_disable: True to disable OOM killer.
+            memory_swap_max: Max swap in bytes (None=unlimited, 0=no swap).
+
+        Returns:
+            Dict with updated settings.
+        """
+        cfg = container.config.limits
+        if oom_score_adj is not None:
+            cfg.oom_score_adj = max(-1000, min(1000, oom_score_adj))
+        if oom_kill_disable is not None:
+            cfg.oom_kill_disable = oom_kill_disable
+        if memory_swap_max is not None:
+            cfg.memory_swap_max = memory_swap_max
+        # Apply immediately if container is running
+        if container.pid is not None:
+            self.apply_oom_protection(container)
+        return {
+            "container_id": container.id,
+            "oom_score_adj": cfg.oom_score_adj,
+            "oom_kill_disable": cfg.oom_kill_disable,
+            "memory_swap_max": cfg.memory_swap_max,
         }
 
     # ------------------------------------------------------------------

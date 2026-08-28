@@ -506,6 +506,34 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.cpu_throttle is not None:
             p2["cpu_throttle"] = args.cpu_throttle
         return p2
+    if command == "containers-oom-status":
+        return {
+            "service": "control",
+            "op": "oom_status",
+            "container_id": args.container_id,
+        }
+    if command == "containers-oom-set":
+        p3: Dict[str, Any] = {
+            "service": "control",
+            "op": "oom_set",
+            "container_id": args.container_id,
+        }
+        if args.oom_score_adj is not None:
+            p3["oom_score_adj"] = args.oom_score_adj
+        if args.oom_kill_disable is not None:
+            p3["oom_kill_disable"] = args.oom_kill_disable
+        if args.memory_swap_max is not None:
+            p3["memory_swap_max"] = args.memory_swap_max
+        return p3
+    if command == "containers-oom-events":
+        p4: Dict[str, Any] = {
+            "service": "control",
+            "op": "oom_events",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p4["tail"] = args.tail
+        return p4
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1170,6 +1198,31 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for key in sorted(resp.keys()):
             if key.startswith("alert_"):
                 lines.append(f"  {key}: {resp[key]}%")
+        return "\n".join(lines)
+    if command == "containers-oom-status":
+        lines = [
+            f"container:       {resp.get('container_id')}",
+            f"score_adj:       {resp.get('oom_score_adj', 0)}",
+            f"kill_disable:    {resp.get('oom_kill_disable', False)}",
+            f"swap_max:        {resp.get('memory_swap_max')}",
+            f"oom_group:       {resp.get('oom_group')}",
+            f"cgroup_swap_max: {resp.get('cgroup_swap_max')}",
+            f"events:          {resp.get('oom_event_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "containers-oom-set":
+        lines = [f"container: {resp.get('container_id')}"]
+        lines.append(f"  score_adj:    {resp.get('oom_score_adj', 0)}")
+        lines.append(f"  kill_disable: {resp.get('oom_kill_disable', False)}")
+        lines.append(f"  swap_max:     {resp.get('memory_swap_max')}")
+        return "\n".join(lines)
+    if command == "containers-oom-events":
+        events = resp.get("events", [])
+        count = resp.get("count", 0)
+        lines = [f"container: {resp.get('container_id')} ({count} events)"]
+        for e in events:
+            ts = e.get("timestamp", 0)
+            lines.append(f"  {ts:.1f}  {e.get('detail', '')}")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1912,6 +1965,29 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--pid-critical", type=float, default=None)
     cat.add_argument("--cpu-throttle", type=float, default=None)
     cat.set_defaults(command="containers-alert-thresholds")
+
+    co = csub.add_parser("oom-status", help="Show OOM protection status")
+    co.add_argument("container_id")
+    co.set_defaults(command="containers-oom-status")
+
+    cos = csub.add_parser("oom-set", help="Update OOM protection settings")
+    cos.add_argument("container_id")
+    cos.add_argument("--score-adj", type=int, default=None,
+                     dest="oom_score_adj",
+                     help="OOM score adjustment (-1000 to 1000)")
+    cos.add_argument("--disable-kill", dest="oom_kill_disable",
+                     action="store_true", default=None,
+                     help="Disable OOM killer")
+    cos.add_argument("--swap-max", type=int, default=None,
+                     dest="memory_swap_max",
+                     help="Max swap in bytes (0=no swap)")
+    cos.set_defaults(command="containers-oom-set")
+
+    coe = csub.add_parser("oom-events", help="Show OOM events")
+    coe.add_argument("container_id")
+    coe.add_argument("--tail", type=int, default=None,
+                     help="Show only last N events")
+    coe.set_defaults(command="containers-oom-events")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
