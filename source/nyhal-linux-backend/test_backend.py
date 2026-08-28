@@ -2026,6 +2026,107 @@ class TestResourceLimitsMonitoring(unittest.TestCase):
         self.assertIn("unlimited", text)
 
 
+class TestPriorityScheduling(unittest.TestCase):
+    """Test container priority scheduling (nice values, CPU affinity)."""
+
+    def test_nice_validation(self):
+        """Nice value outside -20..19 raises ValueError."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        with self.assertRaises(ValueError):
+            manager.set_nice(container, 20)
+        with self.assertRaises(ValueError):
+            manager.set_nice(container, -21)
+
+    def test_affinity_empty_raises(self):
+        """Empty cores list raises ValueError."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        container.pid = 12345
+        with self.assertRaises(ValueError):
+            manager.set_cpu_affinity(container, [])
+
+    def test_get_scheduling(self):
+        """get_scheduling returns current parameters."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        container.pid = os.getpid()  # Use current process for testing
+        result = manager.get_scheduling(container)
+        self.assertIn("nice_value", result)
+        self.assertIn("cpu_affinity_current", result)
+        self.assertIn("cpu_count", result)
+        self.assertIsNotNone(result["cpu_count"])
+
+    def test_sched_cli_payload_query(self):
+        """CLI build_payload for containers-sched (query)."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            nice=None,
+            affinity=None,
+        )
+        payload = build_payload("containers-sched", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_scheduling")
+
+    def test_sched_cli_payload_set_nice(self):
+        """CLI build_payload for containers-sched (set nice)."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            nice=5,
+            affinity=None,
+        )
+        payload = build_payload("containers-sched", args)
+        self.assertEqual(payload["op"], "container_set_nice")
+        self.assertEqual(payload["nice"], 5)
+
+    def test_sched_cli_payload_set_affinity(self):
+        """CLI build_payload for containers-sched (set affinity)."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            nice=None,
+            affinity=[0, 1],
+        )
+        payload = build_payload("containers-sched", args)
+        self.assertEqual(payload["op"], "container_set_affinity")
+        self.assertEqual(payload["cores"], [0, 1])
+
+    def test_sched_cli_format_human(self):
+        """CLI format_human for containers-sched."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "nice_value_current": 0,
+            "cpu_affinity_current": [0, 1, 2, 3],
+            "cpu_count": 8,
+        }
+        text = format_human("containers-sched", resp)
+        self.assertIn("nyctr-test", text)
+        self.assertIn("nice:          0", text)
+        self.assertIn("[0, 1, 2, 3]", text)
+
+    def test_config_fields(self):
+        """ContainerConfig carries scheduling settings."""
+        from backend.container import ContainerConfig
+        config = ContainerConfig(nice_value=5, cpu_affinity=[0, 1])
+        self.assertEqual(config.nice_value, 5)
+        self.assertEqual(config.cpu_affinity, [0, 1])
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17389,6 +17490,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsMonitoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -216,6 +216,27 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_resource_limits",
             "container_id": args.container_id,
         }
+    if command == "containers-sched":
+        if args.nice is not None:
+            return {
+                "service": "control",
+                "op": "container_set_nice",
+                "container_id": args.container_id,
+                "nice": args.nice,
+            }
+        if args.affinity is not None:
+            return {
+                "service": "control",
+                "op": "container_set_affinity",
+                "container_id": args.container_id,
+                "cores": args.affinity,
+            }
+        # Default: query
+        return {
+            "service": "control",
+            "op": "container_scheduling",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -591,6 +612,19 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"memory:    {mem_pct}% {alert_icons.get(mem_alert, '?')} ({mem_alert})" if mem_pct is not None else "memory:    unlimited",
             f"pids:      {pid_pct}% {alert_icons.get(pid_alert, '?')} ({pid_alert})" if pid_pct is not None else "pids:      unlimited",
         ]
+        return "\n".join(lines)
+    if command == "containers-sched":
+        nice = resp.get("nice_value_current", resp.get("nice_value", 0))
+        affinity = resp.get("cpu_affinity_current")
+        config_aff = resp.get("cpu_affinity_config")
+        cpu_count = resp.get("cpu_count", "?")
+        lines = [
+            f"container:      {resp.get('container_id')}",
+            f"nice:          {nice}",
+            f"cpu_affinity:  {affinity if affinity is not None else f'all ({cpu_count} cores)'}",
+        ]
+        if config_aff:
+            lines.append(f"affinity_conf: {config_aff}")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1158,6 +1192,14 @@ def build_parser() -> argparse.ArgumentParser:
     crl = csub.add_parser("limits", help="Show resource usage vs limits with alerts")
     crl.add_argument("container_id")
     crl.set_defaults(command="containers-limits")
+
+    csc = csub.add_parser("sched", help="Show/set scheduling parameters (nice, CPU affinity)")
+    csc.add_argument("container_id")
+    csc.add_argument("--nice", type=int, default=None,
+                     help="Set nice value (-20 to 19)")
+    csc.add_argument("--affinity", nargs="+", type=int, default=None,
+                     help="Set CPU core affinity (e.g. --affinity 0 1)")
+    csc.set_defaults(command="containers-sched")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

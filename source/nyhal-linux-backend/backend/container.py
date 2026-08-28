@@ -105,6 +105,9 @@ class ContainerConfig:
     health_check_interval: float = 30.0  # seconds between checks
     health_check_timeout: float = 5.0  # max seconds per check
     health_check_retries: int = 3  # consecutive failures before unhealthy
+    # Priority scheduling
+    nice_value: int = 0  # -20 (highest) to 19 (lowest), default 0
+    cpu_affinity: Optional[List[int]] = None  # CPU core IDs (None = any)
 
 
 class RingBuffer:
@@ -515,6 +518,11 @@ class ContainerManager:
             self._cap_initialize(container)
             self._attach_to_cgroups(container)
             self.start_health_check(container)
+            # Apply scheduling parameters if configured
+            if container.config.nice_value != 0:
+                self.set_nice(container, container.config.nice_value)
+            if container.config.cpu_affinity:
+                self.set_cpu_affinity(container, container.config.cpu_affinity)
         except Exception as e:
             logger.error(f"Error starting container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
@@ -1218,6 +1226,111 @@ class ContainerManager:
             elif pct >= 75:
                 result["pid_alert"] = "warning"
 
+        return result
+
+    def set_nice(self, container: Container, nice_value: int) -> bool:
+        """Set the nice value (priority) for a running container.
+
+        Uses ``setpriority(2)`` via ``os.setpriority()`` to adjust
+        the scheduling priority of the container's PID-1 init process.
+        A negative nice value requires root or CAP_SYS_NICE.
+
+        Args:
+            container: A running container with a valid PID.
+            nice_value: Priority from -20 (highest) to 19 (lowest).
+
+        Returns:
+            True if the nice value was set successfully.
+        """
+        if not (-20 <= nice_value <= 19):
+            raise ValueError(f"nice value must be -20..19, got {nice_value}")
+        if container.pid is None:
+            raise ValueError("Container has no PID")
+
+        target_pid = container._init_pid or container.pid
+        try:
+            os.setpriority(os.PRIO_PROCESS, target_pid, nice_value)
+            container.config.nice_value = nice_value
+            self._record_event("nice_set", container.id,
+                               f"nice={nice_value}, pid={target_pid}")
+            logger.info(
+                "nice set for %s: %d (pid=%d)",
+                container.id, nice_value, target_pid,
+            )
+            return True
+        except OSError as e:
+            logger.warning(
+                "nice set failed for %s: %s", container.id, e,
+            )
+            return False
+
+    def set_cpu_affinity(self, container: Container,
+                          cores: List[int]) -> bool:
+        """Set CPU affinity for a running container.
+
+        Uses ``sched_setaffinity(2)`` via ``os.sched_setaffinity()`` to
+        pin the container's PID-1 init to specific CPU cores.
+
+        Args:
+            container: A running container with a valid PID.
+            cores: List of CPU core IDs (0-indexed).
+
+        Returns:
+            True if affinity was set successfully.
+        """
+        if not cores:
+            raise ValueError("cores list must not be empty")
+        if container.pid is None:
+            raise ValueError("Container has no PID")
+
+        target_pid = container._init_pid or container.pid
+        try:
+            os.sched_setaffinity(target_pid, set(cores))
+            container.config.cpu_affinity = list(cores)
+            self._record_event("affinity_set", container.id,
+                               f"cores={cores}, pid={target_pid}")
+            logger.info(
+                "CPU affinity set for %s: cores=%s (pid=%d)",
+                container.id, cores, target_pid,
+            )
+            return True
+        except OSError as e:
+            logger.warning(
+                "CPU affinity set failed for %s: %s", container.id, e,
+            )
+            return False
+
+    def get_scheduling(self, container: Container) -> Dict[str, Any]:
+        """Get the current scheduling parameters for a container.
+
+        Returns:
+            Dict with ``nice_value``, ``cpu_affinity`` (current cores
+            from ``sched_getaffinity``), and ``cpu_count``.
+        """
+        result: Dict[str, Any] = {
+            "container_id": container.id,
+            "nice_value": container.config.nice_value,
+            "cpu_affinity_config": container.config.cpu_affinity,
+            "cpu_count": os.cpu_count(),
+        }
+        target_pid = container._init_pid or container.pid
+        if target_pid is not None:
+            try:
+                current_affinity = sorted(
+                    os.sched_getaffinity(target_pid)
+                )
+                result["cpu_affinity_current"] = current_affinity
+            except OSError:
+                result["cpu_affinity_current"] = None
+            try:
+                result["nice_value_current"] = os.getpriority(
+                    os.PRIO_PROCESS, target_pid,
+                )
+            except OSError:
+                result["nice_value_current"] = None
+        else:
+            result["cpu_affinity_current"] = None
+            result["nice_value_current"] = None
         return result
 
     def _start_log_capture(self, container: Container,
