@@ -79,6 +79,7 @@ class ContainerConfig:
     limits: ResourceLimits = field(default_factory=ResourceLimits)
     capabilities: List[str] = field(default_factory=list)  # Nyrqis capabilities
     environment: Dict[str, str] = field(default_factory=dict)
+    inherit_host_env: bool = True  # inherit host env vars into container
     seccomp: bool = True  # data-plane enforcement (NPS-017 §4.2)
     # Fail-closed posture (NPS-017 §5.1): a container whose seccomp
     # install fails must NOT silently run unfiltered. Off only for
@@ -904,6 +905,67 @@ class ContainerManager:
             "set_restart_policy: %s → %s", container.id, policy,
         )
         return self.get_restart_info(container)
+
+    # ------------------------------------------------------------------
+    # Environment variable management
+    # ------------------------------------------------------------------
+
+    def set_env(self, container: Container, key: str, value: str) -> None:
+        """Set an environment variable on a container.
+
+        The variable is available to the container's command at startup.
+        Can be called before or after spawn (after spawn, only affects
+        future re-spawns via auto-restart).
+
+        Args:
+            container: Target container.
+            key: Environment variable name.
+            value: Environment variable value.
+        """
+        container.config.environment[key] = value
+        logger.debug("set_env: %s %s=...", container.id, key)
+
+    def unset_env(self, container: Container, key: str) -> bool:
+        """Remove an environment variable from a container.
+
+        Returns True if the key existed and was removed.
+        """
+        existed = key in container.config.environment
+        container.config.environment.pop(key, None)
+        if existed:
+            logger.debug("unset_env: %s %s", container.id, key)
+        return existed
+
+    def get_env(self, container: Container, key: str) -> Optional[str]:
+        """Get the value of an environment variable, or None."""
+        return container.config.environment.get(key)
+
+    def list_env(self, container: Container) -> Dict[str, str]:
+        """Return a copy of all environment variables for a container."""
+        return dict(container.config.environment)
+
+    def _write_env_file(self, container: Container) -> Optional[str]:
+        """Write container env vars to a JSON temp file for the launcher.
+
+        Returns the path to the env file, or None if there are no
+        custom env vars.
+        """
+        env = container.config.environment
+        if not env:
+            return None
+        fd, path = tempfile.mkstemp(prefix="nyrqis-env-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(env, fh)
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        os.chmod(path, 0o600)
+        self._policy_files.append(path)  # cleaned up with other temp files
+        return path
 
     def _freeze_control(
         self, container: Container
@@ -2628,6 +2690,14 @@ class ContainerManager:
         if container.config.app_path:
             argv.insert(argv.index("--"), "--nyrqis-app")
             argv.insert(argv.index("--"), container.config.app_path)
+        # Pass environment variables to the launcher via a JSON file
+        env_path = self._write_env_file(container)
+        if env_path is not None:
+            argv.insert(argv.index("--"), "--env-file")
+            argv.insert(argv.index("--"), env_path)
+        # If inherit_host_env is False, tell the launcher not to inherit
+        if not container.config.inherit_host_env:
+            argv.insert(argv.index("--"), "--no-inherit-env")
         return argv
 
     def _build_launch_command(self, container: Container, launcher: Path) -> List[str]:

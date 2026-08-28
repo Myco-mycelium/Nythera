@@ -430,6 +430,17 @@ def main(argv: Optional[List[str]] = None) -> int:
              "the launcher loads and executes it through the NyRuntime "
              "instead of running the raw command",
     )
+    parser.add_argument(
+        "--env-file",
+        default="",
+        help="Path to a JSON file containing environment variables to set "
+             "in the container (merged with inherited env)",
+    )
+    parser.add_argument(
+        "--no-inherit-env",
+        action="store_true",
+        help="Do not inherit host environment; use only env-file vars",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -503,7 +514,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         apply_seccomp(args.policy_file, args.strict_seccomp, arch,
                       args.default_deny)
         try:
-            os.execvpe(command[0], command, os.environ.copy())
+            # Build the container's environment: inherit host env
+            # (unless --no-inherit-env), then overlay any custom vars
+            # from the env file.
+            if args.no_inherit_env:
+                env = {}
+            else:
+                env = os.environ.copy()
+            if args.env_file:
+                try:
+                    import json as _json_env
+                    with open(args.env_file) as ef:
+                        custom_env = _json_env.load(ef)
+                    if isinstance(custom_env, dict):
+                        env.update(custom_env)
+                except Exception:
+                    pass  # best-effort: env file errors are non-fatal
+            os.execvpe(command[0], command, env)
         except FileNotFoundError:
             os.write(2, ("nyrqis launcher: command not found: %s\n"
                          % command[0]).encode("utf-8", "replace"))

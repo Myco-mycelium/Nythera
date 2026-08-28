@@ -2736,6 +2736,123 @@ class TestAutoRestart(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestEnvironmentManagement(unittest.TestCase):
+    """Test container environment variable management."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_and_get_env(self):
+        """Set and retrieve an environment variable."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_env(c, "MY_VAR", "hello")
+        self.assertEqual(mgr.get_env(c, "MY_VAR"), "hello")
+
+    def test_get_env_missing(self):
+        """Get returns None for missing key."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertIsNone(mgr.get_env(c, "NONEXISTENT"))
+
+    def test_unset_env(self):
+        """Unset removes the variable."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_env(c, "MY_VAR", "hello")
+        self.assertTrue(mgr.unset_env(c, "MY_VAR"))
+        self.assertIsNone(mgr.get_env(c, "MY_VAR"))
+        # Unset again returns False
+        self.assertFalse(mgr.unset_env(c, "MY_VAR"))
+
+    def test_list_env(self):
+        """List returns all env vars."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_env(c, "A", "1")
+        mgr.set_env(c, "B", "2")
+        env = mgr.list_env(c)
+        self.assertEqual(env, {"A": "1", "B": "2"})
+
+    def test_list_env_returns_copy(self):
+        """List returns a copy, not the internal dict."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_env(c, "X", "1")
+        env = mgr.list_env(c)
+        env["Y"] = "2"
+        self.assertIsNone(mgr.get_env(c, "Y"))
+
+    def test_inherit_host_env_default(self):
+        """inherit_host_env defaults to True."""
+        from backend.container import ContainerConfig
+        c = ContainerConfig(name="a")
+        self.assertTrue(c.inherit_host_env)
+
+    def test_write_env_file(self):
+        """_write_env_file creates a JSON file."""
+        import json, os
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_env(c, "FOO", "bar")
+        mgr.set_env(c, "NUM", "42")
+        path = mgr._write_env_file(c)
+        self.assertIsNotNone(path)
+        self.assertTrue(os.path.isfile(path))
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data, {"FOO": "bar", "NUM": "42"})
+        os.unlink(path)
+
+    def test_write_env_file_empty(self):
+        """_write_env_file returns None when no vars."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertIsNone(mgr._write_env_file(c))
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for env commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", key="FOO", value="bar")
+        p = build_payload("containers-env-set", args)
+        self.assertEqual(p["op"], "container_env_set")
+        self.assertEqual(p["key"], "FOO")
+        self.assertEqual(p["value"], "bar")
+        p = build_payload("containers-env-unset", args)
+        self.assertEqual(p["op"], "container_env_unset")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("containers-env-list", args2)
+        self.assertEqual(p["op"], "container_env_list")
+
+    def test_cli_format_human(self):
+        """CLI format_human for env commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "environment": {"FOO": "bar", "NUM": "42"},
+        }
+        text = format_human("containers-env-list", resp)
+        self.assertIn("FOO=bar", text)
+        self.assertIn("NUM=42", text)
+        # env-set
+        resp2 = {"ok": True, "container_id": "a", "key": "FOO"}
+        text2 = format_human("containers-env-set", resp2)
+        self.assertIn("FOO", text2)
+        # env-unset nonexistent
+        resp3 = {"ok": True, "container_id": "a", "key": "X", "existed": False}
+        text3 = format_human("containers-env-unset", resp3)
+        self.assertIn("not set", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18104,6 +18221,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyOrdering))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRestart))
+    suite.addTests(loader.loadTestsFromTestCase(TestEnvironmentManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

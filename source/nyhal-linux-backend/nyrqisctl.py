@@ -328,6 +328,27 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.delay is not None:
             p["delay"] = args.delay
         return p
+    if command == "containers-env-set":
+        return {
+            "service": "control",
+            "op": "container_env_set",
+            "container_id": args.container_id,
+            "key": args.key,
+            "value": args.value,
+        }
+    if command == "containers-env-unset":
+        return {
+            "service": "control",
+            "op": "container_env_unset",
+            "container_id": args.container_id,
+            "key": args.key,
+        }
+    if command == "containers-env-list":
+        return {
+            "service": "control",
+            "op": "container_env_list",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -819,6 +840,18 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"max_retries:   {max_r} (0=unlimited)\n"
             f"delay:         {delay}s"
         )
+    if command == "containers-env-list":
+        env = resp.get("environment", {})
+        if not env:
+            return f"container {resp.get('container_id')}: (no environment variables)"
+        lines = [f"container: {resp.get('container_id')}"]
+        for k, v in sorted(env.items()):
+            lines.append(f"  {k}={v}")
+        return "\n".join(lines)
+    if command in ("containers-env-set", "containers-env-unset"):
+        if command == "containers-env-unset" and not resp.get("existed", True):
+            return f"variable {resp.get('key')!r} was not set"
+        return f"{resp.get('key')} set on container {resp.get('container_id')}"
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1434,6 +1467,21 @@ def build_parser() -> argparse.ArgumentParser:
     csr.add_argument("--delay", type=float, default=None,
                      help="Seconds between restart attempts")
     csr.set_defaults(command="containers-restart-set")
+
+    ces = csub.add_parser("env-set", help="Set an environment variable")
+    ces.add_argument("container_id")
+    ces.add_argument("key", help="Variable name")
+    ces.add_argument("value", help="Variable value")
+    ces.set_defaults(command="containers-env-set")
+
+    ceu = csub.add_parser("env-unset", help="Remove an environment variable")
+    ceu.add_argument("container_id")
+    ceu.add_argument("key", help="Variable name")
+    ceu.set_defaults(command="containers-env-unset")
+
+    cel = csub.add_parser("env-list", help="List environment variables")
+    cel.add_argument("container_id")
+    cel.set_defaults(command="containers-env-list")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

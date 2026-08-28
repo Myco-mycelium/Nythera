@@ -245,6 +245,7 @@ class ControlService:
                 restart_policy=request.get("restart_policy", "no"),
                 restart_max_retries=int(request.get("restart_max_retries") or 5),
                 restart_delay=float(request.get("restart_delay") or 1.0),
+                inherit_host_env=bool(request.get("inherit_host_env", True)),
             )
             container = self.container_manager.create(config)
             self.container_manager.spawn(container)
@@ -1124,6 +1125,81 @@ class ControlService:
         self._save_state()
         self._reply(server, sender_path, call_id, {
             "ok": True, **info,
+        })
+
+    # ------------------------------------------------------------------
+    # Environment variable management
+    # ------------------------------------------------------------------
+
+    def _container_env_set(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        key = request.get("key")
+        value = request.get("value", "")
+        if not container_id or not key:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and key are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        self.container_manager.set_env(c, key, value)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "key": key,
+        })
+
+    def _container_env_unset(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        key = request.get("key")
+        if not container_id or not key:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and key are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        existed = self.container_manager.unset_env(c, key)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "key": key, "existed": existed,
+        })
+
+    def _container_env_list(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        env = self.container_manager.list_env(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "environment": env,
         })
 
     def _save_state(self) -> None:
