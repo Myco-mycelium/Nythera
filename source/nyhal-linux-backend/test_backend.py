@@ -5155,6 +5155,155 @@ class TestResourceRecommendations(unittest.TestCase):
         self.assertIn("No labels", text)
 
 
+class TestAlertHistoryManagement(unittest.TestCase):
+    """Enhanced alert history management."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make_alerts(self, mgr, c, count=5):
+        """Create test alerts with unique resource+level combos to avoid dedup."""
+        combos = [
+            ("memory", "warning"),
+            ("memory", "critical"),
+            ("cpu", "warning"),
+            ("cpu", "critical"),
+            ("pids", "warning"),
+        ]
+        for i in range(min(count, len(combos))):
+            resource, level = combos[i]
+            mgr._fire_alert(c, resource, level, f"test alert {i}")
+
+    def test_acknowledge_alert(self):
+        """acknowledge_alert marks an alert as acknowledged."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ack-test"))
+        self._make_alerts(mgr, c, 3)
+        result = mgr.acknowledge_alert(c, 0, acknowledged_by="admin")
+        self.assertIsNotNone(result)
+        self.assertTrue(result["acknowledged"])
+        self.assertEqual(result["acknowledged_by"], "admin")
+
+    def test_acknowledge_invalid_index(self):
+        """acknowledge_alert returns None for invalid index."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ack-test2"))
+        result = mgr.acknowledge_alert(c, 999)
+        self.assertIsNone(result)
+
+    def test_suppress_alert(self):
+        """suppress_alert creates a suppression rule."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sup-test"))
+        result = mgr.suppress_alert(c, "memory", duration_s=300)
+        self.assertTrue(result["suppressed"])
+        self.assertEqual(result["resource"], "memory")
+        # Should be suppressed now
+        self.assertTrue(mgr.is_alert_suppressed(c, "memory"))
+        # CPU should not be suppressed
+        self.assertFalse(mgr.is_alert_suppressed(c, "cpu"))
+
+    def test_suppress_with_level(self):
+        """suppress_alert with level only suppresses that level."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sup-test2"))
+        mgr.suppress_alert(c, "memory", level="warning")
+        self.assertTrue(mgr.is_alert_suppressed(c, "memory", "warning"))
+        self.assertFalse(mgr.is_alert_suppressed(c, "memory", "critical"))
+
+    def test_unsuppress_alert(self):
+        """unsuppress_alert removes a suppression rule."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="unsup-test"))
+        mgr.suppress_alert(c, "memory")
+        self.assertTrue(mgr.is_alert_suppressed(c, "memory"))
+        removed = mgr.unsuppress_alert(c, "memory")
+        self.assertTrue(removed)
+        self.assertFalse(mgr.is_alert_suppressed(c, "memory"))
+
+    def test_get_alert_statistics(self):
+        """get_alert_statistics returns counts by level and resource."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="stats-test"))
+        self._make_alerts(mgr, c, 5)
+        stats = mgr.get_alert_statistics(c)
+        self.assertEqual(stats["total_alerts"], 5)
+        self.assertIn("by_level", stats)
+        self.assertIn("by_resource", stats)
+        self.assertIn("time_distribution", stats)
+        self.assertGreaterEqual(stats["unacknowledged_count"], 1)
+
+    def test_get_active_suppressions(self):
+        """get_active_suppressions returns only non-expired rules."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sup-list-test"))
+        mgr.suppress_alert(c, "memory", duration_s=300)
+        mgr.suppress_alert(c, "cpu", duration_s=300)
+        active = mgr.get_active_suppressions(c)
+        self.assertEqual(len(active), 2)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for enhanced alert commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="containers-alert-acknowledge", container_id="a",
+            alert_index=0, by="admin",
+        )
+        p = build_payload("containers-alert-acknowledge", args1)
+        self.assertEqual(p["op"], "alert_acknowledge")
+        self.assertEqual(p["alert_index"], 0)
+        args2 = argparse.Namespace(
+            command="containers-alert-suppress", container_id="a",
+            resource="memory", level=None, duration=600.0,
+        )
+        p2 = build_payload("containers-alert-suppress", args2)
+        self.assertEqual(p2["op"], "alert_suppress")
+        self.assertEqual(p2["duration_s"], 600.0)
+        args3 = argparse.Namespace(
+            command="containers-alert-statistics", container_id="a",
+        )
+        p3 = build_payload("containers-alert-statistics", args3)
+        self.assertEqual(p3["op"], "alert_statistics")
+
+    def test_cli_format_human(self):
+        """CLI format_human for enhanced alert commands."""
+        from nyrqisctl import format_human
+        import time as _time
+        # statistics
+        resp = {
+            "ok": True, "container_id": "a",
+            "total_alerts": 5,
+            "acknowledged_count": 2,
+            "unacknowledged_count": 3,
+            "by_level": {"warning": 3, "critical": 2},
+            "by_resource": {"memory": 3, "cpu": 2},
+            "time_distribution": {"last_1h": 2, "last_6h": 4, "last_24h": 5},
+        }
+        text = format_human("containers-alert-statistics", resp)
+        self.assertIn("5", text)
+        self.assertIn("warning", text)
+        self.assertIn("memory", text)
+        # suppressions
+        resp2 = {
+            "ok": True,
+            "suppressions": [
+                {"resource": "memory", "level": None,
+                 "expires_at": _time.time() + 300},
+            ],
+        }
+        text2 = format_human("containers-alert-suppressions", resp2)
+        self.assertIn("memory", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20542,6 +20691,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceComparison))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceRecommendations))
+    suite.addTests(loader.loadTestsFromTestCase(TestAlertHistoryManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

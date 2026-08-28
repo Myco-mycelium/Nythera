@@ -37,6 +37,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from typing import Any, Dict, List, Optional
 
 from ipc.transport import (
@@ -506,6 +507,43 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.cpu_throttle is not None:
             p2["cpu_throttle"] = args.cpu_throttle
         return p2
+    if command == "containers-alert-acknowledge":
+        return {
+            "service": "control",
+            "op": "alert_acknowledge",
+            "container_id": args.container_id,
+            "alert_index": args.alert_index,
+            "acknowledged_by": args.by,
+        }
+    if command == "containers-alert-suppress":
+        return {
+            "service": "control",
+            "op": "alert_suppress",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "level": args.level,
+            "duration_s": args.duration,
+        }
+    if command == "containers-alert-unsuppress":
+        return {
+            "service": "control",
+            "op": "alert_unsuppress",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "level": args.level,
+        }
+    if command == "containers-alert-statistics":
+        return {
+            "service": "control",
+            "op": "alert_statistics",
+            "container_id": args.container_id,
+        }
+    if command == "containers-alert-suppressions":
+        return {
+            "service": "control",
+            "op": "alert_suppressions_list",
+            "container_id": args.container_id,
+        }
     if command == "containers-oom-status":
         return {
             "service": "control",
@@ -1454,6 +1492,61 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for e in events:
             ts = e.get("timestamp", 0)
             lines.append(f"  {ts:.1f}  {e.get('detail', '')}")
+        return "\n".join(lines)
+    if command == "containers-alert-acknowledge":
+        alert = resp.get("alert", {})
+        if not alert:
+            return f"error: {resp.get('error', 'unknown')}"
+        return (
+            f"container:    {alert.get('container_id')}\n"
+            f"acknowledged: {alert.get('acknowledged')}\n"
+            f"by:           {alert.get('acknowledged_by')}\n"
+            f"resource:     {alert.get('resource')}\n"
+            f"level:        {alert.get('level')}\n"
+            f"detail:       {alert.get('detail')}"
+        )
+    if command == "containers-alert-suppress":
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"resource: {resp.get('resource')}\n"
+            f"level:    {resp.get('level', 'all')}\n"
+            f"duration: {resp.get('duration_s', 0):.0f}s\n"
+            f"expires:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(resp.get('expires_at', 0)))}"
+        )
+    if command == "containers-alert-unsuppress":
+        removed = resp.get("removed", False)
+        return f"removed: {'yes' if removed else 'no'}"
+    if command == "containers-alert-statistics":
+        lines = [
+            f"container:     {resp.get('container_id')}",
+            f"total alerts: {resp.get('total_alerts', 0)}",
+            f"acknowledged: {resp.get('acknowledged_count', 0)}",
+            f"unack'd:      {resp.get('unacknowledged_count', 0)}",
+            "by level:"
+        ]
+        for level, count in resp.get("by_level", {}).items():
+            lines.append(f"  {level}: {count}")
+        lines.append("by resource:")
+        for res, count in resp.get("by_resource", {}).items():
+            lines.append(f"  {res}: {count}")
+        dist = resp.get("time_distribution", {})
+        lines.append("time distribution:")
+        lines.append(f"  last 1h:  {dist.get('last_1h', 0)}")
+        lines.append(f"  last 6h:  {dist.get('last_6h', 0)}")
+        lines.append(f"  last 24h: {dist.get('last_24h', 0)}")
+        return "\n".join(lines)
+    if command == "containers-alert-suppressions":
+        suppressions = resp.get("suppressions", [])
+        if not suppressions:
+            return "No active suppressions."
+        lines = [f"Active suppressions ({len(suppressions)}):"]
+        for s in suppressions:
+            expires = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s.get("expires_at", 0)))
+            lines.append(
+                f"  {s.get('resource')} "
+                f"level={s.get('level', 'all')} "
+                f"expires={expires}"
+            )
         return "\n".join(lines)
     if command == "containers-dashboard":
         # Check if this is an all-containers dashboard
@@ -2533,6 +2626,38 @@ def build_parser() -> argparse.ArgumentParser:
     cat.add_argument("--pid-critical", type=float, default=None)
     cat.add_argument("--cpu-throttle", type=float, default=None)
     cat.set_defaults(command="containers-alert-thresholds")
+
+    # Enhanced alert management commands
+    ack = csub.add_parser("alert-acknowledge", help="Acknowledge an alert")
+    ack.add_argument("container_id")
+    ack.add_argument("alert_index", type=int,
+                     help="Index of alert to acknowledge")
+    ack.add_argument("--by", default="user",
+                     help="Who acknowledged")
+    ack.set_defaults(command="containers-alert-acknowledge")
+
+    asp = csub.add_parser("alert-suppress", help="Suppress alerts for a resource")
+    asp.add_argument("container_id")
+    asp.add_argument("resource", help="Resource to suppress")
+    asp.add_argument("--level", default=None,
+                     help="Specific level (warning/critical). None = all.")
+    asp.add_argument("--duration", type=float, default=3600.0,
+                     help="Duration in seconds")
+    asp.set_defaults(command="containers-alert-suppress")
+
+    aus = csub.add_parser("alert-unsuppress", help="Remove a suppression rule")
+    aus.add_argument("container_id")
+    aus.add_argument("resource")
+    aus.add_argument("--level", default=None)
+    aus.set_defaults(command="containers-alert-unsuppress")
+
+    ast = csub.add_parser("alert-statistics", help="Get alert statistics")
+    ast.add_argument("container_id")
+    ast.set_defaults(command="containers-alert-statistics")
+
+    asl = csub.add_parser("alert-suppressions", help="List active suppressions")
+    asl.add_argument("container_id")
+    asl.set_defaults(command="containers-alert-suppressions")
 
     co = csub.add_parser("oom-status", help="Show OOM protection status")
     co.add_argument("container_id")

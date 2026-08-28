@@ -2014,6 +2014,189 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Alert history management (enhanced)
+    # ------------------------------------------------------------------
+
+    def acknowledge_alert(
+        self,
+        container: Container,
+        alert_index: int,
+        acknowledged_by: str = "system",
+    ) -> Optional[Dict[str, Any]]:
+        """Acknowledge an alert in the history.
+
+        Args:
+            container: Target container.
+            alert_index: Index of the alert to acknowledge.
+            acknowledged_by: Who acknowledged the alert.
+
+        Returns:
+            The updated alert dict, or None if index is invalid.
+        """
+        history = container._alert_history
+        if alert_index < 0 or alert_index >= len(history):
+            return None
+        alert = history[alert_index]
+        alert["acknowledged"] = True
+        alert["acknowledged_at"] = time.time()
+        alert["acknowledged_by"] = acknowledged_by
+        return alert
+
+    def suppress_alert(
+        self,
+        container: Container,
+        resource: str,
+        level: Optional[str] = None,
+        duration_s: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Suppress alerts for a resource (optionally at a specific level).
+
+        Args:
+            container: Target container.
+            resource: Resource to suppress (e.g., "memory", "cpu").
+            level: Optional level filter (e.g., "warning"). None = all levels.
+            duration_s: Suppression duration in seconds.
+
+        Returns:
+            Dict with ``suppressed``, ``expires_at``, ``resource``.
+        """
+        if not hasattr(container, '_alert_suppressions'):
+            container._alert_suppressions = []
+
+        suppression = {
+            "resource": resource,
+            "level": level,
+            "expires_at": time.time() + duration_s,
+            "created_at": time.time(),
+        }
+        container._alert_suppressions.append(suppression)
+        logger.info(
+            "suppress_alert: %s %s level=%s for %.0fs",
+            container.id, resource, level, duration_s,
+        )
+        return {
+            "container_id": container.id,
+            "suppressed": True,
+            "resource": resource,
+            "level": level,
+            "expires_at": suppression["expires_at"],
+            "duration_s": duration_s,
+        }
+
+    def unsuppress_alert(
+        self,
+        container: Container,
+        resource: str,
+        level: Optional[str] = None,
+    ) -> bool:
+        """Remove an active suppression rule.
+
+        Returns True if a suppression was removed.
+        """
+        if not hasattr(container, '_alert_suppressions'):
+            return False
+        before = len(container._alert_suppressions)
+        container._alert_suppressions = [
+            s for s in container._alert_suppressions
+            if not (s["resource"] == resource and s["level"] == level)
+        ]
+        return len(container._alert_suppressions) < before
+
+    def is_alert_suppressed(
+        self,
+        container: Container,
+        resource: str,
+        level: Optional[str] = None,
+    ) -> bool:
+        """Check if alerts for a resource are currently suppressed."""
+        if not hasattr(container, '_alert_suppressions'):
+            return False
+        now = time.time()
+        for s in container._alert_suppressions:
+            if s["expires_at"] < now:
+                continue
+            if s["resource"] != resource:
+                continue
+            if s["level"] is not None and s["level"] != level:
+                continue
+            return True
+        return False
+
+    def get_alert_statistics(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get statistics about alerts for a container.
+
+        Returns:
+            Dict with counts by level, resource, and time distribution.
+        """
+        history = container._alert_history
+        if not history:
+            return {
+                "container_id": container.id,
+                "total_alerts": 0,
+                "by_level": {},
+                "by_resource": {},
+                "acknowledged_count": 0,
+                "unacknowledged_count": 0,
+            }
+
+        by_level: Dict[str, int] = {}
+        by_resource: Dict[str, int] = {}
+        ack_count = 0
+        unack_count = 0
+
+        for a in history:
+            level = a.get("level", "unknown")
+            resource = a.get("resource", "unknown")
+            by_level[level] = by_level.get(level, 0) + 1
+            by_resource[resource] = by_resource.get(resource, 0) + 1
+            if a.get("acknowledged"):
+                ack_count += 1
+            else:
+                unack_count += 1
+
+        # Time distribution (last 1h, 6h, 24h)
+        now = time.time()
+        time_buckets = {
+            "last_1h": 0,
+            "last_6h": 0,
+            "last_24h": 0,
+        }
+        for a in history:
+            age_s = now - a.get("timestamp", 0)
+            if age_s < 3600:
+                time_buckets["last_1h"] += 1
+            if age_s < 21600:
+                time_buckets["last_6h"] += 1
+            if age_s < 86400:
+                time_buckets["last_24h"] += 1
+
+        return {
+            "container_id": container.id,
+            "total_alerts": len(history),
+            "by_level": by_level,
+            "by_resource": by_resource,
+            "acknowledged_count": ack_count,
+            "unacknowledged_count": unack_count,
+            "time_distribution": time_buckets,
+        }
+
+    def get_active_suppressions(
+        self,
+        container: Container,
+    ) -> List[Dict[str, Any]]:
+        """Get currently active suppression rules."""
+        if not hasattr(container, '_alert_suppressions'):
+            return []
+        now = time.time()
+        return [
+            s for s in container._alert_suppressions
+            if s["expires_at"] > now
+        ]
+
+    # ------------------------------------------------------------------
     # OOM killer protection
     # ------------------------------------------------------------------
 

@@ -1695,6 +1695,133 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # Alert history management (enhanced)
+
+    def _alert_acknowledge(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        alert_index = request.get("alert_index", 0)
+        acknowledged_by = request.get("acknowledged_by", "user")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.acknowledge_alert(
+            c, alert_index, acknowledged_by=acknowledged_by,
+        )
+        if result is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "invalid alert index",
+            })
+        else:
+            self._reply(server, sender_path, call_id, {
+                "ok": True, "alert": result,
+            })
+
+    def _alert_suppress(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource")
+        level = request.get("level")
+        duration_s = request.get("duration_s", 3600.0)
+        if not container_id or not resource:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and resource are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.suppress_alert(
+            c, resource, level=level, duration_s=duration_s,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _alert_unsuppress(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource")
+        level = request.get("level")
+        if not container_id or not resource:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and resource are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        removed = self.container_manager.unsuppress_alert(
+            c, resource, level=level,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "removed": removed,
+        })
+
+    def _alert_statistics(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_alert_statistics(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _alert_suppressions_list(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_active_suppressions(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "suppressions": result,
+        })
+
     # ------------------------------------------------------------------
     # OOM killer protection
     # ------------------------------------------------------------------
