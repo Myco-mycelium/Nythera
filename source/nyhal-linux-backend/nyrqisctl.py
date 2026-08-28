@@ -437,6 +437,18 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "label_filter",
             "labels": labels,
         }
+    if command == "containers-cgroup2-status":
+        return {
+            "service": "control",
+            "op": "cgroup2_status",
+            "container_id": args.container_id,
+        }
+    if command == "containers-verify-enforcement":
+        return {
+            "service": "control",
+            "op": "verify_enforcement",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1012,6 +1024,36 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         lines = [f"{count} container(s) matched:"]
         for c in containers:
             lines.append(f"  {c['id']} [{c['state']}]")
+        return "\n".join(lines)
+    if command == "containers-cgroup2-status":
+        if not resp.get("available"):
+            return f"container {resp.get('container_id')}: no cgroup status"
+        lines = [f"container: {resp.get('container_id')}"]
+        for key in sorted(resp.keys()):
+            if key in ("ok", "container_id", "available"):
+                continue
+            val = resp[key]
+            if val is not None:
+                lines.append(f"  {key}: {val}")
+        return "\n".join(lines)
+    if command == "containers-verify-enforcement":
+        enforced = resp.get("enforced", False)
+        violations = resp.get("violations", [])
+        warnings = resp.get("warnings", [])
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"enforced: {'yes' if enforced else 'NO'}",
+        ]
+        if violations:
+            lines.append("violations:")
+            for v in violations:
+                lines.append(f"  ❌ {v}")
+        if warnings:
+            lines.append("warnings:")
+            for w in warnings:
+                lines.append(f"  ⚠ {w}")
+        if not violations and not warnings:
+            lines.append("  all limits OK")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1703,6 +1745,14 @@ def build_parser() -> argparse.ArgumentParser:
     clf.add_argument("labels", nargs="+",
                      help="Key=value pairs to filter by")
     clf.set_defaults(command="containers-label-filter")
+
+    ccg = csub.add_parser("cgroup2-status", help="Show cgroup2 status for a container")
+    ccg.add_argument("container_id")
+    ccg.set_defaults(command="containers-cgroup2-status")
+
+    cve = csub.add_parser("verify-enforcement", help="Verify resource limits are enforced")
+    cve.add_argument("container_id")
+    cve.set_defaults(command="containers-verify-enforcement")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

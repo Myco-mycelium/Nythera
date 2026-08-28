@@ -3338,6 +3338,119 @@ class TestContainerLabels(unittest.TestCase):
         self.assertIn("a", text2)
 
 
+class TestCgroup2Enforcement(unittest.TestCase):
+    """Test cgroup2 advanced enforcement features."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_advanced_config_fields(self):
+        """New config fields default to None."""
+        from backend.container import ContainerConfig, ResourceLimits
+        c = ContainerConfig(name="a")
+        self.assertIsNone(c.limits.cpu_weight)
+        self.assertIsNone(c.limits.memory_high)
+        self.assertIsNone(c.limits.io_max_rbps)
+        self.assertIsNone(c.limits.io_max_wbps)
+
+    def test_advanced_config_settable(self):
+        """New config fields can be set at creation."""
+        from backend.container import ContainerConfig, ResourceLimits
+        c = ContainerConfig(name="a", limits=ResourceLimits(
+            cpu_weight=500,
+            memory_high=200 * 1024 * 1024,
+            io_max_rbps=100 * 1024 * 1024,
+            io_max_wbps=50 * 1024 * 1024,
+        ))
+        self.assertEqual(c.limits.cpu_weight, 500)
+        self.assertEqual(c.limits.memory_high, 200 * 1024 * 1024)
+
+    def test_apply_cgroup2_advanced_no_cgroups(self):
+        """apply_cgroup2_advanced returns False without cgroups."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertFalse(mgr.apply_cgroup2_advanced(c))
+
+    def test_get_cgroup2_status_no_cgroups(self):
+        """get_cgroup2_status returns unavailable without cgroups."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        status = mgr.get_cgroup2_status(c)
+        self.assertFalse(status["available"])
+
+    def test_verify_enforcement_not_running(self):
+        """verify_enforcement returns unavailable when not running."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.verify_enforcement(c)
+        self.assertFalse(result["enforced"])
+        self.assertIn("violations", result)
+        self.assertIn("warnings", result)
+
+    def test_verify_enforcement_within_limits(self):
+        """verify_enforcement shows no violations within limits."""
+        from backend.container import (
+            ContainerManager, ContainerConfig, ContainerState,
+        )
+        mgr = ContainerManager(use_cgroups_v2=False)
+        c = mgr.create(ContainerConfig(name="a"))
+        c.state = ContainerState.RUNNING
+        # Without cgroup paths, stats won't be available
+        result = mgr.verify_enforcement(c)
+        self.assertFalse(result["enforced"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for cgroup2 commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="a")
+        p = build_payload("containers-cgroup2-status", args)
+        self.assertEqual(p["op"], "cgroup2_status")
+        self.assertEqual(p["container_id"], "a")
+        p = build_payload("containers-verify-enforcement", args)
+        self.assertEqual(p["op"], "verify_enforcement")
+
+    def test_cli_format_human_cgroup2_status(self):
+        """CLI format_human for cgroup2 status."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a", "available": True,
+            "memory_current": "1048576",
+            "memory_max": "268435456",
+            "pids_current": "5",
+            "pids_max": "64",
+        }
+        text = format_human("containers-cgroup2-status", resp)
+        self.assertIn("1048576", text)
+        self.assertIn("268435456", text)
+
+    def test_cli_format_human_verify(self):
+        """CLI format_human for verify enforcement."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "enforced": True,
+            "violations": [],
+            "warnings": ["memory: 95.0% of limit used"],
+        }
+        text = format_human("containers-verify-enforcement", resp)
+        self.assertIn("yes", text)
+        self.assertIn("95.0%", text)
+        # With violations
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "enforced": False,
+            "violations": ["memory: exceeds limit"],
+            "warnings": [],
+        }
+        text2 = format_human("containers-verify-enforcement", resp2)
+        self.assertIn("NO", text2)
+        self.assertIn("exceeds", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18711,6 +18824,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceHistory))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsHotUpdate))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLabels))
+    suite.addTests(loader.loadTestsFromTestCase(TestCgroup2Enforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -68,6 +68,11 @@ class ResourceLimits:
     cpu_shares: int = 1024
     cpu_quota_us: Optional[int] = None  # microseconds per period
     cpu_period_us: int = 100000
+    # Cgroup2 advanced enforcement
+    cpu_weight: Optional[int] = None  # 1-10000, proportional CPU sharing
+    memory_high: Optional[int] = None  # soft limit in bytes (pressure)
+    io_max_rbps: Optional[int] = None  # max read bytes/sec
+    io_max_wbps: Optional[int] = None  # max write bytes/sec
 
 
 @dataclass
@@ -671,6 +676,8 @@ class ContainerManager:
             self._ipc_register(container)
             self._cap_initialize(container)
             self._attach_to_cgroups(container)
+            # Apply advanced cgroup2 limits (cpu.weight, memory.high, io.max)
+            self.apply_cgroup2_advanced(container)
             self.start_health_check(container)
             # Apply scheduling parameters if configured
             if container.config.nice_value != 0:
@@ -1998,6 +2005,215 @@ class ContainerManager:
             "updated": updated,
             "previous": previous,
         }
+
+    # ------------------------------------------------------------------
+    # Cgroup2 advanced enforcement
+    # ------------------------------------------------------------------
+
+    def apply_cgroup2_advanced(self, container: Container) -> bool:
+        """Apply advanced cgroup2 limits (cpu.weight, memory.high, io.max).
+
+        These are cgroup2-only features that provide finer-grained
+        resource control beyond the basic memory/pid/cpu limits.
+
+        Args:
+            container: Target container with cgroup paths.
+
+        Returns:
+            True if all applicable limits were applied successfully.
+        """
+        if not self.use_cgroups_v2 or not container.cgroup_paths:
+            return False
+
+        cgroup_path = Path(container.cgroup_paths[0])
+        limits = container.config.limits
+        success = True
+
+        # CPU weight (proportional sharing, 1-10000, default 100)
+        if limits.cpu_weight is not None:
+            weight = max(1, min(10000, limits.cpu_weight))
+            try:
+                (cgroup_path / "cpu.weight").write_text(str(weight))
+                logger.debug(
+                    "apply_cgroup2_advanced: %s cpu.weight=%d",
+                    container.id, weight,
+                )
+            except OSError as e:
+                logger.warning(
+                    "apply_cgroup2_advanced: %s cpu.weight failed: %s",
+                    container.id, e,
+                )
+                success = False
+
+        # Memory high watermark (soft limit, triggers pressure)
+        if limits.memory_high is not None:
+            try:
+                (cgroup_path / "memory.high").write_text(
+                    str(limits.memory_high)
+                )
+                logger.debug(
+                    "apply_cgroup2_advanced: %s memory.high=%d",
+                    container.id, limits.memory_high,
+                )
+            except OSError as e:
+                logger.warning(
+                    "apply_cgroup2_advanced: %s memory.high failed: %s",
+                    container.id, e,
+                )
+                success = False
+
+        # IO max (bandwidth limiting)
+        io_parts: List[str] = []
+        if limits.io_max_rbps is not None:
+            io_parts.append(f"rbps={limits.io_max_rbps}")
+        if limits.io_max_wbps is not None:
+            io_parts.append(f"wbps={limits.io_max_wbps}")
+        if io_parts:
+            # Format: "MAJ:MIN rbps=X wbps=Y" (use device 0:0 for all)
+            io_value = f"0:0 {' '.join(io_parts)}"
+            try:
+                (cgroup_path / "io.max").write_text(io_value)
+                logger.debug(
+                    "apply_cgroup2_advanced: %s io.max=%s",
+                    container.id, io_value,
+                )
+            except OSError as e:
+                logger.warning(
+                    "apply_cgroup2_advanced: %s io.max failed: %s",
+                    container.id, e,
+                )
+                success = False
+
+        return success
+
+    def get_cgroup2_status(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Read comprehensive cgroup2 status for a container.
+
+        Returns all current cgroup2 file values for monitoring and
+        verification.
+
+        Args:
+            container: Target container with cgroup paths.
+
+        Returns:
+            Dict with memory, CPU, PID, and IO status.
+        """
+        if not container.cgroup_paths:
+            return {
+                "container_id": container.id,
+                "available": False,
+            }
+
+        cgroup_path = Path(container.cgroup_paths[0])
+        status: Dict[str, Any] = {
+            "container_id": container.id,
+            "available": True,
+            "cgroup_path": str(cgroup_path),
+        }
+
+        def _read(path: Path) -> Optional[str]:
+            try:
+                return path.read_text().strip()
+            except (OSError, ValueError):
+                return None
+
+        if self.use_cgroups_v2:
+            # Memory
+            status["memory_current"] = _read(cgroup_path / "memory.current")
+            status["memory_max"] = _read(cgroup_path / "memory.max")
+            status["memory_high"] = _read(cgroup_path / "memory.high")
+            status["memory_stat"] = _read(cgroup_path / "memory.stat")
+            # CPU
+            status["cpu_stat"] = _read(cgroup_path / "cpu.stat")
+            status["cpu_weight"] = _read(cgroup_path / "cpu.weight")
+            status["cpu_max"] = _read(cgroup_path / "cpu.max")
+            # PIDs
+            status["pids_current"] = _read(cgroup_path / "pids.current")
+            status["pids_max"] = _read(cgroup_path / "pids.max")
+            # IO
+            status["io_stat"] = _read(cgroup_path / "io.stat")
+            status["io_max"] = _read(cgroup_path / "io.max")
+            # Pressure
+            status["cpu_pressure"] = _read(cgroup_path / "cpu.pressure")
+            status["io_pressure"] = _read(cgroup_path / "io.pressure")
+            status["memory_pressure"] = _read(
+                cgroup_path / "memory.pressure"
+            )
+
+        return status
+
+    def verify_enforcement(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Verify that resource limits are being enforced.
+
+        Compares current usage against configured limits and reports
+        any violations or nearing-limit conditions.
+
+        Args:
+            container: Target container.
+
+        Returns:
+            Dict with ``enforced`` (bool), ``violations`` list,
+            ``warnings`` list, and ``current`` usage snapshot.
+        """
+        stats = self.container_stats(container)
+        result: Dict[str, Any] = {
+            "container_id": container.id,
+            "enforced": True,
+            "violations": [],
+            "warnings": [],
+            "current": stats,
+        }
+
+        if not stats.get("available"):
+            result["enforced"] = False
+            return result
+
+        limits = container.config.limits
+
+        # Memory check
+        mem = stats.get("memory_bytes")
+        if mem is not None and limits.memory_mb > 0:
+            limit_bytes = limits.memory_mb * 1024 * 1024
+            pct = mem / limit_bytes * 100 if limit_bytes > 0 else 0
+            if pct >= 100:
+                result["violations"].append(
+                    f"memory: {mem:,} bytes exceeds "
+                    f"{limit_bytes:,} byte limit"
+                )
+            elif pct >= 90:
+                result["warnings"].append(
+                    f"memory: {pct:.1f}% of limit used"
+                )
+
+        # PID check
+        pids = stats.get("pids_current")
+        if pids is not None and limits.pid_limit > 0:
+            pct = pids / limits.pid_limit * 100
+            if pct >= 100:
+                result["violations"].append(
+                    f"pids: {pids} exceeds {limits.pid_limit} limit"
+                )
+            elif pct >= 90:
+                result["warnings"].append(
+                    f"pids: {pct:.1f}% of limit used"
+                )
+
+        # CPU throttle check
+        throttle_pct = stats.get("cpu_throttle_pct")
+        if throttle_pct is not None and throttle_pct > 0:
+            if throttle_pct >= 50:
+                result["warnings"].append(
+                    f"cpu: {throttle_pct}% throttled"
+                )
+
+        if result["violations"]:
+            result["enforced"] = False
+
+        return result
 
     def apply_network_policy(self, container: Container) -> bool:
         """Apply the container's configured network policy.
