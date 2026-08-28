@@ -154,6 +154,9 @@ class ControlService:
             elif op == "container_health":
                 self._container_health(server, sender_path,
                                        msg.message_id, request)
+            elif op == "container_resource_limits":
+                self._container_resource_limits(server, sender_path,
+                                                msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -555,6 +558,32 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             **health,
+        })
+
+    def _container_resource_limits(self, server, sender_path: str,
+                                    call_id: str,
+                                    request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            limits = self.container_manager.container_resource_limits(
+                container,
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_resource_limits failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            **limits,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,

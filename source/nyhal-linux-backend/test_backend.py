@@ -1932,6 +1932,100 @@ class TestContainerHealthCheck(unittest.TestCase):
         self.assertEqual(config.health_check_retries, 2)
 
 
+class TestResourceLimitsMonitoring(unittest.TestCase):
+    """Test resource limits monitoring (memory/PID usage alerts)."""
+
+    def test_limits_unavailable_when_not_running(self):
+        """Limits report unavailable for non-running containers."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        result = manager.container_resource_limits(container)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["memory_alert"], "ok")
+        self.assertEqual(result["pid_alert"], "ok")
+
+    def test_limits_alert_levels(self):
+        """Alert levels are computed from usage percentages."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+            ResourceLimits,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        config = ContainerConfig(
+            limits=ResourceLimits(memory_mb=100, pid_limit=10),
+        )
+        container = manager.create(config)
+        container.state = ContainerState.RUNNING
+        container.pid = 12345
+
+        # Mock the stats to return specific values
+        original_stats = manager.container_stats
+        def mock_stats(c):
+            return {
+                "available": True,
+                "memory_bytes": 80 * 1024 * 1024,  # 80% of 100 MB
+                "memory_limit_bytes": 100 * 1024 * 1024,
+                "pids_current": 9,  # 90% of 10
+            }
+        manager.container_stats = mock_stats
+
+        result = manager.container_resource_limits(container)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["memory_pct"], 80.0)
+        self.assertEqual(result["memory_alert"], "warning")
+        self.assertEqual(result["pid_pct"], 90.0)
+        self.assertEqual(result["pid_alert"], "critical")
+
+        manager.container_stats = original_stats
+
+    def test_limits_cli_payload(self):
+        """CLI build_payload for containers-limits."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc")
+        payload = build_payload("containers-limits", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_resource_limits")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+
+    def test_limits_cli_format_human(self):
+        """CLI format_human for containers-limits."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "available": True,
+            "memory_pct": 80.0,
+            "memory_alert": "warning",
+            "pid_pct": 50.0,
+            "pid_alert": "ok",
+        }
+        text = format_human("containers-limits", resp)
+        self.assertIn("80.0%", text)
+        self.assertIn("warning", text)
+        self.assertIn("50.0%", text)
+        self.assertIn("ok", text)
+
+    def test_limits_cli_format_human_at_limit(self):
+        """CLI format_human shows at_limit alert."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "available": True,
+            "memory_pct": 100.0,
+            "memory_alert": "at_limit",
+            "pid_pct": None,
+            "pid_alert": "ok",
+        }
+        text = format_human("containers-limits", resp)
+        self.assertIn("100.0%", text)
+        self.assertIn("at_limit", text)
+        self.assertIn("unlimited", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17294,6 +17388,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

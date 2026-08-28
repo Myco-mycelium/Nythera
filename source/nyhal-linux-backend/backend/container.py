@@ -1162,6 +1162,64 @@ class ContainerManager:
 
         return stats
 
+    def container_resource_limits(self, container: Container) -> Dict[str, Any]:
+        """Check resource usage against configured limits and report alerts.
+
+        Compares the container's current cgroup stats against its
+        configured limits (memory_mb, pid_limit) and returns a
+        summary with alert levels for each resource.
+
+        Returns:
+            Dict with ``memory_alert`` (ok/warning/critical/at_limit),
+            ``pid_alert``, ``memory_pct``, ``pid_pct``, and the raw
+            ``stats`` snapshot.
+        """
+        stats = self.container_stats(container)
+        result: Dict[str, Any] = {
+            "container_id": container.id,
+            "available": stats.get("available", False),
+            "memory_alert": "ok",
+            "pid_alert": "ok",
+            "memory_pct": None,
+            "pid_pct": None,
+            "stats": stats,
+        }
+
+        if not stats.get("available"):
+            return result
+
+        # Memory check
+        mem_bytes = stats.get("memory_bytes")
+        mem_limit = stats.get("memory_limit_bytes")
+        configured_limit_mb = container.config.limits.memory_mb
+
+        if mem_bytes is not None and configured_limit_mb > 0:
+            limit_bytes = (mem_limit if mem_limit else
+                           configured_limit_mb * 1024 * 1024)
+            pct = round(mem_bytes / limit_bytes * 100, 1) if limit_bytes > 0 else 0
+            result["memory_pct"] = pct
+            if pct >= 100:
+                result["memory_alert"] = "at_limit"
+            elif pct >= 90:
+                result["memory_alert"] = "critical"
+            elif pct >= 75:
+                result["memory_alert"] = "warning"
+
+        # PID check
+        pids = stats.get("pids_current")
+        pid_limit = container.config.limits.pid_limit
+        if pids is not None and pid_limit > 0:
+            pct = round(pids / pid_limit * 100, 1)
+            result["pid_pct"] = pct
+            if pct >= 100:
+                result["pid_alert"] = "at_limit"
+            elif pct >= 90:
+                result["pid_alert"] = "critical"
+            elif pct >= 75:
+                result["pid_alert"] = "warning"
+
+        return result
+
     def _start_log_capture(self, container: Container,
                            proc: subprocess.Popen) -> None:
         """Start background threads to capture stdout/stderr into ring buffers."""

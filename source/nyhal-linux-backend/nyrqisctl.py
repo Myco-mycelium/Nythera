@@ -210,6 +210,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_health",
             "container_id": args.container_id,
         }
+    if command == "containers-limits":
+        return {
+            "service": "control",
+            "op": "container_resource_limits",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -568,6 +574,23 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         output = resp.get("last_output", "")
         if output:
             lines.append(f"last_output: {output[:200]}")
+        return "\n".join(lines)
+    if command == "containers-limits":
+        if not resp.get("available"):
+            return f"container {resp.get('container_id')}: stats not available"
+        mem_pct = resp.get("memory_pct")
+        pid_pct = resp.get("pid_pct")
+        mem_alert = resp.get("memory_alert", "ok")
+        pid_alert = resp.get("pid_alert", "ok")
+        alert_icons = {
+            "ok": "✓", "warning": "⚠", "critical": "🔴",
+            "at_limit": "⛔",
+        }
+        lines = [
+            f"container:  {resp.get('container_id')}",
+            f"memory:    {mem_pct}% {alert_icons.get(mem_alert, '?')} ({mem_alert})" if mem_pct is not None else "memory:    unlimited",
+            f"pids:      {pid_pct}% {alert_icons.get(pid_alert, '?')} ({pid_alert})" if pid_pct is not None else "pids:      unlimited",
+        ]
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1131,6 +1154,10 @@ def build_parser() -> argparse.ArgumentParser:
     ch = csub.add_parser("health", help="Show container health status")
     ch.add_argument("container_id")
     ch.set_defaults(command="containers-health")
+
+    crl = csub.add_parser("limits", help="Show resource usage vs limits with alerts")
+    crl.add_argument("container_id")
+    crl.set_defaults(command="containers-limits")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)
