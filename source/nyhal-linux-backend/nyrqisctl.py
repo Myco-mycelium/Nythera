@@ -128,6 +128,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.stream != "both":
             payload["stream"] = args.stream
         return payload
+    if command == "containers-exec":
+        return {
+            "service": "control",
+            "op": "container_exec",
+            "container_id": args.container_id,
+            "command": args.exec_command,
+            "timeout": args.timeout,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -348,6 +356,17 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 parts.extend(lines)
         if not parts:
             return f"container {resp.get('container_id')}: no log output yet"
+        return "\n".join(parts)
+    if command == "containers-exec":
+        exit_code = resp.get("exit_code", -1)
+        stdout = resp.get("stdout", "")
+        stderr = resp.get("stderr", "")
+        parts = []
+        if stdout:
+            parts.append(stdout.rstrip())
+        if stderr:
+            parts.append(f"[stderr] {stderr.rstrip()}")
+        parts.append(f"exit code: {exit_code}")
         return "\n".join(parts)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -869,6 +888,13 @@ def build_parser() -> argparse.ArgumentParser:
     clo.add_argument("--stream", choices=["stdout", "stderr", "both"],
                      default="both", help="Which stream to show")
     clo.set_defaults(command="containers-logs")
+
+    ce = csub.add_parser("exec", help="Execute a command inside a running container")
+    ce.add_argument("container_id")
+    ce.add_argument("exec_command", nargs="+", help="Command and arguments to run")
+    ce.add_argument("--timeout", type=float, default=10.0,
+                    help="Timeout in seconds (default: 10)")
+    ce.set_defaults(command="containers-exec")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

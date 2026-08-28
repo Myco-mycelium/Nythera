@@ -124,6 +124,9 @@ class ControlService:
             elif op == "container_logs":
                 self._container_logs(server, sender_path, msg.message_id,
                                      request)
+            elif op == "container_exec":
+                self._container_exec(server, sender_path, msg.message_id,
+                                     request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -273,6 +276,45 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             **logs,
+        })
+
+    def _container_exec(self, server, sender_path: str, call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        command = request.get("command")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id is required",
+            })
+            return
+        if not command or not isinstance(command, list):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "command must be a non-empty list",
+            })
+            return
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            result = self.container_manager.container_exec(
+                container, command,
+                timeout_s=float(request.get("timeout", 10.0)),
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_exec failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            **result,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,

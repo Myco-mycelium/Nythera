@@ -1085,6 +1085,69 @@ class ContainerManager:
             result["stderr"] = container._stderr_buffer.get_lines(tail)
         return result
 
+    def container_exec(self, container: Container, command: List[str],
+                       timeout_s: float = 10.0) -> Dict[str, Any]:
+        """Execute a command inside a running container's namespaces.
+
+        Uses ``nsenter(1)`` to join the container's PID, mount, UTS,
+        IPC, and (if present) network namespaces, then runs the given
+        command.  The container must be in the RUNNING state with a
+        valid host PID.
+
+        Args:
+            container: A running container.
+            command: Command and arguments to execute.
+            timeout_s: Maximum seconds to wait for the command.
+
+        Returns:
+            Dict with ``exit_code``, ``stdout``, ``stderr``.
+        """
+        if container.state != ContainerState.RUNNING:
+            raise ValueError(
+                f"Cannot exec in container in {container.state.value} state"
+            )
+        if container.pid is None:
+            raise ValueError("Container has no PID")
+
+        pid = container.pid
+        nsenter = shutil.which("nsenter")
+        if nsenter is None:
+            raise RuntimeError("nsenter(1) not found — required for container exec")
+
+        # Enter all the container's namespaces
+        ns_args = [
+            nsenter,
+            f"--pid=/proc/{pid}/ns/pid",
+            f"--mount=/proc/{pid}/ns/mnt",
+            f"--uts=/proc/{pid}/ns/uts",
+            f"--ipc=/proc/{pid}/ns/ipc",
+        ]
+        if container.config.network and container.network_ip:
+            ns_args.append(f"--net=/proc/{pid}/ns/net")
+
+        # Run as root inside the namespace (the namespace maps root)
+        ns_args.extend(["--"])
+        ns_args.extend(command)
+
+        logger.debug("container_exec: %s %s", container.id, command)
+        try:
+            result = subprocess.run(
+                ns_args,
+                capture_output=True,
+                timeout=timeout_s,
+            )
+            return {
+                "exit_code": result.returncode,
+                "stdout": result.stdout.decode("utf-8", errors="replace"),
+                "stderr": result.stderr.decode("utf-8", errors="replace"),
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"command timed out after {timeout_s}s",
+            }
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         

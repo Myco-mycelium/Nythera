@@ -1164,6 +1164,88 @@ class TestContainerLogs(unittest.TestCase):
         self.assertIn("no log output yet", text)
 
 
+class TestContainerExec(unittest.TestCase):
+    """Test container exec (nsenter into container namespaces)."""
+
+    def test_exec_rejects_non_running(self):
+        """Exec raises ValueError for non-running containers."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        with self.assertRaises(ValueError):
+            manager.container_exec(container, ["echo", "hello"])
+
+    def test_exec_rejects_no_pid(self):
+        """Exec raises ValueError when container has no PID."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        # No pid set
+        with self.assertRaises(ValueError):
+            manager.container_exec(container, ["echo", "hello"])
+
+    def test_exec_cli_payload(self):
+        """CLI build_payload for containers-exec."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            exec_command=["ls", "-la"],
+            timeout=5.0,
+        )
+        payload = build_payload("containers-exec", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_exec")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+        self.assertEqual(payload["command"], ["ls", "-la"])
+        self.assertEqual(payload["timeout"], 5.0)
+
+    def test_exec_cli_format_human(self):
+        """CLI format_human for containers-exec."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": "file1.txt\nfile2.txt\n",
+            "stderr": "",
+        }
+        text = format_human("containers-exec", resp)
+        self.assertIn("file1.txt", text)
+        self.assertIn("file2.txt", text)
+        self.assertIn("exit code: 0", text)
+
+    def test_exec_cli_format_human_error(self):
+        """CLI format_human shows stderr and non-zero exit code."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "ls: cannot access 'nope': No such file or directory\n",
+        }
+        text = format_human("containers-exec", resp)
+        self.assertIn("cannot access", text)
+        self.assertIn("exit code: 1", text)
+        self.assertIn("[stderr]", text)
+
+    def test_exec_cli_format_human_timeout(self):
+        """CLI format_human for timed-out exec."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "command timed out after 10.0s",
+        }
+        text = format_human("containers-exec", resp)
+        self.assertIn("timed out", text)
+        self.assertIn("exit code: -1", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16518,6 +16600,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerStats))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLogs))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerExec))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
