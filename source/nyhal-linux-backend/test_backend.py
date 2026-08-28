@@ -4360,6 +4360,138 @@ class TestWebhooks(unittest.TestCase):
         self.assertIn("a.com", text2)
 
 
+class TestSLA(unittest.TestCase):
+    """Test SLA (service level agreements)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_default_sla_config(self):
+        """Default SLA config is set correctly."""
+        from backend.container import ContainerConfig
+        c = ContainerConfig(name="a")
+        self.assertEqual(c.sla_uptime_target, 99.9)
+        self.assertEqual(c.sla_max_restart_count, 3)
+        self.assertTrue(c.sla_alert_on_breach)
+
+    def test_start_sla_tracking(self):
+        """start_sla_tracking initializes tracking."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.start_sla_tracking(c)
+        self.assertIsNotNone(c._sla_started_at)
+        self.assertEqual(c._sla_downtime_s, 0.0)
+        self.assertEqual(len(c._sla_violations), 0)
+
+    def test_record_sla_downtime(self):
+        """record_sla_downtime accumulates time."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.record_sla_downtime(c, 10.0, "crash")
+        mgr.record_sla_downtime(c, 5.0, "oom")
+        self.assertEqual(c._sla_downtime_s, 15.0)
+
+    def test_check_sla_not_tracked(self):
+        """check_sla returns not tracked when no start."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.check_sla(c)
+        self.assertFalse(result["tracked"])
+        self.assertIsNone(result["uptime_pct"])
+
+    def test_check_sla_compliant(self):
+        """check_sla returns OK when compliant."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.start_sla_tracking(c)
+        import time
+        time.sleep(0.01)
+        result = mgr.check_sla(c)
+        self.assertTrue(result["tracked"])
+        self.assertFalse(result["breached"])
+        self.assertGreater(result["uptime_pct"], 99.0)
+
+    def test_check_sla_restart_violation(self):
+        """check_sla detects restart count violation."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.start_sla_tracking(c)
+        c.restart_count = 5  # exceeds default max of 3
+        result = mgr.check_sla(c)
+        self.assertTrue(result["breached"])
+        self.assertGreater(len(result["violations"]), 0)
+
+    def test_get_sla_violations(self):
+        """get_sla_violations returns violations."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        c._sla_violations.append({"type": "test", "detail": "x"})
+        violations = mgr.get_sla_violations(c)
+        self.assertEqual(len(violations), 1)
+
+    def test_set_sla_config(self):
+        """set_sla_config updates config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.set_sla_config(
+            c, uptime_target=99.5, max_restart_count=10,
+        )
+        self.assertEqual(result["sla_uptime_target"], 99.5)
+        self.assertEqual(result["sla_max_restart_count"], 10)
+        self.assertEqual(c.config.sla_uptime_target, 99.5)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for SLA commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="a")
+        p = build_payload("sla-check", args)
+        self.assertEqual(p["op"], "sla_check")
+        args2 = argparse.Namespace(container_id="a", tail=None)
+        p = build_payload("sla-violations", args2)
+        self.assertEqual(p["op"], "sla_violations")
+        args3 = argparse.Namespace(
+            container_id="a", uptime_target=99.5,
+            max_restart_count=5, alert_on_breach=None,
+        )
+        p = build_payload("sla-set", args3)
+        self.assertEqual(p["op"], "sla_set")
+        self.assertEqual(p["uptime_target"], 99.5)
+
+    def test_cli_format_human(self):
+        """CLI format_human for SLA commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "uptime_pct": 99.999, "target": 99.9,
+            "breached": False, "downtime_s": 0.1,
+            "total_time_s": 1000.0, "tracked": True,
+            "restart_count": 0, "max_restarts": 3,
+            "violations": [],
+        }
+        text = format_human("sla-check", resp)
+        self.assertIn("99.999", text)
+        self.assertIn("OK", text)
+        # violations
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "violations": [
+                {"timestamp": 1000.0, "type": "restart",
+                 "detail": "too many"},
+            ],
+            "count": 1,
+        }
+        text2 = format_human("sla-violations", resp2)
+        self.assertIn("1 violations", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19741,6 +19873,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceExport))
     suite.addTests(loader.loadTestsFromTestCase(TestWebhooks))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLA))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

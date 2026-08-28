@@ -596,6 +596,34 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "webhook_disable",
             "webhook_id": args.webhook_id,
         }
+    if command == "sla-check":
+        return {
+            "service": "control",
+            "op": "sla_check",
+            "container_id": args.container_id,
+        }
+    if command == "sla-violations":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "sla_violations",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p["tail"] = args.tail
+        return p
+    if command == "sla-set":
+        p2: Dict[str, Any] = {
+            "service": "control",
+            "op": "sla_set",
+            "container_id": args.container_id,
+        }
+        if args.uptime_target is not None:
+            p2["uptime_target"] = args.uptime_target
+        if args.max_restart_count is not None:
+            p2["max_restart_count"] = args.max_restart_count
+        if args.alert_on_breach is not None:
+            p2["alert_on_breach"] = args.alert_on_breach
+        return p2
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1362,6 +1390,40 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not resp.get("existed", True):
             return f"webhook {resp.get('webhook_id')} not found"
         return f"webhook {resp.get('webhook_id')} unregistered"
+    if command == "sla-check":
+        tracked = resp.get("tracked", False)
+        if not tracked:
+            return f"container {resp.get('container_id')}: SLA not tracked"
+        breached = resp.get("breached", False)
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"uptime:   {resp.get('uptime_pct', 0):.4f}%",
+            f"target:   {resp.get('target', 0)}%",
+            f"status:   {'BREACHED' if breached else 'OK'}",
+            f"downtime: {resp.get('downtime_s', 0):.1f}s",
+            f"total:    {resp.get('total_time_s', 0):.1f}s",
+            f"restarts: {resp.get('restart_count', 0)}/{resp.get('max_restarts', 0)}",
+        ]
+        violations = resp.get("violations", [])
+        if violations:
+            lines.append(f"violations: {len(violations)}")
+        return "\n".join(lines)
+    if command == "sla-violations":
+        violations = resp.get("violations", [])
+        count = resp.get("count", 0)
+        lines = [f"container: {resp.get('container_id')} ({count} violations)"]
+        for v in violations:
+            ts = v.get("timestamp", 0)
+            lines.append(
+                f"  {ts:.1f}  {v.get('type', '?')}: {v.get('detail', '')}"
+            )
+        return "\n".join(lines)
+    if command == "sla-set":
+        lines = [f"container: {resp.get('container_id')}"]
+        lines.append(f"  uptime_target:     {resp.get('sla_uptime_target', 99.9)}%")
+        lines.append(f"  max_restarts:      {resp.get('sla_max_restart_count', 3)}")
+        lines.append(f"  alert_on_breach:   {resp.get('sla_alert_on_breach', True)}")
+        return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -2173,6 +2235,32 @@ def build_parser() -> argparse.ArgumentParser:
     whd = whsub.add_parser("disable", help="Disable a webhook")
     whd.add_argument("webhook_id")
     whd.set_defaults(command="webhook-disable")
+
+    sla = sub.add_parser("sla", help="Manage SLA (service level agreements)")
+    slasub = sla.add_subparsers(dest="sla_cmd", required=True)
+
+    slac = slasub.add_parser("check", help="Check SLA compliance")
+    slac.add_argument("container_id")
+    slac.set_defaults(command="sla-check")
+
+    slav = slasub.add_parser("violations", help="Show SLA violations")
+    slav.add_argument("container_id")
+    slav.add_argument("--tail", type=int, default=None,
+                      help="Show only last N violations")
+    slav.set_defaults(command="sla-violations")
+
+    slas = slasub.add_parser("set", help="Set SLA configuration")
+    slas.add_argument("container_id")
+    slas.add_argument("--uptime", type=float, default=None,
+                      dest="uptime_target",
+                      help="Uptime target percentage")
+    slas.add_argument("--max-restarts", type=int, default=None,
+                      dest="max_restart_count",
+                      help="Max restarts before SLA breach")
+    slas.add_argument("--no-alert", dest="alert_on_breach",
+                      action="store_false", default=None,
+                      help="Disable alerts on SLA breach")
+    slas.set_defaults(command="sla-set")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

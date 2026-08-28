@@ -134,6 +134,10 @@ class ContainerConfig:
     alert_pid_warning: float = 75.0  # PID warning threshold
     alert_pid_critical: float = 90.0  # PID critical threshold
     alert_cpu_throttle: float = 50.0  # CPU throttle warning threshold
+    # SLA (service level agreements)
+    sla_uptime_target: float = 99.9  # uptime percentage target
+    sla_max_restart_count: int = 3  # max restarts before SLA breach
+    sla_alert_on_breach: bool = True  # fire alert on SLA breach
 
 class RingBuffer:
     """Thread-safe bounded ring buffer for log line capture."""
@@ -221,6 +225,10 @@ class Container:
         self._alert_history: List[Dict[str, Any]] = []
         # OOM event tracking
         self._oom_events: List[Dict[str, Any]] = []
+        # SLA tracking
+        self._sla_started_at: Optional[float] = None
+        self._sla_downtime_s: float = 0.0
+        self._sla_violations: List[Dict[str, Any]] = []
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -927,6 +935,8 @@ class ContainerManager:
             self.apply_cgroup2_advanced(container)
             # Apply OOM protection settings
             self.apply_oom_protection(container)
+            # Start SLA tracking
+            self.start_sla_tracking(container)
             self.start_health_check(container)
             # Apply scheduling parameters if configured
             if container.config.nice_value != 0:
@@ -3437,6 +3447,152 @@ class ContainerManager:
             "container_id": container.id,
             "path": output_path,
             "bytes_written": bytes_written,
+        }
+
+    # ------------------------------------------------------------------
+    # SLA (service level agreements)
+    # ------------------------------------------------------------------
+
+    def start_sla_tracking(self, container: Container) -> None:
+        """Start SLA tracking for a container.
+
+        Called when a container transitions to RUNNING. Records the
+        start time for uptime calculations.
+        """
+        container._sla_started_at = time.time()
+        container._sla_downtime_s = 0.0
+        container._sla_violations.clear()
+        logger.debug("start_sla_tracking: %s", container.id)
+
+    def record_sla_downtime(
+        self, container: Container, duration_s: float,
+        reason: str = "",
+    ) -> None:
+        """Record downtime for SLA calculation.
+
+        Args:
+            container: Target container.
+            duration_s: Downtime duration in seconds.
+            reason: Reason for downtime (e.g., "crash", "oom").
+        """
+        container._sla_downtime_s += duration_s
+        if container.config.sla_alert_on_breach:
+            self._fire_alert(
+                container, "sla_downtime", "warning",
+                f"{duration_s:.1f}s downtime: {reason}",
+            )
+
+    def check_sla(self, container: Container) -> Dict[str, Any]:
+        """Check SLA compliance for a container.
+
+        Compares actual uptime against the configured target and
+        reports violations.
+
+        Returns:
+            Dict with ``uptime_pct``, ``target``, ``breached``,
+            ``downtime_s``, ``total_time_s``, ``violations``.
+        """
+        cfg = container.config
+        started_at = container._sla_started_at
+        downtime = container._sla_downtime_s
+
+        if started_at is None:
+            return {
+                "container_id": container.id,
+                "uptime_pct": None,
+                "target": cfg.sla_uptime_target,
+                "breached": False,
+                "downtime_s": 0,
+                "total_time_s": 0,
+                "violations": [],
+                "tracked": False,
+            }
+
+        total_time = time.time() - started_at
+        if total_time <= 0:
+            uptime_pct = 100.0
+        else:
+            uptime_pct = round(
+                (1 - downtime / total_time) * 100, 4
+            )
+
+        breached = uptime_pct < cfg.sla_uptime_target
+        violations = list(container._sla_violations)
+
+        # Check restart count violation
+        if container.restart_count > cfg.sla_max_restart_count:
+            violation = {
+                "timestamp": time.time(),
+                "type": "restart_count",
+                "detail": (
+                    f"{container.restart_count} restarts "
+                    f"> {cfg.sla_max_restart_count} limit"
+                ),
+            }
+            if violation not in violations:
+                container._sla_violations.append(violation)
+                violations.append(violation)
+                breached = True
+
+        return {
+            "container_id": container.id,
+            "uptime_pct": uptime_pct,
+            "target": cfg.sla_uptime_target,
+            "breached": breached,
+            "downtime_s": round(downtime, 3),
+            "total_time_s": round(total_time, 3),
+            "violations": violations,
+            "tracked": True,
+            "restart_count": container.restart_count,
+            "max_restarts": cfg.sla_max_restart_count,
+        }
+
+    def get_sla_violations(
+        self, container: Container, tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get SLA violations for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N violations.
+
+        Returns:
+            List of violation dicts.
+        """
+        violations = container._sla_violations
+        if tail is not None:
+            return list(violations[-tail:])
+        return list(violations)
+
+    def set_sla_config(
+        self, container: Container,
+        uptime_target: Optional[float] = None,
+        max_restart_count: Optional[int] = None,
+        alert_on_breach: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Update SLA configuration for a container.
+
+        Args:
+            container: Target container.
+            uptime_target: Uptime percentage target (0-100).
+            max_restart_count: Max restarts before SLA breach.
+            alert_on_breach: Whether to fire alert on breach.
+
+        Returns:
+            Dict with updated SLA config.
+        """
+        cfg = container.config
+        if uptime_target is not None:
+            cfg.sla_uptime_target = max(0.0, min(100.0, uptime_target))
+        if max_restart_count is not None:
+            cfg.sla_max_restart_count = max(0, max_restart_count)
+        if alert_on_breach is not None:
+            cfg.sla_alert_on_breach = alert_on_breach
+        return {
+            "container_id": container.id,
+            "sla_uptime_target": cfg.sla_uptime_target,
+            "sla_max_restart_count": cfg.sla_max_restart_count,
+            "sla_alert_on_breach": cfg.sla_alert_on_breach,
         }
 
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:

@@ -1941,6 +1941,80 @@ class ControlService:
             "ok": ok, "webhook_id": webhook_id,
         })
 
+    # ------------------------------------------------------------------
+    # SLA (service level agreements)
+    # ------------------------------------------------------------------
+
+    def _sla_check(self, server, sender_path: str,
+                   call_id: str,
+                   request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.check_sla(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_violations(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        violations = self.container_manager.get_sla_violations(c, tail=tail)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "violations": violations, "count": len(violations),
+        })
+
+    def _sla_set(self, server, sender_path: str,
+                 call_id: str,
+                 request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_sla_config(
+            c,
+            uptime_target=request.get("uptime_target"),
+            max_restart_count=request.get("max_restart_count"),
+            alert_on_breach=request.get("alert_on_breach"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure
