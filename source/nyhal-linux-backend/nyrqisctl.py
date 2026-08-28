@@ -191,6 +191,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "image_remove",
             "path": args.path,
         }
+    if command == "images-export":
+        return {
+            "service": "control",
+            "op": "image_export",
+            "image_path": args.image_path,
+            "tar_path": args.tar_path,
+        }
+    if command == "images-import":
+        return {
+            "service": "control",
+            "op": "image_import",
+            "tar_path": args.tar_path,
+            "dest_dir": args.dest_dir,
+            "name": args.name,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -589,6 +604,12 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return header + "\n" + "\n".join(rows)
     if command == "images-remove":
         return f"image removed: {resp.get('path')}"
+    if command == "images-export":
+        size = resp.get("size_bytes", 0)
+        return (f"image exported: {resp.get('tar_path')} "
+                f"({size:,} bytes)")
+    if command == "images-import":
+        return f"image imported: {resp.get('image_path')}"
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -1337,6 +1358,20 @@ def build_parser() -> argparse.ArgumentParser:
     ir = isub.add_parser("remove", help="Remove a base image")
     ir.add_argument("path", help="Path to the image directory")
     ir.set_defaults(command="images-remove")
+
+    ie = isub.add_parser("export", help="Export a base image as a tar archive")
+    ie.add_argument("image_path", help="Path to the image directory")
+    ie.add_argument("--tar-path", default=None,
+                    help="Output tar file path (auto-generated if omitted)")
+    ie.set_defaults(command="images-export")
+
+    im = isub.add_parser("import", help="Import an image from a tar archive")
+    im.add_argument("tar_path", help="Path to the tar archive")
+    im.add_argument("--dest-dir", default=None,
+                    help="Destination directory (default: ./images)")
+    im.add_argument("--name", default=None,
+                    help="Override image directory name")
+    im.set_defaults(command="images-import")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

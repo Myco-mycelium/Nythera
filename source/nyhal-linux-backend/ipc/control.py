@@ -139,6 +139,12 @@ class ControlService:
             elif op == "image_remove":
                 self._image_remove(server, sender_path, msg.message_id,
                                    request)
+            elif op == "image_export":
+                self._image_export(server, sender_path, msg.message_id,
+                                   request)
+            elif op == "image_import":
+                self._image_import(server, sender_path, msg.message_id,
+                                   request)
             elif op == "container_checkpoint":
                 self._container_checkpoint(server, sender_path,
                                            msg.message_id, request)
@@ -468,6 +474,61 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "path": path,
+        })
+
+    def _image_export(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        image_path = request.get("image_path")
+        if not image_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "image_path is required",
+            })
+            return
+        try:
+            tar = self.container_manager.export_image(
+                image_path, tar_path=request.get("tar_path"),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "image_export failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "tar_path": tar,
+            "size_bytes": os.path.getsize(tar),
+        })
+
+    def _image_import(self, server, sender_path: str, call_id: str,
+                      request: Dict[str, Any]) -> None:
+        tar_path = request.get("tar_path")
+        if not tar_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "tar_path is required",
+            })
+            return
+        try:
+            imported = self.container_manager.import_image(
+                tar_path,
+                dest_dir=request.get("dest_dir"),
+                name=request.get("name"),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "image_import failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "image_path": imported,
         })
 
     def _container_checkpoint(self, server, sender_path: str, call_id: str,

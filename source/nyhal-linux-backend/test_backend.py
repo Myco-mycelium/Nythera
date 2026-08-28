@@ -1638,6 +1638,99 @@ class TestImageManagement(unittest.TestCase):
         text = format_human("images-list", resp)
         self.assertIn("no images found", text)
 
+    def test_export_import_roundtrip(self):
+        """Export and import an image preserves its content."""
+        import tempfile, json
+        from backend.container import ContainerManager
+        from fuse.nyfs import NyFSFilesystem
+        manager = ContainerManager(use_cgroups_v2=False)
+        tmp = tempfile.mkdtemp()
+        try:
+            # Create a NyFS image
+            img_dir = os.path.join(tmp, "test-image")
+            fs = NyFSFilesystem(img_dir)
+            fs.create_file("/hello.txt")
+            fs.write("/hello.txt", b"hello world")
+            fs.save()
+
+            # Export
+            tar_path = os.path.join(tmp, "export.tar.gz")
+            result_tar = manager.export_image(img_dir, tar_path)
+            self.assertTrue(os.path.isfile(result_tar))
+            self.assertGreater(os.path.getsize(result_tar), 0)
+
+            # Import into a new location
+            import_dir = os.path.join(tmp, "imported")
+            imported = manager.import_image(result_tar, dest_dir=import_dir)
+            self.assertTrue(os.path.isdir(imported))
+            meta = os.path.join(imported, "state", "metadata.json")
+            self.assertTrue(os.path.isfile(meta))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_export_not_found(self):
+        """Export raises ValueError for nonexistent image."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        with self.assertRaises(ValueError):
+            manager.export_image("/nonexistent/image")
+
+    def test_import_not_found(self):
+        """Import raises ValueError for nonexistent tar."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        with self.assertRaises(ValueError):
+            manager.import_image("/nonexistent/file.tar.gz")
+
+    def test_import_cli_payload(self):
+        """CLI build_payload for images-import."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            tar_path="/tmp/img.tar.gz",
+            dest_dir="/tmp/images",
+            name="imported-img",
+        )
+        payload = build_payload("images-import", args)
+        self.assertEqual(payload["op"], "image_import")
+        self.assertEqual(payload["tar_path"], "/tmp/img.tar.gz")
+        self.assertEqual(payload["name"], "imported-img")
+
+    def test_export_cli_payload(self):
+        """CLI build_payload for images-export."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            image_path="/tmp/images/myimg",
+            tar_path="/tmp/export.tar.gz",
+        )
+        payload = build_payload("images-export", args)
+        self.assertEqual(payload["op"], "image_export")
+        self.assertEqual(payload["image_path"], "/tmp/images/myimg")
+        self.assertEqual(payload["tar_path"], "/tmp/export.tar.gz")
+
+    def test_export_cli_format_human(self):
+        """CLI format_human for images-export."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "tar_path": "/tmp/export.tar.gz",
+            "size_bytes": 1048576,
+        }
+        text = format_human("images-export", resp)
+        self.assertIn("export.tar.gz", text)
+        self.assertIn("1,048,576 bytes", text)
+
+    def test_import_cli_format_human(self):
+        """CLI format_human for images-import."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "image_path": "/tmp/images/imported-img",
+        }
+        text = format_human("images-import", resp)
+        self.assertIn("imported-img", text)
+        self.assertIn("imported", text)
+
 
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""

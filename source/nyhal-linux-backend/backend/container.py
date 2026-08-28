@@ -1879,6 +1879,95 @@ class ContainerManager:
         logger.info("image removed: %s", path)
         return True
 
+    def export_image(self, image_path: str,
+                     tar_path: Optional[str] = None) -> str:
+        """Export a base image as a tar archive.
+
+        Creates a gzip-compressed tar archive of the image directory
+        that can be transferred to another host and imported.
+
+        Args:
+            image_path: Path to the image directory to export.
+            tar_path: Optional output path (auto-generated if omitted).
+
+        Returns:
+            Path to the created tar archive.
+
+        Raises:
+            ValueError: If the image directory doesn't exist.
+        """
+        import tarfile
+
+        source = Path(image_path).resolve()
+        if not source.is_dir():
+            raise ValueError(f"Image not found: {image_path}")
+
+        if tar_path is None:
+            tar_path = str(
+                Path(tempfile.gettempdir()) /
+                f"nyrqis-image-{source.name}.tar.gz"
+            )
+
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(str(source), arcname=source.name)
+
+        size = os.path.getsize(tar_path)
+        self._record_event("image_exported", source.name,
+                           f"path={tar_path}, size={size}")
+        logger.info("image exported: %s → %s (%d bytes)",
+                    image_path, tar_path, size)
+        return tar_path
+
+    def import_image(self, tar_path: str,
+                     dest_dir: Optional[str] = None,
+                     name: Optional[str] = None) -> str:
+        """Import an image from a tar archive.
+
+        Extracts a gzip-compressed tar archive (as created by
+        ``export_image``) into the destination directory.
+
+        Args:
+            tar_path: Path to the tar archive.
+            dest_dir: Directory to extract into (default: ./images).
+            name: Optional override for the image directory name.
+
+        Returns:
+            Path to the imported image directory.
+
+        Raises:
+            ValueError: If the tar file doesn't exist or is invalid.
+        """
+        import tarfile
+
+        if not os.path.isfile(tar_path):
+            raise ValueError(f"Tar file not found: {tar_path}")
+
+        if dest_dir is None:
+            dest_dir = os.path.join(os.getcwd(), "images")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        with tarfile.open(tar_path, "r:gz") as tar:
+            # Get the top-level directory name from the archive
+            members = tar.getmembers()
+            if not members:
+                raise ValueError("Tar archive is empty")
+            top_name = members[0].name.split("/")[0]
+            if name:
+                # Rename the top-level directory
+                for m in members:
+                    if m.name == top_name:
+                        m.name = name
+                    elif m.name.startswith(top_name + "/"):
+                        m.name = name + m.name[len(top_name):]
+                top_name = name
+            tar.extractall(dest_dir)
+
+        imported_path = os.path.join(dest_dir, top_name)
+        self._record_event("image_imported", top_name,
+                           f"from={tar_path}, dest={imported_path}")
+        logger.info("image imported: %s → %s", tar_path, imported_path)
+        return imported_path
+
     def container_checkpoint(self, container: Container,
                              path: Optional[str] = None) -> Dict[str, Any]:
         """Checkpoint a container's filesystem state.
