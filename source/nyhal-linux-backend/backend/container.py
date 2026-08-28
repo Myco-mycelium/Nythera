@@ -2496,8 +2496,246 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
-    # Labels / metadata management
+    # Anomaly detection (statistical outliers)
     # ------------------------------------------------------------------
+
+    def _extract_resource_values(
+        self,
+        history: List[Dict[str, Any]],
+        resource: str,
+    ) -> List[float]:
+        """Extract numeric values for a resource from history samples."""
+        key_map = {
+            "memory": "memory_bytes",
+            "cpu": "cpu_usage_usec",
+            "pids": "pids_current",
+        }
+        key = key_map.get(resource, resource)
+        return [float(s.get(key, 0)) for s in history]
+
+    def detect_anomalies(
+        self,
+        container: Container,
+        resource: str = "memory",
+        window_size: int = 20,
+        sensitivity: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Detect anomalies in resource usage using Z-score analysis.
+
+        Uses a rolling window to compute mean and standard deviation,
+        then flags values that deviate more than ``sensitivity``
+        standard deviations from the mean.
+
+        Args:
+            container: Target container.
+            resource: Resource to analyze (memory, cpu, pids).
+            window_size: Number of recent samples to analyze.
+            sensitivity: Number of standard deviations for outlier flag.
+
+        Returns:
+            Dict with ``anomalies`` (list), ``mean``, ``stddev``,
+            ``sample_count``, ``resource``.
+        """
+        history = self.get_resource_history(container, tail=window_size)
+        if len(history) < 3:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "anomalies": [],
+                "mean": None,
+                "stddev": None,
+                "sample_count": len(history),
+                "insufficient_data": True,
+            }
+
+        values = self._extract_resource_values(history, resource)
+        mean = sum(values) / len(values)
+        variance = sum((v - mean) ** 2 for v in values) / len(values)
+        stddev = variance ** 0.5
+
+        anomalies = []
+        for i, (h, v) in enumerate(zip(history, values)):
+            if stddev > 0:
+                z_score = abs(v - mean) / stddev
+            else:
+                z_score = 0.0
+
+            if z_score > sensitivity:
+                anomalies.append({
+                    "index": i,
+                    "timestamp": h.get("timestamp"),
+                    "value": v,
+                    "z_score": round(z_score, 3),
+                    "deviation_pct": round((v - mean) / mean * 100, 1) if mean != 0 else 0,
+                    "type": "spike" if v > mean else "dip",
+                })
+
+        return {
+            "container_id": container.id,
+            "resource": resource,
+            "anomalies": anomalies,
+            "mean": round(mean, 2),
+            "stddev": round(stddev, 2),
+            "sample_count": len(history),
+            "insufficient_data": False,
+            "sensitivity": sensitivity,
+        }
+
+    def detect_anomalies_all(
+        self,
+        container: Container,
+        window_size: int = 20,
+        sensitivity: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Detect anomalies across all resources.
+
+        Runs anomaly detection on memory, CPU, and PIDs usage.
+
+        Returns:
+            Dict with per-resource anomaly results.
+        """
+        resources = ["memory", "cpu", "pids"]
+        result: Dict[str, Any] = {
+            "container_id": container.id,
+            "resources": {},
+            "total_anomalies": 0,
+        }
+
+        for res in resources:
+            detection = self.detect_anomalies(
+                container, res, window_size, sensitivity,
+            )
+            result["resources"][res] = detection
+            result["total_anomalies"] += len(detection.get("anomalies", []))
+
+        return result
+
+    def detect_spike(
+        self,
+        container: Container,
+        resource: str = "memory",
+        threshold_pct: float = 50.0,
+    ) -> Dict[str, Any]:
+        """Detect sudden spikes in resource usage.
+
+        Compares the most recent value against the rolling average
+        and flags if the change exceeds ``threshold_pct``.
+
+        Args:
+            container: Target container.
+            resource: Resource to check.
+            threshold_pct: Minimum percentage change to flag as spike.
+
+        Returns:
+            Dict with ``is_spike``, ``current``, ``previous``,
+            ``change_pct``.
+        """
+        history = self.get_resource_history(container, tail=10)
+        if len(history) < 2:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "is_spike": False,
+                "current": None,
+                "previous": None,
+                "change_pct": 0.0,
+                "insufficient_data": True,
+            }
+
+        all_values = self._extract_resource_values(history, resource)
+        current = all_values[-1]
+        # Average of previous N-1 samples
+        prev_values = all_values[:-1]
+        prev_avg = sum(prev_values) / len(prev_values)
+
+        if prev_avg > 0:
+            change_pct = abs(current - prev_avg) / prev_avg * 100
+        else:
+            change_pct = 0.0 if current == 0 else 100.0
+
+        is_spike = change_pct >= threshold_pct
+
+        return {
+            "container_id": container.id,
+            "resource": resource,
+            "is_spike": is_spike,
+            "current": current,
+            "previous_avg": round(prev_avg, 2),
+            "change_pct": round(change_pct, 1),
+            "threshold_pct": threshold_pct,
+            "direction": "up" if current > prev_avg else "down",
+            "insufficient_data": False,
+        }
+
+    def detect_anomaly_trend(
+        self,
+        container: Container,
+        resource: str = "memory",
+        window_size: int = 20,
+    ) -> Dict[str, Any]:
+        """Analyze anomaly trend over time.
+
+        Detects if anomalies are becoming more frequent, which
+        could indicate an impending resource exhaustion or leak.
+
+        Returns:
+            Dict with ``trend``, ``recent_rate``, ``overall_rate``,
+            ``recent_anomaly_count``.
+        """
+        history = self.get_resource_history(container, tail=window_size * 3)
+        if len(history) < 6:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "trend": "insufficient_data",
+                "recent_rate": 0.0,
+                "overall_rate": 0.0,
+                "recent_anomaly_count": 0,
+            }
+
+        # Compute mean/stddev over full window
+        values = self._extract_resource_values(history, resource)
+        mean = sum(values) / len(values)
+        stddev = (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
+
+        if stddev == 0:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "trend": "stable",
+                "recent_rate": 0.0,
+                "overall_rate": 0.0,
+                "recent_anomaly_count": 0,
+            }
+
+        # Count anomalies in recent half vs overall
+        recent = history[-window_size:]
+        overall_count = sum(
+            1 for v in values if abs(v - mean) / stddev > 2.0
+        )
+        recent_count = sum(
+            1 for h in recent
+            if abs(h["value"] - mean) / stddev > 2.0
+        )
+
+        overall_rate = overall_count / len(values)
+        recent_rate = recent_count / len(recent)
+
+        if recent_rate > overall_rate * 1.5:
+            trend = "increasing"
+        elif recent_rate < overall_rate * 0.5:
+            trend = "decreasing"
+        else:
+            trend = "stable"
+
+        return {
+            "container_id": container.id,
+            "resource": resource,
+            "trend": trend,
+            "recent_rate": round(recent_rate, 3),
+            "overall_rate": round(overall_rate, 3),
+            "recent_anomaly_count": recent_count,
+        }
 
     def set_label(self, container: Container, key: str, value: str) -> None:
         """Set a label on a container.

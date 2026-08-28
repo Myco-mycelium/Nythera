@@ -4717,6 +4717,189 @@ class TestForecasting(unittest.TestCase):
         self.assertIn("1,000", text2)
 
 
+class TestAnomalyDetection(unittest.TestCase):
+    """Anomaly detection via Z-score analysis."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_detect_insufficient_data(self):
+        """detect_anomalies returns insufficient_data with < 3 samples."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="anom-test"))
+        result = mgr.detect_anomalies(c, "memory", window_size=5)
+        self.assertTrue(result["insufficient_data"])
+        self.assertEqual(result["anomalies"], [])
+
+    def test_detect_with_data(self):
+        """detect_anomalies finds outliers in noisy data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="anom-test2"))
+        mgr._init_resource_history(c)
+        # Record normal data with one big spike
+        base_ts = time.time() - 600
+        for i in range(20):
+            val = 1000 if i < 19 else 5000  # last value is a spike
+            mgr._resource_history[c.id].append({
+                "timestamp": base_ts + i * 30,
+                "memory_bytes": val,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.detect_anomalies(c, "memory", sensitivity=1.5)
+        self.assertFalse(result["insufficient_data"])
+        self.assertGreater(len(result["anomalies"]), 0)
+        self.assertEqual(result["anomalies"][0]["type"], "spike")
+
+    def test_detect_all_resources(self):
+        """detect_anomalies_all runs detection on all resources."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="anom-test3"))
+        result = mgr.detect_anomalies_all(c)
+        self.assertIn("resources", result)
+        self.assertIn("memory", result["resources"])
+        self.assertIn("cpu", result["resources"])
+        self.assertIn("pids", result["resources"])
+
+    def test_detect_spike_no_data(self):
+        """detect_spike returns insufficient_data with no history."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="spike-test"))
+        result = mgr.detect_spike(c, "memory")
+        self.assertTrue(result["insufficient_data"])
+        self.assertFalse(result["is_spike"])
+
+    def test_detect_spike_with_data(self):
+        """detect_spike detects a sudden increase."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="spike-test2"))
+        mgr._init_resource_history(c)
+        base_ts = time.time() - 300
+        for i in range(10):
+            val = 1000 if i < 9 else 5000  # last sample jumps
+            mgr._resource_history[c.id].append({
+                "timestamp": base_ts + i * 30,
+                "memory_bytes": val,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.detect_spike(c, "memory", threshold_pct=50.0)
+        self.assertFalse(result["insufficient_data"])
+        self.assertTrue(result["is_spike"])
+        self.assertEqual(result["direction"], "up")
+
+    def test_detect_spike_no_spike(self):
+        """detect_spike returns no spike for stable data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="spike-test3"))
+        mgr._init_resource_history(c)
+        base_ts = time.time() - 300
+        for i in range(10):
+            mgr._resource_history[c.id].append({
+                "timestamp": base_ts + i * 30,
+                "memory_bytes": 1000,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.detect_spike(c, "memory", threshold_pct=50.0)
+        self.assertFalse(result["insufficient_data"])
+        self.assertFalse(result["is_spike"])
+
+    def test_detect_anomaly_trend_insufficient(self):
+        """detect_anomaly_trend returns insufficient_data with few samples."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="trend-test"))
+        result = mgr.detect_anomaly_trend(c, "memory")
+        self.assertEqual(result["trend"], "insufficient_data")
+
+    def test_detect_anomaly_trend_stable(self):
+        """detect_anomaly_trend returns stable for constant data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="trend-test2"))
+        mgr._init_resource_history(c)
+        base_ts = time.time() - 3600
+        for i in range(60):
+            mgr._resource_history[c.id].append({
+                "timestamp": base_ts + i * 60,
+                "memory_bytes": 1000,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.detect_anomaly_trend(c, "memory")
+        self.assertEqual(result["trend"], "stable")
+        self.assertEqual(result["recent_anomaly_count"], 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for anomaly commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="anomaly-detect", container_id="abc",
+            resource="memory", window=20, sensitivity=2.0,
+        )
+        p = build_payload("anomaly-detect", args1)
+        self.assertEqual(p["op"], "anomaly_detect")
+        self.assertEqual(p["container_id"], "abc")
+        args2 = argparse.Namespace(
+            command="anomaly-detect-all", container_id="abc",
+            window=20, sensitivity=2.0,
+        )
+        p2 = build_payload("anomaly-detect-all", args2)
+        self.assertEqual(p2["op"], "anomaly_detect_all")
+        args3 = argparse.Namespace(
+            command="anomaly-spike", container_id="abc",
+            resource="cpu", threshold=75.0,
+        )
+        p3 = build_payload("anomaly-spike", args3)
+        self.assertEqual(p3["op"], "anomaly_spike")
+        self.assertEqual(p3["threshold_pct"], 75.0)
+        args4 = argparse.Namespace(
+            command="anomaly-trend", container_id="abc",
+            resource="memory", window=20,
+        )
+        p4 = build_payload("anomaly-trend", args4)
+        self.assertEqual(p4["op"], "anomaly_trend")
+
+    def test_cli_format_human(self):
+        """CLI format_human for anomaly commands."""
+        from nyrqisctl import format_human
+        # detect
+        resp = {
+            "ok": True, "resource": "memory", "mean": 1000.0,
+            "stddev": 50.0, "sample_count": 20,
+            "anomalies": [{"type": "spike", "value": 5000, "z_score": 80.0, "deviation_pct": 400.0}],
+        }
+        text = format_human("anomaly-detect", resp)
+        self.assertIn("1000.0", text)
+        self.assertIn("spike", text)
+        # spike
+        resp2 = {
+            "ok": True, "resource": "memory", "is_spike": True,
+            "current": 5000, "previous_avg": 1000, "change_pct": 400.0,
+            "direction": "up", "threshold_pct": 50.0,
+            "insufficient_data": False,
+        }
+        text2 = format_human("anomaly-spike", resp2)
+        self.assertIn("YES", text2)
+        self.assertIn("up", text2)
+        # trend
+        resp3 = {
+            "ok": True, "resource": "memory", "trend": "increasing",
+            "recent_rate": 0.15, "overall_rate": 0.05, "recent_anomaly_count": 3,
+        }
+        text3 = format_human("anomaly-trend", resp3)
+        self.assertIn("increasing", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20101,6 +20284,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSLA))
     suite.addTests(loader.loadTestsFromTestCase(TestBilling))
     suite.addTests(loader.loadTestsFromTestCase(TestForecasting))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnomalyDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -2182,6 +2182,110 @@ class ControlService:
             "result": result,
         })
 
+    # Anomaly detection
+
+    def _anomaly_detect(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        window_size = request.get("window_size", 20)
+        sensitivity = request.get("sensitivity", 2.0)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.detect_anomalies(
+            c, resource=resource, window_size=window_size,
+            sensitivity=sensitivity,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_detect_all(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        window_size = request.get("window_size", 20)
+        sensitivity = request.get("sensitivity", 2.0)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.detect_anomalies_all(
+            c, window_size=window_size, sensitivity=sensitivity,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_spike(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        threshold_pct = request.get("threshold_pct", 50.0)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.detect_spike(
+            c, resource=resource, threshold_pct=threshold_pct,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_trend(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        window_size = request.get("window_size", 20)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.detect_anomaly_trend(
+            c, resource=resource, window_size=window_size,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

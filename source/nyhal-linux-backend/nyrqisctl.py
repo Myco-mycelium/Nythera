@@ -687,6 +687,39 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
             "resource": args.resource,
         }
+    if command == "anomaly-detect":
+        return {
+            "service": "control",
+            "op": "anomaly_detect",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "window_size": args.window,
+            "sensitivity": args.sensitivity,
+        }
+    if command == "anomaly-detect-all":
+        return {
+            "service": "control",
+            "op": "anomaly_detect_all",
+            "container_id": args.container_id,
+            "window_size": args.window,
+            "sensitivity": args.sensitivity,
+        }
+    if command == "anomaly-spike":
+        return {
+            "service": "control",
+            "op": "anomaly_spike",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "threshold_pct": args.threshold,
+        }
+    if command == "anomaly-trend":
+        return {
+            "service": "control",
+            "op": "anomaly_trend",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "window_size": args.window,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1574,6 +1607,62 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"time:     {result.get('hours', 0)}h {result.get('minutes', 0)}m {result.get('seconds', 0)}s\n"
             f"total:    {result.get('total_seconds', 0):.1f}s"
         )
+    if command == "anomaly-detect":
+        if resp.get("insufficient_data"):
+            return f"{resp.get('resource')}: insufficient data ({resp.get('sample_count', 0)} samples)"
+        anomalies = resp.get("anomalies", [])
+        lines = [
+            f"resource: {resp.get('resource')}",
+            f"mean:     {resp.get('mean')}",
+            f"stddev:   {resp.get('stddev')}",
+            f"samples:  {resp.get('sample_count')}",
+            f"anomalies: {len(anomalies)}",
+        ]
+        for a in anomalies:
+            lines.append(
+                f"  [{a.get('type')}] value={a.get('value')} "
+                f"z={a.get('z_score')} dev={a.get('deviation_pct', 0):+.1f}%"
+            )
+        return "\n".join(lines)
+    if command == "anomaly-detect-all":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"total anomalies: {resp.get('total_anomalies', 0)}",
+        ]
+        for res in ("memory", "cpu", "pids"):
+            det = resp.get("resources", {}).get(res, {})
+            count = len(det.get("anomalies", []))
+            if det.get("insufficient_data"):
+                lines.append(f"  {res}: (insufficient data)")
+            else:
+                lines.append(
+                    f"  {res}: {count} anomalies "
+                    f"(mean={det.get('mean')}, std={det.get('stddev')})"
+                )
+        return "\n".join(lines)
+    if command == "anomaly-spike":
+        if resp.get("insufficient_data"):
+            return f"{resp.get('resource')}: insufficient data"
+        is_spike = resp.get("is_spike", False)
+        return (
+            f"resource:    {resp.get('resource')}\n"
+            f"is_spike:    {'YES' if is_spike else 'no'}\n"
+            f"current:     {resp.get('current')}\n"
+            f"prev_avg:    {resp.get('previous_avg')}\n"
+            f"change:      {resp.get('change_pct', 0):.1f}% {resp.get('direction')}\n"
+            f"threshold:   {resp.get('threshold_pct', 0):.1f}%"
+        )
+    if command == "anomaly-trend":
+        if resp.get("trend") == "insufficient_data":
+            return f"{resp.get('resource')}: insufficient data"
+        return (
+            f"resource:     {resp.get('resource')}\n"
+            f"trend:        {resp.get('trend')}\n"
+            f"recent_rate:  {resp.get('recent_rate', 0):.1%}\n"
+            f"overall_rate: {resp.get('overall_rate', 0):.1%}\n"
+            f"recent_count: {resp.get('recent_anomaly_count', 0)}"
+        )
+
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -2471,6 +2560,42 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=["memory", "cpu", "pids"],
                      help="Resource to check")
     fce.set_defaults(command="forecast-exhaustion")
+
+    # Anomaly detection commands
+    anomaly = sub.add_parser("anomaly", help="Detect resource anomalies")
+    asub = anomaly.add_subparsers(dest="anomaly_cmd", required=True)
+
+    ad = asub.add_parser("detect", help="Detect anomalies using Z-score")
+    ad.add_argument("container_id")
+    ad.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"],
+                    help="Resource to analyze")
+    ad.add_argument("--window", type=int, default=20,
+                    help="Sample window size")
+    ad.add_argument("--sensitivity", type=float, default=2.0,
+                    help="Std-dev threshold for outlier")
+    ad.set_defaults(command="anomaly-detect")
+
+    aa = asub.add_parser("detect-all", help="Detect anomalies across all resources")
+    aa.add_argument("container_id")
+    aa.add_argument("--window", type=int, default=20)
+    aa.add_argument("--sensitivity", type=float, default=2.0)
+    aa.set_defaults(command="anomaly-detect-all")
+
+    asp = asub.add_parser("spike", help="Detect sudden spikes")
+    asp.add_argument("container_id")
+    asp.add_argument("--resource", default="memory",
+                     choices=["memory", "cpu", "pids"])
+    asp.add_argument("--threshold", type=float, default=50.0,
+                     help="Min %% change to flag as spike")
+    asp.set_defaults(command="anomaly-spike")
+
+    at = asub.add_parser("trend", help="Analyze anomaly trend")
+    at.add_argument("container_id")
+    at.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"])
+    at.add_argument("--window", type=int, default=20)
+    at.set_defaults(command="anomaly-trend")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
