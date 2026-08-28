@@ -1269,6 +1269,102 @@ class ContainerManager:
                 return None
         return None
 
+    def list_images(self, base_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List available base images for overlay filesystems.
+
+        Scans ``base_dir`` (default: a well-known ``images/`` directory
+        relative to the working dir) for NyFS filesystem roots —
+        directories containing ``state/metadata.json``.
+
+        Args:
+            base_dir: Optional override for the image directory.
+
+        Returns:
+            List of dicts with ``path``, ``name``, ``size_bytes``,
+            ``inode_count``, and ``block_count``.
+        """
+        if base_dir is None:
+            base_dir = os.path.join(os.getcwd(), "images")
+        images: List[Dict[str, Any]] = []
+        base = Path(base_dir)
+        if not base.is_dir():
+            return images
+
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            meta = entry / "state" / "metadata.json"
+            if not meta.is_file():
+                continue
+
+            info: Dict[str, Any] = {
+                "path": str(entry),
+                "name": entry.name,
+                "size_bytes": 0,
+                "inode_count": 0,
+                "block_count": 0,
+            }
+
+            # Compute size from block files
+            blocks_dir = entry / "state" / "blocks"
+            if blocks_dir.is_dir():
+                block_files = list(blocks_dir.iterdir())
+                info["block_count"] = len(block_files)
+                info["size_bytes"] = sum(
+                    f.stat().st_size for f in block_files if f.is_file()
+                )
+
+            # Count inodes from metadata (tree structure)
+            try:
+                with open(meta) as f:
+                    meta_data = json.load(f)
+                # NyFS stores a tree with nested children
+                tree = meta_data.get("tree", {})
+                def _count_nodes(node: dict) -> int:
+                    count = 1
+                    for child in node.get("children", []):
+                        count += _count_nodes(child)
+                    return count
+                info["inode_count"] = _count_nodes(tree) if tree else 0
+            except (json.JSONDecodeError, OSError):
+                pass
+
+            images.append(info)
+
+        return images
+
+    def remove_image(self, path: str) -> bool:
+        """Remove a base image directory.
+
+        Deletes the entire image directory at ``path``.  The image
+        must not be in use by any running container (checked against
+        ``container.config.rootfs``).
+
+        Args:
+            path: Absolute path to the image directory.
+
+        Returns:
+            True if removed successfully.
+
+        Raises:
+            ValueError: If the image is in use or doesn't exist.
+        """
+        target = Path(path).resolve()
+        if not target.is_dir():
+            raise ValueError(f"Image not found: {path}")
+
+        # Check if any running container uses this image
+        for c in self.containers.values():
+            if (c.config.rootfs and
+                    Path(c.config.rootfs).resolve() == target):
+                raise ValueError(
+                    f"Image in use by container {c.id}"
+                )
+
+        shutil.rmtree(str(target))
+        logger.info("image removed: %s", path)
+        return True
+
     def container_checkpoint(self, container: Container,
                              path: Optional[str] = None) -> Dict[str, Any]:
         """Checkpoint a container's filesystem state.

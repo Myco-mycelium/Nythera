@@ -133,6 +133,12 @@ class ControlService:
             elif op == "container_network_stats":
                 self._container_network_stats(server, sender_path,
                                               msg.message_id, request)
+            elif op == "image_list":
+                self._image_list(server, sender_path, msg.message_id,
+                                 request)
+            elif op == "image_remove":
+                self._image_remove(server, sender_path, msg.message_id,
+                                   request)
             elif op == "container_checkpoint":
                 self._container_checkpoint(server, sender_path,
                                            msg.message_id, request)
@@ -377,6 +383,53 @@ class ControlService:
             "ok": True,
             "container_id": container.id,
             "stats": stats,
+        })
+
+    def _image_list(self, server, sender_path: str, call_id: str,
+                     request: Dict[str, Any]) -> None:
+        try:
+            images = self.container_manager.list_images(
+                base_dir=request.get("base_dir"),
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "image_list failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "images": images,
+            "count": len(images),
+        })
+
+    def _image_remove(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        path = request.get("path")
+        if not path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "path is required",
+            })
+            return
+        try:
+            self.container_manager.remove_image(path)
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": str(e),
+            })
+            return
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "image_remove failed: %s" % (e,),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "path": path,
         })
 
     def _container_checkpoint(self, server, sender_path: str, call_id: str,

@@ -148,6 +148,20 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_network_stats",
             "container_id": args.container_id,
         }
+    if command == "images-list":
+        payload = {
+            "service": "control",
+            "op": "image_list",
+        }
+        if getattr(args, "base_dir", None):
+            payload["base_dir"] = args.base_dir
+        return payload
+    if command == "images-remove":
+        return {
+            "service": "control",
+            "op": "image_remove",
+            "path": args.path,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -431,6 +445,22 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"TX dropped: {stats.get('tx_dropped', 0)}",
         ]
         return "\n".join(lines)
+    if command == "images-list":
+        images = resp.get("images") or []
+        if not images:
+            return "no images found"
+        rows = []
+        for img in images:
+            rows.append(
+                f"{img.get('name', ''):<20} "
+                f"{img.get('inode_count', 0):>6} inodes  "
+                f"{img.get('block_count', 0):>6} blocks  "
+                f"{img.get('size_bytes', 0):>12,} bytes"
+            )
+        header = f"{'NAME':<20} {'INODES':>6} {'BLOCKS':>6} {'SIZE':>12}"
+        return header + "\n" + "\n".join(rows)
+    if command == "images-remove":
+        return f"image removed: {resp.get('path')}"
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -985,6 +1015,18 @@ def build_parser() -> argparse.ArgumentParser:
     cr = csub.add_parser("restore", help="Restore a container from a checkpoint file")
     cr.add_argument("checkpoint_file", help="Path to the checkpoint JSON file")
     cr.set_defaults(command="containers-restore")
+
+    images = sub.add_parser("images", help="Manage base images for overlays")
+    isub = images.add_subparsers(dest="image_cmd", required=True)
+
+    il = isub.add_parser("list", help="List available base images")
+    il.add_argument("--base-dir", default=None,
+                    help="Image directory (default: ./images)")
+    il.set_defaults(command="images-list")
+
+    ir = isub.add_parser("remove", help="Remove a base image")
+    ir.add_argument("path", help="Path to the image directory")
+    ir.set_defaults(command="images-remove")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

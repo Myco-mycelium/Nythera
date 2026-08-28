@@ -1517,6 +1517,128 @@ class TestContainerNetworkStats(unittest.TestCase):
         self.assertIn("no network interface found", text)
 
 
+class TestImageManagement(unittest.TestCase):
+    """Test container image management (list, remove base images)."""
+
+    def test_list_images_empty_dir(self):
+        """list_images returns empty list for nonexistent directory."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        result = manager.list_images(base_dir="/nonexistent/path")
+        self.assertEqual(result, [])
+
+    def test_list_images_finds_nyfs(self):
+        """list_images finds NyFS images with metadata."""
+        import tempfile, json
+        from backend.container import ContainerManager
+        from fuse.nyfs import NyFSFilesystem
+        manager = ContainerManager(use_cgroups_v2=False)
+        tmp = tempfile.mkdtemp()
+        try:
+            # Create a NyFS image
+            img_dir = os.path.join(tmp, "test-image")
+            fs = NyFSFilesystem(img_dir)
+            fs.create_file("/test.txt")
+            fs.write("/test.txt", b"hello")
+            fs.save()
+
+            result = manager.list_images(base_dir=tmp)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["name"], "test-image")
+            self.assertGreater(result[0]["inode_count"], 0)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_remove_image(self):
+        """remove_image deletes the image directory."""
+        import tempfile
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        tmp = tempfile.mkdtemp()
+        try:
+            img_dir = os.path.join(tmp, "to-remove")
+            os.makedirs(img_dir)
+            with open(os.path.join(img_dir, "file.txt"), "w") as f:
+                f.write("data")
+            self.assertTrue(manager.remove_image(img_dir))
+            self.assertFalse(os.path.exists(img_dir))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_remove_image_in_use(self):
+        """remove_image raises ValueError if image is in use."""
+        import tempfile
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        tmp = tempfile.mkdtemp()
+        try:
+            img_dir = os.path.join(tmp, "in-use")
+            os.makedirs(img_dir)
+            container = manager.create(ContainerConfig(rootfs=img_dir))
+            container.state = ContainerState.RUNNING
+            with self.assertRaises(ValueError) as ctx:
+                manager.remove_image(img_dir)
+            self.assertIn("in use", str(ctx.exception))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_remove_image_not_found(self):
+        """remove_image raises ValueError for nonexistent path."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        with self.assertRaises(ValueError):
+            manager.remove_image("/nonexistent/image")
+
+    def test_images_list_cli_payload(self):
+        """CLI build_payload for images-list."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(base_dir="/tmp/images")
+        payload = build_payload("images-list", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "image_list")
+        self.assertEqual(payload["base_dir"], "/tmp/images")
+
+    def test_images_remove_cli_payload(self):
+        """CLI build_payload for images-remove."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(path="/tmp/images/myimage")
+        payload = build_payload("images-remove", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "image_remove")
+        self.assertEqual(payload["path"], "/tmp/images/myimage")
+
+    def test_images_list_cli_format_human(self):
+        """CLI format_human for images-list."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "images": [
+                {"name": "base-ubuntu", "inode_count": 100,
+                 "block_count": 50, "size_bytes": 3276800},
+                {"name": "base-alpine", "inode_count": 30,
+                 "block_count": 10, "size_bytes": 655360},
+            ],
+            "count": 2,
+        }
+        text = format_human("images-list", resp)
+        self.assertIn("base-ubuntu", text)
+        self.assertIn("base-alpine", text)
+        self.assertIn("100", text)
+        self.assertIn("3,276,800", text)
+
+    def test_images_list_cli_format_human_empty(self):
+        """CLI format_human when no images found."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "images": [], "count": 0}
+        text = format_human("images-list", resp)
+        self.assertIn("no images found", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16875,6 +16997,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCheckpointRestore))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTop))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworkStats))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
