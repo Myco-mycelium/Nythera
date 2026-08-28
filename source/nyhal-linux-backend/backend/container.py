@@ -33,7 +33,7 @@ from typing import List, Tuple
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 
 from backend import rust_syscalls  # ADR-0020 priority #2 FFI loader
 from backend import container_codec  # ADR-0020 priority #5 FFI loader
@@ -871,6 +871,112 @@ class ContainerManager:
         if self.ipc_registry is None:
             return
         self.ipc_registry.unregister(container.pid)
+
+    def container_stats(self, container: Container) -> Dict[str, Any]:
+        """Read live resource usage stats from a running container's cgroup.
+
+        Returns a dict with memory, CPU, and PID stats read from the
+        kernel cgroup files.  On cgroups v2 the unified hierarchy provides
+        ``memory.current``, ``cpu.stat``, and ``pids.current``; on v1 the
+        backend reads ``memory.usage_in_bytes``, ``cpuacct.usage``, and
+        ``pids.current`` (or ``pids.max``) from the respective
+        controller hierarchies.
+
+        When the container has no cgroup paths (setup failed) or is not
+        running, the returned dict contains ``"available": false``.
+        """
+        stats: Dict[str, Any] = {
+            "container_id": container.id,
+            "state": container.state.value,
+            "available": False,
+            "pid": container.pid,
+            "uptime_s": None,
+        }
+        if container.started_at is not None:
+            stats["uptime_s"] = round(time.time() - container.started_at, 3)
+
+        if container.state != ContainerState.RUNNING or not container.cgroup_paths:
+            return stats
+
+        stats["available"] = True
+        cgroup_root = Path(container.cgroup_paths[0])
+
+        def _read_int(path: Path) -> Optional[int]:
+            try:
+                return int(path.read_text().strip())
+            except (OSError, ValueError):
+                return None
+
+        def _read_cpu_stat(path: Path) -> Dict[str, int]:
+            """Parse cpu.stat key-value pairs."""
+            result: Dict[str, int] = {}
+            try:
+                for line in path.read_text().splitlines():
+                    parts = line.split()
+                    if len(parts) == 2:
+                        result[parts[0]] = int(parts[1])
+            except (OSError, ValueError):
+                pass
+            return result
+
+        if self.use_cgroups_v2:
+            # Cgroups v2 unified hierarchy
+            mem = _read_int(cgroup_root / "memory.current")
+            if mem is not None:
+                stats["memory_bytes"] = mem
+            mem_max = _read_int(cgroup_root / "memory.max")
+            if mem_max is not None and mem_max != 0x7FFFFFFFFFFFFFFF:
+                stats["memory_limit_bytes"] = mem_max
+            elif mem_max == 0x7FFFFFFFFFFFFFFF:
+                stats["memory_limit_bytes"] = None  # unlimited
+
+            cpu = _read_cpu_stat(cgroup_root / "cpu.stat")
+            if cpu:
+                # usage_usec is the kernel's cumulative CPU time
+                stats["cpu_usage_usec"] = cpu.get("usage_usec", 0)
+                stats["cpu_user_usec"] = cpu.get("user_usec", 0)
+                stats["cpu_system_usec"] = cpu.get("system_usec", 0)
+                nr = cpu.get("nr_periods", 0)
+                throttled = cpu.get("nr_throttled", 0)
+                if nr > 0:
+                    stats["cpu_throttle_pct"] = round(
+                        throttled / nr * 100, 2
+                    )
+
+            pids = _read_int(cgroup_root / "pids.current")
+            if pids is not None:
+                stats["pids_current"] = pids
+            pids_max = _read_int(cgroup_root / "pids.max")
+            if pids_max is not None and pids_max != 0x7FFFFFFFFFFFFFFF:
+                stats["pids_limit"] = pids_max
+
+            io_r = _read_int(cgroup_root / "io.stat")
+            if io_r is not None:
+                stats["io_read_bytes"] = io_r
+        else:
+            # Cgroups v1 — read from each controller hierarchy
+            for cgroup_path in container.cgroup_paths:
+                cg = Path(cgroup_path)
+                # memory controller
+                mem = _read_int(cg / "memory.usage_in_bytes")
+                if mem is not None:
+                    stats["memory_bytes"] = mem
+                mem_limit = _read_int(cg / "memory.limit_in_bytes")
+                if mem_limit is not None and mem_limit < (1 << 62):
+                    stats["memory_limit_bytes"] = mem_limit
+                # cpuacct controller
+                cpu_ns = _read_int(cg / "cpuacct.usage")
+                if cpu_ns is not None:
+                    stats["cpu_usage_usec"] = cpu_ns // 1000
+                # pids controller
+                pids = _read_int(cg / "pids.current")
+                if pids is not None:
+                    stats["pids_current"] = pids
+                pids_max = _read_int(cg / "pids.max")
+                if pids_max is not None and pids_max != 0x7FFFFFFFFFFFFFFF:
+                    stats["pids_limit"] = pids_max
+
+        return stats
 
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.

@@ -886,6 +886,184 @@ class TestContainerFreezer(unittest.TestCase):
             proc.wait()
 
 
+class TestContainerStats(unittest.TestCase):
+    """Test ContainerManager.container_stats() — live cgroup stats."""
+
+    def test_stats_not_available_when_not_running(self):
+        """Stats report available=False for non-running containers."""
+        from backend.container import Container, ContainerConfig, ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        stats = manager.container_stats(container)
+        self.assertFalse(stats["available"])
+        self.assertEqual(stats["state"], "created")
+        self.assertIsNone(stats["pid"])
+        self.assertIsNone(stats["uptime_s"])
+
+    def test_stats_available_for_running_container(self):
+        """Stats report available=True with memory/CPU fields for a running container."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        container.pid = 12345
+        container.started_at = time.time() - 10.0
+        container.cgroup_paths = ["/sys/fs/cgroup/nyrqis/test"]
+        stats = manager.container_stats(container)
+        self.assertTrue(stats["available"])
+        self.assertEqual(stats["pid"], 12345)
+        self.assertAlmostEqual(stats["uptime_s"], 10.0, delta=0.5)
+
+    def test_stats_no_cgroup_paths(self):
+        """Stats report available=False when cgroup_paths is empty."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        container.pid = 99999
+        # No cgroup_paths set
+        stats = manager.container_stats(container)
+        self.assertFalse(stats["available"])
+
+    def test_stats_v2_memory_fields(self):
+        """Stats read memory.current and memory.max on cgroups v2."""
+        import tempfile, os
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            # Create cgroup v2 files
+            with open(os.path.join(td, "memory.current"), "w") as f:
+                f.write("524288\n")
+            with open(os.path.join(td, "memory.max"), "w") as f:
+                f.write("1048576\n")
+            with open(os.path.join(td, "pids.current"), "w") as f:
+                f.write("3\n")
+            with open(os.path.join(td, "pids.max"), "w") as f:
+                f.write("64\n")
+            with open(os.path.join(td, "cpu.stat"), "w") as f:
+                f.write("usage_usec 123456\nuser_usec 80000\nsystem_usec 43456\nnr_periods 100\nnr_throttled 5\n")
+
+            manager = ContainerManager(use_cgroups_v2=True)
+            container = manager.create(ContainerConfig())
+            container.state = ContainerState.RUNNING
+            container.pid = 42
+            container.cgroup_paths = [td]
+
+            stats = manager.container_stats(container)
+            self.assertTrue(stats["available"])
+            self.assertEqual(stats["memory_bytes"], 524288)
+            self.assertEqual(stats["memory_limit_bytes"], 1048576)
+            self.assertEqual(stats["cpu_usage_usec"], 123456)
+            self.assertEqual(stats["cpu_user_usec"], 80000)
+            self.assertEqual(stats["cpu_system_usec"], 43456)
+            self.assertEqual(stats["cpu_throttle_pct"], 5.0)
+            self.assertEqual(stats["pids_current"], 3)
+            self.assertEqual(stats["pids_limit"], 64)
+
+    def test_stats_v2_unlimited_memory(self):
+        """memory.max = 0x7FFFFFFFFFFFFFFF means unlimited on v2."""
+        import tempfile, os
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "memory.current"), "w") as f:
+                f.write("1024\n")
+            with open(os.path.join(td, "memory.max"), "w") as f:
+                f.write("9223372036854775807\n")  # 0x7FFFFFFFFFFFFFFF (unlimited)
+
+            manager = ContainerManager(use_cgroups_v2=True)
+            container = manager.create(ContainerConfig())
+            container.state = ContainerState.RUNNING
+            container.pid = 42
+            container.cgroup_paths = [td]
+
+            stats = manager.container_stats(container)
+            self.assertEqual(stats["memory_bytes"], 1024)
+            self.assertIsNone(stats["memory_limit_bytes"])
+
+    def test_stats_v1_fields(self):
+        """Stats read v1-style cgroup files when use_cgroups_v2=False."""
+        import tempfile, os
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "memory.usage_in_bytes"), "w") as f:
+                f.write("1048576\n")
+            with open(os.path.join(td, "memory.limit_in_bytes"), "w") as f:
+                f.write("268435456\n")
+            with open(os.path.join(td, "cpuacct.usage"), "w") as f:
+                f.write("50000000\n")  # 50ms in nanoseconds
+            with open(os.path.join(td, "pids.current"), "w") as f:
+                f.write("7\n")
+
+            manager = ContainerManager(use_cgroups_v2=False)
+            container = manager.create(ContainerConfig())
+            container.state = ContainerState.RUNNING
+            container.pid = 42
+            container.cgroup_paths = [td]
+
+            stats = manager.container_stats(container)
+            self.assertTrue(stats["available"])
+            self.assertEqual(stats["memory_bytes"], 1048576)
+            self.assertEqual(stats["memory_limit_bytes"], 268435456)
+            self.assertEqual(stats["cpu_usage_usec"], 50000)  # ns → µs
+            self.assertEqual(stats["pids_current"], 7)
+
+    def test_stats_cli_payload(self):
+        """CLI build_payload for containers-stats."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc123")
+        payload = build_payload("containers-stats", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_stats")
+        self.assertEqual(payload["container_id"], "nyctr-abc123")
+
+    def test_stats_cli_format_human(self):
+        """CLI format_human for containers-stats."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "state": "running",
+            "available": True,
+            "pid": 42,
+            "uptime_s": 5.3,
+            "memory_bytes": 10485760,
+            "memory_limit_bytes": 268435456,
+            "cpu_usage_usec": 1234567,
+            "cpu_throttle_pct": 2.5,
+            "pids_current": 3,
+            "pids_limit": 64,
+        }
+        text = format_human("containers-stats", resp)
+        self.assertIn("nyctr-test", text)
+        self.assertIn("running", text)
+        self.assertIn("10,485,760 bytes", text)
+        self.assertIn("3.9%", text)  # 10485760/268435456
+        self.assertIn("1,234,567", text)
+        self.assertIn("2.5%", text)
+        self.assertIn("pids:      3", text)
+
+    def test_stats_cli_format_human_unavailable(self):
+        """CLI format_human when stats unavailable."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "state": "created",
+            "available": False,
+        }
+        text = format_human("containers-stats", resp)
+        self.assertIn("not available", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16137,6 +16315,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAppCompatibility))
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerStats))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

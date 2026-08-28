@@ -111,6 +111,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_kill",
             "container_id": args.container_id,
         }
+    if command == "containers-stats":
+        return {
+            "service": "control",
+            "op": "container_stats",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -320,6 +326,38 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         )
     if command == "containers-kill":
         return f"container {resp.get('container_id')} terminated"
+    if command == "containers-stats":
+        if not resp.get("available"):
+            return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
+        lines = [
+            f"container:  {resp.get('container_id')}",
+            f"state:     {resp.get('state')}",
+            f"pid:       {resp.get('pid')}",
+            f"uptime:    {resp.get('uptime_s')}s",
+        ]
+        mem = resp.get("memory_bytes")
+        if mem is not None:
+            lines.append(f"memory:    {mem:,} bytes")
+            limit = resp.get("memory_limit_bytes")
+            if limit is not None:
+                lines.append(f"mem limit: {limit:,} bytes")
+                pct = round(mem / limit * 100, 1) if limit > 0 else 0
+                lines.append(f"mem used:  {pct}%")
+            else:
+                lines.append("mem limit: unlimited")
+        cpu = resp.get("cpu_usage_usec")
+        if cpu is not None:
+            lines.append(f"cpu:       {cpu:,} µs")
+        throttle = resp.get("cpu_throttle_pct")
+        if throttle is not None:
+            lines.append(f"throttle:  {throttle}%")
+        pids = resp.get("pids_current")
+        if pids is not None:
+            lines.append(f"pids:      {pids}")
+            plim = resp.get("pids_limit")
+            if plim is not None:
+                lines.append(f"pid limit: {plim}")
+        return "\n".join(lines)
     if command == "vault-volume-create":
         return f"volume {resp.get('volume_id')} created ({resp.get('name')})"
     if command == "vault-volume-open":
@@ -796,6 +834,10 @@ def build_parser() -> argparse.ArgumentParser:
     ck = csub.add_parser("kill", help="Terminate a container on the daemon")
     ck.add_argument("container_id")
     ck.set_defaults(command="containers-kill")
+
+    cs = csub.add_parser("stats", help="Show live resource stats for a container")
+    cs.add_argument("container_id")
+    cs.set_defaults(command="containers-stats")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "
