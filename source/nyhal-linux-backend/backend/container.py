@@ -1795,6 +1795,153 @@ class ContainerManager:
             result["nice_value_current"] = None
         return result
 
+    # ------------------------------------------------------------------
+    # Resource limits hot-update (modify at runtime)
+    # ------------------------------------------------------------------
+
+    def update_resource_limits(
+        self, container: Container,
+        memory_mb: Optional[int] = None,
+        pid_limit: Optional[int] = None,
+        cpu_quota_us: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update resource limits for a running container at runtime.
+
+        Writes new values to the container's cgroup files so the kernel
+        enforces the updated limits immediately.  The container must
+        have cgroup paths (i.e., be spawned with cgroup support).
+
+        Args:
+            container: Target container (must be RUNNING or SUSPENDED).
+            memory_mb: New memory limit in MiB (None = no change).
+            pid_limit: New PID limit (None = no change).
+            cpu_quota_us: New CPU quota in microseconds per period
+                (None = no change, 0 = unlimited).
+
+        Returns:
+            Dict with ``updated`` list of changed limits and
+            ``previous`` dict of old values.
+
+        Raises:
+            ValueError: If container has no cgroup paths.
+        """
+        if not container.cgroup_paths:
+            raise ValueError(
+                f"container {container.id} has no cgroup paths; "
+                "cannot update limits at runtime"
+            )
+
+        # Capture previous values
+        previous = {
+            "memory_mb": container.config.limits.memory_mb,
+            "pid_limit": container.config.limits.pid_limit,
+            "cpu_quota_us": container.config.limits.cpu_quota_us,
+        }
+
+        updated: List[str] = []
+        cgroup_path = Path(container.cgroup_paths[0])
+
+        if self.use_cgroups_v2:
+            # Cgroups v2: write to unified hierarchy
+            if memory_mb is not None:
+                limit_bytes = memory_mb * 1024 * 1024
+                try:
+                    (cgroup_path / "memory.max").write_text(
+                        str(limit_bytes)
+                    )
+                    container.config.limits.memory_mb = memory_mb
+                    updated.append("memory_mb")
+                    logger.info(
+                        "update_resource_limits: %s memory → %d MiB",
+                        container.id, memory_mb,
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "update_resource_limits: %s memory write failed: %s",
+                        container.id, e,
+                    )
+
+            if pid_limit is not None:
+                try:
+                    (cgroup_path / "pids.max").write_text(
+                        str(pid_limit)
+                    )
+                    container.config.limits.pid_limit = pid_limit
+                    updated.append("pid_limit")
+                    logger.info(
+                        "update_resource_limits: %s pids → %d",
+                        container.id, pid_limit,
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "update_resource_limits: %s pids write failed: %s",
+                        container.id, e,
+                    )
+
+            if cpu_quota_us is not None:
+                period = container.config.limits.cpu_period_us
+                if cpu_quota_us == 0:
+                    # Unlimited: write "max 100000"
+                    cpu_max = "max"
+                else:
+                    cpu_max = f"{cpu_quota_us} {period}"
+                try:
+                    (cgroup_path / "cpu.max").write_text(cpu_max)
+                    container.config.limits.cpu_quota_us = (
+                        cpu_quota_us if cpu_quota_us > 0 else None
+                    )
+                    updated.append("cpu_quota_us")
+                    logger.info(
+                        "update_resource_limits: %s cpu → %s",
+                        container.id, cpu_max,
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "update_resource_limits: %s cpu write failed: %s",
+                        container.id, e,
+                    )
+        else:
+            # Cgroups v1: write to each controller
+            for cgroup_dir in container.cgroup_paths:
+                cg = Path(cgroup_dir)
+                if memory_mb is not None:
+                    limit_bytes = memory_mb * 1024 * 1024
+                    mem_file = cg / "memory.limit_in_bytes"
+                    if mem_file.exists():
+                        try:
+                            mem_file.write_text(str(limit_bytes))
+                            container.config.limits.memory_mb = memory_mb
+                            updated.append("memory_mb")
+                        except OSError as e:
+                            logger.warning(
+                                "update_resource_limits: v1 memory failed: %s",
+                                e,
+                            )
+                if pid_limit is not None:
+                    pids_file = cg / "pids.max"
+                    if pids_file.exists():
+                        try:
+                            pids_file.write_text(str(pid_limit))
+                            container.config.limits.pid_limit = pid_limit
+                            updated.append("pid_limit")
+                        except OSError as e:
+                            logger.warning(
+                                "update_resource_limits: v1 pids failed: %s",
+                                e,
+                            )
+
+        if updated:
+            self._record_event(
+                "limits_updated", container.id,
+                f"updated={updated}",
+            )
+
+        return {
+            "container_id": container.id,
+            "updated": updated,
+            "previous": previous,
+        }
+
     def apply_network_policy(self, container: Container) -> bool:
         """Apply the container's configured network policy.
 

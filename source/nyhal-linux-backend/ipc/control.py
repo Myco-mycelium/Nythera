@@ -1372,6 +1372,43 @@ class ControlService:
             "ok": True, "container_id": container_id,
         })
 
+    # ------------------------------------------------------------------
+    # Resource limits hot-update
+    # ------------------------------------------------------------------
+
+    def _container_update_limits(self, server, sender_path: str,
+                                  call_id: str,
+                                  request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            result = self.container_manager.update_resource_limits(
+                c,
+                memory_mb=request.get("memory_mb"),
+                pid_limit=request.get("pid_limit"),
+                cpu_quota_us=request.get("cpu_quota_us"),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

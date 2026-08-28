@@ -392,6 +392,19 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "resource_record_stop",
             "container_id": args.container_id,
         }
+    if command == "containers-update-limits":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "container_update_limits",
+            "container_id": args.container_id,
+        }
+        if args.memory is not None:
+            p["memory_mb"] = args.memory
+        if args.pids is not None:
+            p["pid_limit"] = args.pids
+        if args.cpu_quota is not None:
+            p["cpu_quota_us"] = args.cpu_quota
+        return p
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -938,6 +951,17 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         )
     if command == "containers-resource-record-stop":
         return f"stopped recording for {resp.get('container_id')}"
+    if command == "containers-update-limits":
+        updated = resp.get("updated", [])
+        prev = resp.get("previous", {})
+        lines = [f"container: {resp.get('container_id')}"]
+        if not updated:
+            lines.append("no limits changed")
+        else:
+            for key in updated:
+                old = prev.get(key)
+                lines.append(f"  {key}: {old} → (updated)")
+        return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1598,6 +1622,16 @@ def build_parser() -> argparse.ArgumentParser:
     crrp = csub.add_parser("resource-record-stop", help="Stop periodic resource recording")
     crrp.add_argument("container_id")
     crrp.set_defaults(command="containers-resource-record-stop")
+
+    cul = csub.add_parser("update-limits", help="Update resource limits at runtime")
+    cul.add_argument("container_id")
+    cul.add_argument("--memory", type=int, default=None,
+                     help="New memory limit in MiB")
+    cul.add_argument("--pids", type=int, default=None,
+                     help="New PID limit")
+    cul.add_argument("--cpu-quota", type=int, default=None,
+                     help="New CPU quota in us (0=unlimited)")
+    cul.set_defaults(command="containers-update-limits")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
