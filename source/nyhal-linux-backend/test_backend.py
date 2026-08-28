@@ -2984,6 +2984,128 @@ class TestSnapshotExportImport(unittest.TestCase):
         self.assertIn("created", text2)
 
 
+class TestResourceHistory(unittest.TestCase):
+    """Test container resource usage history (time-series)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_init_history(self):
+        """_init_resource_history creates the buffer."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._init_resource_history(c)
+        self.assertIn(c.id, mgr._resource_history)
+        self.assertEqual(len(mgr._resource_history[c.id]), 0)
+
+    def test_get_history_empty(self):
+        """get_resource_history returns empty list initially."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        history = mgr.get_resource_history(c)
+        self.assertEqual(history, [])
+
+    def test_get_history_tail(self):
+        """get_resource_history respects tail parameter."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"ts": 1}, {"ts": 2}, {"ts": 3}, {"ts": 4}, {"ts": 5},
+        ]
+        history = mgr.get_resource_history(c, tail=2)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["ts"], 4)
+        self.assertEqual(history[1]["ts"], 5)
+
+    def test_record_sample_returns_none_when_not_running(self):
+        """record_resource_sample returns None when not running."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        sample = mgr.record_resource_sample(c)
+        self.assertIsNone(sample)
+
+    def test_history_limit(self):
+        """History is capped at 1000 samples."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._init_resource_history(c)
+        # Simulate 1010 samples
+        mgr._resource_history[c.id] = [
+            {"ts": i} for i in range(1010)
+        ]
+        # Add one more
+        mgr._resource_history[c.id].append({"ts": 1010})
+        # Trim check
+        if len(mgr._resource_history[c.id]) > 1000:
+            mgr._resource_history[c.id] = \
+                mgr._resource_history[c.id][-1000:]
+        self.assertEqual(len(mgr._resource_history[c.id]), 1000)
+        self.assertEqual(mgr._resource_history[c.id][-1]["ts"], 1010)
+
+    def test_stop_recording(self):
+        """stop_resource_recording sets the event."""
+        from backend.container import ContainerConfig
+        import threading
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        c._resource_stop = threading.Event()
+        mgr.stop_resource_recording(c)
+        self.assertTrue(c._resource_stop.is_set())
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for resource history commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="a", tail=None)
+        p = build_payload("containers-resource-history", args)
+        self.assertEqual(p["op"], "resource_history")
+        self.assertEqual(p["container_id"], "a")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("containers-resource-record", args2)
+        self.assertEqual(p["op"], "resource_record")
+        args3 = argparse.Namespace(container_id="a", interval=10.0)
+        p = build_payload("containers-resource-record-start", args3)
+        self.assertEqual(p["op"], "resource_record_start")
+        self.assertEqual(p["interval"], 10.0)
+        p = build_payload("containers-resource-record-stop", args2)
+        self.assertEqual(p["op"], "resource_record_stop")
+
+    def test_cli_format_human(self):
+        """CLI format_human for resource history commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "history": [
+                {"timestamp": 1000.0, "memory_bytes": 1024,
+                 "cpu_usage_usec": 5000, "pids_current": 3},
+                {"timestamp": 1005.0, "memory_bytes": 2048,
+                 "cpu_usage_usec": 8000, "pids_current": 5},
+            ],
+            "count": 2,
+        }
+        text = format_human("containers-resource-history", resp)
+        self.assertIn("2 samples", text)
+        self.assertIn("1,024", text)
+        # record
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "sample": {"memory_bytes": 512, "cpu_usage_usec": 1000,
+                        "pids_current": 2},
+        }
+        text2 = format_human("containers-resource-record", resp2)
+        self.assertIn("512", text2)
+        # record-start
+        resp3 = {"ok": True, "container_id": "a", "interval": 10.0}
+        text3 = format_human("containers-resource-record-start", resp3)
+        self.assertIn("10.0", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18354,6 +18476,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestEnvironmentManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotExportImport))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceHistory))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -198,6 +198,9 @@ class Container:
         # Auto-restart state
         self.restart_count: int = 0
         self._restart_stop: Optional[threading.Event] = None
+        # Resource recording state
+        self._resource_stop: Optional[threading.Event] = None
+        self._resource_thread: Optional[threading.Thread] = None
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -1588,6 +1591,104 @@ class ContainerManager:
                 result["pid_alert"] = "warning"
 
         return result
+
+    # ------------------------------------------------------------------
+    # Resource usage history (time-series)
+    # ------------------------------------------------------------------
+
+    def _init_resource_history(self, container: Container) -> None:
+        """Initialize the resource history buffer for a container."""
+        if not hasattr(self, "_resource_history"):
+            self._resource_history: Dict[str, List[Dict[str, Any]]] = {}
+        if container.id not in self._resource_history:
+            self._resource_history[container.id] = []
+
+    def record_resource_sample(
+        self, container: Container,
+    ) -> Optional[Dict[str, Any]]:
+        """Take a resource usage sample and append to history.
+
+        Returns the sample dict (with ``timestamp``, ``memory_bytes``,
+        ``cpu_usage_usec``, ``pids_current``), or None if stats are
+        unavailable.
+        """
+        stats = self.container_stats(container)
+        if not stats.get("available"):
+            return None
+        sample: Dict[str, Any] = {
+            "timestamp": time.time(),
+            "memory_bytes": stats.get("memory_bytes", 0),
+            "cpu_usage_usec": stats.get("cpu_usage_usec", 0),
+            "pids_current": stats.get("pids_current", 0),
+        }
+        self._init_resource_history(container)
+        self._resource_history[container.id].append(sample)
+        # Keep at most 1000 samples per container
+        if len(self._resource_history[container.id]) > 1000:
+            self._resource_history[container.id] = \
+                self._resource_history[container.id][-1000:]
+        return sample
+
+    def get_resource_history(
+        self, container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the resource usage history for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N samples.
+
+        Returns:
+            List of sample dicts with ``timestamp``, ``memory_bytes``,
+            ``cpu_usage_usec``, ``pids_current``.
+        """
+        self._init_resource_history(container)
+        history = self._resource_history[container.id]
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    def start_resource_recording(
+        self, container: Container,
+        interval: float = 5.0,
+    ) -> None:
+        """Start periodic resource usage sampling.
+
+        Spawns a daemon thread that samples resource usage at the
+        given interval (in seconds).
+
+        Args:
+            container: Target container.
+            interval: Seconds between samples (default 5.0).
+        """
+        self._init_resource_history(container)
+        stop_event = threading.Event()
+        container._resource_stop = stop_event
+
+        def _recorder():
+            while not stop_event.wait(timeout=interval):
+                if container.state != ContainerState.RUNNING:
+                    break
+                self.record_resource_sample(container)
+
+        t = threading.Thread(
+            target=_recorder,
+            name=f"resource-recorder-{container.id}",
+            daemon=True,
+        )
+        t.start()
+        container._resource_thread = t
+        logger.info(
+            "start_resource_recording: %s (interval=%.1fs)",
+            container.id, interval,
+        )
+
+    def stop_resource_recording(self, container: Container) -> None:
+        """Stop periodic resource sampling for a container."""
+        if hasattr(container, "_resource_stop") and container._resource_stop is not None:
+            container._resource_stop.set()
+            logger.debug("stop_resource_recording: %s", container.id)
 
     def set_nice(self, container: Container, nice_value: int) -> bool:
         """Set the nice value (priority) for a running container.

@@ -364,6 +364,34 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "snapshot_import",
             "archive_path": args.archive_path,
         }
+    if command == "containers-resource-history":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "resource_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p["tail"] = args.tail
+        return p
+    if command == "containers-resource-record":
+        return {
+            "service": "control",
+            "op": "resource_record",
+            "container_id": args.container_id,
+        }
+    if command == "containers-resource-record-start":
+        return {
+            "service": "control",
+            "op": "resource_record_start",
+            "container_id": args.container_id,
+            "interval": args.interval,
+        }
+    if command == "containers-resource-record-stop":
+        return {
+            "service": "control",
+            "op": "resource_record_stop",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -880,6 +908,36 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"imported container {resp.get('container_id')}\n"
             f"state: {resp.get('state')}"
         )
+    if command == "containers-resource-history":
+        history = resp.get("history", [])
+        count = resp.get("count", 0)
+        lines = [f"container: {resp.get('container_id')} ({count} samples)"]
+        for s in history:
+            ts = s.get("timestamp", 0)
+            mem = s.get("memory_bytes", 0)
+            cpu = s.get("cpu_usage_usec", 0)
+            pids = s.get("pids_current", 0)
+            lines.append(
+                f"  {ts:.1f}  mem={mem:,}B  cpu={cpu:,}us  pids={pids}"
+            )
+        return "\n".join(lines)
+    if command == "containers-resource-record":
+        sample = resp.get("sample")
+        if sample is None:
+            return f"container {resp.get('container_id')}: no sample (not running?)"
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"memory:  {sample.get('memory_bytes', 0):,} bytes\n"
+            f"cpu:     {sample.get('cpu_usage_usec', 0):,} us\n"
+            f"pids:    {sample.get('pids_current', 0)}"
+        )
+    if command == "containers-resource-record-start":
+        return (
+            f"started recording for {resp.get('container_id')} "
+            f"(interval={resp.get('interval', 5.0)}s)"
+        )
+    if command == "containers-resource-record-stop":
+        return f"stopped recording for {resp.get('container_id')}"
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1520,6 +1578,26 @@ def build_parser() -> argparse.ArgumentParser:
     csi = csub.add_parser("snapshot-import", help="Import checkpoint from tar.gz archive")
     csi.add_argument("archive_path", help="Path to the tar.gz archive")
     csi.set_defaults(command="containers-snapshot-import")
+
+    crh = csub.add_parser("resource-history", help="Show resource usage history")
+    crh.add_argument("container_id")
+    crh.add_argument("--tail", type=int, default=None,
+                     help="Show only last N samples")
+    crh.set_defaults(command="containers-resource-history")
+
+    crr = csub.add_parser("resource-record", help="Take a single resource sample")
+    crr.add_argument("container_id")
+    crr.set_defaults(command="containers-resource-record")
+
+    crrs = csub.add_parser("resource-record-start", help="Start periodic resource recording")
+    crrs.add_argument("container_id")
+    crrs.add_argument("--interval", type=float, default=5.0,
+                      help="Seconds between samples (default: 5.0)")
+    crrs.set_defaults(command="containers-resource-record-start")
+
+    crrp = csub.add_parser("resource-record-stop", help="Stop periodic resource recording")
+    crrp.add_argument("container_id")
+    crrp.set_defaults(command="containers-resource-record-stop")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

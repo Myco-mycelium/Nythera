@@ -1276,6 +1276,102 @@ class ControlService:
             "state": container.state.value,
         })
 
+    # ------------------------------------------------------------------
+    # Resource usage history
+    # ------------------------------------------------------------------
+
+    def _resource_history(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")  # optional
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        history = self.container_manager.get_resource_history(
+            c, tail=tail,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "history": history,
+            "count": len(history),
+        })
+
+    def _resource_record(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        sample = self.container_manager.record_resource_sample(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "sample": sample,
+        })
+
+    def _resource_record_start(self, server, sender_path: str,
+                                call_id: str,
+                                request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        interval = float(request.get("interval", 5.0))
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        self.container_manager.start_resource_recording(c, interval=interval)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "interval": interval,
+        })
+
+    def _resource_record_stop(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        self.container_manager.stop_resource_recording(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure
