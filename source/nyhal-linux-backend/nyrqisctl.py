@@ -405,6 +405,38 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.cpu_quota is not None:
             p["cpu_quota_us"] = args.cpu_quota
         return p
+    if command == "containers-label-set":
+        return {
+            "service": "control",
+            "op": "label_set",
+            "container_id": args.container_id,
+            "key": args.key,
+            "value": args.value,
+        }
+    if command == "containers-label-unset":
+        return {
+            "service": "control",
+            "op": "label_unset",
+            "container_id": args.container_id,
+            "key": args.key,
+        }
+    if command == "containers-label-list":
+        return {
+            "service": "control",
+            "op": "label_list",
+            "container_id": args.container_id,
+        }
+    if command == "containers-label-filter":
+        labels = {}
+        for pair in args.labels:
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                labels[k] = v
+        return {
+            "service": "control",
+            "op": "label_filter",
+            "labels": labels,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -961,6 +993,25 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             for key in updated:
                 old = prev.get(key)
                 lines.append(f"  {key}: {old} → (updated)")
+        return "\n".join(lines)
+    if command == "containers-label-list":
+        labels = resp.get("labels", {})
+        if not labels:
+            return f"container {resp.get('container_id')}: (no labels)"
+        lines = [f"container: {resp.get('container_id')}"]
+        for k, v in sorted(labels.items()):
+            lines.append(f"  {k}={v}")
+        return "\n".join(lines)
+    if command in ("containers-label-set", "containers-label-unset"):
+        if command == "containers-label-unset" and not resp.get("existed", True):
+            return f"label {resp.get('key')!r} was not set"
+        return f"{resp.get('key')}={resp.get('value', '')} on container {resp.get('container_id')}"
+    if command == "containers-label-filter":
+        containers = resp.get("containers", [])
+        count = resp.get("count", 0)
+        lines = [f"{count} container(s) matched:"]
+        for c in containers:
+            lines.append(f"  {c['id']} [{c['state']}]")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1632,6 +1683,26 @@ def build_parser() -> argparse.ArgumentParser:
     cul.add_argument("--cpu-quota", type=int, default=None,
                      help="New CPU quota in us (0=unlimited)")
     cul.set_defaults(command="containers-update-limits")
+
+    cls = csub.add_parser("label-set", help="Set a label on a container")
+    cls.add_argument("container_id")
+    cls.add_argument("key", help="Label key")
+    cls.add_argument("value", help="Label value")
+    cls.set_defaults(command="containers-label-set")
+
+    clu = csub.add_parser("label-unset", help="Remove a label from a container")
+    clu.add_argument("container_id")
+    clu.add_argument("key", help="Label key")
+    clu.set_defaults(command="containers-label-unset")
+
+    cll = csub.add_parser("label-list", help="List labels for a container")
+    cll.add_argument("container_id")
+    cll.set_defaults(command="containers-label-list")
+
+    clf = csub.add_parser("label-filter", help="Find containers by labels")
+    clf.add_argument("labels", nargs="+",
+                     help="Key=value pairs to filter by")
+    clf.set_defaults(command="containers-label-filter")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

@@ -3199,6 +3199,145 @@ class TestResourceLimitsHotUpdate(unittest.TestCase):
         self.assertIn("no limits changed", text)
 
 
+class TestContainerLabels(unittest.TestCase):
+    """Test container labels / metadata."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_and_get_label(self):
+        """Set and retrieve a label."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_label(c, "app", "web")
+        self.assertEqual(mgr.get_label(c, "app"), "web")
+
+    def test_get_label_missing(self):
+        """Get returns None for missing key."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        self.assertIsNone(mgr.get_label(c, "missing"))
+
+    def test_unset_label(self):
+        """Unset removes the label."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_label(c, "app", "web")
+        self.assertTrue(mgr.unset_label(c, "app"))
+        self.assertIsNone(mgr.get_label(c, "app"))
+        self.assertFalse(mgr.unset_label(c, "app"))
+
+    def test_list_labels(self):
+        """List returns all labels."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_label(c, "app", "web")
+        mgr.set_label(c, "env", "prod")
+        labels = mgr.list_labels(c)
+        self.assertEqual(labels, {"app": "web", "env": "prod"})
+
+    def test_list_labels_returns_copy(self):
+        """List returns a copy."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_label(c, "x", "1")
+        labels = mgr.list_labels(c)
+        labels["y"] = "2"
+        self.assertIsNone(mgr.get_label(c, "y"))
+
+    def test_filter_by_labels(self):
+        """filter_by_labels finds matching containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        a = mgr.create(ContainerConfig(name="a"))
+        b = mgr.create(ContainerConfig(name="b"))
+        c = mgr.create(ContainerConfig(name="c"))
+        mgr.set_label(a, "app", "web")
+        mgr.set_label(a, "env", "prod")
+        mgr.set_label(b, "app", "web")
+        mgr.set_label(b, "env", "staging")
+        mgr.set_label(c, "app", "api")
+        # Filter by app=web
+        matches = mgr.filter_by_labels({"app": "web"})
+        ids = [m.id for m in matches]
+        self.assertIn(a.id, ids)
+        self.assertIn(b.id, ids)
+        self.assertNotIn(c.id, ids)
+        # Filter by app=web AND env=prod
+        matches2 = mgr.filter_by_labels({"app": "web", "env": "prod"})
+        self.assertEqual(len(matches2), 1)
+        self.assertEqual(matches2[0].id, a.id)
+
+    def test_filter_no_match(self):
+        """filter_by_labels returns empty when nothing matches."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        matches = mgr.filter_by_labels({"nonexistent": "value"})
+        self.assertEqual(matches, [])
+
+    def test_default_labels_empty(self):
+        """Default labels dict is empty."""
+        from backend.container import ContainerConfig
+        c = ContainerConfig(name="a")
+        self.assertEqual(c.labels, {})
+
+    def test_labels_in_config(self):
+        """Labels can be set at creation time."""
+        from backend.container import ContainerConfig
+        c = ContainerConfig(name="a", labels={"app": "web"})
+        self.assertEqual(c.labels, {"app": "web"})
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for label commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", key="app", value="web")
+        p = build_payload("containers-label-set", args)
+        self.assertEqual(p["op"], "label_set")
+        self.assertEqual(p["key"], "app")
+        self.assertEqual(p["value"], "web")
+        p = build_payload("containers-label-unset", args)
+        self.assertEqual(p["op"], "label_unset")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("containers-label-list", args2)
+        self.assertEqual(p["op"], "label_list")
+        # filter
+        args3 = argparse.Namespace(labels=["app=web", "env=prod"])
+        p = build_payload("containers-label-filter", args3)
+        self.assertEqual(p["op"], "label_filter")
+        self.assertEqual(p["labels"], {"app": "web", "env": "prod"})
+
+    def test_cli_format_human(self):
+        """CLI format_human for label commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "labels": {"app": "web", "env": "prod"},
+        }
+        text = format_human("containers-label-list", resp)
+        self.assertIn("app=web", text)
+        self.assertIn("env=prod", text)
+        # filter
+        resp2 = {
+            "ok": True,
+            "containers": [
+                {"id": "a", "state": "running"},
+                {"id": "b", "state": "created"},
+            ],
+            "count": 2,
+        }
+        text2 = format_human("containers-label-filter", resp2)
+        self.assertIn("2 container", text2)
+        self.assertIn("a", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18571,6 +18710,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotExportImport))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceHistory))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsHotUpdate))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerLabels))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -117,7 +117,8 @@ class ContainerConfig:
     restart_policy: str = "no"  # "no" | "always" | "on-failure"
     restart_max_retries: int = 5  # max restart attempts (for on-failure)
     restart_delay: float = 1.0  # seconds between restart attempts
-
+    # Labels / metadata (key-value tags for organization)
+    labels: Dict[str, str] = field(default_factory=dict)
 
 class RingBuffer:
     """Thread-safe bounded ring buffer for log line capture."""
@@ -1689,6 +1690,62 @@ class ContainerManager:
         if hasattr(container, "_resource_stop") and container._resource_stop is not None:
             container._resource_stop.set()
             logger.debug("stop_resource_recording: %s", container.id)
+
+    # ------------------------------------------------------------------
+    # Labels / metadata management
+    # ------------------------------------------------------------------
+
+    def set_label(self, container: Container, key: str, value: str) -> None:
+        """Set a label on a container.
+
+        Labels are key-value metadata tags for organizing and
+        filtering containers (e.g., ``app=web``, ``env=prod``).
+
+        Args:
+            container: Target container.
+            key: Label key (e.g., "app", "env", "team").
+            value: Label value.
+        """
+        container.config.labels[key] = value
+        logger.debug("set_label: %s %s=%s", container.id, key, value)
+
+    def unset_label(self, container: Container, key: str) -> bool:
+        """Remove a label from a container.
+
+        Returns True if the key existed and was removed.
+        """
+        existed = key in container.config.labels
+        container.config.labels.pop(key, None)
+        if existed:
+            logger.debug("unset_label: %s %s", container.id, key)
+        return existed
+
+    def get_label(self, container: Container, key: str) -> Optional[str]:
+        """Get a label value, or None if not set."""
+        return container.config.labels.get(key)
+
+    def list_labels(self, container: Container) -> Dict[str, str]:
+        """Return a copy of all labels for a container."""
+        return dict(container.config.labels)
+
+    def filter_by_labels(
+        self, labels: Dict[str, str],
+    ) -> List[Container]:
+        """Find containers matching all given label key-value pairs.
+
+        Args:
+            labels: Dict of required label key-value pairs.
+
+        Returns:
+            List of containers whose labels are a superset of the
+            given labels.
+        """
+        result: List[Container] = []
+        for c in self.containers.values():
+            c_labels = c.config.labels
+            if all(c_labels.get(k) == v for k, v in labels.items()):
+                result.append(c)
+        return result
 
     def set_nice(self, container: Container, nice_value: int) -> bool:
         """Set the nice value (priority) for a running container.
