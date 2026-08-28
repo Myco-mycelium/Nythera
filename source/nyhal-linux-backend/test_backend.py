@@ -1064,6 +1064,106 @@ class TestContainerStats(unittest.TestCase):
         self.assertIn("not available", text)
 
 
+class TestContainerLogs(unittest.TestCase):
+    """Test container log capture (stdout/stderr ring buffer)."""
+
+    def test_ring_buffer_basic(self):
+        """RingBuffer append and get_lines work correctly."""
+        from backend.container import RingBuffer
+        buf = RingBuffer(max_lines=5)
+        for i in range(3):
+            buf.append(f"line {i}")
+        self.assertEqual(len(buf), 3)
+        self.assertEqual(buf.get_lines(), ["line 0", "line 1", "line 2"])
+        self.assertEqual(buf.get_lines(tail=2), ["line 1", "line 2"])
+
+    def test_ring_buffer_eviction(self):
+        """RingBuffer evicts oldest lines when full."""
+        from backend.container import RingBuffer
+        buf = RingBuffer(max_lines=3)
+        for i in range(5):
+            buf.append(f"line {i}")
+        self.assertEqual(len(buf), 3)
+        self.assertEqual(buf.get_lines(), ["line 2", "line 3", "line 4"])
+
+    def test_ring_buffer_clear(self):
+        """RingBuffer clear empties the buffer."""
+        from backend.container import RingBuffer
+        buf = RingBuffer(max_lines=10)
+        buf.append("hello")
+        buf.clear()
+        self.assertEqual(len(buf), 0)
+        self.assertEqual(buf.get_lines(), [])
+
+    def test_log_capture_not_available_without_config(self):
+        """container_logs reports unavailable when log_capture=False."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        container.state = ContainerState.RUNNING
+        logs = manager.container_logs(container)
+        self.assertFalse(logs["available"])
+        self.assertEqual(logs["stdout"], [])
+        self.assertEqual(logs["stderr"], [])
+
+    def test_log_capture_cli_payload(self):
+        """CLI build_payload for containers-logs."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            tail=50,
+            stream="stderr",
+        )
+        payload = build_payload("containers-logs", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_logs")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+        self.assertEqual(payload["tail"], 50)
+        self.assertEqual(payload["stream"], "stderr")
+
+    def test_log_capture_cli_format_human(self):
+        """CLI format_human for containers-logs."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "available": True,
+            "stdout": ["[0.001] hello world"],
+            "stderr": ["[0.002] error line"],
+        }
+        text = format_human("containers-logs", resp)
+        self.assertIn("hello world", text)
+        self.assertIn("error line", text)
+        self.assertIn("--- stdout ---", text)
+        self.assertIn("--- stderr ---", text)
+
+    def test_log_capture_cli_format_human_unavailable(self):
+        """CLI format_human when log capture is not active."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "available": False,
+        }
+        text = format_human("containers-logs", resp)
+        self.assertIn("not active", text)
+
+    def test_log_capture_cli_format_human_empty(self):
+        """CLI format_human when logs are empty."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "available": True,
+            "stdout": [],
+            "stderr": [],
+        }
+        text = format_human("containers-logs", resp)
+        self.assertIn("no log output yet", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16417,6 +16517,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestFUSEOverheadBenchmark))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerStats))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerLogs))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

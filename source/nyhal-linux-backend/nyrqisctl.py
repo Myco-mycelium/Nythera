@@ -117,6 +117,17 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_stats",
             "container_id": args.container_id,
         }
+    if command == "containers-logs":
+        payload = {
+            "service": "control",
+            "op": "container_logs",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            payload["tail"] = args.tail
+        if args.stream != "both":
+            payload["stream"] = args.stream
+        return payload
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -326,6 +337,18 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         )
     if command == "containers-kill":
         return f"container {resp.get('container_id')} terminated"
+    if command == "containers-logs":
+        if not resp.get("available"):
+            return f"container {resp.get('container_id')}: log capture not active (set log_capture=True at creation)"
+        parts = []
+        for stream_name in ("stdout", "stderr"):
+            lines = resp.get(stream_name) or []
+            if lines:
+                parts.append(f"--- {stream_name} ---")
+                parts.extend(lines)
+        if not parts:
+            return f"container {resp.get('container_id')}: no log output yet"
+        return "\n".join(parts)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -838,6 +861,14 @@ def build_parser() -> argparse.ArgumentParser:
     cs = csub.add_parser("stats", help="Show live resource stats for a container")
     cs.add_argument("container_id")
     cs.set_defaults(command="containers-stats")
+
+    clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")
+    clo.add_argument("container_id")
+    clo.add_argument("--tail", type=int, default=None,
+                     help="Show only the last N lines")
+    clo.add_argument("--stream", choices=["stdout", "stderr", "both"],
+                     default="both", help="Which stream to show")
+    clo.set_defaults(command="containers-logs")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

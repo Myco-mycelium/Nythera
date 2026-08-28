@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import List, Tuple
 import uuid
@@ -97,14 +98,45 @@ class ContainerConfig:
     # policy (second data-plane enforcement layer, NPS-017 §4.2).
     aa_profile: Optional[str] = None   # path to AppArmor profile file
     se_module_dir: Optional[str] = None  # path to SELinux module directory
+    log_capture: bool = False  # capture stdout/stderr into a ring buffer
+    log_max_lines: int = 1000  # max lines in the ring buffer per stream
+
+
+class RingBuffer:
+    """Thread-safe bounded ring buffer for log line capture."""
+
+    def __init__(self, max_lines: int = 1000):
+        self.max_lines = max_lines
+        self._lines: List[str] = []
+        self._lock = threading.Lock()
+
+    def append(self, line: str) -> None:
+        with self._lock:
+            self._lines.append(line)
+            if len(self._lines) > self.max_lines:
+                self._lines = self._lines[-self.max_lines:]
+
+    def get_lines(self, tail: Optional[int] = None) -> List[str]:
+        with self._lock:
+            if tail is None:
+                return list(self._lines)
+            return list(self._lines[-tail:])
+
+    def clear(self) -> None:
+        with self._lock:
+            self._lines.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._lines)
 
 
 class Container:
     """Represents a single Nyrqis container instance.
-    
+
     Implements the container state machine from NPS-010 §4.
     """
-    
+
     def __init__(self, config: ContainerConfig):
         self.config = config
         self.id = config.name or f"nyctr-{uuid.uuid4().hex[:12]}"
@@ -135,6 +167,10 @@ class Container:
         self._frozen_via_cgroup: bool = False
         # Network IP assigned when network=True (set by _setup_network)
         self.network_ip: Optional[str] = None
+        # Log capture (when config.log_capture is True)
+        self._stdout_buffer: Optional[RingBuffer] = None
+        self._stderr_buffer: Optional[RingBuffer] = None
+        self._log_threads: List[threading.Thread] = []
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -978,6 +1014,77 @@ class ContainerManager:
 
         return stats
 
+    def _start_log_capture(self, container: Container,
+                           proc: subprocess.Popen) -> None:
+        """Start background threads to capture stdout/stderr into ring buffers."""
+        max_lines = container.config.log_max_lines
+        container._stdout_buffer = RingBuffer(max_lines)
+        container._stderr_buffer = RingBuffer(max_lines)
+
+        def _reader(stream: Any, buf: RingBuffer, stream_name: str) -> None:
+            try:
+                for line in iter(stream.readline, b""):
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace").rstrip("\n")
+                    ts = time.time()
+                    buf.append(f"[{ts:.3f}] {decoded}")
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+        if proc.stdout is not None:
+            t = threading.Thread(
+                target=_reader,
+                args=(proc.stdout, container._stdout_buffer, "stdout"),
+                daemon=True, name=f"{container.id}-stdout",
+            )
+            t.start()
+            container._log_threads.append(t)
+
+        if proc.stderr is not None:
+            t = threading.Thread(
+                target=_reader,
+                args=(proc.stderr, container._stderr_buffer, "stderr"),
+                daemon=True, name=f"{container.id}-stderr",
+            )
+            t.start()
+            container._log_threads.append(t)
+
+    def container_logs(self, container: Container,
+                       tail: Optional[int] = None,
+                       stream: str = "both") -> Dict[str, Any]:
+        """Retrieve captured log lines for a container.
+
+        Args:
+            container: The container to read logs from.
+            tail: If set, return only the last N lines per stream.
+            stream: Which stream(s) to return: ``"stdout"``,
+                    ``"stderr"``, or ``"both"`` (default).
+
+        Returns:
+            Dict with ``stdout`` and/or ``stderr`` line lists, and
+            ``available`` indicating whether log capture is active.
+        """
+        result: Dict[str, Any] = {
+            "container_id": container.id,
+            "available": container._stdout_buffer is not None,
+        }
+        if container._stdout_buffer is None:
+            result["stdout"] = []
+            result["stderr"] = []
+            return result
+
+        if stream in ("stdout", "both"):
+            result["stdout"] = container._stdout_buffer.get_lines(tail)
+        if stream in ("stderr", "both"):
+            result["stderr"] = container._stderr_buffer.get_lines(tail)
+        return result
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         
@@ -1344,9 +1451,20 @@ class ContainerManager:
             f"network={container.config.network}, direct_syscalls=False)"
         )
         
-        proc = subprocess.Popen(cmd, env=os.environ.copy())
+        # Set up log capture if configured
+        stdout_target = subprocess.PIPE if container.config.log_capture else None
+        stderr_target = subprocess.PIPE if container.config.log_capture else None
+
+        proc = subprocess.Popen(
+            cmd, env=os.environ.copy(),
+            stdout=stdout_target, stderr=stderr_target,
+        )
         container.pid = proc.pid
         container._proc = proc
+
+        if container.config.log_capture:
+            self._start_log_capture(container, proc)
+
         return proc
 
     def _spawn_direct(self, container: Container):
