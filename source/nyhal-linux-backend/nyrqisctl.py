@@ -472,6 +472,40 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "lock_list",
         }
+    if command == "containers-alert-history":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "alert_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p["tail"] = args.tail
+        if args.resource:
+            p["resource"] = args.resource
+        return p
+    if command == "containers-alert-clear":
+        return {
+            "service": "control",
+            "op": "alert_clear",
+            "container_id": args.container_id,
+        }
+    if command == "containers-alert-thresholds":
+        p2: Dict[str, Any] = {
+            "service": "control",
+            "op": "alert_thresholds",
+            "container_id": args.container_id,
+        }
+        if args.memory_warning is not None:
+            p2["memory_warning"] = args.memory_warning
+        if args.memory_critical is not None:
+            p2["memory_critical"] = args.memory_critical
+        if args.pid_warning is not None:
+            p2["pid_warning"] = args.pid_warning
+        if args.pid_critical is not None:
+            p2["pid_critical"] = args.pid_critical
+        if args.cpu_throttle is not None:
+            p2["cpu_throttle"] = args.cpu_throttle
+        return p2
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1114,6 +1148,28 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"  {lk['container_id']} (fd={lk['fd']}, "
                 f"file={lk['lock_file']})"
             )
+        return "\n".join(lines)
+    if command == "containers-alert-history":
+        alerts = resp.get("alerts", [])
+        count = resp.get("count", 0)
+        lines = [f"container: {resp.get('container_id')} ({count} alerts)"]
+        for a in alerts:
+            ts = a.get("timestamp", 0)
+            lines.append(
+                f"  {ts:.1f}  {a.get('resource')}="
+                f"{a.get('level')}  {a.get('detail', '')}"
+            )
+        return "\n".join(lines)
+    if command == "containers-alert-clear":
+        return (
+            f"cleared {resp.get('cleared', 0)} alerts "
+            f"for {resp.get('container_id')}"
+        )
+    if command == "containers-alert-thresholds":
+        lines = [f"container: {resp.get('container_id')}"]
+        for key in sorted(resp.keys()):
+            if key.startswith("alert_"):
+                lines.append(f"  {key}: {resp[key]}%")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1835,6 +1891,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     clocks = csub.add_parser("locks", help="List all held locks")
     clocks.set_defaults(command="containers-locks")
+
+    ca = csub.add_parser("alert-history", help="Show alert history for a container")
+    ca.add_argument("container_id")
+    ca.add_argument("--tail", type=int, default=None,
+                    help="Show only last N alerts")
+    ca.add_argument("--resource", default=None,
+                    help="Filter by resource (memory, pid, cpu_throttle)")
+    ca.set_defaults(command="containers-alert-history")
+
+    cac = csub.add_parser("alert-clear", help="Clear alert history")
+    cac.add_argument("container_id")
+    cac.set_defaults(command="containers-alert-clear")
+
+    cat = csub.add_parser("alert-thresholds", help="Set alert thresholds")
+    cat.add_argument("container_id")
+    cat.add_argument("--memory-warning", type=float, default=None)
+    cat.add_argument("--memory-critical", type=float, default=None)
+    cat.add_argument("--pid-warning", type=float, default=None)
+    cat.add_argument("--pid-critical", type=float, default=None)
+    cat.add_argument("--cpu-throttle", type=float, default=None)
+    cat.set_defaults(command="containers-alert-thresholds")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

@@ -124,6 +124,12 @@ class ContainerConfig:
     restart_delay: float = 1.0  # seconds between restart attempts
     # Labels / metadata (key-value tags for organization)
     labels: Dict[str, str] = field(default_factory=dict)
+    # Alert thresholds (percentage)
+    alert_memory_warning: float = 75.0  # memory warning threshold
+    alert_memory_critical: float = 90.0  # memory critical threshold
+    alert_pid_warning: float = 75.0  # PID warning threshold
+    alert_pid_critical: float = 90.0  # PID critical threshold
+    alert_cpu_throttle: float = 50.0  # CPU throttle warning threshold
 
 class RingBuffer:
     """Thread-safe bounded ring buffer for log line capture."""
@@ -207,6 +213,8 @@ class Container:
         # Resource recording state
         self._resource_stop: Optional[threading.Event] = None
         self._resource_thread: Optional[threading.Thread] = None
+        # Alert history (bounded ring buffer)
+        self._alert_history: List[Dict[str, Any]] = []
 
     def __repr__(self) -> str:
         return f"Container(id={self.id!r}, state={self.state.value})"
@@ -1634,13 +1642,14 @@ class ContainerManager:
     def container_resource_limits(self, container: Container) -> Dict[str, Any]:
         """Check resource usage against configured limits and report alerts.
 
-        Compares the container's current cgroup stats against its
-        configured limits (memory_mb, pid_limit) and returns a
-        summary with alert levels for each resource.
+        Uses configurable thresholds from ContainerConfig and tracks
+        alert history. Compares cgroup stats against limits and returns
+        alert levels for memory, PID, and CPU throttle.
 
         Returns:
             Dict with ``memory_alert`` (ok/warning/critical/at_limit),
-            ``pid_alert``, ``memory_pct``, ``pid_pct``, and the raw
+            ``pid_alert``, ``cpu_throttle_alert``, ``memory_pct``,
+            ``pid_pct``, ``alerts`` (new alerts fired), and the raw
             ``stats`` snapshot.
         """
         stats = self.container_stats(container)
@@ -1649,18 +1658,23 @@ class ContainerManager:
             "available": stats.get("available", False),
             "memory_alert": "ok",
             "pid_alert": "ok",
+            "cpu_throttle_alert": "ok",
             "memory_pct": None,
             "pid_pct": None,
+            "cpu_throttle_pct": None,
+            "alerts": [],
             "stats": stats,
         }
 
         if not stats.get("available"):
             return result
 
-        # Memory check
+        cfg = container.config
+
+        # Memory check (uses configurable thresholds)
         mem_bytes = stats.get("memory_bytes")
         mem_limit = stats.get("memory_limit_bytes")
-        configured_limit_mb = container.config.limits.memory_mb
+        configured_limit_mb = cfg.limits.memory_mb
 
         if mem_bytes is not None and configured_limit_mb > 0:
             limit_bytes = (mem_limit if mem_limit else
@@ -1669,25 +1683,165 @@ class ContainerManager:
             result["memory_pct"] = pct
             if pct >= 100:
                 result["memory_alert"] = "at_limit"
-            elif pct >= 90:
+                alert = self._fire_alert(container, "memory", "at_limit",
+                                         f"{pct}% of limit")
+                if alert:
+                    result["alerts"].append(alert)
+            elif pct >= cfg.alert_memory_critical:
                 result["memory_alert"] = "critical"
-            elif pct >= 75:
+                alert = self._fire_alert(container, "memory", "critical",
+                                         f"{pct}% of limit")
+                if alert:
+                    result["alerts"].append(alert)
+            elif pct >= cfg.alert_memory_warning:
                 result["memory_alert"] = "warning"
 
-        # PID check
+        # PID check (uses configurable thresholds)
         pids = stats.get("pids_current")
-        pid_limit = container.config.limits.pid_limit
+        pid_limit = cfg.limits.pid_limit
         if pids is not None and pid_limit > 0:
             pct = round(pids / pid_limit * 100, 1)
             result["pid_pct"] = pct
             if pct >= 100:
                 result["pid_alert"] = "at_limit"
-            elif pct >= 90:
+                alert = self._fire_alert(container, "pid", "at_limit",
+                                         f"{pids}/{pid_limit}")
+                if alert:
+                    result["alerts"].append(alert)
+            elif pct >= cfg.alert_pid_critical:
                 result["pid_alert"] = "critical"
-            elif pct >= 75:
+                alert = self._fire_alert(container, "pid", "critical",
+                                         f"{pids}/{pid_limit}")
+                if alert:
+                    result["alerts"].append(alert)
+            elif pct >= cfg.alert_pid_warning:
                 result["pid_alert"] = "warning"
 
+        # CPU throttle check
+        throttle_pct = stats.get("cpu_throttle_pct")
+        if throttle_pct is not None:
+            result["cpu_throttle_pct"] = throttle_pct
+            if throttle_pct >= cfg.alert_cpu_throttle:
+                result["cpu_throttle_alert"] = "warning"
+                alert = self._fire_alert(container, "cpu_throttle",
+                                         "warning",
+                                         f"{throttle_pct}% throttled")
+                if alert:
+                    result["alerts"].append(alert)
+
         return result
+
+    def _fire_alert(
+        self, container: Container, resource: str,
+        level: str, detail: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Record an alert in the container's history.
+
+        Deduplicates: same resource+level within 60 seconds is skipped.
+
+        Returns:
+            The alert dict if fired, None if deduplicated.
+        """
+        now = time.time()
+        # Dedup check: skip if same resource+level within 60s
+        for prev in reversed(container._alert_history):
+            if (prev["resource"] == resource and
+                    prev["level"] == level and
+                    now - prev["timestamp"] < 60):
+                return None
+
+        alert: Dict[str, Any] = {
+            "timestamp": now,
+            "resource": resource,
+            "level": level,
+            "detail": detail,
+            "container_id": container.id,
+        }
+        container._alert_history.append(alert)
+        # Keep at most 200 alerts per container
+        if len(container._alert_history) > 200:
+            container._alert_history = container._alert_history[-200:]
+        logger.warning(
+            "alert: %s %s=%s %s",
+            container.id, resource, level, detail,
+        )
+        self._record_event(
+            "alert", container.id,
+            f"{resource}={level}: {detail}",
+        )
+        return alert
+
+    def get_alert_history(
+        self, container: Container, tail: Optional[int] = None,
+        resource: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the alert history for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N alerts.
+            resource: Filter by resource type.
+
+        Returns:
+            List of alert dicts.
+        """
+        history = container._alert_history
+        if resource:
+            history = [a for a in history if a["resource"] == resource]
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    def clear_alert_history(self, container: Container) -> int:
+        """Clear the alert history for a container.
+
+        Returns:
+            Number of alerts cleared.
+        """
+        count = len(container._alert_history)
+        container._alert_history.clear()
+        return count
+
+    def set_alert_thresholds(
+        self, container: Container,
+        memory_warning: Optional[float] = None,
+        memory_critical: Optional[float] = None,
+        pid_warning: Optional[float] = None,
+        pid_critical: Optional[float] = None,
+        cpu_throttle: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Update alert thresholds for a container.
+
+        Args:
+            container: Target container.
+            memory_warning: Memory warning threshold (%).
+            memory_critical: Memory critical threshold (%).
+            pid_warning: PID warning threshold (%).
+            pid_critical: PID critical threshold (%).
+            cpu_throttle: CPU throttle warning threshold (%).
+
+        Returns:
+            Dict with the updated thresholds.
+        """
+        cfg = container.config
+        if memory_warning is not None:
+            cfg.alert_memory_warning = memory_warning
+        if memory_critical is not None:
+            cfg.alert_memory_critical = memory_critical
+        if pid_warning is not None:
+            cfg.alert_pid_warning = pid_warning
+        if pid_critical is not None:
+            cfg.alert_pid_critical = pid_critical
+        if cpu_throttle is not None:
+            cfg.alert_cpu_throttle = cpu_throttle
+        return {
+            "container_id": container.id,
+            "alert_memory_warning": cfg.alert_memory_warning,
+            "alert_memory_critical": cfg.alert_memory_critical,
+            "alert_pid_warning": cfg.alert_pid_warning,
+            "alert_pid_critical": cfg.alert_pid_critical,
+            "alert_cpu_throttle": cfg.alert_cpu_throttle,
+        }
 
     # ------------------------------------------------------------------
     # Resource usage history (time-series)

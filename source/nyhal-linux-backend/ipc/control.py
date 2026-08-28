@@ -1615,6 +1615,86 @@ class ControlService:
             "ok": True, "locks": locks, "count": len(locks),
         })
 
+    # ------------------------------------------------------------------
+    # Resource alerts
+    # ------------------------------------------------------------------
+
+    def _alert_history(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        resource = request.get("resource")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        history = self.container_manager.get_alert_history(
+            c, tail=tail, resource=resource,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "alerts": history, "count": len(history),
+        })
+
+    def _alert_clear(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        count = self.container_manager.clear_alert_history(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "cleared": count,
+        })
+
+    def _alert_thresholds(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_alert_thresholds(
+            c,
+            memory_warning=request.get("memory_warning"),
+            memory_critical=request.get("memory_critical"),
+            pid_warning=request.get("pid_warning"),
+            pid_critical=request.get("pid_critical"),
+            cpu_throttle=request.get("cpu_throttle"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

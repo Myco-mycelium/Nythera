@@ -3670,6 +3670,156 @@ class TestContainerLocks(unittest.TestCase):
         self.assertIn("a", text2)
 
 
+class TestResourceAlerts(unittest.TestCase):
+    """Test resource usage alerts (threshold notifications)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_default_thresholds(self):
+        """Default thresholds are set correctly."""
+        from backend.container import ContainerConfig
+        c = ContainerConfig(name="a")
+        self.assertEqual(c.alert_memory_warning, 75.0)
+        self.assertEqual(c.alert_memory_critical, 90.0)
+        self.assertEqual(c.alert_pid_warning, 75.0)
+        self.assertEqual(c.alert_pid_critical, 90.0)
+        self.assertEqual(c.alert_cpu_throttle, 50.0)
+
+    def test_fire_alert(self):
+        """_fire_alert records an alert."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        alert = mgr._fire_alert(c, "memory", "critical", "95%")
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert["resource"], "memory")
+        self.assertEqual(alert["level"], "critical")
+        self.assertEqual(len(c._alert_history), 1)
+
+    def test_fire_alert_dedup(self):
+        """_fire_alert deduplicates within 60s."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        # Second same alert should be deduped
+        alert2 = mgr._fire_alert(c, "memory", "critical", "95%")
+        self.assertIsNone(alert2)
+        self.assertEqual(len(c._alert_history), 1)
+
+    def test_fire_alert_different_resource(self):
+        """Different resource fires new alert."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        alert2 = mgr._fire_alert(c, "pid", "critical", "95%")
+        self.assertIsNotNone(alert2)
+        self.assertEqual(len(c._alert_history), 2)
+
+    def test_get_alert_history(self):
+        """get_alert_history returns alerts."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        mgr._fire_alert(c, "pid", "warning", "80%")
+        history = mgr.get_alert_history(c)
+        self.assertEqual(len(history), 2)
+
+    def test_get_alert_history_filter(self):
+        """get_alert_history filters by resource."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        mgr._fire_alert(c, "pid", "warning", "80%")
+        history = mgr.get_alert_history(c, resource="memory")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["resource"], "memory")
+
+    def test_get_alert_history_tail(self):
+        """get_alert_history respects tail."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        mgr._fire_alert(c, "pid", "warning", "80%")
+        # Force different level to avoid dedup
+        c._alert_history[-1]["level"] = "ok"
+        mgr._fire_alert(c, "pid", "critical", "95%")
+        history = mgr.get_alert_history(c, tail=1)
+        self.assertEqual(len(history), 1)
+
+    def test_clear_alert_history(self):
+        """clear_alert_history clears and returns count."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._fire_alert(c, "memory", "critical", "95%")
+        mgr._fire_alert(c, "pid", "warning", "80%")
+        count = mgr.clear_alert_history(c)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(c._alert_history), 0)
+
+    def test_set_alert_thresholds(self):
+        """set_alert_thresholds updates config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.set_alert_thresholds(
+            c, memory_warning=80.0, memory_critical=95.0,
+        )
+        self.assertEqual(result["alert_memory_warning"], 80.0)
+        self.assertEqual(result["alert_memory_critical"], 95.0)
+        self.assertEqual(c.config.alert_memory_warning, 80.0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for alert commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", tail=None, resource=None)
+        p = build_payload("containers-alert-history", args)
+        self.assertEqual(p["op"], "alert_history")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("containers-alert-clear", args2)
+        self.assertEqual(p["op"], "alert_clear")
+        args3 = argparse.Namespace(
+            container_id="a", memory_warning=80.0,
+            memory_critical=None, pid_warning=None,
+            pid_critical=None, cpu_throttle=None,
+        )
+        p = build_payload("containers-alert-thresholds", args3)
+        self.assertEqual(p["op"], "alert_thresholds")
+        self.assertEqual(p["memory_warning"], 80.0)
+
+    def test_cli_format_human(self):
+        """CLI format_human for alert commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "alerts": [
+                {"timestamp": 1000.0, "resource": "memory",
+                 "level": "critical", "detail": "95%"},
+            ],
+            "count": 1,
+        }
+        text = format_human("containers-alert-history", resp)
+        self.assertIn("1 alerts", text)
+        self.assertIn("memory", text)
+        # thresholds
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "alert_memory_warning": 80.0,
+            "alert_memory_critical": 95.0,
+        }
+        text2 = format_human("containers-alert-thresholds", resp2)
+        self.assertIn("80.0", text2)
+        self.assertIn("95.0", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19046,6 +19196,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCgroup2Enforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTopEnhanced))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLocks))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceAlerts))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
