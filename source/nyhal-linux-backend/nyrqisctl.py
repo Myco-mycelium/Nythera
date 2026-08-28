@@ -796,6 +796,50 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.tail is not None:
             p6["tail"] = args.tail
         return p6
+    if command == "health-configure":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "health_configure",
+            "container_id": args.container_id,
+            "auto_restart": args.auto_restart,
+            "max_auto_restarts": args.max_auto_restarts,
+        }
+        if args.cmd is not None:
+            payload["cmd"] = args.cmd
+        if args.interval is not None:
+            payload["interval"] = args.interval
+        if args.timeout is not None:
+            payload["timeout"] = args.timeout
+        if args.retries is not None:
+            payload["retries"] = args.retries
+        return payload
+    if command == "health-trigger":
+        return {
+            "service": "control",
+            "op": "health_trigger",
+            "container_id": args.container_id,
+        }
+    if command == "health-config":
+        return {
+            "service": "control",
+            "op": "health_config",
+            "container_id": args.container_id,
+        }
+    if command == "health-restart-reset":
+        return {
+            "service": "control",
+            "op": "health_restart_reset",
+            "container_id": args.container_id,
+        }
+    if command == "health-restart-history":
+        p7: Dict[str, Any] = {
+            "service": "control",
+            "op": "health_restart_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p7["tail"] = args.tail
+        return p7
     if command == "forecast-resource":
         return {
             "service": "control",
@@ -1905,6 +1949,63 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))} "
                 f"{e.get('direction', '?')} {e.get('scale_type', '?')}: "
                 f"{e.get('reason', '')}"
+            )
+        return "\n".join(lines)
+    if command == "health-configure":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"cmd:      {resp.get('health_check_cmd')}",
+            f"interval: {resp.get('interval')}s",
+            f"timeout:  {resp.get('timeout')}s",
+            f"retries:  {resp.get('retries')}",
+            f"auto_restart: {resp.get('auto_restart', False)}",
+            f"max_restarts: {resp.get('max_auto_restarts', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "health-trigger":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"healthy:   {resp.get('healthy', False)}",
+            f"status:    {resp.get('status', '?')}",
+            f"exit_code: {resp.get('exit_code', -1)}",
+            f"duration:  {resp.get('duration_s', 0)}s",
+            f"failures:  {resp.get('failures', 0)}",
+        ]
+        output = resp.get("output", "")
+        if output:
+            lines.append(f"output:    {output[:200]}")
+        return "\n".join(lines)
+    if command == "health-config":
+        lines = [
+            f"container:      {resp.get('container_id')}",
+            f"cmd:           {resp.get('health_check_cmd')}",
+            f"interval:      {resp.get('interval')}s",
+            f"timeout:       {resp.get('timeout')}s",
+            f"retries:       {resp.get('retries')}",
+            f"auto_restart:  {resp.get('auto_restart', False)}",
+            f"max_restarts:  {resp.get('max_auto_restarts', 0)}",
+            f"cooldown:      {resp.get('restart_cooldown_s', 60)}s",
+            f"restart_count: {resp.get('restart_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "health-restart-reset":
+        prev = resp.get("previous_count", 0)
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"reset:     {resp.get('reset', False)}\n"
+            f"was:       {prev} restarts"
+        )
+    if command == "health-restart-history":
+        history = resp.get("history", [])
+        if not history:
+            return "No restart history."
+        lines = [f"restart history ({len(history)}):"]
+        for e in history:
+            ts = e.get("timestamp", 0)
+            lines.append(
+                f"  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))} "
+                f"attempt {e.get('attempt', '?')}/{e.get('max', '?')} "
+                f"reason: {e.get('reason', '?')}"
             )
         return "\n".join(lines)
     if command == "forecast-resource":
@@ -3056,6 +3157,47 @@ def build_parser() -> argparse.ArgumentParser:
     ase.add_argument("container_id")
     ase.add_argument("--tail", type=int, default=None)
     ase.set_defaults(command="autoscale-events")
+
+    # Health check commands
+    hc = sub.add_parser("health", help="Health check management")
+    hcsub = hc.add_subparsers(dest="health_cmd", required=True)
+
+    hcc = hcsub.add_parser("configure", help="Configure health checks")
+    hcc.add_argument("container_id")
+    hcc.add_argument("--cmd", nargs="+", default=None,
+                     help="Health check command")
+    hcc.add_argument("--interval", type=float, default=None,
+                     help="Check interval in seconds")
+    hcc.add_argument("--timeout", type=float, default=None,
+                     help="Check timeout in seconds")
+    hcc.add_argument("--retries", type=int, default=None,
+                     help="Consecutive failures before unhealthy")
+    hcc.add_argument("--auto-restart", action="store_true", default=True,
+                     help="Auto-restart on unhealthy")
+    hcc.add_argument("--no-auto-restart", dest="auto_restart",
+                     action="store_false",
+                     help="Disable auto-restart")
+    hcc.add_argument("--max-restarts", type=int, default=3,
+                     dest="max_auto_restarts",
+                     help="Max auto-restart attempts")
+    hcc.set_defaults(command="health-configure")
+
+    hct = hcsub.add_parser("trigger", help="Trigger a health check now")
+    hct.add_argument("container_id")
+    hct.set_defaults(command="health-trigger")
+
+    hcg = hcsub.add_parser("config", help="Get health check config")
+    hcg.add_argument("container_id")
+    hcg.set_defaults(command="health-config")
+
+    hcr = hcsub.add_parser("restart-reset", help="Reset restart counter")
+    hcr.add_argument("container_id")
+    hcr.set_defaults(command="health-restart-reset")
+
+    hch = hcsub.add_parser("restart-history", help="Get restart history")
+    hch.add_argument("container_id")
+    hch.add_argument("--tail", type=int, default=None)
+    hch.set_defaults(command="health-restart-history")
 
     fc = sub.add_parser("forecast", help="Resource usage forecasting")
     fcsub = fc.add_subparsers(dest="forecast_cmd", required=True)

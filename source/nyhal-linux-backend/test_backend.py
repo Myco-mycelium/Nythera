@@ -5606,6 +5606,152 @@ class TestAutoScaling(unittest.TestCase):
         self.assertIn("disabled", text3)
 
 
+class TestHealthCheckAutoRestart(unittest.TestCase):
+    """Health checks with automatic restart."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_health_check(self):
+        """configure_health_check sets up config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test"))
+        result = mgr.configure_health_check(
+            c, cmd=["true"], interval=10.0, auto_restart=True,
+        )
+        self.assertEqual(result["health_check_cmd"], ["true"])
+        self.assertEqual(result["interval"], 10.0)
+        self.assertTrue(result["auto_restart"])
+
+    def test_configure_custom(self):
+        """configure_health_check accepts custom settings."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test2"))
+        result = mgr.configure_health_check(
+            c, cmd=["curl", "-f", "http://localhost"],
+            interval=5.0, timeout=2.0, retries=5,
+            auto_restart=False, max_auto_restarts=0,
+        )
+        self.assertEqual(result["retries"], 5)
+        self.assertFalse(result["auto_restart"])
+        self.assertEqual(result["max_auto_restarts"], 0)
+
+    def test_get_config(self):
+        """get_health_check_config returns full config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test3"))
+        mgr.configure_health_check(c, cmd=["true"])
+        config = mgr.get_health_check_config(c)
+        self.assertEqual(config["health_check_cmd"], ["true"])
+        self.assertIn("auto_restart", config)
+        self.assertIn("restart_count", config)
+
+    def test_reset_restart_count(self):
+        """reset_health_restart_count resets counter."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test4"))
+        mgr.configure_health_check(c, cmd=["true"])
+        # Manually set restart count
+        c._health_restart["restart_count"] = 5
+        result = mgr.reset_health_restart_count(c)
+        self.assertTrue(result["reset"])
+        self.assertEqual(result["previous_count"], 5)
+        # Verify reset
+        config = mgr.get_health_check_config(c)
+        self.assertEqual(config["restart_count"], 0)
+
+    def test_get_restart_history(self):
+        """get_health_restart_history returns list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test5"))
+        mgr.configure_health_check(c, cmd=["true"])
+        history = mgr.get_health_restart_history(c)
+        self.assertEqual(len(history), 0)
+
+    def test_trigger_no_cmd(self):
+        """trigger_health_check returns error without cmd."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hc-test6"))
+        result = mgr.trigger_health_check(c)
+        self.assertFalse(result["healthy"])
+        self.assertIn("error", result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for health commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="health-configure", container_id="a",
+            cmd=["true"], interval=10.0, timeout=5.0,
+            retries=3, auto_restart=True, max_auto_restarts=3,
+        )
+        p = build_payload("health-configure", args1)
+        self.assertEqual(p["op"], "health_configure")
+        self.assertEqual(p["cmd"], ["true"])
+        self.assertTrue(p["auto_restart"])
+        args2 = argparse.Namespace(
+            command="health-trigger", container_id="a",
+        )
+        p2 = build_payload("health-trigger", args2)
+        self.assertEqual(p2["op"], "health_trigger")
+        args3 = argparse.Namespace(
+            command="health-config", container_id="a",
+        )
+        p3 = build_payload("health-config", args3)
+        self.assertEqual(p3["op"], "health_config")
+
+    def test_cli_format_human(self):
+        """CLI format_human for health commands."""
+        from nyrqisctl import format_human
+        # configure
+        resp = {
+            "ok": True, "container_id": "a",
+            "health_check_cmd": ["true"],
+            "interval": 10.0, "timeout": 5.0, "retries": 3,
+            "auto_restart": True, "max_auto_restarts": 3,
+        }
+        text = format_human("health-configure", resp)
+        self.assertIn("true", text)
+        self.assertIn("True", text)
+        # trigger
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "healthy": True, "status": "healthy",
+            "exit_code": 0, "duration_s": 0.1,
+            "failures": 0, "output": "",
+        }
+        text2 = format_human("health-trigger", resp2)
+        self.assertIn("True", text2)
+        self.assertIn("healthy", text2)
+        # config
+        resp3 = {
+            "ok": True, "container_id": "a",
+            "health_check_cmd": ["true"],
+            "interval": 10.0, "timeout": 5.0, "retries": 3,
+            "auto_restart": True, "max_auto_restarts": 3,
+            "restart_cooldown_s": 60.0, "restart_count": 2,
+        }
+        text3 = format_human("health-config", resp3)
+        self.assertIn("2", text3)
+        # restart-history
+        resp4 = {
+            "ok": True, "container_id": "a",
+            "history": [
+                {"timestamp": 1000000, "attempt": 1, "max": 3,
+                 "reason": "health_check_unhealthy"},
+            ],
+        }
+        text4 = format_human("health-restart-history", resp4)
+        self.assertIn("1/3", text4)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20996,6 +21142,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAlertHistoryManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestHealthCheckAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

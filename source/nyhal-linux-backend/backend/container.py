@@ -815,6 +815,245 @@ class ContainerManager:
             "check_cmd": container.config.health_check_cmd,
         }
 
+    # ------------------------------------------------------------------
+    # Enhanced health checks with automatic restart
+    # ------------------------------------------------------------------
+
+    def configure_health_check(
+        self,
+        container: Container,
+        cmd: Optional[List[str]] = None,
+        interval: Optional[float] = None,
+        timeout: Optional[float] = None,
+        retries: Optional[int] = None,
+        auto_restart: bool = True,
+        max_auto_restarts: int = 3,
+        restart_cooldown_s: float = 60.0,
+    ) -> Dict[str, Any]:
+        """Configure health check settings for a container.
+
+        Args:
+            container: Target container.
+            cmd: Health check command (e.g., ["curl", "-f", "http://localhost"]).
+            interval: Seconds between checks.
+            timeout: Max seconds per check.
+            retries: Consecutive failures before marking unhealthy.
+            auto_restart: Whether to restart on unhealthy.
+            max_auto_restarts: Max auto-restarts before giving up.
+            restart_cooldown_s: Min seconds between auto-restarts.
+
+        Returns:
+            Dict with the health check configuration.
+        """
+        cfg = container.config
+        if cmd is not None:
+            cfg.health_check_cmd = cmd
+        if interval is not None:
+            cfg.health_check_interval = interval
+        if timeout is not None:
+            cfg.health_check_timeout = timeout
+        if retries is not None:
+            cfg.health_check_retries = retries
+
+        # Auto-restart settings
+        if not hasattr(container, '_health_restart'):
+            container._health_restart = {}
+        container._health_restart.update({
+            "auto_restart": auto_restart,
+            "max_auto_restarts": max_auto_restarts,
+            "restart_cooldown_s": restart_cooldown_s,
+            "restart_count": 0,
+            "last_restart_time": 0,
+            "restart_history": [],
+        })
+
+        logger.info(
+            "configure_health_check: %s cmd=%s interval=%.1f auto_restart=%s",
+            container.id, cmd, cfg.health_check_interval, auto_restart,
+        )
+        return {
+            "container_id": container.id,
+            "health_check_cmd": cfg.health_check_cmd,
+            "interval": cfg.health_check_interval,
+            "timeout": cfg.health_check_timeout,
+            "retries": cfg.health_check_retries,
+            "auto_restart": auto_restart,
+            "max_auto_restarts": max_auto_restarts,
+        }
+
+    def trigger_health_check(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Manually trigger a health check and return the result.
+
+        Returns:
+            Dict with ``healthy``, ``exit_code``, ``output``, ``duration_s``.
+        """
+        if not container.config.health_check_cmd:
+            return {
+                "container_id": container.id,
+                "healthy": False,
+                "error": "no health check command configured",
+            }
+
+        start = time.time()
+        try:
+            result = self.container_exec(
+                container,
+                container.config.health_check_cmd,
+                timeout_s=container.config.health_check_timeout,
+            )
+            exit_code = result.get("exit_code", -1)
+            output = (result.get("stdout", "") + result.get("stderr", ""))[:1000]
+            healthy = exit_code == 0
+        except Exception as e:
+            exit_code = -1
+            output = str(e)
+            healthy = False
+
+        duration = time.time() - start
+
+        # Update container health state
+        container.health_last_check = time.time()
+        container.health_last_output = output
+        if healthy:
+            container.health_failures = 0
+            container.health_status = "healthy"
+        else:
+            container.health_failures += 1
+            if container.health_failures >= container.config.health_check_retries:
+                container.health_status = "unhealthy"
+                # Check if auto-restart should trigger
+                self._maybe_auto_restart(container)
+
+        return {
+            "container_id": container.id,
+            "healthy": healthy,
+            "exit_code": exit_code,
+            "output": output,
+            "duration_s": round(duration, 3),
+            "failures": container.health_failures,
+            "status": container.health_status,
+        }
+
+    def _maybe_auto_restart(self, container: Container) -> None:
+        """Check if auto-restart should be triggered and do it."""
+        if not hasattr(container, '_health_restart') or \
+                not container._health_restart.get("auto_restart"):
+            return
+
+        hr = container._health_restart
+        now = time.time()
+
+        # Check if we've exceeded max restarts
+        if hr["restart_count"] >= hr["max_auto_restarts"]:
+            logger.warning(
+                "auto_restart: %s exceeded max restarts (%d), not restarting",
+                container.id, hr["max_auto_restarts"],
+            )
+            return
+
+        # Check cooldown
+        last_restart = hr.get("last_restart_time", 0)
+        if (now - last_restart) < hr["restart_cooldown_s"]:
+            logger.debug(
+                "auto_restart: %s in cooldown, skipping",
+                container.id,
+            )
+            return
+
+        # Perform the restart
+        logger.warning(
+            "auto_restart: restarting %s (attempt %d/%d)",
+            container.id, hr["restart_count"] + 1, hr["max_auto_restarts"],
+        )
+        try:
+            self.stop(container, timeout=5)
+            time.sleep(1)
+            self.spawn(container.config)
+            hr["restart_count"] += 1
+            hr["last_restart_time"] = now
+            container.health_failures = 0
+            container.health_status = "starting"
+            # Record event
+            event = {
+                "timestamp": now,
+                "attempt": hr["restart_count"],
+                "max": hr["max_auto_restarts"],
+                "reason": "health_check_unhealthy",
+            }
+            hr["restart_history"].append(event)
+            if len(hr["restart_history"]) > 50:
+                hr["restart_history"] = hr["restart_history"][-50:]
+            self._record_event(
+                "auto_restart", container.id,
+                f"attempt {hr['restart_count']}/{hr['max_auto_restarts']}",
+            )
+        except Exception as e:
+            logger.error(
+                "auto_restart: failed to restart %s: %s",
+                container.id, e,
+            )
+
+    def reset_health_restart_count(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Reset the auto-restart counter (e.g., after manual intervention).
+
+        Returns:
+            Dict with ``reset``, ``previous_count``.
+        """
+        if not hasattr(container, '_health_restart') or \
+                not container._health_restart:
+            return {
+                "container_id": container.id,
+                "reset": False,
+                "previous_count": 0,
+            }
+        hr = container._health_restart
+        prev = hr["restart_count"]
+        hr["restart_count"] = 0
+        return {
+            "container_id": container.id,
+            "reset": True,
+            "previous_count": prev,
+        }
+
+    def get_health_restart_history(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get auto-restart history for a container."""
+        if not hasattr(container, '_health_restart') or \
+                not container._health_restart:
+            return []
+        history = container._health_restart.get("restart_history", [])
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    def get_health_check_config(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get the full health check configuration."""
+        cfg = container.config
+        hr = getattr(container, '_health_restart', {})
+        return {
+            "container_id": container.id,
+            "health_check_cmd": cfg.health_check_cmd,
+            "interval": cfg.health_check_interval,
+            "timeout": cfg.health_check_timeout,
+            "retries": cfg.health_check_retries,
+            "auto_restart": hr.get("auto_restart", False),
+            "max_auto_restarts": hr.get("max_auto_restarts", 0),
+            "restart_cooldown_s": hr.get("restart_cooldown_s", 60.0),
+            "restart_count": hr.get("restart_count", 0),
+        }
+
     def _detect_cgroups_v2(self) -> bool:
         """Detect if cgroups v2 is available on this system."""
         try:
