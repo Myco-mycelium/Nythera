@@ -108,6 +108,8 @@ class ContainerConfig:
     # Priority scheduling
     nice_value: int = 0  # -20 (highest) to 19 (lowest), default 0
     cpu_affinity: Optional[List[int]] = None  # CPU core IDs (None = any)
+    # Network policy
+    network_policy: Optional[Dict[str, Any]] = None  # ingress/egress rules
 
 
 class RingBuffer:
@@ -523,6 +525,8 @@ class ContainerManager:
                 self.set_nice(container, container.config.nice_value)
             if container.config.cpu_affinity:
                 self.set_cpu_affinity(container, container.config.cpu_affinity)
+            # Apply network policy if configured
+            self.apply_network_policy(container)
         except Exception as e:
             logger.error(f"Error starting container {container.id}: {e}")
             container.transition_to(ContainerState.TERMINATED)
@@ -775,6 +779,7 @@ class ContainerManager:
             return  # Already terminated
 
         self.stop_health_check(container)
+        self.remove_network_policy(container)
 
         if container.pid is None:
             container.transition_to(ContainerState.TERMINATED)
@@ -1332,6 +1337,58 @@ class ContainerManager:
             result["cpu_affinity_current"] = None
             result["nice_value_current"] = None
         return result
+
+    def apply_network_policy(self, container: Container) -> bool:
+        """Apply the container's configured network policy.
+
+        Uses iptables on the host to filter ingress/egress traffic
+        on the container's veth interface.  Requires ``config.network``
+        and ``config.network_policy`` to be set.
+
+        Returns:
+            True if policy was applied successfully.
+        """
+        if not container.config.network or not container.config.network_policy:
+            return False
+        try:
+            from backend.network import apply_network_policy
+            ok = apply_network_policy(
+                container.id, container.config.network_policy,
+            )
+            if ok:
+                self._record_event("network_policy_applied", container.id,
+                                   str(container.config.network_policy))
+            return ok
+        except ImportError:
+            logger.debug("network_policy: network module not available")
+            return False
+        except Exception as e:
+            logger.warning("network_policy failed for %s: %s", container.id, e)
+            return False
+
+    def remove_network_policy(self, container: Container) -> bool:
+        """Remove the network policy rules for a container."""
+        try:
+            from backend.network import remove_network_policy
+            ok = remove_network_policy(container.id)
+            if ok:
+                self._record_event("network_policy_removed", container.id)
+            return ok
+        except ImportError:
+            return False
+        except Exception as e:
+            logger.warning("remove_network_policy failed for %s: %s", container.id, e)
+            return False
+
+    def get_network_policy(self, container: Container) -> Optional[Dict[str, Any]]:
+        """Get the current network policy rules for a container."""
+        try:
+            from backend.network import get_network_policy
+            return get_network_policy(container.id)
+        except ImportError:
+            return None
+        except Exception:
+            return None
 
     def _start_log_capture(self, container: Container,
                            proc: subprocess.Popen) -> None:

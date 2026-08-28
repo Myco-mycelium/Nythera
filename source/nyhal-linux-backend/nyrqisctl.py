@@ -237,6 +237,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_scheduling",
             "container_id": args.container_id,
         }
+    if command == "containers-netpolicy":
+        return {
+            "service": "control",
+            "op": "container_network_policy",
+            "container_id": args.container_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -625,6 +631,28 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         ]
         if config_aff:
             lines.append(f"affinity_conf: {config_aff}")
+        return "\n".join(lines)
+    if command == "containers-netpolicy":
+        policy = resp.get("policy")
+        if not policy:
+            return f"container {resp.get('container_id')}: no network policy (no veth interface)"
+        lines = [
+            f"interface:  {policy.get('interface')}",
+        ]
+        ingress = policy.get("ingress_rules") or []
+        egress = policy.get("egress_rules") or []
+        if ingress:
+            lines.append("ingress:")
+            for r in ingress:
+                lines.append(f"  {r}")
+        else:
+            lines.append("ingress: (none)")
+        if egress:
+            lines.append("egress:")
+            for r in egress:
+                lines.append(f"  {r}")
+        else:
+            lines.append("egress: (none)")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1200,6 +1228,10 @@ def build_parser() -> argparse.ArgumentParser:
     csc.add_argument("--affinity", nargs="+", type=int, default=None,
                      help="Set CPU core affinity (e.g. --affinity 0 1)")
     csc.set_defaults(command="containers-sched")
+
+    cnp = csub.add_parser("netpolicy", help="Show network policy rules for a container")
+    cnp.add_argument("container_id")
+    cnp.set_defaults(command="containers-netpolicy")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

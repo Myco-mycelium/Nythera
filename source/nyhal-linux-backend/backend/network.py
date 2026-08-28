@@ -385,6 +385,170 @@ def get_network_stats(container_id: str) -> Optional[dict]:
     }
 
 
+def apply_network_policy(container_id: str, policy: dict) -> bool:
+    """Apply iptables network policy rules for a container.
+
+    The policy dict can contain:
+    - ``ingress_allow``: list of "proto:port" strings (e.g. "tcp:80", "tcp:443")
+    - ``ingress_deny``: list of "proto:port" strings to explicitly deny
+    - ``egress_allow``: list of "proto:port" strings for outbound
+    - ``egress_deny``: list of "proto:port" strings to deny outbound
+    - ``egress_all``: bool, allow all outbound (default True)
+    - ``ingress_all``: bool, allow all inbound (default False)
+
+    Rules are applied via iptables on the host-side veth interface
+    using the FORWARD chain.
+
+    Args:
+        container_id: The container identifier.
+        policy: The policy dict.
+
+    Returns:
+        True if rules were applied successfully.
+    """
+    short_id = container_id[:12].replace("-", "")
+    host_iface = f"veth-{short_id}"
+
+    # Check if the interface exists
+    result = _run(["ip", "link", "show", host_iface])
+    if result.returncode != 0:
+        logger.debug("network_policy: interface %s not found", host_iface)
+        return False
+
+    success = True
+
+    # --- Ingress rules (traffic coming INTO the container) ---
+    ingress_all = policy.get("ingress_all", False)
+    ingress_allow = policy.get("ingress_allow", [])
+    ingress_deny = policy.get("ingress_deny", [])
+
+    if not ingress_all:
+        # Default deny ingress, then allow specific ports
+        # -i = input interface (host-side veth)
+        _run(["iptables", "-A", "FORWARD", "-i", host_iface,
+              "-j", "DROP"])
+        for rule in ingress_allow:
+            proto_port = rule.split(":", 1)
+            if len(proto_port) == 2:
+                proto, port = proto_port
+                _run(["iptables", "-I", "FORWARD", "1",
+                      "-i", host_iface,
+                      "-p", proto, "--dport", port,
+                      "-j", "ACCEPT"])
+    else:
+        # Allow all ingress, deny specific ports
+        for rule in ingress_deny:
+            proto_port = rule.split(":", 1)
+            if len(proto_port) == 2:
+                proto, port = proto_port
+                _run(["iptables", "-A", "FORWARD",
+                      "-i", host_iface,
+                      "-p", proto, "--dport", port,
+                      "-j", "DROP"])
+
+    # --- Egress rules (traffic going OUT of the container) ---
+    egress_all = policy.get("egress_all", True)
+    egress_allow = policy.get("egress_allow", [])
+    egress_deny = policy.get("egress_deny", [])
+
+    if egress_all and not egress_deny:
+        # Allow all egress (default)
+        pass
+    else:
+        # Default deny egress, then allow specific ports
+        _run(["iptables", "-A", "FORWARD", "-o", host_iface,
+              "-j", "DROP"])
+        for rule in egress_allow:
+            proto_port = rule.split(":", 1)
+            if len(proto_port) == 2:
+                proto, port = proto_port
+                _run(["iptables", "-I", "FORWARD", "1",
+                      "-o", host_iface,
+                      "-p", proto, "--dport", port,
+                      "-j", "ACCEPT"])
+        for rule in egress_deny:
+            proto_port = rule.split(":", 1)
+            if len(proto_port) == 2:
+                proto, port = proto_port
+                _run(["iptables", "-A", "FORWARD",
+                      "-o", host_iface,
+                      "-p", proto, "--dport", port,
+                      "-j", "DROP"])
+
+    logger.info("network_policy: applied for %s on %s", container_id, host_iface)
+    return success
+
+
+def remove_network_policy(container_id: str) -> bool:
+    """Remove all iptables rules for a container's veth interface.
+
+    Flushes any FORWARD chain rules that reference the container's
+    host-side veth interface.
+
+    Args:
+        container_id: The container identifier.
+
+    Returns:
+        True if rules were removed.
+    """
+    short_id = container_id[:12].replace("-", "")
+    host_iface = f"veth-{short_id}"
+
+    # Remove all rules referencing this interface
+    for direction in ("-i", "-o"):
+        while True:
+            result = _run(
+                ["iptables", "-D", "FORWARD",
+                 direction, host_iface, "-j", "DROP"]
+            )
+            if result.returncode != 0:
+                break
+        while True:
+            result = _run(
+                ["iptables", "-D", "FORWARD",
+                 direction, host_iface, "-j", "ACCEPT"]
+            )
+            if result.returncode != 0:
+                break
+
+    logger.info("network_policy: removed for %s", container_id)
+    return True
+
+
+def get_network_policy(container_id: str) -> Optional[dict]:
+    """Get the current iptables rules for a container's veth interface.
+
+    Returns:
+        Dict with ``ingress_rules`` and ``egress_rules`` lists,
+        or None if the interface doesn't exist.
+    """
+    short_id = container_id[:12].replace("-", "")
+    host_iface = f"veth-{short_id}"
+
+    result = _run(["iptables", "-L", "FORWARD", "-n", "--line-numbers"])
+    if result.returncode != 0:
+        return None
+
+    output = result.stdout.decode("utf-8", errors="replace")
+    ingress_rules = []
+    egress_rules = []
+    for line in output.splitlines():
+        if host_iface in line:
+            parts = line.split()
+            if len(parts) >= 4:
+                rule_str = " ".join(parts[3:])
+                if f"-i {host_iface}" in line or f"-i{host_iface}" in line:
+                    ingress_rules.append(rule_str)
+                elif f"-o {host_iface}" in line or f"-o{host_iface}" in line:
+                    egress_rules.append(rule_str)
+
+    return {
+        "interface": host_iface,
+        "ingress_rules": ingress_rules,
+        "egress_rules": egress_rules,
+    }
+
+
 __all__ = [
     "setup_container_network",
     "teardown_container_network",
@@ -392,6 +556,9 @@ __all__ = [
     "is_bridge_available",
     "get_container_ip",
     "get_network_stats",
+    "apply_network_policy",
+    "remove_network_policy",
+    "get_network_policy",
     "BRIDGE_NAME",
     "BRIDGE_SUBNET",
 ]

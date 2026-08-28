@@ -166,6 +166,9 @@ class ControlService:
             elif op == "container_set_affinity":
                 self._container_set_affinity(server, sender_path,
                                              msg.message_id, request)
+            elif op == "container_network_policy":
+                self._container_network_policy(server, sender_path,
+                                               msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -673,6 +676,31 @@ class ControlService:
             return
         self._reply(server, sender_path, call_id, {
             "ok": ok, "cores": cores,
+        })
+
+    def _container_network_policy(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            policy = self.container_manager.get_network_policy(container)
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_network_policy failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container.id,
+            "policy": policy,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,

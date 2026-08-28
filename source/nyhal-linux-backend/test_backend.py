@@ -2127,6 +2127,100 @@ class TestPriorityScheduling(unittest.TestCase):
         self.assertEqual(config.cpu_affinity, [0, 1])
 
 
+class TestNetworkPolicy(unittest.TestCase):
+    """Test container network policy (iptables ingress/egress filtering)."""
+
+    def test_policy_none_without_network(self):
+        """Network policy returns False for non-network containers."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(network=False))
+        result = manager.apply_network_policy(container)
+        self.assertFalse(result)
+
+    def test_policy_none_without_config(self):
+        """Network policy returns False when no policy configured."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(
+            network=True, network_policy=None,
+        ))
+        result = manager.apply_network_policy(container)
+        self.assertFalse(result)
+
+    def test_remove_policy_no_veth(self):
+        """Remove policy returns True even without a veth interface."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        result = manager.remove_network_policy(container)
+        self.assertTrue(result)
+
+    def test_get_policy_no_veth(self):
+        """Get policy returns None for containers without veth."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        result = manager.get_network_policy(container)
+        self.assertIsNone(result)
+
+    def test_policy_config_fields(self):
+        """ContainerConfig carries network policy settings."""
+        from backend.container import ContainerConfig
+        policy = {
+            "ingress_allow": ["tcp:80", "tcp:443"],
+            "egress_all": True,
+        }
+        config = ContainerConfig(network=True, network_policy=policy)
+        self.assertEqual(config.network_policy["ingress_allow"], ["tcp:80", "tcp:443"])
+        self.assertTrue(config.network_policy["egress_all"])
+
+    def test_netpolicy_cli_payload(self):
+        """CLI build_payload for containers-netpolicy."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc")
+        payload = build_payload("containers-netpolicy", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_network_policy")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+
+    def test_netpolicy_cli_format_human(self):
+        """CLI format_human for containers-netpolicy."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "policy": {
+                "interface": "veth-abc123def456",
+                "ingress_rules": ["ACCEPT tcp dpt:80"],
+                "egress_rules": [],
+            },
+        }
+        text = format_human("containers-netpolicy", resp)
+        self.assertIn("veth-abc123def456", text)
+        self.assertIn("ACCEPT tcp dpt:80", text)
+        self.assertIn("egress: (none)", text)
+
+    def test_netpolicy_cli_format_human_no_policy(self):
+        """CLI format_human when no policy exists."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "policy": None,
+        }
+        text = format_human("containers-netpolicy", resp)
+        self.assertIn("no network policy", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17491,6 +17585,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
