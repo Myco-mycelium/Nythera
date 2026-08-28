@@ -127,6 +127,12 @@ class ControlService:
             elif op == "container_exec":
                 self._container_exec(server, sender_path, msg.message_id,
                                      request)
+            elif op == "container_checkpoint":
+                self._container_checkpoint(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "container_restore":
+                self._container_restore(server, sender_path,
+                                        msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -315,6 +321,56 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             **result,
+        })
+
+    def _container_checkpoint(self, server, sender_path: str, call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        container = self.container_manager.containers.get(container_id)
+        if container is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "unknown container: %r" % (container_id,),
+            })
+            return
+        try:
+            cp = self.container_manager.container_checkpoint(
+                container, path=request.get("path"),
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_checkpoint failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "checkpoint_path": cp.get("checkpoint_path"),
+            "overlay_entries": cp.get("overlay_entries", 0),
+        })
+
+    def _container_restore(self, server, sender_path: str, call_id: str,
+                            request: Dict[str, Any]) -> None:
+        checkpoint = request.get("checkpoint")
+        if not checkpoint or not isinstance(checkpoint, dict):
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "checkpoint dict is required",
+            })
+            return
+        try:
+            container = self.container_manager.container_restore(checkpoint)
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_restore failed: %s" % (e,),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container.id,
+            "state": container.state.value,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,

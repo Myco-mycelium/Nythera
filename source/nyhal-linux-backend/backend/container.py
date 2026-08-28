@@ -1148,6 +1148,162 @@ class ContainerManager:
                 "stderr": f"command timed out after {timeout_s}s",
             }
 
+    def container_checkpoint(self, container: Container,
+                             path: Optional[str] = None) -> Dict[str, Any]:
+        """Checkpoint a container's filesystem state.
+
+        Captures the overlay upper layer (if present) and the container
+        configuration so the container can be restored later.  The
+        checkpoint is serialized as JSON to ``path`` (or a temp file
+        when omitted).
+
+        The container does NOT need to be stopped — the overlay snapshot
+        is taken under a lock — but a running container's filesystem
+        may be inconsistent if the command is actively writing.
+
+        Args:
+            container: The container to checkpoint.
+            path: Optional file path to write the checkpoint JSON.
+
+        Returns:
+            Dict with ``checkpoint_path``, ``container_id``,
+            ``overlay_entries`` count, and ``config`` summary.
+        """
+        checkpoint: Dict[str, Any] = {
+            "container_id": container.id,
+            "config": {
+                "hostname": container.config.hostname,
+                "command": container.config.command,
+                "limits": {
+                    "memory_mb": container.config.limits.memory_mb,
+                    "pid_limit": container.config.limits.pid_limit,
+                },
+                "seccomp": container.config.seccomp,
+                "default_deny": container.config.default_deny,
+                "network": container.config.network,
+                "rootfs": container.config.rootfs,
+                "capabilities": container.config.capabilities,
+                "log_capture": container.config.log_capture,
+            },
+            "state": container.state.value,
+            "pid": container.pid,
+            "created_at": container.created_at,
+            "started_at": container.started_at,
+            "network_ip": container.network_ip,
+        }
+
+        # Capture overlay state if present
+        if container.overlay is not None:
+            try:
+                overlay_snap = container.overlay.snapshot()
+                checkpoint["overlay"] = overlay_snap
+                checkpoint["overlay_entries"] = len(
+                    overlay_snap.get("entries", {})
+                )
+            except Exception as e:
+                logger.warning(
+                    "checkpoint: overlay snapshot failed for %s: %s",
+                    container.id, e,
+                )
+                checkpoint["overlay"] = None
+                checkpoint["overlay_entries"] = 0
+        else:
+            checkpoint["overlay"] = None
+            checkpoint["overlay_entries"] = 0
+
+        # Write to file
+        if path is None:
+            fd, path = tempfile.mkstemp(
+                suffix=".checkpoint.json",
+                prefix=f"nyctr-{container.id}-",
+            )
+            os.close(fd)
+        with open(path, "w") as f:
+            json.dump(checkpoint, f, indent=2)
+
+        checkpoint["checkpoint_path"] = path
+        logger.info(
+            "container_checkpoint: %s → %s (%d overlay entries)",
+            container.id, path, checkpoint["overlay_entries"],
+        )
+        return checkpoint
+
+    def container_restore(self, checkpoint: Dict[str, Any]) -> Container:
+        """Restore a container from a checkpoint.
+
+        Creates a new container from the checkpointed configuration and
+        restores the overlay state.  The container is left in CREATED
+        state — call ``spawn()`` to start it.
+
+        Args:
+            checkpoint: The checkpoint dict (as returned by
+                ``container_checkpoint``).
+
+        Returns:
+            The new container in CREATED state.
+        """
+        cfg_data = checkpoint.get("config", {})
+        limits_data = cfg_data.get("limits", {})
+        config = ContainerConfig(
+            name=f"{checkpoint.get('container_id', 'nyctr')}-restored",
+            hostname=cfg_data.get("hostname", "nyrqis-container"),
+            command=cfg_data.get("command", ["/bin/sh"]),
+            limits=ResourceLimits(
+                memory_mb=limits_data.get("memory_mb", 256),
+                pid_limit=limits_data.get("pid_limit", 64),
+            ),
+            seccomp=cfg_data.get("seccomp", True),
+            default_deny=cfg_data.get("default_deny", True),
+            network=cfg_data.get("network", False),
+            rootfs=cfg_data.get("rootfs"),
+            capabilities=cfg_data.get("capabilities", []),
+            log_capture=cfg_data.get("log_capture", False),
+        )
+
+        container = self.create(config)
+
+        # Restore overlay state if captured
+        overlay_data = checkpoint.get("overlay")
+        if overlay_data is not None and container.config.rootfs is not None:
+            try:
+                from fuse.overlay import OverlayFilesystem
+                from fuse.nyfs import NyFSFilesystem
+                lower = NyFSFilesystem(container.config.rootfs)
+                container.overlay = OverlayFilesystem(
+                    lower, container_id=container.id,
+                )
+                # Restore the upper layer entries
+                entries = overlay_data.get("entries", {})
+                for path, entry_data in entries.items():
+                    kind = entry_data.get("kind", "file")
+                    deleted = entry_data.get("deleted", False)
+                    mode = entry_data.get("mode", 0o644)
+                    if kind == "dir":
+                        container.overlay.mkdir(path, mode)
+                        if deleted:
+                            container.overlay._upper[path].deleted = True
+                    elif kind == "file":
+                        data = bytes.fromhex(
+                            entry_data.get("data", "")
+                        ) if entry_data.get("data") else b""
+                        container.overlay.create_file(path, mode)
+                        if data:
+                            container.overlay.write(path, data)
+                        if deleted:
+                            container.overlay._upper[path].deleted = True
+                logger.info(
+                    "container_restore: %s overlay restored (%d entries)",
+                    container.id, len(entries),
+                )
+            except Exception as e:
+                logger.warning(
+                    "container_restore: overlay restore failed for %s: %s",
+                    container.id, e,
+                )
+
+        logger.info("container_restore: %s from checkpoint", container.id)
+        return container
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         

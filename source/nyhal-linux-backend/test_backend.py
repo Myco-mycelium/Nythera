@@ -1246,6 +1246,137 @@ class TestContainerExec(unittest.TestCase):
         self.assertIn("exit code: -1", text)
 
 
+class TestContainerCheckpointRestore(unittest.TestCase):
+    """Test container checkpoint/restore (save and resume state)."""
+
+    def test_checkpoint_no_overlay(self):
+        """Checkpoint a container without overlay writes to a JSON file."""
+        import json
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(
+            hostname="ckpt-host",
+            command=["echo", "hello"],
+        ))
+        container.state = ContainerState.RUNNING
+        container.pid = 12345
+
+        cp = manager.container_checkpoint(container)
+        self.assertIn("checkpoint_path", cp)
+        self.assertEqual(cp["overlay_entries"], 0)
+        self.assertIsNone(cp["overlay"])
+
+        # Verify the file is valid JSON
+        with open(cp["checkpoint_path"]) as f:
+            data = json.load(f)
+        self.assertEqual(data["container_id"], container.id)
+        self.assertEqual(data["config"]["hostname"], "ckpt-host")
+        os.unlink(cp["checkpoint_path"])
+
+    def test_checkpoint_with_overlay(self):
+        """Checkpoint captures overlay state."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        tmp = tempfile.mkdtemp()
+        try:
+            lower_path = os.path.join(tmp, "lower")
+            os.makedirs(lower_path)
+            from fuse.nyfs import NyFSFilesystem
+            lower = NyFSFilesystem(lower_path)
+            lower.create_file("/base.txt")
+            lower.write("/base.txt", b"base")
+
+            config = ContainerConfig(
+                rootfs=lower_path,
+                hostname="overlay-host",
+            )
+            container = manager.create(config)
+            container.state = ContainerState.RUNNING
+            container.pid = 99999
+
+            # Create overlay and write to it
+            from fuse.overlay import OverlayFilesystem
+            container.overlay = OverlayFilesystem(
+                lower, container_id=container.id,
+            )
+            # write() auto-creates the file in the upper layer
+            container.overlay.write("/overlay.txt", b"overlay data")
+
+            cp = manager.container_checkpoint(container)
+            self.assertGreater(cp["overlay_entries"], 0)
+            self.assertIsNotNone(cp["overlay"])
+
+            # Restore into a new container
+            restored = manager.container_restore(cp)
+            self.assertNotEqual(restored.id, container.id)
+            self.assertEqual(restored.config.hostname, "overlay-host")
+            self.assertIsNotNone(restored.overlay)
+
+            os.unlink(cp["checkpoint_path"])
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_restore_creates_created_container(self):
+        """Restore produces a container in CREATED state."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(
+            hostname="original",
+        ))
+        container.state = ContainerState.RUNNING
+        container.pid = 11111
+
+        cp = manager.container_checkpoint(container)
+        restored = manager.container_restore(cp)
+        self.assertEqual(restored.state, ContainerState.CREATED)
+        self.assertIsNone(restored.pid)
+        self.assertEqual(restored.config.hostname, "original")
+        os.unlink(cp["checkpoint_path"])
+
+    def test_checkpoint_cli_payload(self):
+        """CLI build_payload for containers-checkpoint."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="nyctr-abc",
+            path="/tmp/ckpt.json",
+        )
+        payload = build_payload("containers-checkpoint", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_checkpoint")
+        self.assertEqual(payload["path"], "/tmp/ckpt.json")
+
+    def test_checkpoint_cli_format_human(self):
+        """CLI format_human for containers-checkpoint."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "checkpoint_path": "/tmp/nyctr-x.checkpoint.json",
+            "overlay_entries": 5,
+        }
+        text = format_human("containers-checkpoint", resp)
+        self.assertIn("checkpoint saved", text)
+        self.assertIn("5 overlay entries", text)
+
+    def test_restore_cli_format_human(self):
+        """CLI format_human for containers-restore."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-restored",
+            "state": "created",
+        }
+        text = format_human("containers-restore", resp)
+        self.assertIn("nyctr-restored", text)
+        self.assertIn("created", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16601,6 +16732,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerStats))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLogs))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerExec))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerCheckpointRestore))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

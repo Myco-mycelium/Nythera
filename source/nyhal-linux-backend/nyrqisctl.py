@@ -136,6 +136,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "command": args.exec_command,
             "timeout": args.timeout,
         }
+    if command == "containers-checkpoint":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "container_checkpoint",
+            "container_id": args.container_id,
+        }
+        if args.path:
+            payload["path"] = args.path
+        return payload
+    if command == "containers-restore":
+        import json as _json_restore
+        with open(args.checkpoint_file) as f:
+            cp = _json_restore.load(f)
+        return {
+            "service": "control",
+            "op": "container_restore",
+            "checkpoint": cp,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -368,6 +386,16 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             parts.append(f"[stderr] {stderr.rstrip()}")
         parts.append(f"exit code: {exit_code}")
         return "\n".join(parts)
+    if command == "containers-checkpoint":
+        return (
+            f"checkpoint saved: {resp.get('checkpoint_path')} "
+            f"({resp.get('overlay_entries', 0)} overlay entries)"
+        )
+    if command == "containers-restore":
+        return (
+            f"container {resp.get('container_id')} restored "
+            f"(state={resp.get('state')})"
+        )
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -895,6 +923,15 @@ def build_parser() -> argparse.ArgumentParser:
     ce.add_argument("--timeout", type=float, default=10.0,
                     help="Timeout in seconds (default: 10)")
     ce.set_defaults(command="containers-exec")
+
+    cc = csub.add_parser("checkpoint", help="Checkpoint a container's filesystem state")
+    cc.add_argument("container_id")
+    cc.add_argument("--path", default=None, help="Output file path")
+    cc.set_defaults(command="containers-checkpoint")
+
+    cr = csub.add_parser("restore", help="Restore a container from a checkpoint file")
+    cr.add_argument("checkpoint_file", help="Path to the checkpoint JSON file")
+    cr.set_defaults(command="containers-restore")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "
