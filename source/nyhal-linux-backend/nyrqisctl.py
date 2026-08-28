@@ -745,6 +745,43 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_id:
             p5["container_id"] = args.container_id
         return p5
+    if command == "cost-budget-configure":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "cost_budget_configure",
+            "container_id": args.container_id,
+            "alert_threshold_pct": args.alert_threshold_pct,
+        }
+        if args.daily_limit is not None:
+            payload["daily_limit"] = args.daily_limit
+        if args.weekly_limit is not None:
+            payload["weekly_limit"] = args.weekly_limit
+        if args.monthly_limit is not None:
+            payload["monthly_limit"] = args.monthly_limit
+        if args.hard_limit is not None:
+            payload["hard_limit"] = args.hard_limit
+        return payload
+    if command == "cost-budget-check":
+        return {
+            "service": "control",
+            "op": "cost_budget_check",
+            "container_id": args.container_id,
+        }
+    if command == "cost-alerts":
+        p6: Dict[str, Any] = {
+            "service": "control",
+            "op": "cost_alerts",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p6["tail"] = args.tail
+        return p6
+    if command == "cost-budget-config":
+        return {
+            "service": "control",
+            "op": "cost_budget_config",
+            "container_id": args.container_id,
+        }
     if command == "autoscale-configure":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -1894,6 +1931,56 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"avg cpu:   ${resp.get('avg_cpu_cost', 0):.6f}\n"
             f"avg pid:   ${resp.get('avg_pid_cost', 0):.6f}"
         )
+    if command == "cost-budget-configure":
+        budget = resp.get("budget", {})
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"daily:    ${budget.get('daily_limit', 0):.2f}",
+            f"weekly:   ${budget.get('weekly_limit', 0):.2f}",
+            f"monthly:  ${budget.get('monthly_limit', 0):.2f}",
+            f"hard:     ${budget.get('hard_limit', 0):.2f}",
+            f"threshold: {budget.get('alert_threshold_pct', 80)}%",
+        ]
+        return "\n".join(lines)
+    if command == "cost-budget-check":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"within_budget: {resp.get('within_budget', True)}",
+            "usage:"
+        ]
+        usage = resp.get("usage", {})
+        lines.append(f"  daily:   ${usage.get('daily_cost', 0):.6f}")
+        lines.append(f"  weekly:  ${usage.get('weekly_cost', 0):.6f}")
+        lines.append(f"  monthly: ${usage.get('monthly_cost', 0):.6f}")
+        alerts = resp.get("alerts", [])
+        if alerts:
+            lines.append(f"alerts ({len(alerts)}):")
+            for a in alerts:
+                lines.append(f"  [{a.get('severity', '?')}] {a.get('message', '')}")
+        return "\n".join(lines)
+    if command == "cost-alerts":
+        alerts = resp.get("alerts", [])
+        if not alerts:
+            return "No cost alerts."
+        lines = [f"cost alerts ({len(alerts)}):"]
+        for a in alerts:
+            lines.append(
+                f"  [{a.get('severity', '?')}] {a.get('period', '?')}: "
+                f"{a.get('message', '')}"
+            )
+        return "\n".join(lines)
+    if command == "cost-budget-config":
+        if not resp.get("configured", False):
+            return f"container {resp.get('container_id')}: no budget configured"
+        lines = [
+            f"container:  {resp.get('container_id')}",
+            f"daily:     ${resp.get('daily_limit', 0):.2f}",
+            f"weekly:    ${resp.get('weekly_limit', 0):.2f}",
+            f"monthly:   ${resp.get('monthly_limit', 0):.2f}",
+            f"hard:      ${resp.get('hard_limit', 0):.2f}",
+            f"threshold: {resp.get('alert_threshold_pct', 80)}%",
+        ]
+        return "\n".join(lines)
     if command == "autoscale-configure":
         as_cfg = resp.get("autoscale", {})
         lines = [
@@ -3115,6 +3202,37 @@ def build_parser() -> argparse.ArgumentParser:
     bsum.add_argument("container_id", nargs="?", default=None,
                       help="Container ID (omit for all)")
     bsum.set_defaults(command="billing-summary")
+
+    # Cost budget commands
+    cb = sub.add_parser("cost-budget", help="Cost budget limits and alerts")
+    cbsub = cb.add_subparsers(dest="budget_cmd", required=True)
+
+    cbc = cbsub.add_parser("configure", help="Configure cost budget limits")
+    cbc.add_argument("container_id")
+    cbc.add_argument("--daily", type=float, default=None,
+                     dest="daily_limit", help="Daily cost limit ($)")
+    cbc.add_argument("--weekly", type=float, default=None,
+                     dest="weekly_limit", help="Weekly cost limit ($)")
+    cbc.add_argument("--monthly", type=float, default=None,
+                     dest="monthly_limit", help="Monthly cost limit ($)")
+    cbc.add_argument("--hard", type=float, default=None,
+                     dest="hard_limit", help="Hard limit ($)")
+    cbc.add_argument("--threshold", type=float, default=80.0,
+                     dest="alert_threshold_pct", help="Alert threshold %%")
+    cbc.set_defaults(command="cost-budget-configure")
+
+    cbk = cbsub.add_parser("check", help="Check budget status")
+    cbk.add_argument("container_id")
+    cbk.set_defaults(command="cost-budget-check")
+
+    cba = cbsub.add_parser("alerts", help="Get cost alert history")
+    cba.add_argument("container_id")
+    cba.add_argument("--tail", type=int, default=None)
+    cba.set_defaults(command="cost-alerts")
+
+    cbg = cbsub.add_parser("config", help="Get budget configuration")
+    cbg.add_argument("container_id")
+    cbg.set_defaults(command="cost-budget-config")
 
     # Auto-scaling commands
     asp = sub.add_parser("autoscale", help="Auto-scaling management")

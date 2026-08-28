@@ -2327,6 +2327,101 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # Cost alerts and budget limits
+
+    def _cost_budget_configure(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.configure_cost_budget(
+            c,
+            daily_limit=request.get("daily_limit"),
+            weekly_limit=request.get("weekly_limit"),
+            monthly_limit=request.get("monthly_limit"),
+            alert_threshold_pct=request.get("alert_threshold_pct", 80.0),
+            hard_limit=request.get("hard_limit"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _cost_budget_check(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.check_cost_budget(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _cost_alerts(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        alerts = self.container_manager.get_cost_alerts(c, tail=tail)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "alerts": alerts,
+        })
+
+    def _cost_budget_config(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_cost_budget_config(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     # Auto-scaling
 
     def _autoscale_configure(self, server, sender_path: str,

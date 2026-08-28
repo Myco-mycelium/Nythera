@@ -5752,6 +5752,130 @@ class TestHealthCheckAutoRestart(unittest.TestCase):
         self.assertIn("1/3", text4)
 
 
+class TestCostBudget(unittest.TestCase):
+    """Cost alerts and budget limits."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_budget(self):
+        """configure_cost_budget sets up limits."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget-test"))
+        result = mgr.configure_cost_budget(
+            c, daily_limit=10.0, monthly_limit=200.0,
+        )
+        self.assertEqual(result["budget"]["daily_limit"], 10.0)
+        self.assertEqual(result["budget"]["monthly_limit"], 200.0)
+
+    def test_configure_custom(self):
+        """configure_cost_budget accepts custom values."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget-test2"))
+        result = mgr.configure_cost_budget(
+            c, daily_limit=5.0, weekly_limit=30.0,
+            hard_limit=500.0, alert_threshold_pct=90.0,
+        )
+        self.assertEqual(result["budget"]["hard_limit"], 500.0)
+        self.assertEqual(result["budget"]["alert_threshold_pct"], 90.0)
+
+    def test_check_budget_no_data(self):
+        """check_cost_budget returns within_budget with no data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget-test3"))
+        mgr.configure_cost_budget(c, daily_limit=10.0)
+        result = mgr.check_cost_budget(c)
+        self.assertTrue(result["within_budget"])
+        self.assertEqual(len(result["alerts"]), 0)
+
+    def test_get_config(self):
+        """get_cost_budget_config returns config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget-test4"))
+        mgr.configure_cost_budget(c, daily_limit=10.0)
+        config = mgr.get_cost_budget_config(c)
+        self.assertTrue(config["configured"])
+        self.assertEqual(config["daily_limit"], 10.0)
+
+    def test_get_cost_alerts(self):
+        """get_cost_alerts returns list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget-test5"))
+        alerts = mgr.get_cost_alerts(c)
+        self.assertEqual(len(alerts), 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for cost budget commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="cost-budget-configure", container_id="a",
+            daily_limit=10.0, weekly_limit=None,
+            monthly_limit=200.0, hard_limit=None,
+            alert_threshold_pct=80.0,
+        )
+        p = build_payload("cost-budget-configure", args1)
+        self.assertEqual(p["op"], "cost_budget_configure")
+        self.assertEqual(p["daily_limit"], 10.0)
+        self.assertEqual(p["monthly_limit"], 200.0)
+        args2 = argparse.Namespace(
+            command="cost-budget-check", container_id="a",
+        )
+        p2 = build_payload("cost-budget-check", args2)
+        self.assertEqual(p2["op"], "cost_budget_check")
+        args3 = argparse.Namespace(
+            command="cost-budget-config", container_id="a",
+        )
+        p3 = build_payload("cost-budget-config", args3)
+        self.assertEqual(p3["op"], "cost_budget_config")
+
+    def test_cli_format_human(self):
+        """CLI format_human for cost budget commands."""
+        from nyrqisctl import format_human
+        # configure
+        resp = {
+            "ok": True, "container_id": "a",
+            "budget": {
+                "daily_limit": 10.0, "weekly_limit": 50.0,
+                "monthly_limit": 200.0, "hard_limit": 500.0,
+                "alert_threshold_pct": 80.0,
+            },
+        }
+        text = format_human("cost-budget-configure", resp)
+        self.assertIn("$10.00", text)
+        self.assertIn("$200.00", text)
+        # check
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "within_budget": True,
+            "usage": {"daily_cost": 5.0, "weekly_cost": 25.0, "monthly_cost": 100.0},
+            "alerts": [
+                {"severity": "warning", "period": "daily",
+                 "message": "Daily approaching limit"},
+            ],
+        }
+        text2 = format_human("cost-budget-check", resp2)
+        self.assertIn("True", text2)
+        self.assertIn("warning", text2)
+        # alerts
+        resp3 = {
+            "ok": True, "container_id": "a",
+            "alerts": [
+                {"severity": "critical", "period": "monthly",
+                 "message": "Monthly exceeded"},
+            ],
+        }
+        text3 = format_human("cost-alerts", resp3)
+        self.assertIn("critical", text3)
+        self.assertIn("monthly", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -21143,6 +21267,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSLAEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestHealthCheckAutoRestart))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

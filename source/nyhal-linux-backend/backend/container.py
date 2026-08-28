@@ -5314,6 +5314,232 @@ class ContainerManager:
             "containers": containers,
         }
 
+    # ------------------------------------------------------------------
+    # Cost alerts and budget limits
+    # ------------------------------------------------------------------
+
+    def configure_cost_budget(
+        self,
+        container: Container,
+        daily_limit: Optional[float] = None,
+        weekly_limit: Optional[float] = None,
+        monthly_limit: Optional[float] = None,
+        alert_threshold_pct: float = 80.0,
+        hard_limit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Configure cost budget limits for a container.
+
+        Args:
+            container: Target container.
+            daily_limit: Max daily cost in dollars.
+            weekly_limit: Max weekly cost in dollars.
+            monthly_limit: Max monthly cost in dollars.
+            alert_threshold_pct: Alert when usage reaches this % of limit.
+            hard_limit: Hard cost limit (pause container when exceeded).
+
+        Returns:
+            Dict with the budget configuration.
+        """
+        if not hasattr(container, '_cost_budget'):
+            container._cost_budget = {}
+
+        budget = container._cost_budget
+        if daily_limit is not None:
+            budget["daily_limit"] = daily_limit
+        if weekly_limit is not None:
+            budget["weekly_limit"] = weekly_limit
+        if monthly_limit is not None:
+            budget["monthly_limit"] = monthly_limit
+        if hard_limit is not None:
+            budget["hard_limit"] = hard_limit
+        budget["alert_threshold_pct"] = alert_threshold_pct
+        budget.setdefault("daily_limit", 0)
+        budget.setdefault("weekly_limit", 0)
+        budget.setdefault("monthly_limit", 0)
+        budget.setdefault("hard_limit", 0)
+        budget.setdefault("cost_alerts", [])
+        budget.setdefault("last_check_time", 0)
+
+        logger.info(
+            "configure_cost_budget: %s daily=$%.2f monthly=$%.2f",
+            container.id,
+            budget.get("daily_limit", 0),
+            budget.get("monthly_limit", 0),
+        )
+        return {
+            "container_id": container.id,
+            "budget": dict(budget),
+        }
+
+    def check_cost_budget(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Check if container is approaching or exceeding cost limits.
+
+        Analyzes recent billing records and compares against
+        configured budget limits.
+
+        Returns:
+            Dict with ``alerts``, ``usage``, ``limits``, ``within_budget``.
+        """
+        if not hasattr(container, '_cost_budget') or \
+                not container._cost_budget:
+            return {
+                "container_id": container.id,
+                "within_budget": True,
+                "alerts": [],
+                "usage": {},
+                "limits": {},
+            }
+
+        budget = container._cost_budget
+        now = time.time()
+        records = self.get_billing_records(container)
+
+        # Calculate usage periods
+        day_ago = now - 86400
+        week_ago = now - 604800
+        month_ago = now - 2592000
+
+        daily_cost = sum(
+            r.get("total_cost", 0) for r in records
+            if r.get("timestamp", 0) >= day_ago
+        )
+        weekly_cost = sum(
+            r.get("total_cost", 0) for r in records
+            if r.get("timestamp", 0) >= week_ago
+        )
+        monthly_cost = sum(
+            r.get("total_cost", 0) for r in records
+            if r.get("timestamp", 0) >= month_ago
+        )
+
+        usage = {
+            "daily_cost": round(daily_cost, 6),
+            "weekly_cost": round(weekly_cost, 6),
+            "monthly_cost": round(monthly_cost, 6),
+        }
+
+        limits = {
+            "daily_limit": budget.get("daily_limit", 0),
+            "weekly_limit": budget.get("weekly_limit", 0),
+            "monthly_limit": budget.get("monthly_limit", 0),
+            "hard_limit": budget.get("hard_limit", 0),
+            "alert_threshold_pct": budget.get("alert_threshold_pct", 80),
+        }
+
+        alerts = []
+        threshold = budget.get("alert_threshold_pct", 80) / 100
+
+        # Check each limit
+        for period, cost, limit in [
+            ("daily", daily_cost, budget.get("daily_limit", 0)),
+            ("weekly", weekly_cost, budget.get("weekly_limit", 0)),
+            ("monthly", monthly_cost, budget.get("monthly_limit", 0)),
+        ]:
+            if limit <= 0:
+                continue
+            pct = cost / limit
+            if pct >= 1.0:
+                alerts.append({
+                    "period": period,
+                    "severity": "critical",
+                    "message": f"{period.title()} limit exceeded: ${cost:.6f} / ${limit:.2f}",
+                    "cost": round(cost, 6),
+                    "limit": limit,
+                    "pct": round(pct * 100, 1),
+                })
+            elif pct >= threshold:
+                alerts.append({
+                    "period": period,
+                    "severity": "warning",
+                    "message": f"{period.title()} cost approaching limit: ${cost:.6f} / ${limit:.2f}",
+                    "cost": round(cost, 6),
+                    "limit": limit,
+                    "pct": round(pct * 100, 1),
+                })
+
+        # Check hard limit
+        hard_limit = budget.get("hard_limit", 0)
+        if hard_limit > 0 and monthly_cost >= hard_limit:
+            alerts.append({
+                "period": "hard",
+                "severity": "critical",
+                "message": f"Hard limit exceeded: ${monthly_cost:.6f} / ${hard_limit:.2f}",
+                "cost": round(monthly_cost, 6),
+                "limit": hard_limit,
+                "pct": round(monthly_cost / hard_limit * 100, 1),
+            })
+
+        within_budget = not any(
+            a["severity"] == "critical" for a in alerts
+        )
+
+        # Store alerts
+        if alerts:
+            budget["cost_alerts"].extend(alerts)
+            if len(budget["cost_alerts"]) > 200:
+                budget["cost_alerts"] = budget["cost_alerts"][-200:]
+            # Fire resource alerts
+            for a in alerts:
+                if a["severity"] == "critical":
+                    self._fire_alert(
+                        container, "cost", "critical",
+                        a["message"],
+                    )
+                elif a["severity"] == "warning":
+                    self._fire_alert(
+                        container, "cost", "warning",
+                        a["message"],
+                    )
+
+        budget["last_check_time"] = now
+
+        return {
+            "container_id": container.id,
+            "within_budget": within_budget,
+            "alerts": alerts,
+            "usage": usage,
+            "limits": limits,
+        }
+
+    def get_cost_alerts(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get cost alert history for a container."""
+        if not hasattr(container, '_cost_budget') or \
+                not container._cost_budget:
+            return []
+        alerts = container._cost_budget.get("cost_alerts", [])
+        if tail is not None:
+            return list(alerts[-tail:])
+        return list(alerts)
+
+    def get_cost_budget_config(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get the full cost budget configuration."""
+        if not hasattr(container, '_cost_budget') or \
+                not container._cost_budget:
+            return {
+                "container_id": container.id,
+                "configured": False,
+            }
+        budget = container._cost_budget
+        return {
+            "container_id": container.id,
+            "configured": True,
+            "daily_limit": budget.get("daily_limit", 0),
+            "weekly_limit": budget.get("weekly_limit", 0),
+            "monthly_limit": budget.get("monthly_limit", 0),
+            "hard_limit": budget.get("hard_limit", 0),
+            "alert_threshold_pct": budget.get("alert_threshold_pct", 80),
+        }
+
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:
         """Get network interface stats for a container.
 
