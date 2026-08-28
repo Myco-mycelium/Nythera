@@ -8023,7 +8023,37 @@ class TestOverlayFilesystem(unittest.TestCase):
         self.assertTrue(self._stat_is_dir(attr["st_mode"]))
 
 
-import stat as _stat_mod  # noqa: E402
+class TestFUSEOverheadBenchmark(unittest.TestCase):
+    """Verify the FUSE overhead benchmark infrastructure works."""
+
+    def test_benchmark_produces_results(self):
+        """run_benchmark returns one result per payload size."""
+        from tests.benchmarks import run_benchmark
+        results = run_benchmark(rounds=1)
+        self.assertEqual(len(results), 5)  # 4K, 64K, 256K, 1M, 4M
+        for r in results:
+            self.assertGreater(r.nyfs_write_mb_s, 0)
+            self.assertGreater(r.nyfs_read_mb_s, 0)
+            self.assertGreater(r.native_write_mb_s, 0)
+            self.assertGreater(r.native_read_mb_s, 0)
+
+    def test_benchmark_json_output(self):
+        """JSON output is valid and has the expected keys."""
+        from tests.benchmarks import run_benchmark
+        import json as _json
+        results = run_benchmark(rounds=1)
+        out = [{"payload": r.payload, "label": r.label,
+                "nyfs_write_mb_s": r.nyfs_write_mb_s,
+                "nyfs_read_mb_s": r.nyfs_read_mb_s,
+                "native_write_mb_s": r.native_write_mb_s,
+                "native_read_mb_s": r.native_read_mb_s,
+                "write_overhead_pct": r.write_overhead_pct,
+                "read_overhead_pct": r.read_overhead_pct} for r in results]
+        s = _json.dumps(out)
+        parsed = _json.loads(s)
+        self.assertEqual(len(parsed), 5)
+        self.assertIn("payload", parsed[0])
+        self.assertIn("nyfs_write_mb_s", parsed[0])
 
 
 class TestBootLifecycle(unittest.TestCase):
@@ -16384,6 +16414,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestHIGDesignSystem))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCompatibility))
     suite.addTests(loader.loadTestsFromTestCase(TestOverlayFilesystem))
+    suite.addTests(loader.loadTestsFromTestCase(TestFUSEOverheadBenchmark))
     suite.addTests(loader.loadTestsFromTestCase(TestAppCLI))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerStats))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
