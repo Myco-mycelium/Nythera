@@ -3045,6 +3045,124 @@ class ContainerManager:
             "states": states,
         }
 
+    def container_dashboard(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Return a comprehensive resource dashboard for a container.
+
+        Aggregates cgroup stats, process summary, resource limits,
+        alerts, OOM status, labels, and health into a single view.
+
+        Returns:
+            Dict with all dashboard sections.
+        """
+        stats = self.container_stats(container)
+        limits = self.container_resource_limits(container)
+        top = self.container_top_summary(container)
+        history = self.get_resource_history(container, tail=10)
+        alerts = self.get_alert_history(container, tail=10)
+        oom = self.get_oom_status(container)
+        labels = self.list_labels(container)
+        restart = self.get_restart_info(container)
+        scheduling = self.get_scheduling(container)
+
+        # Compute uptime
+        uptime_s = None
+        if container.started_at is not None:
+            uptime_s = round(time.time() - container.started_at, 1)
+
+        # Compute memory usage percent
+        mem_pct = None
+        if stats.get("available"):
+            mem_bytes = stats.get("memory_bytes")
+            mem_limit = stats.get("memory_limit_bytes")
+            if mem_bytes is not None and mem_limit and mem_limit > 0:
+                mem_pct = round(mem_bytes / mem_limit * 100, 1)
+
+        return {
+            "container_id": container.id,
+            "state": container.state.value,
+            "pid": container.pid,
+            "uptime_s": uptime_s,
+            # Resource stats
+            "stats": stats,
+            "limits": {
+                "memory_mb": container.config.limits.memory_mb,
+                "pid_limit": container.config.limits.pid_limit,
+                "cpu_quota_us": container.config.limits.cpu_quota_us,
+                "cpu_weight": container.config.limits.cpu_weight,
+                "memory_high": container.config.limits.memory_high,
+                "oom_score_adj": container.config.limits.oom_score_adj,
+            },
+            # Usage percentages
+            "memory_pct": mem_pct,
+            "memory_alert": limits.get("memory_alert", "ok"),
+            "pid_pct": limits.get("pid_pct"),
+            "pid_alert": limits.get("pid_alert", "ok"),
+            "cpu_throttle_pct": limits.get("cpu_throttle_pct"),
+            "cpu_throttle_alert": limits.get("cpu_throttle_alert", "ok"),
+            # Process summary
+            "processes": top,
+            # Recent history
+            "resource_history": history,
+            "alert_history": alerts,
+            # OOM
+            "oom": {
+                "score_adj": oom.get("oom_score_adj", 0),
+                "kill_disable": oom.get("oom_kill_disable", False),
+                "event_count": oom.get("oom_event_count", 0),
+            },
+            # Metadata
+            "labels": labels,
+            "restart": restart,
+            "scheduling": {
+                "nice_value": scheduling.get("nice_value", 0),
+                "cpu_affinity": scheduling.get("cpu_affinity_current"),
+            },
+            # Network
+            "network": {
+                "enabled": container.config.network,
+                "ip": container.network_ip,
+            },
+        }
+
+    def dashboard_all(self) -> Dict[str, Any]:
+        """Return a dashboard summary for all containers.
+
+        Returns:
+            Dict with ``total_containers``, ``by_state`` counts,
+            ``total_memory_bytes``, ``total_pids``, and per-container
+            summaries.
+        """
+        total_memory = 0
+        total_pids = 0
+        by_state: Dict[str, int] = {}
+        containers: List[Dict[str, Any]] = []
+
+        for c in self.containers.values():
+            state = c.state.value
+            by_state[state] = by_state.get(state, 0) + 1
+            stats = self.container_stats(c)
+            if stats.get("available"):
+                total_memory += stats.get("memory_bytes", 0)
+                total_pids += stats.get("pids_current", 0)
+            containers.append({
+                "id": c.id,
+                "state": state,
+                "pid": c.pid,
+                "memory_bytes": stats.get("memory_bytes"),
+                "pids_current": stats.get("pids_current"),
+                "labels": self.list_labels(c),
+            })
+
+        return {
+            "total_containers": len(self.containers),
+            "by_state": by_state,
+            "total_memory_bytes": total_memory,
+            "total_pids": total_pids,
+            "containers": containers,
+        }
+
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:
         """Get network interface stats for a container.
 

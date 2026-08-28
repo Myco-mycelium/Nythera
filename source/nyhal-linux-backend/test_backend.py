@@ -3957,6 +3957,133 @@ class TestOOMProtection(unittest.TestCase):
         self.assertIn("killed 1234", text2)
 
 
+class TestResourceDashboard(unittest.TestCase):
+    """Test resource usage dashboard (aggregated metrics)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_container_dashboard_fields(self):
+        """container_dashboard returns all expected fields."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        dash = mgr.container_dashboard(c)
+        self.assertIn("container_id", dash)
+        self.assertIn("state", dash)
+        self.assertIn("pid", dash)
+        self.assertIn("uptime_s", dash)
+        self.assertIn("stats", dash)
+        self.assertIn("limits", dash)
+        self.assertIn("memory_pct", dash)
+        self.assertIn("memory_alert", dash)
+        self.assertIn("pid_pct", dash)
+        self.assertIn("pid_alert", dash)
+        self.assertIn("processes", dash)
+        self.assertIn("resource_history", dash)
+        self.assertIn("alert_history", dash)
+        self.assertIn("oom", dash)
+        self.assertIn("labels", dash)
+        self.assertIn("restart", dash)
+        self.assertIn("scheduling", dash)
+        self.assertIn("network", dash)
+
+    def test_dashboard_all_fields(self):
+        """dashboard_all returns aggregate fields."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        mgr.create(ContainerConfig(name="b"))
+        dash = mgr.dashboard_all()
+        self.assertIn("total_containers", dash)
+        self.assertEqual(dash["total_containers"], 2)
+        self.assertIn("by_state", dash)
+        self.assertIn("total_memory_bytes", dash)
+        self.assertIn("total_pids", dash)
+        self.assertIn("containers", dash)
+        self.assertEqual(len(dash["containers"]), 2)
+
+    def test_dashboard_all_empty(self):
+        """dashboard_all works with no containers."""
+        mgr = self._manager()
+        dash = mgr.dashboard_all()
+        self.assertEqual(dash["total_containers"], 0)
+        self.assertEqual(dash["containers"], [])
+
+    def test_dashboard_includes_labels(self):
+        """container_dashboard includes labels."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr.set_label(c, "app", "web")
+        dash = mgr.container_dashboard(c)
+        self.assertEqual(dash["labels"], {"app": "web"})
+
+    def test_dashboard_includes_restart(self):
+        """container_dashboard includes restart info."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        dash = mgr.container_dashboard(c)
+        self.assertIn("restart_policy", dash["restart"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for dashboard command."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id=None)
+        p = build_payload("containers-dashboard", args)
+        self.assertEqual(p["op"], "dashboard")
+        self.assertNotIn("container_id", p)
+        args2 = argparse.Namespace(container_id="a")
+        p2 = build_payload("containers-dashboard", args2)
+        self.assertEqual(p2["container_id"], "a")
+
+    def test_cli_format_human_all(self):
+        """CLI format_human for all-containers dashboard."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "total_containers": 2,
+            "by_state": {"running": 1, "created": 1},
+            "total_memory_bytes": 1048576,
+            "total_pids": 10,
+            "containers": [
+                {"id": "a", "state": "running", "pid": 123,
+                 "memory_bytes": 524288, "pids_current": 5,
+                 "labels": {"app": "web"}},
+            ],
+        }
+        text = format_human("containers-dashboard", resp)
+        self.assertIn("2", text)
+        self.assertIn("running", text)
+        self.assertIn("a", text)
+
+    def test_cli_format_human_single(self):
+        """CLI format_human for single container dashboard."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a", "state": "running",
+            "pid": 123, "uptime_s": 60.0,
+            "memory_pct": 50.0, "memory_alert": "ok",
+            "pid_pct": 25.0, "pid_alert": "ok",
+            "cpu_throttle_pct": 0.0, "cpu_throttle_alert": "ok",
+            "processes": {
+                "total_processes": 3, "total_threads": 5,
+                "total_rss_kb": 10240, "total_cpu_s": 1.5,
+            },
+            "oom": {"score_adj": 0, "kill_disable": False,
+                     "event_count": 0},
+            "labels": {"app": "web"},
+            "restart": {"restart_policy": "no"},
+            "scheduling": {"nice_value": 0, "cpu_affinity": None},
+            "network": {"enabled": True, "ip": "10.0.0.2"},
+        }
+        text = format_human("containers-dashboard", resp)
+        self.assertIn("a", text)
+        self.assertIn("50.0%", text)
+        self.assertIn("3", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19335,6 +19462,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLocks))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceAlerts))
     suite.addTests(loader.loadTestsFromTestCase(TestOOMProtection))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

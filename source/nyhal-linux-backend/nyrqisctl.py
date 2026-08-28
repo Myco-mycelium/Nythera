@@ -534,6 +534,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.tail is not None:
             p4["tail"] = args.tail
         return p4
+    if command == "containers-dashboard":
+        p5: Dict[str, Any] = {
+            "service": "control",
+            "op": "dashboard",
+        }
+        if args.container_id:
+            p5["container_id"] = args.container_id
+        return p5
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1223,6 +1231,52 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for e in events:
             ts = e.get("timestamp", 0)
             lines.append(f"  {ts:.1f}  {e.get('detail', '')}")
+        return "\n".join(lines)
+    if command == "containers-dashboard":
+        # Check if this is an all-containers dashboard
+        if "total_containers" in resp:
+            lines = [
+                f"total containers: {resp.get('total_containers', 0)}",
+                f"by state: {resp.get('by_state', {})}",
+                f"total memory: {resp.get('total_memory_bytes', 0):,} bytes",
+                f"total pids: {resp.get('total_pids', 0)}",
+                "",
+            ]
+            for c in resp.get("containers", []):
+                mem = c.get("memory_bytes")
+                mem_str = f"{mem:,}B" if mem else "?"
+                lines.append(
+                    f"  {c['id']} [{c['state']}] "
+                    f"mem={mem_str} pids={c.get('pids_current', '?')} "
+                    f"labels={c.get('labels', {})}"
+                )
+            return "\n".join(lines)
+        # Single container dashboard
+        lines = [
+            f"=== {resp.get('container_id')} [{resp.get('state')}] ===",
+            f"pid: {resp.get('pid')}",
+            f"uptime: {resp.get('uptime_s')}s",
+            "",
+            "--- Resources ---",
+            f"memory: {resp.get('memory_pct', '?')}% ({resp.get('memory_alert', 'ok')})",
+            f"pids: {resp.get('pid_pct', '?')}% ({resp.get('pid_alert', 'ok')})",
+            f"cpu throttle: {resp.get('cpu_throttle_pct', '?')}% ({resp.get('cpu_throttle_alert', 'ok')})",
+            "",
+            "--- Processes ---",
+        ]
+        procs = resp.get("processes", {})
+        lines.append(f"  total: {procs.get('total_processes', 0)} processes, {procs.get('total_threads', 0)} threads")
+        lines.append(f"  rss: {procs.get('total_rss_kb', 0):,} KB")
+        lines.append(f"  cpu: {procs.get('total_cpu_s', 0):.3f}s")
+        lines.append("")
+        lines.append("--- OOM ---")
+        oom = resp.get("oom", {})
+        lines.append(f"  score_adj: {oom.get('score_adj', 0)}, kill_disable: {oom.get('kill_disable', False)}")
+        lines.append(f"  events: {oom.get('event_count', 0)}")
+        lines.append("")
+        labels = resp.get("labels", {})
+        if labels:
+            lines.append(f"--- Labels: {labels} ---")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1988,6 +2042,11 @@ def build_parser() -> argparse.ArgumentParser:
     coe.add_argument("--tail", type=int, default=None,
                      help="Show only last N events")
     coe.set_defaults(command="containers-oom-events")
+
+    cd = csub.add_parser("dashboard", help="Show resource dashboard")
+    cd.add_argument("container_id", nargs="?", default=None,
+                    help="Container ID (omit for all containers)")
+    cd.set_defaults(command="containers-dashboard")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

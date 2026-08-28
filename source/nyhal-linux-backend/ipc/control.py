@@ -1770,6 +1770,33 @@ class ControlService:
             "events": events, "count": len(events),
         })
 
+    # ------------------------------------------------------------------
+    # Resource dashboard
+    # ------------------------------------------------------------------
+
+    def _dashboard(self, server, sender_path: str,
+                   call_id: str,
+                   request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            # Return dashboard for all containers
+            result = self.container_manager.dashboard_all()
+            self._reply(server, sender_path, call_id, {
+                "ok": True, **result,
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.container_dashboard(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure
