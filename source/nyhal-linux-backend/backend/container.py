@@ -1148,6 +1148,102 @@ class ContainerManager:
                 "stderr": f"command timed out after {timeout_s}s",
             }
 
+    def container_top(self, container: Container) -> List[Dict[str, Any]]:
+        """List processes running inside a container with resource usage.
+
+        Reads ``/proc/<pid>/task/<pid>/children`` to discover the
+        container's process tree and ``/proc/<pid>/stat`` for each
+        process's CPU time and state.
+
+        Args:
+            container: A running container with a valid host PID.
+
+        Returns:
+            List of dicts, each with ``pid``, ``state``, ``cmd``,
+            ``user_time_s``, ``system_time_s``, ``vsize_kb``,
+            ``rss_kb``.
+        """
+        if container.state != ContainerState.RUNNING:
+            return []
+        if container.pid is None:
+            return []
+
+        procs: List[Dict[str, Any]] = []
+        pids_to_scan = [container.pid]
+        seen_pids: set = set()
+
+        while pids_to_scan:
+            pid = pids_to_scan.pop()
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+
+            # Read /proc/<pid>/stat
+            stat_path = f"/proc/{pid}/stat"
+            try:
+                stat_text = open(stat_path).read()
+            except (OSError, IOError):
+                continue
+
+            # Parse stat: field 1=comm (may contain spaces), field 2=state
+            # Find the last ')' to skip over comm which may contain spaces
+            close_paren = stat_text.rfind(")")
+            if close_paren < 0:
+                continue
+            fields_after_comm = stat_text[close_paren + 2:].split()
+            # fields_after_comm[0] = state (R/S/D/Z/T/t)
+            # fields_after_comm[11] = utime (in clock ticks)
+            # fields_after_comm[12] = stime
+            # fields_after_comm[20] = vsize
+            # fields_after_comm[21] = rss (pages)
+
+            state = fields_after_comm[0] if len(fields_after_comm) > 0 else "?"
+            try:
+                utime_ticks = int(fields_after_comm[11]) if len(fields_after_comm) > 11 else 0
+                stime_ticks = int(fields_after_comm[12]) if len(fields_after_comm) > 12 else 0
+                vsize = int(fields_after_comm[20]) if len(fields_after_comm) > 20 else 0
+                rss_pages = int(fields_after_comm[21]) if len(fields_after_comm) > 21 else 0
+            except (ValueError, IndexError):
+                utime_ticks = stime_ticks = vsize = rss_pages = 0
+
+            # Convert clock ticks to seconds (typically 100 Hz)
+            try:
+                clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+            except (KeyError, OSError, AttributeError):
+                clk_tck = 100
+
+            # Read the command line
+            cmdline = ""
+            try:
+                cmdline = open(f"/proc/{pid}/cmdline").read(
+                    4096
+                ).replace("\x00", " ").strip()
+            except (OSError, IOError):
+                pass
+
+            procs.append({
+                "pid": pid,
+                "state": state,
+                "cmd": cmdline or f"[{state}]",
+                "user_time_s": round(utime_ticks / clk_tck, 3),
+                "system_time_s": round(stime_ticks / clk_tck, 3),
+                "vsize_kb": vsize // 1024,
+                "rss_kb": rss_pages * (os.sysconf("SC_PAGE_SIZE") // 1024),
+            })
+
+            # Discover children
+            try:
+                children_text = open(
+                    f"/proc/{pid}/task/{pid}/children"
+                ).read().strip()
+                if children_text:
+                    for child_pid_str in children_text.split():
+                        pids_to_scan.append(int(child_pid_str))
+            except (OSError, IOError, ValueError):
+                pass
+
+        return procs
+
     def container_checkpoint(self, container: Container,
                              path: Optional[str] = None) -> Dict[str, Any]:
         """Checkpoint a container's filesystem state.

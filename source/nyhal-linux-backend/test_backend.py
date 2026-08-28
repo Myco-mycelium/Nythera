@@ -1377,6 +1377,76 @@ class TestContainerCheckpointRestore(unittest.TestCase):
         self.assertIn("created", text)
 
 
+class TestContainerTop(unittest.TestCase):
+    """Test container top (per-process resource usage)."""
+
+    def test_top_returns_empty_for_created(self):
+        """Top returns empty list for non-running containers."""
+        from backend.container import (
+            Container, ContainerConfig, ContainerManager, ContainerState,
+        )
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig())
+        result = manager.container_top(container)
+        self.assertEqual(result, [])
+
+    def test_top_cli_payload(self):
+        """CLI build_payload for containers-top."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(container_id="nyctr-abc")
+        payload = build_payload("containers-top", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_top")
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+
+    def test_top_cli_format_human(self):
+        """CLI format_human for containers-top."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "processes": [
+                {
+                    "pid": 12345,
+                    "state": "S",
+                    "cmd": "/bin/sh -c echo hello",
+                    "user_time_s": 0.010,
+                    "system_time_s": 0.005,
+                    "vsize_kb": 1024,
+                    "rss_kb": 256,
+                },
+                {
+                    "pid": 12346,
+                    "state": "R",
+                    "cmd": "ps aux",
+                    "user_time_s": 0.002,
+                    "system_time_s": 0.001,
+                    "vsize_kb": 512,
+                    "rss_kb": 128,
+                },
+            ],
+            "count": 2,
+        }
+        text = format_human("containers-top", resp)
+        self.assertIn("12345", text)
+        self.assertIn("12346", text)
+        self.assertIn("echo hello", text)
+        self.assertIn("ps aux", text)
+        self.assertIn("PID", text)
+
+    def test_top_cli_format_human_empty(self):
+        """CLI format_human when no processes found."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "container_id": "nyctr-test",
+            "processes": [],
+            "count": 0,
+        }
+        text = format_human("containers-top", resp)
+        self.assertIn("no processes found", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16733,6 +16803,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLogs))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerExec))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerCheckpointRestore))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerTop))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

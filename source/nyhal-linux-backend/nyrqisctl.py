@@ -136,6 +136,12 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "command": args.exec_command,
             "timeout": args.timeout,
         }
+    if command == "containers-top":
+        return {
+            "service": "control",
+            "op": "container_top",
+            "container_id": args.container_id,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -386,6 +392,21 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             parts.append(f"[stderr] {stderr.rstrip()}")
         parts.append(f"exit code: {exit_code}")
         return "\n".join(parts)
+    if command == "containers-top":
+        procs = resp.get("processes") or []
+        if not procs:
+            return f"container {resp.get('container_id')}: no processes found"
+        rows = []
+        for p in procs:
+            rows.append(
+                f"{p.get('pid'):>8} {p.get('state'):>1} "
+                f"{p.get('user_time_s', 0):>8.3f}s "
+                f"{p.get('system_time_s', 0):>8.3f}s "
+                f"{p.get('rss_kb', 0):>8} KB  "
+                f"{p.get('cmd', '')}"
+            )
+        header = f"{'PID':>8} {'S':>1} {'USER':>8} {'SYS':>8} {'RSS':>8}  CMD"
+        return header + "\n" + "\n".join(rows)
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -928,6 +949,10 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("container_id")
     cc.add_argument("--path", default=None, help="Output file path")
     cc.set_defaults(command="containers-checkpoint")
+
+    ct = csub.add_parser("top", help="List processes inside a container")
+    ct.add_argument("container_id")
+    ct.set_defaults(command="containers-top")
 
     cr = csub.add_parser("restore", help="Restore a container from a checkpoint file")
     cr.add_argument("checkpoint_file", help="Path to the checkpoint JSON file")
