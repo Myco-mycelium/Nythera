@@ -5051,6 +5051,110 @@ class TestResourceComparison(unittest.TestCase):
         self.assertIn("5,000", text3)
 
 
+class TestResourceRecommendations(unittest.TestCase):
+    """Resource usage optimization recommendations."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_get_recommendations(self):
+        """get_recommendations returns recommendations and score."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rec-test"))
+        result = mgr.get_recommendations(c)
+        self.assertIn("recommendations", result)
+        self.assertIn("score", result)
+        self.assertIn("summary", result)
+        self.assertGreaterEqual(result["score"], 0)
+        self.assertLessEqual(result["score"], 100)
+
+    def test_get_recommendations_with_memory_history(self):
+        """get_recommendations detects memory growth."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rec-test2"))
+        mgr._init_resource_history(c)
+        base = time.time() - 300
+        # Add growing memory history
+        for i in range(10):
+            mgr._resource_history[c.id].append({
+                "timestamp": base + i * 30,
+                "memory_bytes": 1000 + i * 500,  # growing
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.get_recommendations(c)
+        # Should detect memory growth
+        memory_recs = [r for r in result["recommendations"] if r["category"] == "memory"]
+        self.assertGreater(len(memory_recs), 0)
+        # Score should be reduced
+        self.assertLess(result["score"], 100)
+
+    def test_get_recommendations_all(self):
+        """get_recommendations_all returns per-container results."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="rec-all1"))
+        c2 = mgr.create(ContainerConfig(name="rec-all2"))
+        result = mgr.get_recommendations_all()
+        self.assertEqual(result["container_count"], 2)
+        self.assertIn("average_score", result)
+        self.assertEqual(len(result["containers"]), 2)
+
+    def test_get_recommendations_by_category(self):
+        """get_recommendations_by_category filters correctly."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rec-cat"))
+        result = mgr.get_recommendations_by_category(c, "general")
+        self.assertIn("recommendations", result)
+        self.assertEqual(result["category"], "general")
+        for r in result["recommendations"]:
+            self.assertEqual(r["category"], "general")
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for recommend commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(command="recommend-get", container_id="abc")
+        p = build_payload("recommend-get", args1)
+        self.assertEqual(p["op"], "recommendations")
+        self.assertEqual(p["container_id"], "abc")
+        args2 = argparse.Namespace(command="recommend-all")
+        p2 = build_payload("recommend-all", args2)
+        self.assertEqual(p2["op"], "recommendations_all")
+        args3 = argparse.Namespace(
+            command="recommend-category", container_id="abc",
+            category="memory",
+        )
+        p3 = build_payload("recommend-category", args3)
+        self.assertEqual(p3["op"], "recommendations_category")
+        self.assertEqual(p3["category"], "memory")
+
+    def test_cli_format_human(self):
+        """CLI format_human for recommend commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "score": 70,
+            "summary": "3 recommendations (1 warnings, 2 info). Score: 70/100.",
+            "recommendations": [
+                {"category": "memory", "severity": "warning",
+                 "title": "High memory", "detail": "Using 90%",
+                 "savings_estimate": None},
+                {"category": "general", "severity": "info",
+                 "title": "No labels", "detail": "Add labels",
+                 "savings_estimate": None},
+            ],
+        }
+        text = format_human("recommend-get", resp)
+        self.assertIn("70/100", text)
+        self.assertIn("High memory", text)
+        self.assertIn("No labels", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20437,6 +20541,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceComparison))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceRecommendations))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

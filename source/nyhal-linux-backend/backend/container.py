@@ -2953,6 +2953,242 @@ class ContainerManager:
 
         return entries[:top_n]
 
+    # ------------------------------------------------------------------
+    # Resource usage recommendations (optimization suggestions)
+    # ------------------------------------------------------------------
+
+    def get_recommendations(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Generate resource optimization recommendations for a container.
+
+        Analyzes the container's resource usage patterns and suggests
+        optimizations for memory, CPU, PIDs, and general best practices.
+
+        Returns:
+            Dict with ``recommendations`` (list of suggestion dicts),
+            ``score`` (0-100 optimization score), ``summary``.
+        """
+        stats = self.container_stats(container)
+        history = self.get_resource_history(container)
+        cfg = container.config
+        recommendations = []
+
+        # --- Memory analysis ---
+        mem_bytes = stats.get("memory_bytes", 0)
+        mem_limit = cfg.limits.memory_mb * 1024 * 1024
+        if mem_limit > 0 and mem_bytes > 0:
+            mem_pct = mem_bytes / mem_limit * 100
+            if mem_pct < 10:
+                recommendations.append({
+                    "category": "memory",
+                    "severity": "info",
+                    "title": "Low memory utilization",
+                    "detail": (
+                        f"Using {mem_pct:.1f}% of allocated memory. "
+                        f"Consider reducing memory_mb from "
+                        f"{cfg.limits.memory_mb} to "
+                        f"{max(64, int(cfg.limits.memory_mb * 0.5))} MB."
+                    ),
+                    "savings_estimate": f"~{cfg.limits.memory_mb // 2} MB",
+                })
+            elif mem_pct > 85:
+                recommendations.append({
+                    "category": "memory",
+                    "severity": "warning",
+                    "title": "High memory utilization",
+                    "detail": (
+                        f"Using {mem_pct:.1f}% of allocated memory. "
+                        f"Risk of OOM. Consider increasing memory_mb."
+                    ),
+                    "savings_estimate": None,
+                })
+
+        # Memory trend analysis
+        if history and len(history) >= 5:
+            mem_values = self._extract_resource_values(history, "memory")
+            if len(mem_values) >= 5:
+                recent_avg = sum(mem_values[-5:]) / 5
+                older_avg = sum(mem_values[:-5]) / max(1, len(mem_values) - 5)
+                if older_avg > 0:
+                    growth_pct = (recent_avg - older_avg) / older_avg * 100
+                    if growth_pct > 20:
+                        recommendations.append({
+                            "category": "memory",
+                            "severity": "warning",
+                            "title": "Memory usage growing",
+                            "detail": (
+                                f"Memory usage increased {growth_pct:.1f}% "
+                                f"over the observation window. "
+                                f"Possible memory leak."
+                            ),
+                            "savings_estimate": None,
+                        })
+
+        # --- CPU analysis ---
+        cpu_usec = stats.get("cpu_usage_usec", 0)
+        throttle = stats.get("cpu_throttle_pct", 0)
+        if throttle > 50:
+            recommendations.append({
+                "category": "cpu",
+                "severity": "warning",
+                "title": "High CPU throttling",
+                "detail": (
+                    f"CPU throttled {throttle}% of the time. "
+                    f"Container needs more CPU quota."
+                ),
+                "savings_estimate": None,
+            })
+        elif throttle < 5 and cpu_usec > 0:
+            recommendations.append({
+                "category": "cpu",
+                "severity": "info",
+                "title": "Low CPU utilization",
+                "detail": "CPU throttling is minimal. Could reduce CPU quota.",
+                "savings_estimate": None,
+            })
+
+        # --- PID analysis ---
+        pids = stats.get("pids_current", 0)
+        pid_limit = cfg.limits.pid_limit
+        if pid_limit > 0 and pids > 0:
+            pid_pct = pids / pid_limit * 100
+            if pid_pct < 20:
+                recommendations.append({
+                    "category": "pids",
+                    "severity": "info",
+                    "title": "Low PID utilization",
+                    "detail": (
+                        f"Using {pids}/{pid_limit} PIDs ({pid_pct:.1f}%). "
+                        f"Consider reducing pid_limit."
+                    ),
+                    "savings_estimate": None,
+                })
+
+        # --- General best practices ---
+        if not cfg.labels:
+            recommendations.append({
+                "category": "general",
+                "severity": "info",
+                "title": "No labels set",
+                "detail": (
+                    "Container has no labels. Add labels like "
+                    "app, env, team for better organization."
+                ),
+                "savings_estimate": None,
+            })
+
+        if cfg.restart_policy == "none" or not cfg.restart_policy:
+            recommendations.append({
+                "category": "general",
+                "severity": "info",
+                "title": "No restart policy",
+                    "detail": (
+                    "Consider setting restart_policy to "
+                    "'on-failure' or 'always' for production."
+                ),
+                "savings_estimate": None,
+            })
+
+        if not cfg.network:
+            recommendations.append({
+                "category": "general",
+                "severity": "info",
+                "title": "Networking disabled",
+                "detail": "Container has no network access. Enable if needed.",
+                "savings_estimate": None,
+            })
+
+        if cfg.sla_uptime_target == 0:
+            recommendations.append({
+                "category": "general",
+                "severity": "info",
+                "title": "No SLA configured",
+                "detail": (
+                    "No SLA uptime target. Set sla_uptime_target "
+                    "for production containers."
+                ),
+                "savings_estimate": None,
+            })
+
+        # Compute optimization score (100 = perfect, deductions for issues)
+        score = 100
+        for r in recommendations:
+            if r["severity"] == "warning":
+                score -= 15
+            elif r["severity"] == "info":
+                score -= 5
+        score = max(0, score)
+
+        # Summary
+        warnings = sum(1 for r in recommendations if r["severity"] == "warning")
+        infos = sum(1 for r in recommendations if r["severity"] == "info")
+        summary = (
+            f"{len(recommendations)} recommendations "
+            f"({warnings} warnings, {infos} info). "
+            f"Optimization score: {score}/100."
+        )
+
+        return {
+            "container_id": container.id,
+            "recommendations": recommendations,
+            "score": score,
+            "summary": summary,
+            "warning_count": warnings,
+            "info_count": infos,
+        }
+
+    def get_recommendations_all(self) -> Dict[str, Any]:
+        """Get recommendations for all running containers.
+
+        Returns:
+            Dict with per-container recommendations and aggregate stats.
+        """
+        all_recs = []
+        total_score = 0
+        count = 0
+
+        for cid, c in self.containers.items():
+            recs = self.get_recommendations(c)
+            all_recs.append(recs)
+            total_score += recs["score"]
+            count += 1
+
+        avg_score = round(total_score / count, 1) if count > 0 else 0
+
+        return {
+            "container_count": count,
+            "average_score": avg_score,
+            "containers": all_recs,
+        }
+
+    def get_recommendations_by_category(
+        self,
+        container: Container,
+        category: str = "memory",
+    ) -> Dict[str, Any]:
+        """Get recommendations filtered by category.
+
+        Args:
+            container: Target container.
+            category: Category filter (memory, cpu, pids, general).
+
+        Returns:
+            Dict with filtered ``recommendations``.
+        """
+        all_recs = self.get_recommendations(container)
+        filtered = [
+            r for r in all_recs["recommendations"]
+            if r["category"] == category
+        ]
+        return {
+            "container_id": container.id,
+            "category": category,
+            "recommendations": filtered,
+            "count": len(filtered),
+        }
+
     def set_label(self, container: Container, key: str, value: str) -> None:
         """Set a label on a container.
 

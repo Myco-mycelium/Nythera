@@ -747,6 +747,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "resource": args.resource,
             "top_n": args.top,
         }
+    if command == "recommend-get":
+        return {
+            "service": "control",
+            "op": "recommendations",
+            "container_id": args.container_id,
+        }
+    if command == "recommend-all":
+        return {
+            "service": "control",
+            "op": "recommendations_all",
+        }
+    if command == "recommend-category":
+        return {
+            "service": "control",
+            "op": "recommendations_category",
+            "container_id": args.container_id,
+            "category": args.category,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1733,6 +1751,46 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"{e.get('value', 0):,}"
             )
         return "\n".join(lines)
+    if command == "recommend-get":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"score:    {resp.get('score', 0)}/100",
+            resp.get("summary", ""),
+            "recommendations:"
+        ]
+        for r in resp.get("recommendations", []):
+            sev = r.get("severity", "info")
+            icon = "⚠" if sev == "warning" else "ℹ"
+            lines.append(f"  {icon} [{r.get('category')}] {r.get('title')}")
+            lines.append(f"    {r.get('detail')}")
+            if r.get("savings_estimate"):
+                lines.append(f"    Savings: {r['savings_estimate']}")
+        return "\n".join(lines)
+    if command == "recommend-all":
+        lines = [
+            f"containers: {resp.get('container_count', 0)}",
+            f"avg score: {resp.get('average_score', 0)}/100",
+            ""
+        ]
+        for c in resp.get("containers", []):
+            count = len(c.get("recommendations", []))
+            lines.append(
+                f"  {c.get('container_id')}: "
+                f"score={c.get('score', 0)} recs={count}"
+            )
+        return "\n".join(lines)
+    if command == "recommend-category":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"category: {resp.get('category')}",
+            f"count: {resp.get('count', 0)}",
+        ]
+        for r in resp.get("recommendations", []):
+            sev = r.get("severity", "info")
+            icon = "⚠" if sev == "warning" else "ℹ"
+            lines.append(f"  {icon} {r.get('title')}")
+            lines.append(f"    {r.get('detail')}")
+        return "\n".join(lines)
 
     if command == "containers-stats":
         if not resp.get("available"):
@@ -2695,6 +2753,24 @@ def build_parser() -> argparse.ArgumentParser:
     ct.add_argument("--top", type=int, default=5,
                     help="Number of top consumers")
     ct.set_defaults(command="compare-top")
+
+    # Recommendation commands
+    rec = sub.add_parser("recommend", help="Get resource optimization recommendations")
+    recsub = rec.add_subparsers(dest="recommend_cmd", required=True)
+
+    rc = recsub.add_parser("get", help="Get recommendations for a container")
+    rc.add_argument("container_id")
+    rc.set_defaults(command="recommend-get")
+
+    ra = recsub.add_parser("all", help="Get recommendations for all containers")
+    ra.set_defaults(command="recommend-all")
+
+    rcat = recsub.add_parser("category", help="Get recommendations by category")
+    rcat.add_argument("container_id")
+    rcat.add_argument("--category", default="memory",
+                      choices=["memory", "cpu", "pids", "general"],
+                      help="Category to filter")
+    rcat.set_defaults(command="recommend-category")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
