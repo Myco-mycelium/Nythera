@@ -1639,6 +1639,128 @@ class TestImageManagement(unittest.TestCase):
         self.assertIn("no images found", text)
 
 
+class TestSnapshotDiff(unittest.TestCase):
+    """Test snapshot diff (compare two checkpoint states)."""
+
+    def test_diff_no_changes(self):
+        """Identical checkpoints produce no differences."""
+        from backend.container import ContainerManager
+        cp = {
+            "container_id": "c1",
+            "config": {"hostname": "h1", "command": ["echo"]},
+            "overlay": {"entries": {"/a.txt": {"data": "68656c6c6f"}}},
+        }
+        result = ContainerManager.snapshot_diff(cp, cp)
+        self.assertEqual(result["added"], [])
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["modified"], [])
+        self.assertEqual(result["config_changes"], {})
+        self.assertIn("no differences", result["summary"])
+
+    def test_diff_added_files(self):
+        """Files in B but not A are reported as added."""
+        from backend.container import ContainerManager
+        a = {"overlay": {"entries": {"/x.txt": {"data": "aa"}}}}
+        b = {"overlay": {"entries": {
+            "/x.txt": {"data": "aa"},
+            "/y.txt": {"data": "bb"},
+        }}}
+        result = ContainerManager.snapshot_diff(a, b)
+        self.assertEqual(result["added"], ["/y.txt"])
+        self.assertEqual(result["removed"], [])
+
+    def test_diff_removed_files(self):
+        """Files in A but not B are reported as removed."""
+        from backend.container import ContainerManager
+        a = {"overlay": {"entries": {
+            "/a.txt": {"data": "11"},
+            "/b.txt": {"data": "22"},
+        }}}
+        b = {"overlay": {"entries": {"/a.txt": {"data": "11"}}}}
+        result = ContainerManager.snapshot_diff(a, b)
+        self.assertEqual(result["removed"], ["/b.txt"])
+        self.assertEqual(result["added"], [])
+
+    def test_diff_modified_files(self):
+        """Files with changed data are reported as modified."""
+        from backend.container import ContainerManager
+        a = {"overlay": {"entries": {"/f.txt": {"data": "old"}}}}
+        b = {"overlay": {"entries": {"/f.txt": {"data": "new"}}}}
+        result = ContainerManager.snapshot_diff(a, b)
+        self.assertEqual(len(result["modified"]), 1)
+        self.assertEqual(result["modified"][0]["path"], "/f.txt")
+        self.assertIn("data", result["modified"][0]["changes"])
+
+    def test_diff_config_changes(self):
+        """Config differences are reported."""
+        from backend.container import ContainerManager
+        a = {"config": {"hostname": "h1", "seccomp": True}}
+        b = {"config": {"hostname": "h2", "seccomp": True}}
+        result = ContainerManager.snapshot_diff(a, b)
+        self.assertIn("hostname", result["config_changes"])
+        self.assertEqual(result["config_changes"]["hostname"]["from"], "h1")
+        self.assertEqual(result["config_changes"]["hostname"]["to"], "h2")
+
+    def test_diff_cli_payload(self):
+        """CLI build_payload for containers-diff."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            checkpoint_a="/tmp/a.json",
+            checkpoint_b="/tmp/b.json",
+        )
+        # This will fail because the files don't exist,
+        # but we can test the payload structure
+        import json as _json
+        import tempfile, os
+        cp = {"overlay": {"entries": {"/x.txt": {"data": "aa"}}}}
+        a_path = os.path.join(tempfile.mkdtemp(), "a.json")
+        b_path = os.path.join(tempfile.mkdtemp(), "b.json")
+        with open(a_path, "w") as f:
+            _json.dump(cp, f)
+        with open(b_path, "w") as f:
+            _json.dump(cp, f)
+        args.checkpoint_a = a_path
+        args.checkpoint_b = b_path
+        payload = build_payload("containers-diff", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_diff")
+        self.assertIn("checkpoint_a", payload)
+        self.assertIn("checkpoint_b", payload)
+
+    def test_diff_cli_format_human(self):
+        """CLI format_human for containers-diff."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "added": ["/new.txt"],
+            "removed": ["/old.txt"],
+            "modified": [{"path": "/changed.txt", "changes": ["data"]}],
+            "config_changes": {},
+            "summary": "1 added, 1 removed, 1 modified",
+        }
+        text = format_human("containers-diff", resp)
+        self.assertIn("Added (1):", text)
+        self.assertIn("+ /new.txt", text)
+        self.assertIn("Removed (1):", text)
+        self.assertIn("- /old.txt", text)
+        self.assertIn("Modified (1):", text)
+        self.assertIn("~ /changed.txt", text)
+
+    def test_diff_cli_format_human_no_changes(self):
+        """CLI format_human when no differences found."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "added": [],
+            "removed": [],
+            "modified": [],
+            "config_changes": {},
+            "summary": "no differences",
+        }
+        text = format_human("containers-diff", resp)
+        self.assertIn("no differences", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -16998,6 +17120,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTop))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworkStats))
     suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

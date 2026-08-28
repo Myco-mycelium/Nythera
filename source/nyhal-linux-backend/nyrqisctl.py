@@ -180,6 +180,18 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_restore",
             "checkpoint": cp,
         }
+    if command == "containers-diff":
+        import json as _json_diff
+        with open(args.checkpoint_a) as f:
+            cp_a = _json_diff.load(f)
+        with open(args.checkpoint_b) as f:
+            cp_b = _json_diff.load(f)
+        return {
+            "service": "control",
+            "op": "container_diff",
+            "checkpoint_a": cp_a,
+            "checkpoint_b": cp_b,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -471,6 +483,41 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"container {resp.get('container_id')} restored "
             f"(state={resp.get('state')})"
         )
+    if command == "containers-diff":
+        parts = []
+        added = resp.get("added") or []
+        removed = resp.get("removed") or []
+        modified = resp.get("modified") or []
+        cfg = resp.get("config_changes") or {}
+        if added:
+            parts.append(f"Added ({len(added)}):")
+            for p in added[:10]:
+                parts.append(f"  + {p}")
+            if len(added) > 10:
+                parts.append(f"  ... and {len(added) - 10} more")
+        if removed:
+            parts.append(f"Removed ({len(removed)}):")
+            for p in removed[:10]:
+                parts.append(f"  - {p}")
+            if len(removed) > 10:
+                parts.append(f"  ... and {len(removed) - 10} more")
+        if modified:
+            parts.append(f"Modified ({len(modified)}):")
+            for m in modified[:10]:
+                parts.append(
+                    f"  ~ {m['path']} ({', '.join(m['changes'])})"
+                )
+            if len(modified) > 10:
+                parts.append(f"  ... and {len(modified) - 10} more")
+        if cfg:
+            parts.append("Config changes:")
+            for key, change in cfg.items():
+                parts.append(
+                    f"  {key}: {change.get('from')} → {change.get('to')}"
+                )
+        if not parts:
+            return resp.get("summary", "no differences")
+        return "\n".join(parts)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1015,6 +1062,11 @@ def build_parser() -> argparse.ArgumentParser:
     cr = csub.add_parser("restore", help="Restore a container from a checkpoint file")
     cr.add_argument("checkpoint_file", help="Path to the checkpoint JSON file")
     cr.set_defaults(command="containers-restore")
+
+    cd = csub.add_parser("diff", help="Compare two checkpoint files")
+    cd.add_argument("checkpoint_a", help="Path to first checkpoint JSON")
+    cd.add_argument("checkpoint_b", help="Path to second checkpoint JSON")
+    cd.set_defaults(command="containers-diff")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

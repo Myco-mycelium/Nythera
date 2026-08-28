@@ -1521,6 +1521,86 @@ class ContainerManager:
         logger.info("container_restore: %s from checkpoint", container.id)
         return container
 
+    @staticmethod
+    def snapshot_diff(checkpoint_a: Dict[str, Any],
+                      checkpoint_b: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare two checkpoints and report the differences.
+
+        Compares the overlay entries (files added, removed, modified)
+        and configuration changes between two checkpoint dicts.
+
+        Args:
+            checkpoint_a: The earlier checkpoint (baseline).
+            checkpoint_b: The later checkpoint (comparison target).
+
+        Returns:
+            Dict with ``added``, ``removed``, ``modified`` file lists,
+            ``config_changes`` dict, and ``summary`` string.
+        """
+        entries_a = (
+            checkpoint_a.get("overlay") or {}
+        ).get("entries", {})
+        entries_b = (
+            checkpoint_b.get("overlay") or {}
+        ).get("entries", {})
+
+        paths_a = set(entries_a.keys())
+        paths_b = set(entries_b.keys())
+
+        added = sorted(paths_b - paths_a)
+        removed = sorted(paths_a - paths_b)
+
+        modified: List[Dict[str, Any]] = []
+        for path in sorted(paths_a & paths_b):
+            ea = entries_a[path]
+            eb = entries_b[path]
+            # Compare meaningful fields
+            changes: List[str] = []
+            if ea.get("data") != eb.get("data"):
+                changes.append("data")
+            if ea.get("mode") != eb.get("mode"):
+                changes.append("mode")
+            if ea.get("deleted") != eb.get("deleted"):
+                changes.append("deleted")
+            if ea.get("size") != eb.get("size"):
+                changes.append("size")
+            if changes:
+                modified.append({"path": path, "changes": changes})
+
+        # Config changes
+        cfg_a = checkpoint_a.get("config", {})
+        cfg_b = checkpoint_b.get("config", {})
+        config_changes: Dict[str, Any] = {}
+        all_keys = set(cfg_a.keys()) | set(cfg_b.keys())
+        for key in sorted(all_keys):
+            if cfg_a.get(key) != cfg_b.get(key):
+                config_changes[key] = {
+                    "from": cfg_a.get(key),
+                    "to": cfg_b.get(key),
+                }
+
+        # Summary
+        parts = []
+        if added:
+            parts.append(f"{len(added)} added")
+        if removed:
+            parts.append(f"{len(removed)} removed")
+        if modified:
+            parts.append(f"{len(modified)} modified")
+        if config_changes:
+            parts.append(
+                f"{len(config_changes)} config change(s)"
+            )
+        summary = ", ".join(parts) if parts else "no differences"
+
+        return {
+            "added": added,
+            "removed": removed,
+            "modified": modified,
+            "config_changes": config_changes,
+            "summary": summary,
+        }
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         

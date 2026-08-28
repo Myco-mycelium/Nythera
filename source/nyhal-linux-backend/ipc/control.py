@@ -145,6 +145,9 @@ class ControlService:
             elif op == "container_restore":
                 self._container_restore(server, sender_path,
                                         msg.message_id, request)
+            elif op == "container_diff":
+                self._container_diff(server, sender_path,
+                                     msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -480,6 +483,29 @@ class ControlService:
             "ok": True,
             "container_id": container.id,
             "state": container.state.value,
+        })
+
+    def _container_diff(self, server, sender_path: str, call_id: str,
+                         request: Dict[str, Any]) -> None:
+        cp_a = request.get("checkpoint_a")
+        cp_b = request.get("checkpoint_b")
+        if not cp_a or not cp_b:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "both checkpoint_a and checkpoint_b are required",
+            })
+            return
+        try:
+            diff = self.container_manager.snapshot_diff(cp_a, cp_b)
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_diff failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            **diff,
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,
