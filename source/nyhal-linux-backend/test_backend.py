@@ -5304,6 +5304,158 @@ class TestAlertHistoryManagement(unittest.TestCase):
         self.assertIn("memory", text2)
 
 
+class TestSLAEscalation(unittest.TestCase):
+    """SLA breach escalation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_escalation_policy(self):
+        """set_sla_escalation_policy configures escalation levels."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test"))
+        result = mgr.set_sla_escalation_policy(c)
+        self.assertTrue(result["configured"])
+        self.assertEqual(len(result["levels"]), 4)
+        # Default policy: 1:alert, 3:webhook, 5:restart, 10:page
+        self.assertEqual(result["levels"][0]["threshold"], 1)
+        self.assertIn("alert", result["levels"][0]["actions"])
+
+    def test_set_custom_policy(self):
+        """set_sla_escalation_policy accepts custom levels."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test2"))
+        custom = [
+            {"threshold": 1, "actions": ["alert"], "cooldown_s": 0},
+            {"threshold": 2, "actions": ["alert", "restart"], "cooldown_s": 60},
+        ]
+        result = mgr.set_sla_escalation_policy(c, levels=custom)
+        self.assertEqual(len(result["levels"]), 2)
+
+    def test_trigger_escalation(self):
+        """trigger_sla_escalation increments breach count and escalates at threshold=1."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test3"))
+        mgr.set_sla_escalation_policy(c)
+        # First breach triggers level 0 (threshold=1)
+        result = mgr.trigger_sla_escalation(c)
+        self.assertTrue(result["escalated"])  # threshold=1 triggers immediately
+        self.assertEqual(result["consecutive_breaches"], 1)
+        self.assertEqual(result["level"], 0)
+
+    def test_trigger_escalation_level_1(self):
+        """trigger_sla_escalation escalates at threshold."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test4"))
+        mgr.set_sla_escalation_policy(c)
+        # Trigger 3 breaches to hit level 1 (threshold=3)
+        # The first breach triggers level 0, cooldown prevents re-trigger
+        mgr.trigger_sla_escalation(c)
+        mgr.trigger_sla_escalation(c)
+        result = mgr.trigger_sla_escalation(c)
+        # At 3 breaches, level 1 threshold is met
+        # But level 0 had cooldown=0 so it keeps re-triggering
+        # Level 1 has cooldown=300, so only triggers once
+        self.assertTrue(result["escalated"])
+        self.assertIn("alert", result["actions"])
+        self.assertIn("webhook", result["actions"])
+
+    def test_reset_escalation(self):
+        """reset_sla_escalation clears breach count."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test5"))
+        mgr.set_sla_escalation_policy(c)
+        mgr.trigger_sla_escalation(c)
+        mgr.trigger_sla_escalation(c)
+        result = mgr.reset_sla_escalation(c)
+        self.assertTrue(result["reset"])
+        self.assertEqual(result["previous_breaches"], 2)
+        # Now at 0 breaches again
+        status = mgr.get_sla_escalation_status(c)
+        self.assertEqual(status["consecutive_breaches"], 0)
+
+    def test_escalation_status(self):
+        """get_sla_escalation_status returns current state."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test6"))
+        mgr.set_sla_escalation_policy(c)
+        mgr.trigger_sla_escalation(c)
+        status = mgr.get_sla_escalation_status(c)
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["consecutive_breaches"], 1)
+        self.assertEqual(len(status["levels"]), 4)
+
+    def test_escalation_history(self):
+        """get_sla_escalation_history returns entries."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test7"))
+        mgr.set_sla_escalation_policy(c)
+        # Trigger to get an escalation entry (first breach triggers level 0)
+        mgr.trigger_sla_escalation(c)
+        history = mgr.get_sla_escalation_history(c)
+        self.assertGreater(len(history), 0)
+        self.assertEqual(history[0]["level"], 0)
+
+    def test_no_escalation_without_policy(self):
+        """trigger_sla_escalation is a no-op without policy."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="esc-test8"))
+        result = mgr.trigger_sla_escalation(c)
+        self.assertFalse(result["escalated"])
+        self.assertEqual(result["consecutive_breaches"], 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for SLA escalation commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="sla-escalation-policy", container_id="a",
+            policy="1:alert,3:alert+webhook",
+        )
+        p = build_payload("sla-escalation-policy", args1)
+        self.assertEqual(p["op"], "sla_escalation_policy")
+        self.assertEqual(len(p["levels"]), 2)
+        args2 = argparse.Namespace(
+            command="sla-escalation-status", container_id="a",
+        )
+        p2 = build_payload("sla-escalation-status", args2)
+        self.assertEqual(p2["op"], "sla_escalation_status")
+        args3 = argparse.Namespace(
+            command="sla-escalation-reset", container_id="a",
+        )
+        p3 = build_payload("sla-escalation-reset", args3)
+        self.assertEqual(p3["op"], "sla_escalation_reset")
+
+    def test_cli_format_human(self):
+        """CLI format_human for SLA escalation commands."""
+        from nyrqisctl import format_human
+        import time as _time
+        resp = {
+            "ok": True, "container_id": "a",
+            "configured": True,
+            "current_level": 1,
+            "consecutive_breaches": 3,
+            "last_escalation_time": _time.time() - 60,
+            "levels": [
+                {"threshold": 1, "actions": ["alert"]},
+                {"threshold": 3, "actions": ["alert", "webhook"]},
+            ],
+        }
+        text = format_human("sla-escalation-status", resp)
+        self.assertIn("True", text)
+        self.assertIn("3", text)
+        self.assertIn("alert", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20692,6 +20844,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceComparison))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceRecommendations))
     suite.addTests(loader.loadTestsFromTestCase(TestAlertHistoryManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLAEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

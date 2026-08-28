@@ -662,6 +662,47 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.alert_on_breach is not None:
             p2["alert_on_breach"] = args.alert_on_breach
         return p2
+    if command == "sla-escalation-policy":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "sla_escalation_policy",
+            "container_id": args.container_id,
+        }
+        # Parse policy string if provided
+        if args.policy:
+            levels = []
+            for part in args.policy.split(","):
+                part = part.strip()
+                if ":" in part:
+                    threshold_str, actions_str = part.split(":", 1)
+                    levels.append({
+                        "threshold": int(threshold_str),
+                        "actions": [a.strip() for a in actions_str.split("+")],
+                        "cooldown_s": 300,
+                    })
+            payload["levels"] = levels
+        return payload
+    if command == "sla-escalation-status":
+        return {
+            "service": "control",
+            "op": "sla_escalation_status",
+            "container_id": args.container_id,
+        }
+    if command == "sla-escalation-reset":
+        return {
+            "service": "control",
+            "op": "sla_escalation_reset",
+            "container_id": args.container_id,
+        }
+    if command == "sla-escalation-history":
+        p3: Dict[str, Any] = {
+            "service": "control",
+            "op": "sla_escalation_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p3["tail"] = args.tail
+        return p3
     if command == "billing-rates-set":
         p3: Dict[str, Any] = {
             "service": "control",
@@ -1657,6 +1698,57 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         lines.append(f"  uptime_target:     {resp.get('sla_uptime_target', 99.9)}%")
         lines.append(f"  max_restarts:      {resp.get('sla_max_restart_count', 3)}")
         lines.append(f"  alert_on_breach:   {resp.get('sla_alert_on_breach', True)}")
+        return "\n".join(lines)
+    if command == "sla-escalation-policy":
+        lines = [f"container: {resp.get('container_id')}"]
+        lines.append("policy:")
+        for level in resp.get("levels", []):
+            actions = "+".join(level.get("actions", []))
+            lines.append(
+                f"  {level.get('threshold', '?')}: {actions}"
+            )
+        return "\n".join(lines)
+    if command == "sla-escalation-status":
+        lines = [
+            f"container:       {resp.get('container_id')}",
+            f"configured:      {resp.get('configured', False)}",
+            f"current level:   {resp.get('current_level', 0)}",
+            f"consecutive:     {resp.get('consecutive_breaches', 0)}",
+        ]
+        last_esc = resp.get("last_escalation_time", 0)
+        if last_esc > 0:
+            lines.append(
+                f"last escalation: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_esc))}"
+            )
+        levels = resp.get("levels", [])
+        if levels:
+            lines.append("levels:")
+            for level in levels:
+                actions = "+".join(level.get("actions", []))
+                lines.append(
+                    f"  {level.get('threshold', '?')}: {actions}"
+                )
+        return "\n".join(lines)
+    if command == "sla-escalation-reset":
+        prev = resp.get("previous_breaches", 0)
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"reset:     {resp.get('reset', False)}\n"
+            f"was:       {prev} consecutive breaches"
+        )
+    if command == "sla-escalation-history":
+        history = resp.get("history", [])
+        if not history:
+            return "No escalation history."
+        lines = [f"escalation history ({len(history)} entries):"]
+        for e in history:
+            ts = e.get("timestamp", 0)
+            actions = "+".join(e.get("actions", []))
+            lines.append(
+                f"  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))} "
+                f"level={e.get('level', 0)} breaches={e.get('consecutive_breaches', 0)} "
+                f"actions={actions}"
+            )
         return "\n".join(lines)
     if command == "billing-rates-set" or command == "billing-rates-get":
         rates = resp.get("rates", {})
@@ -2754,6 +2846,30 @@ def build_parser() -> argparse.ArgumentParser:
                       action="store_false", default=None,
                       help="Disable alerts on SLA breach")
     slas.set_defaults(command="sla-set")
+
+    # SLA escalation commands
+    esc = sub.add_parser("sla-escalation", help="Manage SLA breach escalation")
+    escsub = esc.add_subparsers(dest="esc_cmd", required=True)
+
+    escp = escsub.add_parser("policy", help="Set escalation policy")
+    escp.add_argument("container_id")
+    # Simple policy: "1:alert,3:alert+webhook,5:restart,10:page"
+    escp.add_argument("--policy", default=None,
+                      help="Escalation policy string (e.g., '1:alert,3:webhook,5:restart')")
+    escp.set_defaults(command="sla-escalation-policy")
+
+    escs = escsub.add_parser("status", help="Get escalation status")
+    escs.add_argument("container_id")
+    escs.set_defaults(command="sla-escalation-status")
+
+    escr = escsub.add_parser("reset", help="Reset escalation state")
+    escr.add_argument("container_id")
+    escr.set_defaults(command="sla-escalation-reset")
+
+    esch = escsub.add_parser("history", help="Get escalation history")
+    esch.add_argument("container_id")
+    esch.add_argument("--tail", type=int, default=None)
+    esch.set_defaults(command="sla-escalation-history")
 
     bill = sub.add_parser("billing", help="Manage billing (cost tracking)")
     billsub = bill.add_subparsers(dest="billing_cmd", required=True)

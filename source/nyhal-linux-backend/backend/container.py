@@ -4675,6 +4675,238 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # SLA breach escalation
+    # ------------------------------------------------------------------
+
+    def set_sla_escalation_policy(
+        self,
+        container: Container,
+        levels: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Set SLA breach escalation policy for a container.
+
+        Escalation levels define actions taken after consecutive breaches.
+        Each level has a ``threshold`` (number of consecutive breaches)
+        and ``actions`` (list of action types).
+
+        Args:
+            container: Target container.
+            levels: List of escalation level dicts, each with:
+                - ``threshold``: Consecutive breaches to trigger.
+                - ``actions``: List of action types
+                  (alert, webhook, restart, notify, page).
+                - ``cooldown_s``: Min seconds between escalations.
+
+        Returns:
+            Dict with the escalation policy.
+        """
+        if levels is None:
+            levels = [
+                {"threshold": 1, "actions": ["alert"], "cooldown_s": 0},
+                {"threshold": 3, "actions": ["alert", "webhook"], "cooldown_s": 300},
+                {"threshold": 5, "actions": ["alert", "webhook", "restart"], "cooldown_s": 600},
+                {"threshold": 10, "actions": ["alert", "webhook", "restart", "page"], "cooldown_s": 1800},
+            ]
+        if not hasattr(container, '_sla_escalation_policy'):
+            container._sla_escalation_policy = {}
+        container._sla_escalation_policy = {
+            "levels": levels,
+            "consecutive_breaches": 0,
+            "last_escalation_time": 0,
+            "current_level": 0,
+            "escalation_history": [],
+        }
+        logger.info(
+            "set_sla_escalation_policy: %s (%d levels)",
+            container.id, len(levels),
+        )
+        return {
+            "container_id": container.id,
+            "levels": levels,
+            "configured": True,
+        }
+
+    def trigger_sla_escalation(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Process an SLA breach and escalate if needed.
+
+        Increments the consecutive breach counter and triggers
+        escalation actions if the threshold is met.
+
+        Returns:
+            Dict with ``escalated``, ``level``, ``actions``, ``consecutive_breaches``.
+        """
+        if not hasattr(container, '_sla_escalation_policy') or \
+                not container._sla_escalation_policy:
+            return {
+                "container_id": container.id,
+                "escalated": False,
+                "level": 0,
+                "actions": [],
+                "consecutive_breaches": 0,
+            }
+
+        policy = container._sla_escalation_policy
+        policy["consecutive_breaches"] += 1
+        breaches = policy["consecutive_breaches"]
+        now = time.time()
+        levels = policy.get("levels", [])
+        level_times = policy.setdefault("_level_times", {})
+
+        # Find the highest level that matches
+        triggered_level = None
+        triggered_actions: List[str] = []
+        for i, level in enumerate(levels):
+            if breaches >= level.get("threshold", 999999):
+                triggered_level = i
+                triggered_actions = level.get("actions", [])
+                cooldown = level.get("cooldown_s", 0)
+                last_time = level_times.get(i, 0)
+                if cooldown > 0 and (now - last_time) < cooldown:
+                    # Still in cooldown for this level, don't re-escalate
+                    triggered_actions = []
+
+        if triggered_actions:
+            level_times[triggered_level] = now
+            policy["last_escalation_time"] = now
+            policy["current_level"] = triggered_level
+            # Record escalation
+            entry = {
+                "timestamp": now,
+                "level": triggered_level,
+                "consecutive_breaches": breaches,
+                "actions": triggered_actions,
+            }
+            policy["escalation_history"].append(entry)
+            # Keep last 100 entries
+            if len(policy["escalation_history"]) > 100:
+                policy["escalation_history"] = policy["escalation_history"][-100:]
+
+            # Execute actions
+            for action in triggered_actions:
+                if action == "alert":
+                    self._fire_alert(
+                        container, "sla_escalation", "critical",
+                        f"Level {triggered_level}: {breaches} consecutive breaches",
+                    )
+                elif action == "webhook":
+                    # Fire webhook if registered
+                    for wh_id, wh in self._webhooks.items():
+                        if wh.get("events") is None or "sla_escalation" in wh.get("events", []):
+                            self._pending_webhooks.append({
+                                "webhook_id": wh_id,
+                                "event": "sla_escalation",
+                                "container_id": container.id,
+                                "timestamp": now,
+                                "level": triggered_level,
+                                "breaches": breaches,
+                            })
+                elif action == "restart":
+                    logger.warning(
+                        "sla_escalation: auto-restart triggered for %s",
+                        container.id,
+                    )
+                    # Mark for restart on next check
+                    container._sla_restart_pending = True
+                elif action == "page":
+                    logger.critical(
+                        "sla_escalation: PAGE triggered for %s",
+                        container.id,
+                    )
+
+        return {
+            "container_id": container.id,
+            "escalated": len(triggered_actions) > 0,
+            "level": triggered_level or 0,
+            "actions": triggered_actions,
+            "consecutive_breaches": breaches,
+        }
+
+    def reset_sla_escalation(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Reset the SLA escalation state (e.g., after recovery).
+
+        Returns:
+            Dict with ``reset``, ``previous_breaches``.
+        """
+        if not hasattr(container, '_sla_escalation_policy') or \
+                not container._sla_escalation_policy:
+            return {
+                "container_id": container.id,
+                "reset": False,
+                "previous_breaches": 0,
+            }
+        policy = container._sla_escalation_policy
+        prev = policy["consecutive_breaches"]
+        policy["consecutive_breaches"] = 0
+        policy["current_level"] = 0
+        logger.info(
+            "reset_sla_escalation: %s (was %d breaches)",
+            container.id, prev,
+        )
+        return {
+            "container_id": container.id,
+            "reset": True,
+            "previous_breaches": prev,
+        }
+
+    def get_sla_escalation_status(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get the current SLA escalation status.
+
+        Returns:
+            Dict with current level, consecutive breaches, history.
+        """
+        if not hasattr(container, '_sla_escalation_policy') or \
+                not container._sla_escalation_policy:
+            return {
+                "container_id": container.id,
+                "configured": False,
+                "current_level": 0,
+                "consecutive_breaches": 0,
+                "levels": [],
+                "escalation_history": [],
+            }
+        policy = container._sla_escalation_policy
+        return {
+            "container_id": container.id,
+            "configured": True,
+            "current_level": policy.get("current_level", 0),
+            "consecutive_breaches": policy.get("consecutive_breaches", 0),
+            "last_escalation_time": policy.get("last_escalation_time", 0),
+            "levels": policy.get("levels", []),
+            "escalation_history": policy.get("escalation_history", []),
+        }
+
+    def get_sla_escalation_history(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get escalation history for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N entries.
+
+        Returns:
+            List of escalation entry dicts.
+        """
+        if not hasattr(container, '_sla_escalation_policy') or \
+                not container._sla_escalation_policy:
+            return []
+        history = container._sla_escalation_policy.get("escalation_history", [])
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    # ------------------------------------------------------------------
     # Billing (cost tracking)
     # ------------------------------------------------------------------
 
