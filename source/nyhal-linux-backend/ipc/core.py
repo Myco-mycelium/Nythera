@@ -258,12 +258,16 @@ class IPCManager:
     Implements NPS-017 §4.3 (IPC Semantics) and NPS-003 (IPC Primitives).
     """
     
-    def __init__(self, capability_manager=None):
+    def __init__(self, capability_manager=None,
+                 default_bucket_size: int = 200,
+                 default_tokens_per_second: float = 500.0):
         """Initialize the IPC manager.
-        
+
         Args:
             capability_manager: Optional reference to CapabilityManager for
                                enforcing CAP_IPC_SEND/RECEIVE
+            default_bucket_size: Burst capacity for new endpoint buckets
+            default_tokens_per_second: Refill rate (calls/s) for new endpoints
         """
         self.endpoints: Dict[str, IPCEndpoint] = {}
         self.container_endpoints: Dict[str, List[str]] = {}  # container_id -> [endpoint_ids]
@@ -271,7 +275,10 @@ class IPCManager:
         self.pending_calls: Dict[str, threading.Event] = {}  # message_id -> event
         self.call_replies: Dict[str, IPCMessage] = {}  # message_id -> reply
         self.lock = threading.Lock()
-        logger.info("IPCManager initialized")
+        self.default_bucket_size = default_bucket_size
+        self.default_tokens_per_second = default_tokens_per_second
+        logger.info("IPCManager initialized (burst=%d, rate=%.0f/s)",
+                    default_bucket_size, default_tokens_per_second)
     
     def create_endpoint(self, container_id: str, endpoint_id: Optional[str] = None) -> IPCEndpoint:
         """Create a new IPC endpoint for a container.
@@ -289,7 +296,10 @@ class IPCManager:
             endpoint_id = f"ep-{uuid.uuid4().hex[:12]}"
         
         # Create rate limiter for this endpoint
-        rate_limit = TokenBucket(bucket_size=100, tokens_per_second=50.0)
+        rate_limit = TokenBucket(
+            bucket_size=self.default_bucket_size,
+            tokens_per_second=self.default_tokens_per_second,
+        )
         
         endpoint = IPCEndpoint(endpoint_id, container_id, rate_limit)
         

@@ -1306,6 +1306,76 @@ class TestIPCSemantics(unittest.TestCase):
         time.sleep(0.6)  # Should get at least 1 token
         self.assertTrue(bucket.try_consume())
 
+    def test_token_bucket_refill_accuracy(self):
+        """Token bucket refills at the correct rate over time."""
+        bucket = TokenBucket(bucket_size=100, tokens_per_second=100.0)
+        # Drain completely
+        for _ in range(100):
+            bucket.try_consume()
+        self.assertFalse(bucket.try_consume())
+        # Wait 0.5s → should have ~50 tokens
+        time.sleep(0.5)
+        consumed = 0
+        for _ in range(60):
+            if bucket.try_consume():
+                consumed += 1
+        self.assertGreaterEqual(consumed, 40)
+        self.assertLessEqual(consumed, 60)
+
+    def test_token_bucket_thread_safety(self):
+        """Concurrent consumption never exceeds bucket capacity."""
+        # Use zero refill rate so no tokens appear during the test
+        bucket = TokenBucket(bucket_size=50, tokens_per_second=0.0)
+        results = []
+        def worker():
+            ok = bucket.try_consume()
+            results.append(ok)
+        threads = [threading.Thread(target=worker) for _ in range(60)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum(results), 50)  # exactly bucket_size consumed
+        self.assertEqual(sum(1 for r in results if not r), 10)  # rest denied
+
+    def test_manager_configurable_rate_limit(self):
+        """IPCManager creates endpoints with configurable rate limits."""
+        from ipc.core import IPCManager
+        mgr = IPCManager(default_bucket_size=500, default_tokens_per_second=1000.0)
+        ep = mgr.create_endpoint("c1")
+        self.assertEqual(ep.rate_limit.bucket_size, 500)
+        self.assertEqual(ep.rate_limit.tokens_per_second, 1000.0)
+
+    def test_manager_default_rate_limit(self):
+        """IPCManager uses sensible defaults when not configured."""
+        from ipc.core import IPCManager
+        mgr = IPCManager()
+        ep = mgr.create_endpoint("c1")
+        self.assertEqual(ep.rate_limit.bucket_size, 200)
+        self.assertEqual(ep.rate_limit.tokens_per_second, 500.0)
+
+    def test_rate_limit_sweep_throughput(self):
+        """Sweep different bucket configs and verify throughput bounds."""
+        configs = [
+            (10, 10.0),    # low burst, low rate
+            (100, 100.0),  # medium
+            (500, 1000.0), # high
+        ]
+        for burst, rate in configs:
+            bucket = TokenBucket(bucket_size=burst, tokens_per_second=rate)
+            # Drain
+            for _ in range(burst):
+                bucket.try_consume()
+            # Wait for partial refill (0.1s)
+            time.sleep(0.1)
+            expected = int(rate * 0.1 * 0.8)  # 80% of expected (tolerance)
+            consumed = 0
+            for _ in range(int(rate) + 10):
+                if bucket.try_consume():
+                    consumed += 1
+            self.assertGreaterEqual(consumed, max(1, expected),
+                msg=f"burst={burst}, rate={rate}: consumed {consumed} < {expected}")
+
 
 class TestIPCTransport(unittest.TestCase):
     """Test the Unix-domain datagram IPC transport (NPS-017 §4.3, plan
