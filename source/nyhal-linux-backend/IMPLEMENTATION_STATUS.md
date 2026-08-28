@@ -111,7 +111,7 @@ Test suite: **810/810 passing** (`python3 test_backend.py` — 273 run + 26 skip
 
 **Outstanding Work:**
 - [x] ~~Benchmark IPC latency (NPS-003 §6.1)~~ — **Completed**: measured in BENCHMARK_RESULTS.md §20–§25; Rust IPC loop p50 ~82–95 µs vs floor ~263–274 µs.
-- [ ] Optimize token-bucket parameters (ADR-0009 tuning-blocked)
+- [x] ~~Optimize token-bucket parameters (ADR-0009)~~ — **Implemented**: `IPCManager` now accepts configurable `default_bucket_size`/`default_tokens_per_second`; defaults raised to 200/500 to match measured Rust loop throughput; adversarial tests (refill accuracy, thread safety, sweep) added.
 - [x] ~~Shared-memory transport as an alternative/complement to the Unix-domain datagram path~~ — **Implemented**: `ipc/shm_transport.py` provides a POSIX shared-memory ring-buffer transport (zero-copy, mutex+condition variable synchronization) as a high-performance alternative to Unix datagrams.
 - [x] ~~Integration with seccomp for IPC syscall filtering~~ — **Implemented**: IPC-specific seccomp rules gate `sendto`/`sendmsg`/`recvmsg` on `CAP_IPC_SEND`/`CAP_IPC_RECEIVE` independently of `CAP_NETWORK_SOCKET`; containers with IPC capabilities but no network socket capability can still use the IPC transport.
 
@@ -563,7 +563,7 @@ The following benchmarks are required before moving from `Experimental` to `Acce
 |-----------|--------|--------|-------|
 | IPC Round-trip Latency | < 100µs | **Gate MET** | Rust IPC loop p50 ~82–95 µs vs Python floor ~263–274 µs (§22–§25). ADR-0021 Accepted. |
 | FUSE I/O Overhead | < 20% | Proxy + live-mount first-pass data | **§5 (ops-layer, per-block CoW):** 1 MiB-chunk streaming write ~162 MB/s; 4 KiB-op ~3.6 MB/s write / ~2.8 MB/s read vs 541–771 / 1,064–2,131 native. **§6 (live mount):** writes ~40–46 MB/s (~25× improvement after writeback-cache fix). Vault passthrough §27: streaming writes ~3.2 MB/s. No gate declared met. |
-| Token-Bucket Parameters | TBD | First-pass data collected | Default bucket caps a client→endpoint call path at ~50 calls/s steady state — ADR-0009 defaults need revisiting; sweep + adversarial test pending |
+| Token-Bucket Parameters | **Tuned** | Configurable + adversarial-tested | Defaults 200 burst / 500/s refill; configurable via IPCManager; sweep + thread-safety tests green. |
 | Compression Ratio | > 30% | Pending | ADR-0007 |
 
 See `tests/BENCHMARK_PLAN.md` for methodology and `tests/BENCHMARK_RESULTS.md` for the first-pass measurements.
