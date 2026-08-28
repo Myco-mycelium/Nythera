@@ -4600,6 +4600,123 @@ class TestBilling(unittest.TestCase):
         self.assertIn("10", text2)
 
 
+class TestForecasting(unittest.TestCase):
+    """Test resource usage forecasting (predictive analytics)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_linear_regression(self):
+        """_linear_regression computes correct slope/intercept."""
+        from backend.container import ContainerManager
+        x = [0.0, 1.0, 2.0, 3.0, 4.0]
+        y = [1.0, 3.0, 5.0, 7.0, 9.0]
+        result = ContainerManager._linear_regression(x, y)
+        self.assertIsNotNone(result)
+        slope, intercept, r_squared = result
+        self.assertAlmostEqual(slope, 2.0, places=3)
+        self.assertAlmostEqual(intercept, 1.0, places=3)
+        self.assertAlmostEqual(r_squared, 1.0, places=3)
+
+    def test_linear_regression_insufficient_data(self):
+        """_linear_regression returns None with < 2 points."""
+        from backend.container import ContainerManager
+        self.assertIsNone(ContainerManager._linear_regression([0.0], [1.0]))
+        self.assertIsNone(ContainerManager._linear_regression([], []))
+
+    def test_forecast_resource_insufficient(self):
+        """forecast_resource returns insufficient_data when not enough."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.forecast_resource(c)
+        self.assertFalse(result["sufficient_data"])
+
+    def test_forecast_resource_with_data(self):
+        """forecast_resource works with enough data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        # Add history with increasing memory
+        mgr._init_resource_history(c)
+        base = time.time()
+        mgr._resource_history[c.id] = [
+            {"timestamp": base + i * 10, "memory_bytes": 1000 + i * 100,
+             "cpu_usage_usec": 5000, "pids_current": 3}
+            for i in range(10)
+        ]
+        result = mgr.forecast_resource(c, "memory", horizon_s=600)
+        self.assertTrue(result["sufficient_data"])
+        self.assertIn("current_value", result)
+        self.assertIn("predicted_value", result)
+        self.assertIn("trend_per_hour", result)
+        self.assertIn("confidence", result)
+        # Trend should be positive (increasing)
+        self.assertGreater(result["trend_per_hour"], 0)
+
+    def test_forecast_all_resources(self):
+        """forecast_all_resources returns forecasts for all."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.forecast_all_resources(c)
+        self.assertIn("memory", result)
+        self.assertIn("cpu", result)
+        self.assertIn("pids", result)
+
+    def test_estimate_time_to_exhaustion(self):
+        """estimate_time_to_exhaustion returns None without data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.estimate_time_to_exhaustion(c)
+        self.assertIsNone(result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for forecast commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", resource="memory", horizon_s=3600,
+        )
+        p = build_payload("forecast-resource", args)
+        self.assertEqual(p["op"], "forecast")
+        self.assertEqual(p["resource"], "memory")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("forecast-all", args2)
+        self.assertEqual(p["op"], "forecast_all")
+        args3 = argparse.Namespace(
+            container_id="a", resource="memory",
+        )
+        p = build_payload("forecast-exhaustion", args3)
+        self.assertEqual(p["op"], "time_to_exhaustion")
+
+    def test_cli_format_human(self):
+        """CLI format_human for forecast commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "resource": "memory",
+            "current_value": 100000, "predicted_value": 150000,
+            "trend_per_hour": 50000, "confidence": 0.95,
+            "time_to_limit_s": 7200.0, "sufficient_data": True,
+            "sample_count": 10,
+        }
+        text = format_human("forecast-resource", resp)
+        self.assertIn("memory", text)
+        self.assertIn("95.0%", text)
+        # all
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "memory": {"sufficient_data": True, "current_value": 1000,
+                       "predicted_value": 2000, "trend_per_hour": 1000},
+            "cpu": {"sufficient_data": False},
+            "pids": {"sufficient_data": False},
+        }
+        text2 = format_human("forecast-all", resp2)
+        self.assertIn("a", text2)
+        self.assertIn("1,000", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19983,6 +20100,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestWebhooks))
     suite.addTests(loader.loadTestsFromTestCase(TestSLA))
     suite.addTests(loader.loadTestsFromTestCase(TestBilling))
+    suite.addTests(loader.loadTestsFromTestCase(TestForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

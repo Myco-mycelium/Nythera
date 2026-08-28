@@ -666,6 +666,27 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_id:
             p5["container_id"] = args.container_id
         return p5
+    if command == "forecast-resource":
+        return {
+            "service": "control",
+            "op": "forecast",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "horizon_s": args.horizon_s,
+        }
+    if command == "forecast-all":
+        return {
+            "service": "control",
+            "op": "forecast_all",
+            "container_id": args.container_id,
+        }
+    if command == "forecast-exhaustion":
+        return {
+            "service": "control",
+            "op": "time_to_exhaustion",
+            "container_id": args.container_id,
+            "resource": args.resource,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1514,6 +1535,44 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"avg mem:   ${resp.get('avg_memory_cost', 0):.6f}\n"
             f"avg cpu:   ${resp.get('avg_cpu_cost', 0):.6f}\n"
             f"avg pid:   ${resp.get('avg_pid_cost', 0):.6f}"
+        )
+    if command == "forecast-resource":
+        if not resp.get("sufficient_data"):
+            return f"{resp.get('resource')}: insufficient data for forecast"
+        lines = [
+            f"resource: {resp.get('resource')}",
+            f"current:  {resp.get('current_value', 0):,.0f}",
+            f"predicted: {resp.get('predicted_value', 0):,.0f} (in {resp.get('sample_count', 0)} samples)",
+            f"trend:    {resp.get('trend_per_hour', 0):+,.0f}/hour",
+            f"confidence: {resp.get('confidence', 0):.1%}",
+        ]
+        ttl = resp.get("time_to_limit_s")
+        if ttl is not None:
+            hours = int(ttl // 3600)
+            mins = int((ttl % 3600) // 60)
+            lines.append(f"time_to_limit: {hours}h {mins}m")
+        return "\n".join(lines)
+    if command == "forecast-all":
+        lines = [f"container: {resp.get('container_id')}"]
+        for res in ("memory", "cpu", "pids"):
+            fc = resp.get(res, {})
+            if not fc.get("sufficient_data"):
+                lines.append(f"  {res}: (insufficient data)")
+            else:
+                lines.append(
+                    f"  {res}: current={fc.get('current_value', 0):,.0f} "
+                    f"predicted={fc.get('predicted_value', 0):,.0f} "
+                    f"trend={fc.get('trend_per_hour', 0):+,.0f}/h"
+                )
+        return "\n".join(lines)
+    if command == "forecast-exhaustion":
+        result = resp.get("result")
+        if result is None:
+            return f"{resp.get('resource', '?')}: no exhaustion forecast available"
+        return (
+            f"resource: {result.get('resource')}\n"
+            f"time:     {result.get('hours', 0)}h {result.get('minutes', 0)}m {result.get('seconds', 0)}s\n"
+            f"total:    {result.get('total_seconds', 0):.1f}s"
         )
     if command == "containers-stats":
         if not resp.get("available"):
@@ -2388,6 +2447,30 @@ def build_parser() -> argparse.ArgumentParser:
     bsum.add_argument("container_id", nargs="?", default=None,
                       help="Container ID (omit for all)")
     bsum.set_defaults(command="billing-summary")
+
+    fc = sub.add_parser("forecast", help="Resource usage forecasting")
+    fcsub = fc.add_subparsers(dest="forecast_cmd", required=True)
+
+    fcr = fcsub.add_parser("resource", help="Forecast a specific resource")
+    fcr.add_argument("container_id")
+    fcr.add_argument("--resource", default="memory",
+                     choices=["memory", "cpu", "pids"],
+                     help="Resource to forecast")
+    fcr.add_argument("--horizon", type=float, default=3600.0,
+                     dest="horizon_s",
+                     help="Forecast horizon in seconds")
+    fcr.set_defaults(command="forecast-resource")
+
+    fca = fcsub.add_parser("all", help="Forecast all resources")
+    fca.add_argument("container_id")
+    fca.set_defaults(command="forecast-all")
+
+    fce = fcsub.add_parser("exhaustion", help="Estimate time to exhaustion")
+    fce.add_argument("container_id")
+    fce.add_argument("--resource", default="memory",
+                     choices=["memory", "cpu", "pids"],
+                     help="Resource to check")
+    fce.set_defaults(command="forecast-exhaustion")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

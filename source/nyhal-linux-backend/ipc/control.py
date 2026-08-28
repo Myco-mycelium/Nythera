@@ -2107,6 +2107,81 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # Forecasting
+    # ------------------------------------------------------------------
+
+    def _forecast(self, server, sender_path: str,
+                  call_id: str,
+                  request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        horizon_s = float(request.get("horizon_s", 3600.0))
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.forecast_resource(
+            c, resource=resource, horizon_s=horizon_s,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _forecast_all(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.forecast_all_resources(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _time_to_exhaustion(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.estimate_time_to_exhaustion(
+            c, resource=resource,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "result": result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

@@ -2298,6 +2298,204 @@ class ContainerManager:
             logger.debug("stop_resource_recording: %s", container.id)
 
     # ------------------------------------------------------------------
+    # Resource usage forecasting (predictive analytics)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _linear_regression(
+        x: List[float], y: List[float],
+    ) -> Optional[Tuple[float, float, float]]:
+        """Simple linear regression (least squares).
+
+        Args:
+            x: Independent variable values.
+            y: Dependent variable values.
+
+        Returns:
+            Tuple of (slope, intercept, r_squared), or None if
+            insufficient data.
+        """
+        n = len(x)
+        if n < 2:
+            return None
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+        sum_x2 = sum(xi * xi for xi in x)
+        sum_y2 = sum(yi * yi for yi in y)
+
+        denom = n * sum_x2 - sum_x * sum_x
+        if abs(denom) < 1e-10:
+            return None
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+
+        # R-squared
+        ss_res = sum((yi - (slope * xi + intercept)) ** 2
+                     for xi, yi in zip(x, y))
+        mean_y = sum_y / n
+        ss_tot = sum((yi - mean_y) ** 2 for yi in y)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+        return slope, intercept, max(0.0, min(1.0, r_squared))
+
+    def forecast_resource(
+        self, container: Container,
+        resource: str = "memory",
+        horizon_s: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Forecast resource usage for a container.
+
+        Uses linear regression on resource history to predict future
+        usage and estimate time until resource exhaustion.
+
+        Args:
+            container: Target container.
+            resource: Resource to forecast ("memory", "cpu", "pids").
+            horizon_s: Forecast horizon in seconds (default 1 hour).
+
+        Returns:
+            Dict with ``current_value``, ``predicted_value``,
+            ``trend_per_hour``, ``confidence`` (R-squared),
+            ``time_to_limit_s`` (None if no limit or no trend).
+        """
+        history = self.get_resource_history(container)
+        if len(history) < 2:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "current_value": None,
+                "predicted_value": None,
+                "trend_per_hour": None,
+                "confidence": 0.0,
+                "time_to_limit_s": None,
+                "sufficient_data": False,
+            }
+
+        # Extract time series
+        timestamps = [s["timestamp"] for s in history]
+        if resource == "memory":
+            values = [s.get("memory_bytes", 0) for s in history]
+            # Get limit
+            stats = self.container_stats(container)
+            limit = stats.get("memory_limit_bytes")
+            if limit is None:
+                limit = container.config.limits.memory_mb * 1024 * 1024
+        elif resource == "cpu":
+            values = [s.get("cpu_usage_usec", 0) for s in history]
+            limit = None  # CPU has no hard limit
+        elif resource == "pids":
+            values = [s.get("pids_current", 0) for s in history]
+            limit = container.config.limits.pid_limit
+        else:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "current_value": None,
+                "predicted_value": None,
+                "trend_per_hour": None,
+                "confidence": 0.0,
+                "time_to_limit_s": None,
+                "sufficient_data": False,
+            }
+
+        # Normalize timestamps to seconds from start
+        t0 = timestamps[0]
+        x = [(t - t0) for t in timestamps]
+        y = [float(v) for v in values]
+
+        result = self._linear_regression(x, y)
+        if result is None:
+            return {
+                "container_id": container.id,
+                "resource": resource,
+                "current_value": y[-1],
+                "predicted_value": None,
+                "trend_per_hour": None,
+                "confidence": 0.0,
+                "time_to_limit_s": None,
+                "sufficient_data": True,
+            }
+
+        slope, intercept, r_squared = result
+
+        # Predict at horizon
+        predicted = slope * (x[-1] + horizon_s) + intercept
+        predicted = max(0, predicted)
+
+        # Trend per hour
+        trend_per_hour = slope * 3600
+
+        # Time to limit
+        time_to_limit_s = None
+        if limit is not None and slope > 0:
+            current = y[-1]
+            if current < limit:
+                remaining = limit - current
+                time_to_limit_s = remaining / slope if slope > 0 else None
+
+        return {
+            "container_id": container.id,
+            "resource": resource,
+            "current_value": y[-1],
+            "predicted_value": round(predicted, 2),
+            "trend_per_hour": round(trend_per_hour, 2),
+            "confidence": round(r_squared, 4),
+            "time_to_limit_s": round(time_to_limit_s, 1) if time_to_limit_s else None,
+            "sufficient_data": True,
+            "sample_count": len(history),
+        }
+
+    def forecast_all_resources(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Forecast all trackable resources for a container.
+
+        Returns:
+            Dict with forecasts for memory, CPU, and PIDs.
+        """
+        return {
+            "container_id": container.id,
+            "memory": self.forecast_resource(container, "memory"),
+            "cpu": self.forecast_resource(container, "cpu"),
+            "pids": self.forecast_resource(container, "pids"),
+        }
+
+    def estimate_time_to_exhaustion(
+        self, container: Container,
+        resource: str = "memory",
+    ) -> Optional[Dict[str, Any]]:
+        """Estimate time until a resource is exhausted.
+
+        Args:
+            container: Target container.
+            resource: Resource to check.
+
+        Returns:
+            Dict with ``hours``, ``minutes``, ``seconds``, ``limit``,
+            ``current``, or None if not applicable.
+        """
+        forecast = self.forecast_resource(container, resource)
+        if not forecast.get("sufficient_data"):
+            return None
+        time_s = forecast.get("time_to_limit_s")
+        if time_s is None:
+            return None
+        hours = int(time_s // 3600)
+        minutes = int((time_s % 3600) // 60)
+        seconds = int(time_s % 60)
+        return {
+            "resource": resource,
+            "hours": hours,
+            "minutes": minutes,
+            "seconds": seconds,
+            "total_seconds": round(time_s, 1),
+            "limit": forecast.get("current_value"),
+            "current": forecast.get("current_value"),
+        }
+
+    # ------------------------------------------------------------------
     # Labels / metadata management
     # ------------------------------------------------------------------
 
