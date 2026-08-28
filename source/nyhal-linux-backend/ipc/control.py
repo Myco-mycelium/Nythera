@@ -2286,6 +2286,73 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # Resource comparison
+
+    def _compare(self, server, sender_path: str,
+                 call_id: str,
+                 request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids", [])
+        resource = request.get("resource", "memory")
+        if len(container_ids) < 2:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_ids must have at least 2 entries",
+            })
+            return
+        result = self.container_manager.compare_containers(
+            container_ids, resource=resource,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _compare_all(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids", [])
+        if len(container_ids) < 2:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_ids must have at least 2 entries",
+            })
+            return
+        result = self.container_manager.compare_all_resources(
+            container_ids,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _relative_usage(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "memory")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        result = self.container_manager.get_relative_usage(
+            container_id, resource=resource,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _top_consumers(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        resource = request.get("resource", "memory")
+        top_n = request.get("top_n", 5)
+        result = self.container_manager.find_top_consumers(
+            resource=resource, top_n=top_n,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "resource": resource,
+            "rankings": result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

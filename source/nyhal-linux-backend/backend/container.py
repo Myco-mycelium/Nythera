@@ -2737,6 +2737,222 @@ class ContainerManager:
             "recent_anomaly_count": recent_count,
         }
 
+    # ------------------------------------------------------------------
+    # Resource comparison (cross-container)
+    # ------------------------------------------------------------------
+
+    def compare_containers(
+        self,
+        container_ids: List[str],
+        resource: str = "memory",
+    ) -> Dict[str, Any]:
+        """Compare resource usage across multiple containers.
+
+        Computes current usage, average, min, max, and rankings
+        for the given resource across all specified containers.
+
+        Args:
+            container_ids: List of container IDs to compare.
+            resource: Resource to compare (memory, cpu, pids).
+
+        Returns:
+            Dict with ``rankings``, ``statistics``, ``resource``.
+        """
+        key_map = {
+            "memory": "memory_bytes",
+            "cpu": "cpu_usage_usec",
+            "pids": "pids_current",
+        }
+        stat_key = key_map.get(resource, resource)
+
+        entries = []
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+            stats = self.container_stats(c)
+            current = stats.get(stat_key, 0)
+            history = self.get_resource_history(c)
+            if history:
+                values = [s.get(stat_key, 0) for s in history]
+                avg_val = sum(values) / len(values)
+                min_val = min(values)
+                max_val = max(values)
+            else:
+                avg_val = current
+                min_val = current
+                max_val = current
+
+            entries.append({
+                "container_id": cid,
+                "current": current,
+                "average": round(avg_val, 2),
+                "min": min_val,
+                "max": max_val,
+                "samples": len(history),
+            })
+
+        # Sort by current usage descending for rankings
+        entries.sort(key=lambda e: e["current"], reverse=True)
+        for i, e in enumerate(entries):
+            e["rank"] = i + 1
+
+        # Compute statistics
+        if entries:
+            currents = [e["current"] for e in entries]
+            averages = [e["average"] for e in entries]
+            statistics = {
+                "total_current": sum(currents),
+                "total_average": round(sum(averages), 2),
+                "highest_current": currents[0],
+                "lowest_current": currents[-1],
+                "container_count": len(entries),
+                "mean_current": round(sum(currents) / len(currents), 2),
+            }
+        else:
+            statistics = {
+                "total_current": 0,
+                "total_average": 0,
+                "highest_current": 0,
+                "lowest_current": 0,
+                "container_count": 0,
+                "mean_current": 0,
+            }
+
+        return {
+            "resource": resource,
+            "rankings": entries,
+            "statistics": statistics,
+        }
+
+    def compare_all_resources(
+        self,
+        container_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Compare all resources across multiple containers.
+
+        Returns a comparison result for memory, CPU, and PIDs.
+
+        Returns:
+            Dict with per-resource comparison and overall summary.
+        """
+        resources = ["memory", "cpu", "pids"]
+        comparisons: Dict[str, Any] = {}
+        total_anomalies = 0
+
+        for res in resources:
+            comp = self.compare_containers(container_ids, res)
+            comparisons[res] = comp
+
+        return {
+            "container_ids": container_ids,
+            "comparisons": comparisons,
+            "container_count": len(container_ids),
+        }
+
+    def get_relative_usage(
+        self,
+        container_id: str,
+        resource: str = "memory",
+    ) -> Dict[str, Any]:
+        """Get a container's relative resource usage vs peers.
+
+        Shows how a container's usage compares to the average
+        of all running containers.
+
+        Args:
+            container_id: Container to analyze.
+            resource: Resource to check.
+
+        Returns:
+            Dict with ``percentile``, ``vs_average_pct``,
+            ``rank``, ``total``.
+        """
+        key_map = {
+            "memory": "memory_bytes",
+            "cpu": "cpu_usage_usec",
+            "pids": "pids_current",
+        }
+        stat_key = key_map.get(resource, resource)
+
+        # Get all running containers
+        all_entries = []
+        target_value = 0
+        for cid, c in self.containers.items():
+            stats = self.container_stats(c)
+            val = stats.get(stat_key, 0)
+            all_entries.append((cid, val))
+            if cid == container_id:
+                target_value = val
+
+        if not all_entries:
+            return {
+                "container_id": container_id,
+                "resource": resource,
+                "percentile": 0,
+                "vs_average_pct": 0,
+                "rank": 0,
+                "total": 0,
+            }
+
+        all_entries.sort(key=lambda e: e[1])
+        total = len(all_entries)
+        rank = next(
+            (i + 1 for i, (cid, _) in enumerate(all_entries) if cid == container_id),
+            total,
+        )
+        percentile = round(rank / total * 100, 1)
+
+        avg_val = sum(v for _, v in all_entries) / total
+        if avg_val > 0:
+            vs_avg_pct = round((target_value - avg_val) / avg_val * 100, 1)
+        else:
+            vs_avg_pct = 0.0
+
+        return {
+            "container_id": container_id,
+            "resource": resource,
+            "current": target_value,
+            "average": round(avg_val, 2),
+            "percentile": percentile,
+            "vs_average_pct": vs_avg_pct,
+            "rank": rank,
+            "total": total,
+        }
+
+    def find_top_consumers(
+        self,
+        resource: str = "memory",
+        top_n: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Find the top N resource consumers.
+
+        Args:
+            resource: Resource to rank by.
+            top_n: Number of top consumers to return.
+
+        Returns:
+            List of dicts with ``container_id``, ``value``, ``rank``.
+        """
+        key_map = {
+            "memory": "memory_bytes",
+            "cpu": "cpu_usage_usec",
+            "pids": "pids_current",
+        }
+        stat_key = key_map.get(resource, resource)
+
+        entries = []
+        for cid, c in self.containers.items():
+            stats = self.container_stats(c)
+            val = stats.get(stat_key, 0)
+            entries.append({"container_id": cid, "value": val})
+
+        entries.sort(key=lambda e: e["value"], reverse=True)
+        for i, e in enumerate(entries[:top_n]):
+            e["rank"] = i + 1
+
+        return entries[:top_n]
+
     def set_label(self, container: Container, key: str, value: str) -> None:
         """Set a label on a container.
 

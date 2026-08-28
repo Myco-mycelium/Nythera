@@ -720,6 +720,33 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "resource": args.resource,
             "window_size": args.window,
         }
+    if command == "compare-resources":
+        return {
+            "service": "control",
+            "op": "compare",
+            "container_ids": args.container_ids,
+            "resource": args.resource,
+        }
+    if command == "compare-all":
+        return {
+            "service": "control",
+            "op": "compare_all",
+            "container_ids": args.container_ids,
+        }
+    if command == "compare-relative":
+        return {
+            "service": "control",
+            "op": "relative_usage",
+            "container_id": args.container_id,
+            "resource": args.resource,
+        }
+    if command == "compare-top":
+        return {
+            "service": "control",
+            "op": "top_consumers",
+            "resource": args.resource,
+            "top_n": args.top,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1662,6 +1689,50 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"overall_rate: {resp.get('overall_rate', 0):.1%}\n"
             f"recent_count: {resp.get('recent_anomaly_count', 0)}"
         )
+    if command == "compare-resources":
+        lines = [f"resource: {resp.get('resource')}"]
+        stats = resp.get("statistics", {})
+        lines.append(f"  total: {stats.get('total_current', 0):,}")
+        lines.append(f"  mean:  {stats.get('mean_current', 0):,}")
+        for e in resp.get("rankings", []):
+            lines.append(
+                f"  #{e.get('rank')} {e.get('container_id')}: "
+                f"current={e.get('current', 0):,} avg={e.get('average', 0):,}"
+            )
+        return "\n".join(lines)
+    if command == "compare-all":
+        lines = [f"container count: {resp.get('container_count', 0)}"]
+        for res in ("memory", "cpu", "pids"):
+            comp = resp.get("comparisons", {}).get(res, {})
+            stats = comp.get("statistics", {})
+            lines.append(
+                f"\n{res}: total={stats.get('total_current', 0):,} "
+                f"mean={stats.get('mean_current', 0):,}"
+            )
+            for e in comp.get("rankings", [])[:3]:
+                lines.append(
+                    f"  #{e.get('rank')} {e.get('container_id')}: "
+                    f"current={e.get('current', 0):,}"
+                )
+        return "\n".join(lines)
+    if command == "compare-relative":
+        return (
+            f"container:  {resp.get('container_id')}\n"
+            f"resource:  {resp.get('resource')}\n"
+            f"current:   {resp.get('current', 0):,}\n"
+            f"average:   {resp.get('average', 0):,}\n"
+            f"rank:      {resp.get('rank', 0)}/{resp.get('total', 0)}\n"
+            f"percentile: {resp.get('percentile', 0)}%\n"
+            f"vs avg:    {resp.get('vs_average_pct', 0):+.1f}%"
+        )
+    if command == "compare-top":
+        lines = [f"resource: {resp.get('resource')}", "rankings:"]
+        for e in resp.get("rankings", []):
+            lines.append(
+                f"  #{e.get('rank')} {e.get('container_id')}: "
+                f"{e.get('value', 0):,}"
+            )
+        return "\n".join(lines)
 
     if command == "containers-stats":
         if not resp.get("available"):
@@ -2596,6 +2667,34 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["memory", "cpu", "pids"])
     at.add_argument("--window", type=int, default=20)
     at.set_defaults(command="anomaly-trend")
+
+    # Resource comparison commands
+    compare = sub.add_parser("compare", help="Compare container resources")
+    cmpsub = compare.add_subparsers(dest="compare_cmd", required=True)
+
+    cc = cmpsub.add_parser("resources", help="Compare specific resource across containers")
+    cc.add_argument("container_ids", nargs="+", help="Container IDs to compare")
+    cc.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"],
+                    help="Resource to compare")
+    cc.set_defaults(command="compare-resources")
+
+    ca = cmpsub.add_parser("all", help="Compare all resources across containers")
+    ca.add_argument("container_ids", nargs="+", help="Container IDs to compare")
+    ca.set_defaults(command="compare-all")
+
+    cr = cmpsub.add_parser("relative", help="Show container's relative usage vs peers")
+    cr.add_argument("container_id")
+    cr.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"])
+    cr.set_defaults(command="compare-relative")
+
+    ct = cmpsub.add_parser("top", help="Find top N resource consumers")
+    ct.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"])
+    ct.add_argument("--top", type=int, default=5,
+                    help="Number of top consumers")
+    ct.set_defaults(command="compare-top")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

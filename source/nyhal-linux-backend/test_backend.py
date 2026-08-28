@@ -4900,6 +4900,157 @@ class TestAnomalyDetection(unittest.TestCase):
         self.assertIn("increasing", text3)
 
 
+class TestResourceComparison(unittest.TestCase):
+    """Resource comparison between containers."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_compare_containers(self):
+        """compare_containers returns rankings and statistics."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="comp1"))
+        c2 = mgr.create(ContainerConfig(name="comp2"))
+        # Add history to both
+        mgr._init_resource_history(c1)
+        mgr._init_resource_history(c2)
+        base = time.time() - 300
+        for i in range(5):
+            mgr._resource_history[c1.id].append({
+                "timestamp": base + i * 60,
+                "memory_bytes": 1000 + i * 100,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+            mgr._resource_history[c2.id].append({
+                "timestamp": base + i * 60,
+                "memory_bytes": 2000 + i * 100,
+                "cpu_usage_usec": 5000,
+                "pids_current": 3,
+            })
+        result = mgr.compare_containers([c1.id, c2.id], "memory")
+        self.assertIn("rankings", result)
+        self.assertEqual(len(result["rankings"]), 2)
+        self.assertEqual(result["rankings"][0]["rank"], 1)
+        # With no cgroup stats, current is 0 for both;
+        # verify structure and average values from history
+        avgs = [r["average"] for r in result["rankings"]]
+        self.assertIn(1200.0, avgs)  # c1 avg
+        self.assertIn(2200.0, avgs)  # c2 avg
+        self.assertIn("statistics", result)
+        self.assertEqual(result["statistics"]["container_count"], 2)
+
+    def test_compare_all_resources(self):
+        """compare_all_resources returns per-resource comparison."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="comp3"))
+        c2 = mgr.create(ContainerConfig(name="comp4"))
+        result = mgr.compare_all_resources([c1.id, c2.id])
+        self.assertIn("comparisons", result)
+        self.assertIn("memory", result["comparisons"])
+        self.assertIn("cpu", result["comparisons"])
+        self.assertIn("pids", result["comparisons"])
+        self.assertEqual(result["container_count"], 2)
+
+    def test_compare_empty(self):
+        """compare_containers handles empty list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        result = mgr.compare_containers([], "memory")
+        self.assertEqual(result["statistics"]["container_count"], 0)
+        self.assertEqual(result["rankings"], [])
+
+    def test_get_relative_usage(self):
+        """get_relative_usage returns percentile and vs_average."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="rel1"))
+        c2 = mgr.create(ContainerConfig(name="rel2"))
+        result = mgr.get_relative_usage(c1.id, "memory")
+        self.assertIn("percentile", result)
+        self.assertIn("vs_average_pct", result)
+        self.assertEqual(result["total"], 2)
+
+    def test_find_top_consumers(self):
+        """find_top_consumers returns ranked list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="top1"))
+        c2 = mgr.create(ContainerConfig(name="top2"))
+        c3 = mgr.create(ContainerConfig(name="top3"))
+        result = mgr.find_top_consumers("memory", top_n=2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["rank"], 1)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for compare commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="compare-resources", container_ids=["a", "b"],
+            resource="memory",
+        )
+        p = build_payload("compare-resources", args1)
+        self.assertEqual(p["op"], "compare")
+        self.assertEqual(p["container_ids"], ["a", "b"])
+        args2 = argparse.Namespace(
+            command="compare-all", container_ids=["a", "b"],
+        )
+        p2 = build_payload("compare-all", args2)
+        self.assertEqual(p2["op"], "compare_all")
+        args3 = argparse.Namespace(
+            command="compare-relative", container_id="a",
+            resource="cpu",
+        )
+        p3 = build_payload("compare-relative", args3)
+        self.assertEqual(p3["op"], "relative_usage")
+        args4 = argparse.Namespace(
+            command="compare-top", resource="pids", top=3,
+        )
+        p4 = build_payload("compare-top", args4)
+        self.assertEqual(p4["op"], "top_consumers")
+        self.assertEqual(p4["top_n"], 3)
+
+    def test_cli_format_human(self):
+        """CLI format_human for compare commands."""
+        from nyrqisctl import format_human
+        # compare-resources
+        resp = {
+            "ok": True, "resource": "memory",
+            "rankings": [
+                {"rank": 1, "container_id": "a", "current": 5000, "average": 4500},
+                {"rank": 2, "container_id": "b", "current": 3000, "average": 2800},
+            ],
+            "statistics": {"total_current": 8000, "mean_current": 4000},
+        }
+        text = format_human("compare-resources", resp)
+        self.assertIn("memory", text)
+        self.assertIn("#1", text)
+        # compare-relative
+        resp2 = {
+            "ok": True, "container_id": "a", "resource": "memory",
+            "current": 5000, "average": 4000,
+            "percentile": 75.0, "vs_average_pct": 25.0,
+            "rank": 1, "total": 4,
+        }
+        text2 = format_human("compare-relative", resp2)
+        self.assertIn("75.0%", text2)
+        self.assertIn("+25.0%", text2)
+        # compare-top
+        resp3 = {
+            "ok": True, "resource": "memory",
+            "rankings": [
+                {"rank": 1, "container_id": "a", "value": 5000},
+            ],
+        }
+        text3 = format_human("compare-top", resp3)
+        self.assertIn("#1", text3)
+        self.assertIn("5,000", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20285,6 +20436,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBilling))
     suite.addTests(loader.loadTestsFromTestCase(TestForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceComparison))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
