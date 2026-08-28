@@ -560,6 +560,42 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
             "output_path": args.output_path,
         }
+    if command == "webhook-register":
+        p: Dict[str, Any] = {
+            "service": "control",
+            "op": "webhook_register",
+            "url": args.url,
+        }
+        if args.events:
+            p["events"] = args.events
+        if args.secret:
+            p["secret"] = args.secret
+        if args.container_filter:
+            p["container_filter"] = args.container_filter
+        return p
+    if command == "webhook-unregister":
+        return {
+            "service": "control",
+            "op": "webhook_unregister",
+            "webhook_id": args.webhook_id,
+        }
+    if command == "webhook-list":
+        return {
+            "service": "control",
+            "op": "webhook_list",
+        }
+    if command == "webhook-enable":
+        return {
+            "service": "control",
+            "op": "webhook_enable",
+            "webhook_id": args.webhook_id,
+        }
+    if command == "webhook-disable":
+        return {
+            "service": "control",
+            "op": "webhook_disable",
+            "webhook_id": args.webhook_id,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1303,6 +1339,29 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"bytes:    {resp.get('bytes_written', 0):,}\n"
             f"samples:  {resp.get('samples', 'N/A')}"
         )
+    if command == "webhook-register":
+        return (
+            f"webhook registered: {resp.get('id')}\n"
+            f"url: {resp.get('url')}\n"
+            f"events: {resp.get('events') or 'all'}"
+        )
+    if command == "webhook-list":
+        webhooks = resp.get("webhooks", [])
+        count = resp.get("count", 0)
+        lines = [f"{count} webhook(s):"]
+        for wh in webhooks:
+            status = "enabled" if wh.get("enabled") else "disabled"
+            lines.append(
+                f"  {wh['id']} [{status}] → {wh['url']} "
+                f"(fired {wh.get('fire_count', 0)} times)"
+            )
+        return "\n".join(lines)
+    if command in ("webhook-enable", "webhook-disable"):
+        return f"webhook {resp.get('webhook_id')} {'enabled' if resp.get('ok') else 'not found'}"
+    if command == "webhook-unregister":
+        if not resp.get("existed", True):
+            return f"webhook {resp.get('webhook_id')} not found"
+        return f"webhook {resp.get('webhook_id')} unregistered"
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -2086,6 +2145,34 @@ def build_parser() -> argparse.ArgumentParser:
     ces.add_argument("container_id")
     ces.add_argument("output_path", help="Output file path")
     ces.set_defaults(command="containers-export-snapshot")
+
+    wh = sub.add_parser("webhooks", help="Manage webhooks")
+    whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
+
+    whr = whsub.add_parser("register", help="Register a webhook")
+    whr.add_argument("url", help="Webhook URL")
+    whr.add_argument("--events", nargs="+", default=None,
+                     help="Event types to subscribe to")
+    whr.add_argument("--secret", default=None,
+                     help="HMAC secret for payload signing")
+    whr.add_argument("--filter", dest="container_filter", default=None,
+                     help="Filter by container ID")
+    whr.set_defaults(command="webhook-register")
+
+    whu = whsub.add_parser("unregister", help="Unregister a webhook")
+    whu.add_argument("webhook_id")
+    whu.set_defaults(command="webhook-unregister")
+
+    whl = whsub.add_parser("list", help="List webhooks")
+    whl.set_defaults(command="webhook-list")
+
+    whe = whsub.add_parser("enable", help="Enable a webhook")
+    whe.add_argument("webhook_id")
+    whe.set_defaults(command="webhook-enable")
+
+    whd = whsub.add_parser("disable", help="Disable a webhook")
+    whd.add_argument("webhook_id")
+    whd.set_defaults(command="webhook-disable")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

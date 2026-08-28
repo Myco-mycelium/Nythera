@@ -4201,6 +4201,165 @@ class TestResourceExport(unittest.TestCase):
         self.assertIn("1,234", text)
 
 
+class TestWebhooks(unittest.TestCase):
+    """Test webhooks (HTTP callbacks for events)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_register_webhook(self):
+        """Register a webhook."""
+        mgr = self._manager()
+        config = mgr.register_webhook("http://example.com/hook")
+        self.assertIn("id", config)
+        self.assertEqual(config["url"], "http://example.com/hook")
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["fire_count"], 0)
+
+    def test_register_with_events(self):
+        """Register webhook with event filter."""
+        mgr = self._manager()
+        config = mgr.register_webhook(
+            "http://example.com", events=["alert", "oom"],
+        )
+        self.assertEqual(config["events"], ["alert", "oom"])
+
+    def test_unregister_webhook(self):
+        """Unregister a webhook."""
+        mgr = self._manager()
+        config = mgr.register_webhook("http://example.com")
+        self.assertTrue(mgr.unregister_webhook(config["id"]))
+        self.assertFalse(mgr.unregister_webhook(config["id"]))
+
+    def test_list_webhooks(self):
+        """List webhooks."""
+        mgr = self._manager()
+        mgr.register_webhook("http://a.com")
+        mgr.register_webhook("http://b.com")
+        webhooks = mgr.list_webhooks()
+        self.assertEqual(len(webhooks), 2)
+
+    def test_get_webhook(self):
+        """Get webhook by ID."""
+        mgr = self._manager()
+        config = mgr.register_webhook("http://example.com")
+        self.assertIsNotNone(mgr.get_webhook(config["id"]))
+        self.assertIsNone(mgr.get_webhook("nonexistent"))
+
+    def test_enable_disable(self):
+        """Enable and disable webhooks."""
+        mgr = self._manager()
+        config = mgr.register_webhook("http://example.com")
+        self.assertTrue(mgr.disable_webhook(config["id"]))
+        self.assertFalse(mgr.get_webhook(config["id"])["enabled"])
+        self.assertTrue(mgr.enable_webhook(config["id"]))
+        self.assertTrue(mgr.get_webhook(config["id"])["enabled"])
+
+    def test_enable_nonexistent(self):
+        """Enable nonexistent webhook returns False."""
+        mgr = self._manager()
+        self.assertFalse(mgr.enable_webhook("nonexistent"))
+
+    def test_fire_webhooks(self):
+        """_fire_webhooks updates fire_count."""
+        mgr = self._manager()
+        config = mgr.register_webhook(
+            "http://example.com", events=["alert"],
+        )
+        # Fire matching event
+        mgr._fire_webhooks("alert", "container-1", "test")
+        # Give thread a moment
+        import time
+        time.sleep(0.05)
+        wh = mgr.get_webhook(config["id"])
+        self.assertEqual(wh["fire_count"], 1)
+        self.assertIsNotNone(wh["last_fired"])
+
+    def test_fire_webhooks_no_match(self):
+        """_fire_webhooks skips non-matching events."""
+        mgr = self._manager()
+        config = mgr.register_webhook(
+            "http://example.com", events=["alert"],
+        )
+        mgr._fire_webhooks("oom", "container-1", "test")
+        import time
+        time.sleep(0.05)
+        wh = mgr.get_webhook(config["id"])
+        self.assertEqual(wh["fire_count"], 0)
+
+    def test_fire_webhooks_disabled(self):
+        """_fire_webhooks skips disabled webhooks."""
+        mgr = self._manager()
+        config = mgr.register_webhook("http://example.com")
+        mgr.disable_webhook(config["id"])
+        mgr._fire_webhooks("alert", "container-1", "test")
+        import time
+        time.sleep(0.05)
+        wh = mgr.get_webhook(config["id"])
+        self.assertEqual(wh["fire_count"], 0)
+
+    def test_fire_webhooks_container_filter(self):
+        """_fire_webhooks respects container filter."""
+        mgr = self._manager()
+        config = mgr.register_webhook(
+            "http://example.com", container_filter="c1",
+        )
+        mgr._fire_webhooks("alert", "c2", "test")
+        import time
+        time.sleep(0.05)
+        wh = mgr.get_webhook(config["id"])
+        self.assertEqual(wh["fire_count"], 0)
+        # Matching container
+        mgr._fire_webhooks("alert", "c1", "test")
+        time.sleep(0.05)
+        self.assertEqual(wh["fire_count"], 1)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for webhook commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            url="http://example.com", events=["alert"],
+            secret=None, container_filter=None,
+        )
+        p = build_payload("webhook-register", args)
+        self.assertEqual(p["op"], "webhook_register")
+        self.assertEqual(p["url"], "http://example.com")
+        args2 = argparse.Namespace(webhook_id="wh-1")
+        p = build_payload("webhook-unregister", args2)
+        self.assertEqual(p["op"], "webhook_unregister")
+        p = build_payload("webhook-list", argparse.Namespace())
+        self.assertEqual(p["op"], "webhook_list")
+        p = build_payload("webhook-enable", args2)
+        self.assertEqual(p["op"], "webhook_enable")
+        p = build_payload("webhook-disable", args2)
+        self.assertEqual(p["op"], "webhook_disable")
+
+    def test_cli_format_human(self):
+        """CLI format_human for webhook commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "id": "wh-1",
+            "url": "http://example.com",
+            "events": ["alert"],
+        }
+        text = format_human("webhook-register", resp)
+        self.assertIn("wh-1", text)
+        self.assertIn("http://example.com", text)
+        # list
+        resp2 = {
+            "ok": True,
+            "webhooks": [
+                {"id": "wh-1", "url": "http://a.com",
+                 "enabled": True, "fire_count": 5},
+            ],
+            "count": 1,
+        }
+        text2 = format_human("webhook-list", resp2)
+        self.assertIn("1 webhook", text2)
+        self.assertIn("a.com", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19581,6 +19740,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestOOMProtection))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceExport))
+    suite.addTests(loader.loadTestsFromTestCase(TestWebhooks))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

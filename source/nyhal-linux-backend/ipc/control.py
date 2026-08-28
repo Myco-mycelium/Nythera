@@ -1865,6 +1865,82 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # Webhooks
+    # ------------------------------------------------------------------
+
+    def _webhook_register(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        url = request.get("url")
+        if not url:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "url is required",
+            })
+            return
+        config = self.container_manager.register_webhook(
+            url=url,
+            events=request.get("events"),
+            secret=request.get("secret"),
+            container_filter=request.get("container_filter"),
+            enabled=request.get("enabled", True),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **config,
+        })
+
+    def _webhook_unregister(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        webhook_id = request.get("webhook_id")
+        if not webhook_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "webhook_id is required",
+            })
+            return
+        existed = self.container_manager.unregister_webhook(webhook_id)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "webhook_id": webhook_id,
+            "existed": existed,
+        })
+
+    def _webhook_list(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        webhooks = self.container_manager.list_webhooks()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "webhooks": webhooks,
+            "count": len(webhooks),
+        })
+
+    def _webhook_enable(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        webhook_id = request.get("webhook_id")
+        if not webhook_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "webhook_id is required",
+            })
+            return
+        ok = self.container_manager.enable_webhook(webhook_id)
+        self._reply(server, sender_path, call_id, {
+            "ok": ok, "webhook_id": webhook_id,
+        })
+
+    def _webhook_disable(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        webhook_id = request.get("webhook_id")
+        if not webhook_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "webhook_id is required",
+            })
+            return
+        ok = self.container_manager.disable_webhook(webhook_id)
+        self._reply(server, sender_path, call_id, {
+            "ok": ok, "webhook_id": webhook_id,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

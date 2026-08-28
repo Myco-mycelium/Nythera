@@ -332,6 +332,9 @@ class ContainerManager:
         self._lock_dir = Path(tempfile.gettempdir()) / "nyrqis-locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
         self._lock_fds: Dict[str, int] = {}  # container_id → fd
+        # Webhooks (HTTP callbacks for events)
+        self._webhooks: Dict[str, Dict[str, Any]] = {}  # webhook_id → config
+        self._webhook_id_counter = 0
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
     def _record_event(self, kind: str, container_id: str,
@@ -340,7 +343,148 @@ class ContainerManager:
         ts = time.time()
         entry = f"{ts:.3f}\t{kind}\t{container_id}\t{detail}"
         self._events.append(entry)
+        # Fire webhooks for matching events
+        self._fire_webhooks(kind, container_id, detail)
         logger.debug("event: %s", entry)
+
+    # ------------------------------------------------------------------
+    # Webhooks (HTTP callbacks for events)
+    # ------------------------------------------------------------------
+
+    def register_webhook(
+        self, url: str,
+        events: Optional[List[str]] = None,
+        secret: Optional[str] = None,
+        container_filter: Optional[str] = None,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Register a webhook for container events.
+
+        Args:
+            url: HTTP URL to POST event payloads to.
+            events: List of event types to subscribe to (None = all).
+            secret: Optional HMAC secret for payload signing.
+            container_filter: Optional container ID filter.
+            enabled: Whether the webhook is active.
+
+        Returns:
+            The webhook config dict with ``id``.
+        """
+        self._webhook_id_counter += 1
+        webhook_id = f"wh-{self._webhook_id_counter}"
+        config = {
+            "id": webhook_id,
+            "url": url,
+            "events": events,
+            "secret": secret,
+            "container_filter": container_filter,
+            "enabled": enabled,
+            "created_at": time.time(),
+            "last_fired": None,
+            "fire_count": 0,
+        }
+        self._webhooks[webhook_id] = config
+        logger.info("register_webhook: %s → %s", webhook_id, url)
+        return config
+
+    def unregister_webhook(self, webhook_id: str) -> bool:
+        """Unregister a webhook.
+
+        Returns:
+            True if the webhook existed and was removed.
+        """
+        existed = webhook_id in self._webhooks
+        self._webhooks.pop(webhook_id, None)
+        if existed:
+            logger.info("unregister_webhook: %s", webhook_id)
+        return existed
+
+    def list_webhooks(self) -> List[Dict[str, Any]]:
+        """List all registered webhooks."""
+        return list(self._webhooks.values())
+
+    def get_webhook(self, webhook_id: str) -> Optional[Dict[str, Any]]:
+        """Get a webhook config by ID."""
+        return self._webhooks.get(webhook_id)
+
+    def enable_webhook(self, webhook_id: str) -> bool:
+        """Enable a webhook."""
+        wh = self._webhooks.get(webhook_id)
+        if wh is None:
+            return False
+        wh["enabled"] = True
+        return True
+
+    def disable_webhook(self, webhook_id: str) -> bool:
+        """Disable a webhook."""
+        wh = self._webhooks.get(webhook_id)
+        if wh is None:
+            return False
+        wh["enabled"] = False
+        return True
+
+    def _fire_webhooks(
+        self, event_type: str, container_id: str, detail: str = "",
+    ) -> None:
+        """Fire matching webhooks for an event.
+
+        Sends HTTP POST in a background thread to avoid blocking.
+        """
+        for wh in self._webhooks.values():
+            if not wh["enabled"]:
+                continue
+            # Check event filter
+            if wh["events"] and event_type not in wh["events"]:
+                continue
+            # Check container filter
+            if wh["container_filter"] and wh["container_filter"] != container_id:
+                continue
+            # Fire in background
+            payload = {
+                "event": event_type,
+                "container_id": container_id,
+                "detail": detail,
+                "timestamp": time.time(),
+                "webhook_id": wh["id"],
+            }
+            wh["last_fired"] = time.time()
+            wh["fire_count"] += 1
+            threading.Thread(
+                target=self._send_webhook,
+                args=(wh["url"], payload, wh.get("secret")),
+                daemon=True,
+            ).start()
+
+    def _send_webhook(
+        self, url: str, payload: Dict[str, Any],
+        secret: Optional[str] = None,
+    ) -> None:
+        """Send a webhook HTTP POST (blocking, run in thread)."""
+        import urllib.request
+        import urllib.error
+        try:
+            body = json.dumps(payload, default=str).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+            # HMAC signature if secret provided
+            if secret:
+                import hashlib
+                import hmac
+                sig = hmac.new(
+                    secret.encode(), body, hashlib.sha256
+                ).hexdigest()
+                headers["X-Nyrqis-Signature"] = f"sha256={sig}"
+            req = urllib.request.Request(
+                url, data=body, headers=headers, method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    logger.debug(
+                        "_send_webhook: %s → %d", url, resp.status,
+                    )
+            except urllib.error.URLError as e:
+                logger.warning("_send_webhook: %s failed: %s", url, e)
+        except Exception as e:
+            logger.warning("_send_webhook: error: %s", e)
 
     # ------------------------------------------------------------------
     # Container lock files (prevent concurrent access)
