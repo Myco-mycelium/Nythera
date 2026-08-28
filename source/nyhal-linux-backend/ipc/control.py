@@ -1001,6 +1001,71 @@ class ControlService:
             "app_id": app_id,
         })
 
+    # ------------------------------------------------------------------
+    # Dependency ordering
+    # ------------------------------------------------------------------
+
+    def _container_start_ordered(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids", [])
+        if not container_ids:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_ids is required",
+            })
+            return
+        try:
+            results = self.container_manager.start_ordered(container_ids)
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "results": results,
+        })
+
+    def _container_stop_ordered(self, server, sender_path: str,
+                                call_id: str,
+                                request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids", [])
+        if not container_ids:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_ids is required",
+            })
+            return
+        try:
+            results = self.container_manager.stop_ordered(container_ids)
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "results": results,
+        })
+
+    def _container_dependency_graph(self, server, sender_path: str,
+                                    call_id: str,
+                                    request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids")  # optional
+        try:
+            graph = self.container_manager.get_dependency_graph(
+                container_ids=container_ids,
+            )
+        except Exception as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "graph": graph,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

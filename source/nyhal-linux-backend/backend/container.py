@@ -110,6 +110,8 @@ class ContainerConfig:
     cpu_affinity: Optional[List[int]] = None  # CPU core IDs (None = any)
     # Network policy
     network_policy: Optional[Dict[str, Any]] = None  # ingress/egress rules
+    # Dependency ordering
+    depends_on: Optional[List[str]] = None  # container IDs this depends on
 
 
 class RingBuffer:
@@ -2203,6 +2205,173 @@ class ContainerManager:
             "config_changes": config_changes,
             "summary": summary,
         }
+
+    # ------------------------------------------------------------------
+    # Dependency ordering
+    # ------------------------------------------------------------------
+
+    def _compute_start_order(
+        self, container_ids: List[str]
+    ) -> List[str]:
+        """Topological sort of containers for ordered start.
+
+        Containers listed in ``depends_on`` are started before the
+        containers that reference them.  Raises ``ValueError`` on
+        circular dependencies or missing container IDs.
+
+        Args:
+            container_ids: The IDs to start (order will be computed).
+
+        Returns:
+            Sorted list of container IDs in start order.
+
+        Raises:
+            ValueError: On circular dependency or missing ID.
+        """
+        # Build adjacency: id → set of IDs it depends on
+        adj: Dict[str, set] = {}
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                raise ValueError(f"container {cid!r} not found")
+            deps = c.config.depends_on or []
+            # Only include deps that are in the requested set
+            adj[cid] = {d for d in deps if d in set(container_ids)}
+
+        # Kahn's algorithm
+        in_degree: Dict[str, int] = {cid: 0 for cid in container_ids}
+        reverse: Dict[str, set] = {cid: set() for cid in container_ids}
+        for cid, deps in adj.items():
+            for dep in deps:
+                reverse[dep].add(cid)
+                in_degree[cid] += 1
+
+        queue = [cid for cid, d in in_degree.items() if d == 0]
+        order: List[str] = []
+        while queue:
+            queue.sort()  # deterministic
+            node = queue.pop(0)
+            order.append(node)
+            for dependent in reverse[node]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        if len(order) != len(container_ids):
+            missing = set(container_ids) - set(order)
+            raise ValueError(
+                f"circular dependency detected among: {missing}"
+            )
+        return order
+
+    def _compute_stop_order(
+        self, container_ids: List[str]
+    ) -> List[str]:
+        """Reverse topological sort: dependents stop before deps."""
+        return list(reversed(self._compute_start_order(container_ids)))
+
+    def start_ordered(
+        self, container_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Start containers in dependency order.
+
+        Respects ``depends_on`` declarations so that prerequisites
+        are started (and reach RUNNING) before dependents.
+
+        Args:
+            container_ids: IDs to start.
+
+        Returns:
+            List of ``{id, exit_code}`` dicts in start order.
+        """
+        order = self._compute_start_order(container_ids)
+        results: List[Dict[str, Any]] = []
+        for cid in order:
+            c = self.containers.get(cid)
+            if c is None:
+                results.append({
+                    "id": cid,
+                    "exit_code": -1,
+                    "error": "not found",
+                })
+                continue
+            try:
+                rc = self.start(c)
+                results.append({"id": cid, "exit_code": rc})
+            except Exception as e:
+                results.append({
+                    "id": cid,
+                    "exit_code": -1,
+                    "error": str(e),
+                })
+        return results
+
+    def stop_ordered(
+        self, container_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Stop containers in reverse dependency order.
+
+        Dependents are stopped before their prerequisites.
+
+        Args:
+            container_ids: IDs to stop.
+
+        Returns:
+            List of ``{id, exit_code}`` dicts in stop order.
+        """
+        order = self._compute_stop_order(container_ids)
+        results: List[Dict[str, Any]] = []
+        for cid in order:
+            c = self.containers.get(cid)
+            if c is None:
+                results.append({
+                    "id": cid,
+                    "exit_code": -1,
+                    "error": "not found",
+                })
+                continue
+            try:
+                rc = self.stop(c)
+                results.append({"id": cid, "exit_code": rc})
+            except Exception as e:
+                results.append({
+                    "id": cid,
+                    "exit_code": -1,
+                    "error": str(e),
+                })
+        return results
+
+    def get_dependency_graph(
+        self, container_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return the dependency graph for a set of containers.
+
+        Args:
+            container_ids: IDs to include (default: all containers).
+
+        Returns:
+            Dict mapping each container ID to its ``depends_on`` list,
+            ``dependents`` (reverse edges), and ``state``.
+        """
+        if container_ids is None:
+            container_ids = list(self.containers.keys())
+        graph: Dict[str, Any] = {}
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+            deps = c.config.depends_on or []
+            graph[cid] = {
+                "depends_on": deps,
+                "dependents": [],
+                "state": c.state.value,
+            }
+        # Fill reverse edges
+        for cid, info in graph.items():
+            for dep in info["depends_on"]:
+                if dep in graph:
+                    graph[dep]["dependents"].append(cid)
+        return graph
 
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.

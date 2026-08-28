@@ -287,6 +287,26 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_network_policy",
             "container_id": args.container_id,
         }
+    if command == "containers-start-ordered":
+        return {
+            "service": "control",
+            "op": "container_start_ordered",
+            "container_ids": args.container_ids,
+        }
+    if command == "containers-stop-ordered":
+        return {
+            "service": "control",
+            "op": "container_stop_ordered",
+            "container_ids": args.container_ids,
+        }
+    if command == "containers-dep-graph":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "container_dependency_graph",
+        }
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids
+        return payload
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -739,6 +759,33 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 lines.append(f"  {r}")
         else:
             lines.append("egress: (none)")
+        return "\n".join(lines)
+    if command in ("containers-start-ordered", "containers-stop-ordered"):
+        results = resp.get("results", [])
+        if not results:
+            return "no results"
+        lines = []
+        for r in results:
+            err = r.get("error")
+            if err:
+                lines.append(f"{r['id']}: ERROR {err}")
+            else:
+                lines.append(f"{r['id']}: exit_code={r.get('exit_code')}")
+        return "\n".join(lines)
+    if command == "containers-dep-graph":
+        graph = resp.get("graph", {})
+        if not graph:
+            return "(empty)"
+        lines = []
+        for cid, info in sorted(graph.items()):
+            deps = info.get("depends_on", [])
+            dependents = info.get("dependents", [])
+            state = info.get("state", "?")
+            lines.append(f"{cid} [{state}]")
+            if deps:
+                lines.append(f"  depends_on: {', '.join(deps)}")
+            if dependents:
+                lines.append(f"  dependents: {', '.join(dependents)}")
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1318,6 +1365,21 @@ def build_parser() -> argparse.ArgumentParser:
     cnp = csub.add_parser("netpolicy", help="Show network policy rules for a container")
     cnp.add_argument("container_id")
     cnp.set_defaults(command="containers-netpolicy")
+
+    cso = csub.add_parser("start-ordered", help="Start containers in dependency order")
+    cso.add_argument("container_ids", nargs="+",
+                     help="Container IDs to start (in dependency order)")
+    cso.set_defaults(command="containers-start-ordered")
+
+    cst = csub.add_parser("stop-ordered", help="Stop containers in reverse dependency order")
+    cst.add_argument("container_ids", nargs="+",
+                     help="Container IDs to stop")
+    cst.set_defaults(command="containers-stop-ordered")
+
+    cdg = csub.add_parser("dep-graph", help="Show container dependency graph")
+    cdg.add_argument("container_ids", nargs="*",
+                     help="Container IDs to include (default: all)")
+    cdg.set_defaults(command="containers-dep-graph")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

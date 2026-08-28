@@ -2451,6 +2451,138 @@ class TestResourceQuotas(unittest.TestCase):
         self.assertIn("256 MiB/512 MiB", text)
 
 
+class TestDependencyOrdering(unittest.TestCase):
+    """Test container dependency ordering (start/stop order)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_simple_linear_chain(self):
+        """A → B → C starts in A, B, C order."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        a = mgr.create(ContainerConfig(name="a"))
+        b = mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        c = mgr.create(ContainerConfig(name="c", depends_on=["b"]))
+        order = mgr._compute_start_order(["c", "a", "b"])
+        self.assertEqual(order, ["a", "b", "c"])
+
+    def test_diamond_dependency(self):
+        """Diamond: A → B, A → C, B+C → D."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        mgr.create(ContainerConfig(name="c", depends_on=["a"]))
+        mgr.create(ContainerConfig(name="d", depends_on=["b", "c"]))
+        order = mgr._compute_start_order(["d", "a", "b", "c"])
+        idx = {name: i for i, name in enumerate(order)}
+        self.assertLess(idx["a"], idx["b"])
+        self.assertLess(idx["a"], idx["c"])
+        self.assertLess(idx["b"], idx["d"])
+        self.assertLess(idx["c"], idx["d"])
+
+    def test_no_dependencies(self):
+        """Containers without deps start in given (sorted) order."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="x"))
+        mgr.create(ContainerConfig(name="y"))
+        mgr.create(ContainerConfig(name="z"))
+        order = mgr._compute_start_order(["z", "x", "y"])
+        self.assertEqual(order, ["x", "y", "z"])
+
+    def test_circular_dependency_detected(self):
+        """Circular dependencies raise ValueError."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a", depends_on=["b"]))
+        mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        with self.assertRaises(ValueError) as ctx:
+            mgr._compute_start_order(["a", "b"])
+        self.assertIn("circular", str(ctx.exception))
+
+    def test_missing_container_detected(self):
+        """Missing container ID raises ValueError."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        with self.assertRaises(ValueError):
+            mgr._compute_start_order(["a", "nonexistent"])
+
+    def test_stop_order_reversed(self):
+        """Stop order is the reverse of start order."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        mgr.create(ContainerConfig(name="c", depends_on=["b"]))
+        start = mgr._compute_start_order(["a", "b", "c"])
+        stop = mgr._compute_stop_order(["a", "b", "c"])
+        self.assertEqual(stop, list(reversed(start)))
+
+    def test_dependency_graph(self):
+        """get_dependency_graph returns correct structure."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        a = mgr.create(ContainerConfig(name="a"))
+        b = mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        a.state = ContainerState.RUNNING
+        graph = mgr.get_dependency_graph()
+        self.assertIn("a", graph)
+        self.assertIn("b", graph)
+        self.assertEqual(graph["b"]["depends_on"], ["a"])
+        self.assertIn("b", graph["a"]["dependents"])
+        self.assertEqual(graph["a"]["state"], "running")
+
+    def test_dependency_graph_filtered(self):
+        """get_dependency_graph with specific IDs."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        mgr.create(ContainerConfig(name="b", depends_on=["a"]))
+        graph = mgr.get_dependency_graph(["b"])
+        self.assertIn("b", graph)
+        self.assertNotIn("a", graph)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for dependency commands."""
+        from nyrqisctl import build_payload
+        # start-ordered
+        args = argparse.Namespace(container_ids=["a", "b"])
+        p = build_payload("containers-start-ordered", args)
+        self.assertEqual(p["op"], "container_start_ordered")
+        self.assertEqual(p["container_ids"], ["a", "b"])
+        # stop-ordered
+        p = build_payload("containers-stop-ordered", args)
+        self.assertEqual(p["op"], "container_stop_ordered")
+        # dep-graph
+        args2 = argparse.Namespace(container_ids=["a"])
+        p = build_payload("containers-dep-graph", args2)
+        self.assertEqual(p["op"], "container_dependency_graph")
+
+    def test_cli_format_human(self):
+        """CLI format_human for dependency commands."""
+        from nyrqisctl import format_human
+        # start-ordered
+        resp = {"ok": True, "results": [
+            {"id": "a", "exit_code": 0},
+            {"id": "b", "exit_code": 0},
+        ]}
+        text = format_human("containers-start-ordered", resp)
+        self.assertIn("a", text)
+        self.assertIn("b", text)
+        # dep-graph
+        resp2 = {"ok": True, "graph": {
+            "a": {"depends_on": [], "dependents": ["b"], "state": "running"},
+            "b": {"depends_on": ["a"], "dependents": [], "state": "created"},
+        }}
+        text2 = format_human("containers-dep-graph", resp2)
+        self.assertIn("a", text2)
+        self.assertIn("b", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17817,6 +17949,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
+    suite.addTests(loader.loadTestsFromTestCase(TestDependencyOrdering))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
