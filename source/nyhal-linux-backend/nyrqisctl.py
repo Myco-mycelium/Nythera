@@ -192,6 +192,18 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "checkpoint_a": cp_a,
             "checkpoint_b": cp_b,
         }
+    if command == "containers-events":
+        payload = {
+            "service": "control",
+            "op": "container_events",
+        }
+        if args.tail is not None:
+            payload["tail"] = args.tail
+        if args.container:
+            payload["container_id"] = args.container
+        if args.kind:
+            payload["kind"] = args.kind
+        return payload
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -518,6 +530,22 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not parts:
             return resp.get("summary", "no differences")
         return "\n".join(parts)
+    if command == "containers-events":
+        events = resp.get("events") or []
+        if not events:
+            return "no events"
+        rows = []
+        for ev in events:
+            import datetime as _dt
+            ts = ev.get("time", 0)
+            tstr = _dt.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+            rows.append(
+                f"{tstr}  {ev.get('kind', ''):<12} "
+                f"{ev.get('container_id', ''):<24} "
+                f"{ev.get('detail', '')}"
+            )
+        header = f"{'TIME':>8}  {'KIND':<12} {'CONTAINER':<24} DETAIL"
+        return header + "\n" + "\n".join(rows)
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1067,6 +1095,15 @@ def build_parser() -> argparse.ArgumentParser:
     cd.add_argument("checkpoint_a", help="Path to first checkpoint JSON")
     cd.add_argument("checkpoint_b", help="Path to second checkpoint JSON")
     cd.set_defaults(command="containers-diff")
+
+    ce = csub.add_parser("events", help="Show container lifecycle events")
+    ce.add_argument("--tail", type=int, default=None,
+                    help="Show only the last N events")
+    ce.add_argument("--container", default=None,
+                    help="Filter by container ID")
+    ce.add_argument("--kind", default=None,
+                    help="Filter by event kind (created, started, etc.)")
+    ce.set_defaults(command="containers-events")
 
     images = sub.add_parser("images", help="Manage base images for overlays")
     isub = images.add_subparsers(dest="image_cmd", required=True)

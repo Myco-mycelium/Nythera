@@ -148,6 +148,9 @@ class ControlService:
             elif op == "container_diff":
                 self._container_diff(server, sender_path,
                                      msg.message_id, request)
+            elif op == "container_events":
+                self._container_events(server, sender_path,
+                                       msg.message_id, request)
             elif op == "app_install":
                 self._app_install(server, sender_path, msg.message_id,
                                   request)
@@ -506,6 +509,26 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             **diff,
+        })
+
+    def _container_events(self, server, sender_path: str, call_id: str,
+                           request: Dict[str, Any]) -> None:
+        try:
+            events = self.container_manager.container_events(
+                tail=request.get("tail"),
+                container_id=request.get("container_id"),
+                kind=request.get("kind"),
+            )
+        except Exception as e:  # noqa: BLE001
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_events failed: %s" % (e,),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "events": events,
+            "count": len(events),
         })
 
     def _app_install(self, server, sender_path: str, call_id: str,

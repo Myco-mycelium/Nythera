@@ -1761,6 +1761,89 @@ class TestSnapshotDiff(unittest.TestCase):
         self.assertIn("no differences", text)
 
 
+class TestContainerEvents(unittest.TestCase):
+    """Test container event system (lifecycle notifications)."""
+
+    def test_events_empty_on_init(self):
+        """No events recorded on fresh manager."""
+        from backend.container import ContainerManager
+        manager = ContainerManager(use_cgroups_v2=False)
+        events = manager.container_events()
+        self.assertEqual(events, [])
+
+    def test_events_record_create(self):
+        """Creating a container records a 'created' event."""
+        from backend.container import ContainerManager, ContainerConfig
+        manager = ContainerManager(use_cgroups_v2=False)
+        container = manager.create(ContainerConfig(hostname="ev-test"))
+        events = manager.container_events(container_id=container.id)
+        self.assertGreater(len(events), 0)
+        self.assertEqual(events[0]["kind"], "created")
+        self.assertEqual(events[0]["container_id"], container.id)
+        self.assertIn("ev-test", events[0]["detail"])
+
+    def test_events_filter_by_kind(self):
+        """Events can be filtered by kind."""
+        from backend.container import ContainerManager, ContainerConfig
+        manager = ContainerManager(use_cgroups_v2=False)
+        c1 = manager.create(ContainerConfig())
+        c2 = manager.create(ContainerConfig())
+        all_events = manager.container_events()
+        created = manager.container_events(kind="created")
+        self.assertEqual(len(created), 2)
+        self.assertTrue(all(e["kind"] == "created" for e in created))
+
+    def test_events_filter_by_container(self):
+        """Events can be filtered by container ID."""
+        from backend.container import ContainerManager, ContainerConfig
+        manager = ContainerManager(use_cgroups_v2=False)
+        c1 = manager.create(ContainerConfig())
+        c2 = manager.create(ContainerConfig())
+        ev_c1 = manager.container_events(container_id=c1.id)
+        self.assertTrue(all(e["container_id"] == c1.id for e in ev_c1))
+
+    def test_events_cli_payload(self):
+        """CLI build_payload for containers-events."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            tail=50,
+            container="nyctr-abc",
+            kind="started",
+        )
+        payload = build_payload("containers-events", args)
+        self.assertEqual(payload["service"], "control")
+        self.assertEqual(payload["op"], "container_events")
+        self.assertEqual(payload["tail"], 50)
+        self.assertEqual(payload["container_id"], "nyctr-abc")
+        self.assertEqual(payload["kind"], "started")
+
+    def test_events_cli_format_human(self):
+        """CLI format_human for containers-events."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "events": [
+                {"time": 1700000000.0, "kind": "created",
+                 "container_id": "nyctr-test", "detail": "hostname=host"},
+                {"time": 1700000001.0, "kind": "started",
+                 "container_id": "nyctr-test", "detail": "cmd=echo hi"},
+            ],
+            "count": 2,
+        }
+        text = format_human("containers-events", resp)
+        self.assertIn("created", text)
+        self.assertIn("started", text)
+        self.assertIn("nyctr-test", text)
+        self.assertIn("TIME", text)
+
+    def test_events_cli_format_human_empty(self):
+        """CLI format_human when no events found."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "events": [], "count": 0}
+        text = format_human("containers-events", resp)
+        self.assertIn("no events", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -17121,6 +17204,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworkStats))
     suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

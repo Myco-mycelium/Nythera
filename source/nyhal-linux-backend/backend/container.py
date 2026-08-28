@@ -274,8 +274,52 @@ class ContainerManager:
         self._policy_files: List[str] = []  # seccomp policy temp files to clean up
         self._bpf_files: List[str] = []  # serialized seccomp programs (Rust launcher)
         self._lsm_files: List[str] = []  # LSM policy files (AppArmor/SELinux)
+        # Container lifecycle event ring (bounded, newest first)
+        self._events: RingBuffer = RingBuffer(max_lines=500)
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
-    
+
+    def _record_event(self, kind: str, container_id: str,
+                      detail: str = "") -> None:
+        """Record a lifecycle event in the bounded ring buffer."""
+        ts = time.time()
+        entry = f"{ts:.3f}\t{kind}\t{container_id}\t{detail}"
+        self._events.append(entry)
+        logger.debug("event: %s", entry)
+
+    def container_events(self, tail: Optional[int] = None,
+                         container_id: Optional[str] = None,
+                         kind: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Query container lifecycle events.
+
+        Args:
+            tail: If set, return only the last N events.
+            container_id: Filter by container id.
+            kind: Filter by event kind (created, started, suspended,
+                  resumed, terminated, network_setup, log_capture).
+
+        Returns:
+            List of event dicts with ``time``, ``kind``,
+            ``container_id``, and ``detail``.
+        """
+        raw = self._events.get_lines(tail)
+        events: List[Dict[str, Any]] = []
+        for line in raw:
+            parts = line.split("\t", 3)
+            if len(parts) < 3:
+                continue
+            ev = {
+                "time": float(parts[0]) if parts[0] else 0,
+                "kind": parts[1],
+                "container_id": parts[2],
+                "detail": parts[3] if len(parts) > 3 else "",
+            }
+            if container_id and ev["container_id"] != container_id:
+                continue
+            if kind and ev["kind"] != kind:
+                continue
+            events.append(ev)
+        return events
+
     def _detect_cgroups_v2(self) -> bool:
         """Detect if cgroups v2 is available on this system."""
         try:
@@ -305,6 +349,8 @@ class ContainerManager:
         """
         container = Container(config)
         self.containers[container.id] = container
+        self._record_event("created", container.id,
+                           f"hostname={config.hostname}")
         logger.info(f"Created container {container.id}")
         return container
     
@@ -367,7 +413,9 @@ class ContainerManager:
             raise ValueError(f"Cannot start container in {container.state.value} state")
         
         container.transition_to(ContainerState.RUNNING)
-        
+        self._record_event("started", container.id,
+                           f"cmd={' '.join(container.config.command)}")
+
         try:
             self._setup_cgroups(container)
             self._setup_overlay(container)
@@ -552,12 +600,14 @@ class ContainerManager:
         if not frozen_via_cgroup:
             os.kill(container.pid, signal.SIGSTOP)
         container._frozen_via_cgroup = frozen_via_cgroup
+        self._record_event("suspended", container.id,
+                           f"method={'cgroup' if frozen_via_cgroup else 'sigstop'}")
         container.transition_to(ContainerState.SUSPENDED)
         logger.info(
             f"Suspended container {container.id} (PID {container.pid}, "
             f"{'cgroup freeze' if frozen_via_cgroup else 'SIGSTOP'})"
         )
-    
+
     def resume(self, container: Container) -> None:
         """Resume a suspended container.
         
@@ -590,6 +640,7 @@ class ContainerManager:
                     # still applies.
                     raise
                 container._frozen_via_cgroup = False
+                self._record_event("resumed", container.id, "method=cgroup")
                 container.transition_to(ContainerState.RUNNING)
                 logger.info(
                     f"Resumed container {container.id} (PID {container.pid}, "
@@ -602,6 +653,7 @@ class ContainerManager:
             container._frozen_via_cgroup = False
         
         os.kill(container.pid, signal.SIGCONT)
+        self._record_event("resumed", container.id, "method=sigcont")
         container.transition_to(ContainerState.RUNNING)
         logger.info(f"Resumed container {container.id} (PID {container.pid}, SIGCONT)")
     
@@ -671,12 +723,16 @@ class ContainerManager:
                         pass
                 logger.warning(f"Force-killed container {container.id} (PID {container.pid})")
             
+            self._record_event("terminated", container.id,
+                               f"exit_code={container.exit_code}")
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
             logger.info(f"Terminated container {container.id}")
         except OSError as e:
             logger.error(f"Error terminating container {container.id}: {e}")
+            self._record_event("terminated", container.id,
+                               f"error={e}")
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
