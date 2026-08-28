@@ -5456,6 +5456,156 @@ class TestSLAEscalation(unittest.TestCase):
         self.assertIn("alert", text)
 
 
+class TestAutoScaling(unittest.TestCase):
+    """Auto-scaling based on resource demand."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_auto_scaling(self):
+        """configure_auto_scaling sets up config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test"))
+        result = mgr.configure_auto_scaling(c, enabled=True)
+        self.assertTrue(result["autoscale"]["enabled"])
+        self.assertIn("min_memory_mb", result["autoscale"])
+        self.assertIn("max_memory_mb", result["autoscale"])
+
+    def test_configure_custom(self):
+        """configure_auto_scaling accepts custom bounds."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test2"))
+        result = mgr.configure_auto_scaling(
+            c, enabled=True,
+            min_memory_mb=128, max_memory_mb=2048,
+            target_memory_pct=60.0,
+        )
+        self.assertEqual(result["autoscale"]["min_memory_mb"], 128)
+        self.assertEqual(result["autoscale"]["max_memory_mb"], 2048)
+        self.assertEqual(result["autoscale"]["target_memory_pct"], 60.0)
+
+    def test_evaluate_no_data(self):
+        """evaluate_auto_scaling returns no action with no data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test3"))
+        mgr.configure_auto_scaling(c)
+        result = mgr.evaluate_auto_scaling(c)
+        self.assertFalse(result["should_scale"])
+        self.assertEqual(result["reason"], "insufficient data")
+
+    def test_evaluate_disabled(self):
+        """evaluate_auto_scaling returns no action when disabled."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test4"))
+        mgr.configure_auto_scaling(c, enabled=False)
+        result = mgr.evaluate_auto_scaling(c)
+        self.assertFalse(result["should_scale"])
+        self.assertEqual(result["reason"], "auto-scaling not enabled")
+
+    def test_apply_no_scale(self):
+        """apply_auto_scaling returns no scaling when not needed."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test5"))
+        mgr.configure_auto_scaling(c)
+        result = mgr.apply_auto_scaling(c)
+        self.assertFalse(result["scaled"])
+
+    def test_disable_auto_scaling(self):
+        """disable_auto_scaling turns it off."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test6"))
+        mgr.configure_auto_scaling(c, enabled=True)
+        result = mgr.disable_auto_scaling(c)
+        self.assertFalse(result["enabled"])
+
+    def test_get_status(self):
+        """get_auto_scaling_status returns config and events."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test7"))
+        mgr.configure_auto_scaling(c)
+        status = mgr.get_auto_scaling_status(c)
+        self.assertTrue(status["enabled"])
+        self.assertIn("config", status)
+        self.assertIn("events", status)
+
+    def test_get_events(self):
+        """get_auto_scaling_events returns event list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="as-test8"))
+        mgr.configure_auto_scaling(c)
+        events = mgr.get_auto_scaling_events(c)
+        self.assertEqual(len(events), 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for autoscale commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="autoscale-configure", container_id="a",
+            enabled=True, min_memory_mb=128, max_memory_mb=2048,
+            target_memory_pct=60.0, min_cpu_quota=None,
+            max_cpu_quota=None, target_cpu_pct=70.0,
+            scale_up_cooldown_s=300.0, scale_down_cooldown_s=600.0,
+        )
+        p = build_payload("autoscale-configure", args1)
+        self.assertEqual(p["op"], "autoscale_configure")
+        self.assertEqual(p["min_memory_mb"], 128)
+        self.assertEqual(p["target_memory_pct"], 60.0)
+        args2 = argparse.Namespace(
+            command="autoscale-status", container_id="a",
+        )
+        p2 = build_payload("autoscale-status", args2)
+        self.assertEqual(p2["op"], "autoscale_status")
+        args3 = argparse.Namespace(
+            command="autoscale-apply", container_id="a",
+        )
+        p3 = build_payload("autoscale-apply", args3)
+        self.assertEqual(p3["op"], "autoscale_apply")
+
+    def test_cli_format_human(self):
+        """CLI format_human for autoscale commands."""
+        from nyrqisctl import format_human
+        import time as _time
+        # configure
+        resp = {
+            "ok": True, "container_id": "a",
+            "autoscale": {
+                "enabled": True,
+                "min_memory_mb": 128, "max_memory_mb": 2048,
+                "target_memory_pct": 60.0,
+                "min_cpu_quota": 100, "max_cpu_quota": 400000,
+                "target_cpu_pct": 70.0,
+                "scale_up_cooldown_s": 300.0,
+                "scale_down_cooldown_s": 600.0,
+            },
+        }
+        text = format_human("autoscale-configure", resp)
+        self.assertIn("True", text)
+        self.assertIn("128", text)
+        # status
+        resp2 = {
+            "ok": True, "container_id": "a", "enabled": True,
+            "current": {"memory_mb": 256, "cpu_quota": 100000},
+            "config": {}, "events": [],
+        }
+        text2 = format_human("autoscale-status", resp2)
+        self.assertIn("True", text2)
+        self.assertIn("256", text2)
+        # disable
+        resp3 = {"ok": True, "container_id": "a", "enabled": False}
+        text3 = format_human("autoscale-disable", resp3)
+        self.assertIn("disabled", text3)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -20845,6 +20995,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceRecommendations))
     suite.addTests(loader.loadTestsFromTestCase(TestAlertHistoryManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAEscalation))
+    suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

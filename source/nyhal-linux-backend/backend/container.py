@@ -5100,6 +5100,350 @@ class ContainerManager:
                 return None
         return None
 
+    # ------------------------------------------------------------------
+    # Auto-scaling (demand-based resource adjustment)
+    # ------------------------------------------------------------------
+
+    def configure_auto_scaling(
+        self,
+        container: Container,
+        enabled: bool = True,
+        min_memory_mb: Optional[int] = None,
+        max_memory_mb: Optional[int] = None,
+        target_memory_pct: float = 70.0,
+        min_cpu_quota: Optional[int] = None,
+        max_cpu_quota: Optional[int] = None,
+        target_cpu_pct: float = 70.0,
+        scale_up_cooldown_s: float = 300.0,
+        scale_down_cooldown_s: float = 600.0,
+        evaluation_window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Configure auto-scaling for a container.
+
+        Auto-scaling monitors resource usage and adjusts limits
+        within configured bounds when usage crosses thresholds.
+
+        Args:
+            container: Target container.
+            enabled: Whether auto-scaling is active.
+            min_memory_mb: Minimum memory limit.
+            max_memory_mb: Maximum memory limit.
+            target_memory_pct: Target memory usage percentage.
+            min_cpu_quota: Minimum CPU quota.
+            max_cpu_quota: Maximum CPU quota.
+            target_cpu_pct: Target CPU usage percentage.
+            scale_up_cooldown_s: Cooldown after scaling up.
+            scale_down_cooldown_s: Cooldown after scaling down.
+            evaluation_window_s: Window for averaging usage.
+
+        Returns:
+            Dict with the auto-scaling configuration.
+        """
+        if not hasattr(container, '_autoscale'):
+            container._autoscale = {}
+
+        cfg = container.config.limits
+        autoscale = container._autoscale
+        autoscale.update({
+            "enabled": enabled,
+            "min_memory_mb": min_memory_mb or max(64, cfg.memory_mb // 4),
+            "max_memory_mb": max_memory_mb or cfg.memory_mb * 4,
+            "target_memory_pct": target_memory_pct,
+            "min_cpu_quota": min_cpu_quota or max(100, (cfg.cpu_quota_us or 100000) // 4),
+            "max_cpu_quota": max_cpu_quota or (cfg.cpu_quota_us or 100000) * 4,
+            "target_cpu_pct": target_cpu_pct,
+            "scale_up_cooldown_s": scale_up_cooldown_s,
+            "scale_down_cooldown_s": scale_down_cooldown_s,
+            "evaluation_window_s": evaluation_window_s,
+            "last_scale_time": 0,
+            "last_scale_direction": None,
+            "scale_events": [],
+            "current_memory_mb": cfg.memory_mb,
+            "current_cpu_quota": cfg.cpu_quota_us or 100000,
+        })
+        logger.info(
+            "configure_auto_scaling: %s enabled=%s target_mem=%s%%",
+            container.id, enabled, target_memory_pct,
+        )
+        return {
+            "container_id": container.id,
+            "autoscale": dict(autoscale),
+        }
+
+    def evaluate_auto_scaling(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate whether auto-scaling should adjust resources.
+
+        Analyzes recent resource usage and decides if scaling
+        is needed. Returns the recommended action without applying it.
+
+        Returns:
+            Dict with ``should_scale``, ``direction``, ``reason``,
+            ``current``, ``recommended``.
+        """
+        if not hasattr(container, '_autoscale') or \
+                not container._autoscale.get("enabled"):
+            return {
+                "container_id": container.id,
+                "should_scale": False,
+                "direction": None,
+                "reason": "auto-scaling not enabled",
+            }
+
+        autoscale = container._autoscale
+        now = time.time()
+        stats = self.container_stats(container)
+        history = self.get_resource_history(container)
+
+        # Calculate average usage over evaluation window
+        window = autoscale["evaluation_window_s"]
+        cutoff = now - window
+        recent = [s for s in history if s.get("timestamp", 0) >= cutoff]
+
+        if len(recent) < 2:
+            return {
+                "container_id": container.id,
+                "should_scale": False,
+                "direction": None,
+                "reason": "insufficient data",
+            }
+
+        # Memory analysis
+        mem_values = self._extract_resource_values(recent, "memory")
+        avg_mem = sum(mem_values) / len(mem_values)
+        mem_limit = container.config.limits.memory_mb * 1024 * 1024
+        if mem_limit > 0:
+            mem_pct = (avg_mem / mem_limit) * 100
+        else:
+            mem_pct = 0
+
+        # CPU analysis (using throttle as proxy)
+        cpu_throttle = stats.get("cpu_throttle_pct", 0)
+
+        # Decide on scaling
+        should_scale = False
+        direction = None
+        reason = ""
+        scale_type = None
+
+        # Check cooldown
+        last_time = autoscale.get("last_scale_time", 0)
+        last_dir = autoscale.get("last_scale_direction")
+
+        if mem_pct > autoscale["target_memory_pct"] + 10:
+            # Scale up memory
+            cooldown = autoscale["scale_up_cooldown_s"]
+            if now - last_time >= cooldown:
+                should_scale = True
+                direction = "up"
+                reason = f"Memory at {mem_pct:.1f}% (target: {autoscale['target_memory_pct']}%)"
+                scale_type = "memory"
+        elif mem_pct < autoscale["target_memory_pct"] - 20 and mem_pct > 0:
+            # Scale down memory
+            cooldown = autoscale["scale_down_cooldown_s"]
+            if now - last_time >= cooldown:
+                should_scale = True
+                direction = "down"
+                reason = f"Memory at {mem_pct:.1f}% (target: {autoscale['target_memory_pct']}%)"
+                scale_type = "memory"
+        elif cpu_throttle > autoscale["target_cpu_pct"] + 10:
+            # Scale up CPU
+            cooldown = autoscale["scale_up_cooldown_s"]
+            if now - last_time >= cooldown:
+                should_scale = True
+                direction = "up"
+                reason = f"CPU throttled {cpu_throttle}% (target: {autoscale['target_cpu_pct']}%)"
+                scale_type = "cpu"
+
+        # Calculate recommended values
+        recommended = {}
+        if should_scale and scale_type == "memory":
+            current_mb = autoscale["current_memory_mb"]
+            if direction == "up":
+                new_mb = min(
+                    autoscale["max_memory_mb"],
+                    int(current_mb * 1.5),
+                )
+            else:
+                new_mb = max(
+                    autoscale["min_memory_mb"],
+                    int(current_mb * 0.75),
+                )
+            recommended["memory_mb"] = new_mb
+        elif should_scale and scale_type == "cpu":
+            current_quota = autoscale["current_cpu_quota"]
+            if direction == "up":
+                new_quota = min(
+                    autoscale["max_cpu_quota"],
+                    int(current_quota * 1.5),
+                )
+            else:
+                new_quota = max(
+                    autoscale["min_cpu_quota"],
+                    int(current_quota * 0.75),
+                )
+            recommended["cpu_quota"] = new_quota
+
+        return {
+            "container_id": container.id,
+            "should_scale": should_scale,
+            "direction": direction,
+            "scale_type": scale_type,
+            "reason": reason,
+            "current": {
+                "memory_mb": autoscale["current_memory_mb"],
+                "memory_pct": round(mem_pct, 1),
+                "cpu_quota": autoscale["current_cpu_quota"],
+                "cpu_throttle_pct": round(cpu_throttle, 1),
+            },
+            "recommended": recommended,
+            "config": {
+                "target_memory_pct": autoscale["target_memory_pct"],
+                "target_cpu_pct": autoscale["target_cpu_pct"],
+                "min_memory_mb": autoscale["min_memory_mb"],
+                "max_memory_mb": autoscale["max_memory_mb"],
+            },
+        }
+
+    def apply_auto_scaling(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Apply auto-scaling if needed.
+
+        Evaluates and applies resource adjustments.
+
+        Returns:
+            Dict with the scaling result.
+        """
+        evaluation = self.evaluate_auto_scaling(container)
+        if not evaluation["should_scale"]:
+            return {
+                "container_id": container.id,
+                "scaled": False,
+                "reason": evaluation["reason"],
+            }
+
+        autoscale = container._autoscale
+        recommended = evaluation["recommended"]
+        now = time.time()
+
+        # Apply the scaling
+        if "memory_mb" in recommended:
+            new_mb = recommended["memory_mb"]
+            old_mb = autoscale["current_memory_mb"]
+            container.config.limits.memory_mb = new_mb
+            autoscale["current_memory_mb"] = new_mb
+            logger.info(
+                "auto_scale: %s memory %d → %d MB",
+                container.id, old_mb, new_mb,
+            )
+
+        if "cpu_quota" in recommended:
+            new_quota = recommended["cpu_quota"]
+            old_quota = autoscale["current_cpu_quota"]
+            container.config.limits.cpu_quota_us = new_quota
+            autoscale["current_cpu_quota"] = new_quota
+            logger.info(
+                "auto_scale: %s cpu_quota %d → %d",
+                container.id, old_quota, new_quota,
+            )
+
+        # Record event
+        event = {
+            "timestamp": now,
+            "direction": evaluation["direction"],
+            "scale_type": evaluation["scale_type"],
+            "reason": evaluation["reason"],
+            "old": evaluation["current"],
+            "new": recommended,
+        }
+        autoscale["scale_events"].append(event)
+        autoscale["last_scale_time"] = now
+        autoscale["last_scale_direction"] = evaluation["direction"]
+        # Keep last 100 events
+        if len(autoscale["scale_events"]) > 100:
+            autoscale["scale_events"] = autoscale["scale_events"][-100:]
+
+        return {
+            "container_id": container.id,
+            "scaled": True,
+            "direction": evaluation["direction"],
+            "scale_type": evaluation["scale_type"],
+            "old": evaluation["current"],
+            "new": recommended,
+        }
+
+    def get_auto_scaling_status(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get auto-scaling status for a container.
+
+        Returns:
+            Dict with current config, status, and recent events.
+        """
+        if not hasattr(container, '_autoscale') or \
+                not container._autoscale:
+            return {
+                "container_id": container.id,
+                "enabled": False,
+                "config": {},
+                "events": [],
+            }
+
+        autoscale = container._autoscale
+        return {
+            "container_id": container.id,
+            "enabled": autoscale.get("enabled", False),
+            "config": {
+                "min_memory_mb": autoscale.get("min_memory_mb"),
+                "max_memory_mb": autoscale.get("max_memory_mb"),
+                "target_memory_pct": autoscale.get("target_memory_pct"),
+                "min_cpu_quota": autoscale.get("min_cpu_quota"),
+                "max_cpu_quota": autoscale.get("max_cpu_quota"),
+                "target_cpu_pct": autoscale.get("target_cpu_pct"),
+                "scale_up_cooldown_s": autoscale.get("scale_up_cooldown_s"),
+                "scale_down_cooldown_s": autoscale.get("scale_down_cooldown_s"),
+            },
+            "current": {
+                "memory_mb": autoscale.get("current_memory_mb"),
+                "cpu_quota": autoscale.get("current_cpu_quota"),
+                "last_scale_time": autoscale.get("last_scale_time", 0),
+                "last_scale_direction": autoscale.get("last_scale_direction"),
+            },
+            "events": autoscale.get("scale_events", [])[-10:],
+            "event_count": len(autoscale.get("scale_events", [])),
+        }
+
+    def disable_auto_scaling(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Disable auto-scaling for a container."""
+        if hasattr(container, '_autoscale') and container._autoscale:
+            container._autoscale["enabled"] = False
+        return {
+            "container_id": container.id,
+            "enabled": False,
+        }
+
+    def get_auto_scaling_events(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get auto-scaling event history."""
+        if not hasattr(container, '_autoscale') or \
+                not container._autoscale:
+            return []
+        events = container._autoscale.get("scale_events", [])
+        if tail is not None:
+            return list(events[-tail:])
+        return list(events)
+
     def list_images(self, base_dir: Optional[str] = None) -> List[Dict[str, Any]]:
         """List available base images for overlay filesystems.
 

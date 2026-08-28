@@ -745,6 +745,57 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_id:
             p5["container_id"] = args.container_id
         return p5
+    if command == "autoscale-configure":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "autoscale_configure",
+            "container_id": args.container_id,
+            "enabled": args.enabled,
+        }
+        if args.min_memory_mb is not None:
+            payload["min_memory_mb"] = args.min_memory_mb
+        if args.max_memory_mb is not None:
+            payload["max_memory_mb"] = args.max_memory_mb
+        if args.target_memory_pct != 70.0:
+            payload["target_memory_pct"] = args.target_memory_pct
+        if args.min_cpu_quota is not None:
+            payload["min_cpu_quota"] = args.min_cpu_quota
+        if args.max_cpu_quota is not None:
+            payload["max_cpu_quota"] = args.max_cpu_quota
+        if args.target_cpu_pct != 70.0:
+            payload["target_cpu_pct"] = args.target_cpu_pct
+        if args.scale_up_cooldown_s != 300.0:
+            payload["scale_up_cooldown_s"] = args.scale_up_cooldown_s
+        if args.scale_down_cooldown_s != 600.0:
+            payload["scale_down_cooldown_s"] = args.scale_down_cooldown_s
+        return payload
+    if command == "autoscale-status":
+        return {
+            "service": "control",
+            "op": "autoscale_status",
+            "container_id": args.container_id,
+        }
+    if command == "autoscale-apply":
+        return {
+            "service": "control",
+            "op": "autoscale_apply",
+            "container_id": args.container_id,
+        }
+    if command == "autoscale-disable":
+        return {
+            "service": "control",
+            "op": "autoscale_disable",
+            "container_id": args.container_id,
+        }
+    if command == "autoscale-events":
+        p6: Dict[str, Any] = {
+            "service": "control",
+            "op": "autoscale_events",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p6["tail"] = args.tail
+        return p6
     if command == "forecast-resource":
         return {
             "service": "control",
@@ -1799,6 +1850,63 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"avg cpu:   ${resp.get('avg_cpu_cost', 0):.6f}\n"
             f"avg pid:   ${resp.get('avg_pid_cost', 0):.6f}"
         )
+    if command == "autoscale-configure":
+        as_cfg = resp.get("autoscale", {})
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"enabled:  {as_cfg.get('enabled', False)}",
+            f"memory:   {as_cfg.get('min_memory_mb', '?')}-{as_cfg.get('max_memory_mb', '?')} MB (target: {as_cfg.get('target_memory_pct', '?')}%)",
+            f"cpu:      {as_cfg.get('min_cpu_quota', '?')}-{as_cfg.get('max_cpu_quota', '?')} (target: {as_cfg.get('target_cpu_pct', '?')}%)",
+            f"cooldown: up={as_cfg.get('scale_up_cooldown_s', '?')}s down={as_cfg.get('scale_down_cooldown_s', '?')}s",
+        ]
+        return "\n".join(lines)
+    if command == "autoscale-status":
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"enabled:  {resp.get('enabled', False)}",
+        ]
+        current = resp.get("current", {})
+        if current:
+            lines.append(
+                f"current:  mem={current.get('memory_mb', '?')} MB "
+                f"cpu={current.get('cpu_quota', '?')}"
+            )
+            last_dir = current.get("last_scale_direction")
+            if last_dir:
+                lines.append(f"last:     {last_dir} at {current.get('last_scale_time', 0):.0f}")
+        events = resp.get("events", [])
+        if events:
+            lines.append(f"events:   {len(events)} recent")
+            for e in events[-3:]:
+                lines.append(
+                    f"  {e.get('direction', '?')} {e.get('scale_type', '?')}: "
+                    f"{e.get('reason', '')}"
+                )
+        return "\n".join(lines)
+    if command == "autoscale-apply":
+        if not resp.get("scaled"):
+            return f"container {resp.get('container_id')}: no scaling needed - {resp.get('reason', '')}"
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"scaled:    yes\n"
+            f"direction: {resp.get('direction', '?')}\n"
+            f"type:      {resp.get('scale_type', '?')}"
+        )
+    if command == "autoscale-disable":
+        return f"container {resp.get('container_id')}: auto-scaling disabled"
+    if command == "autoscale-events":
+        events = resp.get("events", [])
+        if not events:
+            return "No scaling events."
+        lines = [f"scaling events ({len(events)}):"]
+        for e in events:
+            ts = e.get("timestamp", 0)
+            lines.append(
+                f"  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))} "
+                f"{e.get('direction', '?')} {e.get('scale_type', '?')}: "
+                f"{e.get('reason', '')}"
+            )
+        return "\n".join(lines)
     if command == "forecast-resource":
         if not resp.get("sufficient_data"):
             return f"{resp.get('resource')}: insufficient data for forecast"
@@ -2906,6 +3014,48 @@ def build_parser() -> argparse.ArgumentParser:
     bsum.add_argument("container_id", nargs="?", default=None,
                       help="Container ID (omit for all)")
     bsum.set_defaults(command="billing-summary")
+
+    # Auto-scaling commands
+    asp = sub.add_parser("autoscale", help="Auto-scaling management")
+    asub = asp.add_subparsers(dest="autoscale_cmd", required=True)
+
+    asc = asub.add_parser("configure", help="Configure auto-scaling")
+    asc.add_argument("container_id")
+    asc.add_argument("--enabled", action="store_true", default=True)
+    asc.add_argument("--min-memory", type=int, default=None,
+                     dest="min_memory_mb", help="Min memory MB")
+    asc.add_argument("--max-memory", type=int, default=None,
+                     dest="max_memory_mb", help="Max memory MB")
+    asc.add_argument("--target-memory", type=float, default=70.0,
+                     dest="target_memory_pct", help="Target memory %%")
+    asc.add_argument("--min-cpu", type=int, default=None,
+                     dest="min_cpu_quota", help="Min CPU quota")
+    asc.add_argument("--max-cpu", type=int, default=None,
+                     dest="max_cpu_quota", help="Max CPU quota")
+    asc.add_argument("--target-cpu", type=float, default=70.0,
+                     dest="target_cpu_pct", help="Target CPU %%")
+    asc.add_argument("--scale-up-cooldown", type=float, default=300.0,
+                     dest="scale_up_cooldown_s")
+    asc.add_argument("--scale-down-cooldown", type=float, default=600.0,
+                     dest="scale_down_cooldown_s")
+    asc.set_defaults(command="autoscale-configure")
+
+    ass = asub.add_parser("status", help="Get auto-scaling status")
+    ass.add_argument("container_id")
+    ass.set_defaults(command="autoscale-status")
+
+    asa = asub.add_parser("apply", help="Apply auto-scaling now")
+    asa.add_argument("container_id")
+    asa.set_defaults(command="autoscale-apply")
+
+    asd = asub.add_parser("disable", help="Disable auto-scaling")
+    asd.add_argument("container_id")
+    asd.set_defaults(command="autoscale-disable")
+
+    ase = asub.add_parser("events", help="Get scaling events")
+    ase.add_argument("container_id")
+    ase.add_argument("--tail", type=int, default=None)
+    ase.set_defaults(command="autoscale-events")
 
     fc = sub.add_parser("forecast", help="Resource usage forecasting")
     fcsub = fc.add_subparsers(dest="forecast_cmd", required=True)
