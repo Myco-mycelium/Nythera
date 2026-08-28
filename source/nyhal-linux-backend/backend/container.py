@@ -2401,20 +2401,28 @@ class ContainerManager:
                 "stderr": f"command timed out after {timeout_s}s",
             }
 
-    def container_top(self, container: Container) -> List[Dict[str, Any]]:
+    def container_top(self, container: Container,
+                       sort_by: Optional[str] = None,
+                       descending: bool = True,
+                       max_depth: Optional[int] = None) -> List[Dict[str, Any]]:
         """List processes running inside a container with resource usage.
 
         Reads ``/proc/<pid>/task/<pid>/children`` to discover the
         container's process tree and ``/proc/<pid>/stat`` for each
-        process's CPU time and state.
+        process's CPU time and state. Enhanced with per-process
+        details: name, ppid, nice, threads, fd count, start time.
 
         Args:
             container: A running container with a valid host PID.
+            sort_by: Optional field to sort by (pid, cpu, memory, rss).
+            descending: Sort direction (default True).
+            max_depth: Max tree depth to scan (None = unlimited).
 
         Returns:
-            List of dicts, each with ``pid``, ``state``, ``cmd``,
-            ``user_time_s``, ``system_time_s``, ``vsize_kb``,
-            ``rss_kb``.
+            List of dicts, each with ``pid``, ``ppid``, ``state``,
+            ``name``, ``cmd``, ``user_time_s``, ``system_time_s``,
+            ``vsize_kb``, ``rss_kb``, ``nice``, ``threads``,
+            ``fd_count``, ``start_time_s``.
         """
         if container.state != ContainerState.RUNNING:
             return []
@@ -2422,11 +2430,17 @@ class ContainerManager:
             return []
 
         procs: List[Dict[str, Any]] = []
-        pids_to_scan = [container.pid]
+        pids_to_scan = [(container.pid, 0)]  # (pid, depth)
         seen_pids: set = set()
+        page_size = os.sysconf("SC_PAGE_SIZE")
+
+        try:
+            clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        except (KeyError, OSError, AttributeError):
+            clk_tck = 100
 
         while pids_to_scan:
-            pid = pids_to_scan.pop()
+            pid, depth = pids_to_scan.pop()
             if pid in seen_pids:
                 continue
             seen_pids.add(pid)
@@ -2434,68 +2448,165 @@ class ContainerManager:
             # Read /proc/<pid>/stat
             stat_path = f"/proc/{pid}/stat"
             try:
-                stat_text = open(stat_path).read()
+                with open(stat_path) as f:
+                    stat_text = f.read()
             except (OSError, IOError):
                 continue
 
-            # Parse stat: field 1=comm (may contain spaces), field 2=state
-            # Find the last ')' to skip over comm which may contain spaces
+            # Parse stat: find last ')' to skip comm (may contain spaces)
             close_paren = stat_text.rfind(")")
             if close_paren < 0:
                 continue
             fields_after_comm = stat_text[close_paren + 2:].split()
-            # fields_after_comm[0] = state (R/S/D/Z/T/t)
-            # fields_after_comm[11] = utime (in clock ticks)
-            # fields_after_comm[12] = stime
-            # fields_after_comm[20] = vsize
-            # fields_after_comm[21] = rss (pages)
+            # Fields after comm:
+            # [0]=state [1]=ppid [3]=threads [11]=utime [12]=stime
+            # [17]=nice [20]=vsize [21]=rss [38]=starttime
 
             state = fields_after_comm[0] if len(fields_after_comm) > 0 else "?"
+            ppid = int(fields_after_comm[1]) if len(fields_after_comm) > 1 else 0
+            threads = int(fields_after_comm[17]) if len(fields_after_comm) > 17 else 1
+            nice = int(fields_after_comm[17]) if len(fields_after_comm) > 17 else 0
             try:
                 utime_ticks = int(fields_after_comm[11]) if len(fields_after_comm) > 11 else 0
                 stime_ticks = int(fields_after_comm[12]) if len(fields_after_comm) > 12 else 0
                 vsize = int(fields_after_comm[20]) if len(fields_after_comm) > 20 else 0
                 rss_pages = int(fields_after_comm[21]) if len(fields_after_comm) > 21 else 0
+                start_ticks = int(fields_after_comm[19]) if len(fields_after_comm) > 19 else 0
             except (ValueError, IndexError):
-                utime_ticks = stime_ticks = vsize = rss_pages = 0
+                utime_ticks = stime_ticks = vsize = rss_pages = start_ticks = 0
+                threads = 1
+                nice = 0
 
-            # Convert clock ticks to seconds (typically 100 Hz)
+            # Read the process name from /proc/<pid>/comm
+            name = ""
             try:
-                clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-            except (KeyError, OSError, AttributeError):
-                clk_tck = 100
+                with open(f"/proc/{pid}/comm") as f:
+                    name = f.read().strip()
+            except (OSError, IOError):
+                pass
 
             # Read the command line
             cmdline = ""
             try:
-                cmdline = open(f"/proc/{pid}/cmdline").read(
-                    4096
-                ).replace("\x00", " ").strip()
+                with open(f"/proc/{pid}/cmdline") as f:
+                    cmdline = f.read(4096).replace("\x00", " ").strip()
             except (OSError, IOError):
                 pass
 
+            # Count file descriptors
+            fd_count = 0
+            try:
+                fd_count = len(os.listdir(f"/proc/{pid}/fd"))
+            except (OSError, IOError):
+                pass
+
+            # Calculate start time in seconds since boot
+            start_time_s = 0.0
+            if start_ticks > 0:
+                try:
+                    with open("/proc/uptime") as f:
+                        uptime_text = f.read().split()[0]
+                    uptime_s = float(uptime_text)
+                    boot_time = time.time() - uptime_s
+                    start_time_s = round(boot_time + start_ticks / clk_tck, 1)
+                except (OSError, IOError, ValueError, IndexError):
+                    pass
+
             procs.append({
                 "pid": pid,
+                "ppid": ppid,
                 "state": state,
-                "cmd": cmdline or f"[{state}]",
+                "name": name,
+                "cmd": cmdline or f"[{name or state}]",
                 "user_time_s": round(utime_ticks / clk_tck, 3),
                 "system_time_s": round(stime_ticks / clk_tck, 3),
                 "vsize_kb": vsize // 1024,
-                "rss_kb": rss_pages * (os.sysconf("SC_PAGE_SIZE") // 1024),
+                "rss_kb": rss_pages * (page_size // 1024),
+                "nice": nice,
+                "threads": threads,
+                "fd_count": fd_count,
+                "start_time_s": start_time_s,
+                "depth": depth,
             })
+
+            # Check depth limit
+            if max_depth is not None and depth >= max_depth:
+                continue
 
             # Discover children
             try:
-                children_text = open(
-                    f"/proc/{pid}/task/{pid}/children"
-                ).read().strip()
+                with open(f"/proc/{pid}/task/{pid}/children") as f:
+                    children_text = f.read().strip()
                 if children_text:
                     for child_pid_str in children_text.split():
-                        pids_to_scan.append(int(child_pid_str))
+                        pids_to_scan.append((int(child_pid_str), depth + 1))
             except (OSError, IOError, ValueError):
                 pass
 
+        # Sort if requested
+        if sort_by:
+            sort_key_map = {
+                "pid": lambda p: p["pid"],
+                "cpu": lambda p: p["user_time_s"] + p["system_time_s"],
+                "memory": lambda p: p["vsize_kb"],
+                "rss": lambda p: p["rss_kb"],
+                "fd": lambda p: p["fd_count"],
+                "threads": lambda p: p["threads"],
+            }
+            key_fn = sort_key_map.get(sort_by)
+            if key_fn:
+                procs.sort(key=key_fn, reverse=descending)
+
         return procs
+
+    def container_top_summary(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Return a summary of processes in the container.
+
+        Provides aggregate stats: total processes, total threads,
+        total memory, total CPU time.
+
+        Returns:
+            Dict with ``total_processes``, ``total_threads``,
+            ``total_rss_kb``, ``total_vsize_kb``, ``total_cpu_s``,
+            ``states`` (count by state).
+        """
+        procs = self.container_top(container)
+        if not procs:
+            return {
+                "container_id": container.id,
+                "total_processes": 0,
+                "total_threads": 0,
+                "total_rss_kb": 0,
+                "total_vsize_kb": 0,
+                "total_cpu_s": 0.0,
+                "states": {},
+            }
+
+        states: Dict[str, int] = {}
+        total_threads = 0
+        total_rss = 0
+        total_vsize = 0
+        total_cpu = 0.0
+
+        for p in procs:
+            st = p.get("state", "?")
+            states[st] = states.get(st, 0) + 1
+            total_threads += p.get("threads", 1)
+            total_rss += p.get("rss_kb", 0)
+            total_vsize += p.get("vsize_kb", 0)
+            total_cpu += p.get("user_time_s", 0) + p.get("system_time_s", 0)
+
+        return {
+            "container_id": container.id,
+            "total_processes": len(procs),
+            "total_threads": total_threads,
+            "total_rss_kb": total_rss,
+            "total_vsize_kb": total_vsize,
+            "total_cpu_s": round(total_cpu, 3),
+            "states": states,
+        }
 
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:
         """Get network interface stats for a container.

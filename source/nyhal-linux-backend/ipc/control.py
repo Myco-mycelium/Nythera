@@ -386,6 +386,10 @@ class ControlService:
     def _container_top(self, server, sender_path: str, call_id: str,
                         request: Dict[str, Any]) -> None:
         container_id = request.get("container_id")
+        sort_by = request.get("sort_by")
+        descending = request.get("descending", True)
+        max_depth = request.get("max_depth")
+        summary_only = request.get("summary_only", False)
         container = self.container_manager.containers.get(container_id)
         if container is None:
             self._reply(server, sender_path, call_id, {
@@ -394,7 +398,20 @@ class ControlService:
             })
             return
         try:
-            procs = self.container_manager.container_top(container)
+            if summary_only:
+                result = self.container_manager.container_top_summary(
+                    container,
+                )
+            else:
+                procs = self.container_manager.container_top(
+                    container, sort_by=sort_by,
+                    descending=descending, max_depth=max_depth,
+                )
+                result = {
+                    "container_id": container.id,
+                    "processes": procs,
+                    "count": len(procs),
+                }
         except Exception as e:  # noqa: BLE001
             self._reply(server, sender_path, call_id, {
                 "ok": False,
@@ -402,10 +419,7 @@ class ControlService:
             })
             return
         self._reply(server, sender_path, call_id, {
-            "ok": True,
-            "container_id": container.id,
-            "processes": procs,
-            "count": len(procs),
+            "ok": True, **result,
         })
 
     def _container_network_stats(self, server, sender_path: str,

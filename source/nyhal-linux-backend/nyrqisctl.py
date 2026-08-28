@@ -140,11 +140,16 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "timeout": args.timeout,
         }
     if command == "containers-top":
-        return {
+        p: Dict[str, Any] = {
             "service": "control",
             "op": "container_top",
             "container_id": args.container_id,
+            "sort_by": args.sort_by,
+            "descending": args.descending,
+            "max_depth": args.max_depth,
+            "summary_only": args.summary_only,
         }
+        return p
     if command == "containers-net":
         return {
             "service": "control",
@@ -682,19 +687,37 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         parts.append(f"exit code: {exit_code}")
         return "\n".join(parts)
     if command == "containers-top":
+        # Check if this is a summary response
+        if "total_processes" in resp:
+            return (
+                f"container: {resp.get('container_id')}\n"
+                f"processes: {resp.get('total_processes', 0)}\n"
+                f"threads:   {resp.get('total_threads', 0)}\n"
+                f"rss:       {resp.get('total_rss_kb', 0):,} KB\n"
+                f"vsize:     {resp.get('total_vsize_kb', 0):,} KB\n"
+                f"cpu:       {resp.get('total_cpu_s', 0):.3f}s\n"
+                f"states:    {resp.get('states', {})}"
+            )
         procs = resp.get("processes") or []
         if not procs:
             return f"container {resp.get('container_id')}: no processes found"
         rows = []
         for p in procs:
+            depth = p.get("depth", 0)
+            indent = "  " * depth
             rows.append(
-                f"{p.get('pid'):>8} {p.get('state'):>1} "
+                f"{p.get('pid'):>8} {p.get('ppid'):>8} {p.get('state'):>1} "
+                f"{p.get('threads'):>3} {p.get('nice'):>4} "
                 f"{p.get('user_time_s', 0):>8.3f}s "
                 f"{p.get('system_time_s', 0):>8.3f}s "
-                f"{p.get('rss_kb', 0):>8} KB  "
-                f"{p.get('cmd', '')}"
+                f"{p.get('rss_kb', 0):>8} KB "
+                f"{p.get('fd_count', 0):>4}fd "
+                f"{indent}{p.get('name', '')}"
             )
-        header = f"{'PID':>8} {'S':>1} {'USER':>8} {'SYS':>8} {'RSS':>8}  CMD"
+        header = (
+            f"{'PID':>8} {'PPID':>8} {'S':>1} {'THR':>3} {'NI':>4} "
+            f"{'USER':>8} {'SYS':>8} {'RSS':>8} {'FD':>4}  NAME"
+        )
         return header + "\n" + "\n".join(rows)
     if command == "containers-net":
         stats = resp.get("stats")
@@ -1597,6 +1620,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     ct = csub.add_parser("top", help="List processes inside a container")
     ct.add_argument("container_id")
+    ct.add_argument("--sort", dest="sort_by", default=None,
+                    choices=["pid", "cpu", "memory", "rss", "fd", "threads"],
+                    help="Sort by field")
+    ct.add_argument("--asc", dest="descending", action="store_false",
+                    default=True, help="Sort ascending")
+    ct.add_argument("--max-depth", type=int, default=None,
+                    help="Max tree depth to scan")
+    ct.add_argument("--summary", dest="summary_only", action="store_true",
+                    default=False, help="Show summary only")
     ct.set_defaults(command="containers-top")
 
     cn = csub.add_parser("net", help="Show network interface stats for a container")
