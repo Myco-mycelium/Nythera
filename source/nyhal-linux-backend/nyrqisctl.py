@@ -454,6 +454,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "verify_enforcement",
             "container_id": args.container_id,
         }
+    if command == "containers-lock":
+        return {
+            "service": "control",
+            "op": "lock_acquire",
+            "container_id": args.container_id,
+            "non_blocking": args.non_blocking,
+        }
+    if command == "containers-unlock":
+        return {
+            "service": "control",
+            "op": "lock_release",
+            "container_id": args.container_id,
+        }
+    if command == "containers-locks":
+        return {
+            "service": "control",
+            "op": "lock_list",
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1077,6 +1095,25 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 lines.append(f"  ⚠ {w}")
         if not violations and not warnings:
             lines.append("  all limits OK")
+        return "\n".join(lines)
+    if command == "containers-lock":
+        acquired = resp.get("acquired", False)
+        if acquired:
+            return f"lock acquired for {resp.get('container_id')}"
+        return f"lock NOT acquired for {resp.get('container_id')}"
+    if command == "containers-unlock":
+        return f"lock released for {resp.get('container_id')}"
+    if command == "containers-locks":
+        locks = resp.get("locks", [])
+        count = resp.get("count", 0)
+        if not locks:
+            return "no locks held"
+        lines = [f"{count} lock(s) held:"]
+        for lk in locks:
+            lines.append(
+                f"  {lk['container_id']} (fd={lk['fd']}, "
+                f"file={lk['lock_file']})"
+            )
         return "\n".join(lines)
     if command == "containers-stats":
         if not resp.get("available"):
@@ -1785,6 +1822,19 @@ def build_parser() -> argparse.ArgumentParser:
     cve = csub.add_parser("verify-enforcement", help="Verify resource limits are enforced")
     cve.add_argument("container_id")
     cve.set_defaults(command="containers-verify-enforcement")
+
+    clock = csub.add_parser("lock", help="Acquire exclusive lock on a container")
+    clock.add_argument("container_id")
+    clock.add_argument("--non-blocking", action="store_true",
+                       default=False, help="Fail if lock is held")
+    clock.set_defaults(command="containers-lock")
+
+    culock = csub.add_parser("unlock", help="Release lock on a container")
+    culock.add_argument("container_id")
+    culock.set_defaults(command="containers-unlock")
+
+    clocks = csub.add_parser("locks", help="List all held locks")
+    clocks.set_defaults(command="containers-locks")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

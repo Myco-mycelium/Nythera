@@ -1563,6 +1563,58 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # Container locks
+    # ------------------------------------------------------------------
+
+    def _lock_acquire(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        non_blocking = request.get("non_blocking", False)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        try:
+            acquired = self.container_manager.acquire_lock(
+                container_id, non_blocking=non_blocking,
+            )
+        except BlockingIOError:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"lock held by another process: {container_id}",
+                "locked": True,
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "acquired": acquired,
+        })
+
+    def _lock_release(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        self.container_manager.release_lock(container_id)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+        })
+
+    def _lock_list(self, server, sender_path: str,
+                   call_id: str,
+                   request: Dict[str, Any]) -> None:
+        locks = self.container_manager.list_locks()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "locks": locks, "count": len(locks),
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

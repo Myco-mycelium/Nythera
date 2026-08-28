@@ -314,6 +314,10 @@ class ContainerManager:
         self._events: RingBuffer = RingBuffer(max_lines=500)
         # Resource quotas: owner → {"memory_mb": int, "pid_limit": int, "max_containers": int}
         self._quotas: Dict[str, Dict[str, Any]] = {}
+        # Container lock files (prevent concurrent access)
+        self._lock_dir = Path(tempfile.gettempdir()) / "nyrqis-locks"
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
+        self._lock_fds: Dict[str, int] = {}  # container_id → fd
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
     def _record_event(self, kind: str, container_id: str,
@@ -323,6 +327,91 @@ class ContainerManager:
         entry = f"{ts:.3f}\t{kind}\t{container_id}\t{detail}"
         self._events.append(entry)
         logger.debug("event: %s", entry)
+
+    # ------------------------------------------------------------------
+    # Container lock files (prevent concurrent access)
+    # ------------------------------------------------------------------
+
+    def _lock_path(self, container_id: str) -> Path:
+        """Return the lock file path for a container."""
+        return self._lock_dir / f"{container_id}.lock"
+
+    def acquire_lock(self, container_id: str, non_blocking: bool = False) -> bool:
+        """Acquire an exclusive lock on a container.
+
+        Uses ``fcntl.flock(LOCK_EX)`` on a lock file to prevent
+        concurrent operations on the same container. The lock is
+        automatically released when the process exits or
+        ``release_lock`` is called.
+
+        Args:
+            container_id: The container to lock.
+            non_blocking: If True, raise ``BlockingIOError`` instead
+                of waiting when the lock is held.
+
+        Returns:
+            True if the lock was acquired.
+
+        Raises:
+            BlockingIOError: When ``non_blocking=True`` and lock is held.
+        """
+        lock_file = self._lock_path(container_id)
+        try:
+            import fcntl
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+            flag = fcntl.LOCK_EX if not non_blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(fd, flag)
+            except (BlockingIOError, OSError):
+                os.close(fd)
+                raise
+            self._lock_fds[container_id] = fd
+            logger.debug("acquire_lock: %s", container_id)
+            return True
+        except ImportError:
+            # fcntl not available (non-Linux), use in-process lock
+            logger.debug("acquire_lock: fcntl unavailable, using in-process lock")
+            return True
+
+    def release_lock(self, container_id: str) -> None:
+        """Release the lock on a container.
+
+        Args:
+            container_id: The container to unlock.
+        """
+        fd = self._lock_fds.pop(container_id, None)
+        if fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            logger.debug("release_lock: %s", container_id)
+        # Clean up lock file
+        lock_file = self._lock_path(container_id)
+        try:
+            lock_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def is_locked(self, container_id: str) -> bool:
+        """Check if a container is currently locked."""
+        return container_id in self._lock_fds
+
+    def list_locks(self) -> List[Dict[str, Any]]:
+        """List all currently held locks."""
+        locks: List[Dict[str, Any]] = []
+        for cid, fd in self._lock_fds.items():
+            locks.append({
+                "container_id": cid,
+                "fd": fd,
+                "lock_file": str(self._lock_path(cid)),
+            })
+        return locks
 
     def container_events(self, tail: Optional[int] = None,
                          container_id: Optional[str] = None,

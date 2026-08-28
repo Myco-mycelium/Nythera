@@ -3584,6 +3584,92 @@ class TestContainerTopEnhanced(unittest.TestCase):
         self.assertIn("1", text)
 
 
+class TestContainerLocks(unittest.TestCase):
+    """Test container lock files (prevent concurrent access)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_acquire_and_release(self):
+        """Acquire and release a lock."""
+        mgr = self._manager()
+        self.assertTrue(mgr.acquire_lock("test-lock-1"))
+        self.assertTrue(mgr.is_locked("test-lock-1"))
+        mgr.release_lock("test-lock-1")
+        self.assertFalse(mgr.is_locked("test-lock-1"))
+
+    def test_lock_file_created(self):
+        """Lock file is created on acquire."""
+        import os
+        mgr = self._manager()
+        mgr.acquire_lock("test-lock-2")
+        lock_path = mgr._lock_path("test-lock-2")
+        self.assertTrue(os.path.exists(lock_path))
+        mgr.release_lock("test-lock-2")
+
+    def test_lock_file_removed_on_release(self):
+        """Lock file is removed on release."""
+        import os
+        mgr = self._manager()
+        mgr.acquire_lock("test-lock-3")
+        lock_path = mgr._lock_path("test-lock-3")
+        self.assertTrue(os.path.exists(lock_path))
+        mgr.release_lock("test-lock-3")
+        self.assertFalse(os.path.exists(lock_path))
+
+    def test_list_locks(self):
+        """list_locks returns held locks."""
+        mgr = self._manager()
+        mgr.acquire_lock("test-lock-4")
+        locks = mgr.list_locks()
+        self.assertEqual(len(locks), 1)
+        self.assertEqual(locks[0]["container_id"], "test-lock-4")
+        mgr.release_lock("test-lock-4")
+
+    def test_list_locks_empty(self):
+        """list_locks returns empty when no locks."""
+        mgr = self._manager()
+        locks = mgr.list_locks()
+        self.assertEqual(locks, [])
+
+    def test_release_nonexistent(self):
+        """Releasing a non-existent lock is safe."""
+        mgr = self._manager()
+        mgr.release_lock("nonexistent")  # should not raise
+
+    def test_is_locked_false(self):
+        """is_locked returns False for unlocked container."""
+        mgr = self._manager()
+        self.assertFalse(mgr.is_locked("never-locked"))
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for lock commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", non_blocking=False)
+        p = build_payload("containers-lock", args)
+        self.assertEqual(p["op"], "lock_acquire")
+        self.assertEqual(p["container_id"], "a")
+        p = build_payload("containers-unlock", args)
+        self.assertEqual(p["op"], "lock_release")
+        p = build_payload("containers-locks", argparse.Namespace())
+        self.assertEqual(p["op"], "lock_list")
+
+    def test_cli_format_human(self):
+        """CLI format_human for lock commands."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "container_id": "a", "acquired": True}
+        text = format_human("containers-lock", resp)
+        self.assertIn("acquired", text)
+        resp2 = {"ok": True, "locks": [
+            {"container_id": "a", "fd": 5, "lock_file": "/tmp/f.lock"},
+        ], "count": 1}
+        text2 = format_human("containers-locks", resp2)
+        self.assertIn("1 lock", text2)
+        self.assertIn("a", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18959,6 +19045,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerLabels))
     suite.addTests(loader.loadTestsFromTestCase(TestCgroup2Enforcement))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTopEnhanced))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerLocks))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
