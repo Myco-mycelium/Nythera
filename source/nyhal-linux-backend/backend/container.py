@@ -3163,6 +3163,138 @@ class ContainerManager:
             "containers": containers,
         }
 
+    # ------------------------------------------------------------------
+    # Resource usage export (CSV/JSON)
+    # ------------------------------------------------------------------
+
+    def export_resource_history(
+        self, container: Container,
+        output_path: str,
+        format: str = "json",
+        tail: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Export resource usage history to a file.
+
+        Supports JSON and CSV formats. JSON includes full metadata;
+        CSV is a flat table suitable for spreadsheet import.
+
+        Args:
+            container: Target container.
+            output_path: Path to write the export file.
+            format: "json" or "csv".
+            tail: If set, export only the last N samples.
+
+        Returns:
+            Dict with ``path``, ``format``, ``samples`` count,
+            ``bytes_written``.
+
+        Raises:
+            ValueError: On invalid format.
+        """
+        if format not in ("json", "csv"):
+            raise ValueError(f"invalid format {format!r}; must be 'json' or 'csv'")
+
+        history = self.get_resource_history(container, tail=tail)
+        stats = self.container_stats(container)
+        limits = container.config.limits
+
+        if format == "json":
+            data = {
+                "container_id": container.id,
+                "state": container.state.value,
+                "exported_at": time.time(),
+                "limits": {
+                    "memory_mb": limits.memory_mb,
+                    "pid_limit": limits.pid_limit,
+                    "cpu_quota_us": limits.cpu_quota_us,
+                },
+                "current_stats": stats,
+                "history": history,
+            }
+            content = json.dumps(data, indent=2)
+            with open(output_path, "w") as f:
+                f.write(content)
+            bytes_written = len(content.encode("utf-8"))
+        else:  # csv
+            import csv
+            import io
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([
+                "timestamp", "memory_bytes", "cpu_usage_usec",
+                "pids_current",
+            ])
+            for sample in history:
+                writer.writerow([
+                    sample.get("timestamp", 0),
+                    sample.get("memory_bytes", 0),
+                    sample.get("cpu_usage_usec", 0),
+                    sample.get("pids_current", 0),
+                ])
+            content = buf.getvalue()
+            with open(output_path, "w") as f:
+                f.write(content)
+            bytes_written = len(content.encode("utf-8"))
+
+        logger.info(
+            "export_resource_history: %s → %s (%s, %d samples)",
+            container.id, output_path, format, len(history),
+        )
+        return {
+            "container_id": container.id,
+            "path": output_path,
+            "format": format,
+            "samples": len(history),
+            "bytes_written": bytes_written,
+        }
+
+    def export_container_snapshot(
+        self, container: Container,
+        output_path: str,
+    ) -> Dict[str, Any]:
+        """Export a complete container snapshot (config + stats + history).
+
+        Creates a JSON file with the container's full state for
+        debugging or archival purposes.
+
+        Args:
+            container: Target container.
+            output_path: Path to write the snapshot.
+
+        Returns:
+            Dict with ``path``, ``bytes_written``.
+        """
+        dash = self.container_dashboard(container)
+        # Add config details
+        dash["config"] = {
+            "name": container.config.name,
+            "hostname": container.config.hostname,
+            "command": container.config.command,
+            "network": container.config.network,
+            "rootfs": container.config.rootfs,
+            "seccomp": container.config.seccomp,
+            "default_deny": container.config.default_deny,
+            "log_capture": container.config.log_capture,
+            "restart_policy": container.config.restart_policy,
+            "environment": container.config.environment,
+            "labels": container.config.labels,
+            "depends_on": container.config.depends_on,
+        }
+        dash["snapshot_time"] = time.time()
+        content = json.dumps(dash, indent=2, default=str)
+        with open(output_path, "w") as f:
+            f.write(content)
+        bytes_written = len(content.encode("utf-8"))
+        logger.info(
+            "export_container_snapshot: %s → %s",
+            container.id, output_path,
+        )
+        return {
+            "container_id": container.id,
+            "path": output_path,
+            "bytes_written": bytes_written,
+        }
+
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:
         """Get network interface stats for a container.
 

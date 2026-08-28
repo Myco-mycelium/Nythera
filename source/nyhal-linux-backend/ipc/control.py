@@ -1797,6 +1797,74 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # Resource export
+    # ------------------------------------------------------------------
+
+    def _export_history(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        output_path = request.get("output_path")
+        fmt = request.get("format", "json")
+        tail = request.get("tail")
+        if not container_id or not output_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and output_path are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            result = self.container_manager.export_resource_history(
+                c, output_path, format=fmt, tail=tail,
+            )
+        except (ValueError, OSError) as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _export_snapshot(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        output_path = request.get("output_path")
+        if not container_id or not output_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and output_path are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            result = self.container_manager.export_container_snapshot(
+                c, output_path,
+            )
+        except (ValueError, OSError) as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

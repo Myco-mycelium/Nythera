@@ -4084,6 +4084,123 @@ class TestResourceDashboard(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestResourceExport(unittest.TestCase):
+    """Test resource usage export (CSV/JSON dump)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_export_json(self):
+        """Export resource history as JSON."""
+        import json, os, tempfile
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        # Add some history
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": 1000.0, "memory_bytes": 1024,
+             "cpu_usage_usec": 5000, "pids_current": 3},
+        ]
+        out = os.path.join(tempfile.gettempdir(), "test-export.json")
+        try:
+            result = mgr.export_resource_history(c, out, format="json")
+            self.assertTrue(os.path.isfile(out))
+            self.assertEqual(result["format"], "json")
+            self.assertEqual(result["samples"], 1)
+            with open(out) as f:
+                data = json.load(f)
+            self.assertEqual(data["container_id"], "a")
+            self.assertEqual(len(data["history"]), 1)
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
+
+    def test_export_csv(self):
+        """Export resource history as CSV."""
+        import os, tempfile
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": 1000.0, "memory_bytes": 1024,
+             "cpu_usage_usec": 5000, "pids_current": 3},
+            {"timestamp": 1005.0, "memory_bytes": 2048,
+             "cpu_usage_usec": 8000, "pids_current": 5},
+        ]
+        out = os.path.join(tempfile.gettempdir(), "test-export.csv")
+        try:
+            result = mgr.export_resource_history(c, out, format="csv")
+            self.assertTrue(os.path.isfile(out))
+            self.assertEqual(result["format"], "csv")
+            self.assertEqual(result["samples"], 2)
+            with open(out) as f:
+                lines = f.readlines()
+            self.assertEqual(len(lines), 3)  # header + 2 rows
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
+
+    def test_export_invalid_format(self):
+        """Export raises ValueError for invalid format."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        with self.assertRaises(ValueError):
+            mgr.export_resource_history(c, "/tmp/out.txt", format="txt")
+
+    def test_export_snapshot(self):
+        """Export container snapshot as JSON."""
+        import json, os, tempfile
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        out = os.path.join(tempfile.gettempdir(), "test-snapshot.json")
+        try:
+            result = mgr.export_container_snapshot(c, out)
+            self.assertTrue(os.path.isfile(out))
+            with open(out) as f:
+                data = json.load(f)
+            self.assertEqual(data["container_id"], "a")
+            self.assertIn("config", data)
+            self.assertIn("limits", data)
+            self.assertIn("processes", data)
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for export commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            container_id="a", output_path="/tmp/out.json",
+            format="json", tail=None,
+        )
+        p = build_payload("containers-export-history", args)
+        self.assertEqual(p["op"], "export_history")
+        self.assertEqual(p["format"], "json")
+        args2 = argparse.Namespace(
+            container_id="a", output_path="/tmp/snap.json",
+        )
+        p2 = build_payload("containers-export-snapshot", args2)
+        self.assertEqual(p2["op"], "export_snapshot")
+
+    def test_cli_format_human(self):
+        """CLI format_human for export commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "path": "/tmp/out.json",
+            "bytes_written": 1234,
+            "samples": 10,
+        }
+        text = format_human("containers-export-history", resp)
+        self.assertIn("/tmp/out.json", text)
+        self.assertIn("1,234", text)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19463,6 +19580,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceAlerts))
     suite.addTests(loader.loadTestsFromTestCase(TestOOMProtection))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceDashboard))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceExport))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

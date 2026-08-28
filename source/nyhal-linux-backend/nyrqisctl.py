@@ -542,6 +542,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_id:
             p5["container_id"] = args.container_id
         return p5
+    if command == "containers-export-history":
+        p6: Dict[str, Any] = {
+            "service": "control",
+            "op": "export_history",
+            "container_id": args.container_id,
+            "output_path": args.output_path,
+            "format": args.format,
+        }
+        if args.tail is not None:
+            p6["tail"] = args.tail
+        return p6
+    if command == "containers-export-snapshot":
+        return {
+            "service": "control",
+            "op": "export_snapshot",
+            "container_id": args.container_id,
+            "output_path": args.output_path,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1278,6 +1296,13 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if labels:
             lines.append(f"--- Labels: {labels} ---")
         return "\n".join(lines)
+    if command in ("containers-export-history", "containers-export-snapshot"):
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"path:     {resp.get('path')}\n"
+            f"bytes:    {resp.get('bytes_written', 0):,}\n"
+            f"samples:  {resp.get('samples', 'N/A')}"
+        )
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -2047,6 +2072,20 @@ def build_parser() -> argparse.ArgumentParser:
     cd.add_argument("container_id", nargs="?", default=None,
                     help="Container ID (omit for all containers)")
     cd.set_defaults(command="containers-dashboard")
+
+    ce = csub.add_parser("export-history", help="Export resource history to file")
+    ce.add_argument("container_id")
+    ce.add_argument("output_path", help="Output file path")
+    ce.add_argument("--format", default="json",
+                    choices=["json", "csv"], help="Export format")
+    ce.add_argument("--tail", type=int, default=None,
+                    help="Export only last N samples")
+    ce.set_defaults(command="containers-export-history")
+
+    ces = csub.add_parser("export-snapshot", help="Export full container snapshot")
+    ces.add_argument("container_id")
+    ces.add_argument("output_path", help="Output file path")
+    ces.set_defaults(command="containers-export-snapshot")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)
