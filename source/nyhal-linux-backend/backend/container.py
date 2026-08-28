@@ -5774,6 +5774,247 @@ class ContainerManager:
         return None
 
     # ------------------------------------------------------------------
+    # Network traffic analysis
+    # ------------------------------------------------------------------
+
+    def get_network_traffic_analysis(
+        self,
+        container: Container,
+        window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Analyze network traffic patterns for a container.
+
+        Tracks bytes/packets in/out over time and computes
+        bandwidth utilization and traffic patterns.
+
+        Args:
+            container: Target container.
+            window_s: Analysis window in seconds.
+
+        Returns:
+            Dict with ``rx_bytes``, ``tx_bytes``, ``bandwidth``,
+            ``packets``, ``errors``, ``patterns``.
+        """
+        if not hasattr(container, '_net_traffic'):
+            container._net_traffic = []
+
+        # Get current stats
+        stats = self.container_stats(container)
+        net_stats = self.container_network_stats(container)
+        now = time.time()
+
+        # Record sample
+        sample = {
+            "timestamp": now,
+            "rx_bytes": 0,
+            "tx_bytes": 0,
+            "rx_packets": 0,
+            "tx_packets": 0,
+            "rx_errors": 0,
+            "tx_errors": 0,
+            "rx_drops": 0,
+            "tx_drops": 0,
+        }
+
+        if net_stats:
+            sample["rx_bytes"] = net_stats.get("rx_bytes", 0)
+            sample["tx_bytes"] = net_stats.get("tx_bytes", 0)
+            sample["rx_packets"] = net_stats.get("rx_packets", 0)
+            sample["tx_packets"] = net_stats.get("tx_packets", 0)
+            sample["rx_errors"] = net_stats.get("rx_errors", 0)
+            sample["tx_errors"] = net_stats.get("tx_errors", 0)
+            sample["rx_drops"] = net_stats.get("rx_drops", 0)
+            sample["tx_drops"] = net_stats.get("tx_drops", 0)
+
+        container._net_traffic.append(sample)
+        # Keep last 1000 samples
+        if len(container._net_traffic) > 1000:
+            container._net_traffic = container._net_traffic[-1000:]
+
+        # Analyze window
+        cutoff = now - window_s
+        window_samples = [
+            s for s in container._net_traffic
+            if s.get("timestamp", 0) >= cutoff
+        ]
+
+        if len(window_samples) < 2:
+            return {
+                "container_id": container.id,
+                "insufficient_data": True,
+                "current": sample,
+            }
+
+        # Calculate deltas
+        first = window_samples[0]
+        last = window_samples[-1]
+        duration = last["timestamp"] - first["timestamp"]
+        if duration <= 0:
+            duration = 1
+
+        rx_delta = last["rx_bytes"] - first["rx_bytes"]
+        tx_delta = last["tx_bytes"] - first["tx_bytes"]
+        rx_pkts = last["rx_packets"] - first["rx_packets"]
+        tx_pkts = last["tx_packets"] - first["tx_packets"]
+        rx_errs = last["rx_errors"] - first["rx_errors"]
+        tx_errs = last["tx_errors"] - first["tx_errors"]
+        rx_drops = last["rx_drops"] - first["rx_drops"]
+        tx_drops = last["tx_drops"] - first["tx_drops"]
+
+        # Bandwidth (bytes/sec)
+        rx_bps = rx_delta / duration
+        tx_bps = tx_delta / duration
+
+        # Traffic patterns
+        if len(window_samples) >= 5:
+            # Detect burstiness (stddev of intervals)
+            bytes_per_sample = []
+            for i in range(1, len(window_samples)):
+                dt = window_samples[i]["timestamp"] - window_samples[i-1]["timestamp"]
+                db = (window_samples[i]["rx_bytes"] + window_samples[i]["tx_bytes"]) - \
+                     (window_samples[i-1]["rx_bytes"] + window_samples[i-1]["tx_bytes"])
+                if dt > 0:
+                    bytes_per_sample.append(db / dt)
+
+            if bytes_per_sample:
+                avg_bps = sum(bytes_per_sample) / len(bytes_per_sample)
+                variance = sum((b - avg_bps) ** 2 for b in bytes_per_sample) / len(bytes_per_sample)
+                stddev = variance ** 0.5
+                burstiness = stddev / avg_bps if avg_bps > 0 else 0
+            else:
+                burstiness = 0
+                avg_bps = 0
+        else:
+            burstiness = 0
+            avg_bps = 0
+
+        # Error rate
+        total_pkts = rx_pkts + tx_pkts
+        error_rate = (rx_errs + tx_errs) / total_pkts * 100 if total_pkts > 0 else 0
+        drop_rate = (rx_drops + tx_drops) / total_pkts * 100 if total_pkts > 0 else 0
+
+        patterns = {
+            "burstiness": round(burstiness, 3),
+            "error_rate_pct": round(error_rate, 2),
+            "drop_rate_pct": round(drop_rate, 2),
+            "dominant_direction": "rx" if rx_bps > tx_bps else "tx",
+            "symmetry_ratio": round(min(rx_bps, tx_bps) / max(rx_bps, tx_bps), 3) if max(rx_bps, tx_bps) > 0 else 0,
+        }
+
+        return {
+            "container_id": container.id,
+            "insufficient_data": False,
+            "window_s": round(duration, 1),
+            "sample_count": len(window_samples),
+            "rx_bytes_total": last["rx_bytes"],
+            "tx_bytes_total": last["tx_bytes"],
+            "rx_bytes_delta": rx_delta,
+            "tx_bytes_delta": tx_delta,
+            "rx_bytes_per_sec": round(rx_bps, 2),
+            "tx_bytes_per_sec": round(tx_bps, 2),
+            "rx_packets_delta": rx_pkts,
+            "tx_packets_delta": tx_pkts,
+            "rx_errors_delta": rx_errs,
+            "tx_errors_delta": tx_errs,
+            "rx_drops_delta": rx_drops,
+            "tx_drops_delta": tx_drops,
+            "patterns": patterns,
+            "current": sample,
+        }
+
+    def get_network_bandwidth_history(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get network traffic history for a container."""
+        if not hasattr(container, '_net_traffic') or \
+                not container._net_traffic:
+            return []
+        history = container._net_traffic
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    def get_network_connections(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get active network connections for a container.
+
+        Returns:
+            Dict with ``connections`` list and ``summary``.
+        """
+        if not container.config.network or not container.network_ip:
+            return {
+                "container_id": container.id,
+                "connections": [],
+                "summary": {"total": 0},
+            }
+
+        connections = []
+        try:
+            # Try to get connection info from proc or ss
+            result = subprocess.run(
+                ["nsenter", "-t", str(container.pid), "-n",
+                 "ss", "-tun"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n")[1:]:
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        connections.append({
+                            "proto": parts[0],
+                            "state": parts[1],
+                            "recv_q": parts[2],
+                            "send_q": parts[3],
+                            "local": parts[4],
+                            "peer": parts[5] if len(parts) > 5 else "",
+                        })
+        except Exception as e:
+            logger.debug(
+                "get_network_connections failed for %s: %s",
+                container.id, e,
+            )
+
+        # Summary
+        proto_counts: Dict[str, int] = {}
+        state_counts: Dict[str, int] = {}
+        for conn in connections:
+            proto = conn.get("proto", "?")
+            state = conn.get("state", "?")
+            proto_counts[proto] = proto_counts.get(proto, 0) + 1
+            state_counts[state] = state_counts.get(state, 0) + 1
+
+        return {
+            "container_id": container.id,
+            "connections": connections,
+            "summary": {
+                "total": len(connections),
+                "by_protocol": proto_counts,
+                "by_state": state_counts,
+            },
+        }
+
+    def get_network_traffic_by_protocol(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get traffic breakdown by protocol (TCP/UDP/ICMP)."""
+        if not hasattr(container, '_net_proto_stats'):
+            container._net_proto_stats = {
+                "tcp": {"rx_bytes": 0, "tx_bytes": 0, "connections": 0},
+                "udp": {"rx_bytes": 0, "tx_bytes": 0, "connections": 0},
+                "icmp": {"rx_bytes": 0, "tx_bytes": 0, "connections": 0},
+                "other": {"rx_bytes": 0, "tx_bytes": 0, "connections": 0},
+            }
+        return {
+            "container_id": container.id,
+            "protocols": dict(container._net_proto_stats),
+        }
+
+    # ------------------------------------------------------------------
     # Auto-scaling (demand-based resource adjustment)
     # ------------------------------------------------------------------
 

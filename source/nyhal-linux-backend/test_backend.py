@@ -5990,6 +5990,115 @@ class TestCapacityPlanning(unittest.TestCase):
         self.assertIn("a", text2)
 
 
+class TestNetworkTrafficAnalysis(unittest.TestCase):
+    """Network traffic analysis."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_get_traffic_insufficient_data(self):
+        """get_network_traffic_analysis returns insufficient_data initially."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="net-test"))
+        result = mgr.get_network_traffic_analysis(c)
+        self.assertTrue(result["insufficient_data"])
+
+    def test_get_traffic_with_samples(self):
+        """get_network_traffic_analysis works with samples."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="net-test2"))
+        # Manually add samples
+        base = time.time() - 600
+        for i in range(10):
+            c._net_traffic = getattr(c, '_net_traffic', [])
+            c._net_traffic.append({
+                "timestamp": base + i * 60,
+                "rx_bytes": 1000 * (i + 1),
+                "tx_bytes": 500 * (i + 1),
+                "rx_packets": 10 * (i + 1),
+                "tx_packets": 5 * (i + 1),
+                "rx_errors": 0, "tx_errors": 0,
+                "rx_drops": 0, "tx_drops": 0,
+            })
+        result = mgr.get_network_traffic_analysis(c, window_s=3600)
+        self.assertFalse(result["insufficient_data"])
+        self.assertIn("rx_bytes_per_sec", result)
+        self.assertIn("patterns", result)
+        self.assertIn("burstiness", result["patterns"])
+
+    def test_get_connections_no_network(self):
+        """get_network_connections returns empty for no network."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="net-test3", network=False))
+        result = mgr.get_network_connections(c)
+        self.assertEqual(result["summary"]["total"], 0)
+
+    def test_get_bandwidth_history(self):
+        """get_network_bandwidth_history returns list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="net-test4"))
+        history = mgr.get_network_bandwidth_history(c)
+        self.assertEqual(len(history), 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for network commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            command="network-traffic", container_id="a",
+            window_s=300.0,
+        )
+        p = build_payload("network-traffic", args1)
+        self.assertEqual(p["op"], "network_traffic")
+        self.assertEqual(p["window_s"], 300.0)
+        args2 = argparse.Namespace(
+            command="network-connections", container_id="a",
+        )
+        p2 = build_payload("network-connections", args2)
+        self.assertEqual(p2["op"], "network_connections")
+
+    def test_cli_format_human(self):
+        """CLI format_human for network commands."""
+        from nyrqisctl import format_human
+        # traffic
+        resp = {
+            "ok": True, "container_id": "a",
+            "insufficient_data": False,
+            "window_s": 300.0, "sample_count": 10,
+            "rx_bytes_total": 10000, "tx_bytes_total": 5000,
+            "rx_bytes_per_sec": 30.0, "tx_bytes_per_sec": 15.0,
+            "rx_packets_delta": 100, "tx_packets_delta": 50,
+            "rx_errors_delta": 0, "tx_errors_delta": 0,
+            "rx_drops_delta": 0, "tx_drops_delta": 0,
+            "patterns": {
+                "burstiness": 0.5, "error_rate_pct": 0.0,
+                "drop_rate_pct": 0.0, "dominant_direction": "rx",
+                "symmetry_ratio": 0.5,
+            },
+        }
+        text = format_human("network-traffic", resp)
+        self.assertIn("rx", text)
+        self.assertIn("30 B/s", text)
+        # connections
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "connections": [
+                {"proto": "tcp", "state": "ESTAB",
+                 "recv_q": "0", "send_q": "0",
+                 "local": "0.0.0.0:80", "peer": "10.0.0.1:12345"},
+            ],
+            "summary": {"total": 1, "by_protocol": {"tcp": 1}, "by_state": {"ESTAB": 1}},
+        }
+        text2 = format_human("network-connections", resp2)
+        self.assertIn("1", text2)
+        self.assertIn("tcp", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -21383,6 +21492,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestHealthCheckAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

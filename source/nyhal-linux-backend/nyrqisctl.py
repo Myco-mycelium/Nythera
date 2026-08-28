@@ -911,6 +911,28 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "capacity_plan_all",
             "horizon_days": args.horizon_days,
         }
+    if command == "network-traffic":
+        return {
+            "service": "control",
+            "op": "network_traffic",
+            "container_id": args.container_id,
+            "window_s": args.window_s,
+        }
+    if command == "network-connections":
+        return {
+            "service": "control",
+            "op": "network_connections",
+            "container_id": args.container_id,
+        }
+    if command == "network-bandwidth-history":
+        p8: Dict[str, Any] = {
+            "service": "control",
+            "op": "network_bandwidth_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p8["tail"] = args.tail
+        return p8
     if command == "anomaly-detect":
         return {
             "service": "control",
@@ -2193,6 +2215,64 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"  {c.get('container_id', '?')}: [{issue_str}]"
             )
         return "\n".join(lines)
+    if command == "network-traffic":
+        if resp.get("insufficient_data"):
+            return f"container {resp.get('container_id')}: insufficient data"
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"window:   {resp.get('window_s', 0)}s",
+            f"samples:  {resp.get('sample_count', 0)}",
+            f"rx total: {resp.get('rx_bytes_total', 0):,} bytes",
+            f"tx total: {resp.get('tx_bytes_total', 0):,} bytes",
+            f"rx rate:  {resp.get('rx_bytes_per_sec', 0):,.0f} B/s",
+            f"tx rate:  {resp.get('tx_bytes_per_sec', 0):,.0f} B/s",
+            f"rx pkts:  {resp.get('rx_packets_delta', 0):,}",
+            f"tx pkts:  {resp.get('tx_packets_delta', 0):,}",
+        ]
+        patterns = resp.get("patterns", {})
+        lines.append(f"direction: {patterns.get('dominant_direction', '?')}")
+        lines.append(f"burstiness: {patterns.get('burstiness', 0):.3f}")
+        lines.append(f"error rate: {patterns.get('error_rate_pct', 0):.2f}%")
+        lines.append(f"drop rate:  {patterns.get('drop_rate_pct', 0):.2f}%")
+        return "\n".join(lines)
+    if command == "network-connections":
+        conns = resp.get("connections", [])
+        summary = resp.get("summary", {})
+        lines = [
+            f"container: {resp.get('container_id')}",
+            f"total:     {summary.get('total', 0)}",
+        ]
+        by_proto = summary.get("by_protocol", {})
+        if by_proto:
+            lines.append("by protocol:")
+            for proto, count in by_proto.items():
+                lines.append(f"  {proto}: {count}")
+        by_state = summary.get("by_state", {})
+        if by_state:
+            lines.append("by state:")
+            for state, count in by_state.items():
+                lines.append(f"  {state}: {count}")
+        # Show first few connections
+        for conn in conns[:5]:
+            lines.append(
+                f"  {conn.get('proto', '?')} {conn.get('state', '?')} "
+                f"{conn.get('local', '?')} -> {conn.get('peer', '?')}"
+            )
+        if len(conns) > 5:
+            lines.append(f"  ... and {len(conns) - 5} more")
+        return "\n".join(lines)
+    if command == "network-bandwidth-history":
+        history = resp.get("history", [])
+        if not history:
+            return "No bandwidth history."
+        lines = [f"bandwidth history ({len(history)} samples):"]
+        for h in history[-10:]:
+            ts = h.get("timestamp", 0)
+            lines.append(
+                f"  {time.strftime('%H:%M:%S', time.localtime(ts))} "
+                f"rx={h.get('rx_bytes', 0):,} tx={h.get('tx_bytes', 0):,}"
+            )
+        return "\n".join(lines)
     if command == "anomaly-detect":
         if resp.get("insufficient_data"):
             return f"{resp.get('resource')}: insufficient data ({resp.get('sample_count', 0)} samples)"
@@ -3415,6 +3495,25 @@ def build_parser() -> argparse.ArgumentParser:
     capa.add_argument("--horizon", type=int, default=30,
                       dest="horizon_days", help="Planning horizon in days")
     capa.set_defaults(command="capacity-plan-all")
+
+    # Network traffic analysis commands
+    net = sub.add_parser("network", help="Network traffic analysis")
+    netsub = net.add_subparsers(dest="network_cmd", required=True)
+
+    nta = netsub.add_parser("traffic", help="Analyze network traffic")
+    nta.add_argument("container_id")
+    nta.add_argument("--window", type=float, default=300.0,
+                     dest="window_s", help="Analysis window in seconds")
+    nta.set_defaults(command="network-traffic")
+
+    nco = netsub.add_parser("connections", help="Get active connections")
+    nco.add_argument("container_id")
+    nco.set_defaults(command="network-connections")
+
+    nbh = netsub.add_parser("bandwidth-history", help="Get bandwidth history")
+    nbh.add_argument("container_id")
+    nbh.add_argument("--tail", type=int, default=None)
+    nbh.set_defaults(command="network-bandwidth-history")
 
     # Anomaly detection commands
     anomaly = sub.add_parser("anomaly", help="Detect resource anomalies")
