@@ -349,6 +349,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "container_env_list",
             "container_id": args.container_id,
         }
+    if command == "containers-snapshot-export":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "snapshot_export",
+            "container_id": args.container_id,
+        }
+        if args.export_path:
+            payload["export_path"] = args.export_path
+        return payload
+    if command == "containers-snapshot-import":
+        return {
+            "service": "control",
+            "op": "snapshot_import",
+            "archive_path": args.archive_path,
+        }
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -852,6 +867,19 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if command == "containers-env-unset" and not resp.get("existed", True):
             return f"variable {resp.get('key')!r} was not set"
         return f"{resp.get('key')} set on container {resp.get('container_id')}"
+    if command == "containers-snapshot-export":
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"archive:  {resp.get('export_path')}\n"
+            f"size:     {resp.get('archive_size', 0):,} bytes\n"
+            f"entries:  {resp.get('overlay_entries', 0)}\n"
+            f"blobs:    {resp.get('blob_count', 0)}"
+        )
+    if command == "containers-snapshot-import":
+        return (
+            f"imported container {resp.get('container_id')}\n"
+            f"state: {resp.get('state')}"
+        )
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -1482,6 +1510,16 @@ def build_parser() -> argparse.ArgumentParser:
     cel = csub.add_parser("env-list", help="List environment variables")
     cel.add_argument("container_id")
     cel.set_defaults(command="containers-env-list")
+
+    cse = csub.add_parser("snapshot-export", help="Export container checkpoint as tar.gz")
+    cse.add_argument("container_id")
+    cse.add_argument("--path", dest="export_path", default=None,
+                     help="Output archive path (auto-generated if omitted)")
+    cse.set_defaults(command="containers-snapshot-export")
+
+    csi = csub.add_parser("snapshot-import", help="Import checkpoint from tar.gz archive")
+    csi.add_argument("archive_path", help="Path to the tar.gz archive")
+    csi.set_defaults(command="containers-snapshot-import")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

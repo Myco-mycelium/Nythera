@@ -1202,6 +1202,80 @@ class ControlService:
             "environment": env,
         })
 
+    # ------------------------------------------------------------------
+    # Snapshot export / import
+    # ------------------------------------------------------------------
+
+    def _snapshot_export(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        export_path = request.get("export_path")  # optional
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            result = self.container_manager.snapshot_export(
+                c, export_path=export_path,
+            )
+        except Exception as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _snapshot_import(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        archive_path = request.get("archive_path")
+        if not archive_path:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "archive_path is required",
+            })
+            return
+        try:
+            checkpoint = self.container_manager.snapshot_import(
+                archive_path,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        except Exception as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": f"import failed: {e}",
+            })
+            return
+        # Restore the container from the imported checkpoint
+        try:
+            container = self.container_manager.container_restore(
+                checkpoint,
+            )
+        except Exception as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": f"restore failed: {e}",
+            })
+            return
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container.id,
+            "state": container.state.value,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

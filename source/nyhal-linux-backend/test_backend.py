@@ -2853,6 +2853,137 @@ class TestEnvironmentManagement(unittest.TestCase):
         self.assertIn("not set", text3)
 
 
+class TestSnapshotExportImport(unittest.TestCase):
+    """Test container snapshot export/import (portable archives)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_export_creates_tarball(self):
+        """Export creates a tar.gz file."""
+        import tarfile, tempfile, os
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        out = os.path.join(tempfile.gettempdir(), "test-export.tar.gz")
+        try:
+            result = mgr.snapshot_export(c, export_path=out)
+            self.assertTrue(os.path.isfile(out))
+            self.assertEqual(result["container_id"], "a")
+            self.assertIn("archive_size", result)
+            self.assertGreater(result["archive_size"], 0)
+            # Verify archive contains checkpoint.json
+            with tarfile.open(out, "r:gz") as tar:
+                names = tar.getnames()
+                self.assertIn("checkpoint.json", names)
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
+
+    def test_export_auto_path(self):
+        """Export with no path auto-generates filename."""
+        import os
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="b"))
+        result = mgr.snapshot_export(c)
+        path = result["export_path"]
+        try:
+            self.assertTrue(os.path.isfile(path))
+            self.assertIn("b", path)
+            self.assertTrue(path.endswith(".tar.gz"))
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_roundtrip_export_import(self):
+        """Export then import recovers the checkpoint."""
+        import tempfile, os
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="c", hostname="test-host",
+            command=["echo", "hello"],
+        ))
+        mgr.set_env(c, "FOO", "bar")
+        out = os.path.join(tempfile.gettempdir(), "test-roundtrip.tar.gz")
+        try:
+            mgr.snapshot_export(c, export_path=out)
+            checkpoint = mgr.snapshot_import(out)
+            self.assertEqual(checkpoint["container_id"], "c")
+            self.assertEqual(
+                checkpoint["config"]["hostname"], "test-host",
+            )
+            self.assertEqual(
+                checkpoint["config"]["command"], ["echo", "hello"],
+            )
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
+
+    def test_import_file_not_found(self):
+        """Import raises FileNotFoundError for missing archive."""
+        from backend.container import ContainerManager
+        mgr = self._manager()
+        with self.assertRaises(FileNotFoundError):
+            mgr.snapshot_import("/nonexistent/file.tar.gz")
+
+    def test_import_missing_checkpoint(self):
+        """Import raises ValueError when archive lacks checkpoint.json."""
+        import tarfile, tempfile, os
+        mgr = self._manager()
+        bad = os.path.join(tempfile.gettempdir(), "bad-archive.tar.gz")
+        try:
+            with tarfile.open(bad, "w:gz") as tar:
+                import io
+                data = b"not a checkpoint"
+                info = tarfile.TarInfo(name="readme.txt")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            with self.assertRaises(ValueError) as ctx:
+                mgr.snapshot_import(bad)
+            self.assertIn("missing checkpoint.json", str(ctx.exception))
+        finally:
+            if os.path.exists(bad):
+                os.unlink(bad)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for snapshot commands."""
+        from nyrqisctl import build_payload
+        # export
+        args = argparse.Namespace(
+            container_id="a", export_path="/tmp/out.tar.gz")
+        p = build_payload("containers-snapshot-export", args)
+        self.assertEqual(p["op"], "snapshot_export")
+        self.assertEqual(p["container_id"], "a")
+        self.assertEqual(p["export_path"], "/tmp/out.tar.gz")
+        # import
+        args2 = argparse.Namespace(archive_path="/tmp/in.tar.gz")
+        p = build_payload("containers-snapshot-import", args2)
+        self.assertEqual(p["op"], "snapshot_import")
+        self.assertEqual(p["archive_path"], "/tmp/in.tar.gz")
+
+    def test_cli_format_human(self):
+        """CLI format_human for snapshot commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "a",
+            "export_path": "/tmp/out.tar.gz",
+            "archive_size": 12345,
+            "overlay_entries": 5,
+            "blob_count": 2,
+        }
+        text = format_human("containers-snapshot-export", resp)
+        self.assertIn("/tmp/out.tar.gz", text)
+        self.assertIn("12,345", text)
+        # import
+        resp2 = {"ok": True, "container_id": "a", "state": "created"}
+        text2 = format_human("containers-snapshot-import", resp2)
+        self.assertIn("a", text2)
+        self.assertIn("created", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -18222,6 +18353,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyOrdering))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestEnvironmentManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestSnapshotExportImport))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

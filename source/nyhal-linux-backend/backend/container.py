@@ -2423,6 +2423,130 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Snapshot export / import
+    # ------------------------------------------------------------------
+
+    def snapshot_export(
+        self, container: Container, export_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Export a container checkpoint as a portable tar.gz archive.
+
+        The archive contains ``checkpoint.json`` (the full checkpoint
+        data) and optionally ``overlay/`` with raw file blobs for
+        large files (files > 1 KiB) stored as separate entries for
+        better compression.
+
+        Args:
+            container: The container to export.
+            export_path: Optional output path; auto-generated if omitted.
+
+        Returns:
+            Dict with ``export_path``, ``archive_size``, ``container_id``.
+        """
+        import tarfile
+
+        # First, create a checkpoint
+        checkpoint = self.container_checkpoint(container)
+
+        if export_path is None:
+            export_path = f"nyctr-{container.id}-export.tar.gz"
+
+        with tarfile.open(export_path, "w:gz") as tar:
+            # Write the checkpoint JSON
+            ckpt_json = json.dumps(checkpoint, indent=2).encode("utf-8")
+            info = tarfile.TarInfo(name="checkpoint.json")
+            info.size = len(ckpt_json)
+            import io
+            tar.addfile(info, io.BytesIO(ckpt_json))
+
+            # Write overlay file blobs as separate entries if large
+            overlay = checkpoint.get("overlay") or {}
+            entries = overlay.get("entries", {})
+            blob_count = 0
+            for path, entry_data in entries.items():
+                if entry_data.get("kind") != "file":
+                    continue
+                hex_data = entry_data.get("data", "")
+                if len(hex_data) > 2048:  # > 1 KiB
+                    raw = bytes.fromhex(hex_data)
+                    blob_name = f"overlay{path}.blob"
+                    blob_info = tarfile.TarInfo(name=blob_name)
+                    blob_info.size = len(raw)
+                    tar.addfile(blob_info, io.BytesIO(raw))
+                    blob_count += 1
+
+        archive_size = os.path.getsize(export_path)
+        logger.info(
+            "snapshot_export: %s → %s (%d bytes, %d blobs)",
+            container.id, export_path, archive_size, blob_count,
+        )
+        return {
+            "export_path": export_path,
+            "archive_size": archive_size,
+            "container_id": container.id,
+            "overlay_entries": len(entries),
+            "blob_count": blob_count,
+        }
+
+    def snapshot_import(
+        self, archive_path: str,
+    ) -> Dict[str, Any]:
+        """Import a checkpoint from a portable tar.gz archive.
+
+        Reads the archive, loads ``checkpoint.json``, and restores
+        any blob data that was stored as separate entries.
+
+        Args:
+            archive_path: Path to the tar.gz archive.
+
+        Returns:
+            The loaded checkpoint dict (ready for ``container_restore``).
+
+        Raises:
+            FileNotFoundError: If archive does not exist.
+            ValueError: If archive is missing checkpoint.json.
+        """
+        import tarfile
+
+        if not os.path.isfile(archive_path):
+            raise FileNotFoundError(f"archive not found: {archive_path}")
+
+        checkpoint = None
+        blobs: Dict[str, bytes] = {}
+
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name == "checkpoint.json":
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        checkpoint = json.loads(f.read())
+                elif member.name.startswith("overlay") and member.name.endswith(".blob"):
+                    f = tar.extractfile(member)
+                    if f is not None:
+                        # /path/to/file.blob → /path/to/file
+                        blob_path = member.name[7:-5]  # strip overlay prefix and .blob suffix
+                        blobs[blob_path] = f.read()
+
+        if checkpoint is None:
+            raise ValueError(
+                f"archive {archive_path!r} missing checkpoint.json"
+            )
+
+        # Re-link blobs to overlay entries
+        overlay = checkpoint.get("overlay")
+        if overlay and blobs:
+            entries = overlay.get("entries", {})
+            for path, raw in blobs.items():
+                if path in entries:
+                    entries[path]["data"] = raw.hex()
+
+        logger.info(
+            "snapshot_import: %s (%d blobs restored)",
+            archive_path, len(blobs),
+        )
+        return checkpoint
+
+    # ------------------------------------------------------------------
     # Dependency ordering
     # ------------------------------------------------------------------
 
