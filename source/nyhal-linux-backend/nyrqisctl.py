@@ -624,6 +624,48 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.alert_on_breach is not None:
             p2["alert_on_breach"] = args.alert_on_breach
         return p2
+    if command == "billing-rates-set":
+        p3: Dict[str, Any] = {
+            "service": "control",
+            "op": "billing_rates_set",
+        }
+        if args.memory_mb_per_hour is not None:
+            p3["memory_mb_per_hour"] = args.memory_mb_per_hour
+        if args.cpu_per_hour is not None:
+            p3["cpu_per_hour"] = args.cpu_per_hour
+        if args.pid_per_hour is not None:
+            p3["pid_per_hour"] = args.pid_per_hour
+        if args.storage_mb_per_hour is not None:
+            p3["storage_mb_per_hour"] = args.storage_mb_per_hour
+        return p3
+    if command == "billing-rates-get":
+        return {
+            "service": "control",
+            "op": "billing_rates_get",
+        }
+    if command == "billing-record":
+        return {
+            "service": "control",
+            "op": "billing_record",
+            "container_id": args.container_id,
+        }
+    if command == "billing-records":
+        p4: Dict[str, Any] = {
+            "service": "control",
+            "op": "billing_records",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            p4["tail"] = args.tail
+        return p4
+    if command == "billing-summary":
+        p5: Dict[str, Any] = {
+            "service": "control",
+            "op": "billing_summary",
+        }
+        if args.container_id:
+            p5["container_id"] = args.container_id
+        return p5
     if command in NUI_COMMANDS:
         payload = {
             "service": "nui",
@@ -1424,6 +1466,55 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         lines.append(f"  max_restarts:      {resp.get('sla_max_restart_count', 3)}")
         lines.append(f"  alert_on_breach:   {resp.get('sla_alert_on_breach', True)}")
         return "\n".join(lines)
+    if command == "billing-rates-set" or command == "billing-rates-get":
+        rates = resp.get("rates", {})
+        lines = ["billing rates:"]
+        for k, v in sorted(rates.items()):
+            lines.append(f"  {k}: ${v}/hour")
+        return "\n".join(lines)
+    if command == "billing-record":
+        if not resp.get("recorded", True):
+            return f"container {resp.get('container_id')}: not running"
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"memory:  ${resp.get('memory_cost', 0):.6f}\n"
+            f"cpu:     ${resp.get('cpu_cost', 0):.6f}\n"
+            f"pid:     ${resp.get('pid_cost', 0):.6f}\n"
+            f"total:   ${resp.get('total_cost', 0):.6f}"
+        )
+    if command == "billing-records":
+        records = resp.get("records", [])
+        count = resp.get("count", 0)
+        lines = [f"container: {resp.get('container_id')} ({count} records)"]
+        for r in records[-5:]:  # Show last 5
+            ts = r.get("timestamp", 0)
+            lines.append(
+                f"  {ts:.1f}  ${r.get('total_cost', 0):.6f}"
+            )
+        if count > 5:
+            lines.append(f"  ... and {count - 5} more")
+        return "\n".join(lines)
+    if command == "billing-summary":
+        if "grand_total_cost" in resp:
+            # All-containers summary
+            lines = [
+                f"grand total: ${resp.get('grand_total_cost', 0):.6f}",
+                f"containers:  {resp.get('container_count', 0)}",
+            ]
+            for c in resp.get("containers", []):
+                lines.append(
+                    f"  {c['container_id']}: ${c['total_cost']:.6f} "
+                    f"({c['record_count']} records)"
+                )
+            return "\n".join(lines)
+        return (
+            f"container: {resp.get('container_id')}\n"
+            f"total:     ${resp.get('total_cost', 0):.6f}\n"
+            f"records:   {resp.get('record_count', 0)}\n"
+            f"avg mem:   ${resp.get('avg_memory_cost', 0):.6f}\n"
+            f"avg cpu:   ${resp.get('avg_cpu_cost', 0):.6f}\n"
+            f"avg pid:   ${resp.get('avg_pid_cost', 0):.6f}"
+        )
     if command == "containers-stats":
         if not resp.get("available"):
             return f"container {resp.get('container_id')}: stats not available (state={resp.get('state')})"
@@ -2261,6 +2352,42 @@ def build_parser() -> argparse.ArgumentParser:
                       action="store_false", default=None,
                       help="Disable alerts on SLA breach")
     slas.set_defaults(command="sla-set")
+
+    bill = sub.add_parser("billing", help="Manage billing (cost tracking)")
+    billsub = bill.add_subparsers(dest="billing_cmd", required=True)
+
+    brs = billsub.add_parser("rates-set", help="Set billing rates")
+    brs.add_argument("--memory", type=float, default=None,
+                     dest="memory_mb_per_hour",
+                     help="Cost per GB-hour of memory")
+    brs.add_argument("--cpu", type=float, default=None,
+                     dest="cpu_per_hour",
+                     help="Cost per vCPU-hour")
+    brs.add_argument("--pid", type=float, default=None,
+                     dest="pid_per_hour",
+                     help="Cost per PID-hour")
+    brs.add_argument("--storage", type=float, default=None,
+                     dest="storage_mb_per_hour",
+                     help="Cost per GB-hour of storage")
+    brs.set_defaults(command="billing-rates-set")
+
+    brg = billsub.add_parser("rates-get", help="Get billing rates")
+    brg.set_defaults(command="billing-rates-get")
+
+    brec = billsub.add_parser("record", help="Record current usage")
+    brec.add_argument("container_id")
+    brec.set_defaults(command="billing-record")
+
+    brecs = billsub.add_parser("records", help="Get billing records")
+    brecs.add_argument("container_id")
+    brecs.add_argument("--tail", type=int, default=None,
+                       help="Show only last N records")
+    brecs.set_defaults(command="billing-records")
+
+    bsum = billsub.add_parser("summary", help="Get billing summary")
+    bsum.add_argument("container_id", nargs="?", default=None,
+                      help="Container ID (omit for all)")
+    bsum.set_defaults(command="billing-summary")
 
     quotas = sub.add_parser("quotas", help="Manage resource quotas")
     qsub = quotas.add_subparsers(dest="quota_cmd", required=True)

@@ -343,6 +343,14 @@ class ContainerManager:
         # Webhooks (HTTP callbacks for events)
         self._webhooks: Dict[str, Dict[str, Any]] = {}  # webhook_id → config
         self._webhook_id_counter = 0
+        # Billing (cost tracking)
+        self._billing_rates: Dict[str, float] = {
+            "memory_mb_per_hour": 0.01,  # $0.01 per GB-hour
+            "cpu_per_hour": 0.05,  # $0.05 per vCPU-hour
+            "pid_per_hour": 0.001,  # $0.001 per PID-hour
+            "storage_mb_per_hour": 0.002,  # $0.002 per GB-hour
+        }
+        self._billing_records: Dict[str, List[Dict[str, Any]]] = {}  # container_id → records
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
     def _record_event(self, kind: str, container_id: str,
@@ -3593,6 +3601,175 @@ class ContainerManager:
             "sla_uptime_target": cfg.sla_uptime_target,
             "sla_max_restart_count": cfg.sla_max_restart_count,
             "sla_alert_on_breach": cfg.sla_alert_on_breach,
+        }
+
+    # ------------------------------------------------------------------
+    # Billing (cost tracking)
+    # ------------------------------------------------------------------
+
+    def set_billing_rates(
+        self,
+        memory_mb_per_hour: Optional[float] = None,
+        cpu_per_hour: Optional[float] = None,
+        pid_per_hour: Optional[float] = None,
+        storage_mb_per_hour: Optional[float] = None,
+    ) -> Dict[str, float]:
+        """Update billing rates.
+
+        Args:
+            memory_mb_per_hour: Cost per GB-hour of memory.
+            cpu_per_hour: Cost per vCPU-hour.
+            pid_per_hour: Cost per PID-hour.
+            storage_mb_per_hour: Cost per GB-hour of storage.
+
+        Returns:
+            Current billing rates.
+        """
+        if memory_mb_per_hour is not None:
+            self._billing_rates["memory_mb_per_hour"] = memory_mb_per_hour
+        if cpu_per_hour is not None:
+            self._billing_rates["cpu_per_hour"] = cpu_per_hour
+        if pid_per_hour is not None:
+            self._billing_rates["pid_per_hour"] = pid_per_hour
+        if storage_mb_per_hour is not None:
+            self._billing_rates["storage_mb_per_hour"] = storage_mb_per_hour
+        return dict(self._billing_rates)
+
+    def get_billing_rates(self) -> Dict[str, float]:
+        """Get current billing rates."""
+        return dict(self._billing_rates)
+
+    def record_billing_usage(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Record current resource usage for billing.
+
+        Takes a snapshot of the container's resource usage and
+        records it with the current billing rates.
+
+        Returns:
+            The billing record dict.
+        """
+        stats = self.container_stats(container)
+        if not stats.get("available"):
+            return {
+                "container_id": container.id,
+                "recorded": False,
+            }
+
+        # Calculate usage in units
+        mem_bytes = stats.get("memory_bytes", 0)
+        mem_gb_hours = mem_bytes / (1024 ** 3)  # Convert to GB
+        cpu_usec = stats.get("cpu_usage_usec", 0)
+        cpu_hours = cpu_usec / (3600 * 1_000_000)  # Convert to hours
+        pids = stats.get("pids_current", 0)
+
+        rates = self._billing_rates
+        mem_cost = mem_gb_hours * rates["memory_mb_per_hour"]
+        cpu_cost = cpu_hours * rates["cpu_per_hour"]
+        pid_cost = pids * rates["pid_per_hour"]
+        total_cost = mem_cost + cpu_cost + pid_cost
+
+        record: Dict[str, Any] = {
+            "timestamp": time.time(),
+            "container_id": container.id,
+            "memory_bytes": mem_bytes,
+            "cpu_usage_usec": cpu_usec,
+            "pids_current": pids,
+            "memory_cost": round(mem_cost, 6),
+            "cpu_cost": round(cpu_cost, 6),
+            "pid_cost": round(pid_cost, 6),
+            "total_cost": round(total_cost, 6),
+            "rates": rates.copy(),
+        }
+
+        # Store record
+        if container.id not in self._billing_records:
+            self._billing_records[container.id] = []
+        self._billing_records[container.id].append(record)
+        # Keep at most 10000 records per container
+        if len(self._billing_records[container.id]) > 10000:
+            self._billing_records[container.id] = \
+                self._billing_records[container.id][-10000:]
+
+        return record
+
+    def get_billing_records(
+        self, container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get billing records for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N records.
+
+        Returns:
+            List of billing record dicts.
+        """
+        records = self._billing_records.get(container.id, [])
+        if tail is not None:
+            return list(records[-tail:])
+        return list(records)
+
+    def get_billing_summary(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Get billing summary for a container.
+
+        Aggregates all billing records into a summary.
+
+        Returns:
+            Dict with ``total_cost``, ``record_count``,
+            ``avg_memory_cost``, ``avg_cpu_cost``, ``avg_pid_cost``.
+        """
+        records = self._billing_records.get(container.id, [])
+        if not records:
+            return {
+                "container_id": container.id,
+                "total_cost": 0.0,
+                "record_count": 0,
+                "avg_memory_cost": 0.0,
+                "avg_cpu_cost": 0.0,
+                "avg_pid_cost": 0.0,
+            }
+
+        total_mem = sum(r.get("memory_cost", 0) for r in records)
+        total_cpu = sum(r.get("cpu_cost", 0) for r in records)
+        total_pid = sum(r.get("pid_cost", 0) for r in records)
+        total = sum(r.get("total_cost", 0) for r in records)
+        count = len(records)
+
+        return {
+            "container_id": container.id,
+            "total_cost": round(total, 6),
+            "record_count": count,
+            "avg_memory_cost": round(total_mem / count, 6),
+            "avg_cpu_cost": round(total_cpu / count, 6),
+            "avg_pid_cost": round(total_pid / count, 6),
+        }
+
+    def get_billing_summary_all(self) -> Dict[str, Any]:
+        """Get billing summary for all containers.
+
+        Returns:
+            Dict with per-container summaries and grand total.
+        """
+        grand_total = 0.0
+        containers: List[Dict[str, Any]] = []
+
+        for cid in self._billing_records:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+            summary = self.get_billing_summary(c)
+            grand_total += summary["total_cost"]
+            containers.append(summary)
+
+        return {
+            "grand_total_cost": round(grand_total, 6),
+            "container_count": len(containers),
+            "containers": containers,
         }
 
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:

@@ -2015,6 +2015,98 @@ class ControlService:
             "ok": True, **result,
         })
 
+    # ------------------------------------------------------------------
+    # Billing (cost tracking)
+    # ------------------------------------------------------------------
+
+    def _billing_rates_set(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        result = self.container_manager.set_billing_rates(
+            memory_mb_per_hour=request.get("memory_mb_per_hour"),
+            cpu_per_hour=request.get("cpu_per_hour"),
+            pid_per_hour=request.get("pid_per_hour"),
+            storage_mb_per_hour=request.get("storage_mb_per_hour"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "rates": result,
+        })
+
+    def _billing_rates_get(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        rates = self.container_manager.get_billing_rates()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "rates": rates,
+        })
+
+    def _billing_record(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.record_billing_usage(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _billing_records(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        records = self.container_manager.get_billing_records(c, tail=tail)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "records": records, "count": len(records),
+        })
+
+    def _billing_summary(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            # Summary for all containers
+            result = self.container_manager.get_billing_summary_all()
+            self._reply(server, sender_path, call_id, {
+                "ok": True, **result,
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_billing_summary(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

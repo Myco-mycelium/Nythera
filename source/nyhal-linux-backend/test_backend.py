@@ -4492,6 +4492,114 @@ class TestSLA(unittest.TestCase):
         self.assertIn("1 violations", text2)
 
 
+class TestBilling(unittest.TestCase):
+    """Test billing (cost tracking)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_default_billing_rates(self):
+        """Default billing rates are set."""
+        mgr = self._manager()
+        rates = mgr.get_billing_rates()
+        self.assertIn("memory_mb_per_hour", rates)
+        self.assertIn("cpu_per_hour", rates)
+        self.assertIn("pid_per_hour", rates)
+        self.assertIn("storage_mb_per_hour", rates)
+
+    def test_set_billing_rates(self):
+        """set_billing_rates updates rates."""
+        mgr = self._manager()
+        result = mgr.set_billing_rates(
+            memory_mb_per_hour=0.02, cpu_per_hour=0.10,
+        )
+        self.assertEqual(result["memory_mb_per_hour"], 0.02)
+        self.assertEqual(result["cpu_per_hour"], 0.10)
+        self.assertEqual(mgr.get_billing_rates()["memory_mb_per_hour"], 0.02)
+
+    def test_record_billing_usage_not_running(self):
+        """record_billing_usage returns not recorded when not running."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        result = mgr.record_billing_usage(c)
+        self.assertFalse(result["recorded"])
+
+    def test_get_billing_records_empty(self):
+        """get_billing_records returns empty when no records."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        records = mgr.get_billing_records(c)
+        self.assertEqual(records, [])
+
+    def test_get_billing_summary_empty(self):
+        """get_billing_summary returns zeros when no records."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="a"))
+        summary = mgr.get_billing_summary(c)
+        self.assertEqual(summary["total_cost"], 0.0)
+        self.assertEqual(summary["record_count"], 0)
+
+    def test_get_billing_summary_all(self):
+        """get_billing_summary_all returns aggregate."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="a"))
+        result = mgr.get_billing_summary_all()
+        self.assertIn("grand_total_cost", result)
+        self.assertIn("container_count", result)
+        self.assertIn("containers", result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for billing commands."""
+        from nyrqisctl import build_payload
+        args = argparse.Namespace(
+            memory_mb_per_hour=0.02, cpu_per_hour=0.10,
+            pid_per_hour=None, storage_mb_per_hour=None,
+        )
+        p = build_payload("billing-rates-set", args)
+        self.assertEqual(p["op"], "billing_rates_set")
+        self.assertEqual(p["memory_mb_per_hour"], 0.02)
+        p = build_payload("billing-rates-get", argparse.Namespace())
+        self.assertEqual(p["op"], "billing_rates_get")
+        args2 = argparse.Namespace(container_id="a")
+        p = build_payload("billing-record", args2)
+        self.assertEqual(p["op"], "billing_record")
+        args3 = argparse.Namespace(container_id="a", tail=None)
+        p = build_payload("billing-records", args3)
+        self.assertEqual(p["op"], "billing_records")
+        args4 = argparse.Namespace(container_id=None)
+        p = build_payload("billing-summary", args4)
+        self.assertEqual(p["op"], "billing_summary")
+
+    def test_cli_format_human(self):
+        """CLI format_human for billing commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "rates": {
+                "memory_mb_per_hour": 0.01,
+                "cpu_per_hour": 0.05,
+            },
+        }
+        text = format_human("billing-rates-get", resp)
+        self.assertIn("0.01", text)
+        self.assertIn("0.05", text)
+        # summary
+        resp2 = {
+            "ok": True, "container_id": "a",
+            "total_cost": 1.234, "record_count": 10,
+            "avg_memory_cost": 0.1, "avg_cpu_cost": 0.2,
+            "avg_pid_cost": 0.01,
+        }
+        text2 = format_human("billing-summary", resp2)
+        self.assertIn("1.234", text2)
+        self.assertIn("10", text2)
+
+
 class TestContainerCapabilityLifecycle(unittest.TestCase):
     """Control-plane capability lifecycle (NPS-010 §5): each spawned
     container is initialized with its default grants (so it can
@@ -19874,6 +19982,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceExport))
     suite.addTests(loader.loadTestsFromTestCase(TestWebhooks))
     suite.addTests(loader.loadTestsFromTestCase(TestSLA))
+    suite.addTests(loader.loadTestsFromTestCase(TestBilling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
