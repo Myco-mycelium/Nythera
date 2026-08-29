@@ -765,6 +765,135 @@ class ContainerManager:
             },
         }
 
+    # ------------------------------------------------------------------
+    # Audit trail (immutable resource usage log)
+    # ------------------------------------------------------------------
+
+    def record_audit_entry(
+        self, container: Container,
+        action: str,
+        actor: str = "system",
+        resource: Optional[str] = None,
+        old_value: Any = None,
+        new_value: Any = None,
+        detail: str = "",
+    ) -> Dict[str, Any]:
+        """Record an immutable audit entry for a resource change.
+
+        Audit entries are append-only and cannot be modified or
+        deleted (the log is write-once).  Each entry captures
+        who did what, what changed, and when.
+
+        Args:
+            container: Target container.
+            action: The action performed (e.g., "limit_change",
+                "capability_grant", "capability_revoke").
+            actor: Who performed the action (e.g., "operator",
+                "auto-scaler", "health-check").
+            resource: Resource type (e.g., "memory", "cpu").
+            old_value: Previous value.
+            new_value: New value.
+            detail: Additional detail.
+
+        Returns:
+            The audit entry dict.
+        """
+        if not hasattr(container, "_audit_log"):
+            container._audit_log = []
+
+        entry: Dict[str, Any] = {
+            "timestamp": time.time(),
+            "container_id": container.id,
+            "action": action,
+            "actor": actor,
+            "resource": resource,
+            "old_value": old_value,
+            "new_value": new_value,
+            "detail": detail,
+        }
+        container._audit_log.append(entry)
+
+        # Also record in the global event log
+        self._record_event(
+            "audit", container.id,
+            f"{action} by {actor}: {resource} {old_value} -> {new_value}")
+
+        return entry
+
+    def get_audit_log(
+        self, container: Container,
+        tail: Optional[int] = None,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        resource: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get the immutable audit log for a container.
+
+        Args:
+            container: Target container.
+            tail: If set, return only the last N entries.
+            action: Filter by action type.
+            actor: Filter by actor.
+            resource: Filter by resource type.
+
+        Returns:
+            List of audit entry dicts (newest first).
+        """
+        log = getattr(container, "_audit_log", [])
+        if action:
+            log = [e for e in log if e["action"] == action]
+        if actor:
+            log = [e for e in log if e["actor"] == actor]
+        if resource:
+            log = [e for e in log if e["resource"] == resource]
+        # Return newest first
+        log = list(reversed(log))
+        if tail is not None:
+            log = log[:tail]
+        return log
+
+    def get_audit_summary(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Get a summary of audit activity for a container.
+
+        Returns:
+            Dict with ``total_entries``, ``by_action``, ``by_actor``,
+            ``by_resource``, and ``recent`` (last 10).
+        """
+        log = getattr(container, "_audit_log", [])
+        if not log:
+            return {
+                "container_id": container.id,
+                "total_entries": 0,
+                "by_action": {},
+                "by_actor": {},
+                "by_resource": {},
+                "recent": [],
+            }
+
+        by_action: Dict[str, int] = {}
+        by_actor: Dict[str, int] = {}
+        by_resource: Dict[str, int] = {}
+
+        for e in log:
+            a = e.get("action", "unknown")
+            by_action[a] = by_action.get(a, 0) + 1
+            actor = e.get("actor", "unknown")
+            by_actor[actor] = by_actor.get(actor, 0) + 1
+            res = e.get("resource")
+            if res:
+                by_resource[res] = by_resource.get(res, 0) + 1
+
+        return {
+            "container_id": container.id,
+            "total_entries": len(log),
+            "by_action": by_action,
+            "by_actor": by_actor,
+            "by_resource": by_resource,
+            "recent": list(reversed(log[-10:])),
+        }
+
     # -- resource quotas ------------------------------------------------
 
     def set_quota(self, owner: str, memory_mb: Optional[int] = None,
@@ -6745,6 +6874,121 @@ class ContainerManager:
             "monthly_limit": budget.get("monthly_limit", 0),
             "hard_limit": budget.get("hard_limit", 0),
             "alert_threshold_pct": budget.get("alert_threshold_pct", 80),
+        }
+
+    # ------------------------------------------------------------------
+    # Cost allocation per container
+    # ------------------------------------------------------------------
+
+    def calculate_cost_allocation(
+        self,
+        container: Container,
+        rates: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Calculate the resource cost for a container.
+
+        Computes the cost based on resource usage and configurable
+        hourly rates (default: $0.01/GB-hour memory, $0.05/CPU-hour,
+        $0.001/PID-hour).
+
+        Args:
+            container: Target container.
+            rates: Custom rates dict with keys ``memory_per_gb_hour``,
+                ``cpu_per_hour``, ``pid_per_hour``.
+
+        Returns:
+            Dict with ``container_id``, ``memory_cost``, ``cpu_cost``,
+            ``pid_cost``, ``total_cost``, ``usage``, and ``rates``.
+        """
+        if rates is None:
+            rates = {
+                "memory_per_gb_hour": 0.01,
+                "cpu_per_hour": 0.05,
+                "pid_per_hour": 0.001,
+            }
+
+        stats = self.container_stats(container)
+        if not stats.get("available"):
+            return {
+                "container_id": container.id,
+                "memory_cost": 0.0,
+                "cpu_cost": 0.0,
+                "pid_cost": 0.0,
+                "total_cost": 0.0,
+                "usage": {},
+                "rates": rates,
+            }
+
+        mem_bytes = stats.get("memory_bytes", 0)
+        mem_gb = mem_bytes / (1024 ** 3)
+        cpu_usec = stats.get("cpu_usage_usec", 0)
+        cpu_hours = cpu_usec / (3600 * 1_000_000)
+        pids = stats.get("pids_current", 0)
+
+        mem_cost = mem_gb * rates.get("memory_per_gb_hour", 0.01)
+        cpu_cost = cpu_hours * rates.get("cpu_per_hour", 0.05)
+        pid_cost = pids * rates.get("pid_per_hour", 0.001)
+        total_cost = mem_cost + cpu_cost + pid_cost
+
+        # Get uptime for cost projection
+        uptime_h = 0.0
+        if container.started_at:
+            uptime_h = (time.time() - container.started_at) / 3600
+
+        return {
+            "container_id": container.id,
+            "memory_cost": round(mem_cost, 6),
+            "cpu_cost": round(cpu_cost, 6),
+            "pid_cost": round(pid_cost, 6),
+            "total_cost": round(total_cost, 6),
+            "projected_daily": round(total_cost * 24, 4),
+            "projected_monthly": round(total_cost * 24 * 30, 4),
+            "uptime_hours": round(uptime_h, 2),
+            "usage": {
+                "memory_gb": round(mem_gb, 4),
+                "cpu_hours": round(cpu_hours, 6),
+                "pids": pids,
+            },
+            "rates": rates,
+        }
+
+    def calculate_cost_allocation_all(
+        self,
+        rates: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Calculate cost allocation for all running containers.
+
+        Returns:
+            Dict with ``total_cost``, ``containers`` list, ``by_owner``
+            aggregation, and ``rates``.
+        """
+        total_cost = 0.0
+        by_owner: Dict[str, float] = {}
+        containers_data: List[Dict[str, Any]] = []
+
+        for cid, c in self.containers.items():
+            if c.state != ContainerState.RUNNING:
+                continue
+            allocation = self.calculate_cost_allocation(c, rates)
+            containers_data.append(allocation)
+            cost = allocation["total_cost"]
+            total_cost += cost
+            owner = getattr(c.config, "owner", "default")
+            by_owner[owner] = by_owner.get(owner, 0) + cost
+
+        return {
+            "timestamp": time.time(),
+            "total_cost": round(total_cost, 6),
+            "container_count": len(containers_data),
+            "containers": containers_data,
+            "by_owner": {
+                k: round(v, 6) for k, v in by_owner.items()
+            },
+            "rates": rates or {
+                "memory_per_gb_hour": 0.01,
+                "cpu_per_hour": 0.05,
+                "pid_per_hour": 0.001,
+            },
         }
 
     def container_network_stats(self, container: Container) -> Optional[Dict[str, Any]]:

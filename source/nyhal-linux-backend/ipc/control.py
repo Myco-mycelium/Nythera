@@ -579,6 +579,21 @@ class ControlService:
             elif op == "ready_containers":
                 self._ready_containers(
                     server, sender_path, msg.message_id, request)
+            elif op == "audit_record":
+                self._audit_record(
+                    server, sender_path, msg.message_id, request)
+            elif op == "audit_log":
+                self._audit_log(
+                    server, sender_path, msg.message_id, request)
+            elif op == "audit_summary":
+                self._audit_summary(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_allocate":
+                self._cost_allocate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_allocate_all":
+                self._cost_allocate_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4163,6 +4178,101 @@ class ControlService:
             return
         result = self.container_manager.get_resource_profile_top_consumers(
             c, resource=resource, top_n=top_n,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _audit_record(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        action = request.get("action")
+        if not container_id or not action:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and action are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        entry = self.container_manager.record_audit_entry(
+            c, action=action,
+            actor=request.get("actor", "operator"),
+            resource=request.get("resource"),
+            old_value=request.get("old_value"),
+            new_value=request.get("new_value"),
+            detail=request.get("detail", ""),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **entry,
+        })
+
+    def _audit_log(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        log = self.container_manager.get_audit_log(
+            c, tail=request.get("tail"),
+            action=request.get("action"),
+            actor=request.get("actor"),
+            resource=request.get("resource"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container_id,
+            "entries": log,
+            "count": len(log),
+        })
+
+    def _audit_summary(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        summary = self.container_manager.get_audit_summary(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **summary,
+        })
+
+    def _cost_allocate(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        rates = request.get("rates")
+        allocation = self.container_manager.calculate_cost_allocation(
+            c, rates=rates,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **allocation,
+        })
+
+    def _cost_allocate_all(self, server, sender_path: str, call_id: str,
+                           request: Dict[str, Any]) -> None:
+        rates = request.get("rates")
+        result = self.container_manager.calculate_cost_allocation_all(
+            rates=rates,
         )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,

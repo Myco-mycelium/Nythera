@@ -1386,6 +1386,42 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "control", "op": "scheduling_queue"}
     if command == "ready-containers":
         return {"service": "control", "op": "ready_containers"}
+    if command == "audit-record":
+        return {
+            "service": "control",
+            "op": "audit_record",
+            "container_id": args.container_id,
+            "action": args.action,
+            "actor": getattr(args, "actor", "operator"),
+            "resource": getattr(args, "resource", None),
+            "old_value": getattr(args, "old_value", None),
+            "new_value": getattr(args, "new_value", None),
+            "detail": getattr(args, "detail", ""),
+        }
+    if command == "audit-log":
+        return {
+            "service": "control",
+            "op": "audit_log",
+            "container_id": args.container_id,
+            "tail": getattr(args, "tail", None),
+            "action": getattr(args, "action", None),
+            "actor": getattr(args, "actor", None),
+            "resource": getattr(args, "resource", None),
+        }
+    if command == "audit-summary":
+        return {
+            "service": "control",
+            "op": "audit_summary",
+            "container_id": args.container_id,
+        }
+    if command == "cost-allocate":
+        return {
+            "service": "control",
+            "op": "cost_allocate",
+            "container_id": args.container_id,
+        }
+    if command == "cost-allocate-all":
+        return {"service": "control", "op": "cost_allocate_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3274,6 +3310,68 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             for f in failed:
                 lines.append(f"  FAILED {f['id']}: {f['error']}")
         return "\n".join(lines)
+    if command == "audit-record":
+        if resp.get("ok"):
+            return (f"audit entry recorded: {resp.get('action')} "
+                    f"by {resp.get('actor')} at "
+                    f"{resp.get('timestamp', '?')}")
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "audit-log":
+        entries = resp.get("entries", [])
+        if not entries:
+            return "No audit entries"
+        lines = ["Timestamp\tAction\tActor\tResource\tDetail"]
+        for e in entries:
+            ts = e.get("timestamp", 0)
+            lines.append(
+                f"{ts:.0f}\t"
+                f"{e.get('action', '?')}\t"
+                f"{e.get('actor', '?')}\t"
+                f"{e.get('resource', '-')}\t"
+                f"{e.get('detail', '')}")
+        return "\n".join(lines)
+    if command == "audit-summary":
+        lines = [
+            f"Total entries: {resp.get('total_entries', 0)}",
+            f"By action: {resp.get('by_action', {})}",
+            f"By actor: {resp.get('by_actor', {})}",
+        ]
+        recent = resp.get("recent", [])
+        if recent:
+            lines.append(f"Recent ({len(recent)}):")
+            for e in recent[:5]:
+                lines.append(f"  {e.get('action')} by {e.get('actor')}")
+        return "\n".join(lines)
+    if command == "cost-allocate":
+        if not resp.get("total_cost") and resp.get("total_cost") != 0:
+            return f"Failed: {resp.get('error', '?')}"
+        lines = [
+            f"Container: {resp.get('container_id', '?')}",
+            f"Memory cost: ${resp.get('memory_cost', 0):.6f}",
+            f"CPU cost:    ${resp.get('cpu_cost', 0):.6f}",
+            f"PID cost:    ${resp.get('pid_cost', 0):.6f}",
+            f"Total/hour:  ${resp.get('total_cost', 0):.6f}",
+            f"Projected/day:   ${resp.get('projected_daily', 0):.4f}",
+            f"Projected/month: ${resp.get('projected_monthly', 0):.4f}",
+        ]
+        usage = resp.get("usage", {})
+        if usage:
+            lines.append(
+                f"Usage: {usage.get('memory_gb', 0):.4f} GB, "
+                f"{usage.get('cpu_hours', 0):.6f} CPU-hours, "
+                f"{usage.get('pids', 0)} PIDs")
+        return "\n".join(lines)
+    if command == "cost-allocate-all":
+        total = resp.get("total_cost", 0)
+        count = resp.get("container_count", 0)
+        lines = [f"Total cost: ${total:.6f}/hour ({count} containers)"]
+        by_owner = resp.get("by_owner", {})
+        if by_owner:
+            lines.append("By owner:")
+            for owner, cost in sorted(by_owner.items(),
+                                       key=lambda x: -x[1]):
+                lines.append(f"  {owner}: ${cost:.6f}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4121,6 +4219,41 @@ def build_parser() -> argparse.ArgumentParser:
     rc = sub.add_parser("ready-containers",
                        help="Show containers ready to start")
     rc.set_defaults(command="ready-containers")
+
+    # -- audit & cost allocation --
+    ar = sub.add_parser("audit-record",
+                        help="Record an audit entry")
+    ar.add_argument("container_id")
+    ar.add_argument("action")
+    ar.add_argument("--actor", default="operator")
+    ar.add_argument("--resource", default=None)
+    ar.add_argument("--old-value", default=None)
+    ar.add_argument("--new-value", default=None)
+    ar.add_argument("--detail", default="")
+    ar.set_defaults(command="audit-record")
+
+    al = sub.add_parser("audit-log",
+                        help="Show the audit log for a container")
+    al.add_argument("container_id")
+    al.add_argument("--tail", type=int, default=None)
+    al.add_argument("--action", default=None)
+    al.add_argument("--actor", default=None)
+    al.add_argument("--resource", default=None)
+    al.set_defaults(command="audit-log")
+
+    as_ = sub.add_parser("audit-summary",
+                         help="Audit activity summary")
+    as_.add_argument("container_id")
+    as_.set_defaults(command="audit-summary")
+
+    ca = sub.add_parser("cost-allocate",
+                        help="Cost allocation for a container")
+    ca.add_argument("container_id")
+    ca.set_defaults(command="cost-allocate")
+
+    caa = sub.add_parser("cost-allocate-all",
+                         help="Cost allocation for all containers")
+    caa.set_defaults(command="cost-allocate-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

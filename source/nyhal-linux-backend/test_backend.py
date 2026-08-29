@@ -22945,6 +22945,209 @@ class TestResourceProfiling(unittest.TestCase):
         self.assertIn("history", replies[0])
 
 
+class TestAuditTrail(unittest.TestCase):
+    """Tests for container audit trail (record, log, summary)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_record_audit_entry(self):
+        """record_audit_entry returns an entry with expected fields."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="audit1", command=["echo"]))
+        entry = mgr.record_audit_entry(
+            c, action="limit_change", actor="operator",
+            resource="memory", old_value=256, new_value=512,
+            detail="doubled memory")
+        self.assertEqual(entry["action"], "limit_change")
+        self.assertEqual(entry["actor"], "operator")
+        self.assertEqual(entry["resource"], "memory")
+        self.assertEqual(entry["old_value"], 256)
+        self.assertEqual(entry["new_value"], 512)
+        self.assertIn("timestamp", entry)
+        self.assertIn("container_id", entry)
+
+    def test_get_audit_log_filtering(self):
+        """get_audit_log filters by action/actor/resource."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="audit2", command=["echo"]))
+        mgr.record_audit_entry(c, action="start", actor="operator")
+        mgr.record_audit_entry(c, action="stop", actor="auto-scaler")
+        mgr.record_audit_entry(c, action="start", actor="operator",
+                                resource="cpu")
+        log = mgr.get_audit_log(c)
+        self.assertEqual(len(log), 3)
+        # Filter by action
+        log_start = mgr.get_audit_log(c, action="start")
+        self.assertEqual(len(log_start), 2)
+        # Filter by actor
+        log_as = mgr.get_audit_log(c, actor="auto-scaler")
+        self.assertEqual(len(log_as), 1)
+        # Filter by resource
+        log_cpu = mgr.get_audit_log(c, resource="cpu")
+        self.assertEqual(len(log_cpu), 1)
+        # Tail
+        log_tail = mgr.get_audit_log(c, tail=1)
+        self.assertEqual(len(log_tail), 1)
+
+    def test_get_audit_summary(self):
+        """get_audit_summary aggregates by action and actor."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="audit3", command=["echo"]))
+        mgr.record_audit_entry(c, action="start", actor="operator")
+        mgr.record_audit_entry(c, action="start", actor="operator")
+        mgr.record_audit_entry(c, action="stop", actor="auto-scaler")
+        summary = mgr.get_audit_summary(c)
+        self.assertEqual(summary["total_entries"], 3)
+        self.assertEqual(summary["by_action"]["start"], 2)
+        self.assertEqual(summary["by_action"]["stop"], 1)
+        self.assertEqual(summary["by_actor"]["operator"], 2)
+
+    def test_get_audit_log_empty(self):
+        """get_audit_log returns empty for a fresh container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="audit4", command=["echo"]))
+        log = mgr.get_audit_log(c)
+        self.assertEqual(log, [])
+        summary = mgr.get_audit_summary(c)
+        self.assertEqual(summary["total_entries"], 0)
+
+    def test_audit_cli_payload(self):
+        """CLI build_payload produces correct IPC payloads."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", action="limit_change",
+            actor="operator", resource="memory",
+            old_value=256, new_value=512, detail="test")
+        p = cli.build_payload("audit-record", ns)
+        self.assertEqual(p["op"], "audit_record")
+        self.assertEqual(p["action"], "limit_change")
+
+        ns2 = argparse.Namespace(
+            container_id="c1", tail=None, action=None,
+            actor=None, resource=None)
+        p2 = cli.build_payload("audit-log", ns2)
+        self.assertEqual(p2["op"], "audit_log")
+
+        ns3 = argparse.Namespace(container_id="c1")
+        p3 = cli.build_payload("audit-summary", ns3)
+        self.assertEqual(p3["op"], "audit_summary")
+
+    def test_cost_allocate_cli_payload(self):
+        """CLI build_payload for cost allocation."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(container_id="c1")
+        p = cli.build_payload("cost-allocate", ns)
+        self.assertEqual(p["op"], "cost_allocate")
+        self.assertEqual(p["container_id"], "c1")
+
+        p2 = cli.build_payload("cost-allocate-all", argparse.Namespace())
+        self.assertEqual(p2["op"], "cost_allocate_all")
+
+    def test_cost_allocate_format_human(self):
+        """format_human renders cost allocation nicely."""
+        import nyrqisctl as cli
+        resp = {
+            "ok": True,
+            "container_id": "c1",
+            "memory_cost": 0.001,
+            "cpu_cost": 0.002,
+            "pid_cost": 0.0001,
+            "total_cost": 0.0031,
+            "projected_daily": 0.0744,
+            "projected_monthly": 2.232,
+            "usage": {"memory_gb": 0.1, "cpu_hours": 0.04, "pids": 5},
+        }
+        text = cli.format_human("cost-allocate", resp)
+        self.assertIn("$0.003100", text)
+        self.assertIn("0.1", text)
+
+    def test_audit_format_human(self):
+        """format_human renders audit log nicely."""
+        import nyrqisctl as cli
+        resp = {
+            "ok": True,
+            "entries": [
+                {"timestamp": 1000, "action": "start",
+                 "actor": "operator", "resource": None, "detail": "ok"},
+            ],
+            "count": 1,
+        }
+        text = cli.format_human("audit-log", resp)
+        self.assertIn("start", text)
+        self.assertIn("operator", text)
+
+    def test_control_audit_record_handler(self):
+        """ControlService dispatches audit_record op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="audit-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "audit_record",
+                  "container_id": c.id,
+                  "action": "test_action",
+                  "actor": "test_actor"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(replies[0]["action"], "test_action")
+
+    def test_control_cost_allocate_handler(self):
+        """ControlService dispatches cost_allocate op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="cost-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "cost_allocate",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("total_cost", replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23029,6 +23232,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBaselines))
     suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))
+    suite.addTests(loader.loadTestsFromTestCase(TestAuditTrail))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
