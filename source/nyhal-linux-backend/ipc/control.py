@@ -639,6 +639,12 @@ class ControlService:
             elif op == "tenant_usage_summary":
                 self._tenant_usage_summary(
                     server, sender_path, msg.message_id, request)
+            elif op == "event_log_export":
+                self._event_log_export(
+                    server, sender_path, msg.message_id, request)
+            elif op == "event_log_import":
+                self._event_log_import(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4585,6 +4591,48 @@ class ControlService:
             "ok": True,
             "tenants": result,
             "count": len(result),
+        })
+
+    def _event_log_export(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        container = None
+        if container_id:
+            container = self.container_manager.containers.get(container_id)
+            if container is None:
+                self._reply(server, sender_path, call_id, {
+                    "ok": False,
+                    "error": f"container {container_id!r} not found",
+                })
+                return
+        result = self.container_manager.export_event_log(
+            container=container,
+            include_audit=request.get('include_audit', True),
+            include_oom=request.get('include_oom', True),
+            include_sla=request.get('include_sla', True),
+            since=request.get('since'),
+            until=request.get('until'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _event_log_import(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        data = request.get('data')
+        if not data or not isinstance(data, dict):
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "data dict is required",
+            })
+            return
+        result = self.container_manager.import_event_log(
+            data=data,
+            container_id=request.get('container_id'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
         })
 
     def _save_state(self) -> None:

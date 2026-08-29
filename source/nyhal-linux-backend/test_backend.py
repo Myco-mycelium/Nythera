@@ -23646,6 +23646,167 @@ class TestMultiTenantFairShare(unittest.TestCase):
         self.assertEqual(replies[0]["config"]["weight"], 1.5)
 
 
+class TestEventLogExportImport(unittest.TestCase):
+    """Tests for event log export/import (disaster recovery)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_export_empty(self):
+        """Export with no containers returns empty."""
+        mgr = self._manager()
+        result = mgr.export_event_log()
+        self.assertEqual(result['total_events'], 0)
+        self.assertEqual(len(result['containers']), 0)
+
+    def test_export_single_container(self):
+        """Export captures lifecycle events for a container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="exp1", command=["echo"]))
+        # Record an audit entry
+        mgr.record_audit_entry(c, action="test", actor="test_actor")
+        result = mgr.export_event_log(container=c)
+        self.assertEqual(len(result['containers']), 1)
+        self.assertEqual(result['containers'][0]['container_id'], c.id)
+        self.assertEqual(len(result['containers'][0]['audit_log']), 1)
+
+    def test_export_with_time_filter(self):
+        """Export respects since/until filters."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="exp2", command=["echo"]))
+        mgr.record_audit_entry(c, action="old", actor="test")
+        # Filter: only events after now (should get none)
+        import time
+        result = mgr.export_event_log(
+            container=c, since=time.time() + 10)
+        self.assertEqual(len(result['containers'][0]['audit_log']), 0)
+
+    def test_export_exclude_categories(self):
+        """Export respects include_* flags."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="exp3", command=["echo"]))
+        mgr.record_audit_entry(c, action="test", actor="test")
+        result = mgr.export_event_log(
+            container=c, include_audit=False)
+        self.assertEqual(len(result['containers'][0]['audit_log']), 0)
+
+    def test_import_restores_audit(self):
+        """Import restores audit entries."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="imp1", command=["echo"]))
+        # Create export data
+        export_data = {
+            'containers': [{
+                'container_id': c.id,
+                'audit_log': [
+                    {'action': 'imported', 'actor': 'dr_restore'},
+                ],
+                'oom_events': [],
+                'sla_violations': [],
+                'remediation_history': [],
+            }],
+        }
+        result = mgr.import_event_log(export_data)
+        self.assertEqual(result['imported_containers'], 1)
+        self.assertEqual(result['total_imported'], 1)
+        log = mgr.get_audit_log(c)
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]['action'], 'imported')
+
+    def test_import_skips_missing_container(self):
+        """Import skips containers that don't exist."""
+        export_data = {
+            'containers': [{
+                'container_id': 'nonexistent',
+                'audit_log': [],
+                'oom_events': [],
+                'sla_violations': [],
+                'remediation_history': [],
+            }],
+        }
+        result = self._manager().import_event_log(export_data)
+        self.assertEqual(result['imported_containers'], 0)
+        self.assertEqual(len(result['errors']), 1)
+
+    def test_roundtrip(self):
+        """Export then import produces matching data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rt1", command=["echo"]))
+        mgr.record_audit_entry(c, action="before", actor="test")
+        export = mgr.export_event_log(container=c)
+        # Create a fresh manager and import
+        mgr2 = self._manager()
+        c2 = mgr2.create(ContainerConfig(name="rt2", command=["echo"]))
+        # Re-map the import to the new container
+        export['containers'][0]['container_id'] = c2.id
+        result = mgr2.import_event_log(export)
+        self.assertEqual(result['total_imported'], 1)
+
+    def test_cli_payload_export(self):
+        """CLI build_payload for event-log-export."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id=None, include_audit=True,
+            include_oom=True, include_sla=True,
+            since=None, until=None)
+        p = cli.build_payload("event-log-export", ns)
+        self.assertEqual(p["op"], "event_log_export")
+        self.assertTrue(p["include_audit"])
+
+    def test_format_human_export(self):
+        """format_human renders export nicely."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'export_time': 1000000,
+            'total_events': 5,
+            'containers': [{
+                'container_id': 'abc12345',
+                'lifecycle_events': [1, 2],
+                'audit_log': [1],
+                'oom_events': [],
+                'sla_violations': [],
+                'remediation_history': [1, 2, 3],
+            }],
+        }
+        text = cli.format_human("event-log-export", resp)
+        self.assertIn('5', text)
+        self.assertIn('abc12345', text)
+
+    def test_control_export_handler(self):
+        """ControlService dispatches event_log_export op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "event_log_export"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('total_events', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23734,6 +23895,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBudgets))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiTenantFairShare))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventLogExportImport))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

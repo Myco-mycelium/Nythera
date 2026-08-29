@@ -1518,6 +1518,31 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "control", "op": "tenant_enforce"}
     if command == "tenant-usage-summary":
         return {"service": "control", "op": "tenant_usage_summary"}
+    if command == "event-log-export":
+        return {
+            "service": "control",
+            "op": "event_log_export",
+            "container_id": getattr(args, 'container_id', None),
+            "include_audit": getattr(args, 'include_audit', True),
+            "include_oom": getattr(args, 'include_oom', True),
+            "include_sla": getattr(args, 'include_sla', True),
+            "since": getattr(args, 'since', None),
+            "until": getattr(args, 'until', None),
+        }
+    if command == "event-log-import":
+        import json as _json
+        data_file = getattr(args, 'data_file', None)
+        if data_file:
+            with open(data_file, 'r') as f:
+                data = _json.load(f)
+        else:
+            data = _json.loads(sys.stdin.read())
+        return {
+            "service": "control",
+            "op": "event_log_import",
+            "data": data,
+            "container_id": getattr(args, 'container_id', None),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3645,6 +3670,35 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"{t.get('containers', 0)}\t"
                 f"{t.get('status', '?')}")
         return "\n".join(lines)
+    if command == "event-log-export":
+        lines = [
+            f"Export time: {resp.get('export_time', 0):.0f}",
+            f"Containers: {resp.get('total_events', 0)} total events "
+            f"from {len(resp.get('containers', []))} containers",
+        ]
+        for c in resp.get('containers', []):
+            cid = c.get('container_id', '?')[:8]
+            lifecycle = len(c.get('lifecycle_events', []))
+            audit = len(c.get('audit_log', []))
+            oom = len(c.get('oom_events', []))
+            sla = len(c.get('sla_violations', []))
+            rem = len(c.get('remediation_history', []))
+            lines.append(
+                f"  {cid}: lifecycle={lifecycle}, audit={audit}, "
+                f"oom={oom}, sla={sla}, remediation={rem}")
+        return "\n".join(lines)
+    if command == "event-log-import":
+        imported = resp.get('imported_containers', 0)
+        total = resp.get('total_imported', 0)
+        errors = resp.get('errors', [])
+        lines = [
+            f"Imported {total} events into {imported} containers",
+        ]
+        if errors:
+            lines.append(f"Errors ({len(errors)}):")
+            for e in errors[:5]:
+                lines.append(f"  {e}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4662,6 +4716,36 @@ def build_parser() -> argparse.ArgumentParser:
     tus = sub.add_parser("tenant-usage-summary",
                          help="Tenant usage summary")
     tus.set_defaults(command="tenant-usage-summary")
+
+    # -- event log export / import --
+    elo = sub.add_parser("event-log-export",
+                        help="Export event log for disaster recovery")
+    elo.add_argument("container_id", nargs='?', default=None,
+                     help="Export only this container (default: all)")
+    elo.add_argument("--no-audit", dest="include_audit",
+                     action="store_false", default=True,
+                     help="Exclude audit log entries")
+    elo.add_argument("--no-oom", dest="include_oom",
+                     action="store_false", default=True,
+                     help="Exclude OOM event entries")
+    elo.add_argument("--no-sla", dest="include_sla",
+                     action="store_false", default=True,
+                     help="Exclude SLA violation entries")
+    elo.add_argument("--since", type=float, default=None,
+                     help="Only events after this Unix timestamp")
+    elo.add_argument("--until", type=float, default=None,
+                     help="Only events before this Unix timestamp")
+    elo.add_argument("--output", default=None,
+                     help="Output file (default: stdout)")
+    elo.set_defaults(command="event-log-export")
+
+    eli = sub.add_parser("event-log-import",
+                        help="Import event log from file or stdin")
+    eli.add_argument("container_id", nargs='?', default=None,
+                     help="Import only for this container")
+    eli.add_argument("data_file", nargs='?', default=None,
+                     help="JSON file to import (default: stdin)")
+    eli.set_defaults(command="event-log-import")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

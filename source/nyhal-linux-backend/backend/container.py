@@ -1011,6 +1011,223 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Event log export / import (disaster recovery)
+    # ------------------------------------------------------------------
+
+    def export_event_log(
+        self,
+        container: Optional[Container] = None,
+        include_audit: bool = True,
+        include_oom: bool = True,
+        include_sla: bool = True,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Export the event log as a JSON-serializable dict.
+
+        Captures the complete event history for a container (or all
+        containers) for disaster recovery or archival. The export
+        includes lifecycle events, audit entries, OOM events, and
+        SLA violations.
+
+        Args:
+            container: Export events for a specific container.
+                If None, export all containers.
+            include_audit: Include audit log entries.
+            include_oom: Include OOM event entries.
+            include_sla: Include SLA violation entries.
+            since: Only include events after this timestamp.
+            until: Only include events before this timestamp.
+
+        Returns:
+            Dict with ``export_time``, ``containers``, ``total_events``,
+            and ``metadata``.
+        """
+        export_time = time.time()
+        containers_data: List[Dict[str, Any]] = []
+        total_events = 0
+
+        targets = ([container] if container
+                   else list(self.containers.values()))
+
+        for c in targets:
+            cdata: Dict[str, Any] = {
+                'container_id': c.id,
+                'name': c.config.name,
+                'state': c.state.value,
+            }
+
+            # Lifecycle events
+            raw_events = self.container_events(container_id=c.id)
+            events = raw_events
+            if since is not None:
+                events = [e for e in events
+                          if e.get('time', 0) >= since]
+            if until is not None:
+                events = [e for e in events
+                          if e.get('time', 0) <= until]
+            cdata['lifecycle_events'] = events
+            total_events += len(events)
+
+            # Audit log
+            if include_audit:
+                audit_log = self.get_audit_log(c)
+                if since is not None:
+                    audit_log = [e for e in audit_log
+                                 if e.get('timestamp', 0) >= since]
+                if until is not None:
+                    audit_log = [e for e in audit_log
+                                 if e.get('timestamp', 0) <= until]
+                cdata['audit_log'] = audit_log
+                total_events += len(audit_log)
+            else:
+                cdata['audit_log'] = []
+
+            # OOM events
+            if include_oom:
+                oom_events = list(getattr(c, '_oom_events', []))
+                if since is not None:
+                    oom_events = [e for e in oom_events
+                                  if e.get('timestamp', 0) >= since]
+                if until is not None:
+                    oom_events = [e for e in oom_events
+                                  if e.get('timestamp', 0) <= until]
+                cdata['oom_events'] = oom_events
+                total_events += len(oom_events)
+            else:
+                cdata['oom_events'] = []
+
+            # SLA violations
+            if include_sla:
+                sla = getattr(c, '_sla', {})
+                violations = sla.get('violations', [])
+                if since is not None:
+                    violations = [v for v in violations
+                                 if v.get('timestamp', 0) >= since]
+                if until is not None:
+                    violations = [v for v in violations
+                                 if v.get('timestamp', 0) <= until]
+                cdata['sla_violations'] = violations
+                total_events += len(violations)
+            else:
+                cdata['sla_violations'] = []
+
+            # Remediation history
+            rem = getattr(c, '_remediation', {})
+            rem_history = rem.get('history', [])
+            if since is not None:
+                rem_history = [e for e in rem_history
+                              if e.get('timestamp', 0) >= since]
+            if until is not None:
+                rem_history = [e for e in rem_history
+                              if e.get('timestamp', 0) <= until]
+            cdata['remediation_history'] = rem_history
+            total_events += len(rem_history)
+
+            containers_data.append(cdata)
+
+        self._record_event(
+            'event_log_export', 'system',
+            f"exported {total_events} events from "
+            f"{len(containers_data)} containers")
+
+        return {
+            'export_time': export_time,
+            'containers': containers_data,
+            'total_events': total_events,
+            'metadata': {
+                'include_audit': include_audit,
+                'include_oom': include_oom,
+                'include_sla': include_sla,
+                'since': since,
+                'until': until,
+            },
+        }
+
+    def import_event_log(
+        self,
+        data: Dict[str, Any],
+        container_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Import event log data into containers.
+
+        Restores audit entries, OOM events, and SLA violations from
+        a previously exported event log. Lifecycle events are
+        informational only (not re-applied).
+
+        Args:
+            data: The exported event log dict.
+            container_id: If provided, only import events for this
+                container ID (match by ID from the export).
+
+        Returns:
+            Dict with ``imported_containers``, ``total_imported``,
+            and ``errors``.
+        """
+        imported_containers = 0
+        total_imported = 0
+        errors: List[str] = []
+
+        for cdata in data.get('containers', []):
+            cid = cdata.get('container_id')
+            if container_id and cid != container_id:
+                continue
+
+            c = self.containers.get(cid)
+            if c is None:
+                errors.append(
+                    f"container {cid!r} not found, skipping import")
+                continue
+
+            imported_containers += 1
+
+            # Import audit entries
+            for entry in cdata.get('audit_log', []):
+                if not hasattr(c, '_audit_log'):
+                    c._audit_log = []
+                c._audit_log.append(entry)
+                total_imported += 1
+
+            # Import OOM events
+            oom_events = cdata.get('oom_events', [])
+            if oom_events:
+                existing_oom = getattr(c, '_oom_events', [])
+                existing_oom.extend(oom_events)
+                c._oom_events = existing_oom[-50:]  # keep bounded
+                total_imported += len(oom_events)
+
+            # Import SLA violations
+            sla_violations = cdata.get('sla_violations', [])
+            if sla_violations:
+                sla = getattr(c, '_sla', {})
+                existing_v = sla.get('violations', [])
+                existing_v.extend(sla_violations)
+                sla['violations'] = existing_v[-200:]  # keep bounded
+                c._sla = sla
+                total_imported += len(sla_violations)
+
+            # Import remediation history
+            rem_history = cdata.get('remediation_history', [])
+            if rem_history:
+                rem = getattr(c, '_remediation', {})
+                existing_r = rem.get('history', [])
+                existing_r.extend(rem_history)
+                rem['history'] = existing_r[-500:]  # keep bounded
+                c._remediation = rem
+                total_imported += len(rem_history)
+
+        self._record_event(
+            'event_log_import', 'system',
+            f"imported {total_imported} events into "
+            f"{imported_containers} containers")
+
+        return {
+            'imported_containers': imported_containers,
+            'total_imported': total_imported,
+            'errors': errors,
+        }
+
+    # ------------------------------------------------------------------
     # Multi-tenant fair-share enforcement
     # ------------------------------------------------------------------
 
