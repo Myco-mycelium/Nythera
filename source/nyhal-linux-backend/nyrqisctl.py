@@ -1686,6 +1686,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "fleet_visualization",
             "time_range_s": getattr(args, 'time_range_s', 3600.0),
         }
+    if command == "anomaly-remediate":
+        return {
+            "service": "control",
+            "op": "anomaly_remediate",
+            "container_id": args.container_id,
+            "resource": getattr(args, 'resource', 'memory'),
+            "sensitivity": getattr(args, 'sensitivity', 2.0),
+        }
+    if command == "anomaly-remediate-all":
+        return {
+            "service": "control",
+            "op": "anomaly_remediate_all",
+            "resource": getattr(args, 'resource', 'memory'),
+            "sensitivity": getattr(args, 'sensitivity', 2.0),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4130,6 +4145,31 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             spark = c.get('sparklines', {}).get('memory', '')
             lines.append(f"  {name}: {spark}")
         return "\n".join(lines)
+    if command == "anomaly-remediate":
+        severity = resp.get('severity_score', 0)
+        level = resp.get('severity_level', '?')
+        action = resp.get('action_taken', 'none')
+        count = resp.get('anomaly_count', 0)
+        lines = [
+            f"{resp.get('container_id', '?')[:8]}: "
+            f"{level} (severity={severity}, anomalies={count})",
+        ]
+        if action != 'none':
+            lines.append(f"  action: {action} - {resp.get('action_detail', '')}")
+        return "\n".join(lines)
+    if command == "anomaly-remediate-all":
+        avg = resp.get('average_severity', 0)
+        count = resp.get('container_count', 0)
+        critical = resp.get('critical_count', 0)
+        high = resp.get('high_count', 0)
+        remediated = resp.get('remediated_count', 0)
+        lines = [
+            f"Anomaly remediation across {count} containers: "
+            f"avg severity={avg}, "
+            f"{critical} critical, {high} high, "
+            f"{remediated} remediated",
+        ]
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5364,6 +5404,25 @@ def build_parser() -> argparse.ArgumentParser:
                     dest='time_range_s',
                     help="Time range in seconds (default: 3600)")
     vf.set_defaults(command="viz-fleet")
+
+    # -- anomaly auto-remediation --
+    ar = sub.add_parser("anomaly-remediate",
+                        help="Detect anomalies and auto-remediate")
+    ar.add_argument("container_id")
+    ar.add_argument("--resource", default="memory",
+                    choices=["memory", "cpu", "pids"],
+                    help="Resource to monitor (default: memory)")
+    ar.add_argument("--sensitivity", type=float, default=2.0,
+                    help="Anomaly sensitivity (default: 2.0)")
+    ar.set_defaults(command="anomaly-remediate")
+
+    ara = sub.add_parser("anomaly-remediate-all",
+                         help="Remediate anomalies across all containers")
+    ara.add_argument("--resource", default="memory",
+                     help="Resource to monitor (default: memory)")
+    ara.add_argument("--sensitivity", type=float, default=2.0,
+                     help="Anomaly sensitivity (default: 2.0)")
+    ara.set_defaults(command="anomaly-remediate-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

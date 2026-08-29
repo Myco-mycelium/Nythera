@@ -714,6 +714,12 @@ class ControlService:
             elif op == "fleet_visualization":
                 self._fleet_visualization(
                     server, sender_path, msg.message_id, request)
+            elif op == "anomaly_remediate":
+                self._anomaly_remediate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_remediate_all":
+                self._anomaly_remediate_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5021,6 +5027,37 @@ class ControlService:
                               request: Dict[str, Any]) -> None:
         result = self.container_manager.get_fleet_visualization(
             time_range_s=request.get('time_range_s', 3600.0))
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_remediate(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.remediate_anomaly(
+            c,
+            resource=request.get('resource', 'memory'),
+            sensitivity=request.get('sensitivity', 2.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_remediate_all(self, server, sender_path: str,
+                                call_id: str,
+                                request: Dict[str, Any]) -> None:
+        result = self.container_manager.remediate_anomaly_all(
+            resource=request.get('resource', 'memory'),
+            sensitivity=request.get('sensitivity', 2.0),
+        )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

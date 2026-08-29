@@ -25050,6 +25050,144 @@ class TestVisualizationDashboard(unittest.TestCase):
         self.assertIn('trends', replies[0])
 
 
+class TestAnomalyAutoRemediation(unittest.TestCase):
+    """Tests for anomaly auto-remediation with severity escalation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_remediate_anomaly_no_data(self):
+        """Anomaly remediation with no data returns healthy."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ar1", command=["echo"]))
+        result = mgr.remediate_anomaly(c)
+        self.assertEqual(result['severity_level'], 'healthy')
+        self.assertEqual(result['action_taken'], 'none')
+        self.assertEqual(result['anomaly_count'], 0)
+
+    def test_remediate_anomaly_with_history(self):
+        """Anomaly remediation with anomalies detects them."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ar2", command=["echo"]))
+        mgr._init_resource_history(c)
+        import time as _time
+        now = _time.time()
+        # Create a spike pattern
+        values = [100] * 15 + [500] * 5  # Spike at the end
+        mgr._resource_history[c.id] = [
+            {"timestamp": now - (20 - i) * 10,
+             "memory_bytes": values[i] * 1024 * 1024,
+             "cpu_usage_usec": 500, "pids_current": 3}
+            for i in range(20)
+        ]
+        result = mgr.remediate_anomaly(c, resource="memory")
+        self.assertIn('severity_score', result)
+        self.assertIn('severity_level', result)
+        self.assertIn('anomaly_count', result)
+        self.assertIn('action_taken', result)
+
+    def test_remediate_anomaly_severity_levels(self):
+        """Severity levels map correctly."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ar3", command=["echo"]))
+        result = mgr.remediate_anomaly(c)
+        score = result['severity_score']
+        level = result['severity_level']
+        if score <= 20:
+            self.assertEqual(level, 'critical')
+        elif score <= 40:
+            self.assertEqual(level, 'high')
+        elif score <= 60:
+            self.assertEqual(level, 'moderate')
+        elif score <= 80:
+            self.assertEqual(level, 'low')
+        else:
+            self.assertEqual(level, 'healthy')
+
+    def test_remediate_anomaly_all(self):
+        """remediate_anomaly_all processes all running containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="ar4", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="ar5", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.remediate_anomaly_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('average_severity', result)
+        self.assertIn('critical_count', result)
+        self.assertIn('remediated_count', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for anomaly commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", resource="memory", sensitivity=2.0)
+        p = cli.build_payload("anomaly-remediate", ns)
+        self.assertEqual(p["op"], "anomaly_remediate")
+        self.assertEqual(p["resource"], "memory")
+        self.assertEqual(p["sensitivity"], 2.0)
+
+        ns2 = argparse.Namespace(resource="cpu", sensitivity=1.5)
+        p2 = cli.build_payload("anomaly-remediate-all", ns2)
+        self.assertEqual(p2["op"], "anomaly_remediate_all")
+        self.assertEqual(p2["resource"], "cpu")
+
+    def test_format_human(self):
+        """format_human renders anomaly results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'abc12345',
+            'severity_score': 35.0,
+            'severity_level': 'high',
+            'anomaly_count': 5,
+            'action_taken': 'alert',
+            'action_detail': 'high severity anomaly alert',
+        }
+        text = cli.format_human("anomaly-remediate", resp)
+        self.assertIn('high', text)
+        self.assertIn('35', text)
+        self.assertIn('5', text)
+        self.assertIn('alert', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches anomaly_remediate op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="ar-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "anomaly_remediate",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('severity_score', replies[0])
+        self.assertIn('severity_level', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25148,6 +25286,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRightSizing))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAComplianceMonitor))
     suite.addTests(loader.loadTestsFromTestCase(TestVisualizationDashboard))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

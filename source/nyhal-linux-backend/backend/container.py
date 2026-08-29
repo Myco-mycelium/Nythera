@@ -9612,6 +9612,171 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Anomaly auto-remediation (severity-based escalation)
+    # ------------------------------------------------------------------
+
+    def remediate_anomaly(
+        self,
+        container: Container,
+        resource: str = "memory",
+        sensitivity: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Detect anomalies and auto-remediate based on severity.
+
+        Detects resource usage anomalies, calculates severity,
+        and triggers escalating remediation actions:
+        - severity 0-20: immediate remediation (restart/throttle)
+        - severity 21-40: urgent (scale down/alert)
+        - severity 41-60: warning (alert)
+        - severity 61-80: monitor (log)
+        - severity 81-100: healthy (no action)
+
+        Args:
+            container: Target container.
+            resource: Resource to monitor.
+            sensitivity: Anomaly detection sensitivity.
+
+        Returns:
+            Dict with anomaly, severity, and remediation results.
+        """
+        # Detect anomalies
+        anomaly_result = self.detect_anomalies(
+            container, resource=resource, sensitivity=sensitivity)
+        anomalies = anomaly_result.get('anomalies', [])
+        anomaly_count = len(anomalies)
+
+        # Calculate severity based on anomaly characteristics
+        if anomaly_count == 0:
+            severity = 100.0
+            level = 'healthy'
+        else:
+            # Severity decreases with more/worse anomalies
+            max_z = max((a.get('z_score', 0) for a in anomalies), default=0)
+            avg_deviation = sum(
+                abs(a.get('deviation_pct', 0)) for a in anomalies
+            ) / anomaly_count
+
+            # Map to severity (lower = worse)
+            severity = 100.0 - (anomaly_count * 8) - (max_z * 10) - (avg_deviation * 0.5)
+            severity = max(0.0, min(100.0, severity))
+
+            if severity <= 20:
+                level = 'critical'
+            elif severity <= 40:
+                level = 'high'
+            elif severity <= 60:
+                level = 'moderate'
+            elif severity <= 80:
+                level = 'low'
+            else:
+                level = 'healthy'
+
+        # Determine remediation action
+        action_taken = 'none'
+        action_detail = ''
+
+        if level == 'critical':
+            # Immediate remediation: throttle or restart
+            rem = getattr(container, '_remediation', {})
+            policy = rem.get('policy', {})
+            if policy.get('enabled', False):
+                result = self.execute_remediation(
+                    container, trigger='threshold_exceeded',
+                    reason=f'anomaly: {anomaly_count} anomalies, severity={severity:.1f}')
+                action_taken = result.get('action_taken', 'none')
+                action_detail = result.get('result', '')
+            else:
+                # No remediation configured, emit alert
+                self._fire_alert(
+                    container, 'anomaly_critical', 'critical',
+                    f'{anomaly_count} anomalies detected (severity={severity:.1f})')
+                action_taken = 'alert'
+                action_detail = 'critical anomaly alert emitted'
+
+        elif level == 'high':
+            # Urgent: alert + log
+            self._fire_alert(
+                container, 'anomaly_high', 'warning',
+                f'{anomaly_count} anomalies (severity={severity:.1f})')
+            action_taken = 'alert'
+            action_detail = 'high severity anomaly alert'
+
+        elif level == 'moderate':
+            # Warning: log only
+            self._record_event(
+                'anomaly_warning', container.id,
+                f'{anomaly_count} anomalies (severity={severity:.1f})')
+            action_taken = 'log'
+            action_detail = 'moderate anomaly logged'
+
+        elif level == 'low':
+            action_taken = 'monitor'
+            action_detail = 'low severity, monitoring'
+
+        self._record_event(
+            'anomaly_remediation', container.id,
+            f'resource={resource}, anomalies={anomaly_count}, '
+            f'severity={severity:.1f}, level={level}, action={action_taken}')
+
+        return {
+            'container_id': container.id,
+            'resource': resource,
+            'anomaly_count': anomaly_count,
+            'max_z_score': max(
+                (a.get('z_score', 0) for a in anomalies), default=0),
+            'severity_score': round(severity, 1),
+            'severity_level': level,
+            'action_taken': action_taken,
+            'action_detail': action_detail,
+            'anomalies': anomalies[:5],  # Return top 5 for brevity
+            'mean': anomaly_result.get('mean'),
+            'stddev': anomaly_result.get('stddev'),
+        }
+
+    def remediate_anomaly_all(
+        self,
+        resource: str = "memory",
+        sensitivity: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Remediate anomalies across all running containers.
+
+        Args:
+            resource: Resource to monitor.
+            sensitivity: Anomaly detection sensitivity.
+
+        Returns:
+            Dict with per-container results and fleet summary.
+        """
+        results = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.remediate_anomaly(
+                    c, resource=resource, sensitivity=sensitivity)
+                results.append(result)
+
+        critical = sum(
+            1 for r in results if r['severity_level'] == 'critical')
+        high = sum(
+            1 for r in results if r['severity_level'] == 'high')
+        remediated = sum(
+            1 for r in results if r['action_taken'] not in ('none', 'monitor'))
+        avg_severity = (
+            sum(r['severity_score'] for r in results) / len(results)
+            if results else 0
+        )
+
+        return {
+            'resource': resource,
+            'container_count': len(results),
+            'average_severity': round(avg_severity, 1),
+            'critical_count': critical,
+            'high_count': high,
+            'remediated_count': remediated,
+            'containers': sorted(
+                results, key=lambda r: r['severity_score']),
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 
