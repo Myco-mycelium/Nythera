@@ -498,6 +498,30 @@ class ControlService:
             elif op == "baseline_clear":
                 self._baseline_clear(
                     server, sender_path, msg.message_id, request)
+            elif op == "process_kill":
+                self._process_kill(
+                    server, sender_path, msg.message_id, request)
+            elif op == "process_list":
+                self._process_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "process_signal_all":
+                self._process_signal_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_schedule_set":
+                self._snapshot_schedule_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_schedule_get":
+                self._snapshot_schedule_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_schedule_disable":
+                self._snapshot_schedule_disable(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_schedule_run":
+                self._snapshot_schedule_run(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_schedule_list":
+                self._snapshot_schedule_list(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3457,6 +3481,189 @@ class ControlService:
             })
             return
         result = self.container_manager.clear_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Process management
+
+    def _process_kill(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        pid = request.get("pid")
+        sig = request.get("signal", 15)  # SIGTERM
+        if not container_id or pid is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id and pid are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.kill_process(
+            c, pid=int(pid), signal=int(sig))
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _process_list(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.list_processes(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _process_signal_all(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        sig = request.get("signal", 15)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.signal_all(
+            c, signal_num=int(sig))
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Snapshot scheduling
+
+    def _snapshot_schedule_set(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.configure_snapshot_schedule(
+            c,
+            enabled=request.get("enabled", True),
+            interval_s=request.get("interval_s", 3600.0),
+            max_snapshots=request.get("max_snapshots", 10),
+            label_prefix=request.get("label_prefix", "scheduled"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _snapshot_schedule_get(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_snapshot_schedule(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _snapshot_schedule_disable(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.disable_snapshot_schedule(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _snapshot_schedule_run(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.run_scheduled_snapshot(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _snapshot_schedule_list(self, server, sender_path: str,
+                                call_id: str,
+                                request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.list_scheduled_snapshots(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

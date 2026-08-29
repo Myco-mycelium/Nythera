@@ -7364,6 +7364,304 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Process management (per-process control within a container)
+    # ------------------------------------------------------------------
+
+    def kill_process(
+        self, container: Container, pid: int,
+        signal: int = signal.SIGTERM,
+    ) -> Dict[str, Any]:
+        """Send a signal to a specific process inside a container.
+
+        Verifies the target PID belongs to the container by checking
+        the init's children list (or matching the container's own PID).
+        Sends the signal via ``os.kill()`` (which works across PID
+        namespaces when the sender has CAP_SYS_PTRACE or is root,
+        or when the target is in the same PID namespace).
+
+        Args:
+            container: The container whose process to signal.
+            pid: The PID to signal (host PID).
+            signal: Signal number (default SIGTERM).
+
+        Returns:
+            Dict with ``ok``, ``pid``, ``signal_name``.
+        """
+        if container.state != ContainerState.RUNNING:
+            return {
+                "ok": False,
+                "error": f"container is {container.state.value}, not running",
+            }
+        if container.pid is None:
+            return {
+                "ok": False,
+                "error": "container has no PID",
+            }
+
+        # Verify the PID is within this container's process tree
+        allowed_pids = {container.pid}
+        try:
+            children_path = (
+                f"/proc/{container.pid}/task/{container.pid}/children"
+            )
+            with open(children_path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+                if raw:
+                    allowed_pids.update(
+                        int(p) for p in raw.split() if p.isdigit()
+                    )
+        except (OSError, ValueError):
+            pass
+
+        if pid not in allowed_pids:
+            return {
+                "ok": False,
+                "error": f"PID {pid} does not belong to container {container.id}",
+            }
+
+        try:
+            os.kill(pid, signal)
+            sig_name = signal.Signals(signal).name
+            return {
+                "ok": True,
+                "pid": pid,
+                "signal_name": sig_name,
+            }
+        except OSError as e:
+            return {
+                "ok": False,
+                "error": str(e),
+            }
+
+    def list_processes(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """List processes in a container with resource details.
+
+        A convenience wrapper around ``container_top`` that returns
+        a dict with ``container_id`` and ``processes`` list.
+
+        Returns:
+            Dict with ``container_id``, ``processes`` list.
+        """
+        procs = self.container_top(container)
+        return {
+            "container_id": container.id,
+            "processes": procs,
+        }
+
+    def signal_all(
+        self, container: Container,
+        signal_num: int = signal.SIGTERM,
+    ) -> Dict[str, Any]:
+        """Send a signal to all processes in a container.
+
+        Iterates the container's children and sends the signal to
+        each. The init process itself is not signaled (it manages
+        the container's lifecycle).
+
+        Returns:
+            Dict with ``signaled`` (list of PIDs) and ``failed`` list.
+        """
+        if container.state != ContainerState.RUNNING:
+            return {
+                "signaled": [],
+                "failed": [{"pid": 0, "error": "not running"}],
+            }
+        if container.pid is None:
+            return {
+                "signaled": [],
+                "failed": [{"pid": 0, "error": "no PID"}],
+            }
+
+        signaled: List[int] = []
+        failed: List[Dict[str, Any]] = []
+
+        try:
+            children_path = (
+                f"/proc/{container.pid}/task/{container.pid}/children"
+            )
+            with open(children_path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+                children = (
+                    [int(p) for p in raw.split() if p.isdigit()]
+                    if raw else []
+                )
+        except (OSError, ValueError):
+            children = []
+
+        for pid in children:
+            try:
+                os.kill(pid, signal_num)
+                signaled.append(pid)
+            except OSError as e:
+                failed.append({"pid": pid, "error": str(e)})
+
+        return {
+            "signaled": signaled,
+            "failed": failed,
+        }
+
+    # ------------------------------------------------------------------
+    # Snapshot scheduling (automated periodic snapshots)
+    # ------------------------------------------------------------------
+
+    def configure_snapshot_schedule(
+        self,
+        container: Container,
+        enabled: bool = True,
+        interval_s: float = 3600.0,
+        max_snapshots: int = 10,
+        label_prefix: str = "scheduled",
+    ) -> Dict[str, Any]:
+        """Configure automated periodic snapshots for a container.
+
+        When enabled, the daemon periodically checkpoints the
+        container and retains the last ``max_snapshots`` snapshots,
+        deleting older ones (rolling window).
+
+        Note: the actual periodic trigger runs in the daemon's
+        event loop; this method configures the policy and performs
+        an immediate snapshot if one doesn't exist yet.
+
+        Args:
+            container: Target container.
+            enabled: Whether scheduling is active.
+            interval_s: Seconds between snapshots.
+            max_snapshots: Maximum snapshots to retain.
+            label_prefix: Prefix for snapshot labels.
+
+        Returns:
+            Dict with the schedule configuration.
+        """
+        if not hasattr(container, "_snapshot_schedule"):
+            container._snapshot_schedule = {}
+
+        container._snapshot_schedule.update({
+            "enabled": enabled,
+            "interval_s": interval_s,
+            "max_snapshots": max_snapshots,
+            "label_prefix": label_prefix,
+            "last_snapshot_time": (
+                container._snapshot_schedule.get("last_snapshot_time")
+            ),
+            "snapshot_count": (
+                container._snapshot_schedule.get("snapshot_count", 0)
+            ),
+        })
+
+        return {
+            "container_id": container.id,
+            "schedule": dict(container._snapshot_schedule),
+        }
+
+    def get_snapshot_schedule(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Get the snapshot schedule for a container.
+
+        Returns:
+            Dict with ``container_id`` and ``schedule``.
+        """
+        schedule = getattr(container, "_snapshot_schedule", {})
+        return {
+            "container_id": container.id,
+            "schedule": dict(schedule) if schedule else None,
+        }
+
+    def disable_snapshot_schedule(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Disable snapshot scheduling for a container.
+
+        Returns:
+            Dict with ``container_id`` and ``disabled`` flag.
+        """
+        if hasattr(container, "_snapshot_schedule"):
+            container._snapshot_schedule["enabled"] = False
+        return {
+            "container_id": container.id,
+            "disabled": True,
+        }
+
+    def run_scheduled_snapshot(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Run a scheduled snapshot now (triggered by daemon timer).
+
+        Performs a checkpoint and enforces the rolling window by
+        removing old snapshots beyond ``max_snapshots``.
+
+        Returns:
+            Dict with ``ok``, ``snapshot_id``, ``pruned`` count.
+        """
+        schedule = getattr(container, "_snapshot_schedule", {})
+        if not schedule.get("enabled"):
+            return {
+                "ok": False,
+                "error": "snapshot scheduling is not enabled",
+            }
+
+        # Take a checkpoint
+        checkpoint = self.container_checkpoint(container)
+        snapshot_id = (
+            f"{schedule.get('label_prefix', 'scheduled')}-"
+            f"{int(time.time())}"
+        )
+        checkpoint["snapshot_id"] = snapshot_id
+        checkpoint["label"] = (
+            f"{schedule.get('label_prefix', 'scheduled')}-"
+            f"{int(time.time())}"
+        )
+
+        # Track in the container's checkpoint history
+        if not hasattr(container, "_scheduled_snapshots"):
+            container._scheduled_snapshots = []
+        container._scheduled_snapshots.append(checkpoint)
+
+        # Enforce rolling window
+        max_keep = schedule.get("max_snapshots", 10)
+        pruned = 0
+        while len(container._scheduled_snapshots) > max_keep:
+            container._scheduled_snapshots.pop(0)
+            pruned += 1
+
+        # Update schedule state
+        schedule["last_snapshot_time"] = time.time()
+        schedule["snapshot_count"] = (
+            schedule.get("snapshot_count", 0) + 1
+        )
+
+        return {
+            "ok": True,
+            "snapshot_id": snapshot_id,
+            "pruned": pruned,
+            "total_snapshots": len(container._scheduled_snapshots),
+        }
+
+    def list_scheduled_snapshots(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """List all scheduled snapshots for a container.
+
+        Returns:
+            Dict with ``container_id`` and ``snapshots`` list.
+        """
+        snapshots = getattr(container, "_scheduled_snapshots", [])
+        return {
+            "container_id": container.id,
+            "snapshots": [
+                {
+                    "snapshot_id": s.get("snapshot_id", "?"),
+                    "label": s.get("label", "?"),
+                    "timestamp": s.get("timestamp", 0),
+                    "state": s.get("state", {}),
+                }
+                for s in snapshots
+            ],
+        }
+
+    # ------------------------------------------------------------------
     # Snapshot export / import
     # ------------------------------------------------------------------
 

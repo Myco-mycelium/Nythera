@@ -21422,6 +21422,192 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestProcessManagement(unittest.TestCase):
+    """Process management (kill, list, signal_all)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_kill_process_not_running(self):
+        """kill_process fails on non-running container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="pm-test"))
+        result = mgr.kill_process(c, pid=1)
+        self.assertFalse(result["ok"])
+        self.assertIn("not running", result["error"])
+
+    def test_kill_process_wrong_pid(self):
+        """kill_process rejects PID not in container."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="pm-test2"))
+        c.state = ContainerState.RUNNING
+        c.pid = 99999
+        result = mgr.kill_process(c, pid=1)
+        self.assertFalse(result["ok"])
+        self.assertIn("does not belong", result["error"])
+
+    def test_list_processes_not_running(self):
+        """list_processes returns empty for non-running."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="pm-test3"))
+        result = mgr.list_processes(c)
+        self.assertEqual(result["container_id"], c.id)
+        self.assertEqual(result["processes"], [])
+
+    def test_signal_all_not_running(self):
+        """signal_all fails on non-running container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="pm-test4"))
+        result = mgr.signal_all(c)
+        self.assertEqual(result["signaled"], [])
+        self.assertEqual(len(result["failed"]), 1)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for process commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("process-kill",
+                          argparse.Namespace(
+                              container_id="abc", pid=42, signal=9))
+        self.assertEqual(p1["op"], "process_kill")
+        self.assertEqual(p1["pid"], 42)
+        self.assertEqual(p1["signal"], 9)
+        p2 = build_payload("process-list",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p2["op"], "process_list")
+        p3 = build_payload("process-signal-all",
+                          argparse.Namespace(
+                              container_id="abc", signal=15))
+        self.assertEqual(p3["op"], "process_signal_all")
+
+    def test_cli_format_human(self):
+        """CLI format_human for process commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "pid": 42, "signal_name": "SIGTERM",
+        }
+        text = format_human("process-kill", resp)
+        self.assertIn("SIGTERM", text)
+        resp2 = {
+            "ok": True, "container_id": "abc",
+            "processes": [
+                {"pid": 1, "state": "S", "user_time_s": 0.1,
+                 "system_time_s": 0.05, "rss_kb": 1024,
+                 "name": "init"},
+            ],
+        }
+        text2 = format_human("process-list", resp2)
+        self.assertIn("init", text2)
+        self.assertIn("1", text2)
+
+
+class TestSnapshotScheduling(unittest.TestCase):
+    """Snapshot scheduling (automated periodic snapshots)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_schedule(self):
+        """configure_snapshot_schedule sets parameters."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ss-test"))
+        result = mgr.configure_snapshot_schedule(
+            c, interval_s=1800.0, max_snapshots=5)
+        self.assertTrue(result["schedule"]["enabled"])
+        self.assertEqual(result["schedule"]["interval_s"], 1800.0)
+        self.assertEqual(result["schedule"]["max_snapshots"], 5)
+
+    def test_get_schedule_empty(self):
+        """get_snapshot_schedule returns None when not configured."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ss-test2"))
+        result = mgr.get_snapshot_schedule(c)
+        self.assertIsNone(result["schedule"])
+
+    def test_disable_schedule(self):
+        """disable_snapshot_schedule disables the schedule."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ss-test3"))
+        mgr.configure_snapshot_schedule(c)
+        result = mgr.disable_snapshot_schedule(c)
+        self.assertTrue(result["disabled"])
+        schedule = mgr.get_snapshot_schedule(c)["schedule"]
+        self.assertFalse(schedule["enabled"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for snapshot schedule commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("snapshot-schedule-set",
+                          argparse.Namespace(
+                              container_id="abc",
+                              interval=1800.0, max_snapshots=5))
+        self.assertEqual(p1["op"], "snapshot_schedule_set")
+        self.assertEqual(p1["interval"], 1800.0)
+        p2 = build_payload("snapshot-schedule-get",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p2["op"], "snapshot_schedule_get")
+        p3 = build_payload("snapshot-schedule-disable",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p3["op"], "snapshot_schedule_disable")
+        p4 = build_payload("snapshot-schedule-run",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p4["op"], "snapshot_schedule_run")
+        p5 = build_payload("snapshot-schedule-list",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p5["op"], "snapshot_schedule_list")
+
+    def test_cli_format_human(self):
+        """CLI format_human for snapshot schedule commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "abc",
+            "schedule": {
+                "enabled": True, "interval_s": 3600.0,
+                "max_snapshots": 10, "snapshot_count": 3,
+            },
+        }
+        text = format_human("snapshot-schedule-set", resp)
+        self.assertIn("enabled=True", text)
+        self.assertIn("3600.0s", text)
+
+    def test_control_handler(self):
+        """Snapshot schedule control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="ss-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "snapshot_schedule_set",
+                           "container_id": c.id}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("schedule", replies[0])
+
+
 class TestResourceBaselines(unittest.TestCase):
     """Resource usage baselines (normal usage patterns)."""
 
@@ -22038,6 +22224,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestProcessManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestSnapshotScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBaselines))
     suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))

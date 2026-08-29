@@ -1219,6 +1219,59 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "baseline_clear",
             "container_id": args.container_id,
         }
+    if command == "process-kill":
+        return {
+            "service": "control",
+            "op": "process_kill",
+            "container_id": args.container_id,
+            "pid": args.pid,
+            "signal": args.signal,
+        }
+    if command == "process-list":
+        return {
+            "service": "control",
+            "op": "process_list",
+            "container_id": args.container_id,
+        }
+    if command == "process-signal-all":
+        return {
+            "service": "control",
+            "op": "process_signal_all",
+            "container_id": args.container_id,
+            "signal": args.signal,
+        }
+    if command == "snapshot-schedule-set":
+        return {
+            "service": "control",
+            "op": "snapshot_schedule_set",
+            "container_id": args.container_id,
+            "interval": args.interval,
+            "max_snapshots": args.max_snapshots,
+        }
+    if command == "snapshot-schedule-get":
+        return {
+            "service": "control",
+            "op": "snapshot_schedule_get",
+            "container_id": args.container_id,
+        }
+    if command == "snapshot-schedule-disable":
+        return {
+            "service": "control",
+            "op": "snapshot_schedule_disable",
+            "container_id": args.container_id,
+        }
+    if command == "snapshot-schedule-run":
+        return {
+            "service": "control",
+            "op": "snapshot_schedule_run",
+            "container_id": args.container_id,
+        }
+    if command == "snapshot-schedule-list":
+        return {
+            "service": "control",
+            "op": "snapshot_schedule_list",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -2832,6 +2885,65 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "baseline-clear":
         cleared = resp.get("cleared", 0)
         return f"Cleared {cleared} baseline snapshot(s)"
+    if command == "process-kill":
+        if resp.get("ok"):
+            return f"Sent {resp.get('signal_name', '?')} to PID {resp.get('pid')}"
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "process-list":
+        procs = resp.get("processes", [])
+        if not procs:
+            return "no running processes"
+        lines = ["PID\tSTATE\tCPU\tRSS\tNAME"]
+        for p in procs:
+            cpu = p.get("user_time_s", 0) + p.get("system_time_s", 0)
+            rss = p.get("rss_kb", 0)
+            lines.append(
+                f"{p.get('pid', '?')}\t{p.get('state', '?')}\t"
+                f"{cpu:.3f}s\t{rss} KiB\t{p.get('name', '?')}")
+        return "\n".join(lines)
+    if command == "process-signal-all":
+        signaled = resp.get("signaled", [])
+        failed = resp.get("failed", [])
+        parts = [f"Signaled {len(signaled)} process(es)"]
+        if failed:
+            parts.append(f"Failed: {len(failed)}")
+        return ", ".join(parts)
+    if command == "snapshot-schedule-set":
+        sched = resp.get("schedule", {})
+        return (
+            f"Schedule: enabled={sched.get('enabled', False)}, "
+            f"interval={sched.get('interval_s', 0)}s, "
+            f"max={sched.get('max_snapshots', 0)}, "
+            f"snapshots taken={sched.get('snapshot_count', 0)}")
+    if command == "snapshot-schedule-get":
+        sched = resp.get("schedule")
+        if not sched:
+            return "No snapshot schedule configured"
+        return (
+            f"enabled={sched.get('enabled', False)}, "
+            f"interval={sched.get('interval_s', 0)}s, "
+            f"max={sched.get('max_snapshots', 0)}, "
+            f"snapshots={sched.get('snapshot_count', 0)}")
+    if command == "snapshot-schedule-disable":
+        return "Snapshot scheduling disabled"
+    if command == "snapshot-schedule-run":
+        if resp.get("ok"):
+            return (
+                f"Snapshot {resp.get('snapshot_id', '?')} taken "
+                f"(pruned {resp.get('pruned', 0)}, "
+                f"total {resp.get('total_snapshots', 0)})")
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "snapshot-schedule-list":
+        snaps = resp.get("snapshots", [])
+        if not snaps:
+            return "No scheduled snapshots"
+        lines = []
+        for s in snaps:
+            lines.append(
+                f"  {s.get('snapshot_id', '?')} "
+                f"(label={s.get('label', '?')}, "
+                f"ts={s.get('timestamp', 0):.0f})")
+        return f"{len(snaps)} scheduled snapshot(s):\n" + "\n".join(lines)
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -3530,6 +3642,55 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Clear all baseline snapshots")
     blx.add_argument("container_id")
     blx.set_defaults(command="baseline-clear")
+
+    pk = csub.add_parser("process-kill",
+                         help="Send signal to a process")
+    pk.add_argument("container_id")
+    pk.add_argument("pid", type=int, help="PID to signal")
+    pk.add_argument("--signal", type=int, default=15,
+                    help="Signal number (default SIGTERM=15)")
+    pk.set_defaults(command="process-kill")
+
+    pl = csub.add_parser("process-list",
+                         help="List processes in a container")
+    pl.add_argument("container_id")
+    pl.set_defaults(command="process-list")
+
+    ps = csub.add_parser("process-signal-all",
+                         help="Signal all processes in a container")
+    ps.add_argument("container_id")
+    ps.add_argument("--signal", type=int, default=15,
+                    help="Signal number (default SIGTERM=15)")
+    ps.set_defaults(command="process-signal-all")
+
+    sss = csub.add_parser("snapshot-schedule-set",
+                          help="Configure snapshot schedule")
+    sss.add_argument("container_id")
+    sss.add_argument("--interval", type=float, default=3600.0,
+                     help="Seconds between snapshots")
+    sss.add_argument("--max-snapshots", type=int, default=10,
+                     help="Max snapshots to retain")
+    sss.set_defaults(command="snapshot-schedule-set")
+
+    ssg = csub.add_parser("snapshot-schedule-get",
+                          help="Get snapshot schedule")
+    ssg.add_argument("container_id")
+    ssg.set_defaults(command="snapshot-schedule-get")
+
+    ssd = csub.add_parser("snapshot-schedule-disable",
+                          help="Disable snapshot schedule")
+    ssd.add_argument("container_id")
+    ssd.set_defaults(command="snapshot-schedule-disable")
+
+    ssr = csub.add_parser("snapshot-schedule-run",
+                          help="Run scheduled snapshot now")
+    ssr.add_argument("container_id")
+    ssr.set_defaults(command="snapshot-schedule-run")
+
+    ssl = csub.add_parser("snapshot-schedule-list",
+                          help="List scheduled snapshots")
+    ssl.add_argument("container_id")
+    ssl.set_defaults(command="snapshot-schedule-list")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
