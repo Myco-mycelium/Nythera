@@ -8604,6 +8604,173 @@ class ContainerManager:
         return history
 
     # ------------------------------------------------------------------
+    # Smart remediation (anomaly-aware severity scoring)
+    # ------------------------------------------------------------------
+
+    def evaluate_and_remediate(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate container health and auto-remediate based on severity.
+
+        Combines anomaly detection, budget status, health score, and
+        OOM risk into a severity score (0-100), then recommends or
+        executes the appropriate remediation action.
+
+        Severity mapping:
+        - 0-20: critical (F grade) - immediate remediation
+        - 21-40: high (D grade) - urgent remediation
+        - 41-60: moderate (C grade) - warning + optional remediation
+        - 61-80: low (B grade) - monitor only
+        - 81-100: healthy (A grade) - no action
+
+        Args:
+            container: Target container.
+
+        Returns:
+            Dict with ``severity_score``, ``severity_level``,
+            ``health_score``, ``anomaly_score``, ``budget_status``,
+            ``recommendations``, and ``action_taken``.
+        """
+        # Gather signals
+        health_result = self.calculate_health_score(container)
+        health_score = health_result.get('score', 50.0)
+
+        anomaly_result = self.detect_anomalies(
+            container, resource='memory')
+        anomaly_count = len(anomaly_result.get('anomalies', []))
+        anomaly_score = min(anomaly_count * 10, 50.0)  # 0-50 penalty
+
+        budget = getattr(container, '_resource_budget', None)
+        budget_status = 'none'
+        budget_penalty = 0.0
+        if budget:
+            budget_check = self._check_single_budget(container, budget)
+            if budget_check.get('violations'):
+                budget_status = 'exceeded'
+                budget_penalty = 30.0
+            elif budget_check.get('warnings'):
+                budget_status = 'warning'
+                budget_penalty = 15.0
+            else:
+                budget_status = 'ok'
+
+        oom_score_val = getattr(container, 'oom_score_adj', 0)
+        oom_penalty = 0.0
+        if oom_score_val > 500:
+            oom_penalty = 25.0
+        elif oom_score_val > 200:
+            oom_penalty = 10.0
+
+        # Calculate severity (lower = worse)
+        severity = health_score - anomaly_score - budget_penalty - oom_penalty
+        severity = max(0.0, min(100.0, severity))
+
+        # Map to severity level
+        if severity <= 20:
+            level = 'critical'
+        elif severity <= 40:
+            level = 'high'
+        elif severity <= 60:
+            level = 'moderate'
+        elif severity <= 80:
+            level = 'low'
+        else:
+            level = 'healthy'
+
+        # Build recommendations
+        recommendations = list(health_result.get('recommendations', []))
+        if anomaly_count > 3:
+            recommendations.append(
+                f"{anomaly_count} anomalies detected: investigate resource usage")
+        if budget_status == 'exceeded':
+            recommendations.append("Budget exceeded: increase limits or reduce workload")
+        elif budget_status == 'warning':
+            recommendations.append("Budget warning: usage approaching limit")
+        if oom_penalty > 0:
+            recommendations.append("Elevated OOM risk: consider increasing memory")
+
+        # Determine action based on severity and remediation config
+        action_taken = 'none'
+        rem = getattr(container, '_remediation', {})
+        policy = rem.get('policy', {})
+
+        if policy.get('enabled', False):
+            if level == 'critical':
+                # Immediately remediate critical issues
+                trigger = 'threshold_exceeded'
+                if budget_status == 'exceeded':
+                    trigger = 'budget_exceeded'
+                elif oom_penalty > 20:
+                    trigger = 'oom_risk'
+                result = self.execute_remediation(
+                    container, trigger=trigger,
+                    reason=f"smart: severity={severity:.1f}, level={level}")
+                action_taken = result.get('action_taken', 'none')
+                recommendations.append(
+                    f"Auto-remediated: {action_taken}")
+            elif level == 'high':
+                recommendations.append(
+                    "High severity: consider manual intervention")
+
+        self._record_event(
+            'smart_evaluation', container.id,
+            f"severity={severity:.1f}, level={level}, "
+            f"action={action_taken}")
+
+        return {
+            'container_id': container.id,
+            'name': container.config.name,
+            'severity_score': round(severity, 1),
+            'severity_level': level,
+            'health_score': round(health_score, 1),
+            'anomaly_count': anomaly_count,
+            'anomaly_penalty': round(anomaly_score, 1),
+            'budget_status': budget_status,
+            'budget_penalty': round(budget_penalty, 1),
+            'oom_penalty': round(oom_penalty, 1),
+            'recommendations': recommendations,
+            'action_taken': action_taken,
+            'timestamp': time.time(),
+        }
+
+    def evaluate_and_remediate_all(
+        self,
+    ) -> Dict[str, Any]:
+        """Evaluate all running containers and remediate as needed.
+
+        Returns:
+            Dict with per-container results, fleet summary,
+            and remediation counts.
+        """
+        results = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.evaluate_and_remediate(c)
+                results.append(result)
+
+        critical = sum(
+            1 for r in results if r['severity_level'] == 'critical')
+        high = sum(
+            1 for r in results if r['severity_level'] == 'high')
+        remediated = sum(
+            1 for r in results if r['action_taken'] != 'none')
+        avg_severity = (
+            sum(r['severity_score'] for r in results) / len(results)
+            if results else 0
+        )
+
+        return {
+            'container_count': len(results),
+            'average_severity': round(avg_severity, 1),
+            'critical_count': critical,
+            'high_count': high,
+            'remediated_count': remediated,
+            'containers': sorted(
+                results, key=lambda r: r['severity_score']),
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

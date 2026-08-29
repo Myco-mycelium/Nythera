@@ -1610,6 +1610,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "detail": getattr(args, 'detail', ''),
             "container_ids": getattr(args, 'container_ids', None),
         }
+    if command == "smart-remediate":
+        return {
+            "service": "control",
+            "op": "smart_remediate",
+            "container_id": args.container_id,
+        }
+    if command == "smart-remediate-all":
+        return {"service": "control", "op": "smart_remediate_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3876,6 +3884,50 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"  remediated: {resp.get('remediated_count', 0)}",
         ]
         return "\n".join(lines)
+    if command == "smart-remediate":
+        severity = resp.get('severity_score', 0)
+        level = resp.get('severity_level', '?')
+        name = resp.get('name') or resp.get('container_id', '?')
+        lines = [
+            f"{name}: {level} (severity={severity}/100)",
+            f"  health: {resp.get('health_score', 0)}/100",
+            f"  anomalies: {resp.get('anomaly_count', 0)}"
+            f" (penalty: {resp.get('anomaly_penalty', 0)})",
+            f"  budget: {resp.get('budget_status', 'none')}"
+            f" (penalty: {resp.get('budget_penalty', 0)})",
+            f"  OOM penalty: {resp.get('oom_penalty', 0)}",
+        ]
+        action = resp.get('action_taken', 'none')
+        if action != 'none':
+            lines.append(f"  action: {action}")
+        recs = resp.get('recommendations', [])
+        if recs:
+            lines.append("  recommendations:")
+            for r in recs:
+                lines.append(f"    - {r}")
+        return "\n".join(lines)
+    if command == "smart-remediate-all":
+        avg = resp.get('average_severity', 0)
+        count = resp.get('container_count', 0)
+        critical = resp.get('critical_count', 0)
+        high = resp.get('high_count', 0)
+        remediated = resp.get('remediated_count', 0)
+        lines = [
+            f"Fleet severity: {avg}/100 avg, "
+            f"{count} containers, "
+            f"{critical} critical, {high} high, "
+            f"{remediated} auto-remediated",
+        ]
+        for c in resp.get('containers', []):
+            severity = c.get('severity_score', 0)
+            level = c.get('severity_level', '?')
+            name = c.get('name') or c.get('container_id', '?')[:8]
+            marker = {'healthy': '\u2713', 'low': '~', 'moderate': '\u26a0',
+                      'high': '\u26a0\u26a0', 'critical': '\u2717'}.get(
+                level, '?')
+            lines.append(
+                f"  {marker} {name}: {level} ({severity})")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5012,6 +5064,16 @@ def build_parser() -> argparse.ArgumentParser:
     sbpa.add_argument("--container-ids", nargs='+', default=None,
                       help="Specific container IDs (default: all with SLA)")
     sbpa.set_defaults(command="sla-breach-process-all")
+
+    # -- smart remediation --
+    sr = sub.add_parser("smart-remediate",
+                        help="Evaluate and auto-remediate a container")
+    sr.add_argument("container_id")
+    sr.set_defaults(command="smart-remediate")
+
+    sra = sub.add_parser("smart-remediate-all",
+                         help="Evaluate and remediate all containers")
+    sra.set_defaults(command="smart-remediate-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

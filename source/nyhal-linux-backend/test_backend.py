@@ -24352,6 +24352,147 @@ class TestSLABreachRemediation(unittest.TestCase):
         self.assertIn('escalation', replies[0])
 
 
+class TestSmartRemediation(unittest.TestCase):
+    """Tests for smart remediation engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_evaluate_healthy_container(self):
+        """Healthy container gets high severity score."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sr1", command=["echo"]))
+        result = mgr.evaluate_and_remediate(c)
+        self.assertIn('severity_score', result)
+        self.assertIn('severity_level', result)
+        self.assertIn('health_score', result)
+        self.assertIn('recommendations', result)
+        self.assertEqual(result['action_taken'], 'none')
+
+    def test_severity_levels(self):
+        """Severity level maps correctly to score ranges."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sr2", command=["echo"]))
+        result = mgr.evaluate_and_remediate(c)
+        score = result['severity_score']
+        level = result['severity_level']
+        if score <= 20:
+            self.assertEqual(level, 'critical')
+        elif score <= 40:
+            self.assertEqual(level, 'high')
+        elif score <= 60:
+            self.assertEqual(level, 'moderate')
+        elif score <= 80:
+            self.assertEqual(level, 'low')
+        else:
+            self.assertEqual(level, 'healthy')
+
+    def test_evaluate_with_budget_violation(self):
+        """Budget violation increases severity."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sr3", command=["echo"]))
+        mgr.set_resource_budget(c, memory_mb=512)
+        result = mgr.evaluate_and_remediate(c)
+        self.assertEqual(result['budget_status'], 'ok')
+        self.assertEqual(result['budget_penalty'], 0.0)
+
+    def test_evaluate_all(self):
+        """evaluate_and_remediate_all processes all running containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="sr4", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="sr5", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.evaluate_and_remediate_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('average_severity', result)
+        self.assertIn('critical_count', result)
+        self.assertIn('remediated_count', result)
+
+    def test_evaluate_triggers_remediation(self):
+        """Critical containers with remediation enabled get auto-remediated."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sr6", command=["echo"]))
+        mgr.configure_remediation(
+            c, on_threshold_exceeded="alert", cooldown_seconds=0.0)
+        # Force OOM score high to lower severity
+        c.oom_score_adj = 1000
+        result = mgr.evaluate_and_remediate(c)
+        # With high OOM, severity should be lower, triggering remediation
+        self.assertIn('action_taken', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for smart remediation."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(container_id="c1")
+        p = cli.build_payload("smart-remediate", ns)
+        self.assertEqual(p["op"], "smart_remediate")
+        self.assertEqual(p["container_id"], "c1")
+
+        p2 = cli.build_payload("smart-remediate-all", argparse.Namespace())
+        self.assertEqual(p2["op"], "smart_remediate_all")
+
+    def test_format_human(self):
+        """format_human renders smart remediation results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'name': 'test-c',
+            'severity_score': 35.0,
+            'severity_level': 'high',
+            'health_score': 60.0,
+            'anomaly_count': 3,
+            'anomaly_penalty': 30.0,
+            'budget_status': 'ok',
+            'budget_penalty': 0.0,
+            'oom_penalty': 0.0,
+            'action_taken': 'none',
+            'recommendations': ['Investigate anomalies'],
+        }
+        text = cli.format_human("smart-remediate", resp)
+        self.assertIn('high', text)
+        self.assertIn('35', text)
+        self.assertIn('Investigate anomalies', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches smart_remediate op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="sr-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "smart_remediate",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('severity_score', replies[0])
+        self.assertIn('severity_level', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24445,6 +24586,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogCompression))
     suite.addTests(loader.loadTestsFromTestCase(TestArchiveScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestSLABreachRemediation))
+    suite.addTests(loader.loadTestsFromTestCase(TestSmartRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

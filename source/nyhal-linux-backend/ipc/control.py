@@ -678,6 +678,12 @@ class ControlService:
             elif op == "sla_breach_process_all":
                 self._sla_breach_process_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "smart_remediate":
+                self._smart_remediate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "smart_remediate_all":
+                self._smart_remediate_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4802,6 +4808,30 @@ class ControlService:
             detail=request.get('detail', ''),
             container_ids=request.get('container_ids'),
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _smart_remediate(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.evaluate_and_remediate(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _smart_remediate_all(self, server, sender_path: str,
+                              call_id: str,
+                              request: Dict[str, Any]) -> None:
+        result = self.container_manager.evaluate_and_remediate_all()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })
