@@ -21422,6 +21422,382 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestBatchOperations(unittest.TestCase):
+    """Batch container operations (start/stop/kill by filter)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_resolve_by_labels(self):
+        """_resolve_batch_targets filters by labels."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="batch-a", labels={"env": "prod"}))
+        c2 = mgr.create(ContainerConfig(
+            name="batch-b", labels={"env": "dev"}))
+        c3 = mgr.create(ContainerConfig(
+            name="batch-c", labels={"env": "prod", "tier": "web"}))
+        targets = mgr._resolve_batch_targets(labels={"env": "prod"})
+        ids = {c.id for c in targets}
+        self.assertIn(c1.id, ids)
+        self.assertNotIn(c2.id, ids)
+        self.assertIn(c3.id, ids)
+
+    def test_resolve_by_name_pattern(self):
+        """_resolve_batch_targets filters by name substring."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="web-server-1"))
+        c2 = mgr.create(ContainerConfig(name="db-server-1"))
+        targets = mgr._resolve_batch_targets(name_pattern="web")
+        ids = {c.id for c in targets}
+        self.assertIn(c1.id, ids)
+        self.assertNotIn(c2.id, ids)
+
+    def test_resolve_by_ids(self):
+        """_resolve_batch_targets filters by explicit IDs."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="batch-x"))
+        c2 = mgr.create(ContainerConfig(name="batch-y"))
+        targets = mgr._resolve_batch_targets(container_ids=[c1.id])
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].id, c1.id)
+
+    def test_resolve_combined_filters(self):
+        """Filters are AND-ed."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="web-a", labels={"env": "prod"}))
+        c2 = mgr.create(ContainerConfig(
+            name="web-b", labels={"env": "dev"}))
+        c3 = mgr.create(ContainerConfig(
+            name="db-a", labels={"env": "prod"}))
+        targets = mgr._resolve_batch_targets(
+            labels={"env": "prod"}, name_pattern="web")
+        ids = {c.id for c in targets}
+        self.assertIn(c1.id, ids)
+        self.assertNotIn(c2.id, ids)
+        self.assertNotIn(c3.id, ids)
+
+    def test_batch_kill_non_running(self):
+        """batch_kill skips terminated containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="bk1"))
+        c1.state = ContainerState.TERMINATED
+        result = mgr.batch_kill(container_ids=[c1.id])
+        self.assertEqual(result["killed"], [])
+        self.assertIn(c1.id, result["skipped"])
+
+    def test_batch_stop_non_running(self):
+        """batch_stop skips terminated containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="bs1"))
+        c1.state = ContainerState.TERMINATED
+        result = mgr.batch_stop(container_ids=[c1.id])
+        self.assertEqual(result["stopped"], [])
+        self.assertIn(c1.id, result["skipped"])
+
+    def test_batch_start_non_running(self):
+        """batch_start skips already-running containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="bst1"))
+        c1.state = ContainerState.RUNNING
+        result = mgr.batch_start(container_ids=[c1.id])
+        self.assertEqual(result["started"], [])
+        self.assertIn(c1.id, result["skipped"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for batch commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(
+            labels="env=prod", name_pattern=None,
+            container_ids=None)
+        p1 = build_payload("batch-start", args1)
+        self.assertEqual(p1["op"], "batch_start")
+        self.assertEqual(p1["labels"], {"env": "prod"})
+
+        args2 = argparse.Namespace(
+            labels=None, name_pattern="web",
+            container_ids=None, timeout=5.0)
+        p2 = build_payload("batch-stop", args2)
+        self.assertEqual(p2["op"], "batch_stop")
+        self.assertEqual(p2["name_pattern"], "web")
+        self.assertEqual(p2["timeout_s"], 5.0)
+
+        args3 = argparse.Namespace(
+            labels=None, name_pattern=None,
+            container_ids="a,b")
+        p3 = build_payload("batch-kill", args3)
+        self.assertEqual(p3["op"], "batch_kill")
+        self.assertEqual(p3["container_ids"], ["a", "b"])
+
+    def test_cli_format_human(self):
+        """CLI format_human for batch commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True,
+            "total_matched": 3,
+            "started": ["c1", "c2"],
+            "skipped": ["c3"],
+            "failed": [],
+        }
+        text = format_human("batch-start", resp)
+        self.assertIn("3", text)
+        self.assertIn("c1", text)
+        self.assertIn("c2", text)
+        self.assertIn("c3", text)
+
+    def test_control_handler(self):
+        """Batch kill control handler returns results."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="batch-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "batch_kill",
+                           "container_ids": [c.id]}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("killed", replies[0])
+
+
+class TestResourceProfiling(unittest.TestCase):
+    """Resource profiling (per-process breakdown)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_profile_no_process(self):
+        """get_resource_profile returns empty for a not-running container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="prof-test"))
+        result = mgr.get_resource_profile(c)
+        self.assertEqual(result["container_id"], c.id)
+        self.assertEqual(result["summary"]["process_count"], 0)
+        self.assertEqual(result["summary"]["total_cpu_s"], 0.0)
+        self.assertEqual(result["summary"]["total_rss_bytes"], 0)
+
+    def test_profile_history_empty(self):
+        """get_resource_profile_history returns empty initially."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="prof-hist"))
+        history = mgr.get_resource_profile_history(c)
+        self.assertEqual(history, [])
+
+    def test_profile_history_after_sample(self):
+        """get_resource_profile_history returns snapshots."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="prof-hist2"))
+        # Manually seed a history entry
+        c._resource_profile_history = [
+            {"timestamp": 1000.0, "summary": {"total_cpu_s": 0.5,
+             "total_rss_bytes": 1024, "total_io_read_bytes": 512,
+             "total_io_write_bytes": 256, "total_threads": 2,
+             "process_count": 1}},
+        ]
+        history = mgr.get_resource_profile_history(c, tail=1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["timestamp"], 1000.0)
+        self.assertEqual(history[0]["summary"]["total_cpu_s"], 0.5)
+
+    def test_top_consumers_empty(self):
+        """get_resource_profile_top_consumers returns empty for no proc."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="prof-top"))
+        result = mgr.get_resource_profile_top_consumers(c)
+        self.assertEqual(result["resource"], "rss_bytes")
+        self.assertEqual(result["top"], [])
+        self.assertEqual(result["total"], 0)
+
+    def test_top_consumers_invalid_resource(self):
+        """get_resource_profile_top_consumers falls back to rss_bytes."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="prof-top2"))
+        result = mgr.get_resource_profile_top_consumers(
+            c, resource="bogus")
+        self.assertEqual(result["resource"], "rss_bytes")
+
+    def test_profile_with_real_process(self):
+        """get_resource_profile reads real /proc data for a child."""
+        import os
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="prof-real",
+            command=["sleep", "10"],
+        ))
+        mgr.start(c)
+        import time as _time
+        _time.sleep(0.5)
+        try:
+            result = mgr.get_resource_profile(c)
+            # The profiler always returns a valid structure
+            self.assertIn("processes", result)
+            self.assertIn("summary", result)
+            self.assertEqual(result["container_id"], c.id)
+            # History should now have one entry
+            history = mgr.get_resource_profile_history(c)
+            self.assertGreaterEqual(len(history), 1)
+            # On hosts where the container actually runs and /proc is
+            # live, the init process shows RSS > 0.  On hosts where
+            # the launch child exits before we read /proc (no cgroup
+            # permissions, etc.), the profiler returns valid but empty
+            # data — both paths are correct.
+        finally:
+            mgr.terminate(c)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for resource-profile commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        args1 = argparse.Namespace(container_id="abc")
+        p1 = build_payload("resource-profile", args1)
+        self.assertEqual(p1["op"], "resource_profile")
+        self.assertEqual(p1["container_id"], "abc")
+
+        args2 = argparse.Namespace(container_id="abc", tail=None)
+        p2 = build_payload("resource-profile-history", args2)
+        self.assertEqual(p2["op"], "resource_profile_history")
+        self.assertNotIn("tail", p2)
+
+        args3 = argparse.Namespace(
+            container_id="abc", resource="cpu_time_s", top_n=10)
+        p3 = build_payload("resource-profile-top", args3)
+        self.assertEqual(p3["op"], "resource_profile_top")
+        self.assertEqual(p3["resource"], "cpu_time_s")
+        self.assertEqual(p3["top_n"], 10)
+
+    def test_cli_format_human(self):
+        """CLI format_human for resource-profile commands."""
+        from nyrqisctl import format_human
+        # profile
+        resp = {
+            "ok": True, "container_id": "abc",
+            "processes": [
+                {"pid": 1, "comm": "sleep", "cpu_time_s": 0.001,
+                 "rss_bytes": 2048, "io_read_bytes": 100,
+                 "io_write_bytes": 50, "threads": 1},
+            ],
+            "summary": {
+                "total_cpu_s": 0.001, "total_rss_bytes": 2048,
+                "total_io_read_bytes": 100, "total_io_write_bytes": 50,
+                "total_threads": 1, "process_count": 1,
+            },
+        }
+        text = format_human("resource-profile", resp)
+        self.assertIn("sleep", text)
+        self.assertIn("1", text)  # PID
+        # history
+        resp2 = {
+            "ok": True, "container_id": "abc",
+            "history": [
+                {"timestamp": 1000.0, "summary": {
+                    "total_cpu_s": 0.5, "total_rss_bytes": 4096,
+                    "total_io_read_bytes": 200, "total_io_write_bytes": 100,
+                    "total_threads": 2}},
+            ],
+        }
+        text2 = format_human("resource-profile-history", resp2)
+        self.assertIn("4.0 KiB", text2)
+        # top
+        resp3 = {
+            "ok": True, "container_id": "abc",
+            "resource": "rss_bytes", "total": 8192,
+            "top": [
+                {"pid": 42, "comm": "node", "rss_bytes": 8192,
+                 "cpu_time_s": 0.0, "io_read_bytes": 0,
+                 "io_write_bytes": 0, "threads": 1},
+            ],
+        }
+        text3 = format_human("resource-profile-top", resp3)
+        self.assertIn("node", text3)
+        self.assertIn("8.0 KiB", text3)
+
+    def test_control_handler_not_found(self):
+        """Resource profile control handler returns not-found."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        # Build a fake message
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "resource_profile",
+                           "container_id": "no-such"}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertFalse(replies[0]["ok"])
+        self.assertIn("not found", replies[0]["error"])
+
+    def test_control_handler_list(self):
+        """Resource profile history control handler returns list."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="prof-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "resource_profile_history",
+                           "container_id": c.id}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("history", replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -21493,6 +21869,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

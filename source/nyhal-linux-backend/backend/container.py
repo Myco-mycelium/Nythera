@@ -3977,6 +3977,170 @@ class ContainerManager:
         return result
 
     # ------------------------------------------------------------------
+    # Batch operations (operate on multiple containers)
+    # ------------------------------------------------------------------
+
+    def _resolve_batch_targets(
+        self,
+        labels: Optional[Dict[str, str]] = None,
+        name_pattern: Optional[str] = None,
+        states: Optional[List[str]] = None,
+        container_ids: Optional[List[str]] = None,
+    ) -> List[Container]:
+        """Resolve a set of containers from batch filters.
+
+        At least one filter must be provided.  Filters are AND-ed:
+        a container must match all specified criteria.
+
+        Args:
+            labels: Required label key-value pairs.
+            name_pattern: Substring match on container name.
+            states: Restrict to these lifecycle states.
+            container_ids: Restrict to these explicit IDs.
+
+        Returns:
+            List of matching containers.
+        """
+        candidates: List[Container] = []
+        if container_ids:
+            for cid in container_ids:
+                c = self.containers.get(cid)
+                if c is not None:
+                    candidates.append(c)
+        else:
+            candidates = list(self.containers.values())
+
+        if not candidates:
+            return []
+
+        result: List[Container] = []
+        for c in candidates:
+            # Label filter
+            if labels and not all(
+                c.config.labels.get(k) == v for k, v in labels.items()
+            ):
+                continue
+            # Name pattern filter
+            if name_pattern and name_pattern not in c.config.name:
+                continue
+            # State filter
+            if states and c.state.value not in states:
+                continue
+            result.append(c)
+        return result
+
+    def batch_start(
+        self,
+        labels: Optional[Dict[str, str]] = None,
+        name_pattern: Optional[str] = None,
+        states: Optional[List[str]] = None,
+        container_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Start multiple containers matching the given filters.
+
+        Containers that are already running are skipped.
+
+        Returns:
+            Dict with ``started``, ``skipped``, and ``failed`` lists.
+        """
+        targets = self._resolve_batch_targets(
+            labels=labels, name_pattern=name_pattern,
+            states=states, container_ids=container_ids,
+        )
+        started, skipped, failed = [], [], []
+        for c in targets:
+            if c.state.value == "running":
+                skipped.append(c.id)
+                continue
+            try:
+                self.start(c)
+                started.append(c.id)
+            except Exception as e:
+                failed.append({"id": c.id, "error": str(e)})
+        return {
+            "started": started,
+            "skipped": skipped,
+            "failed": failed,
+            "total_matched": len(targets),
+        }
+
+    def batch_stop(
+        self,
+        labels: Optional[Dict[str, str]] = None,
+        name_pattern: Optional[str] = None,
+        states: Optional[List[str]] = None,
+        container_ids: Optional[List[str]] = None,
+        timeout_s: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Stop (terminate gracefully) multiple containers.
+
+        Containers that are already terminated are skipped.
+
+        Returns:
+            Dict with ``stopped``, ``skipped``, and ``failed`` lists.
+        """
+        targets = self._resolve_batch_targets(
+            labels=labels, name_pattern=name_pattern,
+            states=states, container_ids=container_ids,
+        )
+        stopped, skipped, failed = [], [], []
+        for c in targets:
+            if c.state.value == "terminated":
+                skipped.append(c.id)
+                continue
+            try:
+                self.terminate(c, timeout_s=timeout_s)
+                stopped.append(c.id)
+            except Exception as e:
+                failed.append({"id": c.id, "error": str(e)})
+        return {
+            "stopped": stopped,
+            "skipped": skipped,
+            "failed": failed,
+            "total_matched": len(targets),
+        }
+
+    def batch_kill(
+        self,
+        labels: Optional[Dict[str, str]] = None,
+        name_pattern: Optional[str] = None,
+        states: Optional[List[str]] = None,
+        container_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Force-kill multiple containers (SIGKILL immediately).
+
+        Containers that are already terminated are skipped.
+
+        Returns:
+            Dict with ``killed``, ``skipped``, and ``failed`` lists.
+        """
+        targets = self._resolve_batch_targets(
+            labels=labels, name_pattern=name_pattern,
+            states=states, container_ids=container_ids,
+        )
+        killed, skipped, failed = [], [], []
+        for c in targets:
+            if c.state.value == "terminated":
+                skipped.append(c.id)
+                continue
+            try:
+                if c.pid is not None:
+                    try:
+                        os.kill(c.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                self.terminate(c, timeout_s=0)
+                killed.append(c.id)
+            except Exception as e:
+                failed.append({"id": c.id, "error": str(e)})
+        return {
+            "killed": killed,
+            "skipped": skipped,
+            "failed": failed,
+            "total_matched": len(targets),
+        }
+
+    # ------------------------------------------------------------------
     # Resource limits hot-update (modify at runtime)
     # ------------------------------------------------------------------
 
@@ -6012,6 +6176,251 @@ class ContainerManager:
         return {
             "container_id": container.id,
             "protocols": dict(container._net_proto_stats),
+        }
+
+    # ------------------------------------------------------------------
+    # Resource profiling (per-process breakdown)
+    # ------------------------------------------------------------------
+
+    def get_resource_profile(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get per-process resource usage breakdown for a container.
+
+        Reads /proc entries for each process inside the container to
+        report CPU time, memory (RSS), I/O bytes, and thread count
+        per PID.  The result is a snapshot of the current state.
+
+        Args:
+            container: Target container.
+
+        Returns:
+            Dict with ``container_id``, ``processes`` (list of dicts
+            with ``pid``, ``comm``, ``cpu_time_s``, ``rss_bytes``,
+            ``io_read_bytes``, ``io_write_bytes``, ``threads``), and
+            ``summary`` (aggregate totals).
+        """
+        if container.pid is None:
+            return {
+                "container_id": container.id,
+                "processes": [],
+                "summary": {
+                    "total_cpu_s": 0.0,
+                    "total_rss_bytes": 0,
+                    "total_io_read_bytes": 0,
+                    "total_io_write_bytes": 0,
+                    "total_threads": 0,
+                    "process_count": 0,
+                },
+            }
+
+        processes = []
+        total_cpu_s = 0.0
+        total_rss = 0
+        total_io_read = 0
+        total_io_write = 0
+        total_threads = 0
+
+        try:
+            # Find the init PID-1's children (the container's processes)
+            children_path = (
+                f"/proc/{container.pid}/task/{container.pid}/children"
+            )
+            child_pids: List[int] = []
+            try:
+                with open(children_path, "r", encoding="utf-8") as f:
+                    raw = f.read().strip()
+                    if raw:
+                        child_pids = [
+                            int(p) for p in raw.split() if p.isdigit()
+                        ]
+            except (OSError, ValueError):
+                pass
+
+            # Include the init itself
+            pids_to_read = [container.pid] + child_pids
+
+            for pid in pids_to_read:
+                info: Dict[str, Any] = {
+                    "pid": pid,
+                    "comm": "",
+                    "cpu_time_s": 0.0,
+                    "rss_bytes": 0,
+                    "io_read_bytes": 0,
+                    "io_write_bytes": 0,
+                    "threads": 1,
+                }
+
+                # comm (process name)
+                try:
+                    with open(
+                        f"/proc/{pid}/comm", "r", encoding="utf-8"
+                    ) as f:
+                        info["comm"] = f.read().strip()[:16]
+                except OSError:
+                    pass
+
+                # /proc/[pid]/stat — CPU time (utime + stime in ticks)
+                try:
+                    with open(
+                        f"/proc/{pid}/stat", "r", encoding="utf-8"
+                    ) as f:
+                        stat_line = f.read()
+                    # Fields after the comm (which may contain spaces
+                    # and is wrapped in parens): split after the last ')'
+                    rp = stat_line.rfind(")")
+                    if rp != -1:
+                        fields = stat_line[rp + 2:].split()
+                        if len(fields) >= 14:
+                            utime_ticks = int(fields[11])
+                            stime_ticks = int(fields[12])
+                            clk_tck = os.sysconf("SC_CLK_TCK")
+                            if clk_tck > 0:
+                                info["cpu_time_s"] = round(
+                                    (utime_ticks + stime_ticks) / clk_tck,
+                                    3,
+                                )
+                            info["threads"] = int(fields[17]) if len(fields) > 17 else 1
+                except (OSError, ValueError, IndexError):
+                    pass
+
+                # /proc/[pid]/statm — RSS in pages
+                try:
+                    with open(
+                        f"/proc/{pid}/statm", "r", encoding="utf-8"
+                    ) as f:
+                        mem_fields = f.read().split()
+                    if len(mem_fields) >= 2:
+                        page_size = os.sysconf("SC_PAGE_SIZE")
+                        info["rss_bytes"] = int(mem_fields[1]) * page_size
+                except (OSError, ValueError, IndexError):
+                    pass
+
+                # /proc/[pid]/io — bytes read/written
+                try:
+                    with open(
+                        f"/proc/{pid}/io", "r", encoding="utf-8"
+                    ) as f:
+                        for line in f:
+                            if line.startswith("read_bytes:"):
+                                info["io_read_bytes"] = int(
+                                    line.split(":", 1)[1].strip()
+                                )
+                            elif line.startswith("write_bytes:"):
+                                info["io_write_bytes"] = int(
+                                    line.split(":", 1)[1].strip()
+                                )
+                except (OSError, ValueError):
+                    pass
+
+                processes.append(info)
+                total_cpu_s += info["cpu_time_s"]
+                total_rss += info["rss_bytes"]
+                total_io_read += info["io_read_bytes"]
+                total_io_write += info["io_write_bytes"]
+                total_threads += info["threads"]
+
+        except Exception as e:
+            logger.debug(
+                "get_resource_profile failed for %s: %s",
+                container.id, e,
+            )
+
+        # Sort by RSS descending (most memory-hungry first)
+        processes.sort(key=lambda p: p["rss_bytes"], reverse=True)
+
+        result = {
+            "container_id": container.id,
+            "processes": processes,
+            "summary": {
+                "total_cpu_s": round(total_cpu_s, 3),
+                "total_rss_bytes": total_rss,
+                "total_io_read_bytes": total_io_read,
+                "total_io_write_bytes": total_io_write,
+                "total_threads": total_threads,
+                "process_count": len(processes),
+            },
+        }
+
+        # Record a snapshot for history
+        if not hasattr(container, "_resource_profile_history"):
+            container._resource_profile_history = []
+        container._resource_profile_history.append({
+            "timestamp": time.time(),
+            "summary": dict(result["summary"]),
+        })
+        # Keep last 1000 snapshots
+        if len(container._resource_profile_history) > 1000:
+            container._resource_profile_history = \
+                container._resource_profile_history[-1000:]
+
+        return result
+
+    def get_resource_profile_history(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get resource profiling history for a container.
+
+        Each entry contains a timestamp and the aggregate summary at
+        that point (total CPU seconds, RSS, I/O bytes, threads).
+
+        Args:
+            container: Target container.
+            tail: Return only the last *n* entries.
+
+        Returns:
+            List of profiling snapshots.
+        """
+        if not hasattr(container, "_resource_profile_history"):
+            return []
+        history = container._resource_profile_history
+        if tail is not None:
+            return list(history[-tail:])
+        return list(history)
+
+    def get_resource_profile_top_consumers(
+        self,
+        container: Container,
+        resource: str = "rss_bytes",
+        top_n: int = 5,
+    ) -> Dict[str, Any]:
+        """Get the top N processes by a specific resource.
+
+        Args:
+            container: Target container.
+            resource: One of ``rss_bytes``, ``cpu_time_s``,
+                ``io_read_bytes``, ``io_write_bytes``.
+            top_n: Number of top consumers to return.
+
+        Returns:
+            Dict with ``container_id``, ``resource``, ``top``
+            (list of process dicts), ``total``.
+        """
+        profile = self.get_resource_profile(container)
+        processes = profile["processes"]
+        valid = {
+            "rss_bytes", "cpu_time_s",
+            "io_read_bytes", "io_write_bytes",
+        }
+        if resource not in valid:
+            resource = "rss_bytes"
+
+        top = sorted(
+            processes,
+            key=lambda p: p.get(resource, 0),
+            reverse=True,
+        )[:top_n]
+
+        total = sum(p.get(resource, 0) for p in processes)
+
+        return {
+            "container_id": container.id,
+            "resource": resource,
+            "top": top,
+            "total": total,
         }
 
     # ------------------------------------------------------------------

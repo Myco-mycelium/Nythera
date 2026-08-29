@@ -1122,10 +1122,94 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "app_terminate",
             "app_id": args.app_id,
         }
+    if command == "resource-profile":
+        return {
+            "service": "control",
+            "op": "resource_profile",
+            "container_id": args.container_id,
+        }
+    if command == "resource-profile-history":
+        payload = {
+            "service": "control",
+            "op": "resource_profile_history",
+            "container_id": args.container_id,
+        }
+        if args.tail is not None:
+            payload["tail"] = args.tail
+        return payload
+    if command == "resource-profile-top":
+        return {
+            "service": "control",
+            "op": "resource_profile_top",
+            "container_id": args.container_id,
+            "resource": args.resource,
+            "top_n": args.top_n,
+        }
+    if command == "batch-start":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "batch_start",
+        }
+        if args.labels:
+            payload["labels"] = dict(
+                item.split("=", 1)
+                for item in args.labels.split(",")
+                if "=" in item
+            )
+        if args.name_pattern:
+            payload["name_pattern"] = args.name_pattern
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids.split(",")
+        return payload
+    if command == "batch-stop":
+        payload = {
+            "service": "control",
+            "op": "batch_stop",
+            "timeout_s": args.timeout,
+        }
+        if args.labels:
+            payload["labels"] = dict(
+                item.split("=", 1)
+                for item in args.labels.split(",")
+                if "=" in item
+            )
+        if args.name_pattern:
+            payload["name_pattern"] = args.name_pattern
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids.split(",")
+        return payload
+    if command == "batch-kill":
+        payload = {
+            "service": "control",
+            "op": "batch_kill",
+        }
+        if args.labels:
+            payload["labels"] = dict(
+                item.split("=", 1)
+                for item in args.labels.split(",")
+                if "=" in item
+            )
+        if args.name_pattern:
+            payload["name_pattern"] = args.name_pattern
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids.split(",")
+        return payload
     raise ValueError(f"unknown command: {command!r}")
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte count (B, KiB, MiB, GiB)."""
+    if n < 1024:
+        return f"{n} B"
+    for unit in ("KiB", "MiB", "GiB", "TiB"):
+        n /= 1024
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+    return f"{n:.1f} PiB"
+
 
 def format_human(command: str, resp: Dict[str, Any]) -> str:
     """Render a successful reply (``ok: true``) for the operator."""
@@ -2622,6 +2706,75 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"pid {resp.get('pid')})")
     if command == "app-terminate":
         return f"app {resp.get('app_id')} terminated"
+    if command == "resource-profile":
+        procs = resp.get("processes", [])
+        if not procs:
+            return "no running processes"
+        summary = resp.get("summary", {})
+        lines = [
+            f"Processes: {summary.get('process_count', 0)}"
+            f"  Threads: {summary.get('total_threads', 0)}"
+            f"  CPU: {summary.get('total_cpu_s', 0):.3f}s"
+            f"  RSS: {_fmt_bytes(summary.get('total_rss_bytes', 0))}"
+            f"  IO-R: {_fmt_bytes(summary.get('total_io_read_bytes', 0))}"
+            f"  IO-W: {_fmt_bytes(summary.get('total_io_write_bytes', 0))}",
+            "",
+            "PID\tCOMM\tCPU\tRSS\tIO-R\tIO-W\tTHR",
+        ]
+        for p in procs:
+            lines.append(
+                f"{p['pid']}\t{p.get('comm', '?')}\t"
+                f"{p['cpu_time_s']:.3f}s\t"
+                f"{_fmt_bytes(p['rss_bytes'])}\t"
+                f"{_fmt_bytes(p['io_read_bytes'])}\t"
+                f"{_fmt_bytes(p['io_write_bytes'])}\t"
+                f"{p['threads']}")
+        return "\n".join(lines)
+    if command == "resource-profile-history":
+        history = resp.get("history", [])
+        if not history:
+            return "no profiling history"
+        lines = ["timestamp\tcpu_s\trss\tio_read\tio_write\tthreads"]
+        for h in history:
+            s = h.get("summary", {})
+            lines.append(
+                f"{h.get('timestamp', 0):.0f}\t"
+                f"{s.get('total_cpu_s', 0):.3f}\t"
+                f"{_fmt_bytes(s.get('total_rss_bytes', 0))}\t"
+                f"{_fmt_bytes(s.get('total_io_read_bytes', 0))}\t"
+                f"{_fmt_bytes(s.get('total_io_write_bytes', 0))}\t"
+                f"{s.get('total_threads', 0)}")
+        return "\n".join(lines)
+    if command == "resource-profile-top":
+        top = resp.get("top", [])
+        if not top:
+            return f"no data for {resp.get('resource', '?')}"
+        lines = [
+            f"Top {resp.get('resource', '?')} consumers"
+            f" (total: {_fmt_bytes(resp.get('total', 0))}):",
+            "",
+            "PID\tCOMM\tVALUE",
+        ]
+        for p in top:
+            val = p.get(resp.get("resource", "rss_bytes"), 0)
+            lines.append(
+                f"{p['pid']}\t{p.get('comm', '?')}\t{_fmt_bytes(val)}")
+        return "\n".join(lines)
+    if command in ("batch-start", "batch-stop", "batch-kill"):
+        verb = command.split("-")[1]
+        matched = resp.get("total_matched", 0)
+        acted = resp.get("started") or resp.get("stopped") or resp.get("killed") or []
+        skipped = resp.get("skipped", [])
+        failed = resp.get("failed", [])
+        lines = [f"Matched {matched} container(s)"]
+        if acted:
+            lines.append(f"  {verb}: {', '.join(acted)}")
+        if skipped:
+            lines.append(f"  skipped: {', '.join(skipped)}")
+        if failed:
+            for f in failed:
+                lines.append(f"  FAILED {f['id']}: {f['error']}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -3228,6 +3381,61 @@ def build_parser() -> argparse.ArgumentParser:
     ces.add_argument("container_id")
     ces.add_argument("output_path", help="Output file path")
     ces.set_defaults(command="containers-export-snapshot")
+
+    crp = csub.add_parser("resource-profile",
+                          help="Per-process resource breakdown")
+    crp.add_argument("container_id")
+    crp.set_defaults(command="resource-profile")
+
+    crph = csub.add_parser("resource-profile-history",
+                           help="Resource profiling history")
+    crph.add_argument("container_id")
+    crph.add_argument("--tail", type=int, default=None,
+                      help="Show only last N samples")
+    crph.set_defaults(command="resource-profile-history")
+
+    crpt = csub.add_parser("resource-profile-top",
+                           help="Top processes by resource")
+    crpt.add_argument("container_id")
+    crpt.add_argument("--resource", default="rss_bytes",
+                      choices=["rss_bytes", "cpu_time_s",
+                               "io_read_bytes", "io_write_bytes"],
+                      help="Resource to rank by")
+    crpt.add_argument("--top-n", type=int, default=5,
+                      help="Number of top consumers")
+    crpt.set_defaults(command="resource-profile-top")
+
+    bs = csub.add_parser("batch-start",
+                         help="Start multiple containers by filter")
+    bs.add_argument("--labels",
+                    help="Label filter (key=val,key=val)")
+    bs.add_argument("--name-pattern",
+                    help="Substring match on container name")
+    bs.add_argument("--container-ids",
+                    help="Comma-separated container IDs")
+    bs.set_defaults(command="batch-start")
+
+    bstop = csub.add_parser("batch-stop",
+                            help="Stop multiple containers by filter")
+    bstop.add_argument("--labels",
+                       help="Label filter (key=val,key=val)")
+    bstop.add_argument("--name-pattern",
+                       help="Substring match on container name")
+    bstop.add_argument("--container-ids",
+                       help="Comma-separated container IDs")
+    bstop.add_argument("--timeout", type=float, default=10.0,
+                       help="Seconds to wait before SIGKILL")
+    bstop.set_defaults(command="batch-stop")
+
+    bk = csub.add_parser("batch-kill",
+                         help="Force-kill multiple containers by filter")
+    bk.add_argument("--labels",
+                    help="Label filter (key=val,key=val)")
+    bk.add_argument("--name-pattern",
+                    help="Substring match on container name")
+    bk.add_argument("--container-ids",
+                    help="Comma-separated container IDs")
+    bk.set_defaults(command="batch-kill")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

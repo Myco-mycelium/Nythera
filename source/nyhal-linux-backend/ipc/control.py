@@ -200,6 +200,292 @@ class ControlService:
             elif op == "app_terminate":
                 self._app_terminate(server, sender_path, msg.message_id,
                                     request)
+            elif op == "container_start_ordered":
+                self._container_start_ordered(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_stop_ordered":
+                self._container_stop_ordered(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_dependency_graph":
+                self._container_dependency_graph(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_restart_info":
+                self._container_restart_info(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_set_restart":
+                self._container_set_restart(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_env_set":
+                self._container_env_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_env_unset":
+                self._container_env_unset(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_env_list":
+                self._container_env_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_export":
+                self._snapshot_export(
+                    server, sender_path, msg.message_id, request)
+            elif op == "snapshot_import":
+                self._snapshot_import(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_history":
+                self._resource_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_record":
+                self._resource_record(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_record_start":
+                self._resource_record_start(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_record_stop":
+                self._resource_record_stop(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_update_limits":
+                self._container_update_limits(
+                    server, sender_path, msg.message_id, request)
+            elif op == "label_set":
+                self._label_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "label_unset":
+                self._label_unset(
+                    server, sender_path, msg.message_id, request)
+            elif op == "label_list":
+                self._label_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "label_filter":
+                self._label_filter(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cgroup2_status":
+                self._cgroup2_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "verify_enforcement":
+                self._verify_enforcement(
+                    server, sender_path, msg.message_id, request)
+            elif op == "lock_acquire":
+                self._lock_acquire(
+                    server, sender_path, msg.message_id, request)
+            elif op == "lock_release":
+                self._lock_release(
+                    server, sender_path, msg.message_id, request)
+            elif op == "lock_list":
+                self._lock_list(
+                    server, sender_path, msg.message_id,
+                    request)
+            elif op == "alert_history":
+                self._alert_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_clear":
+                self._alert_clear(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_thresholds":
+                self._alert_thresholds(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_acknowledge":
+                self._alert_acknowledge(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_suppress":
+                self._alert_suppress(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_unsuppress":
+                self._alert_unsuppress(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_statistics":
+                self._alert_statistics(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_suppressions_list":
+                self._alert_suppressions_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "oom_status":
+                self._oom_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "oom_set":
+                self._oom_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "oom_events":
+                self._oom_events(
+                    server, sender_path, msg.message_id, request)
+            elif op == "dashboard":
+                self._dashboard(
+                    server, sender_path, msg.message_id, request)
+            elif op == "export_history":
+                self._export_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "export_snapshot":
+                self._export_snapshot(
+                    server, sender_path, msg.message_id, request)
+            elif op == "webhook_register":
+                self._webhook_register(
+                    server, sender_path, msg.message_id, request)
+            elif op == "webhook_unregister":
+                self._webhook_unregister(
+                    server, sender_path, msg.message_id, request)
+            elif op == "webhook_list":
+                self._webhook_list(
+                    server, sender_path, msg.message_id,
+                    request)
+            elif op == "webhook_enable":
+                self._webhook_enable(
+                    server, sender_path, msg.message_id, request)
+            elif op == "webhook_disable":
+                self._webhook_disable(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_check":
+                self._sla_check(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_violations":
+                self._sla_violations(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_set":
+                self._sla_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_escalation_policy":
+                self._sla_escalation_policy(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_escalation_status":
+                self._sla_escalation_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_escalation_reset":
+                self._sla_escalation_reset(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_escalation_history":
+                self._sla_escalation_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "billing_rates_set":
+                self._billing_rates_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "billing_rates_get":
+                self._billing_rates_get(
+                    server, sender_path, msg.message_id,
+                    request)
+            elif op == "billing_record":
+                self._billing_record(
+                    server, sender_path, msg.message_id, request)
+            elif op == "billing_records":
+                self._billing_records(
+                    server, sender_path, msg.message_id, request)
+            elif op == "billing_summary":
+                self._billing_summary(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_budget_configure":
+                self._cost_budget_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_budget_check":
+                self._cost_budget_check(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_alerts":
+                self._cost_alerts(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_budget_config":
+                self._cost_budget_config(
+                    server, sender_path, msg.message_id, request)
+            elif op == "autoscale_configure":
+                self._autoscale_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "autoscale_status":
+                self._autoscale_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "autoscale_apply":
+                self._autoscale_apply(
+                    server, sender_path, msg.message_id, request)
+            elif op == "autoscale_disable":
+                self._autoscale_disable(
+                    server, sender_path, msg.message_id, request)
+            elif op == "autoscale_events":
+                self._autoscale_events(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_configure":
+                self._health_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_trigger":
+                self._health_trigger(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_config":
+                self._health_config(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_restart_reset":
+                self._health_restart_reset(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_restart_history":
+                self._health_restart_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "forecast":
+                self._forecast(
+                    server, sender_path, msg.message_id, request)
+            elif op == "forecast_all":
+                self._forecast_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "time_to_exhaustion":
+                self._time_to_exhaustion(
+                    server, sender_path, msg.message_id, request)
+            elif op == "capacity_plan":
+                self._capacity_plan(
+                    server, sender_path, msg.message_id, request)
+            elif op == "capacity_plan_all":
+                self._capacity_plan_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_traffic":
+                self._network_traffic(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_connections":
+                self._network_connections(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_bandwidth_history":
+                self._network_bandwidth_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_detect":
+                self._anomaly_detect(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_detect_all":
+                self._anomaly_detect_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_spike":
+                self._anomaly_spike(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_trend":
+                self._anomaly_trend(
+                    server, sender_path, msg.message_id, request)
+            elif op == "compare":
+                self._compare(
+                    server, sender_path, msg.message_id, request)
+            elif op == "compare_all":
+                self._compare_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "relative_usage":
+                self._relative_usage(
+                    server, sender_path, msg.message_id, request)
+            elif op == "top_consumers":
+                self._top_consumers(
+                    server, sender_path, msg.message_id, request)
+            elif op == "recommendations":
+                self._recommendations(
+                    server, sender_path, msg.message_id, request)
+            elif op == "recommendations_all":
+                self._recommendations_all(
+                    server, sender_path, msg.message_id,
+                    request)
+            elif op == "recommendations_category":
+                self._recommendations_category(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_profile":
+                self._resource_profile(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_profile_history":
+                self._resource_profile_history(
+                    server, sender_path, msg.message_id, request)
+            elif op == "resource_profile_top":
+                self._resource_profile_top(
+                    server, sender_path, msg.message_id, request)
+            elif op == "batch_start":
+                self._batch_start(
+                    server, sender_path, msg.message_id, request)
+            elif op == "batch_stop":
+                self._batch_stop(
+                    server, sender_path, msg.message_id, request)
+            elif op == "batch_kill":
+                self._batch_kill(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3070,6 +3356,121 @@ class ControlService:
             return
         result = self.container_manager.get_recommendations_by_category(
             c, category=category,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Batch operations
+
+    def _batch_start(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        result = self.container_manager.batch_start(
+            labels=request.get("labels"),
+            name_pattern=request.get("name_pattern"),
+            states=request.get("states"),
+            container_ids=request.get("container_ids"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _batch_stop(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        result = self.container_manager.batch_stop(
+            labels=request.get("labels"),
+            name_pattern=request.get("name_pattern"),
+            states=request.get("states"),
+            container_ids=request.get("container_ids"),
+            timeout_s=request.get("timeout_s", 10.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _batch_kill(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        result = self.container_manager.batch_kill(
+            labels=request.get("labels"),
+            name_pattern=request.get("name_pattern"),
+            states=request.get("states"),
+            container_ids=request.get("container_ids"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Resource profiling
+
+    def _resource_profile(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_resource_profile(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _resource_profile_history(self, server, sender_path: str,
+                                  call_id: str,
+                                  request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        tail = request.get("tail")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        history = self.container_manager.get_resource_profile_history(
+            c, tail=tail,
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "container_id": container_id,
+            "history": history,
+        })
+
+    def _resource_profile_top(self, server, sender_path: str,
+                              call_id: str,
+                              request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        resource = request.get("resource", "rss_bytes")
+        top_n = request.get("top_n", 5)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_resource_profile_top_consumers(
+            c, resource=resource, top_n=top_n,
         )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
