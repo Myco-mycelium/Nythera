@@ -690,6 +690,12 @@ class ControlService:
             elif op == "optimization_actions":
                 self._optimization_actions(
                     server, sender_path, msg.message_id, request)
+            elif op == "rightsize":
+                self._rightsize(
+                    server, sender_path, msg.message_id, request)
+            elif op == "rightsize_all":
+                self._rightsize_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4871,6 +4877,39 @@ class ControlService:
             })
             return
         result = self.container_manager.get_usage_optimization_actions(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _rightsize(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.rightsize_container(
+            c,
+            safety_margin_pct=request.get('safety_margin_pct', 20.0),
+            dry_run=request.get('dry_run', False),
+        )
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _rightsize_all(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        result = self.container_manager.rightsize_all_containers(
+            safety_margin_pct=request.get('safety_margin_pct', 20.0),
+            dry_run=request.get('dry_run', False),
+        )
+        self._save_state()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

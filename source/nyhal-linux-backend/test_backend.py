@@ -24627,6 +24627,156 @@ class TestUsagePatternRecognition(unittest.TestCase):
         self.assertIn('patterns', replies[0])
 
 
+class TestRightSizing(unittest.TestCase):
+    """Tests for resource right-sizing."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_rightsize_insufficient_data(self):
+        """Right-sizing with insufficient data returns no changes."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rs1", command=["echo"]))
+        result = mgr.rightsize_container(c)
+        self.assertEqual(result['changes'], [])
+        self.assertFalse(result['applied'])
+        self.assertEqual(result['reason'], 'insufficient_data')
+
+    def test_rightsize_with_history(self):
+        """Right-sizing with enough history produces changes."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rs2", command=["echo"]))
+        mgr._init_resource_history(c)
+        # Set memory well below limit
+        mgr._resource_history[c.id] = [
+            {"timestamp": i * 10, "memory_bytes": 10 * 1024 * 1024,
+             "cpu_usage_usec": 100, "pids_current": 3}
+            for i in range(20)
+        ]
+        c.config.limits.memory_mb = 512
+        result = mgr.rightsize_container(c, dry_run=True)
+        self.assertTrue(result['dry_run'])
+        self.assertFalse(result['applied'])
+        # Should suggest reducing memory
+        if result['changes']:
+            self.assertEqual(result['changes'][0]['resource'], 'memory_mb')
+            self.assertLess(
+                result['changes'][0]['suggested'],
+                result['changes'][0]['current'])
+
+    def test_rightsize_dry_run_no_apply(self):
+        """Dry run does not modify container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rs3", command=["echo"]))
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": i * 10, "memory_bytes": 10 * 1024 * 1024,
+             "cpu_usage_usec": 100, "pids_current": 3}
+            for i in range(20)
+        ]
+        original_mem = c.config.limits.memory_mb
+        mgr.rightsize_container(c, dry_run=True)
+        self.assertEqual(c.config.limits.memory_mb, original_mem)
+
+    def test_rightsize_applies_changes(self):
+        """Non-dry-run applies changes."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rs4", command=["echo"]))
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": i * 10, "memory_bytes": 10 * 1024 * 1024,
+             "cpu_usage_usec": 100, "pids_current": 3}
+            for i in range(20)
+        ]
+        c.config.limits.memory_mb = 512
+        result = mgr.rightsize_container(c, dry_run=False)
+        if result['changes']:
+            self.assertTrue(result['applied'])
+            self.assertNotEqual(c.config.limits.memory_mb, 512)
+
+    def test_rightsize_all(self):
+        """rightsize_all processes all running containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="rs5", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="rs6", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.rightsize_all_containers(dry_run=True)
+        self.assertEqual(result['container_count'], 2)
+        self.assertTrue(result['dry_run'])
+
+    def test_cli_payload(self):
+        """CLI build_payload for right-sizing."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", safety_margin_pct=25.0, dry_run=True)
+        p = cli.build_payload("rightsize", ns)
+        self.assertEqual(p["op"], "rightsize")
+        self.assertEqual(p["safety_margin_pct"], 25.0)
+        self.assertTrue(p["dry_run"])
+
+        ns2 = argparse.Namespace(
+            safety_margin_pct=20.0, dry_run=False)
+        p2 = cli.build_payload("rightsize-all", ns2)
+        self.assertEqual(p2["op"], "rightsize_all")
+        self.assertFalse(p2["dry_run"])
+
+    def test_format_human(self):
+        """format_human renders right-sizing results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'dry_run': True,
+            'changes': [
+                {'resource': 'memory_mb', 'current': 512,
+                 'suggested': 128, 'savings_pct': 75.0},
+            ],
+        }
+        text = cli.format_human("rightsize", resp)
+        self.assertIn('dry run', text)
+        self.assertIn('512', text)
+        self.assertIn('128', text)
+        self.assertIn('75', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches rightsize op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="rs-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "rightsize",
+                  "container_id": c.id,
+                  "dry_run": True}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('changes', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24722,6 +24872,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSLABreachRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestSmartRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestUsagePatternRecognition))
+    suite.addTests(loader.loadTestsFromTestCase(TestRightSizing))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

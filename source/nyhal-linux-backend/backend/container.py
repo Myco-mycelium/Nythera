@@ -5799,6 +5799,183 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource right-sizing (automatic limit adjustment)
+    # ------------------------------------------------------------------
+
+    def rightsize_container(
+        self,
+        container: Container,
+        safety_margin_pct: float = 20.0,
+        min_memory_mb: int = 64,
+        max_memory_mb: int = 16384,
+        min_pids: int = 4,
+        max_pids: int = 1024,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Right-size a container's resource limits based on usage.
+
+        Analyzes historical usage patterns and adjusts memory and
+        PID limits to better match actual usage, with a configurable
+        safety margin.
+
+        Args:
+            container: Target container.
+            safety_margin_pct: Percentage buffer above observed max.
+            min_memory_mb: Minimum memory limit to enforce.
+            max_memory_mb: Maximum memory limit to enforce.
+            min_pids: Minimum PID limit to enforce.
+            max_pids: Maximum PID limit to enforce.
+            dry_run: If True, report changes without applying.
+
+        Returns:
+            Dict with ``changes`` (list of adjustments),
+            ``current_limits``, ``suggested_limits``, and
+            ``applied`` flag.
+        """
+        history = self.get_resource_history(container, tail=50)
+        changes: List[Dict[str, Any]] = []
+        current_limits = {
+            'memory_mb': container.config.limits.memory_mb,
+            'pid_limit': container.config.limits.pid_limit,
+        }
+
+        if len(history) < 5:
+            return {
+                'container_id': container.id,
+                'changes': [],
+                'current_limits': current_limits,
+                'suggested_limits': current_limits,
+                'applied': False,
+                'reason': 'insufficient_data',
+            }
+
+        # Analyze memory usage
+        mem_values = [
+            h.get('memory_bytes', 0) / (1024 * 1024)
+            for h in history if h.get('memory_bytes')
+        ]
+        if mem_values:
+            mem_max = max(mem_values)
+            mem_mean = sum(mem_values) / len(mem_values)
+            suggested_mem = int(
+                mem_max * (1 + safety_margin_pct / 100))
+            suggested_mem = max(
+                min_memory_mb,
+                min(max_memory_mb, suggested_mem))
+
+            current_mem = container.config.limits.memory_mb
+            if suggested_mem != current_mem:
+                changes.append({
+                    'resource': 'memory_mb',
+                    'current': current_mem,
+                    'suggested': suggested_mem,
+                    'observed_max_mb': round(mem_max, 1),
+                    'observed_mean_mb': round(mem_mean, 1),
+                    'savings_pct': round(
+                        (1 - suggested_mem / current_mem) * 100, 1)
+                        if current_mem > 0 else 0,
+                })
+
+        # Analyze PID usage
+        pid_values = [
+            h.get('pids_current', 0)
+            for h in history if h.get('pids_current') is not None
+        ]
+        if pid_values:
+            pid_max = max(pid_values)
+            pid_mean = sum(pid_values) / len(pid_values)
+            suggested_pids = int(
+                pid_max * (1 + safety_margin_pct / 100))
+            suggested_pids = max(
+                min_pids,
+                min(max_pids, suggested_pids))
+
+            current_pids = container.config.limits.pid_limit
+            if suggested_pids != current_pids:
+                changes.append({
+                    'resource': 'pid_limit',
+                    'current': current_pids,
+                    'suggested': suggested_pids,
+                    'observed_max': pid_max,
+                    'observed_mean': round(pid_mean, 1),
+                    'savings_pct': round(
+                        (1 - suggested_pids / current_pids) * 100, 1)
+                        if current_pids > 0 else 0,
+                })
+
+        # Apply changes if not dry run
+        applied = False
+        if changes and not dry_run:
+            for change in changes:
+                if change['resource'] == 'memory_mb':
+                    old = container.config.limits.memory_mb
+                    container.config.limits.memory_mb = change['suggested']
+                    self._record_event(
+                        'rightsize_memory', container.id,
+                        f"{old} -> {change['suggested']} MB")
+                elif change['resource'] == 'pid_limit':
+                    old = container.config.limits.pid_limit
+                    container.config.limits.pid_limit = change['suggested']
+                    self._record_event(
+                        'rightsize_pids', container.id,
+                        f"{old} -> {change['suggested']}")
+            applied = True
+
+        suggested_limits = {
+            'memory_mb': container.config.limits.memory_mb,
+            'pid_limit': container.config.limits.pid_limit,
+        }
+        # Override suggested with computed values for dry_run
+        if dry_run and changes:
+            for change in changes:
+                suggested_limits[change['resource']] = change['suggested']
+
+        return {
+            'container_id': container.id,
+            'changes': changes,
+            'current_limits': current_limits,
+            'suggested_limits': suggested_limits,
+            'applied': applied,
+            'dry_run': dry_run,
+            'safety_margin_pct': safety_margin_pct,
+        }
+
+    def rightsize_all_containers(
+        self,
+        safety_margin_pct: float = 20.0,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Right-size all running containers.
+
+        Args:
+            safety_margin_pct: Safety margin percentage.
+            dry_run: If True, report without applying.
+
+        Returns:
+            Dict with per-container results and summary.
+        """
+        results = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.rightsize_container(
+                    c, safety_margin_pct=safety_margin_pct,
+                    dry_run=dry_run)
+                results.append(result)
+
+        total_changes = sum(
+            len(r.get('changes', [])) for r in results)
+        applied = sum(
+            1 for r in results if r.get('applied', False))
+
+        return {
+            'container_count': len(results),
+            'total_changes': total_changes,
+            'containers_applied': applied,
+            'dry_run': dry_run,
+            'containers': results,
+        }
+
+    # ------------------------------------------------------------------
     # Workload scheduling (priority queues)
     # ------------------------------------------------------------------
 

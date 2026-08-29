@@ -1631,6 +1631,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "optimization_actions",
             "container_id": args.container_id,
         }
+    if command == "rightsize":
+        return {
+            "service": "control",
+            "op": "rightsize",
+            "container_id": args.container_id,
+            "safety_margin_pct": getattr(args, 'safety_margin_pct', 20.0),
+            "dry_run": getattr(args, 'dry_run', False),
+        }
+    if command == "rightsize-all":
+        return {
+            "service": "control",
+            "op": "rightsize_all",
+            "safety_margin_pct": getattr(args, 'safety_margin_pct', 20.0),
+            "dry_run": getattr(args, 'dry_run', False),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3973,6 +3988,37 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                     f"({a.get('resource', '')}, "
                     f"savings: {a.get('estimated_savings_pct', 0)}%)")
         return "\n".join(lines)
+    if command == "rightsize":
+        changes = resp.get('changes', [])
+        if not changes:
+            reason = resp.get('reason', 'no_changes')
+            if reason == 'insufficient_data':
+                return "Insufficient data for right-sizing (need 5+ samples)"
+            return "No right-sizing changes recommended"
+        dry_run = resp.get('dry_run', False)
+        lines = ["Right-sizing " + ("(dry run) " if dry_run else "") + "changes:"]
+        for c in changes:
+            lines.append(
+                f"  {c.get('resource', '?')}: "
+                f"{c.get('current', '?')} -> {c.get('suggested', '?')} "
+                f"(savings: {c.get('savings_pct', 0)}%)")
+        return "\n".join(lines)
+    if command == "rightsize-all":
+        total = resp.get('total_changes', 0)
+        applied = resp.get('containers_applied', 0)
+        dry_run = resp.get('dry_run', False)
+        lines = [
+            f"Right-sizing " + ("(dry run) " if dry_run else "") +
+            f"across {resp.get('container_count', 0)} containers: "
+            f"{total} changes, {applied} applied",
+        ]
+        for c in resp.get('containers', []):
+            changes = c.get('changes', [])
+            if changes:
+                name = c.get('container_id', '?')[:8]
+                lines.append(
+                    f"  {name}: {len(changes)} changes")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5132,6 +5178,26 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Get optimization recommendations")
     oa.add_argument("container_id")
     oa.set_defaults(command="optimization-actions")
+
+    # -- right-sizing --
+    rs = sub.add_parser("rightsize",
+                        help="Right-size a container's resource limits")
+    rs.add_argument("container_id")
+    rs.add_argument("--safety-margin", type=float, default=20.0,
+                    dest='safety_margin_pct',
+                    help="Safety margin %% (default: 20)")
+    rs.add_argument("--dry-run", action="store_true", default=False,
+                    help="Report changes without applying")
+    rs.set_defaults(command="rightsize")
+
+    rsa = sub.add_parser("rightsize-all",
+                         help="Right-size all running containers")
+    rsa.add_argument("--safety-margin", type=float, default=20.0,
+                     dest='safety_margin_pct',
+                     help="Safety margin %% (default: 20)")
+    rsa.add_argument("--dry-run", action="store_true", default=False,
+                     help="Report changes without applying")
+    rsa.set_defaults(command="rightsize-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
