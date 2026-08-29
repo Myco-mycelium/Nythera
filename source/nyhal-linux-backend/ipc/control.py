@@ -750,6 +750,12 @@ class ControlService:
             elif op == "cost_optimize_all":
                 self._cost_optimize_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "anomaly_predict":
+                self._anomaly_predict(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_predict_all":
+                self._anomaly_predict_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5254,6 +5260,39 @@ class ControlService:
                            call_id: str,
                            request: Dict[str, Any]) -> None:
         result = self.container_manager.get_fleet_cost_optimization()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_predict(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.predict_anomalies(
+            c,
+            horizon_s=float(request.get('horizon_s', 3600.0)),
+            confidence_threshold=float(
+                request.get('confidence_threshold', 0.5)),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_predict_all(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        result = self.container_manager.predict_fleet_anomalies(
+            horizon_s=float(request.get('horizon_s', 3600.0)),
+            confidence_threshold=float(
+                request.get('confidence_threshold', 0.5)),
+        )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

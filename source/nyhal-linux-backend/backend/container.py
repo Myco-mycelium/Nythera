@@ -10423,6 +10423,250 @@ class ContainerManager:
         return mem_cost + cpu_cost + pid_cost
 
     # ------------------------------------------------------------------
+    # Anomaly prediction engine (forecast future anomalies)
+    # ------------------------------------------------------------------
+
+    def predict_anomalies(
+        self,
+        container: Container,
+        horizon_s: float = 3600.0,
+        confidence_threshold: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Predict future anomalies based on historical patterns.
+
+        Analyzes resource usage history to forecast when thresholds
+        might be breached or when anomalous behavior is likely.
+
+        Args:
+            container: Target container.
+            horizon_s: How far ahead to predict (seconds).
+            confidence_threshold: Minimum confidence to include.
+
+        Returns:
+            Dict with ``predictions``, ``risk_score``, and
+            ``time_to_next_anomaly``.
+        """
+        history = getattr(container, '_resource_history', [])
+        anomalies = getattr(container, '_anomaly_log', [])
+        config = getattr(container, '_monitoring_config', {})
+
+        predictions: List[Dict[str, Any]] = []
+        now = time.time()
+
+        if len(history) < 3:
+            return {
+                'container_id': container.id,
+                'predictions': [],
+                'risk_score': 0.0,
+                'time_to_next_anomaly': None,
+                'confidence': 0.0,
+                'reason': 'insufficient_data',
+            }
+
+        # Analyze each resource dimension
+        for resource in ('memory', 'cpu', 'pids'):
+            values = []
+            for h in history:
+                if resource == 'memory':
+                    val = h.get('memory_bytes', 0)
+                    limit = (
+                        container.config.limits.memory_mb
+                        * 1024 * 1024
+                    )
+                elif resource == 'cpu':
+                    val = h.get('cpu_percent', 0)
+                    limit = 100.0
+                else:
+                    val = h.get('pids', 0)
+                    limit = container.config.limits.pid_limit
+                    if limit <= 0:
+                        limit = 64
+
+                if limit > 0:
+                    values.append(val / limit)
+                else:
+                    values.append(0.0)
+
+            if len(values) < 3:
+                continue
+
+            # Linear regression for trend
+            n = len(values)
+            x_mean = (n - 1) / 2.0
+            y_mean = sum(values) / n
+            numerator = sum(
+                (i - x_mean) * (y_mean - values[i])
+                for i in range(n)
+            )
+            denominator = sum(
+                (i - x_mean) ** 2 for i in range(n)
+            )
+
+            if denominator == 0:
+                slope = 0.0
+            else:
+                slope = -numerator / denominator
+
+            # Extrapolate to horizon
+            steps = horizon_s / max(
+                (history[-1].get('timestamp', now)
+                 - history[0].get('timestamp', now)) / max(n - 1, 1),
+                1.0,
+            )
+            predicted = values[-1] + slope * steps
+
+            # Volatility (standard deviation of residuals)
+            y_intercept = y_mean + slope * x_mean
+            residuals = [
+                values[i] - (y_intercept - slope * i)
+                for i in range(n)
+            ]
+            variance = sum(r ** 2 for r in residuals) / max(n, 1)
+            std_dev = variance ** 0.5
+
+            # Confidence based on R-squared and trend strength
+            ss_res = sum(r ** 2 for r in residuals)
+            ss_tot = sum(
+                (y - y_mean) ** 2 for y in values
+            )
+            r_squared = 1.0 - (ss_res / max(ss_tot, 0.0001))
+            confidence = min(max(r_squared, 0.0), 1.0)
+
+            # Threshold from monitoring config or defaults
+            warn_thresh = 0.75
+            crit_thresh = 0.90
+            if resource == 'memory':
+                warn_thresh = (
+                    config.get('memory_high_pct', 90.0) / 100.0)
+                crit_thresh = 0.95
+            elif resource == 'cpu':
+                warn_thresh = (
+                    config.get('cpu_high_pct', 90.0) / 100.0)
+                crit_thresh = 0.95
+
+            # Determine predicted risk level
+            risk_level = 'normal'
+            if predicted >= crit_thresh:
+                risk_level = 'critical'
+            elif predicted >= warn_thresh:
+                risk_level = 'warning'
+
+            # Time to threshold breach (if trend is upward)
+            time_to_breach = None
+            if slope > 0 and predicted > warn_thresh:
+                steps_to_warn = (
+                    (warn_thresh - values[-1]) / slope
+                    if slope > 0 else float('inf')
+                )
+                time_to_breach = max(
+                    steps_to_warn * (
+                        (history[-1].get('timestamp', now)
+                         - history[0].get('timestamp', now))
+                        / max(n - 1, 1)
+                    ),
+                    0)
+
+            # Historical anomaly rate for this resource
+            res_anomalies = sum(
+                1 for a in anomalies
+                if a.get('resource') == resource
+            )
+            anomaly_rate = (
+                res_anomalies / max(len(history), 1)
+            )
+
+            if confidence >= confidence_threshold:
+                predictions.append({
+                    'resource': resource,
+                    'current_usage_pct': round(
+                        values[-1] * 100, 1),
+                    'predicted_usage_pct': round(
+                        min(predicted, 1.5) * 100, 1),
+                    'trend_slope': round(slope, 6),
+                    'volatility': round(std_dev, 4),
+                    'risk_level': risk_level,
+                    'confidence': round(confidence, 3),
+                    'time_to_breach_s': (
+                        round(time_to_breach, 1)
+                        if time_to_breach is not None
+                        else None),
+                    'anomaly_rate': round(anomaly_rate, 4),
+                })
+
+        # Overall risk score (0-100)
+        risk_score = 0.0
+        earliest_breach = None
+        for pred in predictions:
+            if pred['risk_level'] == 'critical':
+                risk_score += 30
+            elif pred['risk_level'] == 'warning':
+                risk_score += 15
+            # Penalize high volatility
+            risk_score += pred['volatility'] * 100
+            # Factor in historical anomaly rate
+            risk_score += pred['anomaly_rate'] * 50
+            # Time-to-breach bonus
+            if pred['time_to_breach_s'] is not None:
+                if earliest_breach is None or (
+                    pred['time_to_breach_s'] < earliest_breach
+                ):
+                    earliest_breach = pred['time_to_breach_s']
+
+        risk_score = min(risk_score, 100.0)
+
+        return {
+            'container_id': container.id,
+            'predictions': predictions,
+            'risk_score': round(risk_score, 1),
+            'time_to_next_anomaly': (
+                round(earliest_breach, 1)
+                if earliest_breach is not None
+                else None),
+            'horizon_s': horizon_s,
+            'history_points': len(history),
+        }
+
+    def predict_fleet_anomalies(
+        self,
+        horizon_s: float = 3600.0,
+        confidence_threshold: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Predict anomalies across all containers.
+
+        Returns:
+            Dict with per-container predictions and fleet risk summary.
+        """
+        results: List[Dict[str, Any]] = []
+        total_risk = 0.0
+        high_risk = 0
+
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            pred = self.predict_anomalies(
+                c, horizon_s=horizon_s,
+                confidence_threshold=confidence_threshold)
+            results.append(pred)
+            total_risk += pred['risk_score']
+            if pred['risk_score'] >= 50:
+                high_risk += 1
+
+        results.sort(
+            key=lambda r: r['risk_score'], reverse=True)
+
+        avg_risk = (
+            total_risk / max(len(results), 1)
+        )
+
+        return {
+            'container_count': len(results),
+            'high_risk_count': high_risk,
+            'fleet_risk_score': round(avg_risk, 1),
+            'horizon_s': horizon_s,
+            'containers': results,
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

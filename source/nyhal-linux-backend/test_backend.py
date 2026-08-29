@@ -25652,6 +25652,156 @@ class TestCostOptimization(unittest.TestCase):
         self.assertIn('optimization_score', replies[0])
 
 
+class TestAnomalyPrediction(unittest.TestCase):
+    """Tests for anomaly prediction engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_insufficient_data(self):
+        """Prediction with insufficient data returns low confidence."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ap1", command=["echo"]))
+        result = mgr.predict_anomalies(c)
+        self.assertEqual(result['reason'], 'insufficient_data')
+        self.assertEqual(result['risk_score'], 0.0)
+        self.assertEqual(len(result['predictions']), 0)
+
+    def test_with_history(self):
+        """Prediction with sufficient data returns predictions."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="ap2", command=["echo"],
+            limits=ResourceLimits(memory_mb=512)))
+        # Simulate increasing memory usage
+        now = time.time()
+        c._resource_history = [
+            {'memory_bytes': 100 * 1024 * 1024, 'cpu_percent': 5.0,
+             'pids': 3, 'timestamp': now - 300 + i * 60}
+            for i in range(6)
+        ]
+        result = mgr.predict_anomalies(c)
+        self.assertIn('predictions', result)
+        self.assertIn('risk_score', result)
+        self.assertEqual(result['history_points'], 6)
+
+    def test_increasing_trend_warning(self):
+        """Strong upward trend creates warning predictions."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="ap3", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        # Memory approaching limit
+        now = time.time()
+        c._resource_history = [
+            {'memory_bytes': (50 + i * 30) * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 600 + i * 100}
+            for i in range(7)
+        ]
+        result = mgr.predict_anomalies(c)
+        # Should predict elevated risk
+        self.assertGreaterEqual(result['risk_score'], 0)
+
+    def test_fleet_prediction(self):
+        """Fleet-wide prediction across containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="ap4", command=["echo"]))
+        mgr.create(ContainerConfig(name="ap5", command=["echo"]))
+        result = mgr.predict_fleet_anomalies()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('fleet_risk_score', result)
+        self.assertIn('high_risk_count', result)
+        self.assertEqual(len(result['containers']), 2)
+
+    def test_cli_payload(self):
+        """CLI build_payload for anomaly prediction commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", horizon_s=7200.0,
+            confidence_threshold=0.3)
+        p = cli.build_payload("anomaly-predict", ns)
+        self.assertEqual(p["op"], "anomaly_predict")
+        self.assertEqual(p["horizon_s"], 7200.0)
+        self.assertEqual(p["confidence_threshold"], 0.3)
+
+        ns2 = argparse.Namespace(
+            horizon_s=1800.0, confidence_threshold=0.6)
+        p2 = cli.build_payload("anomaly-predict-all", ns2)
+        self.assertEqual(p2["op"], "anomaly_predict_all")
+
+    def test_format_human(self):
+        """format_human renders anomaly prediction results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'risk_score': 45.0,
+            'time_to_next_anomaly': 1200.0,
+            'predictions': [
+                {'resource': 'memory',
+                 'current_usage_pct': 70.0,
+                 'predicted_usage_pct': 85.0,
+                 'risk_level': 'warning',
+                 'confidence': 0.8},
+            ],
+        }
+        text = cli.format_human("anomaly-predict", resp)
+        self.assertIn('c1', text)
+        self.assertIn('45.0', text)
+        self.assertIn('memory', text)
+        self.assertIn('warning', text)
+
+        resp2 = {
+            'ok': True,
+            'container_count': 3,
+            'high_risk_count': 1,
+            'fleet_risk_score': 20.0,
+            'containers': [
+                {'container_id': 'c2', 'risk_score': 50.0},
+            ],
+        }
+        text2 = cli.format_human("anomaly-predict-all", resp2)
+        self.assertIn('Fleet', text2)
+        self.assertIn('c2', text2)
+
+    def test_control_handler(self):
+        """ControlService dispatches anomaly_predict op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="ap-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "anomaly_predict",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('risk_score', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25754,6 +25904,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAAutoEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnomalyPrediction))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

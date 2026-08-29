@@ -1768,6 +1768,23 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "cost-optimize-all":
         return {"service": "control", "op": "cost_optimize_all"}
+    if command == "anomaly-predict":
+        return {
+            "service": "control",
+            "op": "anomaly_predict",
+            "container_id": args.container_id,
+            "horizon_s": getattr(args, 'horizon_s', 3600.0),
+            "confidence_threshold": getattr(
+                args, 'confidence_threshold', 0.5),
+        }
+    if command == "anomaly-predict-all":
+        return {
+            "service": "control",
+            "op": "anomaly_predict_all",
+            "horizon_s": getattr(args, 'horizon_s', 3600.0),
+            "confidence_threshold": getattr(
+                args, 'confidence_threshold', 0.5),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4321,6 +4338,31 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"  total recommendations: {resp.get('total_recommendations', 0)}",
         ]
         return "\n".join(lines)
+    if command == "anomaly-predict":
+        lines = [
+            f"Anomaly prediction for {resp.get('container_id', '?')}:",
+            f"  risk score: {resp.get('risk_score', 0)}/100",
+            f"  time to next anomaly: {resp.get('time_to_next_anomaly')}",
+            f"  predictions: {len(resp.get('predictions', []))}",
+        ]
+        for p in resp.get('predictions', []):
+            lines.append(
+                f"    {p['resource']}: {p['current_usage_pct']}% "
+                f"→ {p['predicted_usage_pct']}% "
+                f"[{p['risk_level']}] (confidence: {p['confidence']})")
+        return "\n".join(lines)
+    if command == "anomaly-predict-all":
+        lines = [
+            f"Fleet anomaly prediction:",
+            f"  containers: {resp.get('container_count', 0)}",
+            f"  high risk: {resp.get('high_risk_count', 0)}",
+            f"  fleet risk score: {resp.get('fleet_risk_score', 0)}/100",
+        ]
+        for c in resp.get('containers', []):
+            if c.get('risk_score', 0) > 0:
+                lines.append(
+                    f"    {c['container_id']}: risk={c['risk_score']}" )
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5660,6 +5702,23 @@ def build_parser() -> argparse.ArgumentParser:
     coa = sub.add_parser("cost-optimize-all",
                          help="Get fleet-wide cost optimization report")
     coa.set_defaults(command="cost-optimize-all")
+
+    ap = sub.add_parser("anomaly-predict",
+                        help="Predict anomalies for a container")
+    ap.add_argument("container_id")
+    ap.add_argument("--horizon", type=float, default=3600.0,
+                    help="Prediction horizon in seconds (default: 3600)")
+    ap.add_argument("--confidence", type=float, default=0.5,
+                    help="Minimum confidence threshold (default: 0.5)")
+    ap.set_defaults(command="anomaly-predict")
+
+    apa = sub.add_parser("anomaly-predict-all",
+                         help="Predict anomalies across all containers")
+    apa.add_argument("--horizon", type=float, default=3600.0,
+                     help="Prediction horizon in seconds (default: 3600)")
+    apa.add_argument("--confidence", type=float, default=0.5,
+                     help="Minimum confidence threshold (default: 0.5)")
+    apa.set_defaults(command="anomaly-predict-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
