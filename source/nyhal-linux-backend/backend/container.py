@@ -1379,6 +1379,157 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Event log archival scheduling
+    # ------------------------------------------------------------------
+
+    def configure_archive_schedule(
+        self,
+        enabled: bool = True,
+        interval_s: float = 86400.0,
+        keep_recent: int = 500,
+        auto_compress: bool = True,
+        max_archives: int = 30,
+    ) -> Dict[str, Any]:
+        """Configure automatic event log archival scheduling.
+
+        When enabled, the system periodically compresses and archives
+        the event logs, retaining the last ``max_archives`` compressed
+        snapshots.
+
+        Args:
+            enabled: Whether scheduling is active.
+            interval_s: Seconds between archives (default: 86400 = daily).
+            keep_recent: Number of recent events to keep uncompressed.
+            auto_compress: Whether to auto-compress during archival.
+            max_archives: Maximum archive snapshots to retain.
+
+        Returns:
+            Dict with the schedule configuration.
+        """
+        if not hasattr(self, '_archive_schedule'):
+            self._archive_schedule = {}
+
+        self._archive_schedule.update({
+            'enabled': enabled,
+            'interval_s': interval_s,
+            'keep_recent': keep_recent,
+            'auto_compress': auto_compress,
+            'max_archives': max_archives,
+            'last_archive_time': (
+                self._archive_schedule.get('last_archive_time')
+            ),
+            'archive_count': (
+                self._archive_schedule.get('archive_count', 0)
+            ),
+        })
+
+        self._record_event(
+            'archive_schedule_configured', 'system',
+            f"enabled={enabled}, interval={interval_s}s, "
+            f"keep_recent={keep_recent}")
+
+        return {
+            'schedule': dict(self._archive_schedule),
+        }
+
+    def get_archive_schedule(self) -> Dict[str, Any]:
+        """Get the archive schedule configuration."""
+        schedule = getattr(self, '_archive_schedule', {})
+        return {
+            'schedule': dict(schedule) if schedule else {},
+            'status': 'set' if schedule else 'unset',
+        }
+
+    def disable_archive_schedule(self) -> Dict[str, Any]:
+        """Disable archive scheduling."""
+        if hasattr(self, '_archive_schedule'):
+            self._archive_schedule['enabled'] = False
+        return {'disabled': True}
+
+    def run_archive_now(self) -> Dict[str, Any]:
+        """Perform an immediate event log archival.
+
+        Exports, compresses, and stores the compressed log. Returns
+        the archival result.
+        """
+        schedule = getattr(self, '_archive_schedule', {})
+        keep_recent = schedule.get('keep_recent', 500)
+        auto_compress = schedule.get('auto_compress', True)
+        max_archives = schedule.get('max_archives', 30)
+
+        # Export all events
+        export_data = self.export_event_log()
+
+        # Compress if enabled
+        if auto_compress:
+            compressed = self.compress_event_log(
+                export_data, keep_recent=keep_recent)
+        else:
+            compressed = export_data
+
+        # Store the archive
+        if not hasattr(self, '_archives'):
+            self._archives = []
+
+        archive_entry = {
+            'timestamp': time.time(),
+            'original_events': export_data.get('total_events', 0),
+            'compressed_events': compressed.get('compressed_events', 0),
+            'compression_ratio': compressed.get('compression_ratio', 0),
+            'container_count': len(compressed.get('containers', [])),
+            'data': compressed,
+        }
+
+        self._archives.append(archive_entry)
+
+        # Rolling window: keep max_archives
+        if len(self._archives) > max_archives:
+            self._archives = self._archives[-max_archives:]
+
+        # Update schedule stats
+        schedule['last_archive_time'] = time.time()
+        schedule['archive_count'] = schedule.get('archive_count', 0) + 1
+
+        self._record_event(
+            'archive_completed', 'system',
+            f"archived {archive_entry['original_events']} -> "
+            f"{archive_entry['compressed_events']} events")
+
+        return {
+            'timestamp': archive_entry['timestamp'],
+            'original_events': archive_entry['original_events'],
+            'compressed_events': archive_entry['compressed_events'],
+            'compression_ratio': archive_entry['compression_ratio'],
+            'archive_count': schedule['archive_count'],
+        }
+
+    def list_archives(self, tail: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List stored archives (metadata only, not full data)."""
+        archives = getattr(self, '_archives', [])
+        result = []
+        for a in archives:
+            result.append({
+                'timestamp': a['timestamp'],
+                'original_events': a['original_events'],
+                'compressed_events': a['compressed_events'],
+                'compression_ratio': a['compression_ratio'],
+                'container_count': a['container_count'],
+            })
+        result = list(reversed(result))  # newest first
+        if tail is not None:
+            result = result[:tail]
+        return result
+
+    def get_archive(self, index: int) -> Optional[Dict[str, Any]]:
+        """Get a specific archive by index (0 = most recent)."""
+        archives = getattr(self, '_archives', [])
+        if not archives or index < 0 or index >= len(archives):
+            return None
+        # newest first, so reverse
+        reversed_archives = list(reversed(archives))
+        return reversed_archives[index]
+
+    # ------------------------------------------------------------------
     # Multi-tenant fair-share enforcement
     # ------------------------------------------------------------------
 

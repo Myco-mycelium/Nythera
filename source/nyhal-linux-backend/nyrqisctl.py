@@ -1566,6 +1566,34 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "keep_recent": getattr(args, 'keep_recent', 100),
             "summarize_older": getattr(args, 'summarize_older', True),
         }
+    if command == "archive-schedule-set":
+        return {
+            "service": "control",
+            "op": "archive_schedule_set",
+            "enabled": getattr(args, 'enabled', True),
+            "interval_s": getattr(args, 'interval_s', 86400.0),
+            "keep_recent": getattr(args, 'keep_recent', 500),
+            "auto_compress": getattr(args, 'auto_compress', True),
+            "max_archives": getattr(args, 'max_archives', 30),
+        }
+    if command == "archive-schedule-get":
+        return {"service": "control", "op": "archive_schedule_get"}
+    if command == "archive-schedule-disable":
+        return {"service": "control", "op": "archive_schedule_disable"}
+    if command == "archive-run-now":
+        return {"service": "control", "op": "archive_run_now"}
+    if command == "archive-list":
+        return {
+            "service": "control",
+            "op": "archive_list",
+            "tail": getattr(args, 'tail', None),
+        }
+    if command == "archive-get":
+        return {
+            "service": "control",
+            "op": "archive_get",
+            "index": getattr(args, 'index', 0),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3763,6 +3791,51 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"Compressed {orig} -> {comp} events "
             f"({ratio:.1%} reduction) across "
             f"{len(resp.get('containers', []))} containers")
+    if command == "archive-schedule-set":
+        sched = resp.get('schedule', {})
+        enabled = 'enabled' if sched.get('enabled') else 'disabled'
+        return (
+            f"Archive schedule {enabled}:\n"
+            f"  interval: {sched.get('interval_s', 0):.0f}s\n"
+            f"  keep_recent: {sched.get('keep_recent', 0)}\n"
+            f"  auto_compress: {sched.get('auto_compress', True)}\n"
+            f"  max_archives: {sched.get('max_archives', 0)}")
+    if command == "archive-schedule-get":
+        sched = resp.get('schedule', {})
+        if not sched:
+            return "No archive schedule configured"
+        enabled = 'enabled' if sched.get('enabled') else 'disabled'
+        last = sched.get('last_archive_time', 0)
+        count = sched.get('archive_count', 0)
+        return (
+            f"Archive schedule {enabled}: "
+            f"{count} archives, "
+            f"last at {last:.0f}")
+    if command == "archive-schedule-disable":
+        return "Archive schedule disabled"
+    if command == "archive-run-now":
+        orig = resp.get('original_events', 0)
+        comp = resp.get('compressed_events', 0)
+        ratio = resp.get('compression_ratio', 0)
+        count = resp.get('archive_count', 0)
+        return (
+            f"Archive #{count}: {orig} -> {comp} events "
+            f"({ratio:.1%} reduction)")
+    if command == "archive-list":
+        archives = resp.get('archives', [])
+        if not archives:
+            return "No archives stored"
+        lines = [f"{len(archives)} archives:"]
+        for i, a in enumerate(archives):
+            lines.append(
+                f"  #{i}: {a.get('original_events', 0)} -> "
+                f"{a.get('compressed_events', 0)} events "
+                f"({a.get('compression_ratio', 0):.1%})")
+        return "\n".join(lines)
+    if command == "archive-get":
+        orig = resp.get('original_events', 0)
+        comp = resp.get('compressed_events', 0)
+        return f"Archive: {orig} -> {comp} events"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4834,6 +4907,49 @@ def build_parser() -> argparse.ArgumentParser:
     elc.add_argument("--output", default=None,
                      help="Output file (default: stdout)")
     elc.set_defaults(command="event-log-compress")
+
+    # -- archive scheduling --
+    ass = sub.add_parser("archive-schedule-set",
+                        help="Configure automatic archival schedule")
+    ass.add_argument("--enabled", action="store_true", default=True,
+                     help="Enable scheduling (default: True)")
+    ass.add_argument("--disabled", dest="enabled",
+                     action="store_false",
+                     help="Disable scheduling")
+    ass.add_argument("--interval-s", type=float, default=86400.0,
+                     help="Seconds between archives (default: 86400)")
+    ass.add_argument("--keep-recent", type=int, default=500,
+                     help="Recent events to keep uncompressed (default: 500)")
+    ass.add_argument("--no-auto-compress", dest="auto_compress",
+                     action="store_false", default=True,
+                     help="Don't auto-compress during archival")
+    ass.add_argument("--max-archives", type=int, default=30,
+                     help="Maximum archives to retain (default: 30)")
+    ass.set_defaults(command="archive-schedule-set")
+
+    asg = sub.add_parser("archive-schedule-get",
+                         help="Show archive schedule")
+    asg.set_defaults(command="archive-schedule-get")
+
+    asd = sub.add_parser("archive-schedule-disable",
+                         help="Disable archive scheduling")
+    asd.set_defaults(command="archive-schedule-disable")
+
+    arn = sub.add_parser("archive-run-now",
+                         help="Run archive immediately")
+    arn.set_defaults(command="archive-run-now")
+
+    al = sub.add_parser("archive-list",
+                        help="List stored archives")
+    al.add_argument("--tail", type=int, default=None,
+                    help="Show only last N archives")
+    al.set_defaults(command="archive-list")
+
+    ag = sub.add_parser("archive-get",
+                        help="Get a specific archive")
+    ag.add_argument("index", type=int, nargs='?', default=0,
+                    help="Archive index (0 = most recent)")
+    ag.set_defaults(command="archive-get")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

@@ -654,6 +654,24 @@ class ControlService:
             elif op == "event_log_compress":
                 self._event_log_compress(
                     server, sender_path, msg.message_id, request)
+            elif op == "archive_schedule_set":
+                self._archive_schedule_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "archive_schedule_get":
+                self._archive_schedule_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "archive_schedule_disable":
+                self._archive_schedule_disable(
+                    server, sender_path, msg.message_id, request)
+            elif op == "archive_run_now":
+                self._archive_run_now(
+                    server, sender_path, msg.message_id, request)
+            elif op == "archive_list":
+                self._archive_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "archive_get":
+                self._archive_get(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4684,6 +4702,70 @@ class ControlService:
         )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
+        })
+
+    def _archive_schedule_set(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        result = self.container_manager.configure_archive_schedule(
+            enabled=request.get('enabled', True),
+            interval_s=request.get('interval_s', 86400.0),
+            keep_recent=request.get('keep_recent', 500),
+            auto_compress=request.get('auto_compress', True),
+            max_archives=request.get('max_archives', 30),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _archive_schedule_get(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_archive_schedule()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _archive_schedule_disable(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        result = self.container_manager.disable_archive_schedule()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _archive_run_now(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        result = self.container_manager.run_archive_now()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _archive_list(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        archives = self.container_manager.list_archives(
+            tail=request.get('tail'))
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "archives": archives,
+            "count": len(archives),
+        })
+
+    def _archive_get(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        index = request.get('index', 0)
+        archive = self.container_manager.get_archive(index)
+        if archive is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"archive index {index} not found",
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **archive,
         })
 
     def _save_state(self) -> None:

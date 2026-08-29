@@ -24075,6 +24075,164 @@ class TestEventLogCompression(unittest.TestCase):
         self.assertIn('compression_ratio', replies[0])
 
 
+class TestArchiveScheduling(unittest.TestCase):
+    """Tests for event log archival scheduling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_archive_schedule(self):
+        """Configure archive schedule."""
+        mgr = self._manager()
+        result = mgr.configure_archive_schedule(
+            enabled=True, interval_s=3600.0,
+            keep_recent=200, auto_compress=True,
+            max_archives=10)
+        self.assertTrue(result['schedule']['enabled'])
+        self.assertEqual(result['schedule']['interval_s'], 3600.0)
+        self.assertEqual(result['schedule']['keep_recent'], 200)
+
+    def test_get_archive_schedule(self):
+        """Get archive schedule."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule(enabled=True)
+        result = mgr.get_archive_schedule()
+        self.assertEqual(result['status'], 'set')
+        self.assertTrue(result['schedule']['enabled'])
+
+    def test_get_archive_schedule_unset(self):
+        """Get archive schedule when not configured."""
+        result = self._manager().get_archive_schedule()
+        self.assertEqual(result['status'], 'unset')
+
+    def test_disable_archive_schedule(self):
+        """Disable archive schedule."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule(enabled=True)
+        result = mgr.disable_archive_schedule()
+        self.assertTrue(result['disabled'])
+
+    def test_run_archive_now(self):
+        """Run archive immediately."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule(keep_recent=10)
+        result = mgr.run_archive_now()
+        self.assertIn('original_events', result)
+        self.assertIn('compressed_events', result)
+        self.assertEqual(result['archive_count'], 1)
+
+    def test_run_archive_rolling_window(self):
+        """Archives are bounded by max_archives."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule(max_archives=3)
+        for i in range(5):
+            mgr.run_archive_now()
+        archives = mgr.list_archives()
+        self.assertEqual(len(archives), 3)
+
+    def test_list_archives(self):
+        """list_archives returns metadata."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule()
+        mgr.run_archive_now()
+        archives = mgr.list_archives()
+        self.assertEqual(len(archives), 1)
+        self.assertIn('original_events', archives[0])
+        self.assertIn('compression_ratio', archives[0])
+
+    def test_list_archives_tail(self):
+        """list_archives respects tail."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule()
+        for i in range(3):
+            mgr.run_archive_now()
+        archives = mgr.list_archives(tail=1)
+        self.assertEqual(len(archives), 1)
+
+    def test_get_archive(self):
+        """get_archive returns a specific archive."""
+        mgr = self._manager()
+        mgr.configure_archive_schedule()
+        mgr.run_archive_now()
+        archive = mgr.get_archive(0)
+        self.assertIsNotNone(archive)
+        self.assertIn('data', archive)
+
+    def test_get_archive_not_found(self):
+        """get_archive returns None for invalid index."""
+        result = self._manager().get_archive(99)
+        self.assertIsNone(result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for archive commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            enabled=True, interval_s=3600.0,
+            keep_recent=500, auto_compress=True,
+            max_archives=30)
+        p = cli.build_payload("archive-schedule-set", ns)
+        self.assertEqual(p["op"], "archive_schedule_set")
+        self.assertEqual(p["interval_s"], 3600.0)
+
+        p2 = cli.build_payload("archive-schedule-get", argparse.Namespace())
+        self.assertEqual(p2["op"], "archive_schedule_get")
+
+        p3 = cli.build_payload("archive-schedule-disable", argparse.Namespace())
+        self.assertEqual(p3["op"], "archive_schedule_disable")
+
+        p4 = cli.build_payload("archive-run-now", argparse.Namespace())
+        self.assertEqual(p4["op"], "archive_run_now")
+
+        p5 = cli.build_payload("archive-list", argparse.Namespace(tail=None))
+        self.assertEqual(p5["op"], "archive_list")
+
+        p6 = cli.build_payload("archive-get", argparse.Namespace(index=0))
+        self.assertEqual(p6["op"], "archive_get")
+        self.assertEqual(p6["index"], 0)
+
+    def test_format_human(self):
+        """format_human renders archive results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'original_events': 100,
+            'compressed_events': 20,
+            'archive_count': 5,
+            'compression_ratio': 0.8,
+        }
+        text = cli.format_human("archive-run-now", resp)
+        self.assertIn('100', text)
+        self.assertIn('20', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches archive ops."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "archive_run_now"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('archive_count', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24166,6 +24324,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogExportImport))
     suite.addTests(loader.loadTestsFromTestCase(TestHealthScoring))
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogCompression))
+    suite.addTests(loader.loadTestsFromTestCase(TestArchiveScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
