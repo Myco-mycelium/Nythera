@@ -336,6 +336,7 @@ class ContainerManager:
         self._events: RingBuffer = RingBuffer(max_lines=500)
         # Resource quotas: owner → {"memory_mb": int, "pid_limit": int, "max_containers": int}
         self._quotas: Dict[str, Dict[str, Any]] = {}
+        self._tenant_configs: Dict[str, Dict[str, Any]] = {}
         # Container lock files (prevent concurrent access)
         self._lock_dir = Path(tempfile.gettempdir()) / "nyrqis-locks"
         self._lock_dir.mkdir(parents=True, exist_ok=True)
@@ -1008,6 +1009,319 @@ class ContainerManager:
             "pid_limit": quota.get("pid_limit"),
             "max_containers": quota.get("max_containers"),
         }
+
+    # ------------------------------------------------------------------
+    # Multi-tenant fair-share enforcement
+    # ------------------------------------------------------------------
+
+    def set_tenant_config(
+        self,
+        owner: str,
+        priority: int = 0,
+        weight: float = 1.0,
+        burstable_pct: float = 20.0,
+        enforce: bool = True,
+        eviction_policy: str = "lowest_priority",
+    ) -> Dict[str, Any]:
+        """Configure multi-tenant enforcement parameters.
+
+        Args:
+            owner: Tenant identifier.
+            priority: Numeric priority (higher = more important).
+            weight: Fair-share weight relative to other tenants.
+            burstable_pct: How far above quota a tenant can burst.
+            enforce: Whether to actively enforce quotas.
+            eviction_policy: What to do when a tenant exceeds quota:
+                ``lowest_priority`` evict lowest-priority tenant,
+                ``throttle`` throttle the exceeding tenant,
+                ``alert`` only alert, ``none`` do nothing.
+
+        Returns:
+            The tenant config dict.
+        """
+        valid_policies = {
+            'lowest_priority', 'throttle', 'alert', 'none',
+        }
+        if eviction_policy not in valid_policies:
+            raise ValueError(
+                f"invalid eviction_policy {eviction_policy!r}, "
+                f"must be one of {sorted(valid_policies)}")
+
+        config = self._tenant_configs.get(owner, {})
+        config['priority'] = priority
+        config['weight'] = weight
+        config['burstable_pct'] = burstable_pct
+        config['enforce'] = enforce
+        config['eviction_policy'] = eviction_policy
+        config['updated_at'] = time.time()
+        self._tenant_configs[owner] = config
+
+        self._record_event(
+            'tenant_config_set', owner,
+            f"priority={priority}, weight={weight}, "
+            f"enforce={enforce}, policy={eviction_policy}")
+
+        return {
+            'owner': owner,
+            'config': dict(config),
+        }
+
+    def get_tenant_config(self, owner: str) -> Dict[str, Any]:
+        """Get tenant configuration."""
+        config = self._tenant_configs.get(owner, {})
+        return {
+            'owner': owner,
+            'config': dict(config) if config else {},
+            'status': 'set' if config else 'unset',
+        }
+
+    def list_tenant_configs(self) -> Dict[str, Any]:
+        """List all tenant configurations."""
+        return {
+            'tenants': {
+                k: dict(v) for k, v in self._tenant_configs.items()
+            },
+            'count': len(self._tenant_configs),
+        }
+
+    def calculate_fair_share(
+        self,
+        resource: str = "memory_mb",
+    ) -> Dict[str, Any]:
+        """Calculate fair-share allocation across all tenants.
+
+        Uses weighted fair queuing: each tenant's share is
+        ``weight / sum(all_weights) * total_resource``.
+
+        Args:
+            resource: Resource to calculate share for.
+                One of ``memory_mb``, ``pid_limit``.
+
+        Returns:
+            Dict with per-tenant fair share, usage, and whether
+            they're over their share.
+        """
+        quota_key_map = {
+            'memory_mb': 'memory_mb',
+            'pid_limit': 'pid_limit',
+        }
+        quota_key = quota_key_map.get(resource, resource)
+
+        # Gather tenants and their total quota
+        tenants: Dict[str, Dict[str, Any]] = {}
+        for owner, quota in self._quotas.items():
+            limit = quota.get(quota_key)
+            if limit is not None:
+                tc = self._tenant_configs.get(owner, {})
+                weight = tc.get('weight', 1.0)
+                tenants[owner] = {
+                    'quota': limit,
+                    'weight': weight,
+                    'usage': 0,
+                }
+
+        if not tenants:
+            return {
+                'resource': resource,
+                'tenants': {},
+                'total_quota': 0,
+                'total_weight': 0,
+            }
+
+        total_quota = sum(t['quota'] for t in tenants.values())
+        total_weight = sum(t['weight'] for t in tenants.values())
+
+        # Sum actual usage per owner
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            owner = getattr(c.config, 'owner', 'default')
+            if owner in tenants:
+                if resource == 'memory_mb':
+                    tenants[owner]['usage'] += c.config.limits.memory_mb
+                elif resource == 'pid_limit':
+                    tenants[owner]['usage'] += c.config.limits.pid_limit
+
+        # Calculate fair share and status
+        result_tenants: Dict[str, Dict[str, Any]] = {}
+        for owner, info in tenants.items():
+            fair_share = (
+                (info['weight'] / total_weight * total_quota)
+                if total_weight > 0 else 0
+            )
+            tc = self._tenant_configs.get(owner, {})
+            burstable_pct = tc.get('burstable_pct', 20.0)
+            burst_limit = fair_share * (1 + burstable_pct / 100)
+            usage = info['usage']
+            pct_of_share = (
+                (usage / fair_share * 100) if fair_share > 0 else 0
+            )
+            status = 'ok'
+            if usage > burst_limit:
+                status = 'over_burst'
+            elif usage > fair_share:
+                status = 'over_share'
+
+            result_tenants[owner] = {
+                'quota': info['quota'],
+                'fair_share': round(fair_share, 1),
+                'burst_limit': round(burst_limit, 1),
+                'usage': usage,
+                'pct_of_share': round(pct_of_share, 1),
+                'status': status,
+                'weight': info['weight'],
+            }
+
+        return {
+            'resource': resource,
+            'tenants': result_tenants,
+            'total_quota': total_quota,
+            'total_weight': total_weight,
+        }
+
+    def enforce_tenant_quotas(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Enforce tenant quotas across all tenants.
+
+        Checks each tenant's usage against their fair share and
+        burst limit, and returns enforcement actions to take.
+
+        Returns:
+            List of enforcement entries with tenant, status,
+            action, and affected containers.
+        """
+        actions = []
+        for owner, quota in self._quotas.items():
+            tc = self._tenant_configs.get(owner, {})
+            if not tc.get('enforce', False):
+                continue
+
+            eviction_policy = tc.get('eviction_policy', 'alert')
+            if eviction_policy == 'none':
+                continue
+
+            # Get all containers for this owner
+            owner_containers = [
+                c for c in self.containers.values()
+                if (getattr(c.config, 'owner', 'default') == owner
+                    and c.state != ContainerState.TERMINATED)
+            ]
+
+            # Check memory quota
+            mem_limit = quota.get('memory_mb')
+            if mem_limit is not None:
+                total_mem = sum(
+                    c.config.limits.memory_mb for c in owner_containers)
+                if total_mem > mem_limit:
+                    action = {
+                        'owner': owner,
+                        'resource': 'memory',
+                        'usage': total_mem,
+                        'limit': mem_limit,
+                        'overage': total_mem - mem_limit,
+                        'policy': eviction_policy,
+                        'containers': [c.id for c in owner_containers],
+                    }
+                    if eviction_policy == 'throttle':
+                        action['recommended_action'] = 'throttle_containers'
+                    elif eviction_policy == 'lowest_priority':
+                        action['recommended_action'] = 'evict_lowest'
+                    elif eviction_policy == 'alert':
+                        action['recommended_action'] = 'alert_only'
+                    else:
+                        action['recommended_action'] = 'none'
+                    actions.append(action)
+
+            # Check container count
+            max_c = quota.get('max_containers')
+            if max_c is not None and len(owner_containers) > max_c:
+                action = {
+                    'owner': owner,
+                    'resource': 'containers',
+                    'usage': len(owner_containers),
+                    'limit': max_c,
+                    'overage': len(owner_containers) - max_c,
+                    'policy': eviction_policy,
+                    'containers': [c.id for c in owner_containers],
+                    'recommended_action': (
+                        'evict_lowest' if eviction_policy == 'lowest_priority'
+                        else eviction_policy
+                    ),
+                }
+                actions.append(action)
+
+        if actions:
+            self._record_event(
+                'tenant_enforcement', 'system',
+                f"{len(actions)} tenants need enforcement")
+
+        return actions
+
+    def get_tenant_usage_summary(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Get a summary of resource usage across all tenants.
+
+        Returns:
+            List of per-tenant summaries with usage, quota, and
+            container counts.
+        """
+        tenant_usage: Dict[str, Dict[str, Any]] = {}
+
+        for owner, quota in self._quotas.items():
+            tenant_usage[owner] = {
+                'owner': owner,
+                'quota': dict(quota),
+                'containers': 0,
+                'memory_used': 0,
+                'pids_used': 0,
+                'status': 'idle',
+            }
+
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            owner = getattr(c.config, 'owner', 'default')
+            if owner not in tenant_usage:
+                continue
+            tenant_usage[owner]['containers'] += 1
+            tenant_usage[owner]['memory_used'] += c.config.limits.memory_mb
+            tenant_usage[owner]['pids_used'] += c.config.limits.pid_limit
+            tenant_usage[owner]['status'] = 'active'
+
+        # Calculate utilization percentages
+        result = []
+        for owner, info in tenant_usage.items():
+            quota = info['quota']
+            mem_limit = quota.get('memory_mb')
+            mem_pct = (
+                round(info['memory_used'] / mem_limit * 100, 1)
+                if mem_limit and mem_limit > 0 else 0
+            )
+            pid_limit = quota.get('pid_limit')
+            pid_pct = (
+                round(info['pids_used'] / pid_limit * 100, 1)
+                if pid_limit and pid_limit > 0 else 0
+            )
+            tc = self._tenant_configs.get(owner, {})
+            result.append({
+                'owner': owner,
+                'priority': tc.get('priority', 0),
+                'weight': tc.get('weight', 1.0),
+                'containers': info['containers'],
+                'memory_used_mb': info['memory_used'],
+                'memory_limit_mb': mem_limit,
+                'memory_pct': mem_pct,
+                'pids_used': info['pids_used'],
+                'pid_limit': pid_limit,
+                'pid_pct': pid_pct,
+                'status': info['status'],
+            })
+
+        # Sort by priority descending
+        result.sort(key=lambda x: -x.get('priority', 0))
+        return result
 
     # -- health checks ---------------------------------------------------
 

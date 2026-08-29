@@ -1489,6 +1489,35 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "trigger": getattr(args, 'trigger', None),
             "action": getattr(args, 'action', None),
         }
+    if command == "tenant-config-set":
+        return {
+            "service": "control",
+            "op": "tenant_config_set",
+            "owner": args.owner,
+            "priority": getattr(args, 'priority', 0),
+            "weight": getattr(args, 'weight', 1.0),
+            "burstable_pct": getattr(args, 'burstable_pct', 20.0),
+            "enforce": getattr(args, 'enforce', True),
+            "eviction_policy": getattr(args, 'eviction_policy', 'alert'),
+        }
+    if command == "tenant-config-get":
+        return {
+            "service": "control",
+            "op": "tenant_config_get",
+            "owner": args.owner,
+        }
+    if command == "tenant-config-list":
+        return {"service": "control", "op": "tenant_config_list"}
+    if command == "fair-share":
+        return {
+            "service": "control",
+            "op": "fair_share",
+            "resource": getattr(args, 'resource', 'memory_mb'),
+        }
+    if command == "tenant-enforce":
+        return {"service": "control", "op": "tenant_enforce"}
+    if command == "tenant-usage-summary":
+        return {"service": "control", "op": "tenant_usage_summary"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3544,6 +3573,78 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"trigger: {e.get('trigger', '?')} | "
                 f"{e.get('result', '')}")
         return "\n".join(lines)
+    if command == "tenant-config-set":
+        cfg = resp.get('config', {})
+        return (
+            f"Tenant {resp.get('owner', '?')} configured:\n"
+            f"  priority: {cfg.get('priority', 0)}\n"
+            f"  weight: {cfg.get('weight', 1.0)}\n"
+            f"  burstable: {cfg.get('burstable_pct', 20)}%\n"
+            f"  enforce: {cfg.get('enforce', True)}\n"
+            f"  eviction: {cfg.get('eviction_policy', 'alert')}")
+    if command == "tenant-config-get":
+        cfg = resp.get('config', {})
+        if not cfg:
+            return f"No config for tenant {resp.get('owner', '?')}"
+        return (
+            f"Tenant {resp.get('owner', '?')}: "
+            f"priority={cfg.get('priority', 0)}, "
+            f"weight={cfg.get('weight', 1.0)}, "
+            f"enforce={cfg.get('enforce', True)}")
+    if command == "tenant-config-list":
+        tenants = resp.get('tenants', {})
+        if not tenants:
+            return "No tenant configs"
+        lines = [f"{resp.get('count', 0)} tenants:"]
+        for owner, cfg in tenants.items():
+            lines.append(
+                f"  {owner}: priority={cfg.get('priority', 0)}, "
+                f"weight={cfg.get('weight', 1.0)}, "
+                f"enforce={cfg.get('enforce', True)}")
+        return "\n".join(lines)
+    if command == "fair-share":
+        tenants = resp.get('tenants', {})
+        if not tenants:
+            return "No tenants with quotas"
+        lines = [
+            f"Fair-share ({resp.get('resource', '?')}), "
+            f"total: {resp.get('total_quota', 0)}"]
+        for owner, info in tenants.items():
+            status = info.get('status', '?')
+            marker = {'ok': '\u2713', 'over_share': '\u26a0',
+                      'over_burst': '\u2717'}.get(status, '?')
+            lines.append(
+                f"  {marker} {owner}: "
+                f"usage={info.get('usage', 0)}, "
+                f"share={info.get('fair_share', 0)}, "
+                f"{info.get('pct_of_share', 0)}%")
+        return "\n".join(lines)
+    if command == "tenant-enforce":
+        actions = resp.get('actions', [])
+        if not actions:
+            return "All tenants within quota"
+        lines = [f"{len(actions)} enforcement actions needed:"]
+        for a in actions:
+            lines.append(
+                f"  {a.get('owner', '?')}: {a.get('resource', '?')} "
+                f"{a.get('usage', 0)}/{a.get('limit', 0)} "
+                f"(over by {a.get('overage', 0)}), "
+                f"action: {a.get('recommended_action', '?')}")
+        return "\n".join(lines)
+    if command == "tenant-usage-summary":
+        tenants = resp.get('tenants', [])
+        if not tenants:
+            return "No tenants configured"
+        lines = ["Tenant\tPriority\tMem%\tPID%\tContainers\tStatus"]
+        for t in tenants:
+            lines.append(
+                f"{t.get('owner', '?')}\t"
+                f"{t.get('priority', 0)}\t"
+                f"{t.get('memory_pct', 0)}%\t"
+                f"{t.get('pid_pct', 0)}%\t"
+                f"{t.get('containers', 0)}\t"
+                f"{t.get('status', '?')}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4516,6 +4617,51 @@ def build_parser() -> argparse.ArgumentParser:
     rh.add_argument("--action", default=None,
                     help="Filter by action taken")
     rh.set_defaults(command="remediation-history")
+
+    # -- multi-tenant fair-share enforcement --
+    tcs = sub.add_parser("tenant-config-set",
+                         help="Configure tenant parameters")
+    tcs.add_argument("owner")
+    tcs.add_argument("--priority", type=int, default=0,
+                     help="Tenant priority (higher = more important)")
+    tcs.add_argument("--weight", type=float, default=1.0,
+                     help="Fair-share weight")
+    tcs.add_argument("--burstable-pct", type=float, default=20.0,
+                     help="Burst percentage above share (default: 20)")
+    tcs.add_argument("--enforce", action="store_true", default=True,
+                     help="Enable enforcement (default: True)")
+    tcs.add_argument("--no-enforce", dest="enforce",
+                     action="store_false",
+                     help="Disable enforcement")
+    tcs.add_argument("--eviction-policy", default="alert",
+                     choices=["lowest_priority", "throttle",
+                              "alert", "none"],
+                     help="Eviction policy (default: alert)")
+    tcs.set_defaults(command="tenant-config-set")
+
+    tcg = sub.add_parser("tenant-config-get",
+                         help="Get tenant configuration")
+    tcg.add_argument("owner")
+    tcg.set_defaults(command="tenant-config-get")
+
+    tcl = sub.add_parser("tenant-config-list",
+                         help="List all tenant configs")
+    tcl.set_defaults(command="tenant-config-list")
+
+    fs = sub.add_parser("fair-share",
+                        help="Calculate fair-share allocation")
+    fs.add_argument("--resource", default="memory_mb",
+                    choices=["memory_mb", "pid_limit"],
+                    help="Resource to calculate (default: memory_mb)")
+    fs.set_defaults(command="fair-share")
+
+    te = sub.add_parser("tenant-enforce",
+                        help="Check and enforce tenant quotas")
+    te.set_defaults(command="tenant-enforce")
+
+    tus = sub.add_parser("tenant-usage-summary",
+                         help="Tenant usage summary")
+    tus.set_defaults(command="tenant-usage-summary")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

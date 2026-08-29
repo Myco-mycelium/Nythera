@@ -23459,6 +23459,193 @@ class TestAutoRemediation(unittest.TestCase):
             replies[0]["policy"]["on_budget_exceeded"], "restart")
 
 
+class TestMultiTenantFairShare(unittest.TestCase):
+    """Tests for multi-tenant fair-share enforcement."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_and_get_tenant_config(self):
+        """Set and retrieve tenant configuration."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        result = mgr.set_tenant_config(
+            "team-a", priority=10, weight=2.0,
+            enforce=True, eviction_policy="throttle")
+        self.assertEqual(result['owner'], 'team-a')
+        self.assertEqual(result['config']['priority'], 10)
+        self.assertEqual(result['config']['weight'], 2.0)
+        get_result = mgr.get_tenant_config("team-a")
+        self.assertEqual(get_result['status'], 'set')
+
+    def test_invalid_eviction_policy(self):
+        """Invalid eviction policy is rejected."""
+        with self.assertRaises(ValueError):
+            self._manager().set_tenant_config(
+                "x", eviction_policy="bogus")
+
+    def test_list_tenant_configs(self):
+        """List all tenant configs."""
+        mgr = self._manager()
+        mgr.set_tenant_config("a", priority=1)
+        mgr.set_tenant_config("b", priority=2)
+        result = mgr.list_tenant_configs()
+        self.assertEqual(result['count'], 2)
+        self.assertIn('a', result['tenants'])
+
+    def test_calculate_fair_share_empty(self):
+        """Fair share with no quotas returns empty."""
+        result = self._manager().calculate_fair_share()
+        self.assertEqual(result['total_quota'], 0)
+        self.assertEqual(result['tenants'], {})
+
+    def test_calculate_fair_share(self):
+        """Fair share distributes proportionally by weight."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.set_quota('a', memory_mb=1000)
+        mgr.set_quota('b', memory_mb=1000)
+        mgr.set_tenant_config('a', weight=3.0)
+        mgr.set_tenant_config('b', weight=1.0)
+        # Create containers to get some usage
+        ca = mgr.create(ContainerConfig(name="t1", command=["echo"]))
+        ca.config.owner = 'a'
+        ca.config.limits.memory_mb = 500
+        cb = mgr.create(ContainerConfig(name="t2", command=["echo"]))
+        cb.config.owner = 'b'
+        cb.config.limits.memory_mb = 200
+        result = mgr.calculate_fair_share('memory_mb')
+        # a has weight 3, b has weight 1; total weight 4
+        # total quota 2000
+        # a's share = 3/4 * 2000 = 1500
+        # b's share = 1/4 * 2000 = 500
+        self.assertAlmostEqual(
+            result['tenants']['a']['fair_share'], 1500.0)
+        self.assertAlmostEqual(
+            result['tenants']['b']['fair_share'], 500.0)
+        self.assertEqual(result['tenants']['a']['status'], 'ok')
+
+    def test_enforce_tenant_quotas(self):
+        """Enforcement detects over-limit tenants."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.set_quota('a', memory_mb=100)
+        mgr.set_tenant_config('a', enforce=True,
+                               eviction_policy="alert")
+        c = mgr.create(ContainerConfig(name="over1", command=["echo"]))
+        c.config.owner = 'a'
+        c.config.limits.memory_mb = 200
+        actions = mgr.enforce_tenant_quotas()
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]['owner'], 'a')
+        self.assertEqual(actions[0]['resource'], 'memory')
+        self.assertEqual(actions[0]['overage'], 100)
+
+    def test_enforce_skips_disabled_tenants(self):
+        """Enforcement skips tenants with enforce=False."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.set_quota('b', memory_mb=50)
+        mgr.set_tenant_config('b', enforce=False)
+        c = mgr.create(ContainerConfig(name="over2", command=["echo"]))
+        c.config.owner = 'b'
+        c.config.limits.memory_mb = 200
+        actions = mgr.enforce_tenant_quotas()
+        self.assertEqual(len(actions), 0)
+
+    def test_tenant_usage_summary(self):
+        """Tenant usage summary reports correctly."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.set_quota('x', memory_mb=500, pid_limit=32)
+        mgr.set_tenant_config('x', priority=5, weight=2.0)
+        c = mgr.create(ContainerConfig(name="u1", command=["echo"]))
+        c.config.owner = 'x'
+        c.config.limits.memory_mb = 100
+        c.config.limits.pid_limit = 16
+        summary = mgr.get_tenant_usage_summary()
+        self.assertEqual(len(summary), 1)
+        self.assertEqual(summary[0]['owner'], 'x')
+        self.assertEqual(summary[0]['memory_used_mb'], 100)
+        self.assertEqual(summary[0]['priority'], 5)
+        self.assertEqual(summary[0]['weight'], 2.0)
+
+    def test_tenant_cli_payload(self):
+        """CLI build_payload for tenant commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            owner="team-a", priority=10, weight=2.0,
+            burstable_pct=20.0, enforce=True,
+            eviction_policy="alert")
+        p = cli.build_payload("tenant-config-set", ns)
+        self.assertEqual(p["op"], "tenant_config_set")
+        self.assertEqual(p["priority"], 10)
+
+        ns2 = argparse.Namespace(owner="team-a")
+        p2 = cli.build_payload("tenant-config-get", ns2)
+        self.assertEqual(p2["op"], "tenant_config_get")
+
+        p3 = cli.build_payload("tenant-config-list", argparse.Namespace())
+        self.assertEqual(p3["op"], "tenant_config_list")
+
+        ns4 = argparse.Namespace(resource="memory_mb")
+        p4 = cli.build_payload("fair-share", ns4)
+        self.assertEqual(p4["op"], "fair_share")
+
+        p5 = cli.build_payload("tenant-enforce", argparse.Namespace())
+        self.assertEqual(p5["op"], "tenant_enforce")
+
+        p6 = cli.build_payload("tenant-usage-summary", argparse.Namespace())
+        self.assertEqual(p6["op"], "tenant_usage_summary")
+
+    def test_tenant_format_human(self):
+        """format_human renders tenant usage nicely."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'tenants': [
+                {'owner': 'a', 'priority': 10, 'memory_pct': 80.0,
+                 'pid_pct': 50.0, 'containers': 3, 'status': 'active'},
+            ],
+            'count': 1,
+        }
+        text = cli.format_human("tenant-usage-summary", resp)
+        self.assertIn('a', text)
+        self.assertIn('80.0%', text)
+
+    def test_control_tenant_config_set_handler(self):
+        """ControlService dispatches tenant_config_set op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "tenant_config_set",
+                  "owner": "team-x",
+                  "priority": 5,
+                  "weight": 1.5}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(replies[0]["config"]["priority"], 5)
+        self.assertEqual(replies[0]["config"]["weight"], 1.5)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23546,6 +23733,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAuditTrail))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBudgets))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRemediation))
+    suite.addTests(loader.loadTestsFromTestCase(TestMultiTenantFairShare))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

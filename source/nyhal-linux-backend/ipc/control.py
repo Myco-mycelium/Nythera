@@ -621,6 +621,24 @@ class ControlService:
             elif op == "remediation_history":
                 self._remediation_history(
                     server, sender_path, msg.message_id, request)
+            elif op == "tenant_config_set":
+                self._tenant_config_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "tenant_config_get":
+                self._tenant_config_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "tenant_config_list":
+                self._tenant_config_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "fair_share":
+                self._fair_share(
+                    server, sender_path, msg.message_id, request)
+            elif op == "tenant_enforce":
+                self._tenant_enforce(
+                    server, sender_path, msg.message_id, request)
+            elif op == "tenant_usage_summary":
+                self._tenant_usage_summary(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4488,6 +4506,85 @@ class ControlService:
             "container_id": container_id,
             "entries": history,
             "count": len(history),
+        })
+
+    def _tenant_config_set(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        try:
+            result = self.container_manager.set_tenant_config(
+                owner,
+                priority=request.get('priority', 0),
+                weight=request.get('weight', 1.0),
+                burstable_pct=request.get('burstable_pct', 20.0),
+                enforce=request.get('enforce', True),
+                eviction_policy=request.get('eviction_policy', 'alert'),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _tenant_config_get(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        owner = request.get("owner")
+        if not owner:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "owner is required",
+            })
+            return
+        result = self.container_manager.get_tenant_config(owner)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _tenant_config_list(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        result = self.container_manager.list_tenant_configs()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _fair_share(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        resource = request.get('resource', 'memory_mb')
+        result = self.container_manager.calculate_fair_share(
+            resource=resource)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _tenant_enforce(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        actions = self.container_manager.enforce_tenant_quotas()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "actions": actions,
+            "count": len(actions),
+        })
+
+    def _tenant_usage_summary(self, server, sender_path: str,
+                              call_id: str,
+                              request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_tenant_usage_summary()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "tenants": result,
+            "count": len(result),
         })
 
     def _save_state(self) -> None:
