@@ -564,6 +564,21 @@ class ControlService:
             elif op == "compare_containers":
                 self._compare_containers(
                     server, sender_path, msg.message_id, request)
+            elif op == "check_thresholds":
+                self._check_thresholds(
+                    server, sender_path, msg.message_id, request)
+            elif op == "threshold_status":
+                self._threshold_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "set_scheduling_priority":
+                self._set_scheduling_priority(
+                    server, sender_path, msg.message_id, request)
+            elif op == "scheduling_queue":
+                self._scheduling_queue(
+                    server, sender_path, msg.message_id, request)
+            elif op == "ready_containers":
+                self._ready_containers(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3662,6 +3677,65 @@ class ControlService:
             container_ids, metrics=request.get("metrics"))
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
+        })
+
+    # Threshold monitoring
+
+    def _check_thresholds(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.check_all_thresholds()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "fired": result, "count": len(result),
+        })
+
+    def _threshold_status(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_threshold_status()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "containers": result,
+        })
+
+    # Workload scheduling
+
+    def _set_scheduling_priority(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        priority = request.get("priority", 50)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_scheduling_priority(
+            c, priority)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _scheduling_queue(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_scheduling_queue()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "queue": result,
+        })
+
+    def _ready_containers(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_ready_containers()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "ready": result,
         })
 
     # Resource usage reports

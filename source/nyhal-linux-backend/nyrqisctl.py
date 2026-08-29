@@ -1371,6 +1371,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.metrics:
             payload["metrics"] = args.metrics.split(",")
         return payload
+    if command == "check-thresholds":
+        return {"service": "control", "op": "check_thresholds"}
+    if command == "threshold-status":
+        return {"service": "control", "op": "threshold_status"}
+    if command == "set-scheduling-priority":
+        return {
+            "service": "control",
+            "op": "set_scheduling_priority",
+            "container_id": args.container_id,
+            "priority": args.priority,
+        }
+    if command == "scheduling-queue":
+        return {"service": "control", "op": "scheduling_queue"}
+    if command == "ready-containers":
+        return {"service": "control", "op": "ready_containers"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3193,6 +3208,57 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                     f"  #{r['rank']} {r.get('name') or r['id']}: "
                     f"{_fmt_bytes(r['value'])} ({r['percentage']}%)")
         return "\n".join(lines)
+    if command == "check-thresholds":
+        fired = resp.get("fired", [])
+        count = resp.get("count", 0)
+        if count == 0:
+            return "No threshold alerts fired"
+        lines = [f"{count} alert(s) fired:", ""]
+        for a in fired:
+            lines.append(
+                f"  [{a.get('level', '?').upper()}] "
+                f"{a.get('container_id', '?')[:8]}: "
+                f"{a.get('resource', '?')} = {a.get('detail', '')}")
+        return "\n".join(lines)
+    if command == "threshold-status":
+        containers = resp.get("containers", [])
+        if not containers:
+            return "No containers with thresholds"
+        lines = ["Container\tMem%\tPID%\tStatus"]
+        for c in containers:
+            lines.append(
+                f"{c.get('name') or c.get('container_id', '?')[:8]}\t"
+                f"{c.get('memory_pct', 0)}%\t"
+                f"{c.get('pid_pct', 0)}%\t"
+                f"{c.get('status', '?')}")
+        return "\n".join(lines)
+    if command == "set-scheduling-priority":
+        if resp.get("ok"):
+            return f"Priority set to {resp.get('priority', '?')}"
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "scheduling-queue":
+        queue = resp.get("queue", [])
+        if not queue:
+            return "No containers in queue"
+        lines = ["Container\tState\tPriority\tMemory\tPIDs"]
+        for q in queue:
+            lines.append(
+                f"{q.get('name') or q.get('id', '?')}\t"
+                f"{q.get('state', '?')}\t"
+                f"{q.get('priority', '?')}\t"
+                f"{_fmt_bytes(q.get('memory_bytes', 0))}\t"
+                f"{q.get('pids_current', 0)}")
+        return "\n".join(lines)
+    if command == "ready-containers":
+        ready = resp.get("ready", [])
+        if not ready:
+            return "No containers ready to start"
+        lines = ["Container\tPriority"]
+        for r in ready:
+            lines.append(
+                f"{r.get('name') or r.get('id', '?')}\t"
+                f"{r.get('priority', '?')}")
+        return "\n".join(lines)
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -4032,6 +4098,29 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--metrics", default=None,
                     help="Comma-separated metrics to compare")
     cc.set_defaults(command="compare-containers")
+
+    ct = sub.add_parser("check-thresholds",
+                       help="Check resource thresholds and fire alerts")
+    ct.set_defaults(command="check-thresholds")
+
+    ts = sub.add_parser("threshold-status",
+                       help="Show threshold status for all containers")
+    ts.set_defaults(command="threshold-status")
+
+    ssp = csub.add_parser("set-scheduling-priority",
+                         help="Set scheduling priority")
+    ssp.add_argument("container_id")
+    ssp.add_argument("priority", type=int,
+                     help="Priority 0-99 (0=highest)")
+    ssp.set_defaults(command="set-scheduling-priority")
+
+    sq = sub.add_parser("scheduling-queue",
+                       help="Show scheduling queue")
+    sq.set_defaults(command="scheduling-queue")
+
+    rc = sub.add_parser("ready-containers",
+                       help="Show containers ready to start")
+    rc.set_defaults(command="ready-containers")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

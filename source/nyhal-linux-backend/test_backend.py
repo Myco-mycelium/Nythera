@@ -21422,6 +21422,188 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestThresholdMonitoring(unittest.TestCase):
+    """Resource usage threshold monitoring."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_check_thresholds_no_thresholds(self):
+        """check_all_thresholds returns empty without thresholds."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="th1"))
+        result = mgr.check_all_thresholds()
+        self.assertEqual(len(result), 0)
+
+    def test_threshold_status_empty(self):
+        """get_threshold_status returns empty for non-running."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="th2"))
+        result = mgr.get_threshold_status()
+        self.assertEqual(len(result), 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for threshold commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("check-thresholds", argparse.Namespace())
+        self.assertEqual(p1["op"], "check_thresholds")
+        p2 = build_payload("threshold-status", argparse.Namespace())
+        self.assertEqual(p2["op"], "threshold_status")
+
+    def test_cli_format_human(self):
+        """CLI format_human for threshold commands."""
+        from nyrqisctl import format_human
+        resp = {"ok": True, "fired": [], "count": 0}
+        text = format_human("check-thresholds", resp)
+        self.assertIn("No", text)
+        resp2 = {
+            "ok": True,
+            "containers": [
+                {"container_id": "abc", "name": "web",
+                 "memory_pct": 75.0, "pid_pct": 50.0,
+                 "thresholds": {"memory_warning": 80},
+                 "status": "ok"},
+            ],
+        }
+        text2 = format_human("threshold-status", resp2)
+        self.assertIn("web", text2)
+        self.assertIn("75.0%", text2)
+
+    def test_control_handler(self):
+        """Check thresholds control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "check_thresholds"}), "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("fired", replies[0])
+
+
+class TestWorkloadScheduling(unittest.TestCase):
+    """Workload scheduling with priority queues."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_scheduling_priority(self):
+        """set_scheduling_priority works."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ws1"))
+        result = mgr.set_scheduling_priority(c, 10)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["priority"], 10)
+
+    def test_set_scheduling_priority_invalid(self):
+        """set_scheduling_priority rejects invalid range."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ws2"))
+        result = mgr.set_scheduling_priority(c, 100)
+        self.assertFalse(result["ok"])
+        self.assertIn("priority must be", result["error"])
+
+    def test_scheduling_queue(self):
+        """get_scheduling_queue returns sorted list."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="ws3"))
+        c2 = mgr.create(ContainerConfig(name="ws4"))
+        mgr.set_scheduling_priority(c1, 10)
+        mgr.set_scheduling_priority(c2, 5)
+        queue = mgr.get_scheduling_queue()
+        self.assertEqual(len(queue), 2)
+        self.assertEqual(queue[0]["priority"], 5)
+        self.assertEqual(queue[1]["priority"], 10)
+
+    def test_ready_containers(self):
+        """get_ready_containers returns CREATED containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="ws5"))
+        c2 = mgr.create(ContainerConfig(name="ws6"))
+        mgr.set_scheduling_priority(c1, 30)
+        mgr.set_scheduling_priority(c2, 10)
+        ready = mgr.get_ready_containers()
+        self.assertEqual(len(ready), 2)
+        self.assertEqual(ready[0]["priority"], 10)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for scheduling commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("set-scheduling-priority",
+                          argparse.Namespace(
+                              container_id="abc", priority=10))
+        self.assertEqual(p1["op"], "set_scheduling_priority")
+        self.assertEqual(p1["priority"], 10)
+        p2 = build_payload("scheduling-queue", argparse.Namespace())
+        self.assertEqual(p2["op"], "scheduling_queue")
+        p3 = build_payload("ready-containers", argparse.Namespace())
+        self.assertEqual(p3["op"], "ready_containers")
+
+    def test_cli_format_human(self):
+        """CLI format_human for scheduling commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "queue": [
+                {"id": "a", "name": "web", "state": "running",
+                 "priority": 5, "memory_bytes": 1024, "pids_current": 3},
+                {"id": "b", "name": "db", "state": "running",
+                 "priority": 10, "memory_bytes": 2048, "pids_current": 2},
+            ],
+        }
+        text = format_human("scheduling-queue", resp)
+        self.assertIn("web", text)
+        self.assertIn("db", text)
+        self.assertIn("5", text)
+
+    def test_control_handler(self):
+        """Scheduling queue control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="ws-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "scheduling_queue"}), "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("queue", replies[0])
+
+
 class TestEventCorrelation(unittest.TestCase):
     """Event correlation across containers."""
 
@@ -22834,6 +23016,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestThresholdMonitoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestWorkloadScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestEventCorrelation))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicyRules))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerComparison))

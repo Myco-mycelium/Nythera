@@ -2579,6 +2579,155 @@ class ContainerManager:
             if s["expires_at"] > now
         ]
 
+    def check_all_thresholds(
+        self,
+        containers: Optional[List[Container]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Check resource usage against thresholds for all containers.
+
+        Scans every container's current resource usage against its
+        configured thresholds and fires alerts for any breaches.
+        Respects suppressions.
+
+        Args:
+            containers: Containers to check (default: all).
+
+        Returns:
+            List of alerts that were fired.
+        """
+        if containers is None:
+            containers = list(self.containers.values())
+
+        fired: List[Dict[str, Any]] = []
+
+        for c in containers:
+            if c.state != ContainerState.RUNNING:
+                continue
+            if c.pid is None:
+                continue
+
+            thresholds = getattr(c.config, "alert_thresholds", None)
+            if not thresholds:
+                continue
+
+            stats = self.container_stats(c)
+            if not stats.get("available"):
+                continue
+
+            # Memory check
+            mem_bytes = stats.get("memory_bytes", 0)
+            mem_limit = stats.get("memory_limit_bytes", 0)
+            if mem_limit > 0:
+                mem_pct = mem_bytes / mem_limit * 100
+                if mem_pct >= thresholds.get("memory_critical", 95):
+                    if not self.is_alert_suppressed(c, "memory", "critical"):
+                        a = self._fire_alert(
+                            c, "memory", "critical",
+                            f"{mem_pct:.1f}% ({mem_bytes}/{mem_limit})")
+                        if a:
+                            fired.append(a)
+                elif mem_pct >= thresholds.get("memory_warning", 80):
+                    if not self.is_alert_suppressed(c, "memory", "warning"):
+                        a = self._fire_alert(
+                            c, "memory", "warning",
+                            f"{mem_pct:.1f}% ({mem_bytes}/{mem_limit})")
+                        if a:
+                            fired.append(a)
+
+            # PID check
+            pids = stats.get("pids_current", 0)
+            pid_limit = stats.get("pids_limit", 0)
+            if pid_limit > 0 and pid_limit < 0x7FFFFFFFFFFFFFFF:
+                pid_pct = pids / pid_limit * 100
+                if pid_pct >= thresholds.get("pid_critical", 95):
+                    if not self.is_alert_suppressed(c, "pids", "critical"):
+                        a = self._fire_alert(
+                            c, "pids", "critical",
+                            f"{pid_pct:.1f}% ({pids}/{pid_limit})")
+                        if a:
+                            fired.append(a)
+                elif pid_pct >= thresholds.get("pid_warning", 80):
+                    if not self.is_alert_suppressed(c, "pids", "warning"):
+                        a = self._fire_alert(
+                            c, "pids", "warning",
+                            f"{pid_pct:.1f}% ({pids}/{pid_limit})")
+                        if a:
+                            fired.append(a)
+
+            # OOM score check
+            oom_score = getattr(c, "oom_score_adj", None)
+            if oom_score is not None and oom_score >= thresholds.get(
+                    "oom_critical", 900):
+                if not self.is_alert_suppressed(c, "oom", "critical"):
+                    a = self._fire_alert(
+                        c, "oom", "critical",
+                        f"oom_score_adj={oom_score}")
+                    if a:
+                        fired.append(a)
+
+        return fired
+
+    def get_threshold_status(
+        self,
+        containers: Optional[List[Container]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get current threshold status for all containers.
+
+        Returns the current resource usage and threshold levels
+        without firing alerts.
+
+        Returns:
+            List of dicts with ``container_id``, ``memory``,
+            ``pids``, ``thresholds``, and ``status``.
+        """
+        if containers is None:
+            containers = list(self.containers.values())
+
+        results: List[Dict[str, Any]] = []
+
+        for c in containers:
+            if c.state != ContainerState.RUNNING:
+                continue
+            if c.pid is None:
+                continue
+
+            thresholds = getattr(c.config, "alert_thresholds", None)
+            stats = self.container_stats(c)
+            if not stats.get("available"):
+                continue
+
+            mem_bytes = stats.get("memory_bytes", 0)
+            mem_limit = stats.get("memory_limit_bytes", 0)
+            pids = stats.get("pids_current", 0)
+            pid_limit = stats.get("pids_limit", 0)
+
+            status = "ok"
+            mem_pct = (mem_bytes / mem_limit * 100) if mem_limit > 0 else 0
+            pid_pct = (pids / pid_limit * 100) if (
+                pid_limit > 0 and pid_limit < 0x7FFFFFFFFFFFFFFF) else 0
+
+            if thresholds:
+                if mem_pct >= thresholds.get("memory_critical", 95):
+                    status = "critical"
+                elif mem_pct >= thresholds.get("memory_warning", 80):
+                    status = "warning"
+                if pid_pct >= thresholds.get("pid_critical", 95):
+                    status = "critical"
+                elif pid_pct >= thresholds.get("pid_warning", 80) and \
+                        status != "critical":
+                    status = "warning"
+
+            results.append({
+                "container_id": c.id,
+                "name": c.config.name,
+                "memory_pct": round(mem_pct, 1),
+                "pid_pct": round(pid_pct, 1),
+                "thresholds": thresholds,
+                "status": status,
+            })
+
+        return results
+
     # ------------------------------------------------------------------
     # OOM killer protection
     # ------------------------------------------------------------------
@@ -4237,6 +4386,90 @@ class ContainerManager:
             "io_weight": getattr(container.config, "io_weight", None),
             "cpu_affinity": container.config.cpu_affinity,
         }
+
+    # ------------------------------------------------------------------
+    # Workload scheduling (priority queues)
+    # ------------------------------------------------------------------
+
+    def set_scheduling_priority(
+        self, container: Container, priority: int,
+    ) -> Dict[str, Any]:
+        """Set the scheduling priority for a container.
+
+        Priority determines the order in which containers are
+        started when resources are constrained. Higher priority
+        (lower number) = started first.
+
+        Args:
+            container: Target container.
+            priority: Priority (0=highest, 99=lowest, default 50).
+
+        Returns:
+            Dict with ``ok``, ``priority``, ``container_id``.
+        """
+        if not 0 <= priority <= 99:
+            return {
+                "ok": False,
+                "error": "priority must be 0..99",
+            }
+        container.config.scheduling_priority = priority
+        self._record_event(
+            "scheduling_priority_set", container.id,
+            f"priority={priority}")
+        return {
+            "ok": True,
+            "priority": priority,
+            "container_id": container.id,
+        }
+
+    def get_scheduling_queue(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Get all containers sorted by scheduling priority.
+
+        Returns:
+            List of dicts sorted by priority (lowest number first),
+            each with ``id``, ``name``, ``state``, ``priority``,
+            ``memory_bytes``, ``pids_current``.
+        """
+        entries: List[Dict[str, Any]] = []
+        for c in self.containers.values():
+            priority = getattr(c.config, "scheduling_priority", 50)
+            stats = self.container_stats(c)
+            entries.append({
+                "id": c.id,
+                "name": c.config.name,
+                "state": c.state.value,
+                "priority": priority,
+                "memory_bytes": stats.get("memory_bytes", 0),
+                "pids_current": stats.get("pids_current", 0),
+            })
+        entries.sort(key=lambda x: x["priority"])
+        return entries
+
+    def get_ready_containers(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Get containers that are ready to run, sorted by priority.
+
+        Returns CREATED containers sorted by scheduling priority
+        (highest priority first), suitable for an operator to
+        decide which to start next.
+
+        Returns:
+            List of dicts with ``id``, ``name``, ``priority``.
+        """
+        ready: List[Dict[str, Any]] = []
+        for c in self.containers.values():
+            if c.state == ContainerState.CREATED:
+                priority = getattr(c.config, "scheduling_priority", 50)
+                ready.append({
+                    "id": c.id,
+                    "name": c.config.name,
+                    "priority": priority,
+                })
+        ready.sort(key=lambda x: x["priority"])
+        return ready
 
     # ------------------------------------------------------------------
     # Batch operations (operate on multiple containers)
