@@ -645,6 +645,12 @@ class ControlService:
             elif op == "event_log_import":
                 self._event_log_import(
                     server, sender_path, msg.message_id, request)
+            elif op == "health_score":
+                self._health_score(
+                    server, sender_path, msg.message_id, request)
+            elif op == "health_score_all":
+                self._health_score_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4631,6 +4637,30 @@ class ControlService:
             data=data,
             container_id=request.get('container_id'),
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _health_score(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.calculate_health_score(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _health_score_all(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.calculate_health_scores_all()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

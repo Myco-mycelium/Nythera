@@ -4321,6 +4321,188 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Health scoring engine
+    # ------------------------------------------------------------------
+
+    def calculate_health_score(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Calculate a composite health score (0-100) for a container.
+
+        Combines signals from multiple subsystems:
+        - Resource usage stability (anomaly count, 0-25 pts)
+        - Budget compliance (0-25 pts)
+        - OOM risk (0-20 pts)
+        - SLA compliance (0-15 pts)
+        - Health check status (0-15 pts)
+
+        Args:
+            container: Target container.
+
+        Returns:
+            Dict with ``score`` (0-100), ``grade`` (A-F),
+            ``breakdown``, and ``recommendations``.
+        """
+        breakdown: Dict[str, Dict[str, Any]] = {}
+        total_score = 0.0
+        recommendations: List[str] = []
+
+        # --- Resource stability (25 pts) ---
+        anomaly_score = 25.0
+        anomaly_result = self.detect_anomalies(container, resource="memory")
+        anomaly_count = len(anomaly_result.get("anomalies", []))
+        if anomaly_count > 5:
+            anomaly_score = 0.0
+            recommendations.append("High anomaly count: investigate memory usage")
+        elif anomaly_count > 2:
+            anomaly_score = 12.5
+            recommendations.append("Moderate anomalies: monitor memory closely")
+        breakdown["resource_stability"] = {
+            "score": anomaly_score,
+            "max": 25,
+            "anomaly_count": anomaly_count,
+        }
+        total_score += anomaly_score
+
+        # --- Budget compliance (25 pts) ---
+        budget_score = 25.0
+        budget = getattr(container, '_resource_budget', None)
+        if budget:
+            budget_status = self._check_single_budget(container, budget)
+            violations = budget_status.get("violations", [])
+            warnings = budget_status.get("warnings", [])
+            if violations:
+                budget_score = 0.0
+                recommendations.append(
+                    "Budget exceeded: consider increasing limits or "
+                    "reducing workload")
+            elif warnings:
+                budget_score = 12.5
+                recommendations.append("Budget warning: usage approaching limit")
+        breakdown["budget_compliance"] = {
+            "score": budget_score,
+            "max": 25,
+            "has_budget": budget is not None,
+        }
+        total_score += budget_score
+
+        # --- OOM risk (20 pts) ---
+        oom_score = 20.0
+        oom_score_val = getattr(container, 'oom_score_adj', 0)
+        if oom_score_val > 500:
+            oom_score = 0.0
+            recommendations.append("Very high OOM risk: increase memory limit")
+        elif oom_score_val > 200:
+            oom_score = 10.0
+            recommendations.append("Elevated OOM risk: monitor memory usage")
+        breakdown["oom_risk"] = {
+            "score": oom_score,
+            "max": 20,
+            "oom_score_adj": oom_score_val,
+        }
+        total_score += oom_score
+
+        # --- SLA compliance (15 pts) ---
+        sla_score = 15.0
+        sla = getattr(container, '_sla', {})
+        sla_violations = sla.get("violations", [])
+        if sla_violations:
+            recent_violations = [
+                v for v in sla_violations
+                if v.get("timestamp", 0) > time.time() - 3600
+            ]
+            if recent_violations:
+                sla_score = 0.0
+                recommendations.append("Recent SLA violations: investigate")
+            else:
+                sla_score = 7.5
+                recommendations.append("Past SLA violations: monitor closely")
+        breakdown["sla_compliance"] = {
+            "score": sla_score,
+            "max": 15,
+            "violation_count": len(sla_violations),
+        }
+        total_score += sla_score
+
+        # --- Health check status (15 pts) ---
+        health_score = 15.0
+        health_status = getattr(container, 'health_status', None)
+        if health_status == "unhealthy":
+            health_score = 0.0
+            recommendations.append("Container is unhealthy: check health check")
+        elif health_status == "starting":
+            health_score = 7.5
+        breakdown["health_check"] = {
+            "score": health_score,
+            "max": 15,
+            "status": health_status,
+        }
+        total_score += health_score
+
+        # Grade
+        if total_score >= 90:
+            grade = "A"
+        elif total_score >= 75:
+            grade = "B"
+        elif total_score >= 60:
+            grade = "C"
+        elif total_score >= 40:
+            grade = "D"
+        else:
+            grade = "F"
+
+        self._record_event(
+            'health_scored', container.id,
+            f"score={total_score:.1f}, grade={grade}")
+
+        return {
+            "container_id": container.id,
+            "name": container.config.name,
+            "score": round(total_score, 1),
+            "grade": grade,
+            "breakdown": breakdown,
+            "recommendations": recommendations,
+            "timestamp": time.time(),
+        }
+
+    def calculate_health_scores_all(
+        self,
+    ) -> Dict[str, Any]:
+        """Calculate health scores for all running containers.
+
+        Returns:
+            Dict with per-container scores, fleet average,
+            and unhealthy count.
+        """
+        scores = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                score_result = self.calculate_health_score(c)
+                scores.append(score_result)
+
+        if not scores:
+            return {
+                "container_count": 0,
+                "fleet_average": 0,
+                "unhealthy_count": 0,
+                "containers": [],
+            }
+
+        avg_score = sum(s["score"] for s in scores) / len(scores)
+        unhealthy = sum(
+            1 for s in scores if s["grade"] in ("D", "F")
+        )
+
+        return {
+            "container_count": len(scores),
+            "fleet_average": round(avg_score, 1),
+            "unhealthy_count": unhealthy,
+            "containers": sorted(
+                scores, key=lambda s: s["score"]),
+        }
+
+    # ------------------------------------------------------------------
     # Resource comparison (cross-container)
     # ------------------------------------------------------------------
 

@@ -1543,6 +1543,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "data": data,
             "container_id": getattr(args, 'container_id', None),
         }
+    if command == "health-score":
+        return {
+            "service": "control",
+            "op": "health_score",
+            "container_id": args.container_id,
+        }
+    if command == "health-score-all":
+        return {"service": "control", "op": "health_score_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3699,6 +3707,39 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             for e in errors[:5]:
                 lines.append(f"  {e}")
         return "\n".join(lines)
+    if command == "health-score":
+        score = resp.get('score', 0)
+        grade = resp.get('grade', '?')
+        name = resp.get('name') or resp.get('container_id', '?')
+        lines = [
+            f"{name}: {grade} ({score}/100)",
+        ]
+        for dim, info in resp.get('breakdown', {}).items():
+            lines.append(
+                f"  {dim}: {info.get('score', 0)}/{info.get('max', '?')}")
+        recs = resp.get('recommendations', [])
+        if recs:
+            lines.append("Recommendations:")
+            for r in recs:
+                lines.append(f"  - {r}")
+        return "\n".join(lines)
+    if command == "health-score-all":
+        avg = resp.get('fleet_average', 0)
+        count = resp.get('container_count', 0)
+        unhealthy = resp.get('unhealthy_count', 0)
+        lines = [
+            f"Fleet health: {avg}/100 avg, "
+            f"{count} containers, {unhealthy} unhealthy",
+        ]
+        for c in resp.get('containers', []):
+            score = c.get('score', 0)
+            grade = c.get('grade', '?')
+            name = c.get('name') or c.get('container_id', '?')[:8]
+            marker = {'A': '\u2713', 'B': '\u2713', 'C': '~',
+                      'D': '\u26a0', 'F': '\u2717'}.get(grade, '?')
+            lines.append(
+                f"  {marker} {name}: {grade} ({score})")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4746,6 +4787,16 @@ def build_parser() -> argparse.ArgumentParser:
     eli.add_argument("data_file", nargs='?', default=None,
                      help="JSON file to import (default: stdin)")
     eli.set_defaults(command="event-log-import")
+
+    # -- health scoring --
+    hs = sub.add_parser("health-score",
+                        help="Calculate health score for a container")
+    hs.add_argument("container_id")
+    hs.set_defaults(command="health-score")
+
+    hsa = sub.add_parser("health-score-all",
+                         help="Calculate health scores for all containers")
+    hsa.set_defaults(command="health-score-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

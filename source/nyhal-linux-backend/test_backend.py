@@ -23807,6 +23807,147 @@ class TestEventLogExportImport(unittest.TestCase):
         self.assertIn('total_events', replies[0])
 
 
+class TestHealthScoring(unittest.TestCase):
+    """Tests for composite health scoring engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_health_score_empty_container(self):
+        """Health score for a fresh container with no data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hs1", command=["echo"]))
+        result = mgr.calculate_health_score(c)
+        self.assertIn('score', result)
+        self.assertIn('grade', result)
+        self.assertIn('breakdown', result)
+        self.assertIn('recommendations', result)
+        self.assertIsInstance(result['score'], float)
+        self.assertIn(result['grade'], ['A', 'B', 'C', 'D', 'F'])
+
+    def test_health_score_breakdown_has_all_dimensions(self):
+        """Score breakdown includes all 5 dimensions."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hs2", command=["echo"]))
+        result = mgr.calculate_health_score(c)
+        breakdown = result['breakdown']
+        self.assertIn('resource_stability', breakdown)
+        self.assertIn('budget_compliance', breakdown)
+        self.assertIn('oom_risk', breakdown)
+        self.assertIn('sla_compliance', breakdown)
+        self.assertIn('health_check', breakdown)
+
+    def test_health_score_with_budget_set(self):
+        """Budget dimension reports correctly when budget is set."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hs3", command=["echo"]))
+        mgr.set_resource_budget(c, memory_mb=512)
+        result = mgr.calculate_health_score(c)
+        budget_info = result['breakdown']['budget_compliance']
+        self.assertTrue(budget_info['has_budget'])
+        # Score depends on actual cgroup stats (may not be available)
+        self.assertIn(budget_info['score'], [0, 12.5, 25.0])
+
+    def test_health_score_all(self):
+        """health_scores_all returns fleet summary."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="hs4", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="hs5", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.calculate_health_scores_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('fleet_average', result)
+        self.assertIn('containers', result)
+        self.assertEqual(len(result['containers']), 2)
+
+    def test_health_score_grade_mapping(self):
+        """Grade is correctly mapped from score."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="hs6", command=["echo"]))
+        result = mgr.calculate_health_score(c)
+        score = result['score']
+        grade = result['grade']
+        if score >= 90:
+            self.assertEqual(grade, 'A')
+        elif score >= 75:
+            self.assertEqual(grade, 'B')
+        elif score >= 60:
+            self.assertEqual(grade, 'C')
+        elif score >= 40:
+            self.assertEqual(grade, 'D')
+        else:
+            self.assertEqual(grade, 'F')
+
+    def test_cli_payload(self):
+        """CLI build_payload for health scoring."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(container_id="c1")
+        p = cli.build_payload("health-score", ns)
+        self.assertEqual(p["op"], "health_score")
+        self.assertEqual(p["container_id"], "c1")
+
+        p2 = cli.build_payload("health-score-all", argparse.Namespace())
+        self.assertEqual(p2["op"], "health_score_all")
+
+    def test_format_human(self):
+        """format_human renders health score nicely."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'name': 'test-c',
+            'score': 85.0,
+            'grade': 'B',
+            'breakdown': {
+                'resource_stability': {'score': 25, 'max': 25},
+                'budget_compliance': {'score': 25, 'max': 25},
+            },
+            'recommendations': ['Monitor memory usage'],
+        }
+        text = cli.format_human("health-score", resp)
+        self.assertIn('B', text)
+        self.assertIn('85', text)
+        self.assertIn('Monitor memory usage', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches health_score op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="hs-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "health_score",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('score', replies[0])
+        self.assertIn('grade', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23896,6 +24037,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiTenantFairShare))
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogExportImport))
+    suite.addTests(loader.loadTestsFromTestCase(TestHealthScoring))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
