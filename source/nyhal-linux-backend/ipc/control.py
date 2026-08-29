@@ -756,6 +756,18 @@ class ControlService:
             elif op == "anomaly_predict_all":
                 self._anomaly_predict_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "predictive_scaling_configure":
+                self._predictive_scaling_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "predictive_scaling_evaluate":
+                self._predictive_scaling_evaluate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "predictive_scaling_evaluate_all":
+                self._predictive_scaling_evaluate_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "predictive_scaling_status":
+                self._predictive_scaling_status(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5293,6 +5305,78 @@ class ControlService:
             confidence_threshold=float(
                 request.get('confidence_threshold', 0.5)),
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _predictive_scaling_configure(self, server, sender_path: str,
+                                     call_id: str,
+                                     request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.configure_predictive_scaling(
+            c,
+            enabled=bool(request.get('enabled', True)),
+            lead_time_s=float(request.get('lead_time_s', 300.0)),
+            memory_buffer_pct=float(
+                request.get('memory_buffer_pct', 20.0)),
+            cpu_buffer_pct=float(
+                request.get('cpu_buffer_pct', 15.0)),
+            scale_up_threshold=float(
+                request.get('scale_up_threshold', 0.75)),
+            scale_down_threshold=float(
+                request.get('scale_down_threshold', 0.30)),
+            min_memory_mb=request.get('min_memory_mb'),
+            max_memory_mb=request.get('max_memory_mb'),
+            dry_run=bool(request.get('dry_run', False)),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _predictive_scaling_evaluate(self, server, sender_path: str,
+                                    call_id: str,
+                                    request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.evaluate_predictive_scaling(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _predictive_scaling_evaluate_all(self, server, sender_path: str,
+                                        call_id: str,
+                                        request: Dict[str, Any]) -> None:
+        result = (
+            self.container_manager.evaluate_predictive_scaling_all())
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _predictive_scaling_status(self, server, sender_path: str,
+                                  call_id: str,
+                                  request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_predictive_scaling_status(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

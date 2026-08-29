@@ -1785,6 +1785,39 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "confidence_threshold": getattr(
                 args, 'confidence_threshold', 0.5),
         }
+    if command == "predictive-scale-configure":
+        return {
+            "service": "control",
+            "op": "predictive_scaling_configure",
+            "container_id": args.container_id,
+            "enabled": getattr(args, 'enabled', True),
+            "lead_time_s": getattr(args, 'lead_time_s', 300.0),
+            "memory_buffer_pct": getattr(
+                args, 'memory_buffer_pct', 20.0),
+            "cpu_buffer_pct": getattr(args, 'cpu_buffer_pct', 15.0),
+            "scale_up_threshold": getattr(
+                args, 'scale_up_threshold', 0.75),
+            "scale_down_threshold": getattr(
+                args, 'scale_down_threshold', 0.30),
+            "min_memory_mb": getattr(args, 'min_memory_mb', None),
+            "max_memory_mb": getattr(args, 'max_memory_mb', None),
+            "dry_run": getattr(args, 'dry_run', False),
+        }
+    if command == "predictive-scale-evaluate":
+        return {
+            "service": "control",
+            "op": "predictive_scaling_evaluate",
+            "container_id": args.container_id,
+        }
+    if command == "predictive-scale-evaluate-all":
+        return {"service": "control",
+                "op": "predictive_scaling_evaluate_all"}
+    if command == "predictive-scale-status":
+        return {
+            "service": "control",
+            "op": "predictive_scaling_status",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4363,6 +4396,43 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 lines.append(
                     f"    {c['container_id']}: risk={c['risk_score']}" )
         return "\n".join(lines)
+    if command == "predictive-scale-configure":
+        cfg = resp.get('config', {})
+        return (
+            f"Predictive scaling configured for "
+            f"{resp.get('container_id', '?')}:\n"
+            f"  enabled: {cfg.get('enabled')}\n"
+            f"  lead time: {cfg.get('lead_time_s')}s\n"
+            f"  memory buffer: {cfg.get('memory_buffer_pct')}%\n"
+            f"  dry run: {cfg.get('dry_run')}")
+    if command == "predictive-scale-evaluate":
+        lines = [
+            f"Predictive scaling for "
+            f"{resp.get('container_id', '?')}:",
+            f"  action: {resp.get('action', 'none')}",
+            f"  reason: {resp.get('reason', '')}",
+            f"  risk score: {resp.get('risk_score', 0)}",
+        ]
+        changes = resp.get('applied_changes', {})
+        for res, chg in changes.items():
+            lines.append(
+                f"  {res}: {chg['old']} -> {chg['new']}")
+        return "\n".join(lines)
+    if command == "predictive-scale-evaluate-all":
+        return (
+            f"Fleet predictive scaling:\n"
+            f"  containers: {resp.get('container_count', 0)}\n"
+            f"  actions: {resp.get('actions_taken', 0)}\n"
+            f"  scale ups: {resp.get('scale_ups', 0)}\n"
+            f"  scale downs: {resp.get('scale_downs', 0)}")
+    if command == "predictive-scale-status":
+        return (
+            f"Predictive scaling status for "
+            f"{resp.get('container_id', '?')}:\n"
+            f"  enabled: {resp.get('enabled')}\n"
+            f"  lead time: {resp.get('lead_time_s')}s\n"
+            f"  scaling count: {resp.get('scaling_count', 0)}\n"
+            f"  dry run: {resp.get('dry_run')}")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5719,6 +5789,46 @@ def build_parser() -> argparse.ArgumentParser:
     apa.add_argument("--confidence", type=float, default=0.5,
                      help="Minimum confidence threshold (default: 0.5)")
     apa.set_defaults(command="anomaly-predict-all")
+
+    psc = sub.add_parser("predictive-scale-configure",
+                         help="Configure predictive scaling")
+    psc.add_argument("container_id")
+    psc.add_argument("--enabled", action="store_true", default=True,
+                     help="Enable predictive scaling (default: True)")
+    psc.add_argument("--disabled", dest="enabled",
+                     action="store_false",
+                     help="Disable predictive scaling")
+    psc.add_argument("--lead-time", type=float, default=300.0,
+                     help="Lead time in seconds (default: 300)")
+    psc.add_argument("--memory-buffer", type=float, default=20.0,
+                     help="Memory buffer %% (default: 20)")
+    psc.add_argument("--cpu-buffer", type=float, default=15.0,
+                     help="CPU buffer %% (default: 15)")
+    psc.add_argument("--scale-up-threshold", type=float, default=0.75,
+                     help="Scale up threshold (default: 0.75)")
+    psc.add_argument("--scale-down-threshold", type=float, default=0.30,
+                     help="Scale down threshold (default: 0.30)")
+    psc.add_argument("--min-memory", type=int, default=None,
+                     help="Minimum memory MB")
+    psc.add_argument("--max-memory", type=int, default=None,
+                     help="Maximum memory MB")
+    psc.add_argument("--dry-run", action="store_true", default=False,
+                     help="Dry run mode (don't apply changes)")
+    psc.set_defaults(command="predictive-scale-configure")
+
+    pse = sub.add_parser("predictive-scale-evaluate",
+                         help="Evaluate predictive scaling")
+    pse.add_argument("container_id")
+    pse.set_defaults(command="predictive-scale-evaluate")
+
+    psea = sub.add_parser("predictive-scale-evaluate-all",
+                          help="Evaluate fleet predictive scaling")
+    psea.set_defaults(command="predictive-scale-evaluate-all")
+
+    pss = sub.add_parser("predictive-scale-status",
+                         help="Get predictive scaling status")
+    pss.add_argument("container_id")
+    pss.set_defaults(command="predictive-scale-status")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

@@ -12232,6 +12232,263 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Predictive scaling engine (anomaly-driven proactive adjustment)
+    # ------------------------------------------------------------------
+
+    def configure_predictive_scaling(
+        self,
+        container: Container,
+        enabled: bool = True,
+        lead_time_s: float = 300.0,
+        memory_buffer_pct: float = 20.0,
+        cpu_buffer_pct: float = 15.0,
+        scale_up_threshold: float = 0.75,
+        scale_down_threshold: float = 0.30,
+        min_memory_mb: Optional[int] = None,
+        max_memory_mb: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Configure predictive scaling based on anomaly forecasts.
+
+        Unlike reactive auto-scaling, predictive scaling uses the
+        anomaly prediction engine to adjust resources BEFORE
+        thresholds are breached.
+
+        Args:
+            container: Target container.
+            enabled: Whether predictive scaling is active.
+            lead_time_s: How far ahead to scale (seconds).
+            memory_buffer_pct: Extra memory buffer above prediction.
+            cpu_buffer_pct: Extra CPU buffer above prediction.
+            scale_up_threshold: Usage level to trigger scale-up.
+            scale_down_threshold: Usage level to trigger scale-down.
+            min_memory_mb: Minimum memory limit.
+            max_memory_mb: Maximum memory limit.
+            dry_run: If True, calculate but don't apply changes.
+
+        Returns:
+            Dict with configuration.
+        """
+        config = {
+            'enabled': enabled,
+            'lead_time_s': lead_time_s,
+            'memory_buffer_pct': memory_buffer_pct,
+            'cpu_buffer_pct': cpu_buffer_pct,
+            'scale_up_threshold': scale_up_threshold,
+            'scale_down_threshold': scale_down_threshold,
+            'min_memory_mb': min_memory_mb,
+            'max_memory_mb': max_memory_mb,
+            'dry_run': dry_run,
+            'updated_at': time.time(),
+            'scaling_history': [],
+        }
+        container._predictive_scaling = config
+        self._record_event(
+            'predictive_scaling_configured', container.id,
+            f"enabled={enabled}, lead_time={lead_time_s}s")
+        return {
+            'container_id': container.id,
+            'config': dict(config),
+        }
+
+    def evaluate_predictive_scaling(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate and apply predictive scaling for a container.
+
+        Uses anomaly predictions to determine if resource limits
+        should be adjusted proactively.
+
+        Returns:
+            Dict with scaling decision, predicted need, and
+            applied changes.
+        """
+        config = getattr(container, '_predictive_scaling', {})
+        if not config or not config.get('enabled', False):
+            return {
+                'container_id': container.id,
+                'action': 'none',
+                'reason': 'predictive_scaling_disabled',
+            }
+
+        # Get anomaly predictions
+        preds = self.predict_anomalies(
+            container,
+            horizon_s=config.get('lead_time_s', 300.0),
+            confidence_threshold=0.3,
+        )
+
+        action = 'none'
+        reason = 'within_thresholds'
+        applied_changes: Dict[str, Any] = {}
+        scale_direction = 'none'
+
+        # Check each prediction for scaling needs
+        for pred in preds.get('predictions', []):
+            resource = pred.get('resource', '')
+            predicted_pct = pred.get('predicted_usage_pct', 0) / 100.0
+            current_pct = pred.get('current_usage_pct', 0) / 100.0
+
+            if resource == 'memory':
+                threshold = config.get('scale_up_threshold', 0.75)
+                buffer = config.get('memory_buffer_pct', 20.0) / 100.0
+
+                if predicted_pct >= threshold:
+                    # Calculate new memory limit
+                    current_limit = container.config.limits.memory_mb
+                    # Target: usage at predicted level + buffer
+                    target_usage_pct = predicted_pct + buffer
+                    if target_usage_pct > 0:
+                        new_limit = int(
+                            current_limit * current_pct
+                            / max(target_usage_pct, 0.01))
+                    else:
+                        new_limit = current_limit
+
+                    # Apply constraints
+                    min_mb = config.get('min_memory_mb')
+                    max_mb = config.get('max_memory_mb')
+                    if min_mb is not None:
+                        new_limit = max(new_limit, min_mb)
+                    if max_mb is not None:
+                        new_limit = min(new_limit, max_mb)
+                    new_limit = max(new_limit, 64)  # floor
+
+                    if new_limit != current_limit:
+                        action = 'scale_up'
+                        reason = (
+                            f"memory predicted at "
+                            f"{predicted_pct*100:.0f}% "
+                            f"(threshold={threshold*100:.0f}%)")
+                        applied_changes['memory_mb'] = {
+                            'old': current_limit,
+                            'new': new_limit,
+                        }
+                        if not config.get('dry_run', False):
+                            container.config.limits.memory_mb = new_limit
+                            self._record_event(
+                                'predictive_scale_memory',
+                                container.id,
+                                f"{current_limit} -> {new_limit}MB")
+
+                elif (predicted_pct
+                      <= config.get('scale_down_threshold', 0.30)):
+                    current_limit = container.config.limits.memory_mb
+                    target_usage_pct = predicted_pct
+                    if target_usage_pct > 0 and current_pct > 0:
+                        new_limit = int(
+                            current_limit * current_pct
+                            / max(target_usage_pct, 0.01))
+                    else:
+                        new_limit = current_limit
+                    new_limit = max(new_limit, 64)
+
+                    min_mb = config.get('min_memory_mb')
+                    max_mb = config.get('max_memory_mb')
+                    if min_mb is not None:
+                        new_limit = max(new_limit, min_mb)
+                    if max_mb is not None:
+                        new_limit = min(new_limit, max_mb)
+
+                    if new_limit < current_limit:
+                        action = 'scale_down'
+                        reason = (
+                            f"memory predicted at "
+                            f"{predicted_pct*100:.0f}% "
+                            f"(threshold="
+                            f"{config.get('scale_down_threshold', 0.30)*100:.0f}%)")
+                        applied_changes['memory_mb'] = {
+                            'old': current_limit,
+                            'new': new_limit,
+                        }
+                        scale_direction = 'down'
+                        if not config.get('dry_run', False):
+                            container.config.limits.memory_mb = new_limit
+                            self._record_event(
+                                'predictive_scale_down_memory',
+                                container.id,
+                                f"{current_limit} -> {new_limit}MB")
+
+        # Record in scaling history
+        entry = {
+            'timestamp': time.time(),
+            'action': action,
+            'reason': reason,
+            'changes': applied_changes,
+            'risk_score': preds.get('risk_score', 0),
+        }
+        history = config.get('scaling_history', [])
+        history.append(entry)
+        config['scaling_history'] = history[-50:]  # keep bounded
+
+        return {
+            'container_id': container.id,
+            'action': action,
+            'reason': reason,
+            'applied_changes': applied_changes,
+            'dry_run': config.get('dry_run', False),
+            'risk_score': preds.get('risk_score', 0),
+            'time_to_next_anomaly': (
+                preds.get('time_to_next_anomaly')),
+            'scaling_history_count': len(
+                config.get('scaling_history', [])),
+        }
+
+    def evaluate_predictive_scaling_all(
+        self,
+    ) -> Dict[str, Any]:
+        """Evaluate predictive scaling across all containers.
+
+        Returns:
+            Dict with per-container results and fleet summary.
+        """
+        results: List[Dict[str, Any]] = []
+        actions_taken = 0
+        scale_ups = 0
+        scale_downs = 0
+
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            result = self.evaluate_predictive_scaling(c)
+            results.append(result)
+            if result['action'] != 'none':
+                actions_taken += 1
+            if result['action'] == 'scale_up':
+                scale_ups += 1
+            elif result['action'] == 'scale_down':
+                scale_downs += 1
+
+        return {
+            'container_count': len(results),
+            'actions_taken': actions_taken,
+            'scale_ups': scale_ups,
+            'scale_downs': scale_downs,
+            'containers': results,
+        }
+
+    def get_predictive_scaling_status(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get predictive scaling status and configuration."""
+        config = getattr(container, '_predictive_scaling', {})
+        history = config.get('scaling_history', [])
+        return {
+            'container_id': container.id,
+            'enabled': config.get('enabled', False),
+            'lead_time_s': config.get('lead_time_s', 300.0),
+            'dry_run': config.get('dry_run', False),
+            'scaling_count': len(history),
+            'recent_actions': [
+                {'action': h['action'], 'time': h['timestamp'],
+                 'reason': h['reason']}
+                for h in history[-5:]
+            ],
+        }
+
+    # ------------------------------------------------------------------
     # Snapshot scheduling (automated periodic snapshots)
     # ------------------------------------------------------------------
 

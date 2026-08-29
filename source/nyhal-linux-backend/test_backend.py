@@ -25802,6 +25802,177 @@ class TestAnomalyPrediction(unittest.TestCase):
         self.assertIn('risk_score', replies[0])
 
 
+class TestPredictiveScaling(unittest.TestCase):
+    """Tests for predictive scaling engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure(self):
+        """Configure predictive scaling."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps1", command=["echo"]))
+        result = mgr.configure_predictive_scaling(
+            c, lead_time_s=600.0, memory_buffer_pct=30.0)
+        self.assertTrue(result['config']['enabled'])
+        self.assertEqual(result['config']['lead_time_s'], 600.0)
+        self.assertEqual(result['config']['memory_buffer_pct'], 30.0)
+
+    def test_configure_dry_run(self):
+        """Configure with dry run."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps2", command=["echo"]))
+        result = mgr.configure_predictive_scaling(
+            c, dry_run=True)
+        self.assertTrue(result['config']['dry_run'])
+
+    def test_evaluate_disabled(self):
+        """Evaluate when disabled returns none."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps3", command=["echo"]))
+        result = mgr.evaluate_predictive_scaling(c)
+        self.assertEqual(result['action'], 'none')
+        self.assertEqual(result['reason'], 'predictive_scaling_disabled')
+
+    def test_evaluate_with_predictions(self):
+        """Evaluate with prediction data."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="ps4", command=["echo"],
+            limits=ResourceLimits(memory_mb=512)))
+        mgr.configure_predictive_scaling(c)
+        # Add history with increasing usage
+        now = time.time()
+        c._resource_history = [
+            {'memory_bytes': (80 + i * 40) * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 600 + i * 100}
+            for i in range(7)
+        ]
+        result = mgr.evaluate_predictive_scaling(c)
+        self.assertIn('action', result)
+        self.assertIn('risk_score', result)
+
+    def test_evaluate_all(self):
+        """Evaluate fleet predictive scaling."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="ps5", command=["echo"]))
+        mgr.create(ContainerConfig(name="ps6", command=["echo"]))
+        result = mgr.evaluate_predictive_scaling_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('actions_taken', result)
+
+    def test_status(self):
+        """Get predictive scaling status."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps7", command=["echo"]))
+        mgr.configure_predictive_scaling(
+            c, lead_time_s=600.0, dry_run=True)
+        result = mgr.get_predictive_scaling_status(c)
+        self.assertTrue(result['enabled'])
+        self.assertEqual(result['lead_time_s'], 600.0)
+        self.assertTrue(result['dry_run'])
+
+    def test_cli_payload(self):
+        """CLI build_payload for predictive scaling commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", enabled=True,
+            lead_time_s=600.0, memory_buffer_pct=25.0,
+            cpu_buffer_pct=20.0, scale_up_threshold=0.8,
+            scale_down_threshold=0.25, min_memory_mb=128,
+            max_memory_mb=2048, dry_run=False)
+        p = cli.build_payload("predictive-scale-configure", ns)
+        self.assertEqual(p["op"], "predictive_scaling_configure")
+        self.assertEqual(p["lead_time_s"], 600.0)
+        self.assertEqual(p["min_memory_mb"], 128)
+
+        ns2 = argparse.Namespace(container_id="c1")
+        p2 = cli.build_payload("predictive-scale-evaluate", ns2)
+        self.assertEqual(p2["op"], "predictive_scaling_evaluate")
+
+        p3 = cli.build_payload(
+            "predictive-scale-evaluate-all",
+            argparse.Namespace())
+        self.assertEqual(p3["op"],
+                         "predictive_scaling_evaluate_all")
+
+        p4 = cli.build_payload("predictive-scale-status", ns2)
+        self.assertEqual(p4["op"], "predictive_scaling_status")
+
+    def test_format_human(self):
+        """format_human renders predictive scaling results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'config': {
+                'enabled': True,
+                'lead_time_s': 600.0,
+                'memory_buffer_pct': 25.0,
+                'dry_run': False,
+            },
+        }
+        text = cli.format_human(
+            "predictive-scale-configure", resp)
+        self.assertIn('configured', text)
+        self.assertIn('c1', text)
+
+        resp2 = {
+            'ok': True,
+            'container_id': 'c1',
+            'action': 'scale_up',
+            'reason': 'memory predicted at 85%',
+            'risk_score': 40.0,
+            'applied_changes': {
+                'memory_mb': {'old': 512, 'new': 768},
+            },
+        }
+        text2 = cli.format_human(
+            "predictive-scale-evaluate", resp2)
+        self.assertIn('scale_up', text2)
+        self.assertIn('512', text2)
+        self.assertIn('768', text2)
+
+    def test_control_handler(self):
+        """ControlService dispatches predictive_scaling_evaluate."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="ps-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "predictive_scaling_evaluate",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('action', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25905,6 +26076,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSLAAutoEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyPrediction))
+    suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
