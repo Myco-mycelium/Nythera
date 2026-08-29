@@ -3625,7 +3625,7 @@ def build_parser() -> argparse.ArgumentParser:
     ase.set_defaults(command="autoscale-events")
 
     # Health check commands
-    hc = sub.add_parser("health", help="Health check management")
+    hc = sub.add_parser("health-checks", help="Health check management")
     hcsub = hc.add_subparsers(dest="health_cmd", required=True)
 
     hcc = hcsub.add_parser("configure", help="Configure health checks")
