@@ -1646,6 +1646,32 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "safety_margin_pct": getattr(args, 'safety_margin_pct', 20.0),
             "dry_run": getattr(args, 'dry_run', False),
         }
+    if command == "sla-compliance-set":
+        return {
+            "service": "control",
+            "op": "sla_compliance_set",
+            "container_id": args.container_id,
+            "max_memory_pct": getattr(args, 'max_memory_pct', 90.0),
+            "max_pid_pct": getattr(args, 'max_pid_pct', 80.0),
+            "max_daily_cost": getattr(args, 'max_daily_cost', None),
+            "max_consecutive_anomalies": getattr(args, 'max_consecutive_anomalies', 5),
+            "auto_action": getattr(args, 'auto_action', 'alert'),
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "sla-compliance-get":
+        return {
+            "service": "control",
+            "op": "sla_compliance_get",
+            "container_id": args.container_id,
+        }
+    if command == "sla-compliance-check":
+        return {
+            "service": "control",
+            "op": "sla_compliance_check",
+            "container_id": args.container_id,
+        }
+    if command == "sla-compliance-check-all":
+        return {"service": "control", "op": "sla_compliance_check_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4019,6 +4045,45 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 lines.append(
                     f"  {name}: {len(changes)} changes")
         return "\n".join(lines)
+    if command == "sla-compliance-set":
+        rules = resp.get('rules', {})
+        enabled = 'enabled' if rules.get('enabled') else 'disabled'
+        return (
+            f"SLA compliance {enabled} for {resp.get('container_id', '?')}:\n"
+            f"  memory: <{rules.get('max_memory_pct', 90)}%\n"
+            f"  pids: <{rules.get('max_pid_pct', 80)}%\n"
+            f"  action: {rules.get('auto_action', 'alert')}")
+    if command == "sla-compliance-get":
+        rules = resp.get('rules', {})
+        if not rules:
+            return f"No SLA compliance rules for {resp.get('container_id', '?')}"
+        return (
+            f"SLA compliance rules for {resp.get('container_id', '?')}: "
+            f"{rules.get('auto_action', 'alert')}, "
+            f"{len(rules.get('violations', []))} violations")
+    if command == "sla-compliance-check":
+        compliant = resp.get('compliant', True)
+        count = resp.get('violation_count', 0)
+        action = resp.get('action_taken', 'none')
+        if compliant:
+            return f"{resp.get('container_id', '?')}: compliant"
+        lines = [
+            f"{resp.get('container_id', '?')}: {count} violations",
+        ]
+        for v in resp.get('violations', []):
+            lines.append(
+                f"  {v.get('rule', '?')}: {v.get('current', '?')} "
+                f"> {v.get('threshold', '?')} ({v.get('resource', '?')})")
+        if action != 'none':
+            lines.append(f"  action: {action}")
+        return "\n".join(lines)
+    if command == "sla-compliance-check-all":
+        nc = resp.get('non_compliant_count', 0)
+        total = resp.get('total_violations', 0)
+        count = resp.get('container_count', 0)
+        return (
+            f"SLA compliance: {count} containers, "
+            f"{nc} non-compliant, {total} violations")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5198,6 +5263,43 @@ def build_parser() -> argparse.ArgumentParser:
     rsa.add_argument("--dry-run", action="store_true", default=False,
                      help="Report changes without applying")
     rsa.set_defaults(command="rightsize-all")
+
+    # -- SLA compliance monitoring --
+    scs = sub.add_parser("sla-compliance-set",
+                        help="Set SLA compliance rules")
+    scs.add_argument("container_id")
+    scs.add_argument("--max-memory-pct", type=float, default=90.0,
+                     help="Max memory usage %% (default: 90)")
+    scs.add_argument("--max-pid-pct", type=float, default=80.0,
+                     help="Max PID usage %% (default: 80)")
+    scs.add_argument("--max-daily-cost", type=float, default=None,
+                     help="Max daily cost in dollars")
+    scs.add_argument("--max-anomalies", type=int, default=5,
+                     dest='max_consecutive_anomalies',
+                     help="Max consecutive anomalies (default: 5)")
+    scs.add_argument("--auto-action", default="alert",
+                     choices=["alert", "remediate", "escalate"],
+                     help="Auto action on violation (default: alert)")
+    scs.add_argument("--enabled", action="store_true", default=True,
+                     help="Enable monitoring (default: True)")
+    scs.add_argument("--disabled", dest="enabled",
+                     action="store_false",
+                     help="Disable monitoring")
+    scs.set_defaults(command="sla-compliance-set")
+
+    scg = sub.add_parser("sla-compliance-get",
+                         help="Get SLA compliance rules")
+    scg.add_argument("container_id")
+    scg.set_defaults(command="sla-compliance-get")
+
+    scc = sub.add_parser("sla-compliance-check",
+                         help="Check SLA compliance for a container")
+    scc.add_argument("container_id")
+    scc.set_defaults(command="sla-compliance-check")
+
+    scca = sub.add_parser("sla-compliance-check-all",
+                          help="Check SLA compliance for all containers")
+    scca.set_defaults(command="sla-compliance-check-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

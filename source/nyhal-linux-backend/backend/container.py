@@ -8058,6 +8058,210 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # SLA compliance monitor (proactive enforcement)
+    # ------------------------------------------------------------------
+
+    def set_sla_compliance_rules(
+        self,
+        container: Container,
+        max_memory_pct: float = 90.0,
+        max_pid_pct: float = 80.0,
+        max_daily_cost: Optional[float] = None,
+        max_consecutive_anomalies: int = 5,
+        auto_action: str = "alert",
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Set SLA compliance rules for proactive monitoring.
+
+        When enabled, the system proactively checks resource usage
+        against these rules and triggers actions on violations.
+
+        Args:
+            container: Target container.
+            max_memory_pct: Max memory usage percentage before violation.
+            max_pid_pct: Max PID usage percentage before violation.
+            max_daily_cost: Max daily cost in dollars (None = no check).
+            max_consecutive_anomalies: Max anomalies before violation.
+            auto_action: Action on violation (alert, remediate, escalate).
+            enabled: Whether monitoring is active.
+
+        Returns:
+            Dict with the compliance rules.
+        """
+        rules = {
+            'max_memory_pct': max_memory_pct,
+            'max_pid_pct': max_pid_pct,
+            'max_daily_cost': max_daily_cost,
+            'max_consecutive_anomalies': max_consecutive_anomalies,
+            'auto_action': auto_action,
+            'enabled': enabled,
+            'updated_at': time.time(),
+            'violations': [],
+            'last_check': 0.0,
+        }
+        container._sla_compliance_rules = rules
+
+        self._record_event(
+            'sla_compliance_configured', container.id,
+            f"enabled={enabled}, action={auto_action}")
+
+        return {
+            'container_id': container.id,
+            'rules': dict(rules),
+        }
+
+    def get_sla_compliance_rules(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get SLA compliance rules for a container."""
+        rules = getattr(container, '_sla_compliance_rules', None)
+        return {
+            'container_id': container.id,
+            'rules': dict(rules) if rules else {},
+            'status': 'set' if rules else 'unset',
+        }
+
+    def check_sla_compliance(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Check SLA compliance and take action if needed.
+
+        Returns:
+            Dict with ``compliant``, ``violations``, ``action_taken``.
+        """
+        rules = getattr(container, '_sla_compliance_rules', None)
+        if not rules or not rules.get('enabled', False):
+            return {
+                'container_id': container.id,
+                'compliant': True,
+                'violations': [],
+                'action_taken': 'none',
+                'reason': 'no_rules',
+            }
+
+        violations: List[Dict[str, Any]] = []
+        now = time.time()
+
+        # Check memory usage
+        stats = self.container_stats(container)
+        if stats and stats.get('available'):
+            mem_bytes = stats.get('memory_bytes', 0)
+            mem_limit = container.config.limits.memory_mb * 1024 * 1024
+            if mem_limit > 0:
+                mem_pct = (mem_bytes / mem_limit) * 100
+                if mem_pct > rules.get('max_memory_pct', 90):
+                    violations.append({
+                        'rule': 'max_memory_pct',
+                        'current': round(mem_pct, 1),
+                        'threshold': rules['max_memory_pct'],
+                        'resource': 'memory',
+                    })
+
+            # Check PID usage
+            pids = stats.get('pids_current', 0)
+            pid_limit = container.config.limits.pid_limit
+            if pid_limit > 0:
+                pid_pct = (pids / pid_limit) * 100
+                if pid_pct > rules.get('max_pid_pct', 80):
+                    violations.append({
+                        'rule': 'max_pid_pct',
+                        'current': round(pid_pct, 1),
+                        'threshold': rules['max_pid_pct'],
+                        'resource': 'pids',
+                    })
+
+        # Check anomaly count
+        anomaly_result = self.detect_anomalies(container)
+        anomaly_count = len(anomaly_result.get('anomalies', []))
+        if anomaly_count > rules.get('max_consecutive_anomalies', 5):
+            violations.append({
+                'rule': 'max_consecutive_anomalies',
+                'current': anomaly_count,
+                'threshold': rules['max_consecutive_anomalies'],
+                'resource': 'anomalies',
+            })
+
+        # Check daily cost
+        max_daily = rules.get('max_daily_cost')
+        if max_daily is not None:
+            allocation = self.calculate_cost_allocation(container)
+            daily_cost = allocation.get('projected_daily', 0)
+            if daily_cost > max_daily:
+                violations.append({
+                    'rule': 'max_daily_cost',
+                    'current': daily_cost,
+                    'threshold': max_daily,
+                    'resource': 'cost',
+                })
+
+        # Take action if there are violations
+        action_taken = 'none'
+        if violations:
+            auto_action = rules.get('auto_action', 'alert')
+            if auto_action == 'alert':
+                self._fire_alert(
+                    container, 'sla_compliance', 'warning',
+                    f'{len(violations)} compliance violations')
+                action_taken = 'alert'
+            elif auto_action == 'remediate':
+                result = self.execute_remediation(
+                    container, trigger='threshold_exceeded',
+                    reason=f'SLA compliance: {len(violations)} violations')
+                action_taken = result.get('action_taken', 'none')
+            elif auto_action == 'escalate':
+                for _ in range(len(violations)):
+                    self.trigger_sla_escalation(container)
+                action_taken = f'escalated_x{len(violations)}'
+
+            # Record violation
+            rules.setdefault('violations', []).append({
+                'timestamp': now,
+                'violations': violations,
+                'action': action_taken,
+            })
+            # Keep last 100 violations
+            if len(rules['violations']) > 100:
+                rules['violations'] = rules['violations'][-100:]
+
+        rules['last_check'] = now
+
+        return {
+            'container_id': container.id,
+            'compliant': len(violations) == 0,
+            'violations': violations,
+            'violation_count': len(violations),
+            'action_taken': action_taken,
+            'check_time': now,
+        }
+
+    def check_sla_compliance_all(
+        self,
+    ) -> Dict[str, Any]:
+        """Check SLA compliance across all containers."""
+        results = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.check_sla_compliance(c)
+                results.append(result)
+
+        non_compliant = sum(
+            1 for r in results if not r.get('compliant', True))
+        total_violations = sum(
+            r.get('violation_count', 0) for r in results)
+        actions_taken = sum(
+            1 for r in results if r.get('action_taken') != 'none')
+
+        return {
+            'container_count': len(results),
+            'non_compliant_count': non_compliant,
+            'total_violations': total_violations,
+            'actions_taken': actions_taken,
+            'containers': results,
+        }
+
+    # ------------------------------------------------------------------
     # Billing (cost tracking)
     # ------------------------------------------------------------------
 

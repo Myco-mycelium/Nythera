@@ -24777,6 +24777,146 @@ class TestRightSizing(unittest.TestCase):
         self.assertIn('changes', replies[0])
 
 
+class TestSLAComplianceMonitor(unittest.TestCase):
+    """Tests for SLA compliance monitoring."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_compliance_rules(self):
+        """Set compliance rules on a container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sc1", command=["echo"]))
+        result = mgr.set_sla_compliance_rules(
+            c, max_memory_pct=85.0, auto_action="remediate")
+        self.assertEqual(result['rules']['max_memory_pct'], 85.0)
+        self.assertEqual(result['rules']['auto_action'], 'remediate')
+        self.assertTrue(result['rules']['enabled'])
+
+    def test_get_compliance_rules(self):
+        """Get compliance rules."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sc2", command=["echo"]))
+        mgr.set_sla_compliance_rules(c)
+        result = mgr.get_sla_compliance_rules(c)
+        self.assertEqual(result['status'], 'set')
+        self.assertTrue(result['rules']['enabled'])
+
+    def test_get_compliance_rules_unset(self):
+        """Get compliance rules when not configured."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sc3", command=["echo"]))
+        result = mgr.get_sla_compliance_rules(c)
+        self.assertEqual(result['status'], 'unset')
+
+    def test_check_compliance_no_rules(self):
+        """Check compliance with no rules returns compliant."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sc4", command=["echo"]))
+        result = mgr.check_sla_compliance(c)
+        self.assertTrue(result['compliant'])
+        self.assertEqual(result['reason'], 'no_rules')
+
+    def test_check_compliance_disabled(self):
+        """Check compliance when disabled returns compliant."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sc5", command=["echo"]))
+        mgr.set_sla_compliance_rules(c, enabled=False)
+        result = mgr.check_sla_compliance(c)
+        self.assertTrue(result['compliant'])
+
+    def test_check_compliance_all(self):
+        """check_sla_compliance_all processes all containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="sc6", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="sc7", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.check_sla_compliance_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('non_compliant_count', result)
+        self.assertIn('total_violations', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for SLA compliance commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", max_memory_pct=85.0,
+            max_pid_pct=70.0, max_daily_cost=None,
+            max_consecutive_anomalies=3, auto_action="alert",
+            enabled=True)
+        p = cli.build_payload("sla-compliance-set", ns)
+        self.assertEqual(p["op"], "sla_compliance_set")
+        self.assertEqual(p["max_memory_pct"], 85.0)
+
+        ns2 = argparse.Namespace(container_id="c1")
+        p2 = cli.build_payload("sla-compliance-get", ns2)
+        self.assertEqual(p2["op"], "sla_compliance_get")
+
+        p3 = cli.build_payload("sla-compliance-check", ns2)
+        self.assertEqual(p3["op"], "sla_compliance_check")
+
+        p4 = cli.build_payload("sla-compliance-check-all", argparse.Namespace())
+        self.assertEqual(p4["op"], "sla_compliance_check_all")
+
+    def test_format_human(self):
+        """format_human renders compliance results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'compliant': False,
+            'violation_count': 2,
+            'violations': [
+                {'rule': 'max_memory_pct', 'current': 95.0,
+                 'threshold': 90.0, 'resource': 'memory'},
+            ],
+            'action_taken': 'alert',
+        }
+        text = cli.format_human("sla-compliance-check", resp)
+        self.assertIn('2', text)
+        self.assertIn('95.0', text)
+        self.assertIn('alert', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches sla_compliance_check op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="sc-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "sla_compliance_check",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('compliant', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24873,6 +25013,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSmartRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestUsagePatternRecognition))
     suite.addTests(loader.loadTestsFromTestCase(TestRightSizing))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLAComplianceMonitor))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

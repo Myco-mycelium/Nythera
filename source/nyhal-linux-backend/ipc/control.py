@@ -696,6 +696,18 @@ class ControlService:
             elif op == "rightsize_all":
                 self._rightsize_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "sla_compliance_set":
+                self._sla_compliance_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_compliance_get":
+                self._sla_compliance_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_compliance_check":
+                self._sla_compliance_check(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_compliance_check_all":
+                self._sla_compliance_check_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4910,6 +4922,70 @@ class ControlService:
             dry_run=request.get('dry_run', False),
         )
         self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_compliance_set(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_sla_compliance_rules(
+            c,
+            max_memory_pct=request.get('max_memory_pct', 90.0),
+            max_pid_pct=request.get('max_pid_pct', 80.0),
+            max_daily_cost=request.get('max_daily_cost'),
+            max_consecutive_anomalies=request.get('max_consecutive_anomalies', 5),
+            auto_action=request.get('auto_action', 'alert'),
+            enabled=request.get('enabled', True),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_compliance_get(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_sla_compliance_rules(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_compliance_check(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.check_sla_compliance(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_compliance_check_all(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        result = self.container_manager.check_sla_compliance_all()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })
