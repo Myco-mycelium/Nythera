@@ -7497,6 +7497,123 @@ class ContainerManager:
         return list(history)
 
     # ------------------------------------------------------------------
+    # SLA breach auto-remediation integration
+    # ------------------------------------------------------------------
+
+    def process_sla_breach(
+        self,
+        container: Container,
+        breach_type: str = "downtime",
+        detail: str = "",
+    ) -> Dict[str, Any]:
+        """Process an SLA breach and trigger auto-remediation.
+
+        This is the unified entry point that:
+        1. Records the breach in SLA tracking
+        2. Triggers SLA escalation
+        3. If auto-remediation is configured, executes the
+           corresponding remediation action
+
+        Args:
+            container: Target container.
+            breach_type: Type of breach (downtime, latency,
+                error_rate, custom).
+            detail: Human-readable detail.
+
+        Returns:
+            Dict with breach, escalation, and remediation results.
+        """
+        # Record the breach (use 1s as minimal duration for the event)
+        self.record_sla_downtime(
+            container, duration_s=1.0, reason=f"{breach_type}: {detail}")
+
+        # Trigger escalation
+        escalation = self.trigger_sla_escalation(container)
+
+        # Execute auto-remediation if configured
+        remediation = None
+        rem = getattr(container, '_remediation', {})
+        policy = rem.get('policy', {})
+        if policy.get('enabled', False):
+            # Map breach type to remediation trigger
+            trigger_map = {
+                'downtime': 'threshold_exceeded',
+                'latency': 'threshold_exceeded',
+                'error_rate': 'threshold_exceeded',
+                'budget': 'budget_exceeded',
+                'oom': 'oom_risk',
+            }
+            trigger = trigger_map.get(breach_type, 'threshold_exceeded')
+            remediation = self.execute_remediation(
+                container, trigger=trigger,
+                reason=f"SLA breach ({breach_type}): {detail}")
+
+        self._record_event(
+            'sla_breach_processed', container.id,
+            f"type={breach_type}, escalated={escalation.get('escalated')}, "
+            f"remediation={'yes' if remediation else 'no'}")
+
+        return {
+            'container_id': container.id,
+            'breach_type': breach_type,
+            'detail': detail,
+            'escalation': escalation,
+            'remediation': remediation,
+        }
+
+    def process_sla_breach_all(
+        self,
+        breach_type: str = "downtime",
+        detail: str = "",
+        container_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Process SLA breaches across multiple containers.
+
+        Args:
+            breach_type: Type of breach.
+            detail: Human-readable detail.
+            container_ids: Specific containers to breach.
+                If None, breaches all running containers with SLA config.
+
+        Returns:
+            Dict with per-container results and summary.
+        """
+        results = []
+        targets = []
+
+        if container_ids:
+            for cid in container_ids:
+                c = self.containers.get(cid)
+                if c is not None:
+                    targets.append(c)
+        else:
+            for cid, c in self.containers.items():
+                if c.state == ContainerState.RUNNING:
+                    sla = getattr(c, '_sla', {})
+                    if sla.get('enabled', False):
+                        targets.append(c)
+
+        for c in targets:
+            result = self.process_sla_breach(
+                c, breach_type=breach_type, detail=detail)
+            results.append(result)
+
+        escalated_count = sum(
+            1 for r in results
+            if r.get('escalation', {}).get('escalated', False))
+        remediated_count = sum(
+            1 for r in results
+            if r.get('remediation') is not None)
+
+        return {
+            'breach_type': breach_type,
+            'containers_processed': len(results),
+            'escalated_count': escalated_count,
+            'remediated_count': remediated_count,
+            'results': results,
+        }
+
+    # ------------------------------------------------------------------
     # Billing (cost tracking)
     # ------------------------------------------------------------------
 

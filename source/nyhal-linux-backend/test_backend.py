@@ -24233,6 +24233,125 @@ class TestArchiveScheduling(unittest.TestCase):
         self.assertIn('archive_count', replies[0])
 
 
+class TestSLABreachRemediation(unittest.TestCase):
+    """Tests for SLA breach auto-remediation integration."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_process_sla_breach_basic(self):
+        """process_sla_breach records breach and triggers escalation."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sla1", command=["echo"]))
+        result = mgr.process_sla_breach(
+            c, breach_type="downtime", detail="service down")
+        self.assertEqual(result['breach_type'], 'downtime')
+        self.assertIn('escalation', result)
+        self.assertIn('remediation', result)
+
+    def test_process_sla_breach_with_remediation(self):
+        """SLA breach triggers remediation when configured."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sla2", command=["echo"]))
+        mgr.configure_remediation(
+            c, on_threshold_exceeded="alert", cooldown_seconds=0.0)
+        result = mgr.process_sla_breach(
+            c, breach_type="latency", detail="slow response")
+        self.assertIsNotNone(result['remediation'])
+        self.assertEqual(result['remediation']['action_taken'], 'alert')
+
+    def test_process_sla_breach_no_remediation(self):
+        """SLA breach without remediation config returns None."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="sla3", command=["echo"]))
+        result = mgr.process_sla_breach(c)
+        self.assertIsNone(result['remediation'])
+
+    def test_process_sla_breach_all(self):
+        """process_sla_breach_all processes multiple containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="sla4", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="sla5", command=["echo"]))
+        result = mgr.process_sla_breach_all(
+            breach_type="error_rate",
+            container_ids=[c1.id, c2.id])
+        self.assertEqual(result['containers_processed'], 2)
+        self.assertIn('escalated_count', result)
+        self.assertIn('remediated_count', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for SLA breach commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1",
+            breach_type="downtime",
+            detail="test")
+        p = cli.build_payload("sla-breach-process", ns)
+        self.assertEqual(p["op"], "sla_breach_process")
+        self.assertEqual(p["breach_type"], "downtime")
+
+        ns2 = argparse.Namespace(
+            breach_type="latency",
+            detail="slow",
+            container_ids=None)
+        p2 = cli.build_payload("sla-breach-process-all", ns2)
+        self.assertEqual(p2["op"], "sla_breach_process_all")
+
+    def test_format_human(self):
+        """format_human renders SLA breach results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'breach_type': 'downtime',
+            'escalation': {'escalated': True, 'level': 1,
+                           'actions': ['alert']},
+            'remediation': {'action_taken': 'alert',
+                            'result': 'alert emitted'},
+        }
+        text = cli.format_human("sla-breach-process", resp)
+        self.assertIn('downtime', text)
+        self.assertIn('escalated', text)
+        self.assertIn('alert', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches sla_breach_process op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="sla-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "sla_breach_process",
+                  "container_id": c.id,
+                  "breach_type": "downtime"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('escalation', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24325,6 +24444,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestHealthScoring))
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogCompression))
     suite.addTests(loader.loadTestsFromTestCase(TestArchiveScheduling))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLABreachRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

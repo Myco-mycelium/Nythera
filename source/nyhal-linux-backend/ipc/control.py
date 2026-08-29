@@ -672,6 +672,12 @@ class ControlService:
             elif op == "archive_get":
                 self._archive_get(
                     server, sender_path, msg.message_id, request)
+            elif op == "sla_breach_process":
+                self._sla_breach_process(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_breach_process_all":
+                self._sla_breach_process_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4766,6 +4772,38 @@ class ControlService:
             return
         self._reply(server, sender_path, call_id, {
             "ok": True, **archive,
+        })
+
+    def _sla_breach_process(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.process_sla_breach(
+            c,
+            breach_type=request.get('breach_type', 'downtime'),
+            detail=request.get('detail', ''),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_breach_process_all(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        result = self.container_manager.process_sla_breach_all(
+            breach_type=request.get('breach_type', 'downtime'),
+            detail=request.get('detail', ''),
+            container_ids=request.get('container_ids'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
         })
 
     def _save_state(self) -> None:

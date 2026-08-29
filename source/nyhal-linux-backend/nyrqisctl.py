@@ -1594,6 +1594,22 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "archive_get",
             "index": getattr(args, 'index', 0),
         }
+    if command == "sla-breach-process":
+        return {
+            "service": "control",
+            "op": "sla_breach_process",
+            "container_id": args.container_id,
+            "breach_type": getattr(args, 'breach_type', 'downtime'),
+            "detail": getattr(args, 'detail', ''),
+        }
+    if command == "sla-breach-process-all":
+        return {
+            "service": "control",
+            "op": "sla_breach_process_all",
+            "breach_type": getattr(args, 'breach_type', 'downtime'),
+            "detail": getattr(args, 'detail', ''),
+            "container_ids": getattr(args, 'container_ids', None),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3836,6 +3852,30 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         orig = resp.get('original_events', 0)
         comp = resp.get('compressed_events', 0)
         return f"Archive: {orig} -> {comp} events"
+    if command == "sla-breach-process":
+        lines = [
+            f"SLA breach processed for {resp.get('container_id', '?')}:",
+            f"  type: {resp.get('breach_type', '?')}",
+        ]
+        esc = resp.get('escalation', {})
+        if esc.get('escalated'):
+            lines.append(
+                f"  escalated: level {esc.get('level', '?')}, "
+                f"actions: {esc.get('actions', [])}")
+        rem = resp.get('remediation')
+        if rem:
+            lines.append(
+                f"  remediation: {rem.get('action_taken', '?')} - "
+                f"{rem.get('result', '')}")
+        return "\n".join(lines)
+    if command == "sla-breach-process-all":
+        lines = [
+            f"SLA breach processed across "
+            f"{resp.get('containers_processed', 0)} containers:",
+            f"  escalated: {resp.get('escalated_count', 0)}",
+            f"  remediated: {resp.get('remediated_count', 0)}",
+        ]
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4950,6 +4990,28 @@ def build_parser() -> argparse.ArgumentParser:
     ag.add_argument("index", type=int, nargs='?', default=0,
                     help="Archive index (0 = most recent)")
     ag.set_defaults(command="archive-get")
+
+    # -- SLA breach auto-remediation --
+    sbp = sub.add_parser("sla-breach-process",
+                        help="Process an SLA breach with auto-remediation")
+    sbp.add_argument("container_id")
+    sbp.add_argument("--breach-type", default="downtime",
+                     choices=["downtime", "latency", "error_rate",
+                              "budget", "oom", "custom"],
+                     help="Type of breach (default: downtime)")
+    sbp.add_argument("--detail", default="",
+                     help="Human-readable detail")
+    sbp.set_defaults(command="sla-breach-process")
+
+    sbpa = sub.add_parser("sla-breach-process-all",
+                          help="Process SLA breaches across containers")
+    sbpa.add_argument("--breach-type", default="downtime",
+                      help="Type of breach")
+    sbpa.add_argument("--detail", default="",
+                      help="Human-readable detail")
+    sbpa.add_argument("--container-ids", nargs='+', default=None,
+                      help="Specific container IDs (default: all with SLA)")
+    sbpa.set_defaults(command="sla-breach-process-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
