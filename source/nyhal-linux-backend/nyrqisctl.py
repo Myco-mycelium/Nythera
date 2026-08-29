@@ -1194,6 +1194,31 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         if args.container_ids:
             payload["container_ids"] = args.container_ids.split(",")
         return payload
+    if command == "baseline-record":
+        return {
+            "service": "control",
+            "op": "baseline_record",
+            "container_id": args.container_id,
+        }
+    if command == "baseline-get":
+        return {
+            "service": "control",
+            "op": "baseline_get",
+            "container_id": args.container_id,
+        }
+    if command == "baseline-compare":
+        return {
+            "service": "control",
+            "op": "baseline_compare",
+            "container_id": args.container_id,
+            "threshold_sigma": args.threshold,
+        }
+    if command == "baseline-clear":
+        return {
+            "service": "control",
+            "op": "baseline_clear",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -2760,6 +2785,53 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             lines.append(
                 f"{p['pid']}\t{p.get('comm', '?')}\t{_fmt_bytes(val)}")
         return "\n".join(lines)
+    if command == "baseline-record":
+        count = resp.get("snapshot_count", 0)
+        bl = resp.get("baseline", {})
+        return (
+            f"Recorded baseline snapshot #{count}\n"
+            f"  memory: {_fmt_bytes(bl.get('memory_bytes', 0))}\n"
+            f"  rss: {_fmt_bytes(bl.get('total_rss_bytes', 0))}\n"
+            f"  cpu_s: {bl.get('total_cpu_s', 0):.3f}\n"
+            f"  threads: {bl.get('total_threads', 0)}")
+    if command == "baseline-get":
+        count = resp.get("snapshot_count", 0)
+        if count == 0:
+            return "no baseline data (record some snapshots first)"
+        mean = resp.get("mean", {})
+        sd = resp.get("stddev", {})
+        lines = [
+            f"Baseline ({count} snapshots):",
+            "",
+            "Metric\tMean\tStdDev",
+        ]
+        for m in sorted(mean.keys()):
+            if "bytes" in m or "rss" in m:
+                lines.append(
+                    f"{m}\t{_fmt_bytes(int(mean[m]))}\t"
+                    f"{_fmt_bytes(int(sd[m]))}")
+            else:
+                lines.append(
+                    f"{m}\t{mean[m]:.3f}\t{sd[m]:.3f}")
+        return "\n".join(lines)
+    if command == "baseline-compare":
+        deviations = resp.get("deviations", [])
+        reason = resp.get("reason")
+        if reason:
+            return reason
+        if not deviations:
+            return "All metrics within baseline (no deviations)"
+        lines = ["Deviations from baseline:", ""]
+        for d in deviations:
+            lines.append(
+                f"  {d['metric']}: {d['current']} "
+                f"(baseline {d['baseline_mean']:.1f} ± "
+                f"{d['baseline_stddev']:.1f}, "
+                f"z={d['z_score']}, {d['direction']})")
+        return "\n".join(lines)
+    if command == "baseline-clear":
+        cleared = resp.get("cleared", 0)
+        return f"Cleared {cleared} baseline snapshot(s)"
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -3436,6 +3508,28 @@ def build_parser() -> argparse.ArgumentParser:
     bk.add_argument("--container-ids",
                     help="Comma-separated container IDs")
     bk.set_defaults(command="batch-kill")
+
+    blr = csub.add_parser("baseline-record",
+                          help="Record a baseline snapshot")
+    blr.add_argument("container_id")
+    blr.set_defaults(command="baseline-record")
+
+    blg = csub.add_parser("baseline-get",
+                          help="Get aggregated baseline stats")
+    blg.add_argument("container_id")
+    blg.set_defaults(command="baseline-get")
+
+    blc = csub.add_parser("baseline-compare",
+                          help="Compare current usage vs baseline")
+    blc.add_argument("container_id")
+    blc.add_argument("--threshold", type=float, default=2.0,
+                     help="Z-score threshold (default 2.0)")
+    blc.set_defaults(command="baseline-compare")
+
+    blx = csub.add_parser("baseline-clear",
+                          help="Clear all baseline snapshots")
+    blx.add_argument("container_id")
+    blx.set_defaults(command="baseline-clear")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

@@ -6424,6 +6424,181 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource usage baselines (normal usage patterns)
+    # ------------------------------------------------------------------
+
+    def record_baseline(self, container: Container) -> Dict[str, Any]:
+        """Record a resource usage baseline snapshot.
+
+        Captures the current resource usage (from cgroup stats and
+        resource profiling) and stores it as the baseline "normal"
+        pattern for this container.  Multiple snapshots build a
+        statistical profile over time.
+
+        Returns:
+            Dict with ``container_id``, ``snapshot_count``,
+            ``baseline`` (the current stats).
+        """
+        if not hasattr(container, "_baselines"):
+            container._baselines = []
+
+        stats = self.container_stats(container)
+        profile = self.get_resource_profile(container)
+
+        snapshot = {
+            "timestamp": time.time(),
+            "memory_bytes": stats.get("memory_bytes", 0),
+            "cpu_usage_usec": stats.get("cpu_usage_usec", 0),
+            "pids_current": stats.get("pids_current", 0),
+            "io_read_bytes": stats.get("io_read_bytes", 0),
+            "total_cpu_s": profile["summary"].get("total_cpu_s", 0),
+            "total_rss_bytes": profile["summary"].get(
+                "total_rss_bytes", 0),
+            "total_threads": profile["summary"].get(
+                "total_threads", 0),
+        }
+
+        container._baselines.append(snapshot)
+        # Keep last 100 snapshots
+        if len(container._baselines) > 100:
+            container._baselines = container._baselines[-100:]
+
+        return {
+            "container_id": container.id,
+            "snapshot_count": len(container._baselines),
+            "baseline": snapshot,
+        }
+
+    def get_baseline(self, container: Container) -> Dict[str, Any]:
+        """Get the aggregated baseline for a container.
+
+        Computes the mean and stddev of all recorded baseline
+        snapshots, providing a statistical profile of "normal"
+        resource usage.
+
+        Returns:
+            Dict with ``container_id``, ``snapshot_count``,
+            ``mean`` (avg of each metric), ``stddev``.
+        """
+        baselines = getattr(container, "_baselines", [])
+        if not baselines:
+            return {
+                "container_id": container.id,
+                "snapshot_count": 0,
+                "mean": {},
+                "stddev": {},
+            }
+
+        metrics = [
+            "memory_bytes", "cpu_usage_usec", "pids_current",
+            "io_read_bytes", "total_cpu_s", "total_rss_bytes",
+            "total_threads",
+        ]
+
+        mean: Dict[str, float] = {}
+        stddev: Dict[str, float] = {}
+
+        for m in metrics:
+            values = [s.get(m, 0) for s in baselines]
+            avg = sum(values) / len(values)
+            mean[m] = round(avg, 3)
+            if len(values) > 1:
+                variance = sum((v - avg) ** 2 for v in values) / (
+                    len(values) - 1)
+                stddev[m] = round(variance ** 0.5, 3)
+            else:
+                stddev[m] = 0.0
+
+        return {
+            "container_id": container.id,
+            "snapshot_count": len(baselines),
+            "mean": mean,
+            "stddev": stddev,
+        }
+
+    def compare_baseline(
+        self, container: Container,
+        threshold_sigma: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Compare current resource usage against the baseline.
+
+        Flags metrics that deviate more than ``threshold_sigma"
+        standard deviations from the baseline mean.
+
+        Args:
+            container: Target container.
+            threshold_sigma: How many standard deviations from the
+                mean constitutes a deviation.
+
+        Returns:
+            Dict with ``container_id``, ``deviations`` (list of
+            flagged metrics), ``current`` values, and ``baseline``
+            (mean).
+        """
+        baseline = self.get_baseline(container)
+        if baseline["snapshot_count"] < 2:
+            return {
+                "container_id": container.id,
+                "deviations": [],
+                "current": {},
+                "baseline": baseline.get("mean", {}),
+                "reason": "insufficient baseline data",
+            }
+
+        stats = self.container_stats(container)
+        profile = self.get_resource_profile(container)
+
+        current = {
+            "memory_bytes": stats.get("memory_bytes", 0),
+            "cpu_usage_usec": stats.get("cpu_usage_usec", 0),
+            "pids_current": stats.get("pids_current", 0),
+            "io_read_bytes": stats.get("io_read_bytes", 0),
+            "total_cpu_s": profile["summary"].get("total_cpu_s", 0),
+            "total_rss_bytes": profile["summary"].get(
+                "total_rss_bytes", 0),
+            "total_threads": profile["summary"].get(
+                "total_threads", 0),
+        }
+
+        deviations: List[Dict[str, Any]] = []
+        for m, val in current.items():
+            mean = baseline["mean"].get(m, 0)
+            sd = baseline["stddev"].get(m, 0)
+            if sd > 0 and abs(val - mean) > threshold_sigma * sd:
+                direction = "above" if val > mean else "below"
+                z_score = round(
+                    (val - mean) / sd, 2) if sd > 0 else 0
+                deviations.append({
+                    "metric": m,
+                    "current": val,
+                    "baseline_mean": round(mean, 3),
+                    "baseline_stddev": round(sd, 3),
+                    "z_score": z_score,
+                    "direction": direction,
+                })
+
+        return {
+            "container_id": container.id,
+            "deviations": deviations,
+            "current": current,
+            "baseline": baseline["mean"],
+        }
+
+    def clear_baseline(self, container: Container) -> Dict[str, Any]:
+        """Clear all baseline snapshots for a container.
+
+        Returns:
+            Dict with ``container_id`` and ``cleared`` (count).
+        """
+        baselines = getattr(container, "_baselines", [])
+        count = len(baselines)
+        container._baselines = []
+        return {
+            "container_id": container.id,
+            "cleared": count,
+        }
+
+    # ------------------------------------------------------------------
     # Auto-scaling (demand-based resource adjustment)
     # ------------------------------------------------------------------
 

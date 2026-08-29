@@ -486,6 +486,18 @@ class ControlService:
             elif op == "batch_kill":
                 self._batch_kill(
                     server, sender_path, msg.message_id, request)
+            elif op == "baseline_record":
+                self._baseline_record(
+                    server, sender_path, msg.message_id, request)
+            elif op == "baseline_get":
+                self._baseline_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "baseline_compare":
+                self._baseline_compare(
+                    server, sender_path, msg.message_id, request)
+            elif op == "baseline_clear":
+                self._baseline_clear(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3357,6 +3369,94 @@ class ControlService:
         result = self.container_manager.get_recommendations_by_category(
             c, category=category,
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Resource usage baselines
+
+    def _baseline_record(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.record_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _baseline_get(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _baseline_compare(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        threshold = request.get("threshold_sigma", 2.0)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.compare_baseline(
+            c, threshold_sigma=threshold)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _baseline_clear(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.clear_baseline(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

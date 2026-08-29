@@ -21422,6 +21422,175 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestResourceBaselines(unittest.TestCase):
+    """Resource usage baselines (normal usage patterns)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_record_baseline(self):
+        """record_baseline captures a snapshot."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-test"))
+        result = mgr.record_baseline(c)
+        self.assertEqual(result["snapshot_count"], 1)
+        self.assertIn("memory_bytes", result["baseline"])
+        self.assertIn("total_cpu_s", result["baseline"])
+
+    def test_get_baseline_empty(self):
+        """get_baseline returns empty when no snapshots."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-empty"))
+        result = mgr.get_baseline(c)
+        self.assertEqual(result["snapshot_count"], 0)
+        self.assertEqual(result["mean"], {})
+        self.assertEqual(result["stddev"], {})
+
+    def test_get_baseline_aggregated(self):
+        """get_baseline computes mean and stddev."""
+        from backend.container import ContainerConfig
+        import time
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-agg"))
+        # Manually seed baseline snapshots
+        c._baselines = []
+        for i in range(5):
+            c._baselines.append({
+                "timestamp": time.time() + i,
+                "memory_bytes": 1000 + i * 100,
+                "cpu_usage_usec": 100 + i * 10,
+                "pids_current": 3,
+                "io_read_bytes": 500 + i * 50,
+                "total_cpu_s": 0.5 + i * 0.05,
+                "total_rss_bytes": 800 + i * 80,
+                "total_threads": 4,
+            })
+        result = mgr.get_baseline(c)
+        self.assertEqual(result["snapshot_count"], 5)
+        self.assertAlmostEqual(
+            result["mean"]["memory_bytes"], 1200, places=0)
+        self.assertGreater(result["stddev"]["memory_bytes"], 0)
+
+    def test_compare_baseline_no_deviation(self):
+        """compare_baseline returns no deviations when within range."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-nodev"))
+        # Seed 5 identical snapshots
+        c._baselines = [
+            {"timestamp": 1000.0, "memory_bytes": 1000,
+             "cpu_usage_usec": 100, "pids_current": 3,
+             "io_read_bytes": 500, "total_cpu_s": 0.5,
+             "total_rss_bytes": 800, "total_threads": 4}
+            for _ in range(5)
+        ]
+        result = mgr.compare_baseline(c)
+        self.assertEqual(result["deviations"], [])
+
+    def test_compare_baseline_insufficient_data(self):
+        """compare_baseline reports insufficient data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-insuf"))
+        result = mgr.compare_baseline(c)
+        self.assertEqual(len(result["deviations"]), 0)
+        self.assertEqual(result["reason"], "insufficient baseline data")
+
+    def test_clear_baseline(self):
+        """clear_baseline removes all snapshots."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="bl-clear"))
+        mgr.record_baseline(c)
+        mgr.record_baseline(c)
+        result = mgr.clear_baseline(c)
+        self.assertEqual(result["cleared"], 2)
+        self.assertEqual(len(getattr(c, "_baselines", [])), 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for baseline commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("baseline-record",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p1["op"], "baseline_record")
+        p2 = build_payload("baseline-get",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p2["op"], "baseline_get")
+        p3 = build_payload("baseline-compare",
+                          argparse.Namespace(
+                              container_id="abc", threshold=3.0))
+        self.assertEqual(p3["op"], "baseline_compare")
+        self.assertEqual(p3["threshold_sigma"], 3.0)
+        p4 = build_payload("baseline-clear",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p4["op"], "baseline_clear")
+
+    def test_cli_format_human(self):
+        """CLI format_human for baseline commands."""
+        from nyrqisctl import format_human
+        # get with data
+        resp = {
+            "ok": True, "container_id": "abc",
+            "snapshot_count": 3,
+            "mean": {"memory_bytes": 1000, "total_cpu_s": 0.5,
+                      "total_threads": 4, "cpu_usage_usec": 100,
+                      "pids_current": 3, "io_read_bytes": 500,
+                      "total_rss_bytes": 800},
+            "stddev": {"memory_bytes": 100, "total_cpu_s": 0.1,
+                        "total_threads": 0, "cpu_usage_usec": 10,
+                        "pids_current": 0, "io_read_bytes": 50,
+                        "total_rss_bytes": 80},
+        }
+        text = format_human("baseline-get", resp)
+        self.assertIn("3 snapshots", text)
+        self.assertIn("memory_bytes", text)
+        # compare with deviations
+        resp2 = {
+            "ok": True, "container_id": "abc",
+            "deviations": [
+                {"metric": "memory_bytes", "current": 5000,
+                 "baseline_mean": 1000, "baseline_stddev": 100,
+                 "z_score": 40.0, "direction": "above"},
+            ],
+            "current": {"memory_bytes": 5000},
+            "baseline": {"memory_bytes": 1000},
+        }
+        text2 = format_human("baseline-compare", resp2)
+        self.assertIn("memory_bytes", text2)
+        self.assertIn("above", text2)
+
+    def test_control_handler(self):
+        """Baseline record control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="bl-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "baseline_record",
+                           "container_id": c.id}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(replies[0]["snapshot_count"], 1)
+
+
 class TestBatchOperations(unittest.TestCase):
     """Batch container operations (start/stop/kill by filter)."""
 
@@ -21869,6 +22038,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceBaselines))
     suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
