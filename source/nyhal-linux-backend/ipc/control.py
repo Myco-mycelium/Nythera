@@ -528,6 +528,21 @@ class ControlService:
             elif op == "dependency_health_reverse":
                 self._dependency_health_reverse(
                     server, sender_path, msg.message_id, request)
+            elif op == "usage_report":
+                self._usage_report(
+                    server, sender_path, msg.message_id, request)
+            elif op == "alert_summary":
+                self._alert_summary(
+                    server, sender_path, msg.message_id, request)
+            elif op == "set_cpu_weight":
+                self._set_cpu_weight(
+                    server, sender_path, msg.message_id, request)
+            elif op == "set_io_weight":
+                self._set_io_weight(
+                    server, sender_path, msg.message_id, request)
+            elif op == "get_priority":
+                self._get_priority(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3487,6 +3502,94 @@ class ControlService:
             })
             return
         result = self.container_manager.clear_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Resource usage reports
+
+    def _usage_report(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        result = self.container_manager.generate_usage_report(
+            container_ids=request.get("container_ids"),
+            include_trends=request.get("include_trends", True),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _alert_summary(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        result = self.container_manager.generate_alert_summary()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Priority scheduling
+
+    def _set_cpu_weight(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        weight = request.get("weight", 100)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_cpu_weight(c, weight)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _set_io_weight(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        weight = request.get("weight", 100)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_io_weight(c, weight)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _get_priority(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_priority(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

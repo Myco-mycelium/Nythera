@@ -1284,6 +1284,36 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "dependency_health_reverse",
             "container_id": args.container_id,
         }
+    if command == "usage-report":
+        payload = {
+            "service": "control",
+            "op": "usage_report",
+        }
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids.split(",")
+        return payload
+    if command == "alert-summary":
+        return {"service": "control", "op": "alert_summary"}
+    if command == "set-cpu-weight":
+        return {
+            "service": "control",
+            "op": "set_cpu_weight",
+            "container_id": args.container_id,
+            "weight": args.weight,
+        }
+    if command == "set-io-weight":
+        return {
+            "service": "control",
+            "op": "set_io_weight",
+            "container_id": args.container_id,
+            "weight": args.weight,
+        }
+    if command == "get-priority":
+        return {
+            "service": "control",
+            "op": "get_priority",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -2969,6 +2999,62 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"state={d.get('state', '?')}, "
                 f"health={d.get('health', '?')}")
         return "\n".join(lines)
+    if command == "usage-report":
+        totals = resp.get("totals", {})
+        containers = resp.get("containers", [])
+        lines = [
+            f"Report: {resp.get('container_count', 0)} containers",
+            f"  Total memory: {_fmt_bytes(totals.get('memory_bytes', 0))}",
+            f"  Total PIDs: {totals.get('pids', 0)}",
+            "",
+            "Container\tState\tMemory\tPIDs",
+        ]
+        for c in containers:
+            lines.append(
+                f"{c.get('name') or c.get('id', '?')}\t"
+                f"{c.get('state', '?')}\t"
+                f"{_fmt_bytes(c.get('memory_bytes', 0))}\t"
+                f"{c.get('pids_current', 0)}")
+        # Top consumers
+        top = resp.get("top_consumers", {})
+        if top.get("by_memory"):
+            lines.append("\nTop memory consumers:")
+            for t in top["by_memory"]:
+                lines.append(
+                    f"  {t.get('name') or t.get('id', '?')}: "
+                    f"{_fmt_bytes(t.get('memory_bytes', 0))}")
+        return "\n".join(lines)
+    if command == "alert-summary":
+        total = resp.get("total_alerts", 0)
+        by_sev = resp.get("by_severity", {})
+        lines = [f"Total unacknowledged alerts: {total}"]
+        if by_sev:
+            lines.append(f"  By severity: {by_sev}")
+        alerts = resp.get("alerts", [])
+        if alerts:
+            lines.append("")
+            for a in alerts[:10]:
+                lines.append(
+                    f"  [{a.get('severity', '?')}] "
+                    f"{a.get('container_id', '?')}: "
+                    f"{a.get('message', '?')}")
+        return "\n".join(lines)
+    if command == "set-cpu-weight":
+        if resp.get("ok"):
+            return f"CPU weight set to {resp.get('weight', '?')}"
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "set-io-weight":
+        if resp.get("ok"):
+            return f"I/O weight set to {resp.get('weight', '?')}"
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "get-priority":
+        lines = [
+            f"nice: {resp.get('nice_value', '?')}",
+            f"cpu_weight: {resp.get('cpu_weight', '?')}",
+            f"io_weight: {resp.get('io_weight', '?')}",
+            f"cpu_affinity: {resp.get('cpu_affinity', '?')}",
+        ]
+        return "\n".join(lines)
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -3726,6 +3812,35 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Check dependents of a container")
     dhr.add_argument("container_id")
     dhr.set_defaults(command="dependency-health-reverse")
+
+    ur = sub.add_parser("usage-report",
+                       help="Generate resource usage report")
+    ur.add_argument("--container-ids", default=None,
+                    help="Comma-separated container IDs (default: all)")
+    ur.set_defaults(command="usage-report")
+
+    asum = sub.add_parser("alert-summary",
+                         help="Summary of all active alerts")
+    asum.set_defaults(command="alert-summary")
+
+    scw = csub.add_parser("set-cpu-weight",
+                          help="Set CPU weight (cgroups v2)")
+    scw.add_argument("container_id")
+    scw.add_argument("weight", type=int,
+                     help="CPU weight 1-10000 (default 100)")
+    scw.set_defaults(command="set-cpu-weight")
+
+    siw = csub.add_parser("set-io-weight",
+                          help="Set I/O weight (cgroups v2)")
+    siw.add_argument("container_id")
+    siw.add_argument("weight", type=int,
+                     help="I/O weight 1-100 (default 100)")
+    siw.set_defaults(command="set-io-weight")
+
+    gp = csub.add_parser("get-priority",
+                         help="Get all priority parameters")
+    gp.add_argument("container_id")
+    gp.set_defaults(command="get-priority")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

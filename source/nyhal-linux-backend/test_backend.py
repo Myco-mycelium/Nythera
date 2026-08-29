@@ -21422,6 +21422,198 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestUsageReports(unittest.TestCase):
+    """Resource usage reports and alert summary."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_usage_report_empty(self):
+        """generate_usage_report returns empty when no containers."""
+        mgr = self._manager()
+        result = mgr.generate_usage_report()
+        self.assertEqual(result["container_count"], 0)
+        self.assertEqual(result["containers"], [])
+
+    def test_usage_report_with_containers(self):
+        """generate_usage_report includes containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="ur1"))
+        mgr.create(ContainerConfig(name="ur2"))
+        result = mgr.generate_usage_report(include_trends=False)
+        self.assertEqual(result["container_count"], 2)
+        self.assertIn("by_state", result)
+        self.assertIn("top_consumers", result)
+
+    def test_alert_summary_empty(self):
+        """generate_alert_summary returns empty when no alerts."""
+        mgr = self._manager()
+        result = mgr.generate_alert_summary()
+        self.assertEqual(result["total_alerts"], 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for report commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("usage-report",
+                          argparse.Namespace(container_ids=None))
+        self.assertEqual(p1["op"], "usage_report")
+        p2 = build_payload("alert-summary",
+                          argparse.Namespace())
+        self.assertEqual(p2["op"], "alert_summary")
+
+    def test_cli_format_human(self):
+        """CLI format_human for report commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_count": 2,
+            "totals": {"memory_bytes": 2048, "pids": 5, "cpu_ns": 0},
+            "by_state": {"running": 2},
+            "containers": [
+                {"id": "a", "name": "web", "state": "running",
+                 "memory_bytes": 1024, "pids_current": 3, "labels": {}},
+                {"id": "b", "name": "db", "state": "running",
+                 "memory_bytes": 1024, "pids_current": 2, "labels": {}},
+            ],
+            "top_consumers": {
+                "by_memory": [{"id": "a", "name": "web",
+                               "memory_bytes": 1024}],
+                "by_cpu": [],
+            },
+        }
+        text = format_human("usage-report", resp)
+        self.assertIn("2", text)
+        self.assertIn("web", text)
+        self.assertIn("1.0 KiB", text)
+
+    def test_control_handler(self):
+        """Usage report control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "usage_report"}), "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("container_count", replies[0])
+
+
+class TestPriorityScheduling(unittest.TestCase):
+    """Priority scheduling (CPU/IO weights)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_cpu_weight_no_cgroup(self):
+        """set_cpu_weight fails without cgroups."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps1"))
+        result = mgr.set_cpu_weight(c, 200)
+        self.assertFalse(result["ok"])
+
+    def test_set_io_weight_no_cgroup(self):
+        """set_io_weight fails without cgroups."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps2"))
+        result = mgr.set_io_weight(c, 50)
+        self.assertFalse(result["ok"])
+
+    def test_set_cpu_weight_invalid_range(self):
+        """set_cpu_weight rejects out-of-range weight."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps3"))
+        result = mgr.set_cpu_weight(c, 0)
+        self.assertFalse(result["ok"])
+        self.assertIn("weight must be", result["error"])
+
+    def test_get_priority(self):
+        """get_priority returns scheduling info."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ps4"))
+        result = mgr.get_priority(c)
+        self.assertEqual(result["container_id"], c.id)
+        self.assertIn("nice_value", result)
+        self.assertIn("cpu_weight", result)
+        self.assertIn("io_weight", result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for priority commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("set-cpu-weight",
+                          argparse.Namespace(
+                              container_id="abc", weight=200))
+        self.assertEqual(p1["op"], "set_cpu_weight")
+        self.assertEqual(p1["weight"], 200)
+        p2 = build_payload("set-io-weight",
+                          argparse.Namespace(
+                              container_id="abc", weight=50))
+        self.assertEqual(p2["op"], "set_io_weight")
+        p3 = build_payload("get-priority",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p3["op"], "get_priority")
+
+    def test_cli_format_human(self):
+        """CLI format_human for priority commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "abc",
+            "nice_value": 0, "cpu_weight": 200,
+            "io_weight": 50, "cpu_affinity": [0, 1],
+        }
+        text = format_human("get-priority", resp)
+        self.assertIn("nice: 0", text)
+        self.assertIn("cpu_weight: 200", text)
+        self.assertIn("io_weight: 50", text)
+
+    def test_control_handler(self):
+        """Get priority control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="ps-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "get_priority",
+                           "container_id": c.id}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("nice_value", replies[0])
+
+
 class TestDependencyHealth(unittest.TestCase):
     """Dependency health monitoring."""
 
@@ -22340,6 +22532,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestUsageReports))
+    suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyHealth))
     suite.addTests(loader.loadTestsFromTestCase(TestProcessManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotScheduling))

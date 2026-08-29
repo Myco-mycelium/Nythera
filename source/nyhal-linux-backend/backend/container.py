@@ -3976,6 +3976,124 @@ class ContainerManager:
             result["nice_value_current"] = None
         return result
 
+    def set_cpu_weight(
+        self, container: Container, weight: int,
+    ) -> Dict[str, Any]:
+        """Set the CPU weight for a container (cgroups v2 cpu.weight).
+
+        CPU weight is a relative priority (1–10000, default 100).
+        Higher weight means more CPU time.  Only effective on cgroups
+        v2 hosts.
+
+        Args:
+            container: Target container.
+            weight: CPU weight (1–10000).
+
+        Returns:
+            Dict with ``ok``, ``weight``, ``container_id``.
+        """
+        if not 1 <= weight <= 10000:
+            return {
+                "ok": False,
+                "error": "weight must be 1..10000",
+            }
+        if not container.cgroup_paths:
+            return {
+                "ok": False,
+                "error": "container has no cgroup paths",
+            }
+        # Find the v2 cgroup path
+        for path_str in container.cgroup_paths:
+            cpu_weight_file = os.path.join(path_str, "cpu.weight")
+            if os.path.exists(cpu_weight_file):
+                try:
+                    with open(cpu_weight_file, "w") as f:
+                        f.write(str(weight))
+                    container.config.cpu_weight = weight
+                    self._record_event(
+                        "cpu_weight_set", container.id,
+                        f"weight={weight}")
+                    return {
+                        "ok": True,
+                        "weight": weight,
+                        "container_id": container.id,
+                    }
+                except OSError as e:
+                    return {
+                        "ok": False,
+                        "error": str(e),
+                    }
+        return {
+            "ok": False,
+            "error": "no cgroups v2 cpu.weight found",
+        }
+
+    def set_io_weight(
+        self, container: Container, weight: int,
+    ) -> Dict[str, Any]:
+        """Set the I/O weight for a container (cgroups v2 io.weight).
+
+        I/O weight is a relative priority (1–100, default 100).
+        Higher weight means more I/O bandwidth.  Only effective on
+        cgroups v2 hosts.
+
+        Args:
+            container: Target container.
+            weight: I/O weight (1–100).
+
+        Returns:
+            Dict with ``ok``, ``weight``, ``container_id``.
+        """
+        if not 1 <= weight <= 100:
+            return {
+                "ok": False,
+                "error": "weight must be 1..100",
+            }
+        if not container.cgroup_paths:
+            return {
+                "ok": False,
+                "error": "container has no cgroup paths",
+            }
+        for path_str in container.cgroup_paths:
+            io_weight_file = os.path.join(path_str, "io.weight")
+            if os.path.exists(io_weight_file):
+                try:
+                    with open(io_weight_file, "w") as f:
+                        f.write(str(weight))
+                    container.config.io_weight = weight
+                    self._record_event(
+                        "io_weight_set", container.id,
+                        f"weight={weight}")
+                    return {
+                        "ok": True,
+                        "weight": weight,
+                        "container_id": container.id,
+                    }
+                except OSError as e:
+                    return {
+                        "ok": False,
+                        "error": str(e),
+                    }
+        return {
+            "ok": False,
+            "error": "no cgroups v2 io.weight found",
+        }
+
+    def get_priority(self, container: Container) -> Dict[str, Any]:
+        """Get all priority-related parameters for a container.
+
+        Returns:
+            Dict with ``container_id``, ``nice_value``, ``cpu_weight``,
+            ``io_weight``, ``cpu_affinity``.
+        """
+        return {
+            "container_id": container.id,
+            "nice_value": container.config.nice_value,
+            "cpu_weight": getattr(container.config, "cpu_weight", None),
+            "io_weight": getattr(container.config, "io_weight", None),
+            "cpu_affinity": container.config.cpu_affinity,
+        }
+
     # ------------------------------------------------------------------
     # Batch operations (operate on multiple containers)
     # ------------------------------------------------------------------
@@ -5005,6 +5123,149 @@ class ContainerManager:
             "total_memory_bytes": total_memory,
             "total_pids": total_pids,
             "containers": containers,
+        }
+
+    # ------------------------------------------------------------------
+    # Resource usage reports
+    # ------------------------------------------------------------------
+
+    def generate_usage_report(
+        self,
+        container_ids: Optional[List[str]] = None,
+        include_trends: bool = True,
+    ) -> Dict[str, Any]:
+        """Generate a resource usage report across containers.
+
+        Aggregates current resource usage, identifies top consumers,
+        and optionally includes trend analysis (comparing current
+        usage to recent history).
+
+        Args:
+            container_ids: IDs to include (default: all containers).
+            include_trends: Whether to include trend analysis.
+
+        Returns:
+            Dict with ``timestamp``, ``containers`` list, ``totals``,
+            ``top_consumers``, and ``trends``.
+        """
+        if container_ids is None:
+            container_ids = list(self.containers.keys())
+
+        containers_data: List[Dict[str, Any]] = []
+        total_memory = 0
+        total_pids = 0
+        total_cpu_ns = 0
+        by_state: Dict[str, int] = {}
+
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+            state = c.state.value
+            by_state[state] = by_state.get(state, 0) + 1
+            stats = self.container_stats(c)
+            mem = stats.get("memory_bytes", 0)
+            pids = stats.get("pids_current", 0)
+            cpu = stats.get("cpu_usage_usec", 0) * 1000  # to ns
+            total_memory += mem
+            total_pids += pids
+            total_cpu_ns += cpu
+
+            entry: Dict[str, Any] = {
+                "id": cid,
+                "state": state,
+                "name": c.config.name,
+                "memory_bytes": mem,
+                "pids_current": pids,
+                "cpu_usage_usec": stats.get("cpu_usage_usec", 0),
+                "labels": self.list_labels(c),
+            }
+
+            if include_trends:
+                history = self.resource_usage_history(
+                    c, tail=20)
+                if len(history) >= 2:
+                    first = history[0]
+                    last = history[-1]
+                    entry["trend"] = {
+                        "memory_delta": (
+                            last.get("memory_bytes", 0)
+                            - first.get("memory_bytes", 0)),
+                        "pids_delta": (
+                            last.get("pids_current", 0)
+                            - first.get("pids_current", 0)),
+                    }
+
+            containers_data.append(entry)
+
+        # Top consumers by memory
+        top_memory = sorted(
+            containers_data,
+            key=lambda x: x.get("memory_bytes", 0),
+            reverse=True)[:5]
+
+        # Top consumers by CPU
+        top_cpu = sorted(
+            containers_data,
+            key=lambda x: x.get("cpu_usage_usec", 0),
+            reverse=True)[:5]
+
+        return {
+            "timestamp": time.time(),
+            "container_count": len(containers_data),
+            "totals": {
+                "memory_bytes": total_memory,
+                "pids": total_pids,
+                "cpu_ns": total_cpu_ns,
+            },
+            "by_state": by_state,
+            "containers": containers_data,
+            "top_consumers": {
+                "by_memory": [
+                    {"id": c["id"], "name": c.get("name"),
+                     "memory_bytes": c["memory_bytes"]}
+                    for c in top_memory
+                ],
+                "by_cpu": [
+                    {"id": c["id"], "name": c.get("name"),
+                     "cpu_usage_usec": c["cpu_usage_usec"]}
+                    for c in top_cpu
+                ],
+            },
+        }
+
+    def generate_alert_summary(self) -> Dict[str, Any]:
+        """Generate a summary of all active alerts across containers.
+
+        Aggregates alert histories from all containers into a
+        single summary.
+
+        Returns:
+            Dict with ``timestamp``, ``total_alerts``, ``by_severity``,
+            and ``alerts`` list.
+        """
+        all_alerts: List[Dict[str, Any]] = []
+        by_severity: Dict[str, int] = {}
+
+        for cid, c in self.containers.items():
+            history = getattr(c, "_alert_history", [])
+            for alert in history:
+                if not alert.get("acknowledged", False):
+                    entry = dict(alert)
+                    entry["container_id"] = cid
+                    all_alerts.append(entry)
+                    sev = entry.get("severity", "unknown")
+                    by_severity[sev] = by_severity.get(sev, 0) + 1
+
+        # Sort by timestamp descending (newest first)
+        all_alerts.sort(
+            key=lambda a: a.get("timestamp", 0), reverse=True)
+
+        return {
+            "timestamp": time.time(),
+            "total_alerts": len(all_alerts),
+            "by_severity": by_severity,
+            "alerts": all_alerts[:50],  # cap at 50
         }
 
     # ------------------------------------------------------------------
