@@ -25188,6 +25188,147 @@ class TestAnomalyAutoRemediation(unittest.TestCase):
         self.assertIn('severity_level', replies[0])
 
 
+class TestResourceMonitoring(unittest.TestCase):
+    """Tests for resource usage monitoring with threshold alerts."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_monitoring(self):
+        """Configure monitoring on a container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="mon1", command=["echo"]))
+        result = mgr.configure_monitoring(
+            c, memory_high_pct=85.0, trend_window=15)
+        self.assertEqual(result['config']['memory_high_pct'], 85.0)
+        self.assertEqual(result['config']['trend_window'], 15)
+        self.assertTrue(result['config']['enabled'])
+
+    def test_get_monitoring_config(self):
+        """Get monitoring config."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="mon2", command=["echo"]))
+        mgr.configure_monitoring(c)
+        result = mgr.get_monitoring_config(c)
+        self.assertEqual(result['status'], 'set')
+        self.assertTrue(result['config']['enabled'])
+
+    def test_get_monitoring_config_unset(self):
+        """Get monitoring config when not configured."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="mon3", command=["echo"]))
+        result = mgr.get_monitoring_config(c)
+        self.assertEqual(result['status'], 'unset')
+
+    def test_check_monitoring_disabled(self):
+        """Check monitoring when disabled returns disabled."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="mon4", command=["echo"]))
+        result = mgr.check_monitoring(c)
+        self.assertEqual(result['status'], 'disabled')
+
+    def test_check_monitoring_active(self):
+        """Check monitoring when enabled returns status."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="mon5", command=["echo"]))
+        mgr.configure_monitoring(c)
+        result = mgr.check_monitoring(c)
+        self.assertIn('alerts', result)
+        self.assertIn('trends', result)
+        self.assertIn(result['status'], ('ok', 'alerting'))
+
+    def test_check_monitoring_all(self):
+        """check_monitoring_all processes all containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="mon6", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="mon7", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.check_monitoring_all()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('alerting_count', result)
+        self.assertIn('total_alerts', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for monitoring commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", memory_high_pct=85.0,
+            memory_low_pct=15.0, cpu_high_pct=90.0,
+            pid_high_pct=80.0, cost_high_daily=None,
+            trend_window=10, trend_threshold=0.1, enabled=True)
+        p = cli.build_payload("monitor-configure", ns)
+        self.assertEqual(p["op"], "monitoring_configure")
+        self.assertEqual(p["memory_high_pct"], 85.0)
+
+        ns2 = argparse.Namespace(container_id="c1")
+        p2 = cli.build_payload("monitor-get", ns2)
+        self.assertEqual(p2["op"], "monitoring_get")
+
+        p3 = cli.build_payload("monitor-check", ns2)
+        self.assertEqual(p3["op"], "monitoring_check")
+
+        p4 = cli.build_payload("monitor-check-all", argparse.Namespace())
+        self.assertEqual(p4["op"], "monitoring_check_all")
+
+    def test_format_human(self):
+        """format_human renders monitoring results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'status': 'alerting',
+            'alert_count': 2,
+            'alerts': [
+                {'type': 'memory_high', 'severity': 'warning',
+                 'current': 95.0, 'threshold': 90.0, 'resource': 'memory'},
+            ],
+        }
+        text = cli.format_human("monitor-check", resp)
+        self.assertIn('alerting', text)
+        self.assertIn('2', text)
+        self.assertIn('95.0', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches monitoring_check op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="mon-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "monitoring_check",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('alerts', replies[0])
+        self.assertIn('trends', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25287,6 +25428,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSLAComplianceMonitor))
     suite.addTests(loader.loadTestsFromTestCase(TestVisualizationDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAutoRemediation))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

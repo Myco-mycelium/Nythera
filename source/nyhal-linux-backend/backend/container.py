@@ -9777,6 +9777,231 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource usage monitoring (threshold alerts + trend detection)
+    # ------------------------------------------------------------------
+
+    def configure_monitoring(
+        self,
+        container: Container,
+        memory_high_pct: float = 90.0,
+        memory_low_pct: float = 10.0,
+        cpu_high_pct: float = 90.0,
+        pid_high_pct: float = 80.0,
+        cost_high_daily: Optional[float] = None,
+        trend_window: int = 10,
+        trend_threshold: float = 0.1,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure resource usage monitoring for a container.
+
+        Sets up threshold alerts and trend detection that fire when
+        resource usage crosses configured boundaries.
+
+        Args:
+            container: Target container.
+            memory_high_pct: Memory usage % to fire high alert.
+            memory_low_pct: Memory usage % to fire low alert.
+            cpu_high_pct: CPU usage % to fire high alert.
+            pid_high_pct: PID usage % to fire high alert.
+            cost_high_daily: Daily cost $ to fire high alert.
+            trend_window: Number of samples for trend detection.
+            trend_threshold: Minimum trend slope to fire alert.
+            enabled: Whether monitoring is active.
+
+        Returns:
+            Dict with the monitoring configuration.
+        """
+        config = {
+            'memory_high_pct': memory_high_pct,
+            'memory_low_pct': memory_low_pct,
+            'cpu_high_pct': cpu_high_pct,
+            'pid_high_pct': pid_high_pct,
+            'cost_high_daily': cost_high_daily,
+            'trend_window': trend_window,
+            'trend_threshold': trend_threshold,
+            'enabled': enabled,
+            'updated_at': time.time(),
+            'alerts': [],
+            'last_check': 0.0,
+        }
+        container._monitoring_config = config
+
+        self._record_event(
+            'monitoring_configured', container.id,
+            f"enabled={enabled}, mem_high={memory_high_pct}%")
+
+        return {
+            'container_id': container.id,
+            'config': dict(config),
+        }
+
+    def get_monitoring_config(self, container: Container) -> Dict[str, Any]:
+        """Get monitoring configuration for a container."""
+        config = getattr(container, '_monitoring_config', None)
+        return {
+            'container_id': container.id,
+            'config': dict(config) if config else {},
+            'status': 'set' if config else 'unset',
+        }
+
+    def check_monitoring(self, container: Container) -> Dict[str, Any]:
+        """Check resource usage against monitoring thresholds.
+
+        Returns:
+            Dict with ``alerts`` (list), ``trends``, and ``status``.
+        """
+        config = getattr(container, '_monitoring_config', None)
+        if not config or not config.get('enabled', False):
+            return {
+                'container_id': container.id,
+                'alerts': [],
+                'trends': {},
+                'status': 'disabled',
+            }
+
+        alerts: List[Dict[str, Any]] = []
+        now = time.time()
+
+        # Check memory threshold
+        stats = self.container_stats(container)
+        if stats and stats.get('available'):
+            mem_bytes = stats.get('memory_bytes', 0)
+            mem_limit = container.config.limits.memory_mb * 1024 * 1024
+            if mem_limit > 0:
+                mem_pct = (mem_bytes / mem_limit) * 100
+                if mem_pct > config.get('memory_high_pct', 90):
+                    alerts.append({
+                        'type': 'memory_high',
+                        'severity': 'warning',
+                        'current': round(mem_pct, 1),
+                        'threshold': config['memory_high_pct'],
+                        'resource': 'memory',
+                    })
+                elif mem_pct < config.get('memory_low_pct', 10):
+                    alerts.append({
+                        'type': 'memory_low',
+                        'severity': 'info',
+                        'current': round(mem_pct, 1),
+                        'threshold': config['memory_low_pct'],
+                        'resource': 'memory',
+                    })
+
+            # Check PID threshold
+            pids = stats.get('pids_current', 0)
+            pid_limit = container.config.limits.pid_limit
+            if pid_limit > 0:
+                pid_pct = (pids / pid_limit) * 100
+                if pid_pct > config.get('pid_high_pct', 80):
+                    alerts.append({
+                        'type': 'pid_high',
+                        'severity': 'warning',
+                        'current': round(pid_pct, 1),
+                        'threshold': config['pid_high_pct'],
+                        'resource': 'pids',
+                    })
+
+        # Check cost threshold
+        cost_daily = config.get('cost_high_daily')
+        if cost_daily is not None:
+            allocation = self.calculate_cost_allocation(container)
+            daily = allocation.get('projected_daily', 0)
+            if daily > cost_daily:
+                alerts.append({
+                    'type': 'cost_high',
+                    'severity': 'warning',
+                    'current': daily,
+                    'threshold': cost_daily,
+                    'resource': 'cost',
+                })
+
+        # Detect trends
+        trends: Dict[str, Dict[str, Any]] = {}
+        window = config.get('trend_window', 10)
+        threshold = config.get('trend_threshold', 0.1)
+        history = self.get_resource_history(container, tail=window * 2)
+        if len(history) >= window:
+            recent = history[-window:]
+            for resource in ('memory', 'cpu', 'pids'):
+                values = self._extract_resource_values(recent, resource)
+                if len(values) >= 2:
+                    # Simple linear regression
+                    n = len(values)
+                    x_mean = (n - 1) / 2
+                    y_mean = sum(values) / n
+                    cov = sum((i - x_mean) * (v - y_mean)
+                              for i, v in enumerate(values)) / n
+                    var_x = sum((i - x_mean) ** 2
+                                for i in range(n)) / n
+                    slope = cov / var_x if var_x > 0 else 0
+                    # Normalize slope
+                    norm_slope = slope / y_mean if y_mean > 0 else 0
+
+                    direction = 'up' if norm_slope > threshold else \
+                                'down' if norm_slope < -threshold else 'flat'
+
+                    trends[resource] = {
+                        'direction': direction,
+                        'slope': round(norm_slope, 4),
+                        'threshold': threshold,
+                        'alert': direction != 'flat',
+                    }
+
+                    if direction != 'flat':
+                        alerts.append({
+                            'type': f'trend_{resource}_{direction}',
+                            'severity': 'info',
+                            'current': direction,
+                            'threshold': threshold,
+                            'resource': resource,
+                            'slope': round(norm_slope, 4),
+                        })
+
+        # Fire alerts for any warnings
+        for alert in alerts:
+            if alert['severity'] == 'warning':
+                self._fire_alert(
+                    container, f"monitoring_{alert['type']}",
+                    'warning',
+                    f"{alert['resource']}: {alert['type']} "
+                    f"(current={alert['current']}, "
+                    f"threshold={alert['threshold']})")
+
+        # Record in config
+        config.setdefault('alerts', []).extend(alerts)
+        if len(config['alerts']) > 100:
+            config['alerts'] = config['alerts'][-100:]
+        config['last_check'] = now
+
+        return {
+            'container_id': container.id,
+            'alerts': alerts,
+            'alert_count': len(alerts),
+            'trends': trends,
+            'status': 'alerting' if alerts else 'ok',
+            'check_time': now,
+        }
+
+    def check_monitoring_all(self) -> Dict[str, Any]:
+        """Check monitoring across all containers."""
+        results = []
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.check_monitoring(c)
+                results.append(result)
+
+        total_alerts = sum(
+            r.get('alert_count', 0) for r in results)
+        alerting = sum(
+            1 for r in results if r.get('status') == 'alerting')
+
+        return {
+            'container_count': len(results),
+            'alerting_count': alerting,
+            'total_alerts': total_alerts,
+            'containers': results,
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

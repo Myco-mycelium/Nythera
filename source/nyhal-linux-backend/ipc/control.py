@@ -720,6 +720,18 @@ class ControlService:
             elif op == "anomaly_remediate_all":
                 self._anomaly_remediate_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "monitoring_configure":
+                self._monitoring_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "monitoring_get":
+                self._monitoring_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "monitoring_check":
+                self._monitoring_check(
+                    server, sender_path, msg.message_id, request)
+            elif op == "monitoring_check_all":
+                self._monitoring_check_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5058,6 +5070,72 @@ class ControlService:
             resource=request.get('resource', 'memory'),
             sensitivity=request.get('sensitivity', 2.0),
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _monitoring_configure(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.configure_monitoring(
+            c,
+            memory_high_pct=request.get('memory_high_pct', 90.0),
+            memory_low_pct=request.get('memory_low_pct', 10.0),
+            cpu_high_pct=request.get('cpu_high_pct', 90.0),
+            pid_high_pct=request.get('pid_high_pct', 80.0),
+            cost_high_daily=request.get('cost_high_daily'),
+            trend_window=request.get('trend_window', 10),
+            trend_threshold=request.get('trend_threshold', 0.1),
+            enabled=request.get('enabled', True),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _monitoring_get(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_monitoring_config(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _monitoring_check(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.check_monitoring(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _monitoring_check_all(self, server, sender_path: str,
+                              call_id: str,
+                              request: Dict[str, Any]) -> None:
+        result = self.container_manager.check_monitoring_all()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

@@ -1701,6 +1701,34 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "resource": getattr(args, 'resource', 'memory'),
             "sensitivity": getattr(args, 'sensitivity', 2.0),
         }
+    if command == "monitor-configure":
+        return {
+            "service": "control",
+            "op": "monitoring_configure",
+            "container_id": args.container_id,
+            "memory_high_pct": getattr(args, 'memory_high_pct', 90.0),
+            "memory_low_pct": getattr(args, 'memory_low_pct', 10.0),
+            "cpu_high_pct": getattr(args, 'cpu_high_pct', 90.0),
+            "pid_high_pct": getattr(args, 'pid_high_pct', 80.0),
+            "cost_high_daily": getattr(args, 'cost_high_daily', None),
+            "trend_window": getattr(args, 'trend_window', 10),
+            "trend_threshold": getattr(args, 'trend_threshold', 0.1),
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "monitor-get":
+        return {
+            "service": "control",
+            "op": "monitoring_get",
+            "container_id": args.container_id,
+        }
+    if command == "monitor-check":
+        return {
+            "service": "control",
+            "op": "monitoring_check",
+            "container_id": args.container_id,
+        }
+    if command == "monitor-check-all":
+        return {"service": "control", "op": "monitoring_check_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4170,6 +4198,43 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"{remediated} remediated",
         ]
         return "\n".join(lines)
+    if command == "monitor-configure":
+        cfg = resp.get('config', {})
+        return (
+            f"Monitoring configured for {resp.get('container_id', '?')}:\n"
+            f"  memory: <{cfg.get('memory_high_pct', 90)}% / >{cfg.get('memory_low_pct', 10)}%\n"
+            f"  pid: <{cfg.get('pid_high_pct', 80)}%\n"
+            f"  trend_window: {cfg.get('trend_window', 10)}\n"
+            f"  enabled: {cfg.get('enabled', True)}")
+    if command == "monitor-get":
+        cfg = resp.get('config', {})
+        if not cfg:
+            return f"No monitoring config for {resp.get('container_id', '?')}"
+        return (
+            f"Monitoring for {resp.get('container_id', '?')}: "
+            f"{len(cfg.get('alerts', []))} alerts, "
+            f"last check: {cfg.get('last_check', 0):.0f}")
+    if command == "monitor-check":
+        status = resp.get('status', 'ok')
+        count = resp.get('alert_count', 0)
+        if status == 'disabled':
+            return f"{resp.get('container_id', '?')}: monitoring disabled"
+        lines = [f"{resp.get('container_id', '?')}: {status} ({count} alerts)"]
+        for a in resp.get('alerts', []):
+            marker = {'warning': '\u26a0', 'info': 'i'}.get(
+                a.get('severity', ''), '?')
+            lines.append(
+                f"  {marker} {a.get('type', '?')}: "
+                f"{a.get('resource', '?')}="
+                f"{a.get('current', '?')} (threshold={a.get('threshold', '?')})")
+        return "\n".join(lines)
+    if command == "monitor-check-all":
+        count = resp.get('container_count', 0)
+        alerting = resp.get('alerting_count', 0)
+        total = resp.get('total_alerts', 0)
+        return (
+            f"Monitoring: {count} containers, "
+            f"{alerting} alerting, {total} total alerts")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5423,6 +5488,45 @@ def build_parser() -> argparse.ArgumentParser:
     ara.add_argument("--sensitivity", type=float, default=2.0,
                      help="Anomaly sensitivity (default: 2.0)")
     ara.set_defaults(command="anomaly-remediate-all")
+
+    # -- resource usage monitoring --
+    mc = sub.add_parser("monitor-configure",
+                        help="Configure resource monitoring")
+    mc.add_argument("container_id")
+    mc.add_argument("--memory-high-pct", type=float, default=90.0,
+                    help="Memory high threshold %% (default: 90)")
+    mc.add_argument("--memory-low-pct", type=float, default=10.0,
+                    help="Memory low threshold %% (default: 10)")
+    mc.add_argument("--cpu-high-pct", type=float, default=90.0,
+                    help="CPU high threshold %% (default: 90)")
+    mc.add_argument("--pid-high-pct", type=float, default=80.0,
+                    help="PID high threshold %% (default: 80)")
+    mc.add_argument("--cost-high-daily", type=float, default=None,
+                    help="Daily cost high threshold ($)")
+    mc.add_argument("--trend-window", type=int, default=10,
+                    help="Trend detection window (default: 10)")
+    mc.add_argument("--trend-threshold", type=float, default=0.1,
+                    help="Trend slope threshold (default: 0.1)")
+    mc.add_argument("--enabled", action="store_true", default=True,
+                    help="Enable monitoring (default: True)")
+    mc.add_argument("--disabled", dest="enabled",
+                    action="store_false",
+                    help="Disable monitoring")
+    mc.set_defaults(command="monitor-configure")
+
+    mg = sub.add_parser("monitor-get",
+                        help="Get monitoring configuration")
+    mg.add_argument("container_id")
+    mg.set_defaults(command="monitor-get")
+
+    mx = sub.add_parser("monitor-check",
+                        help="Check monitoring for a container")
+    mx.add_argument("container_id")
+    mx.set_defaults(command="monitor-check")
+
+    mca = sub.add_parser("monitor-check-all",
+                         help="Check monitoring for all containers")
+    mca.set_defaults(command="monitor-check-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
