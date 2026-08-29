@@ -1422,6 +1422,38 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "cost-allocate-all":
         return {"service": "control", "op": "cost_allocate_all"}
+    if command == "budget-set":
+        return {
+            "service": "control",
+            "op": "budget_set",
+            "container_id": args.container_id,
+            "memory_mb": getattr(args, "memory_mb", None),
+            "cpu_pct": getattr(args, "cpu_pct", None),
+            "pids": getattr(args, "pids", None),
+            "daily_cost_limit": getattr(args, "daily_cost_limit", None),
+            "monthly_cost_limit": getattr(args, "monthly_cost_limit", None),
+            "alert_at_pct": getattr(args, "alert_at_pct", 80.0),
+        }
+    if command == "budget-get":
+        return {
+            "service": "control",
+            "op": "budget_get",
+            "container_id": args.container_id,
+        }
+    if command == "budget-check":
+        return {
+            "service": "control",
+            "op": "budget_check",
+            "container_id": args.container_id,
+        }
+    if command == "budget-check-all":
+        return {"service": "control", "op": "budget_check_all"}
+    if command == "budget-clear":
+        return {
+            "service": "control",
+            "op": "budget_clear",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3372,6 +3404,60 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                                        key=lambda x: -x[1]):
                 lines.append(f"  {owner}: ${cost:.6f}")
         return "\n".join(lines)
+    if command == "budget-set":
+        budget = resp.get("budget", {})
+        return (f"Budget set for {resp.get('container_id', '?')}: "
+                f"{budget}")
+    if command == "budget-get":
+        budget = resp.get("budget", {})
+        if not budget:
+            return f"No budget set for {resp.get('container_id', '?')}"
+        lines = [f"Budget for {resp.get('container_id', '?')}:"]
+        for k, v in budget.items():
+            lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+    if command in ("budget-check", "budget-check-all"):
+        if 'results' in resp:
+            results = resp.get('results', [])
+            if not results:
+                return "No budgets to check"
+            lines = []
+            for r in results:
+                status = r.get('status', '?')
+                name = r.get('name') or r.get('container_id', '?')
+                marker = {'ok': '\u2713', 'warning': '\u26a0',
+                          'exceeded': '\u2717'}.get(status, '?')
+                lines.append(f"{marker} {name}: {status}")
+                for v in r.get('violations', []):
+                    lines.append(
+                        f"  EXCEEDED {v['resource']}: "
+                        f"{v['used']}/{v['budget']} {v['unit']} "
+                        f"({v['pct']}%)")
+                for w in r.get('warnings', []):
+                    lines.append(
+                        f"  WARNING {w['resource']}: "
+                        f"{w['used']}/{w['budget']} {w['unit']} "
+                        f"({w['pct']}%)")
+            return "\n".join(lines)
+        status = resp.get('status', '?')
+        if status == 'no_budget':
+            return f"No budget set for {resp.get('container_id', '?')}"
+        lines = [f"{resp.get('container_id', '?')}: {status}"]
+        for v in resp.get('violations', []):
+            lines.append(
+                f"  EXCEEDED {v['resource']}: "
+                f"{v['used']}/{v['budget']} {v['unit']} "
+                f"({v['pct']}%)")
+        for w in resp.get('warnings', []):
+            lines.append(
+                f"  WARNING {w['resource']}: "
+                f"{w['used']}/{w['budget']} {w['unit']} "
+                f"({w['pct']}%)")
+        return "\n".join(lines)
+    if command == "budget-clear":
+        if resp.get('cleared'):
+            return f"Budget cleared for {resp.get('container_id', '?')}"
+        return f"No budget was set for {resp.get('container_id', '?')}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4254,6 +4340,43 @@ def build_parser() -> argparse.ArgumentParser:
     caa = sub.add_parser("cost-allocate-all",
                          help="Cost allocation for all containers")
     caa.set_defaults(command="cost-allocate-all")
+
+    # -- budget tracking --
+    bs = sub.add_parser("budget-set",
+                        help="Set a resource budget for a container")
+    bs.add_argument("container_id")
+    bs.add_argument("--memory-mb", type=int, default=None,
+                    help="Memory budget in MB")
+    bs.add_argument("--cpu-pct", type=float, default=None,
+                    help="CPU percentage budget (0-100)")
+    bs.add_argument("--pids", type=int, default=None,
+                    help="PID count budget")
+    bs.add_argument("--daily-cost-limit", type=float, default=None,
+                    help="Daily cost limit in dollars")
+    bs.add_argument("--monthly-cost-limit", type=float, default=None,
+                    help="Monthly cost limit in dollars")
+    bs.add_argument("--alert-at-pct", type=float, default=80.0,
+                    help="Warning threshold percentage (default: 80)")
+    bs.set_defaults(command="budget-set")
+
+    bg = sub.add_parser("budget-get",
+                        help="Show the budget for a container")
+    bg.add_argument("container_id")
+    bg.set_defaults(command="budget-get")
+
+    bc = sub.add_parser("budget-check",
+                        help="Check a container against its budget")
+    bc.add_argument("container_id")
+    bc.set_defaults(command="budget-check")
+
+    bca = sub.add_parser("budget-check-all",
+                         help="Check all budgets")
+    bca.set_defaults(command="budget-check-all")
+
+    bcr = sub.add_parser("budget-clear",
+                         help="Clear a container's budget")
+    bcr.add_argument("container_id")
+    bcr.set_defaults(command="budget-clear")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

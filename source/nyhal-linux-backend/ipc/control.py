@@ -594,6 +594,21 @@ class ControlService:
             elif op == "cost_allocate_all":
                 self._cost_allocate_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "budget_set":
+                self._budget_set(
+                    server, sender_path, msg.message_id, request)
+            elif op == "budget_get":
+                self._budget_get(
+                    server, sender_path, msg.message_id, request)
+            elif op == "budget_check":
+                self._budget_check(
+                    server, sender_path, msg.message_id, request)
+            elif op == "budget_check_all":
+                self._budget_check_all(
+                    server, sender_path, msg.message_id, request)
+            elif op == "budget_clear":
+                self._budget_clear(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4274,6 +4289,91 @@ class ControlService:
         result = self.container_manager.calculate_cost_allocation_all(
             rates=rates,
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _budget_set(self, server, sender_path: str, call_id: str,
+                     request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.set_resource_budget(
+            c,
+            memory_mb=request.get("memory_mb"),
+            cpu_pct=request.get("cpu_pct"),
+            pids=request.get("pids"),
+            daily_cost_limit=request.get("daily_cost_limit"),
+            monthly_cost_limit=request.get("monthly_cost_limit"),
+            alert_at_pct=request.get("alert_at_pct", 80.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _budget_get(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_resource_budget(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _budget_check(self, server, sender_path: str, call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        budget = getattr(c, '_resource_budget', None)
+        if not budget:
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "container_id": container_id,
+                "status": "no_budget",
+            })
+            return
+        status = self.container_manager._check_single_budget(c, budget)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **status,
+        })
+
+    def _budget_check_all(self, server, sender_path: str, call_id: str,
+                          request: Dict[str, Any]) -> None:
+        results = self.container_manager.check_resource_budgets()
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "results": results,
+            "count": len(results),
+        })
+
+    def _budget_clear(self, server, sender_path: str, call_id: str,
+                      request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.clear_resource_budget(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

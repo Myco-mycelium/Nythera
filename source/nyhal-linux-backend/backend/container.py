@@ -7017,6 +7017,214 @@ class ContainerManager:
         return None
 
     # ------------------------------------------------------------------
+    # Resource budget tracking
+    # ------------------------------------------------------------------
+
+    def set_resource_budget(
+        self,
+        container: Container,
+        memory_mb: Optional[int] = None,
+        cpu_pct: Optional[float] = None,
+        pids: Optional[int] = None,
+        daily_cost_limit: Optional[float] = None,
+        monthly_cost_limit: Optional[float] = None,
+        alert_at_pct: float = 80.0,
+    ) -> Dict[str, Any]:
+        """Set a resource budget for a container.
+
+        Budgets are advisory — the system monitors actual usage and
+        emits alerts when thresholds are approached or exceeded.
+
+        Args:
+            container: Target container.
+            memory_mb: Memory budget in MB.
+            cpu_pct: CPU percentage budget (0-100).
+            pids: PID count budget.
+            daily_cost_limit: Maximum daily cost in dollars.
+            monthly_cost_limit: Maximum monthly cost in dollars.
+            alert_at_pct: Percentage at which to emit warning alerts.
+
+        Returns:
+            The budget dict.
+        """
+        if not hasattr(container, '_resource_budget'):
+            container._resource_budget = {}
+
+        budget = container._resource_budget
+        if memory_mb is not None:
+            budget['memory_mb'] = memory_mb
+        if cpu_pct is not None:
+            budget['cpu_pct'] = cpu_pct
+        if pids is not None:
+            budget['pids'] = pids
+        if daily_cost_limit is not None:
+            budget['daily_cost_limit'] = daily_cost_limit
+        if monthly_cost_limit is not None:
+            budget['monthly_cost_limit'] = monthly_cost_limit
+        budget['alert_at_pct'] = alert_at_pct
+        budget['created_at'] = budget.get('created_at', time.time())
+        budget['updated_at'] = time.time()
+
+        self._record_event(
+            'budget_set', container.id,
+            f"budget updated: {list(budget.keys())}")
+
+        return {
+            'container_id': container.id,
+            'budget': dict(budget),
+        }
+
+    def get_resource_budget(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get the resource budget for a container.
+
+        Returns:
+            Dict with ``container_id``, ``budget``, and ``status``
+            (whether the budget has been set).
+        """
+        budget = getattr(container, '_resource_budget', None)
+        return {
+            'container_id': container.id,
+            'budget': dict(budget) if budget else {},
+            'status': 'set' if budget else 'unset',
+        }
+
+    def check_resource_budgets(
+        self,
+    ) -> List[Dict[str, Any]]:
+        """Check all container budgets against current usage.
+
+        Returns:
+            List of status dicts for containers with budgets.
+        """
+        results = []
+        for cid, c in self.containers.items():
+            budget = getattr(c, '_resource_budget', None)
+            if not budget:
+                continue
+            status = self._check_single_budget(c, budget)
+            results.append(status)
+        return results
+
+    def _check_single_budget(
+        self,
+        container: Container, budget: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Check a single container's budget against current usage."""
+        stats = self.container_stats(container)
+        violations = []
+        warnings = []
+        alert_pct = budget.get('alert_at_pct', 80.0)
+
+        # Memory check
+        mem_budget = budget.get('memory_mb')
+        if mem_budget and stats.get('available'):
+            mem_used_mb = stats.get('memory_bytes', 0) / (1024 * 1024)
+            mem_pct = (mem_used_mb / mem_budget * 100) if mem_budget > 0 else 0
+            entry = {
+                'resource': 'memory',
+                'budget': mem_budget,
+                'used': round(mem_used_mb, 1),
+                'unit': 'MB',
+                'pct': round(mem_pct, 1),
+            }
+            if mem_pct >= 100:
+                violations.append(entry)
+            elif mem_pct >= alert_pct:
+                warnings.append(entry)
+
+        # PID check
+        pid_budget = budget.get('pids')
+        if pid_budget and stats.get('available'):
+            pids_used = stats.get('pids_current', 0)
+            pid_pct = (pids_used / pid_budget * 100) if pid_budget > 0 else 0
+            entry = {
+                'resource': 'pids',
+                'budget': pid_budget,
+                'used': pids_used,
+                'unit': 'count',
+                'pct': round(pid_pct, 1),
+            }
+            if pid_pct >= 100:
+                violations.append(entry)
+            elif pid_pct >= alert_pct:
+                warnings.append(entry)
+
+        # Cost check
+        daily_limit = budget.get('daily_cost_limit')
+        if daily_limit:
+            allocation = self.calculate_cost_allocation(container)
+            daily_cost = allocation.get('projected_daily', 0)
+            cost_pct = (daily_cost / daily_limit * 100) if daily_limit > 0 else 0
+            entry = {
+                'resource': 'daily_cost',
+                'budget': daily_limit,
+                'used': daily_cost,
+                'unit': '$/day',
+                'pct': round(cost_pct, 1),
+            }
+            if cost_pct >= 100:
+                violations.append(entry)
+            elif cost_pct >= alert_pct:
+                warnings.append(entry)
+
+        monthly_limit = budget.get('monthly_cost_limit')
+        if monthly_limit:
+            allocation = self.calculate_cost_allocation(container)
+            monthly_cost = allocation.get('projected_monthly', 0)
+            cost_pct = (monthly_cost / monthly_limit * 100) if monthly_limit > 0 else 0
+            entry = {
+                'resource': 'monthly_cost',
+                'budget': monthly_limit,
+                'used': monthly_cost,
+                'unit': '$/month',
+                'pct': round(cost_pct, 1),
+            }
+            if cost_pct >= 100:
+                violations.append(entry)
+            elif cost_pct >= alert_pct:
+                warnings.append(entry)
+
+        status = 'ok'
+        if violations:
+            status = 'exceeded'
+        elif warnings:
+            status = 'warning'
+
+        if violations or warnings:
+            self._record_event(
+                'budget_alert', container.id,
+                f"budget {status}: "
+                f"{len(violations)} violations, "
+                f"{len(warnings)} warnings")
+
+        return {
+            'container_id': container.id,
+            'name': container.config.name,
+            'status': status,
+            'violations': violations,
+            'warnings': warnings,
+            'budget': budget,
+        }
+
+    def clear_resource_budget(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Clear the resource budget for a container."""
+        old = getattr(container, '_resource_budget', {})
+        container._resource_budget = {}
+        self._record_event(
+            'budget_cleared', container.id,
+            f"budget cleared (was: {list(old.keys())})")
+        return {
+            'container_id': container.id,
+            'cleared': bool(old),
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

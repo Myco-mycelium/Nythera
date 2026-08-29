@@ -23148,6 +23148,150 @@ class TestAuditTrail(unittest.TestCase):
         self.assertIn("total_cost", replies[0])
 
 
+class TestResourceBudgets(unittest.TestCase):
+    """Tests for resource budget tracking."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_set_and_get_budget(self):
+        """Set a budget and retrieve it."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget1", command=["echo"]))
+        result = mgr.set_resource_budget(
+            c, memory_mb=512, cpu_pct=50.0, pids=32,
+            daily_cost_limit=1.0, monthly_cost_limit=30.0)
+        self.assertIn('budget', result)
+        self.assertEqual(result['budget']['memory_mb'], 512)
+        self.assertEqual(result['budget']['cpu_pct'], 50.0)
+        get_result = mgr.get_resource_budget(c)
+        self.assertEqual(get_result['status'], 'set')
+        self.assertEqual(get_result['budget']['memory_mb'], 512)
+
+    def test_get_budget_unset(self):
+        """Get budget for a container with no budget."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget2", command=["echo"]))
+        result = mgr.get_resource_budget(c)
+        self.assertEqual(result['status'], 'unset')
+        self.assertEqual(result['budget'], {})
+
+    def test_clear_budget(self):
+        """Clear a budget."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget3", command=["echo"]))
+        mgr.set_resource_budget(c, memory_mb=256)
+        result = mgr.clear_resource_budget(c)
+        self.assertTrue(result['cleared'])
+        get_result = mgr.get_resource_budget(c)
+        self.assertEqual(get_result['status'], 'unset')
+
+    def test_check_budget_no_violations(self):
+        """Check budget when usage is well within limits."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="budget4", command=["echo"]))
+        mgr.set_resource_budget(c, memory_mb=1024, daily_cost_limit=100.0)
+        result = mgr._check_single_budget(c, getattr(c, '_resource_budget'))
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(len(result['violations']), 0)
+
+    def test_check_budget_all(self):
+        """check_resource_budgets returns results for budgeted containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="budget5", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="budget6", command=["echo"]))
+        mgr.set_resource_budget(c1, memory_mb=512)
+        results = mgr.check_resource_budgets()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['container_id'], c1.id)
+
+    def test_budget_cli_payload(self):
+        """CLI build_payload for budget commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", memory_mb=512, cpu_pct=None,
+            pids=None, daily_cost_limit=None,
+            monthly_cost_limit=None, alert_at_pct=80.0)
+        p = cli.build_payload("budget-set", ns)
+        self.assertEqual(p["op"], "budget_set")
+        self.assertEqual(p["memory_mb"], 512)
+
+        ns2 = argparse.Namespace(container_id="c1")
+        p2 = cli.build_payload("budget-get", ns2)
+        self.assertEqual(p2["op"], "budget_get")
+
+        p3 = cli.build_payload("budget-check", argparse.Namespace(container_id="c1"))
+        self.assertEqual(p3["op"], "budget_check")
+
+        p4 = cli.build_payload("budget-check-all", argparse.Namespace())
+        self.assertEqual(p4["op"], "budget_check_all")
+
+        p5 = cli.build_payload("budget-clear", argparse.Namespace(container_id="c1"))
+        self.assertEqual(p5["op"], "budget_clear")
+
+    def test_budget_format_human(self):
+        """format_human renders budget check results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'name': 'test',
+            'status': 'warning',
+            'violations': [],
+            'warnings': [{'resource': 'memory', 'budget': 512,
+                          'used': 450, 'unit': 'MB', 'pct': 87.5}],
+        }
+        text = cli.format_human("budget-check", resp)
+        self.assertIn('warning', text.lower())
+        self.assertIn('87.5%', text)
+
+    def test_budget_set_format_human(self):
+        """format_human renders budget-set result."""
+        import nyrqisctl as cli
+        resp = {'ok': True, 'container_id': 'c1',
+                'budget': {'memory_mb': 512}}
+        text = cli.format_human("budget-set", resp)
+        self.assertIn('512', text)
+
+    def test_control_budget_set_handler(self):
+        """ControlService dispatches budget_set op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="budget-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "budget_set",
+                  "container_id": c.id,
+                  "memory_mb": 256}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(replies[0]["budget"]["memory_mb"], 256)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23233,6 +23377,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestAuditTrail))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceBudgets))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
