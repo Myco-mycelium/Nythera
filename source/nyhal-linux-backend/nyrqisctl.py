@@ -1729,6 +1729,37 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "monitor-check-all":
         return {"service": "control", "op": "monitoring_check_all"}
+    if command == "sla-auto-escalation-configure":
+        return {
+            "service": "control",
+            "op": "sla_auto_escalation_configure",
+            "container_id": args.container_id,
+            "enabled": getattr(args, 'enabled', True),
+            "breach_threshold": getattr(args, 'breach_threshold', 3),
+            "escalation_window_s": getattr(args, 'escalation_window_s', 3600.0),
+            "max_level": getattr(args, 'max_level', 3),
+            "cooldown_s": getattr(args, 'cooldown_s', 300.0),
+        }
+    if command == "sla-breach-record":
+        return {
+            "service": "control",
+            "op": "sla_breach_record",
+            "container_id": args.container_id,
+            "breach_type": getattr(args, 'breach_type', 'downtime'),
+            "detail": getattr(args, 'detail', ''),
+        }
+    if command == "sla-auto-escalation-status":
+        return {
+            "service": "control",
+            "op": "sla_auto_escalation_status",
+            "container_id": args.container_id,
+        }
+    if command == "sla-auto-escalation-reset":
+        return {
+            "service": "control",
+            "op": "sla_auto_escalation_reset",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4235,6 +4266,30 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return (
             f"Monitoring: {count} containers, "
             f"{alerting} alerting, {total} total alerts")
+    if command == "sla-auto-escalation-configure":
+        cfg = resp.get('config', {})
+        return (
+            f"SLA auto-escalation configured for {resp.get('container_id', '?')}:\n"
+            f"  enabled: {cfg.get('enabled')}\n"
+            f"  breach threshold: {cfg.get('breach_threshold')}\n"
+            f"  escalation window: {cfg.get('escalation_window_s')}s\n"
+            f"  max level: {cfg.get('max_level')}\n"
+            f"  cooldown: {cfg.get('cooldown_s')}s")
+    if command == "sla-breach-record":
+        return (
+            f"SLA breach recorded for {resp.get('container_id', '?')}:\n"
+            f"  breach count: {resp.get('breach_count', 0)}\n"
+            f"  current level: {resp.get('current_level', 0)}\n"
+            f"  escalation triggered: {resp.get('escalation_triggered', False)}")
+    if command == "sla-auto-escalation-status":
+        return (
+            f"SLA auto-escalation status for {resp.get('container_id', '?')}:\n"
+            f"  enabled: {resp.get('enabled')}\n"
+            f"  breach count: {resp.get('breach_count', 0)}\n"
+            f"  current level: {resp.get('current_level', 0)}\n"
+            f"  escalation count: {resp.get('escalation_count', 0)}")
+    if command == "sla-auto-escalation-reset":
+        return f"SLA auto-escalation reset for {resp.get('container_id', '?')}: done"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5527,6 +5582,44 @@ def build_parser() -> argparse.ArgumentParser:
     mca = sub.add_parser("monitor-check-all",
                          help="Check monitoring for all containers")
     mca.set_defaults(command="monitor-check-all")
+
+    sla_ae = sub.add_parser("sla-auto-escalation-configure",
+                            help="Configure SLA auto-escalation")
+    sla_ae.add_argument("container_id")
+    sla_ae.add_argument("--enabled", action="store_true", default=True,
+                        help="Enable auto-escalation (default: True)")
+    sla_ae.add_argument("--disabled", dest="enabled",
+                        action="store_false",
+                        help="Disable auto-escalation")
+    sla_ae.add_argument("--breach-threshold", type=int, default=3,
+                        help="Breaches to trigger level 1 (default: 3)")
+    sla_ae.add_argument("--escalation-window", type=float,
+                        default=3600.0,
+                        help="Time window for breach counting (s)")
+    sla_ae.add_argument("--max-level", type=int, default=3,
+                        help="Maximum escalation level (default: 3)")
+    sla_ae.add_argument("--cooldown", type=float, default=300.0,
+                        help="Cooldown between escalations (s)")
+    sla_ae.set_defaults(command="sla-auto-escalation-configure")
+
+    sla_br = sub.add_parser("sla-breach-record",
+                            help="Record an SLA breach")
+    sla_br.add_argument("container_id")
+    sla_br.add_argument("--breach-type", default="downtime",
+                        help="Breach type (default: downtime)")
+    sla_br.add_argument("--detail", default="",
+                        help="Breach detail text")
+    sla_br.set_defaults(command="sla-breach-record")
+
+    sla_st = sub.add_parser("sla-auto-escalation-status",
+                            help="Get SLA auto-escalation status")
+    sla_st.add_argument("container_id")
+    sla_st.set_defaults(command="sla-auto-escalation-status")
+
+    sla_rs = sub.add_parser("sla-auto-escalation-reset",
+                            help="Reset SLA auto-escalation state")
+    sla_rs.add_argument("container_id")
+    sla_rs.set_defaults(command="sla-auto-escalation-reset")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

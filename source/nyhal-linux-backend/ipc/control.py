@@ -732,6 +732,18 @@ class ControlService:
             elif op == "monitoring_check_all":
                 self._monitoring_check_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "sla_auto_escalation_configure":
+                self._sla_auto_escalation_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_breach_record":
+                self._sla_breach_record(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_auto_escalation_status":
+                self._sla_auto_escalation_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "sla_auto_escalation_reset":
+                self._sla_auto_escalation_reset(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5136,6 +5148,82 @@ class ControlService:
                               call_id: str,
                               request: Dict[str, Any]) -> None:
         result = self.container_manager.check_monitoring_all()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_auto_escalation_configure(self, server, sender_path: str,
+                                        call_id: str,
+                                        request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.configure_sla_auto_escalation(
+            c,
+            enabled=request.get('enabled', True),
+            breach_threshold=request.get('breach_threshold', 3),
+            escalation_window_s=request.get('escalation_window_s', 3600.0),
+            max_level=request.get('max_level', 3),
+            actions_per_level=request.get('actions_per_level'),
+            cooldown_s=request.get('cooldown_s', 300.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_breach_record(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.record_sla_breach(
+            c,
+            breach_type=request.get('breach_type', 'downtime'),
+            detail=request.get('detail', ''),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_auto_escalation_status(self, server, sender_path: str,
+                                     call_id: str,
+                                     request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_sla_auto_escalation_status(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _sla_auto_escalation_reset(self, server, sender_path: str,
+                                    call_id: str,
+                                    request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.reset_sla_auto_escalation(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

@@ -25329,6 +25329,172 @@ class TestResourceMonitoring(unittest.TestCase):
         self.assertIn('trends', replies[0])
 
 
+class TestSLAAutoEscalation(unittest.TestCase):
+    """Tests for SLA auto-escalation with breach detection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_escalation(self):
+        """Configure SLA auto-escalation on a container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae1", command=["echo"]))
+        result = mgr.configure_sla_auto_escalation(
+            c, breach_threshold=5, max_level=2)
+        self.assertTrue(result['config']['enabled'])
+        self.assertEqual(result['config']['breach_threshold'], 5)
+        self.assertEqual(result['config']['max_level'], 2)
+
+    def test_configure_escalation_custom_actions(self):
+        """Configure with custom actions per level."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae2", command=["echo"]))
+        custom = {1: ["alert"], 2: ["alert", "restart"]}
+        result = mgr.configure_sla_auto_escalation(
+            c, actions_per_level=custom)
+        self.assertEqual(result['config']['actions_per_level'], custom)
+
+    def test_record_breach_no_config(self):
+        """Record breach without config returns not_configured."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae3", command=["echo"]))
+        result = mgr.record_sla_breach(c)
+        self.assertFalse(result.get('escalation_triggered', False))
+        self.assertEqual(result.get('breach_count', 0), 0)
+
+    def test_record_breach_disabled(self):
+        """Record breach when disabled returns disabled."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae4", command=["echo"]))
+        mgr.configure_sla_auto_escalation(c, enabled=False)
+        result = mgr.record_sla_breach(c)
+        self.assertFalse(result.get('escalation_triggered', False))
+
+    def test_record_breach_triggers_escalation(self):
+        """Multiple breaches trigger escalation."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae5", command=["echo"]))
+        mgr.configure_sla_auto_escalation(c, breach_threshold=2, cooldown_s=0.0)
+        mgr.record_sla_breach(c)
+        result2 = mgr.record_sla_breach(c)
+        self.assertEqual(result2['breach_count'], 2)
+        self.assertGreater(result2['current_level'], 0)
+
+    def test_get_status(self):
+        """Get escalation status."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae6", command=["echo"]))
+        mgr.configure_sla_auto_escalation(c)
+        result = mgr.get_sla_auto_escalation_status(c)
+        self.assertTrue(result['enabled'])
+        self.assertEqual(result['breach_count'], 0)
+        self.assertEqual(result['current_level'], 0)
+
+    def test_reset(self):
+        """Reset escalation state."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="ae7", command=["echo"]))
+        mgr.configure_sla_auto_escalation(c, breach_threshold=1, cooldown_s=0.0)
+        mgr.record_sla_breach(c)
+        result = mgr.reset_sla_auto_escalation(c)
+        self.assertTrue(result['reset'])
+        status = mgr.get_sla_auto_escalation_status(c)
+        self.assertEqual(status['breach_count'], 0)
+        self.assertEqual(status['current_level'], 0)
+
+    def test_cli_payload(self):
+        """CLI build_payload for SLA auto-escalation commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", enabled=True,
+            breach_threshold=5, escalation_window_s=7200.0,
+            max_level=2, cooldown_s=600.0)
+        p = cli.build_payload("sla-auto-escalation-configure", ns)
+        self.assertEqual(p["op"], "sla_auto_escalation_configure")
+        self.assertEqual(p["breach_threshold"], 5)
+
+        ns2 = argparse.Namespace(container_id="c1",
+                                 breach_type="latency", detail="slow")
+        p2 = cli.build_payload("sla-breach-record", ns2)
+        self.assertEqual(p2["op"], "sla_breach_record")
+        self.assertEqual(p2["breach_type"], "latency")
+
+        ns3 = argparse.Namespace(container_id="c1")
+        p3 = cli.build_payload("sla-auto-escalation-status", ns3)
+        self.assertEqual(p3["op"], "sla_auto_escalation_status")
+
+        p4 = cli.build_payload("sla-auto-escalation-reset", ns3)
+        self.assertEqual(p4["op"], "sla_auto_escalation_reset")
+
+    def test_format_human(self):
+        """format_human renders SLA auto-escalation results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'config': {
+                'enabled': True,
+                'breach_threshold': 3,
+                'escalation_window_s': 3600.0,
+                'max_level': 3,
+                'cooldown_s': 300.0,
+            },
+        }
+        text = cli.format_human("sla-auto-escalation-configure", resp)
+        self.assertIn('configured', text)
+        self.assertIn('c1', text)
+
+        resp2 = {
+            'ok': True,
+            'container_id': 'c1',
+            'breach_count': 2,
+            'current_level': 1,
+            'escalation_triggered': True,
+        }
+        text2 = cli.format_human("sla-breach-record", resp2)
+        self.assertIn('recorded', text2)
+        self.assertIn('2', text2)
+
+    def test_control_handler(self):
+        """ControlService dispatches SLA auto-escalation ops."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="ae-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "sla_auto_escalation_configure",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('config', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25429,6 +25595,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestVisualizationDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceMonitoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLAAutoEscalation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

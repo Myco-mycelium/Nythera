@@ -8455,6 +8455,228 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # SLA auto-escalation (breach detection + policy response)
+    # ------------------------------------------------------------------
+
+    def configure_sla_auto_escalation(
+        self,
+        container: Container,
+        enabled: bool = True,
+        breach_threshold: int = 3,
+        escalation_window_s: float = 3600.0,
+        max_level: int = 3,
+        actions_per_level: Optional[Dict[int, List[str]]] = None,
+        cooldown_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Configure SLA auto-escalation with breach-based policies.
+
+        When enabled, the system tracks SLA breaches within a time
+        window and automatically escalates through levels when the
+        breach count exceeds thresholds.
+
+        Args:
+            container: Target container.
+            enabled: Whether auto-escalation is active.
+            breach_threshold: Breaches needed to trigger level 1.
+            escalation_window_s: Time window for counting breaches.
+            max_level: Maximum escalation level.
+            actions_per_level: Dict mapping level -> action list.
+                Default: {1: [alert], 2: [alert, webhook],
+                          3: [alert, webhook, restart]}.
+            cooldown_s: Seconds between escalation actions.
+
+        Returns:
+            Dict with the configuration.
+        """
+        if actions_per_level is None:
+            actions_per_level = {
+                1: ["alert"],
+                2: ["alert", "webhook"],
+                3: ["alert", "webhook", "restart"],
+            }
+
+        config = {
+            'enabled': enabled,
+            'breach_threshold': breach_threshold,
+            'escalation_window_s': escalation_window_s,
+            'max_level': max_level,
+            'actions_per_level': actions_per_level,
+            'cooldown_s': cooldown_s,
+            'updated_at': time.time(),
+            'breaches': [],
+            'current_level': 0,
+            'last_escalation': 0.0,
+            'escalation_history': [],
+        }
+        container._sla_auto_escalation = config
+
+        self._record_event(
+            'sla_auto_escalation_configured', container.id,
+            f"enabled={enabled}, threshold={breach_threshold}, "
+            f"window={escalation_window_s}s")
+
+        return {
+            'container_id': container.id,
+            'config': dict(config),
+        }
+
+    def record_sla_breach(
+        self,
+        container: Container,
+        breach_type: str = "downtime",
+        detail: str = "",
+    ) -> Dict[str, Any]:
+        """Record an SLA breach and trigger auto-escalation if needed.
+
+        Args:
+            container: Target container.
+            breach_type: Type of breach.
+            detail: Human-readable detail.
+
+        Returns:
+            Dict with breach recording and escalation results.
+        """
+        config = getattr(container, '_sla_auto_escalation', None)
+        if not config or not config.get('enabled', False):
+            return {
+                'container_id': container.id,
+                'breach_recorded': False,
+                'escalated': False,
+                'reason': 'auto_escalation_disabled',
+            }
+
+        now = time.time()
+        window = config.get('escalation_window_s', 3600.0)
+        breaches = config.setdefault('breaches', [])
+
+        # Record the breach
+        breach_entry = {
+            'timestamp': now,
+            'type': breach_type,
+            'detail': detail,
+        }
+        breaches.append(breach_entry)
+
+        # Prune old breaches outside the window
+        cutoff = now - window
+        config['breaches'] = [
+            b for b in breaches if b['timestamp'] >= cutoff
+        ]
+        breaches = config['breaches']
+
+        # Check if we need to escalate
+        threshold = config.get('breach_threshold', 3)
+        breach_count = len(breaches)
+        current_level = config.get('current_level', 0)
+        cooldown = config.get('cooldown_s', 300.0)
+        last_esc = config.get('last_escalation', 0.0)
+
+        escalated = False
+        new_level = current_level
+        actions_taken: List[str] = []
+
+        if breach_count >= threshold and (now - last_esc) >= cooldown:
+            # Determine new level
+            max_level = config.get('max_level', 3)
+            actions_map = config.get('actions_per_level', {})
+
+            # Level increases with breach count beyond threshold
+            level = min(
+                max_level,
+                1 + (breach_count - threshold) // threshold)
+
+            if level > current_level:
+                new_level = level
+                escalated = True
+                actions = actions_map.get(level, ["alert"])
+
+                for action in actions:
+                    if action == 'alert':
+                        self._fire_alert(
+                            container, 'sla_escalation', 'critical',
+                            f"Level {level}: {breach_count} breaches in "
+                            f"{window}s")
+                        actions_taken.append('alert')
+                    elif action == 'webhook':
+                        for wh_id, wh in self._webhooks.items():
+                            if (wh.get('events') is None or
+                                    'sla_escalation' in wh.get('events', [])):
+                                self._pending_webhooks.append({
+                                    'webhook_id': wh_id,
+                                    'event': 'sla_escalation',
+                                    'container_id': container.id,
+                                    'timestamp': now,
+                                    'level': level,
+                                    'breaches': breach_count,
+                                })
+                        actions_taken.append('webhook')
+                    elif action == 'restart':
+                        container._sla_restart_pending = True
+                        actions_taken.append('restart')
+
+                # Record escalation
+                esc_entry = {
+                    'timestamp': now,
+                    'level': level,
+                    'breach_count': breach_count,
+                    'actions': actions_taken,
+                }
+                config.setdefault('escalation_history', []).append(esc_entry)
+                if len(config['escalation_history']) > 100:
+                    config['escalation_history'] = \
+                        config['escalation_history'][-100:]
+
+                config['last_escalation'] = now
+
+        config['current_level'] = new_level
+
+        self._record_event(
+            'sla_breach_recorded', container.id,
+            f"type={breach_type}, count={breach_count}, "
+            f"level={new_level}, escalated={escalated}")
+
+        return {
+            'container_id': container.id,
+            'breach_recorded': True,
+            'breach_count': breach_count,
+            'current_level': new_level,
+            'escalated': escalated,
+            'actions_taken': actions_taken,
+        }
+
+    def get_sla_auto_escalation_status(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get SLA auto-escalation status."""
+        config = getattr(container, '_sla_auto_escalation', {})
+        breaches = config.get('breaches', [])
+        history = config.get('escalation_history', [])
+        return {
+            'container_id': container.id,
+            'enabled': config.get('enabled', False),
+            'breach_count': len(breaches),
+            'current_level': config.get('current_level', 0),
+            'last_escalation': config.get('last_escalation', 0.0),
+            'escalation_count': len(history),
+            'history': history[-10:],
+        }
+
+    def reset_sla_auto_escalation(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Reset SLA auto-escalation state."""
+        config = getattr(container, '_sla_auto_escalation', {})
+        config['breaches'] = []
+        config['current_level'] = 0
+        config['last_escalation'] = 0.0
+        return {
+            'container_id': container.id,
+            'reset': True,
+        }
+
+    # ------------------------------------------------------------------
     # Billing (cost tracking)
     # ------------------------------------------------------------------
 
