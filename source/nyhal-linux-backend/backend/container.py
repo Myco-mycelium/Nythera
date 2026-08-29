@@ -7952,6 +7952,112 @@ class ContainerManager:
                     graph[dep]["dependents"].append(cid)
         return graph
 
+    def get_dependency_health(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Check the health of all containers a container depends on.
+
+        For each container in ``depends_on``, reports its current
+        state and health status.  A dependency is considered healthy
+        if it is RUNNING and (has no health check configured OR its
+        health_status is "healthy").
+
+        Returns:
+            Dict with ``container_id``, ``dependencies`` (list of
+            dicts with ``id``, ``state``, ``health``, ``healthy``),
+            ``all_healthy`` flag.
+        """
+        deps = container.config.depends_on or []
+        results: List[Dict[str, Any]] = []
+        all_healthy = True
+
+        for dep_id in deps:
+            c = self.containers.get(dep_id)
+            if c is None:
+                results.append({
+                    "id": dep_id,
+                    "state": "missing",
+                    "health": "unknown",
+                    "healthy": False,
+                })
+                all_healthy = False
+                continue
+
+            health = getattr(c, "health_status", "unknown")
+            has_health_check = bool(c.config.health_check_cmd)
+
+            # Consider healthy if running and (no health check or healthy)
+            if c.state.value == "running":
+                if has_health_check:
+                    is_healthy = health == "healthy"
+                else:
+                    is_healthy = True
+            else:
+                is_healthy = False
+
+            results.append({
+                "id": dep_id,
+                "state": c.state.value,
+                "health": health,
+                "healthy": is_healthy,
+            })
+
+            if not is_healthy:
+                all_healthy = False
+
+        return {
+            "container_id": container.id,
+            "dependencies": results,
+            "all_healthy": all_healthy,
+        }
+
+    def get_reverse_dependency_health(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Check which containers that DEPEND ON this container are affected.
+
+        Returns the health status of all containers that list this
+        container in their ``depends_on``.
+
+        Returns:
+            Dict with ``container_id``, ``dependents`` (list of
+            dicts), ``all_healthy`` flag.
+        """
+        dependents: List[Dict[str, Any]] = []
+        all_healthy = True
+
+        for cid, c in self.containers.items():
+            if cid == container.id:
+                continue
+            deps = c.config.depends_on or []
+            if container.id not in deps:
+                continue
+
+            health = getattr(c, "health_status", "unknown")
+            has_health_check = bool(c.config.health_check_cmd)
+            if c.state.value == "running":
+                if has_health_check:
+                    is_healthy = health == "healthy"
+                else:
+                    is_healthy = True
+            else:
+                is_healthy = False
+
+            dependents.append({
+                "id": cid,
+                "state": c.state.value,
+                "health": health,
+                "healthy": is_healthy,
+            })
+            if not is_healthy:
+                all_healthy = False
+
+        return {
+            "container_id": container.id,
+            "dependents": dependents,
+            "all_healthy": all_healthy,
+        }
+
     def _setup_cgroups(self, container: Container) -> None:
         """Set up cgroup resource limits for the container.
         

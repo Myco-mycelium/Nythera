@@ -522,6 +522,12 @@ class ControlService:
             elif op == "snapshot_schedule_list":
                 self._snapshot_schedule_list(
                     server, sender_path, msg.message_id, request)
+            elif op == "dependency_health":
+                self._dependency_health(
+                    server, sender_path, msg.message_id, request)
+            elif op == "dependency_health_reverse":
+                self._dependency_health_reverse(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3481,6 +3487,50 @@ class ControlService:
             })
             return
         result = self.container_manager.clear_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Dependency health
+
+    def _dependency_health(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_dependency_health(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _dependency_health_reverse(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_reverse_dependency_health(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

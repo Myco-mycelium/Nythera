@@ -1272,6 +1272,18 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "snapshot_schedule_list",
             "container_id": args.container_id,
         }
+    if command == "dependency-health":
+        return {
+            "service": "control",
+            "op": "dependency_health",
+            "container_id": args.container_id,
+        }
+    if command == "dependency-health-reverse":
+        return {
+            "service": "control",
+            "op": "dependency_health_reverse",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -2944,6 +2956,19 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"(label={s.get('label', '?')}, "
                 f"ts={s.get('timestamp', 0):.0f})")
         return f"{len(snaps)} scheduled snapshot(s):\n" + "\n".join(lines)
+    if command in ("dependency-health", "dependency-health-reverse"):
+        deps = resp.get("dependencies") or resp.get("dependents", [])
+        all_ok = resp.get("all_healthy", True)
+        if not deps:
+            return "No dependencies"
+        lines = [f"All healthy: {all_ok}", ""]
+        for d in deps:
+            mark = "OK" if d.get("healthy") else "FAIL"
+            lines.append(
+                f"  [{mark}] {d.get('id', '?')} "
+                f"state={d.get('state', '?')}, "
+                f"health={d.get('health', '?')}")
+        return "\n".join(lines)
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -3691,6 +3716,16 @@ def build_parser() -> argparse.ArgumentParser:
                           help="List scheduled snapshots")
     ssl.add_argument("container_id")
     ssl.set_defaults(command="snapshot-schedule-list")
+
+    dh = csub.add_parser("dependency-health",
+                         help="Check health of dependencies")
+    dh.add_argument("container_id")
+    dh.set_defaults(command="dependency-health")
+
+    dhr = csub.add_parser("dependency-health-reverse",
+                          help="Check dependents of a container")
+    dhr.add_argument("container_id")
+    dhr.set_defaults(command="dependency-health-reverse")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

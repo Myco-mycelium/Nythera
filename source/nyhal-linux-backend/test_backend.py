@@ -21422,6 +21422,122 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestDependencyHealth(unittest.TestCase):
+    """Dependency health monitoring."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_dependency_health_no_deps(self):
+        """get_dependency_health returns empty when no deps."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="dh1"))
+        result = mgr.get_dependency_health(c)
+        self.assertEqual(result["container_id"], c.id)
+        self.assertEqual(result["dependencies"], [])
+        self.assertTrue(result["all_healthy"])
+
+    def test_dependency_health_missing_dep(self):
+        """get_dependency_health reports missing dep."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="dh2", depends_on=["nonexistent"]))
+        result = mgr.get_dependency_health(c)
+        self.assertEqual(len(result["dependencies"]), 1)
+        self.assertFalse(result["all_healthy"])
+        self.assertEqual(result["dependencies"][0]["state"], "missing")
+
+    def test_dependency_health_terminated_dep(self):
+        """get_dependency_health reports unhealthy terminated dep."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        dep = mgr.create(ContainerConfig(name="dh-dep"))
+        dep.state = ContainerState.TERMINATED
+        c = mgr.create(ContainerConfig(
+            name="dh3", depends_on=[dep.id]))
+        result = mgr.get_dependency_health(c)
+        self.assertEqual(len(result["dependencies"]), 1)
+        self.assertFalse(result["all_healthy"])
+        self.assertEqual(result["dependencies"][0]["state"], "terminated")
+
+    def test_reverse_dependency_health(self):
+        """get_reverse_dependency_health finds dependents."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        base = mgr.create(ContainerConfig(name="dh-base"))
+        c1 = mgr.create(ContainerConfig(
+            name="dh-child1", depends_on=[base.id]))
+        c2 = mgr.create(ContainerConfig(
+            name="dh-child2", depends_on=[base.id]))
+        mgr.create(ContainerConfig(name="dh-child3"))  # no dep
+        # Set children to RUNNING so they're healthy
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.get_reverse_dependency_health(base)
+        self.assertEqual(len(result["dependents"]), 2)
+        self.assertTrue(result["all_healthy"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for dependency health commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("dependency-health",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p1["op"], "dependency_health")
+        p2 = build_payload("dependency-health-reverse",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p2["op"], "dependency_health_reverse")
+
+    def test_cli_format_human(self):
+        """CLI format_human for dependency health commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "abc",
+            "dependencies": [
+                {"id": "dep1", "state": "running",
+                 "health": "healthy", "healthy": True},
+                {"id": "dep2", "state": "terminated",
+                 "health": "unknown", "healthy": False},
+            ],
+            "all_healthy": False,
+        }
+        text = format_human("dependency-health", resp)
+        self.assertIn("dep1", text)
+        self.assertIn("dep2", text)
+        self.assertIn("OK", text)
+        self.assertIn("FAIL", text)
+
+    def test_control_handler(self):
+        """Dependency health control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="dh-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "dependency_health",
+                           "container_id": c.id}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("dependencies", replies[0])
+
+
 class TestProcessManagement(unittest.TestCase):
     """Process management (kill, list, signal_all)."""
 
@@ -22224,6 +22340,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestDependencyHealth))
     suite.addTests(loader.loadTestsFromTestCase(TestProcessManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBaselines))
