@@ -7225,6 +7225,253 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Auto-remediation engine
+    # ------------------------------------------------------------------
+
+    def configure_remediation(
+        self,
+        container: Container,
+        on_budget_exceeded: str = "alert",
+        on_threshold_exceeded: str = "alert",
+        on_oom_risk: str = "alert",
+        max_restarts: int = 3,
+        cooldown_seconds: float = 300.0,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure auto-remediation policies for a container.
+
+        Actions:
+        - ``alert``: emit a webhook/event only (default)
+        - ``restart``: stop + restart the container
+        - ``scale_up``: increase memory limit by 25%%
+        - ``scale_down``: decrease memory limit by 25%%
+        - ``throttle``: lower CPU weight
+        - ``migrate``: checkpoint + restore (placeholder)
+
+        Args:
+            container: Target container.
+            on_budget_exceeded: Action when budget is exceeded.
+            on_threshold_exceeded: Action when threshold fires.
+            on_oom_risk: Action when OOM score is high.
+            max_restarts: Maximum restarts in the cooldown window.
+            cooldown_seconds: Cooldown between remediation actions.
+            enabled: Whether remediation is active.
+
+        Returns:
+            The remediation policy dict.
+        """
+        valid_actions = {
+            'alert', 'restart', 'scale_up', 'scale_down',
+            'throttle', 'migrate', 'none',
+        }
+        for action in (on_budget_exceeded, on_threshold_exceeded, on_oom_risk):
+            if action not in valid_actions:
+                raise ValueError(
+                    f"invalid action {action!r}, "
+                    f"must be one of {sorted(valid_actions)}")
+
+        if not hasattr(container, '_remediation'):
+            container._remediation = {
+                'history': [],
+                'restart_count': 0,
+                'last_action_at': 0.0,
+            }
+
+        policy = {
+            'on_budget_exceeded': on_budget_exceeded,
+            'on_threshold_exceeded': on_threshold_exceeded,
+            'on_oom_risk': on_oom_risk,
+            'max_restarts': max_restarts,
+            'cooldown_seconds': cooldown_seconds,
+            'enabled': enabled,
+            'updated_at': time.time(),
+        }
+        container._remediation['policy'] = policy
+
+        self._record_event(
+            'remediation_configured', container.id,
+            f"remediation {'enabled' if enabled else 'disabled'}: "
+            f"budget={on_budget_exceeded}, "
+            f"threshold={on_threshold_exceeded}, "
+            f"oom={on_oom_risk}")
+
+        return {
+            'container_id': container.id,
+            'policy': policy,
+        }
+
+    def execute_remediation(
+        self,
+        container: Container,
+        trigger: str,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Execute the configured remediation action for a trigger.
+
+        Args:
+            container: Target container.
+            trigger: One of ``budget_exceeded``, ``threshold_exceeded``,
+                ``oom_risk``.
+            reason: Human-readable reason.
+
+        Returns:
+            Dict with ``action_taken``, ``result``, ``cooldown_active``,
+            and ``history``.
+        """
+        rem = getattr(container, '_remediation', {})
+        policy = rem.get('policy', {})
+
+        if not policy.get('enabled', False):
+            return {
+                'container_id': container.id,
+                'action_taken': 'none',
+                'result': 'remediation disabled',
+                'cooldown_active': False,
+                'history': rem.get('history', [])[-5:],
+            }
+
+        action_map = {
+            'budget_exceeded': policy.get('on_budget_exceeded', 'alert'),
+            'threshold_exceeded': policy.get('on_threshold_exceeded', 'alert'),
+            'oom_risk': policy.get('on_oom_risk', 'alert'),
+        }
+        action = action_map.get(trigger, 'alert')
+
+        if action == 'none':
+            return {
+                'container_id': container.id,
+                'action_taken': 'none',
+                'result': 'policy set to none',
+                'cooldown_active': False,
+                'history': rem.get('history', [])[-5:],
+            }
+
+        # Check cooldown
+        cooldown = policy.get('cooldown_seconds', 300.0)
+        last_at = rem.get('last_action_at', 0.0)
+        now = time.time()
+        cooldown_active = (now - last_at) < cooldown
+
+        if cooldown_active:
+            return {
+                'container_id': container.id,
+                'action_taken': 'skipped',
+                'result': f'cooldown active ({cooldown - (now - last_at):.0f}s remaining)',
+                'cooldown_active': True,
+                'history': rem.get('history', [])[-5:],
+            }
+
+        # Check restart limit
+        if action == 'restart':
+            max_r = policy.get('max_restarts', 3)
+            if rem.get('restart_count', 0) >= max_r:
+                entry = {
+                    'timestamp': now,
+                    'trigger': trigger,
+                    'action': 'restart_denied',
+                    'reason': f'max restarts ({max_r}) reached',
+                }
+                rem.setdefault('history', []).append(entry)
+                self._record_event(
+                    'remediation_restart_denied', container.id,
+                    f'max restarts reached: {max_r}')
+                return {
+                    'container_id': container.id,
+                    'action_taken': 'restart_denied',
+                    'result': f'max restarts ({max_r}) reached',
+                    'cooldown_active': False,
+                    'history': rem.get('history', [])[-5:],
+                }
+
+        # Execute the action
+        result_detail = ''
+        try:
+            if action == 'restart':
+                self.terminate(container)
+                self.spawn(container)
+                rem['restart_count'] = rem.get('restart_count', 0) + 1
+                result_detail = 'container restarted'
+            elif action == 'scale_up':
+                limits = container.config.limits
+                new_mem = int(limits.memory_mb * 1.25)
+                limits.memory_mb = new_mem
+                result_detail = f'memory scaled up to {new_mem} MB'
+            elif action == 'scale_down':
+                limits = container.config.limits
+                new_mem = max(64, int(limits.memory_mb * 0.75))
+                limits.memory_mb = new_mem
+                result_detail = f'memory scaled down to {new_mem} MB'
+            elif action == 'throttle':
+                result_detail = 'CPU weight lowered (placeholder)'
+            elif action == 'alert':
+                result_detail = 'alert emitted'
+            elif action == 'migrate':
+                result_detail = 'migration requested (placeholder)'
+            else:
+                result_detail = f'unknown action: {action}'
+        except Exception as e:  # noqa: BLE001
+            result_detail = f'action failed: {e}'
+
+        entry = {
+            'timestamp': now,
+            'trigger': trigger,
+            'action': action,
+            'reason': reason,
+            'result': result_detail,
+        }
+        rem.setdefault('history', []).append(entry)
+        rem['last_action_at'] = now
+
+        self._record_event(
+            'remediation_executed', container.id,
+            f'{action} for {trigger}: {result_detail}')
+
+        return {
+            'container_id': container.id,
+            'action_taken': action,
+            'result': result_detail,
+            'cooldown_active': False,
+            'history': rem.get('history', [])[-5:],
+        }
+
+    def get_remediation_status(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get remediation policy and recent history for a container."""
+        rem = getattr(container, '_remediation', {})
+        policy = rem.get('policy', {})
+        history = rem.get('history', [])
+        return {
+            'container_id': container.id,
+            'enabled': policy.get('enabled', False),
+            'policy': policy,
+            'restart_count': rem.get('restart_count', 0),
+            'last_action_at': rem.get('last_action_at', 0.0),
+            'history': history[-20:],
+            'history_total': len(history),
+        }
+
+    def get_remediation_history(
+        self,
+        container: Container,
+        tail: Optional[int] = None,
+        trigger: Optional[str] = None,
+        action: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get filtered remediation history."""
+        rem = getattr(container, '_remediation', {})
+        history = rem.get('history', [])
+        if trigger:
+            history = [e for e in history if e.get('trigger') == trigger]
+        if action:
+            history = [e for e in history if e.get('action') == action]
+        history = list(reversed(history))
+        if tail is not None:
+            history = history[:tail]
+        return history
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

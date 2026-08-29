@@ -609,6 +609,18 @@ class ControlService:
             elif op == "budget_clear":
                 self._budget_clear(
                     server, sender_path, msg.message_id, request)
+            elif op == "remediation_configure":
+                self._remediation_configure(
+                    server, sender_path, msg.message_id, request)
+            elif op == "remediation_execute":
+                self._remediation_execute(
+                    server, sender_path, msg.message_id, request)
+            elif op == "remediation_status":
+                self._remediation_status(
+                    server, sender_path, msg.message_id, request)
+            elif op == "remediation_history":
+                self._remediation_history(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4376,6 +4388,106 @@ class ControlService:
         result = self.container_manager.clear_resource_budget(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
+        })
+
+    def _remediation_configure(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        try:
+            result = self.container_manager.configure_remediation(
+                c,
+                on_budget_exceeded=request.get(
+                    'on_budget_exceeded', 'alert'),
+                on_threshold_exceeded=request.get(
+                    'on_threshold_exceeded', 'alert'),
+                on_oom_risk=request.get(
+                    'on_oom_risk', 'alert'),
+                max_restarts=request.get('max_restarts', 3),
+                cooldown_seconds=request.get('cooldown_seconds', 300.0),
+                enabled=request.get('enabled', True),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": str(e),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _remediation_execute(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        trigger = request.get("trigger")
+        if not container_id or not trigger:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "container_id and trigger are required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.execute_remediation(
+            c, trigger=trigger,
+            reason=request.get('reason', ''),
+        )
+        self._save_state()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _remediation_status(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_remediation_status(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _remediation_history(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        history = self.container_manager.get_remediation_history(
+            c,
+            tail=request.get('tail'),
+            trigger=request.get('trigger'),
+            action=request.get('action'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "container_id": container_id,
+            "entries": history,
+            "count": len(history),
         })
 
     def _save_state(self) -> None:

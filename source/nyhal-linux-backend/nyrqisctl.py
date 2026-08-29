@@ -1454,6 +1454,41 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "budget_clear",
             "container_id": args.container_id,
         }
+    if command == "remediation-configure":
+        return {
+            "service": "control",
+            "op": "remediation_configure",
+            "container_id": args.container_id,
+            "on_budget_exceeded": getattr(args, 'on_budget_exceeded', 'alert'),
+            "on_threshold_exceeded": getattr(args, 'on_threshold_exceeded', 'alert'),
+            "on_oom_risk": getattr(args, 'on_oom_risk', 'alert'),
+            "max_restarts": getattr(args, 'max_restarts', 3),
+            "cooldown_seconds": getattr(args, 'cooldown_seconds', 300.0),
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "remediation-execute":
+        return {
+            "service": "control",
+            "op": "remediation_execute",
+            "container_id": args.container_id,
+            "trigger": args.trigger,
+            "reason": getattr(args, 'reason', ''),
+        }
+    if command == "remediation-status":
+        return {
+            "service": "control",
+            "op": "remediation_status",
+            "container_id": args.container_id,
+        }
+    if command == "remediation-history":
+        return {
+            "service": "control",
+            "op": "remediation_history",
+            "container_id": args.container_id,
+            "tail": getattr(args, 'tail', None),
+            "trigger": getattr(args, 'trigger', None),
+            "action": getattr(args, 'action', None),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3458,6 +3493,57 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if resp.get('cleared'):
             return f"Budget cleared for {resp.get('container_id', '?')}"
         return f"No budget was set for {resp.get('container_id', '?')}"
+    if command == "remediation-configure":
+        policy = resp.get('policy', {})
+        enabled = 'enabled' if policy.get('enabled') else 'disabled'
+        return (
+            f"Remediation {enabled} for {resp.get('container_id', '?')}:\n"
+            f"  budget_exceeded: {policy.get('on_budget_exceeded', '?')}\n"
+            f"  threshold_exceeded: {policy.get('on_threshold_exceeded', '?')}\n"
+            f"  oom_risk: {policy.get('on_oom_risk', '?')}\n"
+            f"  max_restarts: {policy.get('max_restarts', 3)}\n"
+            f"  cooldown: {policy.get('cooldown_seconds', 300)}s")
+    if command == "remediation-execute":
+        action = resp.get('action_taken', '?')
+        result = resp.get('result', '')
+        cooldown = resp.get('cooldown_active', False)
+        lines = [f"Action: {action}", f"Result: {result}"]
+        if cooldown:
+            lines.append("Note: cooldown is active")
+        history = resp.get('history', [])
+        if history:
+            lines.append(f"Recent history ({len(history)}):")
+            for h in history[-3:]:
+                lines.append(
+                    f"  {h.get('action', '?')} for "
+                    f"{h.get('trigger', '?')}: {h.get('result', '')}")
+        return "\n".join(lines)
+    if command == "remediation-status":
+        enabled = 'enabled' if resp.get('enabled') else 'disabled'
+        lines = [
+            f"Remediation {enabled} for {resp.get('container_id', '?')}",
+            f"  Restarts: {resp.get('restart_count', 0)}",
+        ]
+        policy = resp.get('policy', {})
+        if policy:
+            lines.append(f"  Budget: {policy.get('on_budget_exceeded', '?')}")
+            lines.append(f"  Threshold: {policy.get('on_threshold_exceeded', '?')}")
+            lines.append(f"  OOM: {policy.get('on_oom_risk', '?')}")
+        total = resp.get('history_total', 0)
+        if total:
+            lines.append(f"  History: {total} entries")
+        return "\n".join(lines)
+    if command == "remediation-history":
+        entries = resp.get('entries', [])
+        if not entries:
+            return "No remediation history"
+        lines = [f"{len(entries)} remediation events:"]
+        for e in entries:
+            lines.append(
+                f"  {e.get('action', '?')} | "
+                f"trigger: {e.get('trigger', '?')} | "
+                f"{e.get('result', '')}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4377,6 +4463,59 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Clear a container's budget")
     bcr.add_argument("container_id")
     bcr.set_defaults(command="budget-clear")
+
+    # -- auto-remediation --
+    rc = sub.add_parser("remediation-configure",
+                        help="Configure auto-remediation policies")
+    rc.add_argument("container_id")
+    rc.add_argument("--on-budget-exceeded", default="alert",
+                    choices=["alert", "restart", "scale_up",
+                             "scale_down", "throttle", "none"],
+                    help="Action on budget exceeded (default: alert)")
+    rc.add_argument("--on-threshold-exceeded", default="alert",
+                    choices=["alert", "restart", "scale_up",
+                             "scale_down", "throttle", "none"],
+                    help="Action on threshold exceeded")
+    rc.add_argument("--on-oom-risk", default="alert",
+                    choices=["alert", "restart", "scale_up",
+                             "scale_down", "throttle", "none"],
+                    help="Action on OOM risk")
+    rc.add_argument("--max-restarts", type=int, default=3,
+                    help="Max restarts in cooldown window (default: 3)")
+    rc.add_argument("--cooldown-seconds", type=float, default=300.0,
+                    help="Cooldown between actions in seconds (default: 300)")
+    rc.add_argument("--enabled", action="store_true", default=True,
+                    help="Enable remediation (default: True)")
+    rc.add_argument("--disabled", dest="enabled", action="store_false",
+                    help="Disable remediation")
+    rc.set_defaults(command="remediation-configure")
+
+    re = sub.add_parser("remediation-execute",
+                        help="Execute a remediation action now")
+    re.add_argument("container_id")
+    re.add_argument("trigger",
+                    choices=["budget_exceeded", "threshold_exceeded",
+                             "oom_risk"],
+                    help="Trigger type")
+    re.add_argument("--reason", default="",
+                    help="Reason for remediation")
+    re.set_defaults(command="remediation-execute")
+
+    rs = sub.add_parser("remediation-status",
+                        help="Show remediation status")
+    rs.add_argument("container_id")
+    rs.set_defaults(command="remediation-status")
+
+    rh = sub.add_parser("remediation-history",
+                        help="Show remediation history")
+    rh.add_argument("container_id")
+    rh.add_argument("--tail", type=int, default=None,
+                    help="Show only last N entries")
+    rh.add_argument("--trigger", default=None,
+                    help="Filter by trigger type")
+    rh.add_argument("--action", default=None,
+                    help="Filter by action taken")
+    rh.set_defaults(command="remediation-history")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

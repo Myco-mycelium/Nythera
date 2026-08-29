@@ -23292,6 +23292,173 @@ class TestResourceBudgets(unittest.TestCase):
         self.assertEqual(replies[0]["budget"]["memory_mb"], 256)
 
 
+class TestAutoRemediation(unittest.TestCase):
+    """Tests for auto-remediation engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_configure_remediation(self):
+        """configure_remediation sets policy on a container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem1", command=["echo"]))
+        result = mgr.configure_remediation(
+            c, on_budget_exceeded="restart",
+            on_threshold_exceeded="scale_up",
+            on_oom_risk="alert",
+            max_restarts=5, cooldown_seconds=60.0)
+        self.assertTrue(result['policy']['enabled'])
+        self.assertEqual(result['policy']['on_budget_exceeded'], 'restart')
+        self.assertEqual(result['policy']['on_threshold_exceeded'], 'scale_up')
+        self.assertEqual(result['policy']['max_restarts'], 5)
+
+    def test_configure_invalid_action(self):
+        """configure_remediation rejects invalid actions."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem2", command=["echo"]))
+        with self.assertRaises(ValueError):
+            mgr.configure_remediation(c, on_budget_exceeded="bogus")
+
+    def test_execute_remediation_disabled(self):
+        """execute_remediation returns none when disabled."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem3", command=["echo"]))
+        result = mgr.execute_remediation(c, trigger="budget_exceeded")
+        self.assertEqual(result['action_taken'], 'none')
+
+    def test_execute_remediation_alert(self):
+        """execute_remediation with alert action."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem4", command=["echo"]))
+        mgr.configure_remediation(c, on_budget_exceeded="alert")
+        result = mgr.execute_remediation(
+            c, trigger="budget_exceeded", reason="test")
+        self.assertEqual(result['action_taken'], 'alert')
+        self.assertEqual(result['result'], 'alert emitted')
+        self.assertFalse(result['cooldown_active'])
+
+    def test_execute_remediation_history(self):
+        """execute_remediation records history entries."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem5", command=["echo"]))
+        mgr.configure_remediation(c, on_budget_exceeded="alert",
+                                   cooldown_seconds=0.0)
+        mgr.execute_remediation(c, trigger="budget_exceeded")
+        mgr.execute_remediation(c, trigger="threshold_exceeded")
+        status = mgr.get_remediation_status(c)
+        self.assertEqual(status['history_total'], 2)
+
+    def test_remediation_history_filtering(self):
+        """get_remediation_history filters by trigger and action."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem6", command=["echo"]))
+        mgr.configure_remediation(c, on_budget_exceeded="alert",
+                                   on_threshold_exceeded="restart",
+                                   cooldown_seconds=0.0)
+        mgr.execute_remediation(c, trigger="budget_exceeded")
+        mgr.execute_remediation(c, trigger="threshold_exceeded")
+        mgr.execute_remediation(c, trigger="budget_exceeded")
+        # Filter by trigger
+        budget_history = mgr.get_remediation_history(
+            c, trigger="budget_exceeded")
+        self.assertEqual(len(budget_history), 2)
+        # Filter by action
+        restart_history = mgr.get_remediation_history(
+            c, trigger="threshold_exceeded")
+        self.assertEqual(len(restart_history), 1)
+        # Tail
+        tail = mgr.get_remediation_history(c, tail=1)
+        self.assertEqual(len(tail), 1)
+
+    def test_remediation_cli_payload(self):
+        """CLI build_payload for remediation commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1",
+            on_budget_exceeded="restart",
+            on_threshold_exceeded="alert",
+            on_oom_risk="alert",
+            max_restarts=3, cooldown_seconds=300.0, enabled=True)
+        p = cli.build_payload("remediation-configure", ns)
+        self.assertEqual(p["op"], "remediation_configure")
+        self.assertEqual(p["on_budget_exceeded"], "restart")
+
+        ns2 = argparse.Namespace(
+            container_id="c1", trigger="budget_exceeded",
+            reason="test")
+        p2 = cli.build_payload("remediation-execute", ns2)
+        self.assertEqual(p2["op"], "remediation_execute")
+
+        ns3 = argparse.Namespace(container_id="c1")
+        p3 = cli.build_payload("remediation-status", ns3)
+        self.assertEqual(p3["op"], "remediation_status")
+
+        ns4 = argparse.Namespace(
+            container_id="c1", tail=None, trigger=None, action=None)
+        p4 = cli.build_payload("remediation-history", ns4)
+        self.assertEqual(p4["op"], "remediation_history")
+
+    def test_remediation_format_human(self):
+        """format_human renders remediation status nicely."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'enabled': True,
+            'policy': {
+                'on_budget_exceeded': 'restart',
+                'on_threshold_exceeded': 'alert',
+                'on_oom_risk': 'alert',
+            },
+            'restart_count': 2,
+            'history_total': 5,
+        }
+        text = cli.format_human("remediation-status", resp)
+        self.assertIn('enabled', text)
+        self.assertIn('restart', text)
+        self.assertIn('2', text)
+
+    def test_control_remediation_configure_handler(self):
+        """ControlService dispatches remediation_configure op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="rem-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "remediation_configure",
+                  "container_id": c.id,
+                  "on_budget_exceeded": "restart"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(
+            replies[0]["policy"]["on_budget_exceeded"], "restart")
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -23378,6 +23545,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestAuditTrail))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceBudgets))
+    suite.addTests(loader.loadTestsFromTestCase(TestAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
