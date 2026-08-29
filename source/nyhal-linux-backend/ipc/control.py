@@ -651,6 +651,9 @@ class ControlService:
             elif op == "health_score_all":
                 self._health_score_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "event_log_compress":
+                self._event_log_compress(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4661,6 +4664,24 @@ class ControlService:
                           call_id: str,
                           request: Dict[str, Any]) -> None:
         result = self.container_manager.calculate_health_scores_all()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _event_log_compress(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        data = request.get('data')
+        if not data or not isinstance(data, dict):
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "data dict is required",
+            })
+            return
+        result = self.container_manager.compress_event_log(
+            data=data,
+            keep_recent=request.get('keep_recent', 100),
+            summarize_older=request.get('summarize_older', True),
+        )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

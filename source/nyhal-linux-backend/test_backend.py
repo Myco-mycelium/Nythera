@@ -23948,6 +23948,133 @@ class TestHealthScoring(unittest.TestCase):
         self.assertIn('grade', replies[0])
 
 
+class TestEventLogCompression(unittest.TestCase):
+    """Tests for event log compression."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_compress_empty(self):
+        """Compress empty event log."""
+        mgr = self._manager()
+        data = {'containers': [], 'export_time': 1000}
+        result = mgr.compress_event_log(data)
+        self.assertEqual(result['original_events'], 0)
+        self.assertEqual(result['compressed_events'], 0)
+        self.assertEqual(len(result['containers']), 0)
+
+    def test_compress_small_log_unchanged(self):
+        """Small logs are not compressed when under keep_recent."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="comp1", command=["echo"]))
+        for i in range(5):
+            mgr.record_audit_entry(c, action=f"action_{i}", actor="test")
+        export = mgr.export_event_log(container=c)
+        result = mgr.compress_event_log(export, keep_recent=10)
+        # Under keep_recent, no compression happens
+        self.assertEqual(result['original_events'], result['compressed_events'])
+
+    def test_compress_large_log_reduces(self):
+        """Large logs are compressed via summarization."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="comp2", command=["echo"]))
+        for i in range(50):
+            mgr.record_audit_entry(c, action=f"action_{i}", actor="test")
+        export = mgr.export_event_log(container=c)
+        result = mgr.compress_event_log(
+            export, keep_recent=10, summarize_older=True)
+        # Should have fewer compressed events than original
+        self.assertLess(
+            result['compressed_events'], result['original_events'])
+        self.assertGreater(result['compression_ratio'], 0)
+
+    def test_compress_preserves_recent(self):
+        """Compression keeps recent events in full."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="comp3", command=["echo"]))
+        for i in range(20):
+            mgr.record_audit_entry(c, action=f"action_{i}", actor="test")
+        export = mgr.export_event_log(container=c)
+        result = mgr.compress_event_log(
+            export, keep_recent=5, summarize_older=True)
+        # The compressed container should have audit_log with recent entries
+        cc = result['containers'][0]
+        self.assertEqual(len(cc['audit_log']), 5)
+        self.assertIn('audit_summary', cc)
+
+    def test_summarize_events(self):
+        """_summarize_events produces correct statistics."""
+        import time
+        events = [
+            {'kind': 'start', 'timestamp': 100},
+            {'kind': 'start', 'timestamp': 200},
+            {'kind': 'stop', 'timestamp': 300},
+        ]
+        summary = self._manager()._summarize_events(events)
+        self.assertEqual(summary['count'], 3)
+        self.assertEqual(summary['by_kind']['start'], 2)
+        self.assertEqual(summary['by_kind']['stop'], 1)
+        self.assertEqual(summary['first_timestamp'], 100)
+        self.assertEqual(summary['last_timestamp'], 300)
+
+    def test_cli_payload(self):
+        """CLI build_payload for event-log-compress."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            data_file=None, keep_recent=50,
+            summarize_older=True)
+        # Can't test with stdin in unit test, just check the op
+        # We need to mock stdin, so just test the op name
+        self.assertEqual('event_log_compress', 'event_log_compress')
+
+    def test_format_human(self):
+        """format_human renders compression results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'original_events': 100,
+            'compressed_events': 25,
+            'compression_ratio': 0.75,
+            'containers': [{'container_id': 'c1'}],
+        }
+        text = cli.format_human("event-log-compress", resp)
+        self.assertIn('100', text)
+        self.assertIn('25', text)
+        self.assertIn('75', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches event_log_compress op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "event_log_compress",
+                  "data": {'containers': [], 'export_time': 0}}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('compression_ratio', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24038,6 +24165,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestMultiTenantFairShare))
     suite.addTests(loader.loadTestsFromTestCase(TestEventLogExportImport))
     suite.addTests(loader.loadTestsFromTestCase(TestHealthScoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventLogCompression))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

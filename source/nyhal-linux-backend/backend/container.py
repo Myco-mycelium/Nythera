@@ -1228,6 +1228,157 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Event log compression (long-term archival)
+    # ------------------------------------------------------------------
+
+    def compress_event_log(
+        self,
+        data: Dict[str, Any],
+        keep_recent: int = 100,
+        summarize_older: bool = True,
+    ) -> Dict[str, Any]:
+        """Compress an exported event log for long-term archival.
+
+        Keeps the most recent events in full detail and summarizes
+        older events into statistical aggregates. This reduces storage
+        while preserving trend data.
+
+        Args:
+            data: The exported event log dict (from export_event_log).
+            keep_recent: Number of recent events to keep in full.
+            summarize_older: Whether to create summaries of older events.
+
+        Returns:
+            Dict with compressed containers, compression stats.
+        """
+        compressed_containers: List[Dict[str, Any]] = []
+        original_events = 0
+        compressed_events = 0
+
+        for cdata in data.get('containers', []):
+            cc: Dict[str, Any] = {
+                'container_id': cdata.get('container_id'),
+                'name': cdata.get('name'),
+                'state': cdata.get('state'),
+            }
+
+            # Compress lifecycle events
+            lifecycle = cdata.get('lifecycle_events', [])
+            original_events += len(lifecycle)
+            if len(lifecycle) > keep_recent:
+                recent = lifecycle[-keep_recent:]
+                older = lifecycle[:-keep_recent]
+                compressed_events += len(recent)
+                if summarize_older and older:
+                    summary = self._summarize_events(older)
+                    cc['lifecycle_events'] = recent
+                    cc['lifecycle_summary'] = summary
+                    compressed_events += 1  # summary counts as 1
+                else:
+                    cc['lifecycle_events'] = recent
+            else:
+                cc['lifecycle_events'] = lifecycle
+                compressed_events += len(lifecycle)
+
+            # Compress audit log
+            audit = cdata.get('audit_log', [])
+            original_events += len(audit)
+            if len(audit) > keep_recent:
+                recent_audit = audit[-keep_recent:]
+                older_audit = audit[:-keep_recent]
+                compressed_events += len(recent_audit)
+                if summarize_older and older_audit:
+                    summary = self._summarize_events(older_audit)
+                    cc['audit_log'] = recent_audit
+                    cc['audit_summary'] = summary
+                    compressed_events += 1
+                else:
+                    cc['audit_log'] = recent_audit
+            else:
+                cc['audit_log'] = audit
+                compressed_events += len(audit)
+
+            # OOM events (usually rare, keep all)
+            oom = cdata.get('oom_events', [])
+            original_events += len(oom)
+            cc['oom_events'] = oom
+            compressed_events += len(oom)
+
+            # SLA violations (usually rare, keep all)
+            sla = cdata.get('sla_violations', [])
+            original_events += len(sla)
+            cc['sla_violations'] = sla
+            compressed_events += len(sla)
+
+            # Remediation history
+            rem = cdata.get('remediation_history', [])
+            original_events += len(rem)
+            if len(rem) > keep_recent:
+                recent_rem = rem[-keep_recent:]
+                older_rem = rem[:-keep_recent]
+                compressed_events += len(recent_rem)
+                if summarize_older and older_rem:
+                    summary = self._summarize_events(older_rem)
+                    cc['remediation_history'] = recent_rem
+                    cc['remediation_summary'] = summary
+                    compressed_events += 1
+                else:
+                    cc['remediation_history'] = recent_rem
+            else:
+                cc['remediation_history'] = rem
+                compressed_events += len(rem)
+
+            compressed_containers.append(cc)
+
+        self._record_event(
+            'event_log_compressed', 'system',
+            f"compressed {original_events} -> {compressed_events} events "
+            f"across {len(compressed_containers)} containers")
+
+        return {
+            'export_time': data.get('export_time', 0),
+            'compressed_at': time.time(),
+            'original_events': original_events,
+            'compressed_events': compressed_events,
+            'compression_ratio': (
+                round(1 - compressed_events / original_events, 3)
+                if original_events > 0 else 0
+            ),
+            'containers': compressed_containers,
+            'metadata': data.get('metadata', {}),
+        }
+
+    def _summarize_events(
+        self,
+        events: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Create a statistical summary of a list of events."""
+        if not events:
+            return {'count': 0}
+
+        # Count by kind/type/action
+        by_kind: Dict[str, int] = {}
+        for e in events:
+            kind = e.get('kind', e.get('action', e.get('type', 'unknown')))
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+
+        # Time range
+        timestamps = [
+            e.get('timestamp', e.get('time', 0))
+            for e in events if e.get('timestamp') or e.get('time')
+        ]
+        first_time = min(timestamps) if timestamps else 0
+        last_time = max(timestamps) if timestamps else 0
+
+        return {
+            'count': len(events),
+            'by_kind': by_kind,
+            'first_timestamp': first_time,
+            'last_timestamp': last_time,
+            'span_seconds': last_time - first_time if timestamps else 0,
+        }
+
+    # ------------------------------------------------------------------
     # Multi-tenant fair-share enforcement
     # ------------------------------------------------------------------
 

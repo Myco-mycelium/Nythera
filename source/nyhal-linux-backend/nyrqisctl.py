@@ -1551,6 +1551,21 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "health-score-all":
         return {"service": "control", "op": "health_score_all"}
+    if command == "event-log-compress":
+        import json as _json
+        data_file = getattr(args, 'data_file', None)
+        if data_file:
+            with open(data_file, 'r') as f:
+                data = _json.load(f)
+        else:
+            data = _json.loads(sys.stdin.read())
+        return {
+            "service": "control",
+            "op": "event_log_compress",
+            "data": data,
+            "keep_recent": getattr(args, 'keep_recent', 100),
+            "summarize_older": getattr(args, 'summarize_older', True),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3740,6 +3755,14 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             lines.append(
                 f"  {marker} {name}: {grade} ({score})")
         return "\n".join(lines)
+    if command == "event-log-compress":
+        orig = resp.get('original_events', 0)
+        comp = resp.get('compressed_events', 0)
+        ratio = resp.get('compression_ratio', 0)
+        return (
+            f"Compressed {orig} -> {comp} events "
+            f"({ratio:.1%} reduction) across "
+            f"{len(resp.get('containers', []))} containers")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -4797,6 +4820,20 @@ def build_parser() -> argparse.ArgumentParser:
     hsa = sub.add_parser("health-score-all",
                          help="Calculate health scores for all containers")
     hsa.set_defaults(command="health-score-all")
+
+    # -- event log compression --
+    elc = sub.add_parser("event-log-compress",
+                        help="Compress event log for archival")
+    elc.add_argument("data_file", nargs='?', default=None,
+                     help="JSON file to compress (default: stdin)")
+    elc.add_argument("--keep-recent", type=int, default=100,
+                     help="Number of recent events to keep (default: 100)")
+    elc.add_argument("--no-summarize", dest="summarize_older",
+                     action="store_false", default=True,
+                     help="Don't summarize older events")
+    elc.add_argument("--output", default=None,
+                     help="Output file (default: stdout)")
+    elc.set_defaults(command="event-log-compress")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
