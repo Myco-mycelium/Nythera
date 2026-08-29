@@ -684,6 +684,12 @@ class ControlService:
             elif op == "smart_remediate_all":
                 self._smart_remediate_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "usage_patterns":
+                self._usage_patterns(
+                    server, sender_path, msg.message_id, request)
+            elif op == "optimization_actions":
+                self._optimization_actions(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4832,6 +4838,39 @@ class ControlService:
                               call_id: str,
                               request: Dict[str, Any]) -> None:
         result = self.container_manager.evaluate_and_remediate_all()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _usage_patterns(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.detect_usage_patterns(
+            c, window_size=request.get('window_size', 30))
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _optimization_actions(self, server, sender_path: str,
+                               call_id: str,
+                               request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_usage_optimization_actions(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

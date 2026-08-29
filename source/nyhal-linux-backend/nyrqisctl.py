@@ -1618,6 +1618,19 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "smart-remediate-all":
         return {"service": "control", "op": "smart_remediate_all"}
+    if command == "usage-patterns":
+        return {
+            "service": "control",
+            "op": "usage_patterns",
+            "container_id": args.container_id,
+            "window_size": getattr(args, 'window_size', 30),
+        }
+    if command == "optimization-actions":
+        return {
+            "service": "control",
+            "op": "optimization_actions",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3928,6 +3941,38 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             lines.append(
                 f"  {marker} {name}: {level} ({severity})")
         return "\n".join(lines)
+    if command == "usage-patterns":
+        patterns = resp.get('patterns', {})
+        corr = resp.get('memory_cpu_correlation', 0)
+        lines = ["Resource usage patterns:"]
+        for resource, info in patterns.items():
+            pattern = info.get('pattern', '?')
+            conf = info.get('confidence', 0)
+            lines.append(
+                f"  {resource}: {pattern} "
+                f"(confidence={conf:.1f}%, "
+                f"mean={info.get('mean', 0)}, "
+                f"cv={info.get('cv', 0):.3f})")
+        lines.append(f"  memory-cpu correlation: {corr:.4f}")
+        return "\n".join(lines)
+    if command == "optimization-actions":
+        actions = resp.get('actions', [])
+        if not actions:
+            return "No optimization actions recommended"
+        lines = [f"{len(actions)} optimization actions:"]
+        for a in actions:
+            priority = a.get('priority', '?')
+            marker = {'high': '\u26a0', 'medium': '~',
+                      'low': '\u2713'}.get(priority, '?')
+            lines.append(
+                f"  {marker} [{priority}] {a.get('action', '?')}: "
+                f"{a.get('reason', '')}")
+            if a.get('suggested') is not None:
+                lines.append(
+                    f"    {a.get('current')} -> {a.get('suggested')} "
+                    f"({a.get('resource', '')}, "
+                    f"savings: {a.get('estimated_savings_pct', 0)}%)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5074,6 +5119,19 @@ def build_parser() -> argparse.ArgumentParser:
     sra = sub.add_parser("smart-remediate-all",
                          help="Evaluate and remediate all containers")
     sra.set_defaults(command="smart-remediate-all")
+
+    # -- usage pattern recognition --
+    up = sub.add_parser("usage-patterns",
+                        help="Detect resource usage patterns")
+    up.add_argument("container_id")
+    up.add_argument("--window-size", type=int, default=30,
+                    help="Number of samples to analyze (default: 30)")
+    up.set_defaults(command="usage-patterns")
+
+    oa = sub.add_parser("optimization-actions",
+                        help="Get optimization recommendations")
+    oa.add_argument("container_id")
+    oa.set_defaults(command="optimization-actions")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

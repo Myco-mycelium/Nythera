@@ -24493,6 +24493,140 @@ class TestSmartRemediation(unittest.TestCase):
         self.assertIn('severity_level', replies[0])
 
 
+class TestUsagePatternRecognition(unittest.TestCase):
+    """Tests for resource usage pattern recognition."""
+
+    def _manager(self):
+        from backend.container import ContainerConfig
+        from backend.container import ContainerManager
+        mgr = ContainerManager(use_cgroups_v2=False)
+        return mgr
+
+    def test_detect_patterns_insufficient_data(self):
+        """Insufficient data returns placeholder pattern."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="up1", command=["echo"]))
+        result = mgr.detect_usage_patterns(c)
+        self.assertIn('patterns', result)
+        self.assertIn('memory', result['patterns'])
+        self.assertEqual(
+            result['patterns']['memory']['pattern'], 'insufficient_data')
+
+    def test_detect_patterns_with_history(self):
+        """Patterns detected with enough history."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="up2", command=["echo"]))
+        # Seed history using public API
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": i * 10, "memory_bytes": 1000 + i * 100,
+             "cpu_usage_usec": 500, "pids_current": 5}
+            for i in range(20)
+        ]
+        result = mgr.detect_usage_patterns(c)
+        self.assertIn('patterns', result)
+        mem = result['patterns']['memory']
+        # Increasing pattern due to linear growth
+        self.assertIn(mem['pattern'], ('increasing', 'stable'))
+        self.assertIn('confidence', mem)
+
+    def test_analyze_single_pattern_stable(self):
+        """_analyze_single_pattern detects stable values."""
+        values = [100.0] * 20
+        result = self._manager()._analyze_single_pattern(values)
+        self.assertEqual(result['pattern'], 'stable')
+        self.assertGreater(result['confidence'], 50)
+
+    def test_analyze_single_pattern_bursty(self):
+        """_analyze_single_pattern detects bursty values."""
+        import random
+        random.seed(42)
+        values = [random.gauss(100, 80) for _ in range(20)]
+        result = self._manager()._analyze_single_pattern(values)
+        self.assertEqual(result['pattern'], 'bursty')
+
+    def test_optimization_actions(self):
+        """get_usage_optimization_actions returns actions."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="up3", command=["echo"]))
+        mgr._init_resource_history(c)
+        mgr._resource_history[c.id] = [
+            {"timestamp": i * 10, "memory_bytes": 500,
+             "cpu_usage_usec": 100, "pids_current": 3}
+            for i in range(20)
+        ]
+        result = mgr.get_usage_optimization_actions(c)
+        self.assertIn('actions', result)
+        self.assertIn('action_count', result)
+        self.assertIn('total_estimated_savings_pct', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for pattern commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", window_size=30)
+        p = cli.build_payload("usage-patterns", ns)
+        self.assertEqual(p["op"], "usage_patterns")
+        self.assertEqual(p["container_id"], "c1")
+        self.assertEqual(p["window_size"], 30)
+
+        ns2 = argparse.Namespace(container_id="c1")
+        p2 = cli.build_payload("optimization-actions", ns2)
+        self.assertEqual(p2["op"], "optimization_actions")
+
+    def test_format_human(self):
+        """format_human renders patterns nicely."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'patterns': {
+                'memory': {'pattern': 'increasing', 'confidence': 85.0,
+                           'mean': 1000, 'cv': 0.15},
+                'cpu': {'pattern': 'stable', 'confidence': 90.0,
+                        'mean': 500, 'cv': 0.05},
+            },
+            'memory_cpu_correlation': 0.75,
+        }
+        text = cli.format_human("usage-patterns", resp)
+        self.assertIn('increasing', text)
+        self.assertIn('stable', text)
+        self.assertIn('0.75', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches usage_patterns op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="up-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "usage_patterns",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('patterns', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -24587,6 +24721,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestArchiveScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestSLABreachRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestSmartRemediation))
+    suite.addTests(loader.loadTestsFromTestCase(TestUsagePatternRecognition))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

@@ -5532,6 +5532,273 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource usage pattern recognition
+    # ------------------------------------------------------------------
+
+    def detect_usage_patterns(
+        self,
+        container: Container,
+        window_size: int = 30,
+    ) -> Dict[str, Any]:
+        """Detect resource usage patterns (periodic, trend, step).
+
+        Analyzes historical resource data to identify usage patterns
+        that can inform optimization and capacity planning.
+
+        Pattern types:
+        - ``periodic``: regular ups and downs (e.g., daily cycles)
+        - ``increasing``: steady upward trend
+        - ``decreasing``: steady downward trend
+        - ``step``: sudden level change
+        - ``stable``: no significant pattern
+        - ``bursty``: high variance, sporadic spikes
+
+        Args:
+            container: Target container.
+            window_size: Number of samples to analyze.
+
+        Returns:
+            Dict with per-resource patterns and confidence scores.
+        """
+        history = self.get_resource_history(container, tail=window_size)
+        patterns: Dict[str, Dict[str, Any]] = {}
+
+        for resource in ("memory", "cpu", "pids"):
+            values = self._extract_resource_values(history, resource)
+            if len(values) < 5:
+                patterns[resource] = {
+                    "pattern": "insufficient_data",
+                    "confidence": 0.0,
+                    "sample_count": len(values),
+                }
+                continue
+
+            pattern_result = self._analyze_single_pattern(values)
+            patterns[resource] = pattern_result
+
+        # Cross-resource correlation
+        mem_values = self._extract_resource_values(history, "memory")
+        cpu_values = self._extract_resource_values(history, "cpu")
+        correlation = 0.0
+        if len(mem_values) >= 5 and len(cpu_values) >= 5:
+            min_len = min(len(mem_values), len(cpu_values))
+            m = mem_values[:min_len]
+            c = cpu_values[:min_len]
+            mean_m = sum(m) / len(m)
+            mean_c = sum(c) / len(c)
+            cov = sum((a - mean_m) * (b - mean_c)
+                      for a, b in zip(m, c)) / len(m)
+            std_m = (sum((a - mean_m) ** 2 for a in m) / len(m)) ** 0.5
+            std_c = (sum((b - mean_c) ** 2 for b in c) / len(c)) ** 0.5
+            if std_m > 0 and std_c > 0:
+                correlation = cov / (std_m * std_c)
+
+        self._record_event(
+            "pattern_detected", container.id,
+            f"patterns: {list(patterns.keys())}, "
+            f"correlation={correlation:.3f}")
+
+        return {
+            "container_id": container.id,
+            "patterns": patterns,
+            "memory_cpu_correlation": round(correlation, 4),
+            "sample_count": len(history),
+            "window_size": window_size,
+        }
+
+    def _analyze_single_pattern(
+        self,
+        values: List[float],
+    ) -> Dict[str, Any]:
+        """Analyze a single resource's value list for patterns."""
+        n = len(values)
+        mean = sum(values) / n
+        variance = sum((v - mean) ** 2 for v in values) / n
+        stddev = variance ** 0.5
+        cv = stddev / mean if mean > 0 else 0  # coefficient of variation
+
+        # Linear regression for trend detection
+        x_vals = list(range(n))
+        x_mean = (n - 1) / 2
+        cov_xy = sum((x - x_mean) * (v - mean)
+                     for x, v in zip(x_vals, values)) / n
+        var_x = sum((x - x_mean) ** 2 for x in x_vals) / n
+        slope = cov_xy / var_x if var_x > 0 else 0
+
+        # Detect periodicity (autocorrelation at lag ~n/4)
+        lag = max(1, n // 4)
+        if n > lag * 2:
+            mean_diff = mean
+            numer = sum(
+                (values[i] - mean) * (values[i + lag] - mean)
+                for i in range(n - lag))
+            denom = sum((v - mean) ** 2 for v in values)
+            autocorr = numer / denom if denom > 0 else 0
+        else:
+            autocorr = 0
+
+        # Detect step changes (max consecutive jump)
+        diffs = [abs(values[i + 1] - values[i]) for i in range(n - 1)]
+        max_jump = max(diffs) if diffs else 0
+        avg_jump = sum(diffs) / len(diffs) if diffs else 0
+        step_ratio = max_jump / avg_jump if avg_jump > 0 else 0
+
+        # Determine pattern
+        if cv > 0.5 and autocorr < 0.3:
+            pattern = "bursty"
+            confidence = min(cv * 100, 100)
+        elif autocorr > 0.5:
+            pattern = "periodic"
+            confidence = autocorr * 100
+        elif abs(slope) > stddev * 0.05 and stddev > 0:
+            if slope > 0:
+                pattern = "increasing"
+            else:
+                pattern = "decreasing"
+            confidence = min(abs(slope) / stddev * 100, 100)
+        elif step_ratio > 3.0:
+            pattern = "step"
+            confidence = min(step_ratio * 10, 100)
+        else:
+            pattern = "stable"
+            confidence = max(0, 100 - cv * 200)
+
+        return {
+            "pattern": pattern,
+            "confidence": round(confidence, 1),
+            "mean": round(mean, 2),
+            "stddev": round(stddev, 2),
+            "cv": round(cv, 4),
+            "slope": round(slope, 4),
+            "autocorrelation": round(autocorr, 4),
+            "sample_count": n,
+        }
+
+    def get_usage_optimization_actions(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Generate optimization actions based on detected patterns.
+
+        Combines pattern detection with current configuration to
+        recommend specific optimization actions.
+
+        Args:
+            container: Target container.
+
+        Returns:
+            Dict with ``actions`` (list of action dicts), ``priority``
+            ranking, and ``estimated_savings``.
+        """
+        patterns = self.detect_usage_patterns(container)
+        actions: List[Dict[str, Any]] = []
+
+        # Memory optimization
+        mem_pattern = patterns.get("patterns", {}).get("memory", {})
+        mem_mean = mem_pattern.get("mean", 0)
+        if mem_pattern.get("pattern") == "decreasing":
+            actions.append({
+                "action": "reduce_memory_limit",
+                "resource": "memory",
+                "current": container.config.limits.memory_mb,
+                "suggested": max(64, int(mem_mean * 1.2 / (1024 * 1024))
+                                 if mem_mean > 1024 * 1024
+                                 else int(mem_mean * 1.2)),
+                "reason": "Memory usage is decreasing",
+                "priority": "medium",
+                "estimated_savings_pct": 20,
+            })
+        elif (mem_pattern.get("pattern") in ("increasing", "step")
+              and mem_mean > container.config.limits.memory_mb * 0.8):
+            new_limit = int(container.config.limits.memory_mb * 1.25)
+            actions.append({
+                "action": "increase_memory_limit",
+                "resource": "memory",
+                "current": container.config.limits.memory_mb,
+                "suggested": new_limit,
+                "reason": "Memory usage approaching limit",
+                "priority": "high",
+                "estimated_savings_pct": 0,
+            })
+        elif mem_pattern.get("pattern") == "stable":
+            margin = container.config.limits.memory_mb - mem_mean / (1024 * 1024)
+            if margin > container.config.limits.memory_mb * 0.5:
+                new_limit = max(64, int(mem_mean * 1.3 / (1024 * 1024))
+                                if mem_mean > 1024 * 1024
+                                else int(mem_mean * 1.3))
+                actions.append({
+                    "action": "rightsize_memory",
+                    "resource": "memory",
+                    "current": container.config.limits.memory_mb,
+                    "suggested": new_limit,
+                    "reason": "Stable usage well below limit",
+                    "priority": "low",
+                    "estimated_savings_pct": max(
+                        0, int((1 - new_limit / container.config.limits.memory_mb)
+                               * 100)),
+                })
+
+        # PID optimization
+        pid_pattern = patterns.get("patterns", {}).get("pids", {})
+        if pid_pattern.get("pattern") == "stable":
+            pid_mean = pid_pattern.get("mean", 0)
+            if pid_mean < container.config.limits.pid_limit * 0.3:
+                new_pid = max(4, int(pid_mean * 2))
+                actions.append({
+                    "action": "rightsize_pids",
+                    "resource": "pids",
+                    "current": container.config.limits.pid_limit,
+                    "suggested": new_pid,
+                    "reason": "Stable PID usage well below limit",
+                    "priority": "low",
+                    "estimated_savings_pct": max(
+                        0, int((1 - new_pid / container.config.limits.pid_limit)
+                               * 100)),
+                })
+
+        # Bursty memory pattern
+        if mem_pattern.get("pattern") == "bursty":
+            actions.append({
+                "action": "investigate_memory_bursts",
+                "resource": "memory",
+                "current": container.config.limits.memory_mb,
+                "suggested": container.config.limits.memory_mb,
+                "reason": "Bursty memory usage detected",
+                "priority": "medium",
+                "estimated_savings_pct": 0,
+            })
+
+        # High memory-CPU correlation
+        corr = patterns.get("memory_cpu_correlation", 0)
+        if corr > 0.8:
+            actions.append({
+                "action": "correlated_resources",
+                "resource": "memory+cpu",
+                "current": None,
+                "suggested": None,
+                "reason": (f"High memory-CPU correlation ({corr:.2f}): "
+                           "scaling one may require scaling the other"),
+                "priority": "medium",
+                "estimated_savings_pct": 0,
+            })
+
+        # Sort by priority
+        priority_order = {"high": 0, "medium": 1, "low": 2}
+        actions.sort(key=lambda a: priority_order.get(
+            a.get("priority", "low"), 3))
+
+        total_savings = sum(
+            a.get("estimated_savings_pct", 0) for a in actions)
+
+        return {
+            "container_id": container.id,
+            "actions": actions,
+            "action_count": len(actions),
+            "total_estimated_savings_pct": total_savings,
+            "patterns": patterns.get("patterns", {}),
+        }
+
+    # ------------------------------------------------------------------
     # Workload scheduling (priority queues)
     # ------------------------------------------------------------------
 
