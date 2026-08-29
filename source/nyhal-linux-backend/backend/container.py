@@ -7431,6 +7431,199 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource usage visualization dashboard
+    # ------------------------------------------------------------------
+
+    def get_visualization_data(
+        self,
+        container: Container,
+        time_range_s: float = 3600.0,
+        resolution: int = 60,
+    ) -> Dict[str, Any]:
+        """Get resource usage data formatted for visualization.
+
+        Returns time-series data suitable for rendering charts,
+        sparklines, and trend visualizations.
+
+        Args:
+            container: Target container.
+            time_range_s: Time range in seconds to visualize.
+            resolution: Number of data points to return.
+
+        Returns:
+            Dict with ``time_series`` (list of timestamps),
+            ``memory`` (list of MB values), ``cpu`` (list of usec),
+            ``pids`` (list of counts), and ``metadata``.
+        """
+        history = self.get_resource_history(container)
+        now = time.time()
+        cutoff = now - time_range_s
+
+        # Filter to time range
+        filtered = [
+            h for h in history
+            if h.get("timestamp", 0) >= cutoff
+        ]
+
+        if not filtered:
+            return {
+                "container_id": container.id,
+                "time_series": [],
+                "memory_mb": [],
+                "cpu_usec": [],
+                "pids": [],
+                "sparklines": {},
+                "trends": {},
+                "metadata": {
+                    "time_range_s": time_range_s,
+                    "resolution": resolution,
+                    "sample_count": 0,
+                },
+            }
+
+        # Downsample to resolution points
+        if len(filtered) > resolution:
+            step = len(filtered) / resolution
+            sampled = [filtered[int(i * step)]
+                      for i in range(resolution)]
+        else:
+            sampled = filtered
+
+        time_series = [s.get("timestamp", 0) for s in sampled]
+        memory_mb = [
+            round(s.get("memory_bytes", 0) / (1024 * 1024), 2)
+            for s in sampled
+        ]
+        cpu_usec = [s.get("cpu_usage_usec", 0) for s in sampled]
+        pids = [s.get("pids_current", 0) for s in sampled]
+
+        # Generate sparklines (ASCII mini-charts)
+        sparklines = {
+            "memory": self._generate_sparkline(memory_mb),
+            "cpu": self._generate_sparkline(cpu_usec),
+            "pids": self._generate_sparkline(pids),
+        }
+
+        # Calculate trends
+        trends = {}
+        if len(memory_mb) >= 2:
+            mem_trend = memory_mb[-1] - memory_mb[0]
+            trends["memory"] = {
+                "direction": "up" if mem_trend > 0 else "down" if mem_trend < 0 else "flat",
+                "change_pct": round(
+                    (mem_trend / memory_mb[0] * 100) if memory_mb[0] > 0 else 0, 1),
+                "current": memory_mb[-1],
+                "min": min(memory_mb),
+                "max": max(memory_mb),
+                "avg": round(sum(memory_mb) / len(memory_mb), 2),
+            }
+        if len(cpu_usec) >= 2:
+            cpu_trend = cpu_usec[-1] - cpu_usec[0]
+            trends["cpu"] = {
+                "direction": "up" if cpu_trend > 0 else "down" if cpu_trend < 0 else "flat",
+                "change_pct": round(
+                    (cpu_trend / cpu_usec[0] * 100) if cpu_usec[0] > 0 else 0, 1),
+                "current": cpu_usec[-1],
+                "min": min(cpu_usec),
+                "max": max(cpu_usec),
+                "avg": round(sum(cpu_usec) / len(cpu_usec), 2),
+            }
+        if len(pids) >= 2:
+            pid_trend = pids[-1] - pids[0]
+            trends["pids"] = {
+                "direction": "up" if pid_trend > 0 else "down" if pid_trend < 0 else "flat",
+                "change_pct": round(
+                    (pid_trend / pids[0] * 100) if pids[0] > 0 else 0, 1),
+                "current": pids[-1],
+                "min": min(pids),
+                "max": max(pids),
+                "avg": round(sum(pids) / len(pids), 1),
+            }
+
+        return {
+            "container_id": container.id,
+            "name": container.config.name,
+            "time_series": time_series,
+            "memory_mb": memory_mb,
+            "cpu_usec": cpu_usec,
+            "pids": pids,
+            "sparklines": sparklines,
+            "trends": trends,
+            "metadata": {
+                "time_range_s": time_range_s,
+                "resolution": resolution,
+                "sample_count": len(filtered),
+                "output_points": len(sampled),
+            },
+        }
+
+    def _generate_sparkline(
+        self,
+        values: List[float],
+        width: int = 20,
+    ) -> str:
+        """Generate an ASCII sparkline from a list of values."""
+        if not values:
+            return ""
+        blocks = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+        min_val = min(values)
+        max_val = max(values)
+        val_range = max_val - min_val
+        if val_range == 0:
+            return blocks[4] * min(width, len(values))
+
+        if len(values) > width:
+            step = len(values) / width
+            sampled = [values[int(i * step)] for i in range(width)]
+        else:
+            sampled = values
+
+        result = ""
+        for v in sampled:
+            idx = int((v - min_val) / val_range * (len(blocks) - 1))
+            idx = max(0, min(len(blocks) - 1, idx))
+            result += blocks[idx]
+        return result
+
+    def get_fleet_visualization(
+        self,
+        time_range_s: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Get fleet-wide visualization data.
+
+        Returns aggregated visualization data across all running
+        containers for fleet-level dashboards.
+
+        Args:
+            time_range_s: Time range in seconds.
+
+        Returns:
+            Dict with per-container data and fleet aggregates.
+        """
+        containers_data = []
+        total_memory = 0.0
+        total_cpu = 0.0
+        total_pids = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                viz = self.get_visualization_data(
+                    c, time_range_s=time_range_s)
+                containers_data.append(viz)
+                if viz.get("trends"):
+                    mem_info = viz["trends"].get("memory", {})
+                    total_memory += mem_info.get("current", 0)
+                total_pids += c.config.limits.pid_limit
+
+        return {
+            "container_count": len(containers_data),
+            "fleet_memory_mb": round(total_memory, 2),
+            "fleet_pids": total_pids,
+            "time_range_s": time_range_s,
+            "containers": containers_data,
+        }
+
+    # ------------------------------------------------------------------
     # Resource usage export (CSV/JSON)
     # ------------------------------------------------------------------
 

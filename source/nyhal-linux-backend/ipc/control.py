@@ -708,6 +708,12 @@ class ControlService:
             elif op == "sla_compliance_check_all":
                 self._sla_compliance_check_all(
                     server, sender_path, msg.message_id, request)
+            elif op == "visualization_data":
+                self._visualization_data(
+                    server, sender_path, msg.message_id, request)
+            elif op == "fleet_visualization":
+                self._fleet_visualization(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -4986,6 +4992,35 @@ class ControlService:
                                    call_id: str,
                                    request: Dict[str, Any]) -> None:
         result = self.container_manager.check_sla_compliance_all()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _visualization_data(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_visualization_data(
+            c,
+            time_range_s=request.get('time_range_s', 3600.0),
+            resolution=request.get('resolution', 60),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _fleet_visualization(self, server, sender_path: str,
+                              call_id: str,
+                              request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_fleet_visualization(
+            time_range_s=request.get('time_range_s', 3600.0))
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

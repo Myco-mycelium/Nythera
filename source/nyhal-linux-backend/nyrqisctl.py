@@ -1672,6 +1672,20 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "sla-compliance-check-all":
         return {"service": "control", "op": "sla_compliance_check_all"}
+    if command == "viz-data":
+        return {
+            "service": "control",
+            "op": "visualization_data",
+            "container_id": args.container_id,
+            "time_range_s": getattr(args, 'time_range_s', 3600.0),
+            "resolution": getattr(args, 'resolution', 60),
+        }
+    if command == "viz-fleet":
+        return {
+            "service": "control",
+            "op": "fleet_visualization",
+            "time_range_s": getattr(args, 'time_range_s', 3600.0),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4084,6 +4098,38 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return (
             f"SLA compliance: {count} containers, "
             f"{nc} non-compliant, {total} violations")
+    if command == "viz-data":
+        name = resp.get('name') or resp.get('container_id', '?')
+        sparklines = resp.get('sparklines', {})
+        trends = resp.get('trends', {})
+        meta = resp.get('metadata', {})
+        lines = [
+            f"Visualization for {name}:",
+            f"  samples: {meta.get('sample_count', 0)} "
+            f"-> {meta.get('output_points', 0)} points",
+        ]
+        for resource, spark in sparklines.items():
+            trend = trends.get(resource, {})
+            direction = trend.get('direction', '?')
+            avg = trend.get('avg', 0)
+            lines.append(
+                f"  {resource}: {spark} "
+                f"({direction}, avg={avg})")
+        return "\n".join(lines)
+    if command == "viz-fleet":
+        count = resp.get('container_count', 0)
+        mem = resp.get('fleet_memory_mb', 0)
+        pids = resp.get('fleet_pids', 0)
+        lines = [
+            f"Fleet visualization ({count} containers):",
+            f"  total memory: {_fmt_bytes(int(mem * 1024 * 1024))}",
+            f"  total PIDs: {pids}",
+        ]
+        for c in resp.get('containers', []):
+            name = c.get('name') or c.get('container_id', '?')[:8]
+            spark = c.get('sparklines', {}).get('memory', '')
+            lines.append(f"  {name}: {spark}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5300,6 +5346,24 @@ def build_parser() -> argparse.ArgumentParser:
     scca = sub.add_parser("sla-compliance-check-all",
                           help="Check SLA compliance for all containers")
     scca.set_defaults(command="sla-compliance-check-all")
+
+    # -- visualization dashboard --
+    vd = sub.add_parser("viz-data",
+                        help="Get visualization data for a container")
+    vd.add_argument("container_id")
+    vd.add_argument("--time-range", type=float, default=3600.0,
+                    dest='time_range_s',
+                    help="Time range in seconds (default: 3600)")
+    vd.add_argument("--resolution", type=int, default=60,
+                    help="Number of data points (default: 60)")
+    vd.set_defaults(command="viz-data")
+
+    vf = sub.add_parser("viz-fleet",
+                        help="Get fleet-wide visualization data")
+    vf.add_argument("--time-range", type=float, default=3600.0,
+                    dest='time_range_s',
+                    help="Time range in seconds (default: 3600)")
+    vf.set_defaults(command="viz-fleet")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

@@ -24917,6 +24917,139 @@ class TestSLAComplianceMonitor(unittest.TestCase):
         self.assertIn('compliant', replies[0])
 
 
+class TestVisualizationDashboard(unittest.TestCase):
+    """Tests for resource usage visualization dashboard."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_visualization_empty(self):
+        """Visualization with no data returns empty."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="vd1", command=["echo"]))
+        result = mgr.get_visualization_data(c)
+        self.assertEqual(result['time_series'], [])
+        self.assertEqual(result['memory_mb'], [])
+        self.assertEqual(result['sparklines'], {})
+        self.assertEqual(result['trends'], {})
+
+    def test_visualization_with_history(self):
+        """Visualization with history returns data."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="vd2", command=["echo"]))
+        mgr._init_resource_history(c)
+        import time as _time
+        now = _time.time()
+        mgr._resource_history[c.id] = [
+            {"timestamp": now - (20 - i) * 10, "memory_bytes": (10 + i) * 1024 * 1024,
+             "cpu_usage_usec": 500 + i * 10, "pids_current": 3 + (i % 3)}
+            for i in range(20)
+        ]
+        result = mgr.get_visualization_data(c, time_range_s=1000)
+        self.assertEqual(len(result['time_series']), 20)
+        self.assertEqual(len(result['memory_mb']), 20)
+        self.assertIn('sparklines', result)
+        self.assertIn('trends', result)
+        self.assertIn('memory', result['trends'])
+        self.assertEqual(result['trends']['memory']['direction'], 'up')
+
+    def test_sparkline_generation(self):
+        """_generate_sparkline produces ASCII output."""
+        values = [10, 20, 30, 25, 15, 5]
+        sparkline = self._manager()._generate_sparkline(values)
+        self.assertIsInstance(sparkline, str)
+        self.assertGreater(len(sparkline), 0)
+
+    def test_sparkline_empty(self):
+        """Empty sparkline returns empty string."""
+        self.assertEqual(self._manager()._generate_sparkline([]), "")
+
+    def test_fleet_visualization(self):
+        """Fleet visualization aggregates containers."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="vd3", command=["echo"]))
+        c2 = mgr.create(ContainerConfig(name="vd4", command=["echo"]))
+        c1.state = ContainerState.RUNNING
+        c2.state = ContainerState.RUNNING
+        result = mgr.get_fleet_visualization()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('fleet_memory_mb', result)
+        self.assertIn('containers', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for visualization commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            container_id="c1", time_range_s=1800.0, resolution=30)
+        p = cli.build_payload("viz-data", ns)
+        self.assertEqual(p["op"], "visualization_data")
+        self.assertEqual(p["time_range_s"], 1800.0)
+        self.assertEqual(p["resolution"], 30)
+
+        ns2 = argparse.Namespace(time_range_s=7200.0)
+        p2 = cli.build_payload("viz-fleet", ns2)
+        self.assertEqual(p2["op"], "fleet_visualization")
+        self.assertEqual(p2["time_range_s"], 7200.0)
+
+    def test_format_human(self):
+        """format_human renders visualization data."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'name': 'test-c',
+            'sparklines': {
+                'memory': '\u2581\u2582\u2583\u2584\u2585',
+                'cpu': '\u2585\u2584\u2583\u2582\u2581',
+            },
+            'trends': {
+                'memory': {'direction': 'up', 'avg': 100},
+                'cpu': {'direction': 'down', 'avg': 500},
+            },
+            'metadata': {'sample_count': 20, 'output_points': 20},
+        }
+        text = cli.format_human("viz-data", resp)
+        self.assertIn('test-c', text)
+        self.assertIn('20', text)
+        self.assertIn('up', text)
+        self.assertIn('down', text)
+
+    def test_control_handler(self):
+        """ControlService dispatches visualization_data op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="vd-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "visualization_data",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('sparklines', replies[0])
+        self.assertIn('trends', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25014,6 +25147,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestUsagePatternRecognition))
     suite.addTests(loader.loadTestsFromTestCase(TestRightSizing))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAComplianceMonitor))
+    suite.addTests(loader.loadTestsFromTestCase(TestVisualizationDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
