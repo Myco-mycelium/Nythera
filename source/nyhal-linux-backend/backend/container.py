@@ -10667,6 +10667,225 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Anomaly correlation engine (cross-container pattern detection)
+    # ------------------------------------------------------------------
+
+    def correlate_anomalies(
+        self,
+        time_window_s: float = 300.0,
+        min_containers: int = 2,
+        resource_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Detect correlated anomalies across multiple containers.
+
+        Identifies time windows where multiple containers exhibit
+        anomalous behavior simultaneously, which may indicate
+        systemic issues (shared host resource contention, cascading
+        failures, or coordinated load spikes).
+
+        Args:
+            time_window_s: Max seconds between first and last
+                anomaly in a correlated cluster.
+            min_containers: Minimum different containers for a
+                correlation to be reported.
+            resource_filter: Only consider these resources
+                (e.g., ['memory', 'cpu']).
+
+        Returns:
+            Dict with ``clusters``, ``total_anomalies``,
+            ``correlated_containers``, and ``systemic_risk``.
+        """
+        # Collect all anomalies across containers
+        all_anomalies: List[Dict[str, Any]] = []
+
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            history = getattr(c, '_resource_history', [])
+            for h in history:
+                ts = h.get('timestamp', 0)
+                # Check for anomalies via threshold exceedance
+                for resource in ('memory', 'cpu', 'pids'):
+                    if resource_filter and resource not in resource_filter:
+                        continue
+                    if resource == 'memory':
+                        val = h.get('memory_bytes', 0)
+                        limit = (
+                            c.config.limits.memory_mb
+                            * 1024 * 1024)
+                    elif resource == 'cpu':
+                        val = h.get('cpu_percent', 0)
+                        limit = 100.0
+                    else:
+                        val = h.get('pids', 0)
+                        limit = c.config.limits.pid_limit
+                        if limit <= 0:
+                            limit = 64
+
+                    if limit > 0:
+                        ratio = val / limit
+                    else:
+                        ratio = 0.0
+
+                    if ratio > 0.80:  # anomaly threshold
+                        all_anomalies.append({
+                            'container_id': c.id,
+                            'resource': resource,
+                            'timestamp': ts,
+                            'usage_ratio': round(ratio, 3),
+                            'severity': (
+                                'critical' if ratio > 0.95
+                                else 'high' if ratio > 0.90
+                                else 'warning'),
+                        })
+
+        if not all_anomalies:
+            return {
+                'clusters': [],
+                'total_anomalies': 0,
+                'correlated_containers': 0,
+                'systemic_risk': 0.0,
+            }
+
+        # Sort by timestamp
+        all_anomalies.sort(key=lambda a: a['timestamp'])
+
+        # Sliding-window clustering: group anomalies from different
+        # containers within time_window_s
+        clusters: List[Dict[str, Any]] = []
+        current: List[Dict[str, Any]] = []
+        cluster_start = 0.0
+
+        for anom in all_anomalies:
+            ts = anom['timestamp']
+            if not current:
+                current.append(anom)
+                cluster_start = ts
+                continue
+
+            if ts - cluster_start <= time_window_s:
+                current.append(anom)
+            else:
+                self._finalize_anomaly_cluster(
+                    current, clusters, min_containers)
+                current = [anom]
+                cluster_start = ts
+
+        # Finalize last cluster
+        if current:
+            self._finalize_anomaly_cluster(
+                current, clusters, min_containers)
+
+        # Compute systemic risk
+        correlated_ids = set()
+        for cl in clusters:
+            correlated_ids.update(cl['container_ids'])
+
+        systemic_risk = min(
+            len(clusters) * 15.0
+            + len(correlated_ids) * 10.0
+            + sum(
+                cl.get('max_severity_score', 0)
+                for cl in clusters
+            ),
+            100.0,
+        )
+
+        return {
+            'clusters': clusters,
+            'total_anomalies': len(all_anomalies),
+            'correlated_containers': len(correlated_ids),
+            'systemic_risk': round(systemic_risk, 1),
+            'time_window_s': time_window_s,
+        }
+
+    def _finalize_anomaly_cluster(
+        self,
+        anomalies: List[Dict[str, Any]],
+        clusters: List[Dict[str, Any]],
+        min_containers: int,
+    ) -> None:
+        """Add a cluster if it meets the minimum container count."""
+        container_ids = set(
+            a['container_id'] for a in anomalies)
+        if len(container_ids) < min_containers:
+            return
+
+        # Severity distribution
+        sev_counts: Dict[str, int] = {}
+        for a in anomalies:
+            s = a.get('severity', 'warning')
+            sev_counts[s] = sev_counts.get(s, 0) + 1
+
+        # Resource distribution
+        res_counts: Dict[str, int] = {}
+        for a in anomalies:
+            r = a.get('resource', 'unknown')
+            res_counts[r] = res_counts.get(r, 0) + 1
+
+        # Max severity score
+        sev_order = {'warning': 1, 'high': 2, 'critical': 3}
+        max_sev = max(
+            (sev_order.get(a.get('severity', 'warning'), 0)
+             for a in anomalies), default=0)
+
+        clusters.append({
+            'start_time': anomalies[0]['timestamp'],
+            'end_time': anomalies[-1]['timestamp'],
+            'container_ids': list(container_ids),
+            'anomaly_count': len(anomalies),
+            'severity_distribution': sev_counts,
+            'resource_distribution': res_counts,
+            'max_severity_score': max_sev,
+        })
+
+    def get_correlation_report(
+        self,
+        time_window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Get a human-readable anomaly correlation report."""
+        result = self.correlate_anomalies(
+            time_window_s=time_window_s)
+
+        # Identify the most affected containers
+        container_freq: Dict[str, int] = {}
+        for cl in result['clusters']:
+            for cid in cl['container_ids']:
+                container_freq[cid] = (
+                    container_freq.get(cid, 0) + 1)
+
+        most_affected = sorted(
+            container_freq.items(),
+            key=lambda x: x[1], reverse=True)[:5]
+
+        # Identify common patterns
+        patterns: List[Dict[str, Any]] = []
+        for cl in result['clusters']:
+            resources = cl.get('resource_distribution', {})
+            if resources:
+                dominant = max(resources, key=resources.get)
+                patterns.append({
+                    'dominant_resource': dominant,
+                    'container_count': len(cl['container_ids']),
+                    'start_time': cl['start_time'],
+                })
+
+        return {
+            **result,
+            'most_affected_containers': [
+                {'container_id': cid, 'cluster_count': cnt}
+                for cid, cnt in most_affected
+            ],
+            'common_patterns': patterns,
+            'recommendation': (
+                'investigate_host_resources'
+                if result['systemic_risk'] >= 50
+                else 'monitor'
+                if result['systemic_risk'] >= 20
+                else 'ok'),
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

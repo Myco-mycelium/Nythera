@@ -768,6 +768,12 @@ class ControlService:
             elif op == "predictive_scaling_status":
                 self._predictive_scaling_status(
                     server, sender_path, msg.message_id, request)
+            elif op == "anomaly_correlate":
+                self._anomaly_correlate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "anomaly_correlation_report":
+                self._anomaly_correlation_report(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5377,6 +5383,31 @@ class ControlService:
             })
             return
         result = self.container_manager.get_predictive_scaling_status(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_correlate(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        result = self.container_manager.correlate_anomalies(
+            time_window_s=float(
+                request.get('time_window_s', 300.0)),
+            min_containers=int(
+                request.get('min_containers', 2)),
+            resource_filter=request.get('resource_filter'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _anomaly_correlation_report(self, server, sender_path: str,
+                                   call_id: str,
+                                   request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_correlation_report(
+            time_window_s=float(
+                request.get('time_window_s', 300.0)),
+        )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

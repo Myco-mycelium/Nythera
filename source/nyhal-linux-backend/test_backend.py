@@ -25973,6 +25973,194 @@ class TestPredictiveScaling(unittest.TestCase):
         self.assertIn('action', replies[0])
 
 
+class TestAnomalyCorrelation(unittest.TestCase):
+    """Tests for anomaly correlation engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_no_correlation(self):
+        """No anomalies means no clusters."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="ac1", command=["echo"]))
+        result = mgr.correlate_anomalies()
+        self.assertEqual(result['total_anomalies'], 0)
+        self.assertEqual(len(result['clusters']), 0)
+        self.assertEqual(result['systemic_risk'], 0.0)
+
+    def test_correlated_anomalies(self):
+        """Multiple containers with high usage create clusters."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="ac2", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        c2 = mgr.create(ContainerConfig(
+            name="ac3", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        now = time.time()
+        # Both containers exceed 80% memory at same time
+        c1._resource_history = [
+            {'memory_bytes': 220 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 100},
+        ]
+        c2._resource_history = [
+            {'memory_bytes': 210 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 90},
+        ]
+        result = mgr.correlate_anomalies(time_window_s=300.0)
+        self.assertGreater(result['total_anomalies'], 0)
+        self.assertGreater(len(result['clusters']), 0)
+        self.assertGreater(result['correlated_containers'], 0)
+
+    def test_resource_filter(self):
+        """Resource filter limits which anomalies are considered."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="ac4", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        c2 = mgr.create(ContainerConfig(
+            name="ac5", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        now = time.time()
+        c1._resource_history = [
+            {'memory_bytes': 220 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 100},
+        ]
+        c2._resource_history = [
+            {'memory_bytes': 220 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 90},
+        ]
+        # Filter to CPU only (no CPU anomalies)
+        result = mgr.correlate_anomalies(
+            resource_filter=['cpu'])
+        self.assertEqual(result['total_anomalies'], 0)
+
+    def test_min_containers_filter(self):
+        """min_containers filters out single-container clusters."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="ac6", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        now = time.time()
+        c1._resource_history = [
+            {'memory_bytes': 220 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 100},
+        ]
+        result = mgr.correlate_anomalies(min_containers=2)
+        self.assertEqual(len(result['clusters']), 0)
+
+    def test_correlation_report(self):
+        """Get correlation report with recommendations."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(
+            name="ac7", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        c2 = mgr.create(ContainerConfig(
+            name="ac8", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        now = time.time()
+        c1._resource_history = [
+            {'memory_bytes': 220 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 100},
+        ]
+        c2._resource_history = [
+            {'memory_bytes': 210 * 1024 * 1024,
+             'cpu_percent': 10.0, 'pids': 3,
+             'timestamp': now - 90},
+        ]
+        result = mgr.get_correlation_report()
+        self.assertIn('recommendation', result)
+        self.assertIn('most_affected_containers', result)
+        self.assertIn('common_patterns', result)
+
+    def test_cli_payload(self):
+        """CLI build_payload for anomaly correlation commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(
+            time_window_s=600.0, min_containers=3,
+            resource_filter=['memory'])
+        p = cli.build_payload("anomaly-correlate", ns)
+        self.assertEqual(p["op"], "anomaly_correlate")
+        self.assertEqual(p["time_window_s"], 600.0)
+        self.assertEqual(p["min_containers"], 3)
+
+        ns2 = argparse.Namespace(time_window_s=300.0)
+        p2 = cli.build_payload(
+            "anomaly-correlation-report", ns2)
+        self.assertEqual(p2["op"], "anomaly_correlation_report")
+
+    def test_format_human(self):
+        """format_human renders anomaly correlation results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'total_anomalies': 5,
+            'correlated_containers': 3,
+            'clusters': [
+                {'anomaly_count': 3,
+                 'container_ids': ['c1', 'c2']},
+            ],
+            'systemic_risk': 45.0,
+        }
+        text = cli.format_human("anomaly-correlate", resp)
+        self.assertIn('5', text)
+        self.assertIn('3', text)
+        self.assertIn('45.0', text)
+
+        resp2 = {
+            'ok': True,
+            'total_anomalies': 5,
+            'systemic_risk': 45.0,
+            'recommendation': 'monitor',
+            'most_affected_containers': [
+                {'container_id': 'c1', 'cluster_count': 2},
+            ],
+        }
+        text2 = cli.format_human(
+            "anomaly-correlation-report", resp2)
+        self.assertIn('monitor', text2)
+        self.assertIn('c1', text2)
+
+    def test_control_handler(self):
+        """ControlService dispatches anomaly_correlate op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "anomaly_correlate"}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('clusters', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -26077,6 +26265,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyPrediction))
     suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnomalyCorrelation))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

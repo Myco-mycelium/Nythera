@@ -1818,6 +1818,20 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "predictive_scaling_status",
             "container_id": args.container_id,
         }
+    if command == "anomaly-correlate":
+        return {
+            "service": "control",
+            "op": "anomaly_correlate",
+            "time_window_s": getattr(args, 'time_window_s', 300.0),
+            "min_containers": getattr(args, 'min_containers', 2),
+            "resource_filter": getattr(args, 'resource_filter', None),
+        }
+    if command == "anomaly-correlation-report":
+        return {
+            "service": "control",
+            "op": "anomaly_correlation_report",
+            "time_window_s": getattr(args, 'time_window_s', 300.0),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4433,6 +4447,31 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"  lead time: {resp.get('lead_time_s')}s\n"
             f"  scaling count: {resp.get('scaling_count', 0)}\n"
             f"  dry run: {resp.get('dry_run')}")
+    if command == "anomaly-correlate":
+        lines = [
+            f"Anomaly correlation:",
+            f"  total anomalies: {resp.get('total_anomalies', 0)}",
+            f"  correlated containers: {resp.get('correlated_containers', 0)}",
+            f"  clusters: {len(resp.get('clusters', []))}",
+            f"  systemic risk: {resp.get('systemic_risk', 0)}/100",
+        ]
+        for cl in resp.get('clusters', []):
+            lines.append(
+                f"    cluster: {cl.get('anomaly_count', 0)} anomalies "
+                f"across {len(cl.get('container_ids', []))} containers")
+        return "\n".join(lines)
+    if command == "anomaly-correlation-report":
+        lines = [
+            f"Anomaly correlation report:",
+            f"  total anomalies: {resp.get('total_anomalies', 0)}",
+            f"  systemic risk: {resp.get('systemic_risk', 0)}/100",
+            f"  recommendation: {resp.get('recommendation', 'ok')}",
+        ]
+        for c in resp.get('most_affected_containers', []):
+            lines.append(
+                f"    {c['container_id']}: "
+                f"{c['cluster_count']} clusters")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5829,6 +5868,22 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Get predictive scaling status")
     pss.add_argument("container_id")
     pss.set_defaults(command="predictive-scale-status")
+
+    ac = sub.add_parser("anomaly-correlate",
+                        help="Detect correlated anomalies across containers")
+    ac.add_argument("--time-window", type=float, default=300.0,
+                    help="Time window in seconds (default: 300)")
+    ac.add_argument("--min-containers", type=int, default=2,
+                    help="Minimum containers for correlation (default: 2)")
+    ac.add_argument("--resources", nargs="+", default=None,
+                    help="Filter by resources (e.g., memory cpu)")
+    ac.set_defaults(command="anomaly-correlate")
+
+    acr = sub.add_parser("anomaly-correlation-report",
+                         help="Get correlation report with recommendations")
+    acr.add_argument("--time-window", type=float, default=300.0,
+                     help="Time window in seconds (default: 300)")
+    acr.set_defaults(command="anomaly-correlation-report")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
