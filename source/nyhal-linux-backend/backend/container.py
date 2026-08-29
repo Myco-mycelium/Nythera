@@ -10224,6 +10224,205 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Cost optimization engine
+    # ------------------------------------------------------------------
+
+    def get_cost_optimization_report(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Generate a cost optimization report for a container.
+
+        Analyzes the container's resource usage history, billing records,
+        and current limits to identify savings opportunities.
+
+        Returns:
+            Dict with ``current_cost``, ``potential_savings``,
+            ``recommendations``, and ``optimization_score`` (0-100).
+        """
+        # Gather resource history
+        history = getattr(container, '_resource_history', [])
+        records = self._billing_records.get(container.id, [])
+
+        # Current costs
+        current_cost = self._calculate_container_cost(container)
+
+        # Analyze usage patterns for savings
+        recommendations: List[Dict[str, Any]] = []
+        potential_savings = 0.0
+
+        # 1. Memory over-provisioning check
+        if history:
+            avg_mem = sum(
+                h.get('memory_bytes', 0) for h in history
+            ) / max(len(history), 1)
+            limit_mem = container.config.limits.memory_mb * 1024 * 1024
+            if limit_mem > 0 and avg_mem > 0:
+                utilization = avg_mem / limit_mem
+                if utilization < 0.5:
+                    suggested = int(avg_mem * 1.5 / (1024 * 1024)) + 1
+                    saving = (
+                        (container.config.limits.memory_mb - suggested)
+                        * self._billing_rates.get('memory_mb_per_hour', 0.01)
+                    )
+                    potential_savings += max(saving, 0)
+                    recommendations.append({
+                        'type': 'memory_over_provisioned',
+                        'severity': 'high' if utilization < 0.25 else 'medium',
+                        'current_mb': container.config.limits.memory_mb,
+                        'suggested_mb': suggested,
+                        'utilization_pct': round(utilization * 100, 1),
+                        'estimated_hourly_saving': round(max(saving, 0), 6),
+                    })
+
+        # 2. PID limit check
+        if history:
+            avg_pids = sum(
+                h.get('pids', 0) for h in history
+            ) / max(len(history), 1)
+            pid_limit = container.config.limits.pid_limit
+            if avg_pids > 0 and pid_limit > avg_pids * 3:
+                suggested_pids = max(int(avg_pids * 2), 16)
+                saving_pids = (
+                    (pid_limit - suggested_pids)
+                    * self._billing_rates.get('pid_per_hour', 0.001)
+                )
+                potential_savings += max(saving_pids, 0)
+                recommendations.append({
+                    'type': 'pid_over_provisioned',
+                    'severity': 'low',
+                    'current_pids': pid_limit,
+                    'suggested_pids': suggested_pids,
+                    'estimated_hourly_saving': round(
+                        max(saving_pids, 0), 6),
+                })
+
+        # 3. Idle container detection
+        if history and len(history) >= 5:
+            recent = history[-5:]
+            avg_cpu = sum(
+                h.get('cpu_percent', 0) for h in recent
+            ) / len(recent)
+            if avg_cpu < 1.0:
+                recommendations.append({
+                    'type': 'idle_container',
+                    'severity': 'medium',
+                    'avg_cpu_pct': round(avg_cpu, 2),
+                    'suggestion': 'Consider stopping this idle container '
+                        'to save resources',
+                })
+                # Estimate savings from stopping
+                mem_saving = (
+                    container.config.limits.memory_mb
+                    * self._billing_rates.get('memory_mb_per_hour', 0.01)
+                )
+                potential_savings += mem_saving
+
+        # 4. Billing record analysis
+        if len(records) >= 2:
+            costs = [r.get('total_cost', 0) for r in records[-10:]]
+            avg_cost = sum(costs) / len(costs)
+            if costs and costs[-1] > avg_cost * 1.5:
+                recommendations.append({
+                    'type': 'cost_spike',
+                    'severity': 'high',
+                    'current_cost': round(costs[-1], 6),
+                    'avg_cost': round(avg_cost, 6),
+                    'spike_ratio': round(
+                        costs[-1] / max(avg_cost, 0.0001), 2),
+                })
+
+        # Optimization score (100 = no waste, 0 = maximum waste)
+        score = 100.0
+        for rec in recommendations:
+            if rec.get('severity') == 'high':
+                score -= 20
+            elif rec.get('severity') == 'medium':
+                score -= 10
+            else:
+                score -= 5
+        score = max(score, 0)
+
+        return {
+            'container_id': container.id,
+            'current_cost': round(current_cost, 6),
+            'potential_hourly_savings': round(potential_savings, 6),
+            'potential_daily_savings': round(potential_savings * 24, 6),
+            'recommendations': recommendations,
+            'optimization_score': round(score, 1),
+            'history_points': len(history),
+        }
+
+    def get_fleet_cost_optimization(
+        self,
+    ) -> Dict[str, Any]:
+        """Generate fleet-wide cost optimization report.
+
+        Returns:
+            Dict with per-container reports and fleet totals.
+        """
+        reports: List[Dict[str, Any]] = []
+        total_cost = 0.0
+        total_savings = 0.0
+        total_recommendations = 0
+
+        for c in self.containers.values():
+            if c.state == ContainerState.TERMINATED:
+                continue
+            report = self.get_cost_optimization_report(c)
+            reports.append(report)
+            total_cost += report['current_cost']
+            total_savings += report['potential_hourly_savings']
+            total_recommendations += len(report['recommendations'])
+
+        # Sort by potential savings (highest first)
+        reports.sort(
+            key=lambda r: r['potential_hourly_savings'],
+            reverse=True)
+
+        avg_score = 0.0
+        if reports:
+            avg_score = sum(
+                r['optimization_score'] for r in reports
+            ) / len(reports)
+
+        return {
+            'container_count': len(reports),
+            'total_hourly_cost': round(total_cost, 6),
+            'total_hourly_savings': round(total_savings, 6),
+            'total_daily_savings': round(total_savings * 24, 6),
+            'total_recommendations': total_recommendations,
+            'fleet_optimization_score': round(avg_score, 1),
+            'containers': reports,
+        }
+
+    def _calculate_container_cost(
+        self,
+        container: Container,
+    ) -> float:
+        """Calculate the current hourly cost for a container."""
+        mem_mb = container.config.limits.memory_mb
+        cpu_quota = container.config.limits.cpu_quota_us
+        pids = container.config.limits.pid_limit
+
+        mem_cost = (
+            mem_mb
+            * self._billing_rates.get('memory_mb_per_hour', 0.01)
+        )
+        # Normalize CPU to vCPU equivalent
+        cpu_vcpu = (cpu_quota or 100000) / 100000.0
+        cpu_cost = (
+            cpu_vcpu
+            * self._billing_rates.get('cpu_per_hour', 0.05)
+        )
+        pid_cost = (
+            pids
+            * self._billing_rates.get('pid_per_hour', 0.001)
+        )
+
+        return mem_cost + cpu_cost + pid_cost
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

@@ -25495,6 +25495,163 @@ class TestSLAAutoEscalation(unittest.TestCase):
         self.assertIn('config', replies[0])
 
 
+class TestCostOptimization(unittest.TestCase):
+    """Tests for cost optimization engine."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_basic_report(self):
+        """Cost optimization report for a basic container."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="co1", command=["echo"]))
+        result = mgr.get_cost_optimization_report(c)
+        self.assertIn('current_cost', result)
+        self.assertIn('potential_hourly_savings', result)
+        self.assertIn('optimization_score', result)
+        self.assertIn('recommendations', result)
+        self.assertGreater(result['current_cost'], 0)
+
+    def test_overprovisioned_memory(self):
+        """Detect over-provisioned memory."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="co2", command=["echo"],
+            limits=ResourceLimits(memory_mb=1024)))
+        # Simulate low usage history
+        c._resource_history = [
+            {'memory_bytes': 50 * 1024 * 1024, 'pids': 5,
+             'cpu_percent': 10.0}
+            for _ in range(10)
+        ]
+        result = mgr.get_cost_optimization_report(c)
+        types = [r['type'] for r in result['recommendations']]
+        self.assertIn('memory_over_provisioned', types)
+        self.assertGreater(result['potential_hourly_savings'], 0)
+
+    def test_idle_container(self):
+        """Detect idle container."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="co3", command=["echo"],
+            limits=ResourceLimits(memory_mb=256)))
+        c._resource_history = [
+            {'memory_bytes': 10 * 1024 * 1024, 'pids': 2,
+             'cpu_percent': 0.5}
+            for _ in range(10)
+        ]
+        result = mgr.get_cost_optimization_report(c)
+        types = [r['type'] for r in result['recommendations']]
+        self.assertIn('idle_container', types)
+
+    def test_fleet_report(self):
+        """Fleet-wide cost optimization report."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        mgr.create(ContainerConfig(name="co4", command=["echo"]))
+        mgr.create(ContainerConfig(name="co5", command=["echo"]))
+        result = mgr.get_fleet_cost_optimization()
+        self.assertEqual(result['container_count'], 2)
+        self.assertIn('total_hourly_cost', result)
+        self.assertIn('fleet_optimization_score', result)
+        self.assertEqual(len(result['containers']), 2)
+
+    def test_optimization_score(self):
+        """Optimization score decreases with recommendations."""
+        from backend.container import ContainerConfig, ResourceLimits
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(
+            name="co6", command=["echo"],
+            limits=ResourceLimits(memory_mb=2048)))
+        c._resource_history = [
+            {'memory_bytes': 10 * 1024 * 1024, 'pids': 2,
+             'cpu_percent': 0.1}
+            for _ in range(10)
+        ]
+        result = mgr.get_cost_optimization_report(c)
+        self.assertLess(result['optimization_score'], 100)
+
+    def test_cli_payload(self):
+        """CLI build_payload for cost optimization commands."""
+        import nyrqisctl as cli
+        import argparse
+        ns = argparse.Namespace(container_id="c1")
+        p = cli.build_payload("cost-optimize", ns)
+        self.assertEqual(p["op"], "cost_optimize")
+        self.assertEqual(p["container_id"], "c1")
+
+        p2 = cli.build_payload("cost-optimize-all",
+                                argparse.Namespace())
+        self.assertEqual(p2["op"], "cost_optimize_all")
+
+    def test_format_human(self):
+        """format_human renders cost optimization results."""
+        import nyrqisctl as cli
+        resp = {
+            'ok': True,
+            'container_id': 'c1',
+            'current_cost': 0.0523,
+            'potential_hourly_savings': 0.0210,
+            'potential_daily_savings': 0.5040,
+            'optimization_score': 60.0,
+            'recommendations': [
+                {'type': 'memory_over_provisioned',
+                 'severity': 'high'},
+            ],
+        }
+        text = cli.format_human("cost-optimize", resp)
+        self.assertIn('c1', text)
+        self.assertIn('0.0523', text)
+        self.assertIn('memory_over_provisioned', text)
+
+        resp2 = {
+            'ok': True,
+            'container_count': 3,
+            'total_hourly_cost': 0.15,
+            'total_hourly_savings': 0.05,
+            'total_daily_savings': 1.20,
+            'fleet_optimization_score': 75.0,
+            'total_recommendations': 5,
+        }
+        text2 = cli.format_human("cost-optimize-all", resp2)
+        self.assertIn('Fleet', text2)
+        self.assertIn('75.0', text2)
+
+    def test_control_handler(self):
+        """ControlService dispatches cost_optimize op."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(
+            __import__('backend.container', fromlist=['ContainerConfig'])
+            .ContainerConfig(name="co-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(
+            _Msg({"op": "cost_optimize",
+                  "container_id": c.id}),
+            "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn('optimization_score', replies[0])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -25596,6 +25753,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAutoRemediation))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestSLAAutoEscalation))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

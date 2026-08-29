@@ -744,6 +744,12 @@ class ControlService:
             elif op == "sla_auto_escalation_reset":
                 self._sla_auto_escalation_reset(
                     server, sender_path, msg.message_id, request)
+            elif op == "cost_optimize":
+                self._cost_optimize(
+                    server, sender_path, msg.message_id, request)
+            elif op == "cost_optimize_all":
+                self._cost_optimize_all(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5224,6 +5230,30 @@ class ControlService:
             })
             return
         result = self.container_manager.reset_sla_auto_escalation(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _cost_optimize(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        container_id = request.get('container_id')
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.get_cost_optimization_report(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _cost_optimize_all(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_fleet_cost_optimization()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

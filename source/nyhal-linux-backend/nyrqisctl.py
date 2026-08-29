@@ -1760,6 +1760,14 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "sla_auto_escalation_reset",
             "container_id": args.container_id,
         }
+    if command == "cost-optimize":
+        return {
+            "service": "control",
+            "op": "cost_optimize",
+            "container_id": args.container_id,
+        }
+    if command == "cost-optimize-all":
+        return {"service": "control", "op": "cost_optimize_all"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4290,6 +4298,29 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"  escalation count: {resp.get('escalation_count', 0)}")
     if command == "sla-auto-escalation-reset":
         return f"SLA auto-escalation reset for {resp.get('container_id', '?')}: done"
+    if command == "cost-optimize":
+        lines = [
+            f"Cost optimization for {resp.get('container_id', '?')}:",
+            f"  current hourly cost: ${resp.get('current_cost', 0):.4f}",
+            f"  potential hourly savings: ${resp.get('potential_hourly_savings', 0):.4f}",
+            f"  potential daily savings: ${resp.get('potential_daily_savings', 0):.4f}",
+            f"  optimization score: {resp.get('optimization_score', 0)}/100",
+            f"  recommendations: {len(resp.get('recommendations', []))}",
+        ]
+        for rec in resp.get('recommendations', []):
+            lines.append(f"    - [{rec.get('severity', '?')}] {rec.get('type', '?')}")
+        return "\n".join(lines)
+    if command == "cost-optimize-all":
+        lines = [
+            f"Fleet cost optimization:",
+            f"  containers: {resp.get('container_count', 0)}",
+            f"  total hourly cost: ${resp.get('total_hourly_cost', 0):.4f}",
+            f"  total hourly savings: ${resp.get('total_hourly_savings', 0):.4f}",
+            f"  total daily savings: ${resp.get('total_daily_savings', 0):.4f}",
+            f"  fleet optimization score: {resp.get('fleet_optimization_score', 0)}/100",
+            f"  total recommendations: {resp.get('total_recommendations', 0)}",
+        ]
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5620,6 +5651,15 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Reset SLA auto-escalation state")
     sla_rs.add_argument("container_id")
     sla_rs.set_defaults(command="sla-auto-escalation-reset")
+
+    co = sub.add_parser("cost-optimize",
+                        help="Get cost optimization report for a container")
+    co.add_argument("container_id")
+    co.set_defaults(command="cost-optimize")
+
+    coa = sub.add_parser("cost-optimize-all",
+                         help="Get fleet-wide cost optimization report")
+    coa.set_defaults(command="cost-optimize-all")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
