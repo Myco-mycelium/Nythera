@@ -621,6 +621,150 @@ class ContainerManager:
             events.append(ev)
         return events
 
+    def correlate_events(
+        self,
+        time_window_s: float = 60.0,
+        kinds: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Correlate events across containers within a time window.
+
+        Finds clusters of events from different containers that
+        occurred within ``time_window_s`` of each other, which may
+        indicate cascading failures or coordinated changes.
+
+        Args:
+            time_window_s: Max seconds between first and last event
+                in a cluster.
+            kinds: Filter to these event kinds before correlating.
+
+        Returns:
+            Dict with ``clusters`` (list of correlated event groups)
+            and ``total_events``.
+        """
+        all_events = self.container_events()
+
+        # Filter by kinds if specified
+        if kinds:
+            all_events = [
+                e for e in all_events if e["kind"] in kinds
+            ]
+
+        if not all_events:
+            return {
+                "clusters": [],
+                "total_events": 0,
+            }
+
+        # Sort by time
+        all_events.sort(key=lambda e: e.get("time", 0))
+
+        # Simple sliding-window clustering: group events that are
+        # within time_window_s of the cluster's first event and
+        # involve at least 2 different containers.
+        clusters: List[Dict[str, Any]] = []
+        current_cluster: List[Dict[str, Any]] = []
+        cluster_start = 0.0
+
+        for ev in all_events:
+            t = ev.get("time", 0)
+            if not current_cluster:
+                current_cluster.append(ev)
+                cluster_start = t
+                continue
+
+            if t - cluster_start <= time_window_s:
+                current_cluster.append(ev)
+            else:
+                # Finalize current cluster
+                container_ids = set(
+                    e["container_id"] for e in current_cluster)
+                if len(container_ids) >= 2:
+                    clusters.append({
+                        "start_time": current_cluster[0]["time"],
+                        "end_time": current_cluster[-1]["time"],
+                        "container_ids": list(container_ids),
+                        "event_count": len(current_cluster),
+                        "kinds": list(set(
+                            e["kind"] for e in current_cluster)),
+                        "events": current_cluster,
+                    })
+                current_cluster = [ev]
+                cluster_start = t
+
+        # Don't forget the last cluster
+        if current_cluster:
+            container_ids = set(
+                e["container_id"] for e in current_cluster)
+            if len(container_ids) >= 2:
+                clusters.append({
+                    "start_time": current_cluster[0]["time"],
+                    "end_time": current_cluster[-1]["time"],
+                    "container_ids": list(container_ids),
+                    "event_count": len(current_cluster),
+                    "kinds": list(set(
+                        e["kind"] for e in current_cluster)),
+                    "events": current_cluster,
+                })
+
+        return {
+            "clusters": clusters,
+            "total_events": len(all_events),
+        }
+
+    def get_event_timeline(
+        self,
+        container_ids: Optional[List[str]] = None,
+        time_window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Get a merged timeline of events across containers.
+
+        Returns events from multiple containers sorted by time,
+        useful for debugging cross-container interactions.
+
+        Args:
+            container_ids: IDs to include (default: all).
+            time_window_s: Only include events from the last N seconds.
+
+        Returns:
+            Dict with ``events`` (sorted list) and ``summary``.
+        """
+        import time as _time
+        cutoff = _time.time() - time_window_s
+
+        all_events = self.container_events()
+        if container_ids:
+            id_set = set(container_ids)
+            all_events = [
+                e for e in all_events
+                if e["container_id"] in id_set
+            ]
+
+        # Filter by time window
+        all_events = [
+            e for e in all_events if e.get("time", 0) >= cutoff
+        ]
+
+        # Sort by time
+        all_events.sort(key=lambda e: e.get("time", 0))
+
+        # Summary
+        by_kind: Dict[str, int] = {}
+        by_container: Dict[str, int] = {}
+        for e in all_events:
+            k = e["kind"]
+            by_kind[k] = by_kind.get(k, 0) + 1
+            cid = e["container_id"]
+            by_container[cid] = by_container.get(cid, 0) + 1
+
+        return {
+            "events": all_events,
+            "summary": {
+                "total": len(all_events),
+                "by_kind": by_kind,
+                "by_container": by_container,
+            },
+        }
+
     # -- resource quotas ------------------------------------------------
 
     def set_quota(self, owner: str, memory_mb: Optional[int] = None,
@@ -4666,6 +4810,124 @@ class ContainerManager:
         except Exception:
             return None
 
+    def add_network_rule(
+        self, container: Container,
+        direction: str,  # "ingress" or "egress"
+        protocol: str = "tcp",
+        port: Optional[int] = None,
+        source: Optional[str] = None,
+        action: str = "allow",
+    ) -> Dict[str, Any]:
+        """Add a network policy rule to a container.
+
+        Rules are stored in the container's config and applied via
+        iptables when the container's network is set up.
+
+        Args:
+            container: Target container.
+            direction: "ingress" or "egress".
+            protocol: "tcp", "udp", or "icmp".
+            port: Port number (None = any).
+            source: Source CIDR or IP (None = any).
+            action: "allow" or "deny".
+
+        Returns:
+            Dict with ``ok``, ``rule_index``, ``rules_count``.
+        """
+        if direction not in ("ingress", "egress"):
+            return {
+                "ok": False,
+                "error": "direction must be 'ingress' or 'egress'",
+            }
+        if action not in ("allow", "deny"):
+            return {
+                "ok": False,
+                "error": "action must be 'allow' or 'deny'",
+            }
+
+        if not hasattr(container.config, "network_rules") or \
+                container.config.network_rules is None:
+            container.config.network_rules = []
+
+        rule = {
+            "direction": direction,
+            "protocol": protocol,
+            "port": port,
+            "source": source,
+            "action": action,
+        }
+        container.config.network_rules.append(rule)
+        rule_index = len(container.config.network_rules) - 1
+
+        self._record_event(
+            "network_rule_added", container.id,
+            f"idx={rule_index} {direction} {protocol} "
+            f"port={port} src={source} {action}")
+
+        return {
+            "ok": True,
+            "rule_index": rule_index,
+            "rules_count": len(container.config.network_rules),
+        }
+
+    def remove_network_rule(
+        self, container: Container, rule_index: int,
+    ) -> Dict[str, Any]:
+        """Remove a network policy rule by index.
+
+        Args:
+            container: Target container.
+            rule_index: Index of the rule to remove.
+
+        Returns:
+            Dict with ``ok``, ``removed`` (the rule dict).
+        """
+        rules = getattr(container.config, "network_rules", None) or []
+        if rule_index < 0 or rule_index >= len(rules):
+            return {
+                "ok": False,
+                "error": f"invalid rule index {rule_index}",
+            }
+        removed = rules.pop(rule_index)
+        self._record_event(
+            "network_rule_removed", container.id,
+            f"idx={rule_index}")
+        return {
+            "ok": True,
+            "removed": removed,
+        }
+
+    def list_network_rules(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """List all network policy rules for a container.
+
+        Returns:
+            Dict with ``container_id``, ``rules`` list.
+        """
+        rules = getattr(container.config, "network_rules", None) or []
+        return {
+            "container_id": container.id,
+            "rules": list(rules),
+        }
+
+    def clear_network_rules(self, container: Container) -> Dict[str, Any]:
+        """Remove all network policy rules for a container.
+
+        Returns:
+            Dict with ``container_id``, ``cleared`` count.
+        """
+        rules = getattr(container.config, "network_rules", None) or []
+        count = len(rules)
+        container.config.network_rules = []
+        self._record_event(
+            "network_rules_cleared", container.id,
+            f"count={count}")
+        return {
+            "container_id": container.id,
+            "cleared": count,
+        }
+
     def _start_log_capture(self, container: Container,
                            proc: subprocess.Popen) -> None:
         """Start background threads to capture stdout/stderr into ring buffers."""
@@ -5266,6 +5528,85 @@ class ContainerManager:
             "total_alerts": len(all_alerts),
             "by_severity": by_severity,
             "alerts": all_alerts[:50],  # cap at 50
+        }
+
+    def compare_containers_detailed(
+        self,
+        container_ids: List[str],
+        metrics: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Compare resource usage across multiple containers.
+
+        Generates a side-by-side comparison with rankings and
+        percentages of total.
+
+        Args:
+            container_ids: IDs to compare (minimum 2).
+            metrics: Metrics to compare (default: memory, pids, cpu).
+
+        Returns:
+            Dict with ``comparison`` list, ``rankings`` by metric,
+            and ``percentages``.
+        """
+        if len(container_ids) < 2:
+            return {
+                "error": "need at least 2 containers to compare",
+                "comparison": [],
+            }
+
+        if metrics is None:
+            metrics = ["memory_bytes", "pids_current", "cpu_usage_usec"]
+
+        containers_data: List[Dict[str, Any]] = []
+        totals: Dict[str, float] = {m: 0 for m in metrics}
+
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+            stats = self.container_stats(c)
+            entry: Dict[str, Any] = {
+                "id": cid,
+                "name": c.config.name,
+                "state": c.state.value,
+            }
+            for m in metrics:
+                val = stats.get(m, 0)
+                entry[m] = val
+                totals[m] += val
+            containers_data.append(entry)
+
+        # Compute percentages
+        for entry in containers_data:
+            for m in metrics:
+                total = totals.get(m, 0)
+                entry[f"{m}_pct"] = (
+                    round(entry[m] / total * 100, 1)
+                    if total > 0 else 0)
+
+        # Rankings per metric
+        rankings: Dict[str, List[Dict[str, Any]]] = {}
+        for m in metrics:
+            ranked = sorted(
+                containers_data,
+                key=lambda x: x.get(m, 0),
+                reverse=True)
+            rankings[m] = [
+                {
+                    "rank": i + 1,
+                    "id": r["id"],
+                    "name": r.get("name"),
+                    "value": r.get(m, 0),
+                    "percentage": r.get(f"{m}_pct", 0),
+                }
+                for i, r in enumerate(ranked)
+            ]
+
+        return {
+            "container_count": len(containers_data),
+            "comparison": containers_data,
+            "totals": totals,
+            "rankings": rankings,
         }
 
     # ------------------------------------------------------------------

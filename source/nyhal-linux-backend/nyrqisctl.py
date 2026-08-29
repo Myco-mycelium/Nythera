@@ -1314,6 +1314,63 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "get_priority",
             "container_id": args.container_id,
         }
+    if command == "event-correlate":
+        payload = {
+            "service": "control",
+            "op": "event_correlate",
+            "time_window_s": args.window,
+        }
+        if args.kinds:
+            payload["kinds"] = args.kinds.split(",")
+        return payload
+    if command == "event-timeline":
+        payload = {
+            "service": "control",
+            "op": "event_timeline",
+            "time_window_s": args.window,
+        }
+        if args.container_ids:
+            payload["container_ids"] = args.container_ids.split(",")
+        return payload
+    if command == "network-rule-add":
+        return {
+            "service": "control",
+            "op": "network_rule_add",
+            "container_id": args.container_id,
+            "direction": args.direction,
+            "protocol": args.protocol,
+            "port": args.port,
+            "source": args.source,
+            "action": args.action,
+        }
+    if command == "network-rule-remove":
+        return {
+            "service": "control",
+            "op": "network_rule_remove",
+            "container_id": args.container_id,
+            "rule_index": args.rule_index,
+        }
+    if command == "network-rules-list":
+        return {
+            "service": "control",
+            "op": "network_rules_list",
+            "container_id": args.container_id,
+        }
+    if command == "network-rules-clear":
+        return {
+            "service": "control",
+            "op": "network_rules_clear",
+            "container_id": args.container_id,
+        }
+    if command == "compare-containers":
+        payload = {
+            "service": "control",
+            "op": "compare_containers",
+            "container_ids": args.container_ids.split(","),
+        }
+        if args.metrics:
+            payload["metrics"] = args.metrics.split(",")
+        return payload
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -3055,6 +3112,87 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"cpu_affinity: {resp.get('cpu_affinity', '?')}",
         ]
         return "\n".join(lines)
+    if command == "event-correlate":
+        clusters = resp.get("clusters", [])
+        total = resp.get("total_events", 0)
+        if not clusters:
+            return f"No correlated event clusters ({total} events total)"
+        lines = [f"{len(clusters)} correlated cluster(s) ({total} events total):", ""]
+        for i, cl in enumerate(clusters, 1):
+            lines.append(
+                f"  Cluster {i}: {cl['event_count']} events, "
+                f"{len(cl['container_ids'])} containers")
+            lines.append(
+                f"    containers: {', '.join(cl['container_ids'])}")
+            lines.append(
+                f"    kinds: {', '.join(cl['kinds'])}")
+        return "\n".join(lines)
+    if command == "event-timeline":
+        events = resp.get("events", [])
+        summary = resp.get("summary", {})
+        if not events:
+            return "No events in time window"
+        lines = [
+            f"{summary.get('total', 0)} events in window:",
+            f"  by kind: {summary.get('by_kind', {})}", "",
+            "Time\tContainer\tKind\tDetail",
+        ]
+        for e in events[:20]:
+            lines.append(
+                f"{e.get('time', 0):.0f}\t"
+                f"{e.get('container_id', '?')[:8]}\t"
+                f"{e.get('kind', '?')}\t"
+                f"{e.get('detail', '')[:40]}")
+        if len(events) > 20:
+            lines.append(f"  ... and {len(events) - 20} more")
+        return "\n".join(lines)
+    if command == "network-rule-add":
+        if resp.get("ok"):
+            return (
+                f"Rule #{resp.get('rule_index')} added "
+                f"({resp.get('rules_count', 0)} total rules)")
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "network-rule-remove":
+        if resp.get("ok"):
+            removed = resp.get("removed", {})
+            return (
+                f"Removed: {removed.get('direction', '?')} "
+                f"{removed.get('protocol', '?')} port={removed.get('port', '?')}")
+        return f"Failed: {resp.get('error', '?')}"
+    if command == "network-rules-list":
+        rules = resp.get("rules", [])
+        if not rules:
+            return "No network rules"
+        lines = ["IDX\tDIR\tPROTO\tPORT\tSOURCE\tACTION"]
+        for i, r in enumerate(rules):
+            lines.append(
+                f"{i}\t{r.get('direction', '?')}\t"
+                f"{r.get('protocol', '?')}\t"
+                f"{r.get('port', '*')}\t"
+                f"{r.get('source', '*')}\t"
+                f"{r.get('action', '?')}")
+        return "\n".join(lines)
+    if command == "network-rules-clear":
+        return f"Cleared {resp.get('cleared', 0)} rule(s)"
+    if command == "compare-containers":
+        if "error" in resp:
+            return resp["error"]
+        comparison = resp.get("comparison", [])
+        rankings = resp.get("rankings", {})
+        lines = [f"Comparing {resp.get('container_count', 0)} containers:", ""]
+        for c in comparison:
+            lines.append(
+                f"  {c.get('name') or c.get('id', '?')} "
+                f"(state={c.get('state', '?')}): "
+                f"mem={_fmt_bytes(c.get('memory_bytes', 0))}, "
+                f"pids={c.get('pids_current', 0)}")
+        if rankings.get("memory_bytes"):
+            lines.append("\nMemory ranking:")
+            for r in rankings["memory_bytes"]:
+                lines.append(
+                    f"  #{r['rank']} {r.get('name') or r['id']}: "
+                    f"{_fmt_bytes(r['value'])} ({r['percentage']}%)")
+        return "\n".join(lines)
     if command in ("batch-start", "batch-stop", "batch-kill"):
         verb = command.split("-")[1]
         matched = resp.get("total_matched", 0)
@@ -3841,6 +3979,59 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Get all priority parameters")
     gp.add_argument("container_id")
     gp.set_defaults(command="get-priority")
+
+    ec = sub.add_parser("event-correlate",
+                       help="Correlate events across containers")
+    ec.add_argument("--window", type=float, default=60.0,
+                    help="Time window in seconds")
+    ec.add_argument("--kinds", default=None,
+                    help="Comma-separated event kinds to filter")
+    ec.set_defaults(command="event-correlate")
+
+    et = sub.add_parser("event-timeline",
+                       help="Merged event timeline across containers")
+    et.add_argument("--container-ids", default=None,
+                    help="Comma-separated container IDs")
+    et.add_argument("--window", type=float, default=300.0,
+                    help="Time window in seconds")
+    et.set_defaults(command="event-timeline")
+
+    nra = csub.add_parser("network-rule-add",
+                         help="Add a network policy rule")
+    nra.add_argument("container_id")
+    nra.add_argument("direction", choices=["ingress", "egress"])
+    nra.add_argument("--protocol", default="tcp",
+                     choices=["tcp", "udp", "icmp"])
+    nra.add_argument("--port", type=int, default=None)
+    nra.add_argument("--source", default=None,
+                     help="Source CIDR or IP")
+    nra.add_argument("--action", default="allow",
+                     choices=["allow", "deny"])
+    nra.set_defaults(command="network-rule-add")
+
+    nrr = csub.add_parser("network-rule-remove",
+                         help="Remove a network policy rule")
+    nrr.add_argument("container_id")
+    nrr.add_argument("rule_index", type=int)
+    nrr.set_defaults(command="network-rule-remove")
+
+    nrl = csub.add_parser("network-rules-list",
+                         help="List network policy rules")
+    nrl.add_argument("container_id")
+    nrl.set_defaults(command="network-rules-list")
+
+    nrc = csub.add_parser("network-rules-clear",
+                         help="Clear all network policy rules")
+    nrc.add_argument("container_id")
+    nrc.set_defaults(command="network-rules-clear")
+
+    cc = sub.add_parser("compare-containers",
+                       help="Compare resource usage across containers")
+    cc.add_argument("container_ids",
+                    help="Comma-separated container IDs (min 2)")
+    cc.add_argument("--metrics", default=None,
+                    help="Comma-separated metrics to compare")
+    cc.set_defaults(command="compare-containers")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

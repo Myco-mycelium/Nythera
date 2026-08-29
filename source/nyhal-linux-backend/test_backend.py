@@ -21422,6 +21422,308 @@ class TestNstudioCodecConformance(unittest.TestCase):
 
 
 
+class TestEventCorrelation(unittest.TestCase):
+    """Event correlation across containers."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_correlate_empty(self):
+        """correlate_events returns empty when no events."""
+        mgr = self._manager()
+        result = mgr.correlate_events()
+        self.assertEqual(result["clusters"], [])
+        self.assertEqual(result["total_events"], 0)
+
+    def test_get_event_timeline_empty(self):
+        """get_event_timeline returns empty when no events."""
+        mgr = self._manager()
+        result = mgr.get_event_timeline()
+        self.assertEqual(result["events"], [])
+        self.assertIn("summary", result)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for event commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("event-correlate",
+                          argparse.Namespace(window=60.0, kinds=None))
+        self.assertEqual(p1["op"], "event_correlate")
+        p2 = build_payload("event-timeline",
+                          argparse.Namespace(
+                              container_ids=None, window=300.0))
+        self.assertEqual(p2["op"], "event_timeline")
+
+    def test_cli_format_human(self):
+        """CLI format_human for event commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "clusters": [], "total_events": 5,
+        }
+        text = format_human("event-correlate", resp)
+        self.assertIn("5", text)
+        resp2 = {
+            "ok": True, "events": [],
+            "summary": {"total": 0, "by_kind": {}, "by_container": {}},
+        }
+        text2 = format_human("event-timeline", resp2)
+        self.assertIn("No events", text2)
+
+    def test_control_handler(self):
+        """Event correlation control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "event_correlate"}), "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+
+
+class TestNetworkPolicyRules(unittest.TestCase):
+    """Network policy rules management."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_add_and_list_rules(self):
+        """add_network_rule and list_network_rules work."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="np1"))
+        r1 = mgr.add_network_rule(c, "ingress", "tcp", 80)
+        self.assertTrue(r1["ok"])
+        self.assertEqual(r1["rule_index"], 0)
+        r2 = mgr.add_network_rule(c, "egress", "tcp", 443,
+                                  action="deny")
+        self.assertTrue(r2["ok"])
+        result = mgr.list_network_rules(c)
+        self.assertEqual(len(result["rules"]), 2)
+
+    def test_remove_rule(self):
+        """remove_network_rule removes by index."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="np2"))
+        mgr.add_network_rule(c, "ingress", "tcp", 80)
+        mgr.add_network_rule(c, "ingress", "udp", 53)
+        result = mgr.remove_network_rule(c, 0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["removed"]["port"], 80)
+        rules = mgr.list_network_rules(c)["rules"]
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["port"], 53)
+
+    def test_remove_invalid_index(self):
+        """remove_network_rule rejects invalid index."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="np3"))
+        result = mgr.remove_network_rule(c, 99)
+        self.assertFalse(result["ok"])
+
+    def test_clear_rules(self):
+        """clear_network_rules removes all rules."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="np4"))
+        mgr.add_network_rule(c, "ingress", "tcp", 80)
+        mgr.add_network_rule(c, "egress", "tcp", 443)
+        result = mgr.clear_network_rules(c)
+        self.assertEqual(result["cleared"], 2)
+        rules = mgr.list_network_rules(c)["rules"]
+        self.assertEqual(len(rules), 0)
+
+    def test_add_invalid_direction(self):
+        """add_network_rule rejects invalid direction."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="np5"))
+        result = mgr.add_network_rule(c, "sideways", "tcp", 80)
+        self.assertFalse(result["ok"])
+        self.assertIn("ingress", result["error"])
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for network rule commands."""
+        from nyrqisctl import build_payload
+        import argparse
+        p1 = build_payload("network-rule-add",
+                          argparse.Namespace(
+                              container_id="abc",
+                              direction="ingress",
+                              protocol="tcp", port=80,
+                              source=None, action="allow"))
+        self.assertEqual(p1["op"], "network_rule_add")
+        self.assertEqual(p1["port"], 80)
+        p2 = build_payload("network-rule-remove",
+                          argparse.Namespace(
+                              container_id="abc", rule_index=0))
+        self.assertEqual(p2["op"], "network_rule_remove")
+        p3 = build_payload("network-rules-list",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p3["op"], "network_rules_list")
+        p4 = build_payload("network-rules-clear",
+                          argparse.Namespace(container_id="abc"))
+        self.assertEqual(p4["op"], "network_rules_clear")
+
+    def test_cli_format_human(self):
+        """CLI format_human for network rule commands."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_id": "abc",
+            "rules": [
+                {"direction": "ingress", "protocol": "tcp",
+                 "port": 80, "source": None, "action": "allow"},
+                {"direction": "egress", "protocol": "tcp",
+                 "port": 443, "source": None, "action": "deny"},
+            ],
+        }
+        text = format_human("network-rules-list", resp)
+        self.assertIn("ingress", text)
+        self.assertIn("80", text)
+
+    def test_control_handler(self):
+        """Network rules control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c = mgr.create(ContainerConfig(name="np-ctl"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "network_rule_add",
+                           "container_id": c.id,
+                           "direction": "ingress",
+                           "protocol": "tcp", "port": 80}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertEqual(replies[0]["rules_count"], 1)
+
+
+class TestContainerComparison(unittest.TestCase):
+    """Container resource usage comparison."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_compare_needs_two(self):
+        """compare_containers_detailed requires at least 2 containers."""
+        mgr = self._manager()
+        result = mgr.compare_containers_detailed(["a"])
+        self.assertIn("error", result)
+
+    def test_compare_basic(self):
+        """compare_containers_detailed works with 2+ containers."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c1 = mgr.create(ContainerConfig(name="cmp1"))
+        c2 = mgr.create(ContainerConfig(name="cmp2"))
+        result = mgr.compare_containers_detailed([c1.id, c2.id])
+        self.assertEqual(result["container_count"], 2)
+        self.assertIn("rankings", result)
+        self.assertIn("totals", result)
+
+    def test_compare_invalid_ids(self):
+        """compare_containers_detailed handles missing containers."""
+        mgr = self._manager()
+        result = mgr.compare_containers_detailed(["no-such-1", "no-such-2"])
+        self.assertEqual(result["container_count"], 0)
+
+    def test_cli_payloads(self):
+        """CLI build_payloads for compare command."""
+        from nyrqisctl import build_payload
+        import argparse
+        p = build_payload("compare-containers",
+                         argparse.Namespace(
+                             container_ids="a,b", metrics=None))
+        self.assertEqual(p["op"], "compare_containers")
+        self.assertEqual(p["container_ids"], ["a", "b"])
+
+    def test_cli_format_human(self):
+        """CLI format_human for compare command."""
+        from nyrqisctl import format_human
+        resp = {
+            "ok": True, "container_count": 2,
+            "comparison": [
+                {"id": "a", "name": "web", "state": "running",
+                 "memory_bytes": 2048, "pids_current": 3,
+                 "memory_bytes_pct": 66.7, "pids_current_pct": 60.0},
+                {"id": "b", "name": "db", "state": "running",
+                 "memory_bytes": 1024, "pids_current": 2,
+                 "memory_bytes_pct": 33.3, "pids_current_pct": 40.0},
+            ],
+            "totals": {"memory_bytes": 3072, "pids_current": 5},
+            "rankings": {
+                "memory_bytes": [
+                    {"rank": 1, "id": "a", "name": "web",
+                     "value": 2048, "percentage": 66.7},
+                    {"rank": 2, "id": "b", "name": "db",
+                     "value": 1024, "percentage": 33.3},
+                ],
+            },
+        }
+        text = format_human("compare-containers", resp)
+        self.assertIn("web", text)
+        self.assertIn("db", text)
+        self.assertIn("66.7%", text)
+
+    def test_control_handler(self):
+        """Compare containers control handler works."""
+        from ipc.control import ControlService
+        from backend.container import ContainerManager, ContainerConfig
+        from backend.capability import CapabilityManager
+        import json
+        mgr = ContainerManager(use_cgroups_v2=False)
+        cap_mgr = CapabilityManager()
+        svc = ControlService(mgr, cap_mgr, operator_id="op1")
+        c1 = mgr.create(ContainerConfig(name="cmp-ctl1"))
+        c2 = mgr.create(ContainerConfig(name="cmp-ctl2"))
+        class _Msg:
+            def __init__(self, d):
+                self.payload = json.dumps(d).encode()
+                self.message_id = "m1"
+        replies = []
+        class _Server:
+            operator_id = "op1"
+            def reply(self, path, cid, data):
+                replies.append(json.loads(data))
+        svc._server = _Server()
+        svc._on_call(_Msg({"op": "compare_containers",
+                           "container_ids": [c1.id, c2.id]}),
+                     "op1", "path1")
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(replies[0]["ok"])
+        self.assertIn("rankings", replies[0])
+
+
 class TestUsageReports(unittest.TestCase):
     """Resource usage reports and alert summary."""
 
@@ -22532,6 +22834,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostBudget))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkTrafficAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventCorrelation))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicyRules))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerComparison))
     suite.addTests(loader.loadTestsFromTestCase(TestUsageReports))
     suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyHealth))

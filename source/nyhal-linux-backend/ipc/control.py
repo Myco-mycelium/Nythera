@@ -543,6 +543,27 @@ class ControlService:
             elif op == "get_priority":
                 self._get_priority(
                     server, sender_path, msg.message_id, request)
+            elif op == "event_correlate":
+                self._event_correlate(
+                    server, sender_path, msg.message_id, request)
+            elif op == "event_timeline":
+                self._event_timeline(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_rule_add":
+                self._network_rule_add(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_rule_remove":
+                self._network_rule_remove(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_rules_list":
+                self._network_rules_list(
+                    server, sender_path, msg.message_id, request)
+            elif op == "network_rules_clear":
+                self._network_rules_clear(
+                    server, sender_path, msg.message_id, request)
+            elif op == "compare_containers":
+                self._compare_containers(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -3502,6 +3523,143 @@ class ControlService:
             })
             return
         result = self.container_manager.clear_baseline(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Event correlation
+
+    def _event_correlate(self, server, sender_path: str,
+                         call_id: str,
+                         request: Dict[str, Any]) -> None:
+        result = self.container_manager.correlate_events(
+            time_window_s=request.get("time_window_s", 60.0),
+            kinds=request.get("kinds"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _event_timeline(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_event_timeline(
+            container_ids=request.get("container_ids"),
+            time_window_s=request.get("time_window_s", 300.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Network policy rules
+
+    def _network_rule_add(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.add_network_rule(
+            c,
+            direction=request.get("direction", "ingress"),
+            protocol=request.get("protocol", "tcp"),
+            port=request.get("port"),
+            source=request.get("source"),
+            action=request.get("action", "allow"),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _network_rule_remove(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        rule_index = request.get("rule_index", 0)
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.remove_network_rule(
+            c, rule_index)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _network_rules_list(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.list_network_rules(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _network_rules_clear(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        container_id = request.get("container_id")
+        if not container_id:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container_id is required",
+            })
+            return
+        c = self.container_manager.containers.get(container_id)
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": f"container {container_id!r} not found",
+            })
+            return
+        result = self.container_manager.clear_network_rules(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # Container comparison
+
+    def _compare_containers(self, server, sender_path: str,
+                            call_id: str,
+                            request: Dict[str, Any]) -> None:
+        container_ids = request.get("container_ids", [])
+        if len(container_ids) < 2:
+            self._reply(server, sender_path, call_id, {
+                "ok": False,
+                "error": "need at least 2 container_ids to compare",
+            })
+            return
+        result = self.container_manager.compare_containers_detailed(
+            container_ids, metrics=request.get("metrics"))
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })
