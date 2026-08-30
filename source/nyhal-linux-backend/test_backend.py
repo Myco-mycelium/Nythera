@@ -31904,6 +31904,187 @@ class TestMultiArch(unittest.TestCase):
         self.assertIn("amd64", text)
 
 
+class TestRuntimeClasses(unittest.TestCase):
+    """Tests for container runtime class support."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_class(self):
+        """register_runtime_class stores class."""
+        mgr = self._manager()
+        r = mgr.register_runtime_class("gvisor", runtime_handler="gvisor", immutable_rootfs=True)
+        self.assertTrue(r["registered"])
+        self.assertEqual(r["runtime_handler"], "gvisor")
+
+    def test_assign_class(self):
+        """assign_runtime_class assigns to container."""
+        mgr = self._manager()
+        c = self._make(mgr, "rc1")
+        mgr.register_runtime_class("nvidia")
+        r = mgr.assign_runtime_class(c, "nvidia")
+        self.assertTrue(r["assigned"])
+
+    def test_get_class(self):
+        """get_container_runtime_class returns assignment."""
+        mgr = self._manager()
+        c = self._make(mgr, "rc2")
+        mgr.register_runtime_class("default")
+        mgr.assign_runtime_class(c, "default")
+        r = mgr.get_container_runtime_class(c)
+        self.assertEqual(r["runtime_class"], "default")
+
+    def test_list_classes(self):
+        """list_runtime_classes returns all."""
+        mgr = self._manager()
+        mgr.register_runtime_class("a")
+        mgr.register_runtime_class("b")
+        r = mgr.list_runtime_classes()
+        self.assertEqual(len(r), 2)
+
+    def test_delete_class(self):
+        """delete_runtime_class removes unused class."""
+        mgr = self._manager()
+        mgr.register_runtime_class("del1")
+        r = mgr.delete_runtime_class("del1")
+        self.assertIn("deleted", r)
+
+    def test_format_human_class(self):
+        """format_human handles list-runtime-classes."""
+        from nyrqisctl import format_human
+        text = format_human("list-runtime-classes", {"classes": [{"name": "gvisor", "handler": "gvisor", "immutable_rootfs": True, "assigned": 3}]})
+        self.assertIn("gvisor", text)
+        self.assertIn("3", text)
+
+
+class TestReplayDebugging(unittest.TestCase):
+    """Tests for deterministic replay debugging."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_trace(self):
+        """create_replay_trace creates trace."""
+        mgr = self._manager()
+        c = self._make(mgr, "rd1")
+        r = mgr.create_replay_trace(c, "crash-debug")
+        self.assertEqual(r["status"], "recording")
+
+    def test_record_event(self):
+        """record_replay_event stores event."""
+        mgr = self._manager()
+        c = self._make(mgr, "rd2")
+        mgr.create_replay_trace(c, "trace1")
+        mgr.record_replay_event("trace1", "syscall", data={"name": "open"})
+        mgr.record_replay_event("trace1", "signal", data={"sig": 9})
+        r = mgr.record_replay_event("trace1", "exit", data={"code": 1})
+        self.assertEqual(r["event_count"], 3)
+
+    def test_state_snapshot(self):
+        """record_state_snapshot stores snapshot."""
+        mgr = self._manager()
+        c = self._make(mgr, "rd3")
+        mgr.create_replay_trace(c, "trace2")
+        mgr.record_replay_event("trace2", "syscall")
+        r = mgr.record_state_snapshot("trace2", {"mem": 1024, "cpu": 50})
+        self.assertEqual(r["snapshot_count"], 1)
+
+    def test_stop_trace(self):
+        """stop_replay_trace stops recording."""
+        mgr = self._manager()
+        c = self._make(mgr, "rd4")
+        mgr.create_replay_trace(c, "trace3")
+        mgr.record_replay_event("trace3", "syscall")
+        r = mgr.stop_replay_trace("trace3")
+        self.assertEqual(r["events"], 1)
+
+    def test_replay_trace(self):
+        """replay_trace returns events."""
+        mgr = self._manager()
+        c = self._make(mgr, "rd5")
+        mgr.create_replay_trace(c, "trace4")
+        mgr.record_replay_event("trace4", "open")
+        mgr.record_replay_event("trace4", "read")
+        mgr.record_replay_event("trace4", "close")
+        r = mgr.replay_trace("trace4")
+        self.assertEqual(r["total_events"], 3)
+        self.assertEqual(r["replay_events"], 3)
+
+    def test_format_human_trace(self):
+        """format_human handles list-replay-traces."""
+        from nyrqisctl import format_human
+        text = format_human("list-replay-traces", {"traces": [{"name": "t1", "events": 5, "snapshots": 2, "status": "recording"}]})
+        self.assertIn("t1", text)
+        self.assertIn("5", text)
+
+
+class TestCostOptimization(unittest.TestCase):
+    """Tests for container cost optimization with ML forecasting."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_cost_trends(self):
+        """analyze_cost_trends returns data."""
+        mgr = self._manager()
+        c = self._make(mgr, "co1")
+        mgr.configure_cost_attribution(c, cost_per_hour=0.5)
+        r = mgr.analyze_cost_trends(c, lookback_days=3)
+        self.assertEqual(len(r["daily_costs"]), 3)
+        self.assertIn("trend", r)
+
+    def test_cost_recommendations(self):
+        """recommend_cost_optimization returns recs."""
+        mgr = self._manager()
+        c = self._make(mgr, "co2")
+        mgr.configure_cost_attribution(c, cost_per_hour=0.5)
+        r = mgr.recommend_cost_optimization(c)
+        self.assertIn("recommendations", r)
+        self.assertIn("total_potential_savings_pct", r)
+
+    def test_forecast_cost(self):
+        """forecast_cost returns projections."""
+        mgr = self._manager()
+        c = self._make(mgr, "co3")
+        mgr.configure_cost_attribution(c, cost_per_hour=1.0)
+        r = mgr.forecast_cost(c, days_ahead=7)
+        self.assertEqual(len(r["forecasts"]), 7)
+        self.assertGreater(r["projected_monthly"], 0)
+
+    def test_fleet_cost_report(self):
+        """fleet_cost_optimization_report returns summary."""
+        mgr = self._manager()
+        c = self._make(mgr, "co4")
+        mgr.configure_cost_attribution(c, cost_per_hour=0.1)
+        r = mgr.fleet_cost_optimization_report()
+        self.assertEqual(r["containers_analyzed"], 1)
+
+    def test_format_human_cost_trends(self):
+        """format_human handles cost-trends."""
+        from nyrqisctl import format_human
+        text = format_human("cost-trends", {"lookback_days": 7, "avg_daily_cost": 12.50, "trend": "stable", "projected_monthly": 375.0})
+        self.assertIn("12.50", text)
+        self.assertIn("stable", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -32131,6 +32312,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestTopologyScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestChaosMonkey))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiArch))
+    suite.addTests(loader.loadTestsFromTestCase(TestRuntimeClasses))
+    suite.addTests(loader.loadTestsFromTestCase(TestReplayDebugging))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

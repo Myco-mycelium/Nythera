@@ -4272,6 +4272,83 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "get_build_matrix",
             "name": args.name,
         }
+    if command == "register-runtime-class":
+        return {
+            "service": "control",
+            "op": "register_runtime_class",
+            "name": args.name,
+            "runtime_handler": getattr(args, 'runtime_handler', 'nyrqis-default'),
+            "immutable_rootfs": getattr(args, 'immutable_rootfs', False),
+        }
+    if command == "assign-runtime-class":
+        return {
+            "service": "control",
+            "op": "assign_runtime_class",
+            "container_id": args.container_id,
+            "class_name": args.class_name,
+        }
+    if command == "list-runtime-classes":
+        return {
+            "service": "control",
+            "op": "list_runtime_classes",
+        }
+    if command == "create-replay-trace":
+        return {
+            "service": "control",
+            "op": "create_replay_trace",
+            "container_id": args.container_id,
+            "trace_name": args.trace_name,
+        }
+    if command == "record-replay-event":
+        return {
+            "service": "control",
+            "op": "record_replay_event",
+            "trace_name": args.trace_name,
+            "event_type": args.event_type,
+        }
+    if command == "stop-replay-trace":
+        return {
+            "service": "control",
+            "op": "stop_replay_trace",
+            "trace_name": args.trace_name,
+        }
+    if command == "replay-trace":
+        return {
+            "service": "control",
+            "op": "replay_trace",
+            "trace_name": args.trace_name,
+            "from_snapshot": getattr(args, 'from_snapshot', None),
+        }
+    if command == "list-replay-traces":
+        return {
+            "service": "control",
+            "op": "list_replay_traces",
+        }
+    if command == "cost-trends":
+        return {
+            "service": "control",
+            "op": "analyze_cost_trends",
+            "container_id": args.container_id,
+            "lookback_days": getattr(args, 'lookback_days', 7),
+        }
+    if command == "cost-recommendations":
+        return {
+            "service": "control",
+            "op": "recommend_cost_optimization",
+            "container_id": args.container_id,
+        }
+    if command == "fleet-cost-report":
+        return {
+            "service": "control",
+            "op": "fleet_cost_optimization_report",
+        }
+    if command == "forecast-cost":
+        return {
+            "service": "control",
+            "op": "forecast_cost",
+            "container_id": args.container_id,
+            "days_ahead": getattr(args, 'days_ahead', 30),
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -8288,6 +8365,51 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for m in matrix:
             lines.append(f"  {m['platform']}: goarch={m.get('goarch', '?')}, size={m.get('size_bytes', 0)}")
         return "\n".join(lines)
+    if command == "register-runtime-class":
+        return f"Runtime class '{resp.get('name', '?')}' registered (handler: {resp.get('runtime_handler', '?')})"
+    if command == "assign-runtime-class":
+        return f"Runtime class '{resp.get('runtime_class', '?')}' assigned to {resp.get('container_id', '?')[:12]}"
+    if command == "list-runtime-classes":
+        classes = resp.get("classes", [])
+        lines = ["Runtime Classes:"]
+        for rc in classes:
+            lines.append(f"  {rc['name']}: handler={rc['handler']}, immutable={rc['immutable_rootfs']}, assigned={rc['assigned']}")
+        if not classes:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "create-replay-trace":
+        return f"Replay trace '{resp.get('trace_name', '?')}' created for {resp.get('container_id', '?')[:12]}"
+    if command == "record-replay-event":
+        return f"Recorded event #{resp.get('event_count', 0)} in trace '{resp.get('trace_name', '?')}'"
+    if command == "stop-replay-trace":
+        return f"Trace '{resp.get('trace_name', '?')}' stopped: {resp.get('events', 0)} events, {resp.get('snapshots', 0)} snapshots"
+    if command == "replay-trace":
+        return f"Replay plan: {resp.get('replay_events', 0)} of {resp.get('total_events', 0)} events"
+    if command == "list-replay-traces":
+        traces = resp.get("traces", [])
+        lines = ["Replay Traces:"]
+        for t in traces:
+            lines.append(f"  {t['name']}: {t['events']} events, {t['snapshots']} snapshots [{t['status']}]")
+        if not traces:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "cost-trends":
+        lines = [f"Cost Trends ({resp.get('lookback_days', 0)} days):", f"  avg daily: ${resp.get('avg_daily_cost', 0):.2f}, trend: {resp.get('trend', '?')}", f"  projected monthly: ${resp.get('projected_monthly', 0):.2f}"]
+        return "\n".join(lines)
+    if command == "cost-recommendations":
+        recs = resp.get("recommendations", [])
+        lines = [f"Cost Recommendations ({len(recs)} found, {resp.get('total_potential_savings_pct', 0):.1f}% savings):"]
+        for r in recs:
+            lines.append(f"  [{r.get('type', '?')}] {r.get('recommended', r.get('suggestion', '?'))}")
+        if not recs:
+            lines.append("  No recommendations")
+        return "\n".join(lines)
+    if command == "fleet-cost-report":
+        lines = [f"Fleet Cost Report: {resp.get('containers_analyzed', 0)} containers, {resp.get('total_recommendations', 0)} recs, avg {resp.get('avg_savings_pct', 0):.1f}% savings"]
+        return "\n".join(lines)
+    if command == "forecast-cost":
+        lines = ["Cost Forecast:", f"  daily: ${resp.get('daily_cost', 0):.2f}", f"  current monthly: ${resp.get('current_monthly', 0):.2f}", f"  projected monthly: ${resp.get('projected_monthly', 0):.2f} ({resp.get('change_pct', 0):+.1f}%)"]
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -12289,6 +12411,62 @@ def build_parser() -> argparse.ArgumentParser:
     bm = sub.add_parser("build-matrix", help="Build matrix")
     bm.add_argument("name")
     bm.set_defaults(command="build-matrix")
+
+    # Runtime classes
+    rrc = sub.add_parser("register-runtime-class", help="Register runtime class")
+    rrc.add_argument("name")
+    rrc.add_argument("--handler", dest="runtime_handler", default="nyrqis-default")
+    rrc.add_argument("--immutable-rootfs", action="store_true", default=False)
+    rrc.set_defaults(command="register-runtime-class")
+
+    arc = sub.add_parser("assign-runtime-class", help="Assign runtime class")
+    arc.add_argument("container_id")
+    arc.add_argument("class_name")
+    arc.set_defaults(command="assign-runtime-class")
+
+    lrc = sub.add_parser("list-runtime-classes", help="List runtime classes")
+    lrc.set_defaults(command="list-runtime-classes")
+
+    # Replay debugging
+    crt = sub.add_parser("create-replay-trace", help="Create replay trace")
+    crt.add_argument("container_id")
+    crt.add_argument("trace_name")
+    crt.set_defaults(command="create-replay-trace")
+
+    rre = sub.add_parser("record-replay-event", help="Record replay event")
+    rre.add_argument("trace_name")
+    rre.add_argument("event_type")
+    rre.set_defaults(command="record-replay-event")
+
+    srt = sub.add_parser("stop-replay-trace", help="Stop replay trace")
+    srt.add_argument("trace_name")
+    srt.set_defaults(command="stop-replay-trace")
+
+    rt = sub.add_parser("replay-trace", help="Replay a trace")
+    rt.add_argument("trace_name")
+    rt.add_argument("--from-snapshot", type=int, default=None)
+    rt.set_defaults(command="replay-trace")
+
+    lrt = sub.add_parser("list-replay-traces", help="List replay traces")
+    lrt.set_defaults(command="list-replay-traces")
+
+    # Cost optimization
+    ct = sub.add_parser("cost-trends", help="Cost trends analysis")
+    ct.add_argument("container_id")
+    ct.add_argument("--lookback-days", type=int, default=7)
+    ct.set_defaults(command="cost-trends")
+
+    cr = sub.add_parser("cost-recommendations", help="Cost optimization recommendations")
+    cr.add_argument("container_id")
+    cr.set_defaults(command="cost-recommendations")
+
+    fcr = sub.add_parser("fleet-cost-report", help="Fleet cost optimization report")
+    fcr.set_defaults(command="fleet-cost-report")
+
+    fc = sub.add_parser("forecast-cost", help="Cost forecasting")
+    fc.add_argument("container_id")
+    fc.add_argument("--days", type=int, dest="days_ahead", default=30)
+    fc.set_defaults(command="forecast-cost")
 
     return parser
 

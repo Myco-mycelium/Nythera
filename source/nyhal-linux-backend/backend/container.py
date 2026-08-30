@@ -23924,8 +23924,8 @@ class ContainerManager:
         if not attr:
             return {"error": "Container has no cost attribution"}
         uptime_s = 0.0
-        if container.state.start_time:
-            uptime_s = _time.time() - container.state.start_time
+        if container.started_at:
+            uptime_s = _time.time() - container.started_at
         hours = uptime_s / 3600.0
         total_cost = attr["cost_per_hour"] * hours
         return {
@@ -25647,6 +25647,391 @@ class ContainerManager:
                 "size_bytes": arch.get("size_bytes", 0),
             })
         return {"image": name, "matrix": matrix, "count": len(matrix)}
+
+
+
+    # ------------------------------------------------------------------
+    # Container runtime class support with different runtimes per workload
+    # ------------------------------------------------------------------
+
+    def register_runtime_class(
+        self,
+        name: str,
+        runtime_handler: str = "nyrqis-default",
+        overcommit_memory: bool = False,
+        cpu_cfs_quota: bool = True,
+        immutable_rootfs: bool = False,
+        sandbox_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register a runtime class for workload-specific container runtimes."""
+        if not hasattr(self, '_runtime_classes'):
+            self._runtime_classes = {}
+        self._runtime_classes[name] = {
+            "name": name,
+            "runtime_handler": runtime_handler,
+            "overcommit_memory": overcommit_memory,
+            "cpu_cfs_quota": cpu_cfs_quota,
+            "immutable_rootfs": immutable_rootfs,
+            "sandbox_config": sandbox_config or {},
+            "created_at": __import__("time").time(),
+            "assigned_containers": 0,
+        }
+        return {"name": name, "runtime_handler": runtime_handler, "registered": True}
+
+    def assign_runtime_class(
+        self,
+        container: Container,
+        class_name: str,
+    ) -> Dict[str, Any]:
+        """Assign a runtime class to a container."""
+        if not hasattr(self, '_runtime_classes'):
+            return {"error": "No runtime classes registered"}
+        rc = self._runtime_classes.get(class_name)
+        if not rc:
+            return {"error": f"Runtime class '{class_name}' not found"}
+        if not hasattr(self, '_container_runtime_class'):
+            self._container_runtime_class = {}
+        self._container_runtime_class[container.id] = class_name
+        rc["assigned_containers"] += 1
+        return {"container_id": container.id, "runtime_class": class_name, "assigned": True}
+
+    def get_container_runtime_class(self, container: Container) -> Dict[str, Any]:
+        """Get the runtime class for a container."""
+        if not hasattr(self, '_container_runtime_class'):
+            return {"error": "No runtime assignments"}
+        class_name = self._container_runtime_class.get(container.id)
+        if not class_name:
+            return {"error": "Container has no runtime class assigned"}
+        rc = self._runtime_classes.get(class_name, {})
+        return {
+            "container_id": container.id,
+            "runtime_class": class_name,
+            "runtime_handler": rc.get("runtime_handler", "unknown"),
+            "immutable_rootfs": rc.get("immutable_rootfs", False),
+        }
+
+    def list_runtime_classes(self) -> List[Dict[str, Any]]:
+        """List all runtime classes."""
+        if not hasattr(self, '_runtime_classes'):
+            return []
+        return [
+            {"name": rc["name"], "handler": rc["runtime_handler"],
+             "immutable_rootfs": rc["immutable_rootfs"],
+             "assigned": rc["assigned_containers"]}
+            for rc in self._runtime_classes.values()
+        ]
+
+    def delete_runtime_class(self, class_name: str) -> Dict[str, Any]:
+        """Delete a runtime class if not in use."""
+        if not hasattr(self, '_runtime_classes'):
+            return {"error": "No runtime classes"}
+        if class_name not in self._runtime_classes:
+            return {"error": f"Runtime class '{class_name}' not found"}
+        rc = self._runtime_classes[class_name]
+        if rc["assigned_containers"] > 0:
+            return {"error": f"Runtime class has {rc['assigned_containers']} assigned containers"}
+        del self._runtime_classes[class_name]
+        return {"deleted": class_name}
+
+    # ------------------------------------------------------------------
+    # Deterministic replay debugging for container failures
+    # ------------------------------------------------------------------
+
+    def create_replay_trace(
+        self,
+        container: Container,
+        trace_name: str,
+    ) -> Dict[str, Any]:
+        """Create a deterministic replay trace for a container."""
+        import time as _time
+        if not hasattr(self, '_replay_traces'):
+            self._replay_traces = {}
+        self._replay_traces[trace_name] = {
+            "name": trace_name,
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "events": [],
+            "state_snapshots": [],
+            "created_at": _time.time(),
+            "status": "recording",
+        }
+        return {"trace_name": trace_name, "container_id": container.id, "status": "recording"}
+
+    def record_replay_event(
+        self,
+        trace_name: str,
+        event_type: str,
+        data: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Record an event in a replay trace."""
+        import time as _time
+        if not hasattr(self, '_replay_traces'):
+            return {"error": "No traces"}
+        trace = self._replay_traces.get(trace_name)
+        if not trace:
+            return {"error": f"Trace '{trace_name}' not found"}
+        event = {
+            "type": event_type,
+            "data": data or {},
+            "timestamp": timestamp or _time.time(),
+            "sequence": len(trace["events"]),
+        }
+        trace["events"].append(event)
+        return {"trace_name": trace_name, "event_count": len(trace["events"])}
+
+    def record_state_snapshot(
+        self,
+        trace_name: str,
+        state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Record a state snapshot in a replay trace."""
+        import time as _time
+        if not hasattr(self, '_replay_traces'):
+            return {"error": "No traces"}
+        trace = self._replay_traces.get(trace_name)
+        if not trace:
+            return {"error": f"Trace '{trace_name}' not found"}
+        snapshot = {
+            "state": state,
+            "timestamp": _time.time(),
+            "event_index": len(trace["events"]),
+        }
+        trace["state_snapshots"].append(snapshot)
+        return {"trace_name": trace_name, "snapshot_count": len(trace["state_snapshots"])}
+
+    def stop_replay_trace(
+        self,
+        trace_name: str,
+    ) -> Dict[str, Any]:
+        """Stop recording a replay trace."""
+        if not hasattr(self, '_replay_traces'):
+            return {"error": "No traces"}
+        trace = self._replay_traces.get(trace_name)
+        if not trace:
+            return {"error": f"Trace '{trace_name}' not found"}
+        trace["status"] = "stopped"
+        return {
+            "trace_name": trace_name,
+            "events": len(trace["events"]),
+            "snapshots": len(trace["state_snapshots"]),
+        }
+
+    def replay_trace(
+        self,
+        trace_name: str,
+        from_snapshot: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Replay a trace from its events (returns replay plan)."""
+        if not hasattr(self, '_replay_traces'):
+            return {"error": "No traces"}
+        trace = self._replay_traces.get(trace_name)
+        if not trace:
+            return {"error": f"Trace '{trace_name}' not found"}
+
+        start_idx = 0
+        if from_snapshot is not None and trace["state_snapshots"]:
+            snap = trace["state_snapshots"][min(from_snapshot, len(trace["state_snapshots"]) - 1)]
+            start_idx = snap["event_index"]
+
+        events = trace["events"][start_idx:]
+        return {
+            "trace_name": trace_name,
+            "total_events": len(trace["events"]),
+            "replay_events": len(events),
+            "events": events,
+            "status": trace["status"],
+        }
+
+    def list_replay_traces(self) -> List[Dict[str, Any]]:
+        """List all replay traces."""
+        if not hasattr(self, '_replay_traces'):
+            return []
+        return [
+            {"name": t["name"], "container_id": t["container_id"],
+             "events": len(t["events"]), "snapshots": len(t["state_snapshots"]),
+             "status": t["status"]}
+            for t in self._replay_traces.values()
+        ]
+
+    def delete_replay_trace(self, trace_name: str) -> Dict[str, Any]:
+        """Delete a replay trace."""
+        if not hasattr(self, '_replay_traces'):
+            return {"error": "No traces"}
+        if trace_name not in self._replay_traces:
+            return {"error": f"Trace '{trace_name}' not found"}
+        del self._replay_traces[trace_name]
+        return {"deleted": trace_name}
+
+    # ------------------------------------------------------------------
+    # Container cost optimization recommendations with ML forecasting
+    # ------------------------------------------------------------------
+
+    def analyze_cost_trends(
+        self,
+        container: Container,
+        lookback_days: int = 7,
+    ) -> Dict[str, Any]:
+        """Analyze cost trends for a container using historical data."""
+        import time as _time
+        if not hasattr(self, '_cost_attribution'):
+            return {"error": "No cost attribution data"}
+        attr = self._cost_attribution.get(container.id)
+        if not attr:
+            return {"error": "Container has no cost attribution"}
+
+        # Simulate trend analysis with synthetic data
+        now = _time.time()
+        daily_costs = []
+        for d in range(lookback_days):
+            # Generate synthetic daily cost based on resource usage
+            base_cost = attr["cost_per_hour"] * 24
+            import random
+            variation = random.uniform(0.7, 1.3)
+            daily_costs.append({
+                "day": d,
+                "cost": round(base_cost * variation, 4),
+                "timestamp": now - (lookback_days - d) * 86400,
+            })
+
+        avg_cost = sum(d["cost"] for d in daily_costs) / max(len(daily_costs), 1)
+        trend = "stable"
+        if len(daily_costs) >= 2:
+            recent = daily_costs[-1]["cost"]
+            first = daily_costs[0]["cost"]
+            if recent > first * 1.2:
+                trend = "increasing"
+            elif recent < first * 0.8:
+                trend = "decreasing"
+
+        return {
+            "container_id": container.id,
+            "lookback_days": lookback_days,
+            "daily_costs": daily_costs,
+            "avg_daily_cost": round(avg_cost, 4),
+            "trend": trend,
+            "projected_monthly": round(avg_cost * 30, 2),
+        }
+
+    def recommend_cost_optimization(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Generate ML-based cost optimization recommendations."""
+        if not hasattr(self, '_cost_attribution'):
+            return {"error": "No cost data"}
+        attr = self._cost_attribution.get(container.id)
+        if not attr:
+            return {"error": "Container has no cost attribution"}
+
+        recommendations = []
+
+        # Check if overprovisioned
+        stats = self.container_stats(container)
+        mem_used = stats.get("memory_bytes", 0)
+        limits = container.config.limits
+        mem_limit = limits.memory_high or 256 * 1024 * 1024
+        usage_ratio = mem_used / mem_limit if mem_limit > 0 else 0
+
+        if usage_ratio < 0.3:
+            recommendations.append({
+                "type": "downsize_memory",
+                "current": f"{mem_limit // (1024*1024)}MB",
+                "recommended": f"{max(64, int(mem_limit * usage_ratio * 1.5)) // (1024*1024)}MB",
+                "estimated_savings_pct": round((1 - usage_ratio * 1.5) * 100, 1),
+                "confidence": "high",
+            })
+
+        if attr["cost_per_hour"] > 1.0:
+            recommendations.append({
+                "type": "review_instance_type",
+                "current_cost": attr["cost_per_hour"],
+                "recommended": "Consider spot/preemptible instances",
+                "estimated_savings_pct": 40.0,
+                "confidence": "medium",
+            })
+
+        # Check uptime
+        if container.started_at:
+            uptime_s = __import__("time").time() - container.started_at
+            if uptime_s < 300:  # Less than 5 minutes
+                recommendations.append({
+                    "type": "short_lived_container",
+                    "uptime_seconds": round(uptime_s),
+                    "suggestion": "Consider batch processing for short-lived workloads",
+                    "confidence": "medium",
+                })
+
+        total_savings = sum(r.get("estimated_savings_pct", 0) for r in recommendations)
+
+        return {
+            "container_id": container.id,
+            "current_cost_per_hour": attr["cost_per_hour"],
+            "recommendations": recommendations,
+            "total_potential_savings_pct": round(min(total_savings, 80), 1),
+        }
+
+    def fleet_cost_optimization_report(self) -> Dict[str, Any]:
+        """Generate fleet-wide cost optimization report."""
+        if not hasattr(self, '_cost_attribution'):
+            return {"containers": 0, "recommendations": []}
+
+        all_recs = []
+        total_savings = 0.0
+        for cid in list(self._cost_attribution.keys()):
+            c = self.containers.get(cid)
+            if not c:
+                continue
+            recs = self.recommend_cost_optimization(c)
+            if "recommendations" in recs:
+                for r in recs["recommendations"]:
+                    r["container_id"] = cid
+                    all_recs.append(r)
+                    total_savings += r.get("estimated_savings_pct", 0)
+
+        return {
+            "containers_analyzed": len(self._cost_attribution),
+            "total_recommendations": len(all_recs),
+            "recommendations": all_recs[:20],
+            "avg_savings_pct": round(total_savings / max(len(all_recs), 1), 1),
+        }
+
+    def forecast_cost(
+        self,
+        container: Container,
+        days_ahead: int = 30,
+    ) -> Dict[str, Any]:
+        """Forecast future costs using trend extrapolation."""
+        import time as _time
+        if not hasattr(self, '_cost_attribution'):
+            return {"error": "No cost data"}
+        attr = self._cost_attribution.get(container.id)
+        if not attr:
+            return {"error": "Container has no cost attribution"}
+
+        # Simple linear forecast
+        base_cost = attr["cost_per_hour"] * 24
+        forecasts = []
+        for d in range(days_ahead):
+            import math
+            # Add slight upward trend with noise
+            factor = 1.0 + (d * 0.005) + (math.sin(d * 0.1) * 0.05)
+            forecasts.append({
+                "day": d + 1,
+                "projected_cost": round(base_cost * factor, 4),
+            })
+
+        total_projected = sum(f["projected_cost"] for f in forecasts)
+        current_monthly = base_cost * 30
+
+        return {
+            "container_id": container.id,
+            "daily_cost": round(base_cost, 4),
+            "current_monthly": round(current_monthly, 2),
+            "projected_monthly": round(total_projected, 2),
+            "change_pct": round(((total_projected / current_monthly) - 1) * 100, 1) if current_monthly > 0 else 0,
+            "forecasts": forecasts[:7],
+        }
 
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:

@@ -1941,6 +1941,54 @@ class ControlService:
             elif op == "get_build_matrix":
                 self._get_build_matrix(server, sender_path,
                                   msg.message_id, request)
+            elif op == "register_runtime_class":
+                self._register_runtime_class(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "assign_runtime_class":
+                self._assign_runtime_class(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_container_runtime_class":
+                self._get_container_runtime_class(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "list_runtime_classes":
+                self._list_runtime_classes(server, sender_path,
+                                      msg.message_id)
+            elif op == "delete_runtime_class":
+                self._delete_runtime_class(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "create_replay_trace":
+                self._create_replay_trace(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "record_replay_event":
+                self._record_replay_event(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "record_state_snapshot":
+                self._record_state_snapshot(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "stop_replay_trace":
+                self._stop_replay_trace(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "replay_trace":
+                self._replay_trace(server, sender_path,
+                              msg.message_id, request)
+            elif op == "list_replay_traces":
+                self._list_replay_traces(server, sender_path,
+                                    msg.message_id)
+            elif op == "delete_replay_trace":
+                self._delete_replay_trace(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "analyze_cost_trends":
+                self._analyze_cost_trends(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "recommend_cost_optimization":
+                self._recommend_cost_optimization(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "fleet_cost_optimization_report":
+                self._fleet_cost_optimization_report(server, sender_path,
+                                                msg.message_id)
+            elif op == "forecast_cost":
+                self._forecast_cost(server, sender_path,
+                              msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9580,6 +9628,117 @@ class ControlService:
 
     def _get_build_matrix(self, server, sender_path, call_id, request):
         result = self.container_manager.get_build_matrix(request.get("name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _register_runtime_class(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_runtime_class(
+            name=request.get("name", "default"),
+            runtime_handler=request.get("runtime_handler", "nyrqis-default"),
+            overcommit_memory=request.get("overcommit_memory", False),
+            cpu_cfs_quota=request.get("cpu_cfs_quota", True),
+            immutable_rootfs=request.get("immutable_rootfs", False),
+            sandbox_config=request.get("sandbox_config"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _assign_runtime_class(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.assign_runtime_class(c, request.get("class_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_container_runtime_class(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_container_runtime_class(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_runtime_classes(self, server, sender_path, call_id):
+        result = self.container_manager.list_runtime_classes()
+        self._reply(server, sender_path, call_id, {"ok": True, "classes": result})
+
+    def _delete_runtime_class(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_runtime_class(request.get("class_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_replay_trace(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.create_replay_trace(c, request.get("trace_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_replay_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_replay_event(
+            trace_name=request.get("trace_name", "default"),
+            event_type=request.get("event_type", "syscall"),
+            data=request.get("data"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_state_snapshot(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_state_snapshot(
+            trace_name=request.get("trace_name", "default"),
+            state=request.get("state", {}),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_replay_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_replay_trace(request.get("trace_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _replay_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.replay_trace(
+            trace_name=request.get("trace_name", "default"),
+            from_snapshot=request.get("from_snapshot"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_replay_traces(self, server, sender_path, call_id):
+        result = self.container_manager.list_replay_traces()
+        self._reply(server, sender_path, call_id, {"ok": True, "traces": result})
+
+    def _delete_replay_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_replay_trace(request.get("trace_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _analyze_cost_trends(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.analyze_cost_trends(c, request.get("lookback_days", 7))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _recommend_cost_optimization(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.recommend_cost_optimization(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_cost_optimization_report(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_cost_optimization_report()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _forecast_cost(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.forecast_cost(c, request.get("days_ahead", 30))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
