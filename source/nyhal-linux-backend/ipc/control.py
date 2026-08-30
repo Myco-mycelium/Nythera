@@ -1524,6 +1524,57 @@ class ControlService:
             elif op == "delete_slo":
                 self._delete_slo(server, sender_path,
                             msg.message_id, request)
+            elif op == "analyze_resource_usage":
+                self._analyze_resource_usage(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "recommend_right_sizing":
+                self._recommend_right_sizing(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "apply_right_sizing":
+                self._apply_right_sizing(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "fleet_right_sizing_report":
+                self._fleet_right_sizing_report(server, sender_path,
+                                           msg.message_id)
+            elif op == "create_mesh_cluster":
+                self._create_mesh_cluster(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "add_mesh_service":
+                self._add_mesh_service(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "create_traffic_policy":
+                self._create_traffic_policy(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "evaluate_traffic_policy":
+                self._evaluate_traffic_policy(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "get_mesh_topology":
+                self._get_mesh_topology(server, sender_path,
+                                   msg.message_id)
+            elif op == "list_mesh_policies":
+                self._list_mesh_policies(server, sender_path,
+                                    msg.message_id)
+            elif op == "delete_mesh_policy":
+                self._delete_mesh_policy(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "configure_auto_rollback":
+                self._configure_auto_rollback(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "check_and_auto_rollback":
+                self._check_and_auto_rollback(server, sender_path,
+                                         msg.message_id)
+            elif op == "get_auto_rollback_status":
+                self._get_auto_rollback_status(server, sender_path,
+                                          msg.message_id)
+            elif op == "get_auto_rollback_history":
+                self._get_auto_rollback_history(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "disable_auto_rollback":
+                self._disable_auto_rollback(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "delete_auto_rollback":
+                self._delete_auto_rollback(server, sender_path,
+                                      msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8219,6 +8270,104 @@ class ControlService:
 
     def _delete_slo(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_slo(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Resource right-sizing handlers
+    # ------------------------------------------------------------------
+
+    def _analyze_resource_usage(self, server, sender_path, call_id, request):
+        result = self.container_manager.analyze_resource_usage(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _recommend_right_sizing(self, server, sender_path, call_id, request):
+        result = self.container_manager.recommend_right_sizing(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _apply_right_sizing(self, server, sender_path, call_id, request):
+        result = self.container_manager.apply_right_sizing(
+            request['container_id'], dry_run=request.get('dry_run', True))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_right_sizing_report(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_right_sizing_report()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Service mesh handlers
+    # ------------------------------------------------------------------
+
+    def _create_mesh_cluster(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_mesh_cluster(
+            name=request['name'],
+            endpoint=request['endpoint'],
+            region=request.get('region', 'default'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _add_mesh_service(self, server, sender_path, call_id, request):
+        result = self.container_manager.add_mesh_service(
+            cluster_name=request['cluster_name'],
+            service_name=request['service_name'],
+            port=int(request.get('port', 80)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_traffic_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_traffic_policy(
+            name=request['name'],
+            source_service=request['source_service'],
+            destination_service=request['destination_service'],
+            rules=request.get('rules'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_traffic_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_traffic_policy(
+            source=request['source'],
+            destination=request['destination'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_mesh_topology(self, server, sender_path, call_id):
+        result = self.container_manager.get_mesh_topology()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_mesh_policies(self, server, sender_path, call_id):
+        result = self.container_manager.list_mesh_policies()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_mesh_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_mesh_policy(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Auto-rollback handlers
+    # ------------------------------------------------------------------
+
+    def _configure_auto_rollback(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_auto_rollback(
+            slo_name=request['slo_name'],
+            deployment_name=request.get('deployment_name'),
+            canary_name=request.get('canary_name'),
+            breach_threshold=float(request.get('breach_threshold', 1.0)),
+            cooldown_seconds=int(request.get('cooldown_seconds', 300)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_and_auto_rollback(self, server, sender_path, call_id):
+        result = self.container_manager.check_and_auto_rollback()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_auto_rollback_status(self, server, sender_path, call_id):
+        result = self.container_manager.get_auto_rollback_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_auto_rollback_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_auto_rollback_history(request['slo_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_auto_rollback(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_auto_rollback(request['slo_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_auto_rollback(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_auto_rollback(request['slo_name'])
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

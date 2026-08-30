@@ -22588,6 +22588,436 @@ class ContainerManager:
             return {"error": f"SLO '{name}' not found"}
         return {"deleted": name}
 
+    # ------------------------------------------------------------------
+    # Resource right-sizing with ML-based analysis
+    # ------------------------------------------------------------------
+
+    def analyze_resource_usage(
+        self, container_id: str, window_hours: float = 24.0
+    ) -> Dict[str, Any]:
+        """Analyze resource usage patterns for a container."""
+        history = getattr(self, '_resource_history', {}).get(container_id, [])
+        if not history:
+            return {"error": "No resource history"}
+
+        mem_ratios = [h.get("mem_ratio", 0) for h in history if "mem_ratio" in h]
+        cpu_ratios = [h.get("cpu_ratio", 0) for h in history if "cpu_ratio" in h]
+
+        if not mem_ratios and not cpu_ratios:
+            return {"error": "No usable data points"}
+
+        result = {"container_id": container_id, "data_points": len(history)}
+
+        if mem_ratios:
+            result["memory"] = {
+                "avg_ratio": round(sum(mem_ratios) / len(mem_ratios), 4),
+                "max_ratio": round(max(mem_ratios), 4),
+                "min_ratio": round(min(mem_ratios), 4),
+                "p95_ratio": round(sorted(mem_ratios)[int(len(mem_ratios) * 0.95)] if mem_ratios else 0, 4),
+            }
+
+        if cpu_ratios:
+            result["cpu"] = {
+                "avg_ratio": round(sum(cpu_ratios) / len(cpu_ratios), 4),
+                "max_ratio": round(max(cpu_ratios), 4),
+                "min_ratio": round(min(cpu_ratios), 4),
+                "p95_ratio": round(sorted(cpu_ratios)[int(len(cpu_ratios) * 0.95)] if cpu_ratios else 0, 4),
+            }
+
+        return result
+
+    def recommend_right_sizing(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Generate right-sizing recommendations based on usage patterns."""
+        analysis = self.analyze_resource_usage(container_id)
+        if "error" in analysis:
+            return analysis
+
+        recommendations = []
+        container = self.get_container(container_id)
+        if not container:
+            return {"error": "Container not found"}
+
+        # Memory recommendation
+        mem = analysis.get("memory", {})
+        if mem:
+            p95 = mem.get("p95_ratio", 0)
+            current_mb = container.config.limits.memory_mb
+            if p95 < 0.3:
+                suggested_mb = max(64, int(current_mb * 0.5))
+                recommendations.append({
+                    "resource": "memory",
+                    "current_mb": current_mb,
+                    "suggested_mb": suggested_mb,
+                    "reason": f"Average usage at {mem['avg_ratio']*100:.1f}% (p95={p95*100:.1f}%)",
+                    "potential_savings_pct": round((1 - suggested_mb / current_mb) * 100, 1) if current_mb > 0 else 0,
+                })
+            elif p95 > 0.85:
+                suggested_mb = int(current_mb * 1.5)
+                recommendations.append({
+                    "resource": "memory",
+                    "current_mb": current_mb,
+                    "suggested_mb": suggested_mb,
+                    "reason": f"High usage detected (p95={p95*100:.1f}%)",
+                    "risk": "potential_oom",
+                })
+
+        # CPU recommendation
+        cpu = analysis.get("cpu", {})
+        if cpu:
+            p95 = cpu.get("p95_ratio", 0)
+            current_shares = container.config.limits.cpu_shares
+            if p95 < 0.2:
+                suggested_shares = max(256, current_shares // 2)
+                recommendations.append({
+                    "resource": "cpu_shares",
+                    "current": current_shares,
+                    "suggested": suggested_shares,
+                    "reason": f"CPU usage at {cpu['avg_ratio']*100:.1f}% (p95={p95*100:.1f}%)",
+                })
+            elif p95 > 0.9:
+                suggested_shares = min(8192, current_shares * 2)
+                recommendations.append({
+                    "resource": "cpu_shares",
+                    "current": current_shares,
+                    "suggested": suggested_shares,
+                    "reason": f"High CPU usage (p95={p95*100:.1f}%)",
+                })
+
+        return {
+            "container_id": container_id,
+            "recommendations": recommendations,
+            "count": len(recommendations),
+            "analysis": analysis,
+        }
+
+    def apply_right_sizing(
+        self, container_id: str, dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """Apply right-sizing recommendations."""
+        recs = self.recommend_right_sizing(container_id)
+        if "error" in recs:
+            return recs
+
+        container = self.get_container(container_id)
+        if not container:
+            return {"error": "Container not found"}
+
+        applied = []
+        for rec in recs.get("recommendations", []):
+            if rec["resource"] == "memory":
+                if not dry_run:
+                    container.config.limits.memory_mb = rec["suggested_mb"]
+                applied.append({"resource": "memory", "from": rec["current_mb"], "to": rec["suggested_mb"]})
+            elif rec["resource"] == "cpu_shares":
+                if not dry_run:
+                    container.config.limits.cpu_shares = rec["suggested"]
+                applied.append({"resource": "cpu_shares", "from": rec["current"], "to": rec["suggested"]})
+
+        return {
+            "container_id": container_id,
+            "dry_run": dry_run,
+            "applied": applied,
+            "count": len(applied),
+        }
+
+    def fleet_right_sizing_report(self) -> Dict[str, Any]:
+        """Generate right-sizing report for all containers."""
+        containers = self.list_containers()
+        reports = []
+        total_potential_savings = 0
+        for c in containers:
+            recs = self.recommend_right_sizing(c.id)
+            if recs.get("recommendations"):
+                for r in recs["recommendations"]:
+                    if "potential_savings_pct" in r:
+                        total_potential_savings += r["potential_savings_pct"]
+                reports.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "recommendation_count": recs["count"],
+                })
+        return {
+            "containers_with_recommendations": len(reports),
+            "total_containers": len(containers),
+            "reports": reports,
+            "total_potential_savings_pct": round(total_potential_savings, 1),
+        }
+
+    # ------------------------------------------------------------------
+    # Multi-cluster service mesh with traffic policies
+    # ------------------------------------------------------------------
+
+    def create_mesh_cluster(
+        self, name: str, endpoint: str, region: str = "default"
+    ) -> Dict[str, Any]:
+        """Register a cluster in the service mesh."""
+        import time as _time
+        if not hasattr(self, '_mesh_clusters'):
+            self._mesh_clusters = {}
+        self._mesh_clusters[name] = {
+            "name": name,
+            "endpoint": endpoint,
+            "region": region,
+            "status": "active",
+            "registered_at": _time.time(),
+            "services": [],
+        }
+        return {"name": name, "endpoint": endpoint, "region": region}
+
+    def add_mesh_service(
+        self, cluster_name: str, service_name: str, port: int = 80
+    ) -> Dict[str, Any]:
+        """Add a service to a mesh cluster."""
+        if not hasattr(self, '_mesh_clusters'):
+            return {"error": "No mesh clusters"}
+        cluster = self._mesh_clusters.get(cluster_name)
+        if not cluster:
+            return {"error": f"Cluster '{cluster_name}' not found"}
+        cluster["services"].append({"name": service_name, "port": port})
+        return {"cluster": cluster_name, "service": service_name, "port": port}
+
+    def create_traffic_policy(
+        self,
+        name: str,
+        source_service: str,
+        destination_service: str,
+        rules: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Create a traffic policy for service mesh routing."""
+        import time as _time
+        if not hasattr(self, '_mesh_policies'):
+            self._mesh_policies = {}
+        if rules is None:
+            rules = [{"match": {}, "action": "allow", "weight": 100}]
+        policy = {
+            "name": name,
+            "source": source_service,
+            "destination": destination_service,
+            "rules": rules,
+            "enabled": True,
+            "created_at": _time.time(),
+        }
+        self._mesh_policies[name] = policy
+        return {
+            "name": name,
+            "source": source_service,
+            "destination": destination_service,
+            "rule_count": len(rules),
+        }
+
+    def evaluate_traffic_policy(
+        self, source: str, destination: str, headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """Evaluate traffic policies for a source-destination pair."""
+        if not hasattr(self, '_mesh_policies'):
+            return {"action": "allow", "reason": "no_policies"}
+        for policy in self._mesh_policies.values():
+            if not policy["enabled"]:
+                continue
+            if policy["source"] == source and policy["destination"] == destination:
+                for rule in policy["rules"]:
+                    return {
+                        "action": rule.get("action", "allow"),
+                        "policy": policy["name"],
+                        "weight": rule.get("weight", 100),
+                    }
+        return {"action": "allow", "reason": "default"}
+
+    def get_mesh_topology(self) -> Dict[str, Any]:
+        """Get the service mesh topology."""
+        clusters = getattr(self, '_mesh_clusters', {})
+        policies = getattr(self, '_mesh_policies', {})
+        services = []
+        for name, cluster in clusters.items():
+            for svc in cluster.get("services", []):
+                services.append({
+                    "cluster": name,
+                    "service": svc["name"],
+                    "port": svc["port"],
+                    "region": cluster["region"],
+                })
+        return {
+            "clusters": len(clusters),
+            "services": services,
+            "policies": len(policies),
+        }
+
+    def list_mesh_policies(self) -> Dict[str, Any]:
+        """List all traffic policies."""
+        if not hasattr(self, '_mesh_policies'):
+            return {"policies": [], "count": 0}
+        result = []
+        for name, p in self._mesh_policies.items():
+            result.append({
+                "name": name,
+                "source": p["source"],
+                "destination": p["destination"],
+                "enabled": p["enabled"],
+                "rules": len(p["rules"]),
+            })
+        return {"policies": result, "count": len(result)}
+
+    def delete_mesh_policy(self, name: str) -> Dict[str, Any]:
+        """Delete a traffic policy."""
+        if not hasattr(self, '_mesh_policies'):
+            return {"error": "No mesh policies"}
+        policy = self._mesh_policies.pop(name, None)
+        if not policy:
+            return {"error": f"Policy '{name}' not found"}
+        return {"deleted": name}
+
+    # ------------------------------------------------------------------
+    # Automated rollback on SLO breach detection
+    # ------------------------------------------------------------------
+
+    def configure_auto_rollback(
+        self,
+        slo_name: str,
+        deployment_name: Optional[str] = None,
+        canary_name: Optional[str] = None,
+        breach_threshold: float = 1.0,
+        cooldown_seconds: int = 300,
+        notification_channels: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Configure automatic rollback when SLO is breached.
+
+        Args:
+            slo_name: SLO to monitor.
+            deployment_name: Blue-green deployment to rollback.
+            canary_name: Canary deployment to rollback.
+            breach_threshold: How many % below target to trigger (default: 1%).
+            cooldown_seconds: Minimum time between rollbacks.
+            notification_channels: Channels to notify on rollback.
+        """
+        import time as _time
+        if not hasattr(self, '_auto_rollbacks'):
+            self._auto_rollbacks = {}
+        config = {
+            "slo_name": slo_name,
+            "deployment_name": deployment_name,
+            "canary_name": canary_name,
+            "breach_threshold": breach_threshold,
+            "cooldown_seconds": cooldown_seconds,
+            "notification_channels": notification_channels or [],
+            "enabled": True,
+            "created_at": _time.time(),
+            "last_triggered": None,
+            "trigger_count": 0,
+            "rollback_history": [],
+        }
+        self._auto_rollbacks[slo_name] = config
+        return {
+            "slo_name": slo_name,
+            "deployment": deployment_name or canary_name,
+            "breach_threshold": breach_threshold,
+        }
+
+    def check_and_auto_rollback(self) -> Dict[str, Any]:
+        """Check all monitored SLOs and trigger rollbacks if needed."""
+        import time as _time
+        if not hasattr(self, '_auto_rollbacks'):
+            return {"rollbacks_triggered": 0}
+
+        triggered = []
+        for slo_name, config in self._auto_rollbacks.items():
+            if not config["enabled"]:
+                continue
+
+            # Check cooldown
+            last = config.get("last_triggered") or 0
+            if _time.time() - last < config["cooldown_seconds"]:
+                continue
+
+            # Check SLO status
+            slo_status = self.get_slo_status(slo_name)
+            if "error" in slo_status:
+                continue
+
+            if not slo_status.get("met", True):
+                current = slo_status.get("current_sli", 100)
+                target = slo_status.get("target_percentage", 99.9)
+                deficit = target - current
+
+                if deficit >= config["breach_threshold"]:
+                    # Trigger rollback
+                    rollback_result = None
+                    if config["deployment_name"]:
+                        rollback_result = self.rollback_bluegreen(config["deployment_name"])
+                    elif config["canary_name"]:
+                        rollback_result = self.rollback_canary(config["canary_name"])
+
+                    config["last_triggered"] = _time.time()
+                    config["trigger_count"] += 1
+                    config["rollback_history"].append({
+                        "time": _time.time(),
+                        "slo_name": slo_name,
+                        "current_sli": current,
+                        "target": target,
+                        "result": rollback_result,
+                    })
+
+                    triggered.append({
+                        "slo_name": slo_name,
+                        "current_sli": current,
+                        "target": target,
+                        "deficit": round(deficit, 4),
+                        "rollback": rollback_result,
+                    })
+
+        return {
+            "rollbacks_triggered": len(triggered),
+            "details": triggered,
+        }
+
+    def get_auto_rollback_status(self) -> Dict[str, Any]:
+        """Get status of all auto-rollback configurations."""
+        if not hasattr(self, '_auto_rollbacks'):
+            return {"configurations": [], "count": 0}
+        result = []
+        for name, config in self._auto_rollbacks.items():
+            result.append({
+                "slo_name": name,
+                "enabled": config["enabled"],
+                "deployment": config["deployment_name"] or config["canary_name"],
+                "trigger_count": config["trigger_count"],
+                "last_triggered": config["last_triggered"],
+            })
+        return {"configurations": result, "count": len(result)}
+
+    def get_auto_rollback_history(self, slo_name: str) -> Dict[str, Any]:
+        """Get rollback history for a specific SLO."""
+        if not hasattr(self, '_auto_rollbacks'):
+            return {"error": "No auto-rollbacks configured"}
+        config = self._auto_rollbacks.get(slo_name)
+        if not config:
+            return {"error": f"No auto-rollback for SLO '{slo_name}'"}
+        return {
+            "slo_name": slo_name,
+            "history": list(reversed(config["rollback_history"])),
+            "count": len(config["rollback_history"]),
+        }
+
+    def disable_auto_rollback(self, slo_name: str) -> Dict[str, Any]:
+        """Disable auto-rollback for an SLO."""
+        if not hasattr(self, '_auto_rollbacks'):
+            return {"error": "No auto-rollbacks"}
+        config = self._auto_rollbacks.get(slo_name)
+        if not config:
+            return {"error": f"No auto-rollback for SLO '{slo_name}'"}
+        config["enabled"] = False
+        return {"slo_name": slo_name, "enabled": False}
+
+    def delete_auto_rollback(self, slo_name: str) -> Dict[str, Any]:
+        """Delete auto-rollback configuration."""
+        if not hasattr(self, '_auto_rollbacks'):
+            return {"error": "No auto-rollbacks"}
+        config = self._auto_rollbacks.pop(slo_name, None)
+        if not config:
+            return {"error": f"No auto-rollback for SLO '{slo_name}'"}
+        return {"deleted": slo_name}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

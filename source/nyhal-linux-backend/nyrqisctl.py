@@ -3389,6 +3389,116 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     raise ValueError(f"unknown command: {command!r}")
 
+    if command == "analyze-resource-usage":
+        return {
+            "service": "control",
+            "op": "analyze_resource_usage",
+            "container_id": args.container_id,
+        }
+    if command == "recommend-right-sizing":
+        return {
+            "service": "control",
+            "op": "recommend_right_sizing",
+            "container_id": args.container_id,
+        }
+    if command == "apply-right-sizing":
+        return {
+            "service": "control",
+            "op": "apply_right_sizing",
+            "container_id": args.container_id,
+            "dry_run": getattr(args, 'dry_run', True),
+        }
+    if command == "fleet-right-sizing-report":
+        return {
+            "service": "control",
+            "op": "fleet_right_sizing_report",
+        }
+    if command == "create-mesh-cluster":
+        return {
+            "service": "control",
+            "op": "create_mesh_cluster",
+            "name": args.name,
+            "endpoint": args.endpoint,
+            "region": getattr(args, 'region', 'default'),
+        }
+    if command == "add-mesh-service":
+        return {
+            "service": "control",
+            "op": "add_mesh_service",
+            "cluster_name": args.cluster_name,
+            "service_name": args.service_name,
+            "port": int(getattr(args, 'port', 80)),
+        }
+    if command == "create-traffic-policy":
+        return {
+            "service": "control",
+            "op": "create_traffic_policy",
+            "name": args.name,
+            "source_service": args.source_service,
+            "destination_service": args.destination_service,
+        }
+    if command == "evaluate-traffic-policy":
+        return {
+            "service": "control",
+            "op": "evaluate_traffic_policy",
+            "source": args.source,
+            "destination": args.destination,
+        }
+    if command == "get-mesh-topology":
+        return {
+            "service": "control",
+            "op": "get_mesh_topology",
+        }
+    if command == "list-mesh-policies":
+        return {
+            "service": "control",
+            "op": "list_mesh_policies",
+        }
+    if command == "delete-mesh-policy":
+        return {
+            "service": "control",
+            "op": "delete_mesh_policy",
+            "name": args.name,
+        }
+    if command == "configure-auto-rollback":
+        return {
+            "service": "control",
+            "op": "configure_auto_rollback",
+            "slo_name": args.slo_name,
+            "deployment_name": getattr(args, 'deployment_name', None),
+            "canary_name": getattr(args, 'canary_name', None),
+            "breach_threshold": float(getattr(args, 'breach_threshold', 1.0)),
+            "cooldown_seconds": int(getattr(args, 'cooldown_seconds', 300)),
+        }
+    if command == "check-auto-rollback":
+        return {
+            "service": "control",
+            "op": "check_and_auto_rollback",
+        }
+    if command == "get-auto-rollback-status":
+        return {
+            "service": "control",
+            "op": "get_auto_rollback_status",
+        }
+    if command == "get-auto-rollback-history":
+        return {
+            "service": "control",
+            "op": "get_auto_rollback_history",
+            "slo_name": args.slo_name,
+        }
+    if command == "disable-auto-rollback":
+        return {
+            "service": "control",
+            "op": "disable_auto_rollback",
+            "slo_name": args.slo_name,
+        }
+    if command == "delete-auto-rollback":
+        return {
+            "service": "control",
+            "op": "delete_auto_rollback",
+            "slo_name": args.slo_name,
+        }
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -7050,6 +7160,35 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines) if lines[1:] else "No SLOs"
     if command == "get-error-budget-report":
         return f"Error budget utilization: {resp.get('total_budget_used_pct', 0)}%"
+    if command == "recommend-right-sizing":
+        lines = ["Right-sizing recommendations:"]
+        for r in resp.get('recommendations', []):
+            if 'potential_savings_pct' in r:
+                lines.append(f"  {r['resource']}: {r.get('current_mb', r.get('current', 0))} -> {r.get('suggested_mb', r.get('suggested', 0))} (save {r['potential_savings_pct']}%)")
+            else:
+                lines.append(f"  {r['resource']}: {r.get('current', 0)} -> {r.get('suggested', r.get('suggested_mb', 0))} ({r.get('reason', '')})")
+        return "\n".join(lines) if lines[1:] else "No recommendations"
+    if command == "fleet-right-sizing-report":
+        return f"Right-sizing: {resp.get('containers_with_recommendations', 0)}/{resp.get('total_containers', 0)} containers have recommendations, {resp.get('total_potential_savings_pct', 0)}% potential savings"
+    if command == "get-mesh-topology":
+        return f"Mesh: {resp.get('clusters', 0)} clusters, {resp.get('services', []) and len(resp['services']) or 0} services, {resp.get('policies', 0)} policies"
+    if command == "create-traffic-policy":
+        return f"Traffic policy '{resp.get('name', '?')}' created: {resp.get('source', '?')} -> {resp.get('destination', '?')}"
+    if command == "list-mesh-policies":
+        lines = ["Mesh policies:"]
+        for p in resp.get('policies', []):
+            lines.append(f"  {p['name']}: {p['source']} -> {p['destination']} ({'enabled' if p['enabled'] else 'disabled'})")
+        return "\n".join(lines) if lines[1:] else "No policies"
+    if command == "configure-auto-rollback":
+        return f"Auto-rollback configured for SLO '{resp.get('slo_name', '?')}' (threshold={resp.get('breach_threshold', 0)}%)"
+    if command == "check-auto-rollback":
+        return f"Auto-rollback: {resp.get('rollbacks_triggered', 0)} rollbacks triggered"
+    if command == "get-auto-rollback-status":
+        lines = ["Auto-rollback status:"]
+        for c in resp.get('configurations', []):
+            status = "enabled" if c['enabled'] else "disabled"
+            lines.append(f"  SLO {c['slo_name']}: {status}, triggered={c['trigger_count']}")
+        return "\n".join(lines) if lines[1:] else "No auto-rollbacks"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -9651,6 +9790,84 @@ def build_parser() -> argparse.ArgumentParser:
     dslo = sub.add_parser("delete-slo", help="Delete SLO")
     dslo.add_argument("name")
     dslo.set_defaults(command="delete-slo")
+
+    # Resource right-sizing subcommands
+    aru = sub.add_parser("analyze-resource-usage", help="Analyze resource usage")
+    aru.add_argument("container_id")
+    aru.set_defaults(command="analyze-resource-usage")
+
+    rrs = sub.add_parser("recommend-right-sizing", help="Get right-sizing recommendations")
+    rrs.add_argument("container_id")
+    rrs.set_defaults(command="recommend-right-sizing")
+
+    ars = sub.add_parser("apply-right-sizing", help="Apply right-sizing")
+    ars.add_argument("container_id")
+    ars.add_argument("--dry-run", action="store_true", default=True)
+    ars.set_defaults(command="apply-right-sizing")
+
+    frr = sub.add_parser("fleet-right-sizing-report", help="Fleet right-sizing report")
+    frr.set_defaults(command="fleet-right-sizing-report")
+
+    # Service mesh subcommands
+    cmc = sub.add_parser("create-mesh-cluster", help="Create mesh cluster")
+    cmc.add_argument("name")
+    cmc.add_argument("endpoint")
+    cmc.add_argument("--region", default="default")
+    cmc.set_defaults(command="create-mesh-cluster")
+
+    ams = sub.add_parser("add-mesh-service", help="Add service to mesh")
+    ams.add_argument("cluster_name")
+    ams.add_argument("service_name")
+    ams.add_argument("--port", type=int, default=80)
+    ams.set_defaults(command="add-mesh-service")
+
+    ctp = sub.add_parser("create-traffic-policy", help="Create traffic policy")
+    ctp.add_argument("name")
+    ctp.add_argument("source_service")
+    ctp.add_argument("destination_service")
+    ctp.set_defaults(command="create-traffic-policy")
+
+    etp = sub.add_parser("evaluate-traffic-policy", help="Evaluate traffic policy")
+    etp.add_argument("source")
+    etp.add_argument("destination")
+    etp.set_defaults(command="evaluate-traffic-policy")
+
+    gmt = sub.add_parser("get-mesh-topology", help="Get mesh topology")
+    gmt.set_defaults(command="get-mesh-topology")
+
+    lmp = sub.add_parser("list-mesh-policies", help="List mesh policies")
+    lmp.set_defaults(command="list-mesh-policies")
+
+    dmp = sub.add_parser("delete-mesh-policy", help="Delete mesh policy")
+    dmp.add_argument("name")
+    dmp.set_defaults(command="delete-mesh-policy")
+
+    # Auto-rollback subcommands
+    car = sub.add_parser("configure-auto-rollback", help="Configure auto-rollback")
+    car.add_argument("slo_name")
+    car.add_argument("--deployment-name", default=None)
+    car.add_argument("--canary-name", default=None)
+    car.add_argument("--breach-threshold", type=float, default=1.0)
+    car.add_argument("--cooldown-seconds", type=int, default=300)
+    car.set_defaults(command="configure-auto-rollback")
+
+    ckar = sub.add_parser("check-auto-rollback", help="Check and trigger auto-rollback")
+    ckar.set_defaults(command="check-auto-rollback")
+
+    gars = sub.add_parser("get-auto-rollback-status", help="Get auto-rollback status")
+    gars.set_defaults(command="get-auto-rollback-status")
+
+    garh = sub.add_parser("get-auto-rollback-history", help="Get auto-rollback history")
+    garh.add_argument("slo_name")
+    garh.set_defaults(command="get-auto-rollback-history")
+
+    dar = sub.add_parser("disable-auto-rollback", help="Disable auto-rollback")
+    dar.add_argument("slo_name")
+    dar.set_defaults(command="disable-auto-rollback")
+
+    delar = sub.add_parser("delete-auto-rollback", help="Delete auto-rollback")
+    delar.add_argument("slo_name")
+    delar.set_defaults(command="delete-auto-rollback")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

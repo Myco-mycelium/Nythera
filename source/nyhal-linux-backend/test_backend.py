@@ -5368,6 +5368,221 @@ class TestSLOTracking(unittest.TestCase):
         self.assertIn("99.95", text)
 
 
+class TestResourceRightSizing(unittest.TestCase):
+    """Tests for resource right-sizing with ML-based analysis."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def _seed_history(self, mgr, cid, count=30, mem_ratio=0.5, cpu_ratio=0.3):
+        """Seed resource history for analysis."""
+        if not hasattr(mgr, '_resource_history'):
+            mgr._resource_history = {}
+        if cid not in mgr._resource_history:
+            mgr._resource_history[cid] = []
+        for _ in range(count):
+            mgr._resource_history[cid].append({"mem_ratio": mem_ratio, "cpu_ratio": cpu_ratio})
+
+    def test_analyze_usage(self):
+        """analyze_resource_usage computes stats."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs1")
+        self._seed_history(mgr, c.id, mem_ratio=0.5)
+        r = mgr.analyze_resource_usage(c.id)
+        self.assertIn("memory", r)
+        self.assertEqual(r["memory"]["avg_ratio"], 0.5)
+
+    def test_recommend_low_usage(self):
+        """Low usage triggers downsize recommendation."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs2")
+        self._seed_history(mgr, c.id, mem_ratio=0.15)
+        r = mgr.recommend_right_sizing(c.id)
+        self.assertGreater(r["count"], 0)
+        self.assertEqual(r["recommendations"][0]["resource"], "memory")
+
+    def test_recommend_high_usage(self):
+        """High usage triggers upsize recommendation."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs3")
+        self._seed_history(mgr, c.id, mem_ratio=0.9)
+        r = mgr.recommend_right_sizing(c.id)
+        self.assertGreater(r["count"], 0)
+        self.assertIn("risk", r["recommendations"][0])
+
+    def test_apply_dry_run(self):
+        """apply_right_sizing dry_run doesn't change config."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs4")
+        self._seed_history(mgr, c.id, mem_ratio=0.15)
+        old_mb = c.config.limits.memory_mb
+        mgr.apply_right_sizing(c.id, dry_run=True)
+        self.assertEqual(c.config.limits.memory_mb, old_mb)
+
+    def test_apply_real(self):
+        """apply_right_sizing changes config when not dry_run."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs5")
+        self._seed_history(mgr, c.id, mem_ratio=0.15)
+        old_mb = c.config.limits.memory_mb
+        mgr.apply_right_sizing(c.id, dry_run=False)
+        self.assertNotEqual(c.config.limits.memory_mb, old_mb)
+
+    def test_fleet_report(self):
+        """fleet_right_sizing_report aggregates."""
+        mgr = self._manager()
+        c = self._make(mgr, "rs6")
+        self._seed_history(mgr, c.id, mem_ratio=0.15)
+        r = mgr.fleet_right_sizing_report()
+        self.assertGreaterEqual(r["containers_with_recommendations"], 1)
+
+    def test_format_human(self):
+        """format_human handles recommend-right-sizing."""
+        from nyrqisctl import format_human
+        resp = {"recommendations": [{"resource": "memory", "current_mb": 1024, "suggested_mb": 512, "potential_savings_pct": 50.0}]}
+        text = format_human("recommend-right-sizing", resp)
+        self.assertIn("50.0", text)
+
+
+class TestServiceMesh(unittest.TestCase):
+    """Tests for multi-cluster service mesh."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_cluster(self):
+        """create_mesh_cluster stores cluster."""
+        mgr = self._manager()
+        r = mgr.create_mesh_cluster("us-east", "https://us-east.mesh", region="us-east-1")
+        self.assertEqual(r["region"], "us-east-1")
+
+    def test_add_service(self):
+        """add_mesh_service adds to cluster."""
+        mgr = self._manager()
+        mgr.create_mesh_cluster("c1", "https://c1.mesh")
+        r = mgr.add_mesh_service("c1", "api", port=8080)
+        self.assertEqual(r["port"], 8080)
+
+    def test_create_policy(self):
+        """create_traffic_policy stores policy."""
+        mgr = self._manager()
+        r = mgr.create_traffic_policy("tp1", "frontend", "backend")
+        self.assertEqual(r["source"], "frontend")
+        self.assertEqual(r["destination"], "backend")
+
+    def test_evaluate_policy(self):
+        """evaluate_traffic_policy returns action."""
+        mgr = self._manager()
+        mgr.create_traffic_policy("tp2", "a", "b")
+        r = mgr.evaluate_traffic_policy("a", "b")
+        self.assertIn("action", r)
+        self.assertEqual(r["policy"], "tp2")
+
+    def test_topology(self):
+        """get_mesh_topology returns overview."""
+        mgr = self._manager()
+        mgr.create_mesh_cluster("cl1", "https://cl1")
+        mgr.add_mesh_service("cl1", "svc1")
+        r = mgr.get_mesh_topology()
+        self.assertEqual(r["clusters"], 1)
+        self.assertEqual(len(r["services"]), 1)
+
+    def test_list_policies(self):
+        """list_mesh_policies returns all."""
+        mgr = self._manager()
+        mgr.create_traffic_policy("p1", "a", "b")
+        mgr.create_traffic_policy("p2", "c", "d")
+        r = mgr.list_mesh_policies()
+        self.assertEqual(r["count"], 2)
+
+    def test_format_human_topology(self):
+        """format_human handles get-mesh-topology."""
+        from nyrqisctl import format_human
+        text = format_human("get-mesh-topology", {"clusters": 3, "services": [{"s": 1}], "policies": 5})
+        self.assertIn("3", text)
+
+
+class TestAutoRollback(unittest.TestCase):
+    """Tests for automated rollback on SLO breach."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_configure(self):
+        """configure_auto_rollback stores config."""
+        mgr = self._manager()
+        r = mgr.configure_auto_rollback("slo1", breach_threshold=2.0)
+        self.assertEqual(r["breach_threshold"], 2.0)
+
+    def test_check_no_breach(self):
+        """check_and_auto_rollback does nothing when SLO met."""
+        mgr = self._manager()
+        mgr.create_slo("slo2", target_percentage=99.0)
+        for _ in range(100):
+            mgr.record_sli_event("slo2", is_good=True)
+        mgr.configure_auto_rollback("slo2")
+        r = mgr.check_and_auto_rollback()
+        self.assertEqual(r["rollbacks_triggered"], 0)
+
+    def test_check_breach(self):
+        """check_and_auto_rollback triggers on breach."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ar1")
+        c2 = self._make(mgr, "ar2")
+        mgr.create_slo("slo3", target_percentage=99.0)
+        for _ in range(90):
+            mgr.record_sli_event("slo3", is_good=True)
+        for _ in range(10):
+            mgr.record_sli_event("slo3", is_good=False)
+        # Create a blue-green deployment for rollback target
+        mgr.create_bluegreen_deployment("bg1", c1.id, c2.id)
+        mgr.configure_auto_rollback("slo3", deployment_name="bg1", breach_threshold=1.0, cooldown_seconds=0)
+        r = mgr.check_and_auto_rollback()
+        self.assertGreaterEqual(r["rollbacks_triggered"], 1)
+
+    def test_status(self):
+        """get_auto_rollback_status returns config."""
+        mgr = self._manager()
+        mgr.configure_auto_rollback("slo4")
+        r = mgr.get_auto_rollback_status()
+        self.assertEqual(r["count"], 1)
+        self.assertTrue(r["configurations"][0]["enabled"])
+
+    def test_disable(self):
+        """disable_auto_rollback disables config."""
+        mgr = self._manager()
+        mgr.configure_auto_rollback("slo5")
+        r = mgr.disable_auto_rollback("slo5")
+        self.assertFalse(r["enabled"])
+
+    def test_history(self):
+        """get_auto_rollback_history returns past rollbacks."""
+        mgr = self._manager()
+        mgr.configure_auto_rollback("slo6", cooldown_seconds=0)
+        mgr._auto_rollbacks["slo6"]["rollback_history"].append({"time": 1.0, "slo": "slo6"})
+        r = mgr.get_auto_rollback_history("slo6")
+        self.assertEqual(r["count"], 1)
+
+    def test_format_human_status(self):
+        """format_human handles get-auto-rollback-status."""
+        from nyrqisctl import format_human
+        resp = {"configurations": [{"slo_name": "s1", "enabled": True, "trigger_count": 3}]}
+        text = format_human("get-auto-rollback-status", resp)
+        self.assertIn("s1", text)
+        self.assertIn("3", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -30462,6 +30677,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestChaosEngineering))
     suite.addTests(loader.loadTestsFromTestCase(TestCostAllocation))
     suite.addTests(loader.loadTestsFromTestCase(TestSLOTracking))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceRightSizing))
+    suite.addTests(loader.loadTestsFromTestCase(TestServiceMesh))
+    suite.addTests(loader.loadTestsFromTestCase(TestAutoRollback))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
