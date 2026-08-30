@@ -4623,6 +4623,150 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Capacity forecasting with trend analysis
+    # ------------------------------------------------------------------
+
+    def forecast_resource_needs(
+        self,
+        container: Container,
+        horizon_hours: int = 24,
+    ) -> Dict[str, Any]:
+        """Forecast future resource needs based on historical trends.
+
+        Uses linear regression on resource history to predict future usage.
+
+        Args:
+            container: Container to forecast.
+            horizon_hours: How far ahead to forecast.
+
+        Returns:
+            Dict with forecasts for memory, CPU, and PIDs.
+        """
+        if not hasattr(self, '_resource_history'):
+            self._resource_history = {}
+        history = self._resource_history.get(container.id, [])
+
+        if len(history) < 3:
+            return {
+                "container_id": container.id,
+                "horizon_hours": horizon_hours,
+                "insufficient_data": True,
+                "data_points": len(history),
+            }
+
+        forecasts: Dict[str, Any] = {}
+        for metric in ["mem_ratio", "cpu_ratio", "pids_ratio"]:
+            values = [h.get(metric, 0) for h in history if metric in h]
+            if len(values) < 3:
+                forecasts[metric] = {"predicted": None, "trend": "unknown"}
+                continue
+
+            # Simple linear regression
+            n = len(values)
+            x = list(range(n))
+            x_mean = sum(x) / n
+            y_mean = sum(values) / n
+
+            numerator = sum((xi - x_mean) * (yi - y_mean) for xi, yi in zip(x, values))
+            denominator = sum((xi - x_mean) ** 2 for xi in x)
+
+            if denominator == 0:
+                slope = 0
+            else:
+                slope = numerator / denominator
+            intercept = y_mean - slope * x_mean
+
+            # Predict at horizon
+            predicted = intercept + slope * (n + horizon_hours)
+            predicted = max(0, min(predicted, 1.0))
+
+            # Determine trend
+            if slope > 0.01:
+                trend = "increasing"
+            elif slope < -0.01:
+                trend = "decreasing"
+            else:
+                trend = "stable"
+
+            # Time to threshold (if increasing)
+            time_to_90 = None
+            if slope > 0.001:
+                current = values[-1]
+                remaining = 0.9 - current
+                if remaining > 0:
+                    steps = remaining / slope
+                    time_to_90 = round(steps * 1.0, 1)  # hours assuming 1h per step
+
+            forecasts[metric] = {
+                "current": round(values[-1], 4),
+                "predicted": round(predicted, 4),
+                "slope": round(slope, 6),
+                "trend": trend,
+                "time_to_90pct_hours": time_to_90,
+            }
+
+        # Overall risk
+        risks = []
+        for metric, fc in forecasts.items():
+            if fc.get("predicted") and fc["predicted"] > 0.9:
+                risks.append(metric)
+
+        return {
+            "container_id": container.id,
+            "horizon_hours": horizon_hours,
+            "forecasts": forecasts,
+            "risk_metrics": risks,
+            "overall_risk": "high" if len(risks) >= 2 else
+                           "medium" if risks else "low",
+            "data_points": len(history),
+            "insufficient_data": False,
+        }
+
+    def forecast_fleet_capacity(self) -> Dict[str, Any]:
+        """Forecast capacity needs across all running containers."""
+        results: List[Dict[str, Any]] = []
+        high_risk_count = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.forecast_resource_needs(c)
+                if not result.get("insufficient_data"):
+                    results.append(result)
+                    if result.get("overall_risk") == "high":
+                        high_risk_count += 1
+
+        return {
+            "containers_forecasted": len(results),
+            "high_risk_containers": high_risk_count,
+            "results": results,
+        }
+
+    def get_capacity_recommendations(self) -> Dict[str, Any]:
+        """Get fleet-wide capacity recommendations."""
+        forecast = self.forecast_fleet_capacity()
+
+        recommendations: List[Dict[str, Any]] = []
+        for result in forecast["results"]:
+            for metric, fc in result.get("forecasts", {}).items():
+                if fc.get("time_to_90pct_hours") and fc["time_to_90pct_hours"] < 48:
+                    recommendations.append({
+                        "container_id": result["container_id"],
+                        "metric": metric,
+                        "time_to_threshold_hours": fc["time_to_90pct_hours"],
+                        "current": fc["current"],
+                        "predicted": fc["predicted"],
+                        "action": "scale_up" if fc["trend"] == "increasing" else "monitor",
+                    })
+
+        recommendations.sort(key=lambda r: r["time_to_threshold_hours"])
+
+        return {
+            "recommendations": recommendations,
+            "count": len(recommendations),
+            "urgent_count": sum(1 for r in recommendations if r["time_to_threshold_hours"] < 24),
+        }
+
+    # ------------------------------------------------------------------
     # Health scoring engine
     # ------------------------------------------------------------------
 
@@ -13616,6 +13760,193 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Container performance profiling
+    # ------------------------------------------------------------------
+
+    def profile_container_performance(
+        self,
+        container: Container,
+        duration_s: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Profile a container's performance characteristics.
+
+        Collects CPU, memory, I/O, and PID metrics with derived
+        performance indicators.
+
+        Args:
+            container: Container to profile.
+            duration_s: Profiling duration (used for rate calculations).
+
+        Returns:
+            Dict with performance profile data.
+        """
+        stats = self.container_stats(container)
+        limits = container.config.limits
+
+        # Memory analysis
+        mem_bytes = stats.get("memory_bytes", 0)
+        mem_limit = limits.memory_mb * 1024 * 1024
+        mem_ratio = mem_bytes / max(mem_limit, 1)
+
+        # CPU analysis
+        cpu_usec = stats.get("cpu_usage_usec", 0)
+        uptime_s = stats.get("uptime_s", 0) or 1.0
+        cpu_pct = min((cpu_usec / 10000.0) / uptime_s, 100.0) if uptime_s > 0 else 0.0
+
+        # PID analysis
+        pids = stats.get("pids_current", 0)
+        pid_limit = limits.pid_limit
+        pid_ratio = pids / max(pid_limit, 1)
+
+        # I/O analysis
+        io_read = stats.get("io_read_bytes", 0)
+        io_write = stats.get("io_write_bytes", 0)
+        io_read_rate = io_read / uptime_s if uptime_s > 0 else 0
+        io_write_rate = io_write / uptime_s if uptime_s > 0 else 0
+
+        # Performance score (0-100)
+        mem_score = max(0, 100 - (mem_ratio * 100))
+        cpu_score = max(0, 100 - cpu_pct)
+        pid_score = max(0, 100 - (pid_ratio * 100))
+        perf_score = (mem_score + cpu_score + pid_score) / 3
+
+        # Performance rating
+        if perf_score >= 80:
+            rating = "excellent"
+        elif perf_score >= 60:
+            rating = "good"
+        elif perf_score >= 40:
+            rating = "fair"
+        elif perf_score >= 20:
+            rating = "poor"
+        else:
+            rating = "critical"
+
+        # Bottleneck detection
+        bottlenecks: List[str] = []
+        if mem_ratio > 0.9:
+            bottlenecks.append("memory")
+        if cpu_pct > 90:
+            bottlenecks.append("cpu")
+        if pid_ratio > 0.9:
+            bottlenecks.append("pids")
+
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "memory": {
+                "bytes": mem_bytes,
+                "limit_bytes": mem_limit,
+                "ratio": round(mem_ratio, 4),
+                "score": round(mem_score, 1),
+            },
+            "cpu": {
+                "usage_usec": cpu_usec,
+                "uptime_s": round(uptime_s, 3),
+                "percent": round(cpu_pct, 2),
+                "score": round(cpu_score, 1),
+            },
+            "pids": {
+                "current": pids,
+                "limit": pid_limit,
+                "ratio": round(pid_ratio, 4),
+                "score": round(pid_score, 1),
+            },
+            "io": {
+                "read_bytes": io_read,
+                "write_bytes": io_write,
+                "read_rate_bytes_s": round(io_read_rate, 0),
+                "write_rate_bytes_s": round(io_write_rate, 0),
+            },
+            "performance_score": round(perf_score, 1),
+            "rating": rating,
+            "bottlenecks": bottlenecks,
+            "profile_time": time.time(),
+        }
+
+    def profile_fleet_performance(self) -> Dict[str, Any]:
+        """Profile performance across all running containers."""
+        results: List[Dict[str, Any]] = []
+        total_score = 0
+        critical_count = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.profile_container_performance(c)
+                results.append(result)
+                total_score += result["performance_score"]
+                if result["rating"] in ("critical", "poor"):
+                    critical_count += 1
+
+        results.sort(key=lambda r: r["performance_score"])
+        avg_score = total_score / max(len(results), 1)
+
+        return {
+            "containers_profiled": len(results),
+            "average_score": round(avg_score, 1),
+            "critical_containers": critical_count,
+            "results": results,
+        }
+
+    def get_performance_recommendations(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Generate performance optimization recommendations."""
+        profile = self.profile_container_performance(container)
+        recommendations: List[Dict[str, Any]] = []
+
+        mem = profile["memory"]
+        cpu = profile["cpu"]
+        pids = profile["pids"]
+
+        if mem["ratio"] > 0.8:
+            recommendations.append({
+                "type": "memory_high",
+                "severity": "high",
+                "message": f"Memory usage at {mem['ratio']*100:.0f}% - consider increasing limit",
+                "current_limit_mb": container.config.limits.memory_mb,
+                "suggested_limit_mb": int(container.config.limits.memory_mb * 1.5),
+            })
+        elif mem["ratio"] < 0.1 and container.config.limits.memory_mb > 128:
+            recommendations.append({
+                "type": "memory_overprovisioned",
+                "severity": "low",
+                "message": f"Memory usage at {mem['ratio']*100:.0f}% - limit can be reduced",
+                "current_limit_mb": container.config.limits.memory_mb,
+                "suggested_limit_mb": max(64, int(mem["bytes"] / (1024*1024) * 2)),
+            })
+
+        if cpu["percent"] > 80:
+            recommendations.append({
+                "type": "cpu_high",
+                "severity": "high",
+                "message": f"CPU usage at {cpu['percent']:.0f}% - consider increasing CPU shares",
+            })
+
+        if pids["ratio"] > 0.8:
+            recommendations.append({
+                "type": "pids_high",
+                "severity": "medium",
+                "message": f"PID count at {pids['ratio']*100:.0f}% of limit",
+            })
+
+        if profile["bottlenecks"]:
+            recommendations.append({
+                "type": "bottleneck_detected",
+                "severity": "warning",
+                "message": f"Bottlenecks detected: {', '.join(profile['bottlenecks'])}",
+            })
+
+        return {
+            "container_id": container.id,
+            "performance_score": profile["performance_score"],
+            "rating": profile["rating"],
+            "recommendations": recommendations,
+            "recommendation_count": len(recommendations),
+        }
+
+    # ------------------------------------------------------------------
     # Resource usage baselines (normal usage patterns)
     # ------------------------------------------------------------------
 
@@ -15310,6 +15641,207 @@ class ContainerManager:
             "images": images,
             "image_count": len(images),
             "total_size_bytes": total_size,
+        }
+
+    # ------------------------------------------------------------------
+    # Image vulnerability scanning
+    # ------------------------------------------------------------------
+
+    # Simulated CVE database for demonstration purposes.
+    # In production this would connect to an actual vulnerability database
+    # (e.g., NVD, OSV, Trivy).
+    _KNOWN_VULNS = [
+        {"id": "CVE-2024-0001", "severity": "critical", "package": "openssl",
+         "version": "<3.0.12", "description": "Buffer overflow in TLS handshake"},
+        {"id": "CVE-2024-0002", "severity": "high", "package": "curl",
+         "version": "<8.4.0", "description": "HTTP/2 rapid reset DoS"},
+        {"id": "CVE-2024-0003", "severity": "medium", "package": "zlib",
+         "version": "<1.3.1", "description": "Integer overflow in inflate"},
+        {"id": "CVE-2024-0004", "severity": "low", "package": "libpng",
+         "version": "<1.6.40", "description": "Out-of-bounds read in chunk processing"},
+        {"id": "CVE-2024-0005", "severity": "critical", "package": "bash",
+         "version": "<5.2.21", "description": "Command injection via crafted input"},
+        {"id": "CVE-2024-0006", "severity": "high", "package": "python3",
+         "version": "<3.11.7", "description": "Denial of service via crafted HTTP request"},
+        {"id": "CVE-2024-0007", "severity": "medium", "package": "kernel",
+         "version": "<6.6.10", "description": "Local privilege escalation via kernel module"},
+        {"id": "CVE-2024-0008", "severity": "high", "package": "glibc",
+         "version": "<2.38", "description": "Heap buffer overflow in iconv"},
+        {"id": "CVE-2024-0009", "severity": "low", "package": "systemd",
+         "version": "<255", "description": "Information disclosure via journal files"},
+        {"id": "CVE-2024-0010", "severity": "medium", "package": "nginx",
+         "version": "<1.25.4", "description": "HTTP request smuggling via malformed header"},
+    ]
+
+    def scan_image_vulnerabilities(
+        self,
+        image_path: str,
+        severity_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Scan an image directory for known vulnerabilities.
+
+        Analyzes installed packages in the image against a CVE database.
+
+        Args:
+            image_path: Path to the image directory.
+            severity_filter: If set, only return these severities.
+
+        Returns:
+            Dict with vulnerabilities, counts, and risk score.
+        """
+        import hashlib as _hl
+
+        if not os.path.isdir(image_path):
+            return {"error": f"Image not found: {image_path}", "vulnerabilities": []}
+
+        # Discover packages in the image
+        packages: Dict[str, str] = {}
+        state_dir = os.path.join(image_path, "state")
+
+        # Check for package manifests
+        for manifest in ["packages.json", "installed.json", "dpkg-status"]:
+            manifest_path = os.path.join(state_dir, manifest)
+            if os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path) as f:
+                        import json as _json
+                        data = _json.load(f)
+                    if isinstance(data, dict):
+                        packages.update({k: str(v) for k, v in data.items()})
+                    elif isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict) and "name" in item:
+                                packages[item["name"]] = item.get("version", "0")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        # Fallback: scan files for known patterns
+        if not packages:
+            for root, dirs, files in os.walk(image_path):
+                for fname in files:
+                    # Heuristic: common library patterns
+                    for lib_name in ["openssl", "curl", "zlib", "libpng",
+                                     "bash", "python3", "glibc", "nginx"]:
+                        if lib_name in fname.lower():
+                            packages[lib_name] = "1.0"
+                    if len(packages) >= 10:
+                        break
+                if len(packages) >= 10:
+                    break
+
+        # Match against known vulnerabilities
+        vulns: List[Dict[str, Any]] = []
+        for vuln in self._KNOWN_VULNS:
+            pkg = vuln["package"]
+            if pkg in packages:
+                if severity_filter and vuln["severity"] not in severity_filter:
+                    continue
+                vulns.append({
+                    "cve_id": vuln["id"],
+                    "severity": vuln["severity"],
+                    "package": pkg,
+                    "installed_version": packages[pkg],
+                    "vulnerable_version": vuln["version"],
+                    "description": vuln["description"],
+                })
+
+        # Compute risk score
+        severity_scores = {"critical": 40, "high": 25, "medium": 15, "low": 5}
+        risk_score = sum(severity_scores.get(v["severity"], 0) for v in vulns)
+        risk_score = min(risk_score, 100)
+
+        severity_counts: Dict[str, int] = {}
+        for v in vulns:
+            severity_counts[v["severity"]] = severity_counts.get(v["severity"], 0) + 1
+
+        if risk_score >= 75:
+            risk_level = "critical"
+        elif risk_score >= 50:
+            risk_level = "high"
+        elif risk_score >= 25:
+            risk_level = "medium"
+        elif risk_score > 0:
+            risk_level = "low"
+        else:
+            risk_level = "clean"
+
+        return {
+            "image_path": image_path,
+            "packages_scanned": len(packages),
+            "vulnerabilities": vulns,
+            "vuln_count": len(vulns),
+            "severity_distribution": severity_counts,
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+        }
+
+    def scan_container_vulnerabilities(
+        self,
+        container: Container,
+        severity_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Scan a container's filesystem for vulnerabilities.
+
+        Falls back to scanning the container's rootfs if available.
+        """
+        if container.config.rootfs and os.path.isdir(container.config.rootfs):
+            return self.scan_image_vulnerabilities(
+                container.config.rootfs, severity_filter)
+
+        return {
+            "container_id": container.id,
+            "packages_scanned": 0,
+            "vulnerabilities": [],
+            "vuln_count": 0,
+            "severity_distribution": {},
+            "risk_score": 0,
+            "risk_level": "unknown",
+            "reason": "No rootfs available for scanning",
+        }
+
+    def scan_fleet_vulnerabilities(
+        self,
+        severity_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Scan all running containers for vulnerabilities."""
+        results: List[Dict[str, Any]] = []
+        total_vulns = 0
+        critical_count = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.scan_container_vulnerabilities(c, severity_filter)
+                results.append(result)
+                total_vulns += result.get("vuln_count", 0)
+                if result.get("risk_level") in ("critical", "high"):
+                    critical_count += 1
+
+        results.sort(key=lambda r: r.get("risk_score", 0), reverse=True)
+
+        return {
+            "containers_scanned": len(results),
+            "total_vulnerabilities": total_vulns,
+            "critical_containers": critical_count,
+            "results": results,
+        }
+
+    def get_vulnerability_summary(self) -> Dict[str, Any]:
+        """Get a summary of fleet vulnerability posture."""
+        scan = self.scan_fleet_vulnerabilities()
+        severity_counts: Dict[str, int] = {}
+        for result in scan["results"]:
+            for vuln in result.get("vulnerabilities", []):
+                sev = vuln["severity"]
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+        return {
+            "containers_scanned": scan["containers_scanned"],
+            "total_vulnerabilities": scan["total_vulnerabilities"],
+            "critical_containers": scan["critical_containers"],
+            "severity_distribution": severity_counts,
+            "overall_risk": "critical" if scan["critical_containers"] > 0 else
+                           "high" if scan["total_vulnerabilities"] > 10 else
+                           "medium" if scan["total_vulnerabilities"] > 0 else "clean",
         }
 
     # ------------------------------------------------------------------

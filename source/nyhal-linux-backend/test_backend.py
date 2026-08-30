@@ -3349,6 +3349,200 @@ class TestSecurityScanning(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestVulnerabilityScanning(unittest.TestCase):
+    """Tests for image vulnerability scanning."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_scan_image_nonexistent(self):
+        """Scan nonexistent image returns error."""
+        mgr = self._manager()
+        r = mgr.scan_image_vulnerabilities("/nonexistent")
+        self.assertIn("error", r)
+
+    def test_scan_fleet(self):
+        """Fleet vulnerability scan."""
+        mgr = self._manager()
+        self._make(mgr, "vuln1")
+        r = mgr.scan_fleet_vulnerabilities()
+        self.assertIn("containers_scanned", r)
+        self.assertIn("total_vulnerabilities", r)
+
+    def test_vulnerability_summary(self):
+        """Vulnerability summary."""
+        mgr = self._manager()
+        r = mgr.get_vulnerability_summary()
+        self.assertIn("overall_risk", r)
+        self.assertIn("severity_distribution", r)
+
+    def test_format_human_scan_vuln(self):
+        """format_human handles scan-image-vulnerabilities."""
+        from nyrqisctl import format_human
+        resp = {"packages_scanned": 10, "vuln_count": 2, "risk_level": "medium",
+                "risk_score": 30, "vulnerabilities": [
+                    {"severity": "high", "cve_id": "CVE-2024-0001", "package": "openssl",
+                     "description": "Buffer overflow"}]}
+        text = format_human("scan-image-vulnerabilities", resp)
+        self.assertIn("10", text)
+        self.assertIn("CVE-2024-0001", text)
+
+    def test_format_human_vuln_summary(self):
+        """format_human handles get-vulnerability-summary."""
+        from nyrqisctl import format_human
+        resp = {"containers_scanned": 5, "total_vulnerabilities": 3, "overall_risk": "medium"}
+        text = format_human("get-vulnerability-summary", resp)
+        self.assertIn("5", text)
+        self.assertIn("3", text)
+
+
+class TestPerformanceProfiling(unittest.TestCase):
+    """Tests for container performance profiling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_profile_container(self):
+        """Profile a container."""
+        mgr = self._manager()
+        c = self._make(mgr, "perf1")
+        r = mgr.profile_container_performance(c)
+        self.assertIn("performance_score", r)
+        self.assertIn("rating", r)
+        self.assertIn("bottlenecks", r)
+        self.assertIn("memory", r)
+        self.assertIn("cpu", r)
+
+    def test_profile_fleet(self):
+        """Fleet performance profiling."""
+        mgr = self._manager()
+        self._make(mgr, "perf2")
+        r = mgr.profile_fleet_performance()
+        self.assertIn("containers_profiled", r)
+        self.assertIn("average_score", r)
+
+    def test_performance_recommendations(self):
+        """Performance recommendations."""
+        mgr = self._manager()
+        c = self._make(mgr, "perf3")
+        r = mgr.get_performance_recommendations(c)
+        self.assertIn("recommendations", r)
+        self.assertIn("performance_score", r)
+        self.assertIn("rating", r)
+
+    def test_format_human_profile(self):
+        """format_human handles profile-container-performance."""
+        from nyrqisctl import format_human
+        resp = {"container_name": "web", "performance_score": 85.0,
+                "rating": "excellent", "bottlenecks": [],
+                "memory": {"ratio": 0.3, "score": 70.0},
+                "cpu": {"percent": 15.0, "score": 85.0},
+                "pids": {"ratio": 0.1, "score": 90.0}}
+        text = format_human("profile-container-performance", resp)
+        self.assertIn("web", text)
+        self.assertIn("85", text)
+
+    def test_format_human_fleet_profile(self):
+        """format_human handles profile-fleet-performance."""
+        from nyrqisctl import format_human
+        resp = {"containers_profiled": 3, "average_score": 75.0,
+                "critical_containers": 0, "results": []}
+        text = format_human("profile-fleet-performance", resp)
+        self.assertIn("3", text)
+        self.assertIn("75", text)
+
+
+class TestCapacityForecasting(unittest.TestCase):
+    """Tests for capacity forecasting."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_forecast_insufficient_data(self):
+        """Forecast with insufficient data."""
+        mgr = self._manager()
+        c = self._make(mgr, "fc1")
+        r = mgr.forecast_resource_needs(c)
+        self.assertTrue(r["insufficient_data"])
+
+    def test_forecast_with_history(self):
+        """Forecast with historical data."""
+        mgr = self._manager()
+        c = self._make(mgr, "fc2")
+        mgr._resource_history = {}
+        mgr._resource_history[c.id] = [
+            {"mem_ratio": 0.3 + i * 0.02, "cpu_ratio": 0.2, "pids_ratio": 0.1}
+            for i in range(10)
+        ]
+        r = mgr.forecast_resource_needs(c, horizon_hours=12)
+        self.assertFalse(r["insufficient_data"])
+        self.assertIn("forecasts", r)
+        self.assertIn("mem_ratio", r["forecasts"])
+
+    def test_fleet_forecast(self):
+        """Fleet capacity forecast."""
+        mgr = self._manager()
+        self._make(mgr, "fc3")
+        r = mgr.forecast_fleet_capacity()
+        self.assertIn("containers_forecasted", r)
+        self.assertIn("high_risk_containers", r)
+
+    def test_capacity_recommendations(self):
+        """Capacity recommendations."""
+        mgr = self._manager()
+        r = mgr.get_capacity_recommendations()
+        self.assertIn("recommendations", r)
+        self.assertIn("count", r)
+        self.assertIn("urgent_count", r)
+
+    def test_format_human_forecast(self):
+        """format_human handles forecast-resource-needs."""
+        from nyrqisctl import format_human
+        resp = {"horizon_hours": 24, "insufficient_data": False,
+                "forecasts": {"mem_ratio": {"current": 0.5, "predicted": 0.6, "trend": "increasing"}},
+                "risk_metrics": ["mem_ratio"]}
+        text = format_human("forecast-resource-needs", resp)
+        self.assertIn("50%", text)
+        self.assertIn("60%", text)
+
+    def test_format_human_capacity_recs(self):
+        """format_human handles get-capacity-recommendations."""
+        from nyrqisctl import format_human
+        resp = {"count": 2, "urgent_count": 1, "recommendations": [
+            {"container_id": "abc123", "metric": "mem_ratio",
+             "time_to_threshold_hours": 12, "action": "scale_up"}]}
+        text = format_human("get-capacity-recommendations", resp)
+        self.assertIn("2", text)
+        self.assertIn("1", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -28294,6 +28488,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBackupDR))
     suite.addTests(loader.loadTestsFromTestCase(TestLogAggregation))
     suite.addTests(loader.loadTestsFromTestCase(TestSecurityScanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestVulnerabilityScanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestPerformanceProfiling))
+    suite.addTests(loader.loadTestsFromTestCase(TestCapacityForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

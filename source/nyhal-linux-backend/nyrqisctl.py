@@ -2439,6 +2439,45 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "control", "op": "scan_fleet_security"}
     if command == "get-security-summary":
         return {"service": "control", "op": "get_security_summary"}
+    if command == "scan-image-vulnerabilities":
+        return {
+            "service": "control",
+            "op": "scan_image_vulnerabilities",
+            "image_path": args.image_path,
+            "severity_filter": getattr(args, 'severity_filter', None),
+        }
+    if command == "scan-container-vulnerabilities":
+        return {
+            "service": "control",
+            "op": "scan_container_vulnerabilities",
+            "container_id": args.container_id,
+            "severity_filter": getattr(args, 'severity_filter', None),
+        }
+    if command == "scan-fleet-vulnerabilities":
+        return {
+            "service": "control",
+            "op": "scan_fleet_vulnerabilities",
+            "severity_filter": getattr(args, 'severity_filter', None),
+        }
+    if command == "get-vulnerability-summary":
+        return {"service": "control", "op": "get_vulnerability_summary"}
+    if command == "profile-container-performance":
+        return {"service": "control", "op": "profile_container_performance", "container_id": args.container_id}
+    if command == "profile-fleet-performance":
+        return {"service": "control", "op": "profile_fleet_performance"}
+    if command == "get-performance-recommendations":
+        return {"service": "control", "op": "get_performance_recommendations", "container_id": args.container_id}
+    if command == "forecast-resource-needs":
+        return {
+            "service": "control",
+            "op": "forecast_resource_needs",
+            "container_id": args.container_id,
+            "horizon_hours": getattr(args, 'horizon_hours', 24),
+        }
+    if command == "forecast-fleet-capacity":
+        return {"service": "control", "op": "forecast_fleet_capacity"}
+    if command == "get-capacity-recommendations":
+        return {"service": "control", "op": "get_capacity_recommendations"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5650,6 +5689,74 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines)
     if command == "get-security-summary":
         return f"Security: {resp.get('containers_scanned', 0)} scanned, {resp.get('total_findings', 0)} findings, overall risk: {resp.get('overall_risk', '?')}"
+    if command == "scan-image-vulnerabilities":
+        lines = [
+            f"Vulnerability scan: {resp.get('packages_scanned', 0)} packages, {resp.get('vuln_count', 0)} vulns (risk: {resp.get('risk_level', '?')}, score: {resp.get('risk_score', 0)})",
+        ]
+        for v in resp.get('vulnerabilities', [])[:5]:
+            lines.append(f"  [{v.get('severity', '?')}] {v.get('cve_id', '?')}: {v.get('package', '?')} - {v.get('description', '?')}")
+        return "\n".join(lines)
+    if command == "scan-container-vulnerabilities":
+        lines = [
+            f"Container {resp.get('container_id', '?')[:12]}: {resp.get('vuln_count', 0)} vulns (risk: {resp.get('risk_level', '?')})",
+        ]
+        return "\n".join(lines)
+    if command == "scan-fleet-vulnerabilities":
+        lines = [
+            f"Fleet vulnerabilities: {resp.get('containers_scanned', 0)} scanned, {resp.get('total_vulnerabilities', 0)} total, {resp.get('critical_containers', 0)} critical",
+        ]
+        for r in resp.get('results', [])[:5]:
+            lines.append(f"  {r.get('container_id', '?')[:12]}: {r.get('risk_level', '?')} ({r.get('vuln_count', 0)} vulns)")
+        return "\n".join(lines)
+    if command == "get-vulnerability-summary":
+        return f"Vulnerabilities: {resp.get('containers_scanned', 0)} scanned, {resp.get('total_vulnerabilities', 0)} total, overall risk: {resp.get('overall_risk', '?')}"
+    if command == "profile-container-performance":
+        lines = [
+            f"Performance profile: {resp.get('container_name', '?')} (score: {resp.get('performance_score', 0)}, rating: {resp.get('rating', '?')})",
+            f"  Memory: {resp.get('memory', {}).get('ratio', 0)*100:.0f}% (score: {resp.get('memory', {}).get('score', 0)})",
+            f"  CPU: {resp.get('cpu', {}).get('percent', 0):.1f}% (score: {resp.get('cpu', {}).get('score', 0)})",
+            f"  PIDs: {resp.get('pids', {}).get('ratio', 0)*100:.0f}% (score: {resp.get('pids', {}).get('score', 0)})",
+        ]
+        if resp.get('bottlenecks'):
+            lines.append(f"  Bottlenecks: {', '.join(resp['bottlenecks'])}")
+        return "\n".join(lines)
+    if command == "profile-fleet-performance":
+        lines = [
+            f"Fleet performance: {resp.get('containers_profiled', 0)} profiled, avg score: {resp.get('average_score', 0)}, {resp.get('critical_containers', 0)} critical",
+        ]
+        for r in resp.get('results', [])[:5]:
+            lines.append(f"  {r.get('container_name', '?')}: {r.get('rating', '?')} (score: {r.get('performance_score', 0)})")
+        return "\n".join(lines)
+    if command == "get-performance-recommendations":
+        lines = [
+            f"Recommendations for {resp.get('container_id', '?')[:12]} (score: {resp.get('performance_score', 0)}, rating: {resp.get('rating', '?')}):",
+        ]
+        for r in resp.get('recommendations', []):
+            lines.append(f"  [{r.get('severity', '?')}] {r.get('message', '?')}")
+        if not resp.get('recommendations'):
+            lines.append("  No recommendations")
+        return "\n".join(lines)
+    if command == "forecast-resource-needs":
+        if resp.get('insufficient_data'):
+            return f"Insufficient data for forecast ({resp.get('data_points', 0)} points)"
+        lines = [
+            f"Resource forecast ({resp.get('horizon_hours', 0)}h horizon):",
+        ]
+        for metric, fc in resp.get('forecasts', {}).items():
+            lines.append(f"  {metric}: {fc.get('current', 0)*100:.0f}% -> {fc.get('predicted', 0)*100:.0f}% ({fc.get('trend', '?')})")
+        if resp.get('risk_metrics'):
+            lines.append(f"  Risk: {', '.join(resp['risk_metrics'])}")
+        return "\n".join(lines)
+    if command == "forecast-fleet-capacity":
+        lines = [
+            f"Fleet forecast: {resp.get('containers_forecasted', 0)} forecasted, {resp.get('high_risk_containers', 0)} high risk",
+        ]
+        return "\n".join(lines)
+    if command == "get-capacity-recommendations":
+        lines = [f"Capacity recommendations: {resp.get('count', 0)} ({resp.get('urgent_count', 0)} urgent)"]
+        for r in resp.get('recommendations', [])[:5]:
+            lines.append(f"  {r.get('container_id', '?')[:12]}: {r.get('metric', '?')} in {r.get('time_to_threshold_hours', 0):.0f}h ({r.get('action', '?')})")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -7543,6 +7650,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     gss = sub.add_parser("get-security-summary", help="Get security summary")
     gss.set_defaults(command="get-security-summary")
+
+    # -- vulnerability scanning commands --
+    siv = sub.add_parser("scan-image-vulnerabilities", help="Scan image for vulnerabilities")
+    siv.add_argument("image_path")
+    siv.add_argument("--severity-filter", nargs="+", default=None)
+    siv.set_defaults(command="scan-image-vulnerabilities")
+
+    scv = sub.add_parser("scan-container-vulnerabilities", help="Scan container for vulnerabilities")
+    scv.add_argument("container_id")
+    scv.add_argument("--severity-filter", nargs="+", default=None)
+    scv.set_defaults(command="scan-container-vulnerabilities")
+
+    sfv = sub.add_parser("scan-fleet-vulnerabilities", help="Scan fleet for vulnerabilities")
+    sfv.add_argument("--severity-filter", nargs="+", default=None)
+    sfv.set_defaults(command="scan-fleet-vulnerabilities")
+
+    gvs = sub.add_parser("get-vulnerability-summary", help="Get vulnerability summary")
+    gvs.set_defaults(command="get-vulnerability-summary")
+
+    # -- performance profiling commands --
+    pcp = sub.add_parser("profile-container-performance", help="Profile container performance")
+    pcp.add_argument("container_id")
+    pcp.set_defaults(command="profile-container-performance")
+
+    pfp = sub.add_parser("profile-fleet-performance", help="Profile fleet performance")
+    pfp.set_defaults(command="profile-fleet-performance")
+
+    gpr = sub.add_parser("get-performance-recommendations", help="Get performance recommendations")
+    gpr.add_argument("container_id")
+    gpr.set_defaults(command="get-performance-recommendations")
+
+    # -- capacity forecasting commands --
+    frn = sub.add_parser("forecast-resource-needs", help="Forecast resource needs")
+    frn.add_argument("container_id")
+    frn.add_argument("--horizon-hours", type=int, default=24)
+    frn.set_defaults(command="forecast-resource-needs")
+
+    ffc = sub.add_parser("forecast-fleet-capacity", help="Forecast fleet capacity")
+    ffc.set_defaults(command="forecast-fleet-capacity")
+
+    gcr = sub.add_parser("get-capacity-recommendations", help="Get capacity recommendations")
+    gcr.set_defaults(command="get-capacity-recommendations")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

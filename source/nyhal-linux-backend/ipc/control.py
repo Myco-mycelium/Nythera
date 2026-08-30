@@ -1080,6 +1080,36 @@ class ControlService:
             elif op == "get_security_summary":
                 self._get_security_summary(server, sender_path,
                                         msg.message_id, request)
+            elif op == "scan_image_vulnerabilities":
+                self._scan_image_vulnerabilities(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "scan_container_vulnerabilities":
+                self._scan_container_vulnerabilities(server, sender_path,
+                                                 msg.message_id, request)
+            elif op == "scan_fleet_vulnerabilities":
+                self._scan_fleet_vulnerabilities(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "get_vulnerability_summary":
+                self._get_vulnerability_summary(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "profile_container_performance":
+                self._profile_container_performance(server, sender_path,
+                                                msg.message_id, request)
+            elif op == "profile_fleet_performance":
+                self._profile_fleet_performance(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_performance_recommendations":
+                self._get_performance_recommendations(server, sender_path,
+                                                  msg.message_id, request)
+            elif op == "forecast_resource_needs":
+                self._forecast_resource_needs(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "forecast_fleet_capacity":
+                self._forecast_fleet_capacity(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "get_capacity_recommendations":
+                self._get_capacity_recommendations(server, sender_path,
+                                               msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6650,6 +6680,74 @@ class ControlService:
 
     def _get_security_summary(self, server, sender_path, call_id, request):
         result = self.container_manager.get_security_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- vulnerability scanning handlers --
+
+    def _scan_image_vulnerabilities(self, server, sender_path, call_id, request):
+        result = self.container_manager.scan_image_vulnerabilities(
+            request['image_path'],
+            severity_filter=request.get('severity_filter'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _scan_container_vulnerabilities(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.scan_container_vulnerabilities(
+            c, severity_filter=request.get('severity_filter'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _scan_fleet_vulnerabilities(self, server, sender_path, call_id, request):
+        result = self.container_manager.scan_fleet_vulnerabilities(
+            severity_filter=request.get('severity_filter'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_vulnerability_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_vulnerability_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- performance profiling handlers --
+
+    def _profile_container_performance(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.profile_container_performance(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _profile_fleet_performance(self, server, sender_path, call_id, request):
+        result = self.container_manager.profile_fleet_performance()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_performance_recommendations(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_performance_recommendations(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- capacity forecasting handlers --
+
+    def _forecast_resource_needs(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.forecast_resource_needs(
+            c, horizon_hours=request.get('horizon_hours', 24))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _forecast_fleet_capacity(self, server, sender_path, call_id, request):
+        result = self.container_manager.forecast_fleet_capacity()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_capacity_recommendations(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_capacity_recommendations()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
