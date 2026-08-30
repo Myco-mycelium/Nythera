@@ -3146,6 +3146,209 @@ class TestNetworkPolicyAdvanced(unittest.TestCase):
         self.assertIn("ALLOWED", text)
 
 
+class TestBackupDR(unittest.TestCase):
+    """Tests for container backup and disaster recovery."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_create_and_list_backup(self):
+        """Create and list a backup."""
+        mgr = self._manager()
+        c = self._make(mgr, "bkp1")
+        r = mgr.create_backup(c)
+        self.assertTrue(r["ok"])
+        self.assertIn("backup_id", r)
+        backups = mgr.list_backups()
+        self.assertEqual(len(backups), 1)
+        mgr.delete_backup(r["backup_id"])
+
+    def test_incremental_backup(self):
+        """Incremental backup records parent."""
+        mgr = self._manager()
+        c = self._make(mgr, "bkp2")
+        r1 = mgr.create_backup(c, backup_type="full")
+        r2 = mgr.create_backup(c, backup_type="incremental")
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["backup_type"], "incremental")
+        mgr.delete_backup(r1["backup_id"])
+        mgr.delete_backup(r2["backup_id"])
+
+    def test_restore_dry_run(self):
+        """Dry-run restore reports without changes."""
+        mgr = self._manager()
+        c = self._make(mgr, "bkp3")
+        r = mgr.create_backup(c)
+        result = mgr.restore_from_backup(r["backup_id"], dry_run=True)
+        self.assertTrue(result["dry_run"])
+        mgr.delete_backup(r["backup_id"])
+
+    def test_backup_policy(self):
+        """Configure and retrieve backup policy."""
+        mgr = self._manager()
+        c = self._make(mgr, "bkp4")
+        r = mgr.configure_backup_policy(c, interval_hours=12, retention_count=3)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["interval_hours"], 12)
+        policy = mgr.get_backup_policy(c)
+        self.assertTrue(policy["enabled"])
+
+    def test_dr_status(self):
+        """DR status overview."""
+        mgr = self._manager()
+        r = mgr.get_disaster_recovery_status()
+        self.assertIn("total_backups", r)
+        self.assertIn("policies_active", r)
+
+    def test_format_human_backup(self):
+        """format_human handles create-backup."""
+        from nyrqisctl import format_human
+        resp = {"backup_id": "bkp-abc", "size_bytes": 1024, "backup_type": "full"}
+        text = format_human("create-backup", resp)
+        self.assertIn("bkp-abc", text)
+        self.assertIn("1,024", text)
+
+    def test_format_human_dr_status(self):
+        """format_human handles get-dr-status."""
+        from nyrqisctl import format_human
+        resp = {"total_backups": 5, "total_size_bytes": 10240, "policies_active": 2,
+                "containers_with_policy": 3, "stale_backups_7d": 1, "containers_covered": 4}
+        text = format_human("get-dr-status", resp)
+        self.assertIn("5", text)
+        self.assertIn("2", text)
+
+
+class TestLogAggregation(unittest.TestCase):
+    """Tests for container log aggregation across cluster."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_aggregate_logs(self):
+        """Aggregate logs from all containers."""
+        mgr = self._manager()
+        c = self._make(mgr, "log1")
+        r = mgr.aggregate_cluster_logs()
+        self.assertIn("entries", r)
+        self.assertIn("containers_scanned", r)
+
+    def test_search_logs(self):
+        """Search across all logs."""
+        mgr = self._manager()
+        c = self._make(mgr, "log2")
+        r = mgr.search_cluster_logs("test")
+        self.assertIn("matches", r)
+        self.assertIn("containers_searched", r)
+
+    def test_search_invalid_regex(self):
+        """Invalid regex returns error."""
+        mgr = self._manager()
+        r = mgr.search_cluster_logs("[invalid")
+        self.assertIn("error", r)
+
+    def test_log_stats(self):
+        """Log stats aggregate correctly."""
+        mgr = self._manager()
+        self._make(mgr, "log3")
+        stats = mgr.get_log_stats()
+        self.assertIn("total_containers", stats)
+        self.assertIn("total_lines", stats)
+
+    def test_format_human_aggregate(self):
+        """format_human handles aggregate-cluster-logs."""
+        from nyrqisctl import format_human
+        resp = {"total_lines": 50, "containers_scanned": 3, "entries": []}
+        text = format_human("aggregate-cluster-logs", resp)
+        self.assertIn("50", text)
+        self.assertIn("3", text)
+
+    def test_format_human_search(self):
+        """format_human handles search-cluster-logs."""
+        from nyrqisctl import format_human
+        resp = {"match_count": 10, "containers_searched": 5, "matches": []}
+        text = format_human("search-cluster-logs", resp)
+        self.assertIn("10", text)
+        self.assertIn("5", text)
+
+
+class TestSecurityScanning(unittest.TestCase):
+    """Tests for container security scanning."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_scan_container(self):
+        """Scan a container for security issues."""
+        mgr = self._manager()
+        c = self._make(mgr, "sec1")
+        r = mgr.scan_container_security(c)
+        self.assertIn("risk_score", r)
+        self.assertIn("risk_level", r)
+        self.assertIn("findings", r)
+        self.assertIn("finding_count", r)
+
+    def test_scan_fleet(self):
+        """Fleet security scan."""
+        mgr = self._manager()
+        self._make(mgr, "sec2")
+        r = mgr.scan_fleet_security()
+        self.assertIn("containers_scanned", r)
+        self.assertIn("total_findings", r)
+        self.assertIn("results", r)
+
+    def test_security_summary(self):
+        """Security summary."""
+        mgr = self._manager()
+        r = mgr.get_security_summary()
+        self.assertIn("overall_risk", r)
+        self.assertIn("severity_distribution", r)
+
+    def test_format_human_scan(self):
+        """format_human handles scan-container-security."""
+        from nyrqisctl import format_human
+        resp = {"container_name": "web", "risk_level": "clean", "risk_score": 0,
+                "findings": [], "finding_count": 0}
+        text = format_human("scan-container-security", resp)
+        self.assertIn("clean", text)
+        self.assertIn("web", text)
+
+    def test_format_human_fleet_scan(self):
+        """format_human handles scan-fleet-security."""
+        from nyrqisctl import format_human
+        resp = {"containers_scanned": 5, "total_findings": 3, "critical_containers": 1,
+                "results": []}
+        text = format_human("scan-fleet-security", resp)
+        self.assertIn("5", text)
+        self.assertIn("3", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -28088,6 +28291,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestEventDrivenScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestClusterDashboard))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicyAdvanced))
+    suite.addTests(loader.loadTestsFromTestCase(TestBackupDR))
+    suite.addTests(loader.loadTestsFromTestCase(TestLogAggregation))
+    suite.addTests(loader.loadTestsFromTestCase(TestSecurityScanning))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

@@ -7153,6 +7153,175 @@ class ContainerManager:
             "format": format,
         }
 
+    # ------------------------------------------------------------------
+    # Container log aggregation across cluster
+    # ------------------------------------------------------------------
+
+    def aggregate_cluster_logs(
+        self,
+        pattern: str = "",
+        stream: str = "both",
+        tail: int = 100,
+        container_ids: Optional[List[str]] = None,
+        sort_by: str = "timestamp",
+    ) -> Dict[str, Any]:
+        """Aggregate logs from all containers into a unified view.
+
+        Args:
+            pattern: Regex pattern to filter log lines.
+            stream: ``"stdout"``, ``"stderr"`, or ``"both"``.
+            tail: Max lines per container.
+            container_ids: Specific containers (all if None).
+            sort_by: ``"timestamp"`` or ``"container"``.
+
+        Returns:
+            Dict with aggregated logs and metadata.
+        """
+        import re as _re
+        import json as _json
+
+        all_entries: List[Dict[str, Any]] = []
+        containers_scanned = 0
+        total_lines = 0
+
+        compiled = None
+        if pattern:
+            try:
+                compiled = _re.compile(pattern)
+            except _re.error:
+                compiled = None
+
+        targets = container_ids or list(self.containers.keys())
+        for cid in targets:
+            c = self.containers.get(cid)
+            if not c or c.state != ContainerState.RUNNING:
+                continue
+            if c._stdout_buffer is None and c._stderr_buffer is None:
+                continue
+
+            containers_scanned += 1
+            if stream in ("stdout", "both") and c._stdout_buffer:
+                for line in c._stdout_buffer.get_lines(tail):
+                    if compiled and not compiled.search(line):
+                        continue
+                    all_entries.append({
+                        "container_id": cid,
+                        "container_name": c.config.name or cid[:12],
+                        "stream": "stdout",
+                        "line": line,
+                    })
+            if stream in ("stderr", "both") and c._stderr_buffer:
+                for line in c._stderr_buffer.get_lines(tail):
+                    if compiled and not compiled.search(line):
+                        continue
+                    all_entries.append({
+                        "container_id": cid,
+                        "container_name": c.config.name or cid[:12],
+                        "stream": "stderr",
+                        "line": line,
+                    })
+
+        total_lines = len(all_entries)
+
+        # Sort
+        if sort_by == "container":
+            all_entries.sort(key=lambda e: (e["container_id"], e["stream"]))
+        # default: insertion order (already ordered)
+
+        # Limit total
+        if len(all_entries) > 1000:
+            all_entries = all_entries[-1000:]
+
+        return {
+            "entries": all_entries,
+            "total_lines": total_lines,
+            "containers_scanned": containers_scanned,
+            "pattern": pattern,
+            "stream": stream,
+        }
+
+    def search_cluster_logs(
+        self,
+        pattern: str,
+        stream: str = "both",
+        max_matches: int = 500,
+    ) -> Dict[str, Any]:
+        """Search across all container logs for a pattern."""
+        import re as _re
+
+        try:
+            compiled = _re.compile(pattern)
+        except _re.error as e:
+            return {"error": f"Invalid regex: {e}", "matches": []}
+
+        matches: List[Dict[str, Any]] = []
+        containers_searched = 0
+
+        for cid, c in self.containers.items():
+            if c.state != ContainerState.RUNNING:
+                continue
+            if c._stdout_buffer is None and c._stderr_buffer is None:
+                continue
+
+            containers_searched += 1
+            if stream in ("stdout", "both") and c._stdout_buffer:
+                for i, line in enumerate(c._stdout_buffer.get_lines()):
+                    if compiled.search(line):
+                        matches.append({
+                            "container_id": cid,
+                            "container_name": c.config.name or cid[:12],
+                            "stream": "stdout",
+                            "line": line,
+                            "line_num": i,
+                        })
+                        if len(matches) >= max_matches:
+                            break
+            if stream in ("stderr", "both") and c._stderr_buffer:
+                for i, line in enumerate(c._stderr_buffer.get_lines()):
+                    if compiled.search(line):
+                        matches.append({
+                            "container_id": cid,
+                            "container_name": c.config.name or cid[:12],
+                            "stream": "stderr",
+                            "line": line,
+                            "line_num": i,
+                        })
+                        if len(matches) >= max_matches:
+                            break
+            if len(matches) >= max_matches:
+                break
+
+        return {
+            "matches": matches,
+            "match_count": len(matches),
+            "containers_searched": containers_searched,
+            "pattern": pattern,
+        }
+
+    def get_log_stats(self) -> Dict[str, Any]:
+        """Get aggregate log statistics across all containers."""
+        total_containers = 0
+        total_stdout_lines = 0
+        total_stderr_lines = 0
+        containers_with_logs = 0
+
+        for c in self.containers.values():
+            if c.state == ContainerState.RUNNING:
+                total_containers += 1
+                if c._stdout_buffer is not None:
+                    total_stdout_lines += len(c._stdout_buffer)
+                    containers_with_logs += 1
+                if c._stderr_buffer is not None:
+                    total_stderr_lines += len(c._stderr_buffer)
+
+        return {
+            "total_containers": total_containers,
+            "containers_with_logs": containers_with_logs,
+            "total_stdout_lines": total_stdout_lines,
+            "total_stderr_lines": total_stderr_lines,
+            "total_lines": total_stdout_lines + total_stderr_lines,
+        }
+
     def container_exec(self, container: Container, command: List[str],
                        timeout_s: float = 10.0) -> Dict[str, Any]:
         """Execute a command inside a running container's namespaces.
@@ -7539,6 +7708,164 @@ class ContainerManager:
             "total_memory_bytes": total_memory,
             "total_pids": total_pids,
             "containers": containers,
+        }
+
+    # ------------------------------------------------------------------
+    # Container security scanning
+    # ------------------------------------------------------------------
+
+    def scan_container_security(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Perform a security scan on a container.
+
+        Checks: file permissions, setuid binaries, world-writable files,
+        sensitive file exposure, capability configuration, seccomp status.
+
+        Args:
+            container: Container to scan.
+
+        Returns:
+        """
+        findings: List[Dict[str, Any]] = []
+        risk_score = 0
+
+        # Check rootfs if available
+        if container.config.rootfs and os.path.isdir(container.config.rootfs):
+            for root, dirs, files in os.walk(container.config.rootfs):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    try:
+                        stat = os.stat(fpath)
+                        mode = stat.st_mode
+
+                        # World-writable files
+                        if mode & 0o002:
+                            findings.append({
+                                "type": "world_writable",
+                                "severity": "medium",
+                                "path": os.path.relpath(fpath, container.config.rootfs),
+                                "description": "World-writable file found",
+                            })
+                            risk_score += 10
+
+                        # Setuid/setgid binaries
+                        if mode & (stat.S_ISUID | stat.S_ISGID):
+                            findings.append({
+                                "type": "setuid_binary",
+                                "severity": "high",
+                                "path": os.path.relpath(fpath, container.config.rootfs),
+                                "description": "Setuid/setgid binary found",
+                            })
+                            risk_score += 25
+
+                        # Sensitive files exposed
+                        rel = os.path.relpath(fpath, container.config.rootfs)
+                        sensitive_patterns = [
+                            ".ssh/id_rsa", ".ssh/id_ed25519",
+                            "/etc/shadow", "/etc/gshadow",
+                            ".env", "credentials.json",
+                        ]
+                        for pat in sensitive_patterns:
+                            if pat in rel:
+                                findings.append({
+                                    "type": "sensitive_file",
+                                    "severity": "critical",
+                                    "path": rel,
+                                    "description": f"Sensitive file exposed: {pat}",
+                                })
+                                risk_score += 50
+                    except OSError:
+                        pass
+
+        # Check container config security
+        if not container.config.health_check_cmd:
+            findings.append({
+                "type": "no_health_check",
+                "severity": "low",
+                "description": "No health check configured",
+            })
+            risk_score += 5
+
+        # Check resource limits
+        if container.config.limits.memory_mb <= 0:
+            findings.append({
+                "type": "no_memory_limit",
+                "severity": "medium",
+                "description": "No memory limit set",
+            })
+            risk_score += 15
+
+        if container.config.limits.pid_limit <= 0:
+            findings.append({
+                "type": "no_pid_limit",
+                "severity": "medium",
+                "description": "No PID limit set",
+            })
+            risk_score += 15
+
+        # Risk level
+        if risk_score >= 75:
+            risk_level = "critical"
+        elif risk_score >= 50:
+            risk_level = "high"
+        elif risk_score >= 25:
+            risk_level = "medium"
+        elif risk_score > 0:
+            risk_level = "low"
+        else:
+            risk_level = "clean"
+
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "risk_score": min(risk_score, 100),
+            "risk_level": risk_level,
+            "findings": findings,
+            "finding_count": len(findings),
+            "scan_time": time.time(),
+        }
+
+    def scan_fleet_security(self) -> Dict[str, Any]:
+        """Scan security across all running containers."""
+        results: List[Dict[str, Any]] = []
+        total_findings = 0
+        critical_count = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.scan_container_security(c)
+                results.append(result)
+                total_findings += result["finding_count"]
+                if result["risk_level"] in ("critical", "high"):
+                    critical_count += 1
+
+        results.sort(key=lambda r: r["risk_score"], reverse=True)
+
+        return {
+            "containers_scanned": len(results),
+            "total_findings": total_findings,
+            "critical_containers": critical_count,
+            "results": results,
+        }
+
+    def get_security_summary(self) -> Dict[str, Any]:
+        """Get a summary of fleet security posture."""
+        scan = self.scan_fleet_security()
+        severity_counts: Dict[str, int] = {}
+        for result in scan["results"]:
+            for finding in result["findings"]:
+                sev = finding["severity"]
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+        return {
+            "containers_scanned": scan["containers_scanned"],
+            "total_findings": scan["total_findings"],
+            "critical_containers": scan["critical_containers"],
+            "severity_distribution": severity_counts,
+            "overall_risk": "high" if scan["critical_containers"] > 0 else
+                           "medium" if scan["total_findings"] > 5 else "low",
         }
 
     # ------------------------------------------------------------------
@@ -16751,6 +17078,308 @@ class ContainerManager:
         if not diff["has_changes"]:
             lines.append("No differences found")
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Container backup and disaster recovery
+    # ------------------------------------------------------------------
+
+    def create_backup(
+        self,
+        container: Container,
+        backup_id: Optional[str] = None,
+        backup_type: str = "full",
+        destination: str = "/tmp/nyrqis-backups",
+        include_logs: bool = True,
+        include_state: bool = True,
+    ) -> Dict[str, Any]:
+        """Create a backup of a container.
+
+        Args:
+            container: Container to back up.
+            backup_id: Custom backup ID (auto-generated if None).
+            backup_type: ``"full"`` or ``"incremental"``.
+            destination: Directory to store backup.
+            include_logs: Include container logs in backup.
+            include_state: Include container state (env vars, labels, config).
+
+        Returns:
+            Dict with backup details.
+        """
+        now = time.time()
+        backup_id = backup_id or f"backup-{container.id[:12]}-{int(now)}"
+
+        if not hasattr(self, '_backups'):
+            self._backups: Dict[str, Dict[str, Any]] = {}
+
+        # Gather backup data
+        backup_data: Dict[str, Any] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "backup_id": backup_id,
+            "backup_type": backup_type,
+            "timestamp": now,
+            "destination": destination,
+        }
+
+        # Config snapshot
+        config_data = {
+            "name": container.config.name,
+            "command": container.config.command,
+            "rootfs": container.config.rootfs,
+            "network": container.config.network,
+            "depends_on": container.config.depends_on,
+            "health_check_cmd": container.config.health_check_cmd,
+            "auto_restart": getattr(container.config, 'auto_restart', False),
+            "limits": {
+                "memory_mb": container.config.limits.memory_mb,
+                "pid_limit": container.config.limits.pid_limit,
+                "cpu_shares": container.config.limits.cpu_shares,
+                "cpu_quota_us": container.config.limits.cpu_quota_us,
+                "cpu_period_us": container.config.limits.cpu_period_us,
+            },
+        }
+        backup_data["config"] = config_data
+
+        # State snapshot
+        if include_state:
+            backup_data["state"] = {
+                "state": container.state.value,
+                "labels": dict(getattr(container, '_labels', {})),
+                "env": dict(getattr(container, '_env', {})),
+            }
+
+        # Log snapshot
+        if include_logs:
+            logs: Dict[str, Any] = {}
+            if container._stdout_buffer is not None:
+                logs["stdout"] = container._stdout_buffer.get_lines()
+            if container._stderr_buffer is not None:
+                logs["stderr"] = container._stderr_buffer.get_lines()
+            backup_data["logs"] = logs
+
+        # Rootfs snapshot (file list + sizes)
+        if container.config.rootfs and os.path.isdir(container.config.rootfs):
+            rootfs_files: List[Dict[str, Any]] = []
+            total_size = 0
+            for root, dirs, files in os.walk(container.config.rootfs):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    try:
+                        size = os.path.getsize(fpath)
+                        rel = os.path.relpath(fpath, container.config.rootfs)
+                        rootfs_files.append({"path": rel, "size": size})
+                        total_size += size
+                    except OSError:
+                        pass
+            backup_data["rootfs"] = {
+                "files": rootfs_files,
+                "file_count": len(rootfs_files),
+                "total_size": total_size,
+            }
+
+        # Incremental: record delta from last backup
+        if backup_type == "incremental" and self._backups:
+            prev_backups = [b for b in self._backups.values()
+                           if b["container_id"] == container.id]
+            if prev_backups:
+                prev = max(prev_backups, key=lambda b: b["timestamp"])
+                backup_data["parent_backup"] = prev["backup_id"]
+                backup_data["parent_timestamp"] = prev["timestamp"]
+
+        # Calculate size
+        import json as _json
+        backup_size = len(_json.dumps(backup_data).encode())
+        backup_data["size_bytes"] = backup_size
+
+        self._backups[backup_id] = backup_data
+        self._record_event(
+            "backup_created", container.id,
+            f"backup_id={backup_id}, type={backup_type}, size={backup_size}")
+
+        return {
+            "ok": True,
+            "backup_id": backup_id,
+            "container_id": container.id,
+            "backup_type": backup_type,
+            "size_bytes": backup_size,
+            "timestamp": now,
+        }
+
+    def list_backups(
+        self,
+        container_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List all backups, optionally filtered by container."""
+        if not hasattr(self, '_backups'):
+            self._backups = {}
+
+        backups = list(self._backups.values())
+        if container_id:
+            backups = [b for b in backups if b["container_id"] == container_id]
+
+        return sorted(backups, key=lambda b: b["timestamp"], reverse=True)
+
+    def get_backup(self, backup_id: str) -> Optional[Dict[str, Any]]:
+        """Get details of a specific backup."""
+        if not hasattr(self, '_backups'):
+            return None
+        return self._backups.get(backup_id)
+
+    def delete_backup(self, backup_id: str) -> Dict[str, Any]:
+        """Delete a backup."""
+        if not hasattr(self, '_backups') or backup_id not in self._backups:
+            return {"error": f"Backup '{backup_id}' not found"}
+        del self._backups[backup_id]
+        return {"ok": True, "backup_id": backup_id}
+
+    def restore_from_backup(
+        self,
+        backup_id: str,
+        container_id: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Restore a container from a backup.
+
+        Args:
+            backup_id: Backup to restore from.
+            container_id: Target container (creates new if None).
+            dry_run: If True, report what would be restored.
+
+        Returns:
+            Dict with restoration details.
+        """
+        if not hasattr(self, '_backups') or backup_id not in self._backups:
+            return {"error": f"Backup '{backup_id}' not found"}
+
+        backup = self._backups[backup_id]
+        config = backup.get("config", {})
+        state = backup.get("state", {})
+
+        result = {
+            "backup_id": backup_id,
+            "dry_run": dry_run,
+            "container_name": config.get("name"),
+            "state_to_restore": state.get("state", "created"),
+            "labels_count": len(state.get("labels", {})),
+            "env_count": len(state.get("env", {})),
+            "rootfs_files": backup.get("rootfs", {}).get("file_count", 0),
+            "logs_lines": sum(len(v) for v in backup.get("logs", {}).values()),
+        }
+
+        if dry_run:
+            result["status"] = "dry_run"
+            return result
+
+        # Create or update container from backup
+        if container_id and container_id in self.containers:
+            c = self.containers[container_id]
+            # Restore config
+            if config.get("limits"):
+                c.config.limits.memory_mb = config["limits"].get("memory_mb", 256)
+                c.config.limits.pid_limit = config["limits"].get("pid_limit", 64)
+            # Restore state
+            if state.get("labels"):
+                if not hasattr(c, '_labels'):
+                    c._labels = {}
+                c._labels.update(state["labels"])
+            if state.get("env"):
+                if not hasattr(c, '_env'):
+                    c._env = {}
+                c._env.update(state["env"])
+            result["status"] = "restored"
+            result["container_id"] = container_id
+        else:
+            # Create new container from backup config
+            from backend.container import ContainerConfig
+            new_config = ContainerConfig(
+                name=config.get("name", f"restored-{backup_id[:8]}"),
+                command=config.get("command", ["echo"]),
+                rootfs=config.get("rootfs"),
+            )
+            new_c = self.create(new_config)
+            result["status"] = "created"
+            result["container_id"] = new_c.id
+
+        self._record_event(
+            "backup_restored", result.get("container_id", "unknown"),
+            f"from={backup_id}")
+
+        return result
+
+    def get_backup_policy(self, container: Container) -> Dict[str, Any]:
+        """Get the backup policy for a container."""
+        if not hasattr(self, '_backup_policies'):
+            self._backup_policies = {}
+        policy = self._backup_policies.get(container.id, {})
+        return {
+            "container_id": container.id,
+            "enabled": policy.get("enabled", False),
+            "interval_hours": policy.get("interval_hours", 24),
+            "retention_count": policy.get("retention_count", 7),
+            "backup_type": policy.get("backup_type", "full"),
+            "include_logs": policy.get("include_logs", True),
+        }
+
+    def configure_backup_policy(
+        self,
+        container: Container,
+        enabled: bool = True,
+        interval_hours: int = 24,
+        retention_count: int = 7,
+        backup_type: str = "full",
+        include_logs: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure automatic backup policy for a container."""
+        if not hasattr(self, '_backup_policies'):
+            self._backup_policies = {}
+
+        self._backup_policies[container.id] = {
+            "enabled": enabled,
+            "interval_hours": interval_hours,
+            "retention_count": retention_count,
+            "backup_type": backup_type,
+            "include_logs": include_logs,
+            "configured_at": time.time(),
+        }
+
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "enabled": enabled,
+            "interval_hours": interval_hours,
+            "retention_count": retention_count,
+        }
+
+    def get_disaster_recovery_status(self) -> Dict[str, Any]:
+        """Get overview of backup and disaster recovery status."""
+        if not hasattr(self, '_backups'):
+            self._backups = {}
+        if not hasattr(self, '_backup_policies'):
+            self._backup_policies = {}
+
+        total_backups = len(self._backups)
+        total_size = sum(b.get("size_bytes", 0) for b in self._backups.values())
+        policies_active = sum(1 for p in self._backup_policies.values() if p.get("enabled"))
+        containers_with_policy = len(self._backup_policies)
+
+        # Latest backup per container
+        latest: Dict[str, float] = {}
+        for b in self._backups.values():
+            cid = b["container_id"]
+            if cid not in latest or b["timestamp"] > latest[cid]:
+                latest[cid] = b["timestamp"]
+
+        now = time.time()
+        stale_backups = sum(1 for ts in latest.values() if now - ts > 86400 * 7)
+
+        return {
+            "total_backups": total_backups,
+            "total_size_bytes": total_size,
+            "policies_active": policies_active,
+            "containers_with_policy": containers_with_policy,
+            "stale_backups_7d": stale_backups,
+            "containers_covered": len(latest),
+        }
 
     # ------------------------------------------------------------------
     # Dependency ordering

@@ -2373,6 +2373,72 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         }
     if command == "get-network-rule-stats":
         return {"service": "control", "op": "get_network_rule_stats"}
+    if command == "create-backup":
+        return {
+            "service": "control",
+            "op": "create_backup",
+            "container_id": args.container_id,
+            "backup_id": getattr(args, 'backup_id', None),
+            "backup_type": getattr(args, 'backup_type', 'full'),
+            "destination": getattr(args, 'destination', '/tmp/nyrqis-backups'),
+            "include_logs": getattr(args, 'include_logs', True),
+            "include_state": getattr(args, 'include_state', True),
+        }
+    if command == "list-backups":
+        return {"service": "control", "op": "list_backups", "container_id": getattr(args, 'container_id', None)}
+    if command == "get-backup":
+        return {"service": "control", "op": "get_backup", "backup_id": args.backup_id}
+    if command == "delete-backup":
+        return {"service": "control", "op": "delete_backup", "backup_id": args.backup_id}
+    if command == "restore-from-backup":
+        return {
+            "service": "control",
+            "op": "restore_from_backup",
+            "backup_id": args.backup_id,
+            "container_id": getattr(args, 'container_id', None),
+            "dry_run": getattr(args, 'dry_run', True),
+        }
+    if command == "configure-backup-policy":
+        return {
+            "service": "control",
+            "op": "configure_backup_policy",
+            "container_id": args.container_id,
+            "enabled": getattr(args, 'enabled', True),
+            "interval_hours": getattr(args, 'interval_hours', 24),
+            "retention_count": getattr(args, 'retention_count', 7),
+            "backup_type": getattr(args, 'backup_type', 'full'),
+            "include_logs": getattr(args, 'include_logs', True),
+        }
+    if command == "get-backup-policy":
+        return {"service": "control", "op": "get_backup_policy", "container_id": args.container_id}
+    if command == "get-dr-status":
+        return {"service": "control", "op": "get_dr_status"}
+    if command == "aggregate-cluster-logs":
+        return {
+            "service": "control",
+            "op": "aggregate_cluster_logs",
+            "pattern": getattr(args, 'pattern', ''),
+            "stream": getattr(args, 'stream', 'both'),
+            "tail": getattr(args, 'tail', 100),
+            "container_ids": getattr(args, 'container_ids', None),
+            "sort_by": getattr(args, 'sort_by', 'timestamp'),
+        }
+    if command == "search-cluster-logs":
+        return {
+            "service": "control",
+            "op": "search_cluster_logs",
+            "pattern": args.pattern,
+            "stream": getattr(args, 'stream', 'both'),
+            "max_matches": getattr(args, 'max_matches', 500),
+        }
+    if command == "get-log-stats":
+        return {"service": "control", "op": "get_log_stats"}
+    if command == "scan-container-security":
+        return {"service": "control", "op": "scan_container_security", "container_id": args.container_id}
+    if command == "scan-fleet-security":
+        return {"service": "control", "op": "scan_fleet_security"}
+    if command == "get-security-summary":
+        return {"service": "control", "op": "get_security_summary"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5530,6 +5596,60 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return f"{allowed}: {resp.get('reason', '?')}"
     if command == "get-network-rule-stats":
         return f"Rules: {resp.get('total_rules', 0)} total ({resp.get('ingress_rules', 0)} ingress, {resp.get('egress_rules', 0)} egress), {resp.get('total_hits', 0)} hits"
+    if command == "create-backup":
+        return f"Backup '{resp.get('backup_id', '?')}' created: {resp.get('size_bytes', 0):,} bytes ({resp.get('backup_type', '?')})"
+    if command == "list-backups":
+        backups = resp.get('backups', [])
+        if not backups:
+            return "No backups found"
+        lines = ["Backups:"]
+        for b in backups:
+            lines.append(f"  {b.get('backup_id', '?')}: {b.get('container_id', '?')[:12]} ({b.get('backup_type', '?')}, {b.get('size_bytes', 0):,} bytes)")
+        return "\n".join(lines)
+    if command == "delete-backup":
+        return f"Backup '{resp.get('backup_id', '?')}' deleted"
+    if command == "restore-from-backup":
+        mode = "DRY RUN" if resp.get('dry_run') else "EXECUTED"
+        return f"Restore {mode}: {resp.get('status', '?')} from {resp.get('backup_id', '?')}"
+    if command == "configure-backup-policy":
+        return f"Backup policy for {resp.get('container_id', '?')[:12]}: {'enabled' if resp.get('enabled') else 'disabled'}, interval={resp.get('interval_hours', 0)}h, retention={resp.get('retention_count', 0)}"
+    if command == "get-dr-status":
+        lines = [
+            f"DR Status: {resp.get('total_backups', 0)} backups, {resp.get('total_size_bytes', 0):,} bytes",
+            f"  Policies: {resp.get('policies_active', 0)} active, {resp.get('containers_with_policy', 0)} containers",
+            f"  Stale (>7d): {resp.get('stale_backups_7d', 0)}, Covered: {resp.get('containers_covered', 0)} containers",
+        ]
+        return "\n".join(lines)
+    if command == "aggregate-cluster-logs":
+        lines = [
+            f"Cluster logs: {resp.get('total_lines', 0)} entries from {resp.get('containers_scanned', 0)} containers",
+        ]
+        for e in resp.get('entries', [])[:5]:
+            lines.append(f"  [{e.get('container_name', '?')}] {e.get('line', '')[:60]}")
+        return "\n".join(lines)
+    if command == "search-cluster-logs":
+        lines = [f"Search: {resp.get('match_count', 0)} matches in {resp.get('containers_searched', 0)} containers"]
+        for m in resp.get('matches', [])[:5]:
+            lines.append(f"  [{m.get('container_name', '?')}] {m.get('line', '')[:60]}")
+        return "\n".join(lines)
+    if command == "get-log-stats":
+        return f"Logs: {resp.get('total_lines', 0)} lines across {resp.get('containers_with_logs', 0)}/{resp.get('total_containers', 0)} containers (stdout: {resp.get('total_stdout_lines', 0)}, stderr: {resp.get('total_stderr_lines', 0)})"
+    if command == "scan-container-security":
+        lines = [
+            f"Security scan: {resp.get('container_name', '?')} (risk: {resp.get('risk_level', '?')}, score: {resp.get('risk_score', 0)})",
+        ]
+        for f in resp.get('findings', []):
+            lines.append(f"  [{f.get('severity', '?')}] {f.get('type', '?')}: {f.get('description', '?')}")
+        return "\n".join(lines)
+    if command == "scan-fleet-security":
+        lines = [
+            f"Fleet security: {resp.get('containers_scanned', 0)} scanned, {resp.get('total_findings', 0)} findings, {resp.get('critical_containers', 0)} critical",
+        ]
+        for r in resp.get('results', [])[:5]:
+            lines.append(f"  {r.get('container_name', '?')}: {r.get('risk_level', '?')} (score: {r.get('risk_score', 0)}, {r.get('finding_count', 0)} findings)")
+        return "\n".join(lines)
+    if command == "get-security-summary":
+        return f"Security: {resp.get('containers_scanned', 0)} scanned, {resp.get('total_findings', 0)} findings, overall risk: {resp.get('overall_risk', '?')}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -7346,6 +7466,83 @@ def build_parser() -> argparse.ArgumentParser:
 
     gnrs = sub.add_parser("get-network-rule-stats", help="Get network rule statistics")
     gnrs.set_defaults(command="get-network-rule-stats")
+
+    # -- backup/DR commands --
+    cb = sub.add_parser("create-backup", help="Create a container backup")
+    cb.add_argument("container_id")
+    cb.add_argument("--backup-id", default=None)
+    cb.add_argument("--backup-type", choices=["full", "incremental"], default="full")
+    cb.add_argument("--destination", default="/tmp/nyrqis-backups")
+    cb.add_argument("--include-logs", action="store_true", default=True)
+    cb.add_argument("--no-include-logs", dest="include_logs", action="store_false")
+    cb.add_argument("--include-state", action="store_true", default=True)
+    cb.add_argument("--no-include-state", dest="include_state", action="store_false")
+    cb.set_defaults(command="create-backup")
+
+    lb = sub.add_parser("list-backups", help="List backups")
+    lb.add_argument("--container-id", default=None)
+    lb.set_defaults(command="list-backups")
+
+    gb = sub.add_parser("get-backup", help="Get backup details")
+    gb.add_argument("backup_id")
+    gb.set_defaults(command="get-backup")
+
+    db = sub.add_parser("delete-backup", help="Delete a backup")
+    db.add_argument("backup_id")
+    db.set_defaults(command="delete-backup")
+
+    rfb = sub.add_parser("restore-from-backup", help="Restore from backup")
+    rfb.add_argument("backup_id")
+    rfb.add_argument("--container-id", default=None)
+    rfb.add_argument("--dry-run", action="store_true", default=True)
+    rfb.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    rfb.set_defaults(command="restore-from-backup")
+
+    cbp = sub.add_parser("configure-backup-policy", help="Configure backup policy")
+    cbp.add_argument("container_id")
+    cbp.add_argument("--enabled", action="store_true", default=True)
+    cbp.add_argument("--interval-hours", type=int, default=24)
+    cbp.add_argument("--retention-count", type=int, default=7)
+    cbp.add_argument("--backup-type", choices=["full", "incremental"], default="full")
+    cbp.add_argument("--include-logs", action="store_true", default=True)
+    cbp.add_argument("--no-include-logs", dest="include_logs", action="store_false")
+    cbp.set_defaults(command="configure-backup-policy")
+
+    gbp = sub.add_parser("get-backup-policy", help="Get backup policy")
+    gbp.add_argument("container_id")
+    gbp.set_defaults(command="get-backup-policy")
+
+    gdrs = sub.add_parser("get-dr-status", help="Get DR status")
+    gdrs.set_defaults(command="get-dr-status")
+
+    # -- log aggregation commands --
+    acl = sub.add_parser("aggregate-cluster-logs", help="Aggregate logs from all containers")
+    acl.add_argument("--pattern", default="")
+    acl.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    acl.add_argument("--tail", type=int, default=100)
+    acl.add_argument("--container-ids", nargs="+", default=None)
+    acl.add_argument("--sort-by", choices=["timestamp", "container"], default="timestamp")
+    acl.set_defaults(command="aggregate-cluster-logs")
+
+    scl = sub.add_parser("search-cluster-logs", help="Search across all container logs")
+    scl.add_argument("pattern")
+    scl.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    scl.add_argument("--max-matches", type=int, default=500)
+    scl.set_defaults(command="search-cluster-logs")
+
+    gls = sub.add_parser("get-log-stats", help="Get log statistics")
+    gls.set_defaults(command="get-log-stats")
+
+    # -- security scan commands --
+    scs = sub.add_parser("scan-container-security", help="Scan container security")
+    scs.add_argument("container_id")
+    scs.set_defaults(command="scan-container-security")
+
+    sfs = sub.add_parser("scan-fleet-security", help="Scan fleet security")
+    sfs.set_defaults(command="scan-fleet-security")
+
+    gss = sub.add_parser("get-security-summary", help="Get security summary")
+    gss.set_defaults(command="get-security-summary")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

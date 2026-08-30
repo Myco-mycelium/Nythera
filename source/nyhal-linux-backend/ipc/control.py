@@ -1038,6 +1038,48 @@ class ControlService:
             elif op == "get_network_rule_stats":
                 self._get_network_rule_stats(server, sender_path,
                                           msg.message_id, request)
+            elif op == "create_backup":
+                self._create_backup(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "list_backups":
+                self._list_backups(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_backup":
+                self._get_backup(server, sender_path,
+                               msg.message_id, request)
+            elif op == "delete_backup":
+                self._delete_backup(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "restore_from_backup":
+                self._restore_from_backup(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "configure_backup_policy":
+                self._configure_backup_policy(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "get_backup_policy":
+                self._get_backup_policy(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_dr_status":
+                self._get_dr_status(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "aggregate_cluster_logs":
+                self._aggregate_cluster_logs(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "search_cluster_logs":
+                self._search_cluster_logs(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_log_stats":
+                self._get_log_stats(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "scan_container_security":
+                self._scan_container_security(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "scan_fleet_security":
+                self._scan_fleet_security(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_security_summary":
+                self._get_security_summary(server, sender_path,
+                                        msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6497,6 +6539,117 @@ class ControlService:
 
     def _get_network_rule_stats(self, server, sender_path, call_id, request):
         result = self.container_manager.get_network_rule_stats()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- backup/DR handlers --
+
+    def _create_backup(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_backup(
+            c,
+            backup_id=request.get('backup_id'),
+            backup_type=request.get('backup_type', 'full'),
+            destination=request.get('destination', '/tmp/nyrqis-backups'),
+            include_logs=request.get('include_logs', True),
+            include_state=request.get('include_state', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_backups(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_backups(
+            container_id=request.get('container_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, "backups": result})
+
+    def _get_backup(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_backup(request['backup_id'])
+        if result is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "backup not found"})
+        else:
+            self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_backup(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_backup(request['backup_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _restore_from_backup(self, server, sender_path, call_id, request):
+        result = self.container_manager.restore_from_backup(
+            request['backup_id'],
+            container_id=request.get('container_id'),
+            dry_run=request.get('dry_run', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _configure_backup_policy(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_backup_policy(
+            c,
+            enabled=request.get('enabled', True),
+            interval_hours=request.get('interval_hours', 24),
+            retention_count=request.get('retention_count', 7),
+            backup_type=request.get('backup_type', 'full'),
+            include_logs=request.get('include_logs', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_backup_policy(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_backup_policy(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_dr_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_disaster_recovery_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- log aggregation handlers --
+
+    def _aggregate_cluster_logs(self, server, sender_path, call_id, request):
+        result = self.container_manager.aggregate_cluster_logs(
+            pattern=request.get('pattern', ''),
+            stream=request.get('stream', 'both'),
+            tail=request.get('tail', 100),
+            container_ids=request.get('container_ids'),
+            sort_by=request.get('sort_by', 'timestamp'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _search_cluster_logs(self, server, sender_path, call_id, request):
+        result = self.container_manager.search_cluster_logs(
+            request['pattern'],
+            stream=request.get('stream', 'both'),
+            max_matches=request.get('max_matches', 500),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_log_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_log_stats()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- security scan handlers --
+
+    def _scan_container_security(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.scan_container_security(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _scan_fleet_security(self, server, sender_path, call_id, request):
+        result = self.container_manager.scan_fleet_security()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_security_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_security_summary()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
