@@ -145,6 +145,27 @@ class ControlService:
             elif op == "image_import":
                 self._image_import(server, sender_path, msg.message_id,
                                    request)
+            elif op == "image_create_layer":
+                self._image_create_layer(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "image_list_layers":
+                self._image_list_layers(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "image_remove_layer":
+                self._image_remove_layer(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "image_diff":
+                self._image_diff(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "registry_pull":
+                self._registry_pull(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "registry_push":
+                self._registry_push(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "registry_catalog":
+                self._registry_catalog(server, sender_path,
+                                       msg.message_id, request)
             elif op == "container_checkpoint":
                 self._container_checkpoint(server, sender_path,
                                            msg.message_id, request)
@@ -1140,6 +1161,85 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True, "image_path": imported,
         })
+
+    def _image_create_layer(self, server, sender_path: str, call_id: str,
+                            request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.create_image_layer(
+                base_path=request["base_path"],
+                layer_name=request["layer_name"],
+                changes=request.get("changes"),
+            )
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _image_list_layers(self, server, sender_path: str, call_id: str,
+                           request: Dict[str, Any]) -> None:
+        layers = self.container_manager.list_image_layers(
+            request["image_path"])
+        self._reply(server, sender_path, call_id,
+                    {"ok": True, "layers": layers})
+
+    def _image_remove_layer(self, server, sender_path: str, call_id: str,
+                            request: Dict[str, Any]) -> None:
+        try:
+            self.container_manager.remove_image_layer(
+                request["image_path"], request["layer_name"])
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True})
+
+    def _image_diff(self, server, sender_path: str, call_id: str,
+                    request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.diff_images(
+                request["image_a_path"], request["image_b_path"])
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _registry_pull(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.registry_pull(
+                registry_url=request["registry_url"],
+                image_name=request["image_name"],
+                tag=request.get("tag", "latest"),
+                dest_dir=request.get("dest_dir"),
+            )
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _registry_push(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.registry_push(
+                image_path=request["image_path"],
+                registry_url=request["registry_url"],
+                image_name=request["image_name"],
+                tag=request.get("tag", "latest"),
+            )
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _registry_catalog(self, server, sender_path: str, call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.registry_catalog(
+            registry_url=request["registry_url"])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _container_checkpoint(self, server, sender_path: str, call_id: str,
                                request: Dict[str, Any]) -> None:

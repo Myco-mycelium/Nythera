@@ -215,6 +215,57 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "dest_dir": args.dest_dir,
             "name": args.name,
         }
+    if command == "images-create-layer":
+        return {
+            "service": "control",
+            "op": "image_create_layer",
+            "base_path": args.base_path,
+            "layer_name": args.layer_name,
+            "changes": json.loads(args.changes) if args.changes else None,
+        }
+    if command == "images-list-layers":
+        return {
+            "service": "control",
+            "op": "image_list_layers",
+            "image_path": args.image_path,
+        }
+    if command == "images-remove-layer":
+        return {
+            "service": "control",
+            "op": "image_remove_layer",
+            "image_path": args.image_path,
+            "layer_name": args.layer_name,
+        }
+    if command == "images-diff":
+        return {
+            "service": "control",
+            "op": "image_diff",
+            "image_a_path": args.image_a_path,
+            "image_b_path": args.image_b_path,
+        }
+    if command == "registry-pull":
+        return {
+            "service": "control",
+            "op": "registry_pull",
+            "registry_url": args.registry_url,
+            "image_name": args.image_name,
+            "tag": args.tag,
+        }
+    if command == "registry-push":
+        return {
+            "service": "control",
+            "op": "registry_push",
+            "image_path": args.image_path,
+            "registry_url": args.registry_url,
+            "image_name": args.image_name,
+            "tag": args.tag,
+        }
+    if command == "registry-catalog":
+        return {
+            "service": "control",
+            "op": "registry_catalog",
+            "registry_url": args.registry_url,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -2109,6 +2160,46 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"({size:,} bytes)")
     if command == "images-import":
         return f"image imported: {resp.get('image_path')}"
+    if command == "images-create-layer":
+        return (
+            f"layer created: {resp.get('layer_name')} "
+            f"({resp.get('changes_count', 0)} changes, "
+            f"{resp.get('size_bytes', 0)} bytes)")
+    if command == "images-list-layers":
+        layers = resp.get('layers', [])
+        if not layers:
+            return "no layers found"
+        lines = ["Image layers:"]
+        for l in layers:
+            lines.append(
+                f"  {l['name']}: {l['changes_count']} changes")
+        return "\n".join(lines)
+    if command == "images-remove-layer":
+        return "layer removed"
+    if command == "images-diff":
+        added = len(resp.get('added', []))
+        removed = len(resp.get('removed', []))
+        modified = len(resp.get('modified', []))
+        return (
+            f"diff: +{added} added, -{removed} removed, "
+            f"~{modified} modified, "
+            f"identical={resp.get('identical', False)}")
+    if command == "registry-pull":
+        return (
+            f"pulled {resp.get('name')}:{resp.get('tag')} "
+            f"({resp.get('size_bytes', 0):,} bytes)")
+    if command == "registry-push":
+        return (
+            f"pushed {resp.get('name')}:{resp.get('tag')} "
+            f"({resp.get('size_bytes', 0):,} bytes)")
+    if command == "registry-catalog":
+        images = resp.get('images', [])
+        if not images:
+            return "registry catalog is empty"
+        lines = [f"Registry {resp.get('registry_url')}:"]
+        for img in images:
+            lines.append(f"  {img}")
+        return "\n".join(lines)
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -6437,6 +6528,51 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--name", default=None,
                     help="Override image directory name")
     im.set_defaults(command="images-import")
+
+    il = sub.add_parser("images-create-layer",
+                        help="Create a new image layer")
+    il.add_argument("base_path", help="Path to base image")
+    il.add_argument("layer_name", help="Layer name")
+    il.add_argument("--changes", default=None,
+                    help='JSON list of {op, path, content} dicts')
+    il.set_defaults(command="images-create-layer")
+
+    ill = sub.add_parser("images-list-layers",
+                         help="List layers for an image")
+    ill.add_argument("image_path", help="Path to image")
+    ill.set_defaults(command="images-list-layers")
+
+    ilr = sub.add_parser("images-remove-layer",
+                         help="Remove a layer from an image")
+    ilr.add_argument("image_path", help="Path to image")
+    ilr.add_argument("layer_name", help="Layer name to remove")
+    ilr.set_defaults(command="images-remove-layer")
+
+    idf = sub.add_parser("images-diff",
+                         help="Diff two images")
+    idf.add_argument("image_a_path", help="Path to first image")
+    idf.add_argument("image_b_path", help="Path to second image")
+    idf.set_defaults(command="images-diff")
+
+    rp = sub.add_parser("registry-pull",
+                        help="Pull image from HTTP registry")
+    rp.add_argument("registry_url", help="Registry base URL")
+    rp.add_argument("image_name", help="Image name")
+    rp.add_argument("--tag", default="latest", help="Image tag")
+    rp.set_defaults(command="registry-pull")
+
+    rpu = sub.add_parser("registry-push",
+                         help="Push image to HTTP registry")
+    rpu.add_argument("image_path", help="Local image path")
+    rpu.add_argument("registry_url", help="Registry base URL")
+    rpu.add_argument("image_name", help="Image name")
+    rpu.add_argument("--tag", default="latest", help="Image tag")
+    rpu.set_defaults(command="registry-push")
+
+    rc = sub.add_parser("registry-catalog",
+                        help="List images in registry")
+    rc.add_argument("registry_url", help="Registry base URL")
+    rc.set_defaults(command="registry-catalog")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

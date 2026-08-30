@@ -12774,6 +12774,315 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Image layering and registry
+    # ------------------------------------------------------------------
+
+    def create_image_layer(
+        self,
+        base_path: str,
+        layer_name: str,
+        changes: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Create a new image layer on top of a base.
+
+        A layer records file additions, modifications, and deletions
+        relative to the base image.  The layer is stored as a metadata
+        file inside the base image directory.
+
+        Args:
+            base_path: Path to the base image directory.
+            layer_name: Name for the new layer.
+            changes: List of {op, path, [content]} dicts.
+                     op is 'add', 'modify', or 'remove'.
+
+        Returns:
+            { path, layer_name, base_path, changes_count, size_bytes }
+        """
+        base = Path(base_path).resolve()
+        if not base.is_dir():
+            raise ValueError(f"Base image not found: {base_path}")
+
+        layers_dir = base / "layers"
+        layers_dir.mkdir(exist_ok=True)
+
+        layer_file = layers_dir / f"{layer_name}.json"
+        if layer_file.exists():
+            raise ValueError(f"Layer already exists: {layer_name}")
+
+        if changes is None:
+            changes = []
+
+        layer_data = {
+            "name": layer_name,
+            "base_path": str(base),
+            "changes": changes,
+            "created_at": time.time(),
+        }
+
+        with open(layer_file, "w") as f:
+            json.dump(layer_data, f, indent=2)
+
+        size = layer_file.stat().st_size
+        self._record_event("image_layer_created", layer_name,
+                           f"base={base_path}, changes={len(changes)}")
+        return {
+            "path": str(layer_file),
+            "layer_name": layer_name,
+            "base_path": str(base),
+            "changes_count": len(changes),
+            "size_bytes": size,
+        }
+
+    def list_image_layers(
+        self,
+        image_path: str,
+    ) -> List[Dict[str, Any]]:
+        """List all layers for an image.
+
+        Returns:
+            List of layer dicts with name, changes_count, created_at.
+        """
+        base = Path(image_path).resolve()
+        layers_dir = base / "layers"
+        if not layers_dir.is_dir():
+            return []
+
+        layers = []
+        for f in sorted(layers_dir.glob("*.json")):
+            try:
+                with open(f) as fh:
+                    data = json.load(fh)
+                layers.append({
+                    "name": data.get("name", f.stem),
+                    "changes_count": len(data.get("changes", [])),
+                    "created_at": data.get("created_at", 0),
+                    "path": str(f),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+        return layers
+
+    def remove_image_layer(
+        self,
+        image_path: str,
+        layer_name: str,
+    ) -> bool:
+        """Remove a layer from an image."""
+        base = Path(image_path).resolve()
+        layer_file = base / "layers" / f"{layer_name}.json"
+        if not layer_file.exists():
+            raise ValueError(f"Layer not found: {layer_name}")
+        layer_file.unlink()
+        self._record_event("image_layer_removed", layer_name,
+                           f"image={image_path}")
+        return True
+
+    def diff_images(
+        self,
+        image_a_path: str,
+        image_b_path: str,
+    ) -> Dict[str, Any]:
+        """Compute the difference between two images.
+
+        Compares the NyFS tree structures and block sets of two images
+        to identify added, removed, and modified files.
+
+        Returns:
+            { added: [...], removed: [...], modified: [...],
+              identical: bool, size_diff_bytes: int }
+        """
+        def _load_tree(image_path: str) -> dict:
+            meta = Path(image_path) / "state" / "metadata.json"
+            if not meta.is_file():
+                return {}
+            try:
+                with open(meta) as f:
+                    return json.load(f).get("tree", {})
+            except (json.JSONDecodeError, OSError):
+                return {}
+
+        def _flatten(tree: dict, prefix: str = "") -> Dict[str, Any]:
+            files: Dict[str, Any] = {}
+            for child in tree.get("children", []):
+                name = child.get("name", "")
+                path = f"{prefix}/{name}" if prefix else name
+                if child.get("type") == "file":
+                    files[path] = child.get("checksum", "")
+                elif child.get("type") == "directory":
+                    files.update(_flatten(child, path))
+            return files
+
+        def _block_size(image_path: str) -> int:
+            blocks = Path(image_path) / "state" / "blocks"
+            if not blocks.is_dir():
+                return 0
+            return sum(f.stat().st_size for f in blocks.iterdir()
+                       if f.is_file())
+
+        tree_a = _flatten(_load_tree(image_a_path))
+        tree_b = _flatten(_load_tree(image_b_path))
+
+        all_paths = set(tree_a) | set(tree_b)
+        added = [p for p in all_paths if p in tree_b and p not in tree_a]
+        removed = [p for p in all_paths if p in tree_a and p not in tree_b]
+        modified = [
+            p for p in all_paths
+            if p in tree_a and p in tree_b and tree_a[p] != tree_b[p]
+        ]
+
+        size_a = _block_size(image_a_path)
+        size_b = _block_size(image_b_path)
+
+        return {
+            "added": sorted(added),
+            "removed": sorted(removed),
+            "modified": sorted(modified),
+            "identical": not added and not removed and not modified,
+            "size_diff_bytes": size_b - size_a,
+        }
+
+    def registry_pull(
+        self,
+        registry_url: str,
+        image_name: str,
+        tag: str = "latest",
+        dest_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Pull an image from an HTTP registry.
+
+        Downloads a tar archive from ``registry_url/<image_name>/<tag>.tar.gz"
+        and imports it as a local image.
+
+        Args:
+            registry_url: Base URL of the registry.
+            image_name: Image name.
+            tag: Image tag (default: 'latest').
+            dest_dir: Local directory to store the image.
+
+        Returns:
+            { name, tag, path, size_bytes, source_url }
+        """
+        import urllib.request
+        import tempfile
+        import tarfile
+
+        url = f"{registry_url.rstrip('/')}/{image_name}/{tag}.tar.gz"
+        if dest_dir is None:
+            dest_dir = os.path.join(os.getcwd(), "images")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+        try:
+            urllib.request.urlretrieve(url, tmp.name)
+            size = os.path.getsize(tmp.name)
+
+            # Extract
+            with tarfile.open(tmp.name, "r:gz") as tar:
+                members = tar.getmembers()
+                top_name = (members[0].name.split("/")[0]
+                            if members else image_name)
+                tar.extractall(dest_dir)
+
+            imported_path = os.path.join(dest_dir, top_name)
+            self._record_event(
+                "registry_pull", image_name,
+                f"tag={tag}, url={url}, size={size}")
+            return {
+                "name": image_name,
+                "tag": tag,
+                "path": imported_path,
+                "size_bytes": size,
+                "source_url": url,
+            }
+        finally:
+            os.unlink(tmp.name)
+
+    def registry_push(
+        self,
+        image_path: str,
+        registry_url: str,
+        image_name: str,
+        tag: str = "latest",
+    ) -> Dict[str, Any]:
+        """Push an image to an HTTP registry.
+
+        Exports the image as a tar archive and uploads it via HTTP PUT.
+
+        Args:
+            image_path: Local path to the image directory.
+            registry_url: Base URL of the registry.
+            image_name: Image name.
+            tag: Image tag.
+
+        Returns:
+            { name, tag, size_bytes, url }
+        """
+        import urllib.request
+        import tempfile
+        import tarfile
+
+        source = Path(image_path).resolve()
+        if not source.is_dir():
+            raise ValueError(f"Image not found: {image_path}")
+
+        url = f"{registry_url.rstrip('/')}/{image_name}/{tag}.tar.gz"
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+        try:
+            with tarfile.open(tmp.name, "w:gz") as tar:
+                tar.add(str(source), arcname=source.name)
+            size = os.path.getsize(tmp.name)
+
+            with open(tmp.name, "rb") as f:
+                data = f.read()
+            req = urllib.request.Request(url, data=data, method="PUT")
+            req.add_header("Content-Type", "application/gzip")
+            urllib.request.urlopen(req)
+
+            self._record_event(
+                "registry_push", image_name,
+                f"tag={tag}, url={url}, size={size}")
+            return {
+                "name": image_name,
+                "tag": tag,
+                "size_bytes": size,
+                "url": url,
+            }
+        finally:
+            os.unlink(tmp.name)
+
+    def registry_catalog(
+        self,
+        registry_url: str,
+    ) -> Dict[str, Any]:
+        """List images in an HTTP registry.
+
+        Fetches ``<registry_url>/catalog.json`` to discover available
+        images.
+
+        Returns:
+            { images: [...], registry_url }
+        """
+        import urllib.request
+
+        url = f"{registry_url.rstrip('/')}/catalog.json"
+        try:
+            req = urllib.request.Request(url)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode())
+        except Exception as e:
+            return {
+                "images": [],
+                "registry_url": registry_url,
+                "error": str(e),
+            }
+
+        return {
+            "images": data.get("images", []),
+            "registry_url": registry_url,
+        }
+
+    # ------------------------------------------------------------------
     # Process management (per-process control within a container)
     # ------------------------------------------------------------------
 

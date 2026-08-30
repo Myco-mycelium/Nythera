@@ -26376,6 +26376,156 @@ class TestResourceTiering(unittest.TestCase):
         self.assertTrue(result['cpu_guaranteed'])
 
 
+class TestImageManagement(unittest.TestCase):
+    """Tests for image layering and diff."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make_image(self, mgr, name):
+        import os, tempfile
+        d = tempfile.mkdtemp(prefix=f"img-{name}-")
+        state = os.path.join(d, "state")
+        os.makedirs(state)
+        meta = os.path.join(state, "metadata.json")
+        with open(meta, "w") as f:
+            json.dump({"tree": {"name": name, "type": "directory",
+                                "children": [{"name": "file.txt",
+                                              "type": "file",
+                                              "checksum": "abc"}]}}, f)
+        blocks = os.path.join(state, "blocks")
+        os.makedirs(blocks)
+        with open(os.path.join(blocks, "b1"), "w") as f:
+            f.write("hello")
+        return d
+
+    def test_list_images_empty(self):
+        mgr = self._mgr()
+        images = mgr.list_images(base_dir="/tmp/nonexistent-images")
+        self.assertEqual(images, [])
+
+    def test_list_images_with_image(self):
+        import tempfile
+        mgr = self._mgr()
+        parent = tempfile.mkdtemp(prefix="img-parent-")
+        d = self._make_image(mgr, "testimg")
+        # Move into parent
+        import shutil
+        dest = os.path.join(parent, "testimg")
+        shutil.move(d, dest)
+        try:
+            images = mgr.list_images(base_dir=parent)
+            self.assertGreater(len(images), 0)
+            self.assertEqual(images[0]["name"], "testimg")
+        finally:
+            shutil.rmtree(parent)
+
+    def test_create_layer(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "layerimg")
+        try:
+            changes = [{"op": "add", "path": "/new.txt"},
+                       {"op": "modify", "path": "/file.txt"}]
+            result = mgr.create_image_layer(d, "v1", changes=changes)
+            self.assertEqual(result["layer_name"], "v1")
+            self.assertEqual(result["changes_count"], 2)
+            self.assertGreater(result["size_bytes"], 0)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_list_layers(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "layerimg2")
+        try:
+            mgr.create_image_layer(d, "v1", changes=[{"op": "add", "path": "/a"}])
+            mgr.create_image_layer(d, "v2", changes=[{"op": "modify", "path": "/b"}])
+            layers = mgr.list_image_layers(d)
+            self.assertEqual(len(layers), 2)
+            self.assertEqual(layers[0]["name"], "v1")
+            self.assertEqual(layers[1]["name"], "v2")
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_remove_layer(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "layerimg3")
+        try:
+            mgr.create_image_layer(d, "v1")
+            self.assertTrue(mgr.remove_image_layer(d, "v1"))
+            self.assertEqual(len(mgr.list_image_layers(d)), 0)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_remove_layer_not_found(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "layerimg4")
+        try:
+            with self.assertRaises(ValueError):
+                mgr.remove_image_layer(d, "nonexistent")
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_diff_images_identical(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "diffa")
+        try:
+            result = mgr.diff_images(d, d)
+            self.assertTrue(result["identical"])
+            self.assertEqual(len(result["added"]), 0)
+            self.assertEqual(len(result["removed"]), 0)
+        finally:
+            import shutil
+            shutil.rmtree(d)
+
+    def test_diff_images_different(self):
+        import tempfile, shutil
+        mgr = self._mgr()
+        d1 = self._make_image(mgr, "diff1")
+        d2 = self._make_image(mgr, "diff2")
+        try:
+            meta2 = os.path.join(d2, "state", "metadata.json")
+            with open(meta2) as f:
+                data = json.load(f)
+            data["tree"]["children"].append(
+                {"name": "extra.txt", "type": "file",
+                 "checksum": "xyz"})
+            with open(meta2, "w") as f:
+                json.dump(data, f)
+            result = mgr.diff_images(d1, d2)
+            self.assertFalse(result["identical"])
+            self.assertIn("extra.txt", result["added"])
+        finally:
+            shutil.rmtree(d1)
+            shutil.rmtree(d2)
+
+    def test_export_and_import_roundtrip(self):
+        import tempfile
+        mgr = self._mgr()
+        d = self._make_image(mgr, "roundtrip")
+        try:
+            tar = mgr.export_image(d)
+            self.assertTrue(os.path.isfile(tar))
+            imported = mgr.import_image(tar)
+            self.assertTrue(os.path.isdir(imported))
+        finally:
+            import shutil
+            shutil.rmtree(d)
+            if os.path.isfile(tar):
+                os.unlink(tar)
+            if 'imported' in dir() and os.path.isdir(imported):
+                shutil.rmtree(imported)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -26483,6 +26633,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyCorrelation))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceHeatmap))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceTiering))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))
