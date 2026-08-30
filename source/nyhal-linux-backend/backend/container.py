@@ -14647,6 +14647,257 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Cross-cluster federation
+    # ------------------------------------------------------------------
+
+    def register_federation_peer(
+        self,
+        peer_id: str,
+        peer_url: str,
+        cluster_name: str,
+        capabilities: Optional[Dict[str, Any]] = None,
+        trust_level: str = "full",
+    ) -> Dict[str, Any]:
+        """Register a peer cluster for cross-cluster operations.
+
+        Args:
+            peer_id: Unique peer cluster identifier.
+            peer_url: IPC/API URL of the peer cluster.
+            cluster_name: Human-readable cluster name.
+            capabilities: Peer cluster capabilities (memory_mb, cpu_cores, etc.).
+            trust_level: ``"full"``, ``"limited"``, or ``"none"``.
+
+        Returns:
+            Dict with peer registration details.
+        """
+        if not hasattr(self, '_federation_peers'):
+            self._federation_peers: Dict[str, Dict[str, Any]] = {}
+
+        now = time.time()
+        self._federation_peers[peer_id] = {
+            "peer_id": peer_id,
+            "peer_url": peer_url,
+            "cluster_name": cluster_name,
+            "capabilities": capabilities or {},
+            "trust_level": trust_level,
+            "registered_at": now,
+            "last_seen": now,
+            "status": "active",
+            "shared_containers": [],
+            "shared_resources": {},
+        }
+
+        self._record_event(
+            "federation_peer_registered", peer_id,
+            f"cluster={cluster_name}, url={peer_url}")
+
+        return {
+            "ok": True,
+            "peer_id": peer_id,
+            "cluster_name": cluster_name,
+            "trust_level": trust_level,
+        }
+
+    def unregister_federation_peer(self, peer_id: str) -> Dict[str, Any]:
+        """Remove a federation peer."""
+        if not hasattr(self, '_federation_peers') or peer_id not in self._federation_peers:
+            return {"error": f"Peer '{peer_id}' not found"}
+        del self._federation_peers[peer_id]
+        return {"ok": True, "peer_id": peer_id}
+
+    def list_federation_peers(self) -> List[Dict[str, Any]]:
+        """List all registered federation peers."""
+        if not hasattr(self, '_federation_peers'):
+            return []
+        result = []
+        for peer in self._federation_peers.values():
+            result.append({
+                "peer_id": peer["peer_id"],
+                "cluster_name": peer["cluster_name"],
+                "trust_level": peer["trust_level"],
+                "status": peer["status"],
+                "shared_containers": len(peer.get("shared_containers", [])),
+            })
+        return result
+
+    def share_container_with_peer(
+        self,
+        container: Container,
+        peer_id: str,
+        permissions: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Share a container's visibility with a federation peer.
+
+        Args:
+            container: Container to share.
+            peer_id: Peer cluster to share with.
+            permissions: List of permissions (``"view"``, ``"manage"``, ``"migrate"``).
+
+        Returns:
+            Dict with sharing details.
+        """
+        if not hasattr(self, '_federation_peers') or peer_id not in self._federation_peers:
+            return {"error": f"Peer '{peer_id}' not found"}
+
+        peer = self._federation_peers[peer_id]
+        permissions = permissions or ["view"]
+
+        # Remove existing share if any
+        peer["shared_containers"] = [
+            s for s in peer["shared_containers"] if s["container_id"] != container.id
+        ]
+
+        share_entry = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "permissions": permissions,
+            "shared_at": time.time(),
+        }
+        peer["shared_containers"].append(share_entry)
+
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "peer_id": peer_id,
+            "permissions": permissions,
+        }
+
+    def unshare_container_from_peer(
+        self,
+        container_id: str,
+        peer_id: str,
+    ) -> Dict[str, Any]:
+        """Stop sharing a container with a federation peer."""
+        if not hasattr(self, '_federation_peers') or peer_id not in self._federation_peers:
+            return {"error": f"Peer '{peer_id}' not found"}
+        peer = self._federation_peers[peer_id]
+        before = len(peer["shared_containers"])
+        peer["shared_containers"] = [
+            s for s in peer["shared_containers"] if s["container_id"] != container_id
+        ]
+        removed = before - len(peer["shared_containers"])
+        return {
+            "ok": True,
+            "container_id": container_id,
+            "peer_id": peer_id,
+            "removed": removed > 0,
+        }
+
+    def share_resources_with_peer(
+        self,
+        peer_id: str,
+        resource_type: str,
+        amount: int,
+    ) -> Dict[str, Any]:
+        """Offer shared resources to a federation peer.
+
+        Args:
+            peer_id: Peer to share with.
+            resource_type: Type of resource (``"memory_mb"``, ``"cpu_cores"``).
+            amount: Amount to share.
+
+        Returns:
+            Dict with sharing details.
+        """
+        if not hasattr(self, '_federation_peers') or peer_id not in self._federation_peers:
+            return {"error": f"Peer '{peer_id}' not found"}
+
+        peer = self._federation_peers[peer_id]
+        shared = peer.setdefault("shared_resources", {})
+        shared[resource_type] = shared.get(resource_type, 0) + amount
+
+        return {
+            "ok": True,
+            "peer_id": peer_id,
+            "resource_type": resource_type,
+            "amount": amount,
+            "total_shared": shared[resource_type],
+        }
+
+    def get_federation_status(self) -> Dict[str, Any]:
+        """Get overview of the federation status."""
+        if not hasattr(self, '_federation_peers'):
+            self._federation_peers = {}
+
+        peers = []
+        total_shared = 0
+        total_resources: Dict[str, int] = {}
+        for peer in self._federation_peers.values():
+            peers.append({
+                "peer_id": peer["peer_id"],
+                "cluster_name": peer["cluster_name"],
+                "status": peer["status"],
+                "shared_count": len(peer.get("shared_containers", [])),
+            })
+            total_shared += len(peer.get("shared_containers", []))
+            for rtype, amount in peer.get("shared_resources", {}).items():
+                total_resources[rtype] = total_resources.get(rtype, 0) + amount
+
+        return {
+            "peer_count": len(peers),
+            "peers": peers,
+            "total_shared_containers": total_shared,
+            "total_shared_resources": total_resources,
+        }
+
+    def plan_cross_cluster_migration(
+        self,
+        container: Container,
+        target_peer_id: str,
+        strategy: str = "snapshot",
+    ) -> Dict[str, Any]:
+        """Plan migration of a container to a peer cluster.
+
+        Args:
+            container: Container to migrate.
+            target_peer_id: Target federation peer.
+            strategy: Migration strategy.
+
+        Returns:
+            Dict with migration plan.
+        """
+        if not hasattr(self, '_federation_peers') or target_peer_id not in self._federation_peers:
+            return {"error": f"Peer '{target_peer_id}' not found"}
+
+        peer = self._federation_peers[target_peer_id]
+        trust = peer.get("trust_level", "none")
+
+        if trust == "none":
+            return {"error": "Peer trust level insufficient for migration"}
+
+        caps = peer.get("capabilities", {})
+        container_mem = container.config.limits.memory_mb
+        if caps.get("memory_mb", 0) > 0 and container_mem > caps["memory_mb"]:
+            return {
+                "error": f"Insufficient memory on peer: need {container_mem}MB, have {caps['memory_mb']}MB",
+            }
+
+        steps = [
+            {"step": 1, "action": "snapshot_container",
+             "description": "Create snapshot of container state"},
+            {"step": 2, "action": "transfer_snapshot",
+             "description": f"Transfer to {peer['cluster_name']} via peer link"},
+            {"step": 3, "action": "restore_on_peer",
+             "description": "Restore container on peer cluster"},
+            {"step": 4, "action": "update_dns",
+             "description": "Update DNS/network routing"},
+            {"step": 5, "action": "cleanup_local",
+             "description": "Remove local container"},
+        ]
+
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "source_cluster": "local",
+            "target_cluster": peer["cluster_name"],
+            "target_peer": target_peer_id,
+            "strategy": strategy,
+            "steps": steps,
+            "trust_level": trust,
+            "estimated_seconds": 10.0,
+        }
+
+    # ------------------------------------------------------------------
     # Container placement optimization
     # ------------------------------------------------------------------
 
@@ -16210,6 +16461,241 @@ class ContainerManager:
             "container_id": container.id,
             "dependents": dependents,
             "all_healthy": all_healthy,
+        }
+
+    # ------------------------------------------------------------------
+    # Dependency graph visualization
+    # ------------------------------------------------------------------
+
+    def generate_dependency_graph(
+        self,
+        container_ids: Optional[List[str]] = None,
+        format: str = "ascii",
+    ) -> Dict[str, Any]:
+        """Generate a visual dependency graph for containers.
+
+        Supports ASCII art, DOT (Graphviz), and Mermaid formats.
+
+        Args:
+            container_ids: IDs to include (default: all).
+            format: Output format: ``"ascii"``, ``"dot"``, or ``"mermaid"``.
+
+        Returns:
+            Dict with ``graph`` (text), ``format``, and metadata.
+        """
+        if container_ids is None:
+            container_ids = list(self.containers.keys())
+
+        # Build adjacency: container -> list of dependencies
+        nodes: Dict[str, Dict[str, Any]] = {}
+        edges: List[Dict[str, str]] = []
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c:
+                state = c.state.value
+                name = c.config.name or cid[:12]
+                nodes[cid] = {"name": name, "state": state}
+                for dep in (c.config.depends_on or []):
+                    if dep in self.containers:
+                        edges.append({"from": dep, "to": cid})
+
+        if format == "dot":
+            return self._generate_dot_graph(nodes, edges)
+        elif format == "mermaid":
+            return self._generate_mermaid_graph(nodes, edges)
+        else:
+            return self._generate_ascii_graph(nodes, edges)
+
+    def _generate_ascii_graph(
+        self,
+        nodes: Dict[str, Dict[str, Any]],
+        edges: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """Generate ASCII art dependency graph."""
+        if not nodes:
+            return {"graph": "(empty)", "format": "ascii", "nodes": 0, "edges": 0}
+
+        # Topological sort for ordering
+        order = self._topo_sort(nodes, edges)
+
+        # Build adjacency for display
+        deps_of: Dict[str, List[str]] = {}
+        for e in edges:
+            deps_of.setdefault(e["to"], []).append(e["from"])
+
+        state_icons = {
+            "running": "🟢", "created": "⚪", "suspended": "🟡",
+            "terminated": "🔴",
+        }
+
+        lines: List[str] = []
+        lines.append("Dependency Graph")
+        lines.append("=" * 40)
+        for cid in order:
+            node = nodes[cid]
+            icon = state_icons.get(node["state"], "?")
+            deps = deps_of.get(cid, [])
+            dep_str = f" <- {', '.join(deps)}" if deps else ""
+            lines.append(f"  {icon} {node['name']} [{node['state']}]{dep_str}")
+
+        # Draw edges
+        if edges:
+            lines.append("")
+            lines.append("Edges:")
+            for e in edges:
+                from_name = nodes.get(e["from"], {}).get("name", e["from"])
+                to_name = nodes.get(e["to"], {}).get("name", e["to"])
+                lines.append(f"  {from_name} --> {to_name}")
+
+        return {
+            "graph": "\n".join(lines),
+            "format": "ascii",
+            "nodes": len(nodes),
+            "edges": len(edges),
+        }
+
+    def _generate_dot_graph(
+        self,
+        nodes: Dict[str, Dict[str, Any]],
+        edges: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """Generate Graphviz DOT format."""
+        lines = ["digraph dependencies {"]
+        lines.append("  rankdir=LR;")
+        lines.append("  node [shape=box];")
+        for cid, node in nodes.items():
+            name = node["name"]
+            state = node["state"]
+            color = {"running": "green", "terminated": "red",
+                     "suspended": "yellow"}.get(state, "gray")
+            lines.append(f'  "{name}" [label="{name}\n{state}" style=filled fillcolor={color}];')
+        for e in edges:
+            from_name = nodes.get(e["from"], {}).get("name", e["from"])
+            to_name = nodes.get(e["to"], {}).get("name", e["to"])
+            lines.append(f'  "{from_name}" -> "{to_name}";')
+        lines.append("}")
+        return {
+            "graph": "\n".join(lines),
+            "format": "dot",
+            "nodes": len(nodes),
+            "edges": len(edges),
+        }
+
+    def _generate_mermaid_graph(
+        self,
+        nodes: Dict[str, Dict[str, Any]],
+        edges: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """Generate Mermaid diagram format."""
+        lines = ["graph LR"]
+        for cid, node in nodes.items():
+            name = node["name"]
+            state = node["state"]
+            lines.append(f"    {name.replace('-', '_')}[{name} ({state})]")
+        for e in edges:
+            from_name = nodes.get(e["from"], {}).get("name", e["from"]).replace("-", "_")
+            to_name = nodes.get(e["to"], {}).get("name", e["to"]).replace("-", "_")
+            lines.append(f"    {from_name} --> {to_name}")
+        return {
+            "graph": "\n".join(lines),
+            "format": "mermaid",
+            "nodes": len(nodes),
+            "edges": len(edges),
+        }
+
+    def _topo_sort(
+        self,
+        nodes: Dict[str, Dict[str, Any]],
+        edges: List[Dict[str, str]],
+    ) -> List[str]:
+        """Topological sort of containers by dependencies."""
+        adj: Dict[str, List[str]] = {nid: [] for nid in nodes}
+        in_degree: Dict[str, int] = {nid: 0 for nid in nodes}
+        for e in edges:
+            if e["from"] in adj and e["to"] in in_degree:
+                adj[e["from"]].append(e["to"])
+                in_degree[e["to"]] += 1
+
+        queue = [nid for nid, deg in in_degree.items() if deg == 0]
+        result: List[str] = []
+        while queue:
+            nid = queue.pop(0)
+            result.append(nid)
+            for neighbor in adj.get(nid, []):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        # Add remaining (cycles)
+        for nid in nodes:
+            if nid not in result:
+                result.append(nid)
+        return result
+
+    def get_critical_path(
+        self,
+        container_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Find the critical path (longest dependency chain) in the graph.
+
+        Returns:
+            Dict with ``critical_path`` (list of container IDs),
+            ``length``, and ``estimated_seconds``.
+        """
+        if container_ids is None:
+            container_ids = list(self.containers.keys())
+
+        # Build adjacency
+        deps_of: Dict[str, List[str]] = {}
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c:
+                for dep in (c.config.depends_on or []):
+                    if dep in self.containers:
+                        deps_of.setdefault(cid, []).append(dep)
+
+        # DFS for longest path
+        memo: Dict[str, int] = {}
+        path_memo: Dict[str, List[str]] = {}
+
+        def dfs(cid: str) -> int:
+            if cid in memo:
+                return memo[cid]
+            deps = deps_of.get(cid, [])
+            if not deps:
+                memo[cid] = 1
+                path_memo[cid] = [cid]
+                return 1
+            best = 0
+            best_path: List[str] = []
+            for dep in deps:
+                length = dfs(dep)
+                if length > best:
+                    best = length
+                    best_path = path_memo.get(dep, [dep])
+            memo[cid] = best + 1
+            path_memo[cid] = best_path + [cid]
+            return best + 1
+
+        max_len = 0
+        critical: List[str] = []
+        for cid in container_ids:
+            length = dfs(cid)
+            if length > max_len:
+                max_len = length
+                critical = path_memo.get(cid, [cid])
+
+        # Estimate startup time (assume 2s per container)
+        estimated_s = max_len * 2.0
+
+        return {
+            "critical_path": critical,
+            "length": max_len,
+            "estimated_seconds": estimated_s,
+            "path_names": [
+                self.containers[cid].config.name or cid
+                for cid in critical if cid in self.containers
+            ],
         }
 
     def _setup_cgroups(self, container: Container) -> None:

@@ -948,6 +948,48 @@ class ControlService:
             elif op == "placement_score":
                 self._placement_score(server, sender_path,
                                      msg.message_id, request)
+            elif op == "configure_auto_scaling":
+                self._configure_auto_scaling(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "evaluate_and_adjust":
+                self._evaluate_and_adjust(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "auto_scaling_status":
+                self._auto_scaling_status(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "batch_evaluate_scaling":
+                self._batch_evaluate_scaling(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "generate_dependency_graph":
+                self._generate_dependency_graph(server, sender_path,
+                                               msg.message_id, request)
+            elif op == "get_critical_path":
+                self._get_critical_path(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "register_federation_peer":
+                self._register_federation_peer(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "unregister_federation_peer":
+                self._unregister_federation_peer(server, sender_path,
+                                                msg.message_id, request)
+            elif op == "list_federation_peers":
+                self._list_federation_peers(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "share_container_with_peer":
+                self._share_container_with_peer(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "unshare_container_from_peer":
+                self._unshare_container_from_peer(server, sender_path,
+                                                msg.message_id, request)
+            elif op == "share_resources_with_peer":
+                self._share_resources_with_peer(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "get_federation_status":
+                self._get_federation_status(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "plan_cross_cluster_migration":
+                self._plan_cross_cluster_migration(server, sender_path,
+                                                 msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6193,6 +6235,120 @@ class ControlService:
             return
         result = self.container_manager.placement_score(
             request['node_id'], c,
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- dynamic resource limit handlers --
+
+    def _configure_auto_scaling(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_auto_scaling(
+            c,
+            enabled=request.get('enabled', True),
+            min_memory_mb=request.get('min_memory_mb'),
+            max_memory_mb=request.get('max_memory_mb'),
+            target_memory_pct=request.get('target_memory_pct', 70.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_and_adjust(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.evaluate_auto_scaling(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _auto_scaling_status(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_auto_scaling_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _batch_evaluate_scaling(self, server, sender_path, call_id, request):
+        # Evaluate all containers with auto-scaling enabled
+        results = []
+        for cid, c in self.container_manager.containers.items():
+            if c.state.value == 'running' and hasattr(c, '_autoscale') and c._autoscale.get('enabled'):
+                result = self.container_manager.evaluate_auto_scaling(c)
+                results.append(result)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, "containers_evaluated": len(results), "results": results})
+
+    # -- dependency graph handlers --
+
+    def _generate_dependency_graph(self, server, sender_path, call_id, request):
+        result = self.container_manager.generate_dependency_graph(
+            container_ids=request.get('container_ids'),
+            format=request.get('format', 'ascii'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_critical_path(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_critical_path(
+            container_ids=request.get('container_ids'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- federation handlers --
+
+    def _register_federation_peer(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_federation_peer(
+            request['peer_id'], request['peer_url'],
+            request['cluster_name'],
+            capabilities=request.get('capabilities'),
+            trust_level=request.get('trust_level', 'full'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _unregister_federation_peer(self, server, sender_path, call_id, request):
+        result = self.container_manager.unregister_federation_peer(request['peer_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_federation_peers(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_federation_peers()
+        self._reply(server, sender_path, call_id, {"ok": True, "peers": result})
+
+    def _share_container_with_peer(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.share_container_with_peer(
+            c, request['peer_id'],
+            permissions=request.get('permissions'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _unshare_container_from_peer(self, server, sender_path, call_id, request):
+        result = self.container_manager.unshare_container_from_peer(
+            request['container_id'], request['peer_id'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _share_resources_with_peer(self, server, sender_path, call_id, request):
+        result = self.container_manager.share_resources_with_peer(
+            request['peer_id'], request['resource_type'], request['amount'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_federation_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_federation_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _plan_cross_cluster_migration(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.plan_cross_cluster_migration(
+            c, request['target_peer_id'],
+            strategy=request.get('strategy', 'snapshot'),
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 

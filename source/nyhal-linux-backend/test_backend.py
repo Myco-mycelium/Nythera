@@ -2650,6 +2650,241 @@ class TestPlacementOptimization(unittest.TestCase):
         self.assertIn("0.80", text)
 
 
+class TestDynamicResourceLimits(unittest.TestCase):
+    """Tests for dynamic resource limit adjustment."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_configure_auto_scaling(self):
+        """Configure auto-scaling for a container."""
+        mgr = self._manager()
+        c = self._make(mgr, "as1")
+        r = mgr.configure_auto_scaling(c, target_memory_pct=80)
+        self.assertIn("autoscale", r)
+        self.assertEqual(r["autoscale"]["target_memory_pct"], 80)
+
+    def test_evaluate_auto_scaling(self):
+        """Evaluate auto-scaling."""
+        mgr = self._manager()
+        c = self._make(mgr, "as2")
+        mgr.configure_auto_scaling(c)
+        r = mgr.evaluate_auto_scaling(c)
+        self.assertIn("should_scale", r)
+        self.assertIn("reason", r)
+
+    def test_auto_scaling_status(self):
+        """Status returns config details."""
+        mgr = self._manager()
+        c = self._make(mgr, "as3")
+        mgr.configure_auto_scaling(c)
+        r = mgr.get_auto_scaling_status(c)
+        self.assertTrue(r["enabled"])
+
+    def test_format_human_configure(self):
+        """format_human handles configure-auto-scaling."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "enabled": True,
+                "target_memory_pct": 70, "min_memory_mb": 64, "max_memory_mb": 4096}
+        text = format_human("configure-auto-scaling", resp)
+        self.assertIn("enabled", text)
+        self.assertIn("70", text)
+
+    def test_format_human_status(self):
+        """format_human handles auto-scaling-status."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "configured": True, "enabled": True,
+                "target_memory_pct": 70, "min_memory_mb": 64, "max_memory_mb": 4096,
+                "adjustments_made": 3}
+        text = format_human("auto-scaling-status", resp)
+        self.assertIn("70", text)
+        self.assertIn("3", text)
+
+
+class TestDependencyGraph(unittest.TestCase):
+    """Tests for dependency graph visualization."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name, depends_on=None):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       depends_on=depends_on or []))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_ascii_graph(self):
+        """ASCII graph renders nodes and edges."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "db")
+        c2 = self._make(mgr, "web", depends_on=["db"])
+        r = mgr.generate_dependency_graph(format="ascii")
+        self.assertEqual(r["format"], "ascii")
+        self.assertEqual(r["nodes"], 2)
+        self.assertEqual(r["edges"], 1)
+        self.assertIn("db", r["graph"])
+        self.assertIn("web", r["graph"])
+
+    def test_dot_graph(self):
+        """DOT graph renders Graphviz format."""
+        mgr = self._manager()
+        c = self._make(mgr, "svc")
+        r = mgr.generate_dependency_graph(format="dot")
+        self.assertEqual(r["format"], "dot")
+        self.assertIn("digraph", r["graph"])
+
+    def test_mermaid_graph(self):
+        """Mermaid graph renders diagram format."""
+        mgr = self._manager()
+        c = self._make(mgr, "app")
+        r = mgr.generate_dependency_graph(format="mermaid")
+        self.assertEqual(r["format"], "mermaid")
+        self.assertIn("graph LR", r["graph"])
+
+    def test_critical_path(self):
+        """Critical path finds longest chain."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "db")
+        c2 = self._make(mgr, "cache", depends_on=["db"])
+        c3 = self._make(mgr, "web", depends_on=["cache"])
+        r = mgr.get_critical_path()
+        self.assertEqual(r["length"], 3)
+        self.assertEqual(len(r["critical_path"]), 3)
+        self.assertGreater(r["estimated_seconds"], 0)
+
+    def test_format_human_graph(self):
+        """format_human handles generate-dependency-graph."""
+        from nyrqisctl import format_human
+        resp = {"graph": "digraph { a -> b }", "format": "dot", "nodes": 2, "edges": 1}
+        text = format_human("generate-dependency-graph", resp)
+        self.assertIn("digraph", text)
+
+    def test_format_human_critical_path(self):
+        """format_human handles get-critical-path."""
+        from nyrqisctl import format_human
+        resp = {"critical_path": ["db", "web"], "length": 2,
+                "estimated_seconds": 4.0, "path_names": ["db", "web"]}
+        text = format_human("get-critical-path", resp)
+        self.assertIn("db", text)
+        self.assertIn("web", text)
+
+
+class TestFederation(unittest.TestCase):
+    """Tests for cross-cluster federation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_register_unregister_peer(self):
+        """Register and unregister a federation peer."""
+        mgr = self._manager()
+        r = mgr.register_federation_peer("p1", "unix:///tmp/p1.sock", "cluster-a")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["cluster_name"], "cluster-a")
+        mgr.unregister_federation_peer("p1")
+        self.assertEqual(len(mgr.list_federation_peers()), 0)
+
+    def test_list_peers(self):
+        """List federation peers."""
+        mgr = self._manager()
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock", "cluster-a")
+        mgr.register_federation_peer("p2", "unix:///tmp/p2.sock", "cluster-b")
+        peers = mgr.list_federation_peers()
+        self.assertEqual(len(peers), 2)
+        mgr.unregister_federation_peer("p1")
+        mgr.unregister_federation_peer("p2")
+
+    def test_share_unshare_container(self):
+        """Share and unshare a container with a peer."""
+        mgr = self._manager()
+        c = self._make(mgr, "share1")
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock", "cluster-a")
+        r = mgr.share_container_with_peer(c, "p1", permissions=["view", "migrate"])
+        self.assertTrue(r["ok"])
+        self.assertIn("migrate", r["permissions"])
+        r2 = mgr.unshare_container_from_peer(c.id, "p1")
+        self.assertTrue(r2["ok"])
+        mgr.unregister_federation_peer("p1")
+
+    def test_share_resources(self):
+        """Share resources with a peer."""
+        mgr = self._manager()
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock", "cluster-a")
+        r = mgr.share_resources_with_peer("p1", "memory_mb", 512)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_shared"], 512)
+        mgr.unregister_federation_peer("p1")
+
+    def test_federation_status(self):
+        """Federation status overview."""
+        mgr = self._manager()
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock", "cluster-a")
+        r = mgr.get_federation_status()
+        self.assertEqual(r["peer_count"], 1)
+        mgr.unregister_federation_peer("p1")
+
+    def test_plan_cross_cluster_migration(self):
+        """Plan cross-cluster migration."""
+        mgr = self._manager()
+        c = self._make(mgr, "mig1")
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock",
+                                     "cluster-a", capabilities={"memory_mb": 1024})
+        r = mgr.plan_cross_cluster_migration(c, "p1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["target_cluster"], "cluster-a")
+        mgr.unregister_federation_peer("p1")
+
+    def test_migration_insufficient_trust(self):
+        """Migration fails with no trust."""
+        mgr = self._manager()
+        c = self._make(mgr, "mig2")
+        mgr.register_federation_peer("p1", "unix:///tmp/p1.sock",
+                                     "cluster-a", trust_level="none")
+        r = mgr.plan_cross_cluster_migration(c, "p1")
+        self.assertIn("error", r)
+        mgr.unregister_federation_peer("p1")
+
+    def test_format_human_federation_status(self):
+        """format_human handles get-federation-status."""
+        from nyrqisctl import format_human
+        resp = {"peer_count": 2, "total_shared_containers": 5,
+                "total_shared_resources": {"memory_mb": 1024}}
+        text = format_human("get-federation-status", resp)
+        self.assertIn("2", text)
+        self.assertIn("5", text)
+
+    def test_format_human_plan_migration(self):
+        """format_human handles plan-cross-cluster-migration."""
+        from nyrqisctl import format_human
+        resp = {"source_cluster": "local", "target_cluster": "remote",
+                "strategy": "snapshot", "trust_level": "full",
+                "steps": [{"step": 1, "action": "snapshot"}]}
+        text = format_human("plan-cross-cluster-migration", resp)
+        self.assertIn("local", text)
+        self.assertIn("remote", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -27586,6 +27821,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStatisticalAnomalyDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotRollback))
     suite.addTests(loader.loadTestsFromTestCase(TestPlacementOptimization))
+    suite.addTests(loader.loadTestsFromTestCase(TestDynamicResourceLimits))
+    suite.addTests(loader.loadTestsFromTestCase(TestDependencyGraph))
+    suite.addTests(loader.loadTestsFromTestCase(TestFederation))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

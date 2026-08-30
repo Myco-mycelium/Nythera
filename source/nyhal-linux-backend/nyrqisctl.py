@@ -2220,6 +2220,84 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
             "node_id": args.node_id,
         }
+    if command == "configure-auto-scaling":
+        return {
+            "service": "control",
+            "op": "configure_auto_scaling",
+            "container_id": args.container_id,
+            "enabled": getattr(args, 'enabled', True),
+            "min_memory_mb": getattr(args, 'min_memory_mb', 64),
+            "max_memory_mb": getattr(args, 'max_memory_mb', 4096),
+            "target_memory_pct": getattr(args, 'target_memory_pct', 70.0),
+            "scale_up_step_mb": getattr(args, 'scale_up_step_mb', 128),
+            "scale_down_step_mb": getattr(args, 'scale_down_step_mb', 64),
+            "cooldown_seconds": getattr(args, 'cooldown_seconds', 60.0),
+        }
+    if command == "evaluate-and-adjust":
+        return {"service": "control", "op": "evaluate_and_adjust", "container_id": args.container_id}
+    if command == "auto-scaling-status":
+        return {"service": "control", "op": "auto_scaling_status", "container_id": args.container_id}
+    if command == "batch-evaluate-scaling":
+        return {"service": "control", "op": "batch_evaluate_scaling"}
+    if command == "generate-dependency-graph":
+        return {
+            "service": "control",
+            "op": "generate_dependency_graph",
+            "container_ids": getattr(args, 'container_ids', None),
+            "format": getattr(args, 'format', 'ascii'),
+        }
+    if command == "get-critical-path":
+        return {
+            "service": "control",
+            "op": "get_critical_path",
+            "container_ids": getattr(args, 'container_ids', None),
+        }
+    if command == "register-federation-peer":
+        return {
+            "service": "control",
+            "op": "register_federation_peer",
+            "peer_id": args.peer_id,
+            "peer_url": args.peer_url,
+            "cluster_name": args.cluster_name,
+            "trust_level": getattr(args, 'trust_level', 'full'),
+        }
+    if command == "unregister-federation-peer":
+        return {"service": "control", "op": "unregister_federation_peer", "peer_id": args.peer_id}
+    if command == "list-federation-peers":
+        return {"service": "control", "op": "list_federation_peers"}
+    if command == "share-container-with-peer":
+        return {
+            "service": "control",
+            "op": "share_container_with_peer",
+            "container_id": args.container_id,
+            "peer_id": args.peer_id,
+            "permissions": getattr(args, 'permissions', None),
+        }
+    if command == "unshare-container-from-peer":
+        return {
+            "service": "control",
+            "op": "unshare_container_from_peer",
+            "container_id": args.container_id,
+            "peer_id": args.peer_id,
+        }
+    if command == "share-resources-with-peer":
+        return {
+            "service": "control",
+            "op": "share_resources_with_peer",
+            "peer_id": args.peer_id,
+            "resource_type": args.resource_type,
+            "amount": args.amount,
+        }
+    if command == "get-federation-status":
+        return {"service": "control", "op": "get_federation_status"}
+    if command == "plan-cross-cluster-migration":
+        return {
+            "service": "control",
+            "op": "plan_cross_cluster_migration",
+            "container_id": args.container_id,
+            "target_peer_id": args.target_peer_id,
+            "strategy": getattr(args, 'strategy', 'snapshot'),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5250,6 +5328,71 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not resp.get('feasible'):
             lines.append(f"  Reason: {resp.get('reason', '?')}")
         return "\n".join(lines)
+    if command == "configure-auto-scaling":
+        return f"Auto-scaling {'enabled' if resp.get('enabled') else 'disabled'} for {resp.get('container_id', '?')[:12]}: target={resp.get('target_memory_pct', 0)}%, range={resp.get('min_memory_mb', 0)}-{resp.get('max_memory_mb', 0)}MB"
+    if command == "evaluate-and-adjust":
+        lines = [
+            f"Auto-scale eval for {resp.get('container_id', '?')[:12]}:",
+            f"  Action: {resp.get('action', '?')}",
+            f"  Usage: {resp.get('current_usage_pct', 0)}% (target: {resp.get('target_pct', 0)}%)",
+            f"  Limit: {resp.get('previous_limit_mb', 0)}MB -> {resp.get('new_limit_mb', 0)}MB",
+        ]
+        return "\n".join(lines)
+    if command == "auto-scaling-status":
+        if not resp.get('configured'):
+            return f"Auto-scaling not configured for {resp.get('container_id', '?')[:12]}"
+        lines = [
+            f"Auto-scaling for {resp.get('container_id', '?')[:12]}:",
+            f"  Enabled: {resp.get('enabled', False)}",
+            f"  Target: {resp.get('target_memory_pct', 0)}%",
+            f"  Range: {resp.get('min_memory_mb', 0)}-{resp.get('max_memory_mb', 0)}MB",
+            f"  Adjustments: {resp.get('adjustments_made', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "batch-evaluate-scaling":
+        lines = [
+            f"Batch scaling: {resp.get('containers_evaluated', 0)} evaluated, {resp.get('adjustments_made', 0)} adjusted",
+        ]
+        return "\n".join(lines)
+    if command == "generate-dependency-graph":
+        return resp.get('graph', '(empty)')
+    if command == "get-critical-path":
+        names = resp.get('path_names', [])
+        return f"Critical path ({resp.get('length', 0)} containers, ~{resp.get('estimated_seconds', 0)}s): {' -> '.join(names)}"
+    if command == "register-federation-peer":
+        return f"Federated with '{resp.get('cluster_name', '?')}' (trust: {resp.get('trust_level', '?')})"
+    if command == "unregister-federation-peer":
+        return f"Removed federation peer '{resp.get('peer_id', '?')}'"
+    if command == "list-federation-peers":
+        peers = resp.get('peers', [])
+        if not peers:
+            return "No federation peers"
+        lines = ["Federation peers:"]
+        for p in peers:
+            lines.append(f"  {p.get('cluster_name', '?')}: {p.get('status', '?')} (trust: {p.get('trust_level', '?')}, shared: {p.get('shared_count', 0)})")
+        return "\n".join(lines)
+    if command == "share-container-with-peer":
+        return f"Shared {resp.get('container_id', '?')[:12]} with peer '{resp.get('peer_id', '?')}' [{', '.join(resp.get('permissions', []))}]"
+    if command == "unshare-container-from-peer":
+        return f"Unshared {resp.get('container_id', '?')[:12]} from peer '{resp.get('peer_id', '?')}'"
+    if command == "share-resources-with-peer":
+        return f"Shared {resp.get('amount', 0)} {resp.get('resource_type', '?')} with peer '{resp.get('peer_id', '?')}' (total: {resp.get('total_shared', 0)})"
+    if command == "get-federation-status":
+        lines = [
+            f"Federation: {resp.get('peer_count', 0)} peers, {resp.get('total_shared_containers', 0)} shared containers",
+        ]
+        for rtype, amount in resp.get('total_shared_resources', {}).items():
+            lines.append(f"  Shared {rtype}: {amount}")
+        return "\n".join(lines)
+    if command == "plan-cross-cluster-migration":
+        lines = [
+            f"Cross-cluster migration:",
+            f"  {resp.get('source_cluster', '?')} -> {resp.get('target_cluster', '?')}",
+            f"  Strategy: {resp.get('strategy', '?')}, Trust: {resp.get('trust_level', '?')}",
+        ]
+        for s in resp.get('steps', []):
+            lines.append(f"  Step {s.get('step', '?')}: {s.get('action', '?')}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -6910,6 +7053,80 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("container_id")
     ps.add_argument("node_id")
     ps.set_defaults(command="placement-score")
+
+    # -- dynamic resource limit commands --
+    cas = sub.add_parser("configure-auto-scaling", help="Configure auto-scaling for a container")
+    cas.add_argument("container_id")
+    cas.add_argument("--enabled", action="store_true", default=True)
+    cas.add_argument("--min-memory-mb", type=int, default=64)
+    cas.add_argument("--max-memory-mb", type=int, default=4096)
+    cas.add_argument("--target-memory-pct", type=float, default=70.0)
+    cas.add_argument("--scale-up-step-mb", type=int, default=128)
+    cas.add_argument("--scale-down-step-mb", type=int, default=64)
+    cas.add_argument("--cooldown-seconds", type=float, default=60.0)
+    cas.set_defaults(command="configure-auto-scaling")
+
+    ea = sub.add_parser("evaluate-and-adjust", help="Evaluate and adjust resource limits")
+    ea.add_argument("container_id")
+    ea.set_defaults(command="evaluate-and-adjust")
+
+    ass_ = sub.add_parser("auto-scaling-status", help="Show auto-scaling status")
+    ass_.add_argument("container_id")
+    ass_.set_defaults(command="auto-scaling-status")
+
+    bes = sub.add_parser("batch-evaluate-scaling", help="Batch evaluate auto-scaling")
+    bes.set_defaults(command="batch-evaluate-scaling")
+
+    # -- dependency graph commands --
+    gdg = sub.add_parser("generate-dependency-graph", help="Generate dependency graph")
+    gdg.add_argument("--container-ids", nargs="+", default=None)
+    gdg.add_argument("--format", choices=["ascii", "dot", "mermaid"], default="ascii")
+    gdg.set_defaults(command="generate-dependency-graph")
+
+    gcp = sub.add_parser("get-critical-path", help="Find critical dependency path")
+    gcp.add_argument("--container-ids", nargs="+", default=None)
+    gcp.set_defaults(command="get-critical-path")
+
+    # -- federation commands --
+    rfp = sub.add_parser("register-federation-peer", help="Register a federation peer cluster")
+    rfp.add_argument("peer_id")
+    rfp.add_argument("peer_url")
+    rfp.add_argument("cluster_name")
+    rfp.add_argument("--trust-level", choices=["full", "limited", "none"], default="full")
+    rfp.set_defaults(command="register-federation-peer")
+
+    ufp = sub.add_parser("unregister-federation-peer", help="Remove a federation peer")
+    ufp.add_argument("peer_id")
+    ufp.set_defaults(command="unregister-federation-peer")
+
+    lfp = sub.add_parser("list-federation-peers", help="List federation peers")
+    lfp.set_defaults(command="list-federation-peers")
+
+    scwp = sub.add_parser("share-container-with-peer", help="Share a container with a peer")
+    scwp.add_argument("container_id")
+    scwp.add_argument("peer_id")
+    scwp.add_argument("--permissions", nargs="+", default=None)
+    scwp.set_defaults(command="share-container-with-peer")
+
+    ucfp = sub.add_parser("unshare-container-from-peer", help="Unshare a container from a peer")
+    ucfp.add_argument("container_id")
+    ucfp.add_argument("peer_id")
+    ucfp.set_defaults(command="unshare-container-from-peer")
+
+    srwp = sub.add_parser("share-resources-with-peer", help="Share resources with a peer")
+    srwp.add_argument("peer_id")
+    srwp.add_argument("resource_type")
+    srwp.add_argument("amount", type=int)
+    srwp.set_defaults(command="share-resources-with-peer")
+
+    gfs = sub.add_parser("get-federation-status", help="Get federation overview")
+    gfs.set_defaults(command="get-federation-status")
+
+    pcm = sub.add_parser("plan-cross-cluster-migration", help="Plan cross-cluster migration")
+    pcm.add_argument("container_id")
+    pcm.add_argument("target_peer_id")
+    pcm.add_argument("--strategy", choices=["snapshot", "live"], default="snapshot")
+    pcm.set_defaults(command="plan-cross-cluster-migration")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
