@@ -4506,6 +4506,78 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "get_federation_workloads",
         }
+    if command == "create-batch-job":
+        return {
+            "service": "control",
+            "op": "create_batch_job",
+            "name": args.name,
+            "commands": getattr(args, 'commands', []),
+            "max_parallel": getattr(args, 'max_parallel', 1),
+        }
+    if command == "execute-batch-job":
+        return {
+            "service": "control",
+            "op": "execute_batch_job",
+            "job_name": args.job_name,
+        }
+    if command == "batch-job-status":
+        return {
+            "service": "control",
+            "op": "get_batch_job_status",
+            "job_name": args.job_name,
+        }
+    if command == "list-batch-jobs":
+        return {
+            "service": "control",
+            "op": "list_batch_jobs",
+        }
+    if command == "configure-memory-compaction":
+        return {
+            "service": "control",
+            "op": "configure_memory_compaction",
+            "container_id": args.container_id,
+            "compaction_threshold_pct": getattr(args, 'threshold', 70.0),
+            "auto_compact": getattr(args, 'auto_compact', True),
+        }
+    if command == "run-memory-compaction":
+        return {
+            "service": "control",
+            "op": "run_memory_compaction",
+            "container_id": args.container_id,
+        }
+    if command == "run-memory-defragmentation":
+        return {
+            "service": "control",
+            "op": "run_memory_defragmentation",
+            "container_id": args.container_id,
+        }
+    if command == "fs-snapshot":
+        return {
+            "service": "control",
+            "op": "create_filesystem_snapshot",
+            "container_id": args.container_id,
+            "snapshot_name": args.snapshot_name,
+        }
+    if command == "fs-restore":
+        return {
+            "service": "control",
+            "op": "restore_filesystem_snapshot",
+            "snapshot_name": args.snapshot_name,
+            "target_container_id": getattr(args, 'target_container_id', None),
+        }
+    if command == "list-fs-snapshots":
+        return {
+            "service": "control",
+            "op": "list_filesystem_snapshots",
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "compare-fs-snapshots":
+        return {
+            "service": "control",
+            "op": "compare_snapshots",
+            "snapshot_a": args.snapshot_a,
+            "snapshot_b": args.snapshot_b,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -8650,6 +8722,39 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not workloads:
             lines.append("  (none)")
         return "\n".join(lines)
+    if command == "create-batch-job":
+        return f"Batch job '{resp.get('name', '?')}' created with {resp.get('task_count', 0)} tasks"
+    if command == "execute-batch-job":
+        return f"Job '{resp.get('job', '?')}': executed {resp.get('executed', 0)} tasks, status={resp.get('status', '?')}"
+    if command == "batch-job-status":
+        s = resp
+        return f"Job '{s.get('name', '?')}': {s.get('completed', 0)}/{s.get('total', 0)} completed, {s.get('failed', 0)} failed [{s.get('status', '?')}]"
+    if command == "list-batch-jobs":
+        jobs = resp.get("jobs", [])
+        lines = ["Batch Jobs:"]
+        for j in jobs:
+            lines.append(f"  {j['name']}: {j['tasks']} tasks [{j['status']}]")
+        if not jobs:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "run-memory-compaction":
+        return f"Compacted {resp.get('compacted_bytes', 0)} bytes, score={resp.get('fragmentation_score', 0):.1f}"
+    if command == "run-memory-defragmentation":
+        return f"Defragmented {resp.get('defragmented_bytes', 0)} bytes, score={resp.get('fragmentation_score', 0):.1f}"
+    if command == "fs-snapshot":
+        return f"Snapshot '{resp.get('snapshot_name', '?')}' created for {resp.get('container_id', '?')[:12]}"
+    if command == "fs-restore":
+        return f"Snapshot '{resp.get('snapshot_name', '?')}' restored to {resp.get('target_container_id', '?')[:12]} (restore #{resp.get('restore_count', 0)})"
+    if command == "list-fs-snapshots":
+        snaps = resp.get("snapshots", [])
+        lines = ["Filesystem Snapshots:"]
+        for s in snaps:
+            lines.append(f"  {s['name']}: container={s['container_id'][:12]}, status={s['status']}, restores={s['restores']}")
+        if not snaps:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "compare-fs-snapshots":
+        return f"Snapshots: {resp.get('snapshot_a', '?')} vs {resp.get('snapshot_b', '?')} (same_container={resp.get('same_container', False)})"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -12815,6 +12920,58 @@ def build_parser() -> argparse.ArgumentParser:
 
     fw = sub.add_parser("fed-workloads", help="List federated workloads")
     fw.set_defaults(command="fed-workloads")
+
+    # Batch jobs
+    cbj = sub.add_parser("create-batch-job", help="Create batch job with DAG")
+    cbj.add_argument("name")
+    cbj.add_argument("--max-parallel", type=int, default=1)
+    cbj.set_defaults(command="create-batch-job")
+
+    ebj = sub.add_parser("execute-batch-job", help="Execute batch job")
+    ebj.add_argument("job_name")
+    ebj.set_defaults(command="execute-batch-job")
+
+    bjs = sub.add_parser("batch-job-status", help="Batch job status")
+    bjs.add_argument("job_name")
+    bjs.set_defaults(command="batch-job-status")
+
+    lbj = sub.add_parser("list-batch-jobs", help="List batch jobs")
+    lbj.set_defaults(command="list-batch-jobs")
+
+    # Memory compaction
+    cmc = sub.add_parser("configure-memory-compaction", help="Configure memory compaction")
+    cmc.add_argument("container_id")
+    cmc.add_argument("--threshold", type=float, default=70.0)
+    cmc.add_argument("--auto-compact", action="store_true", default=True)
+    cmc.set_defaults(command="configure-memory-compaction")
+
+    rmc = sub.add_parser("run-memory-compaction", help="Run memory compaction")
+    rmc.add_argument("container_id")
+    rmc.set_defaults(command="run-memory-compaction")
+
+    rmd = sub.add_parser("run-memory-defragmentation", help="Run memory defragmentation")
+    rmd.add_argument("container_id")
+    rmd.set_defaults(command="run-memory-defragmentation")
+
+    # Filesystem snapshots
+    fss = sub.add_parser("fs-snapshot", help="Create filesystem snapshot")
+    fss.add_argument("container_id")
+    fss.add_argument("snapshot_name")
+    fss.set_defaults(command="fs-snapshot")
+
+    fsr = sub.add_parser("fs-restore", help="Restore filesystem snapshot")
+    fsr.add_argument("snapshot_name")
+    fsr.add_argument("--target-container-id", default=None)
+    fsr.set_defaults(command="fs-restore")
+
+    lfs = sub.add_parser("list-fs-snapshots", help="List filesystem snapshots")
+    lfs.add_argument("--container-id", default=None)
+    lfs.set_defaults(command="list-fs-snapshots")
+
+    cfs = sub.add_parser("compare-fs-snapshots", help="Compare filesystem snapshots")
+    cfs.add_argument("snapshot_a")
+    cfs.add_argument("snapshot_b")
+    cfs.set_defaults(command="compare-fs-snapshots")
 
     return parser
 

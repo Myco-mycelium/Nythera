@@ -2073,6 +2073,45 @@ class ControlService:
             elif op == "remove_federation_cluster":
                 self._remove_federation_cluster(server, sender_path,
                                           msg.message_id, request)
+            elif op == "create_batch_job":
+                self._create_batch_job(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_dag_order":
+                self._get_dag_order(server, sender_path,
+                               msg.message_id, request)
+            elif op == "execute_batch_job":
+                self._execute_batch_job(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_batch_job_status":
+                self._get_batch_job_status(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "list_batch_jobs":
+                self._list_batch_jobs(server, sender_path,
+                                 msg.message_id)
+            elif op == "configure_memory_compaction":
+                self._configure_memory_compaction(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "run_memory_compaction":
+                self._run_memory_compaction(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "run_memory_defragmentation":
+                self._run_memory_defragmentation(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_memory_compaction_status":
+                self._get_memory_compaction_status(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "create_filesystem_snapshot":
+                self._create_filesystem_snapshot(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "restore_filesystem_snapshot":
+                self._restore_filesystem_snapshot(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "list_filesystem_snapshots":
+                self._list_filesystem_snapshots(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "compare_snapshots":
+                self._compare_snapshots(server, sender_path,
+                                  msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -10026,6 +10065,104 @@ class ControlService:
 
     def _remove_federation_cluster(self, server, sender_path, call_id, request):
         result = self.container_manager.remove_federation_cluster(request.get("cluster_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_batch_job(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_batch_job(
+            name=request.get("name", "default"),
+            commands=request.get("commands", []),
+            dependencies=request.get("dependencies"),
+            max_parallel=request.get("max_parallel", 1),
+            retry_count=request.get("retry_count", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_dag_order(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_dag_order(request.get("job_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, "levels": result})
+
+    def _execute_batch_job(self, server, sender_path, call_id, request):
+        result = self.container_manager.execute_batch_job(request.get("job_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_batch_job_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_batch_job_status(request.get("job_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_batch_jobs(self, server, sender_path, call_id):
+        result = self.container_manager.list_batch_jobs()
+        self._reply(server, sender_path, call_id, {"ok": True, "jobs": result})
+
+    def _configure_memory_compaction(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.configure_memory_compaction(
+            c, compaction_threshold_pct=request.get("compaction_threshold_pct", 70.0),
+            defrag_threshold_pct=request.get("defrag_threshold_pct", 50.0),
+            auto_compact=request.get("auto_compact", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _run_memory_compaction(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.run_memory_compaction(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _run_memory_defragmentation(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.run_memory_defragmentation(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_memory_compaction_status(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_memory_compaction_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_filesystem_snapshot(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.create_filesystem_snapshot(
+            c, request.get("snapshot_name", "default"),
+            include_paths=request.get("include_paths"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _restore_filesystem_snapshot(self, server, sender_path, call_id, request):
+        result = self.container_manager.restore_filesystem_snapshot(
+            request.get("snapshot_name", "default"),
+            target_container_id=request.get("target_container_id"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_filesystem_snapshots(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_filesystem_snapshots(
+            container_id=request.get("container_id"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, "snapshots": result})
+
+    def _compare_snapshots(self, server, sender_path, call_id, request):
+        result = self.container_manager.compare_snapshots(
+            request.get("snapshot_a", ""),
+            request.get("snapshot_b", ""),
+        )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

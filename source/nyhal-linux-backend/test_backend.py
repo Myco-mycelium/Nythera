@@ -32445,6 +32445,165 @@ class TestMultiClusterFederation(unittest.TestCase):
         self.assertIn("2", text)
 
 
+class TestBatchJobs(unittest.TestCase):
+    """Tests for batch job scheduling with DAG dependencies."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_job(self):
+        """create_batch_job stores job."""
+        mgr = self._manager()
+        r = mgr.create_batch_job("pipeline", commands=[["echo", "a"], ["echo", "b"], ["echo", "c"]])
+        self.assertTrue(r["created"])
+        self.assertEqual(r["task_count"], 3)
+
+    def test_dag_order(self):
+        """get_dag_order returns topological levels."""
+        mgr = self._manager()
+        mgr.create_batch_job("dag1", commands=[["a"], ["b"], ["c"]], dependencies={1: [0], 2: [1]})
+        levels = mgr.get_dag_order("dag1")
+        self.assertEqual(len(levels), 3)
+        self.assertEqual(levels[0], [0])
+
+    def test_execute_job(self):
+        """execute_batch_job runs tasks."""
+        mgr = self._manager()
+        mgr.create_batch_job("exec1", commands=[["echo"], ["echo"], ["echo"]], max_parallel=2)
+        r = mgr.execute_batch_job("exec1")
+        self.assertGreater(r["executed"], 0)
+
+    def test_job_status(self):
+        """get_batch_job_status returns info."""
+        mgr = self._manager()
+        mgr.create_batch_job("stat1", commands=[["a"], ["b"]])
+        r = mgr.get_batch_job_status("stat1")
+        self.assertEqual(r["total"], 2)
+        self.assertEqual(r["status"], "pending")
+
+    def test_list_jobs(self):
+        """list_batch_jobs returns all."""
+        mgr = self._manager()
+        mgr.create_batch_job("j1", commands=[["a"]])
+        mgr.create_batch_job("j2", commands=[["b"]])
+        r = mgr.list_batch_jobs()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_batch(self):
+        """format_human handles list-batch-jobs."""
+        from nyrqisctl import format_human
+        text = format_human("list-batch-jobs", {"jobs": [{"name": "pipe", "tasks": 5, "status": "completed"}]})
+        self.assertIn("pipe", text)
+        self.assertIn("5", text)
+
+
+class TestMemoryCompaction(unittest.TestCase):
+    """Tests for memory compaction and defragmentation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_configure_compaction(self):
+        """configure_memory_compaction stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "mc1")
+        r = mgr.configure_memory_compaction(c, compaction_threshold_pct=60.0)
+        self.assertTrue(r["configured"])
+
+    def test_run_compaction(self):
+        """run_memory_compaction compacts bytes."""
+        mgr = self._manager()
+        c = self._make(mgr, "mc2")
+        mgr.configure_memory_compaction(c)
+        r = mgr.run_memory_compaction(c)
+        self.assertIn("compacted_bytes", r)
+        self.assertEqual(r["total_compactions"], 1)
+
+    def test_run_defragmentation(self):
+        """run_memory_defragmentation defrags bytes."""
+        mgr = self._manager()
+        c = self._make(mgr, "mc3")
+        mgr.configure_memory_compaction(c)
+        r = mgr.run_memory_defragmentation(c)
+        self.assertIn("defragmented_bytes", r)
+
+    def test_compaction_status(self):
+        """get_memory_compaction_status returns info."""
+        mgr = self._manager()
+        c = self._make(mgr, "mc4")
+        mgr.configure_memory_compaction(c, compaction_threshold_pct=75.0)
+        r = mgr.get_memory_compaction_status(c)
+        self.assertTrue(r["auto_compact"])
+        self.assertEqual(r["threshold"], 75.0)
+
+    def test_format_human_compaction(self):
+        """format_human handles run-memory-compaction."""
+        from nyrqisctl import format_human
+        text = format_human("run-memory-compaction", {"compacted_bytes": 1024, "fragmentation_score": 5.0})
+        self.assertIn("1024", text)
+
+
+class TestFilesystemSnapshot(unittest.TestCase):
+    """Tests for filesystem snapshot and restore."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_snapshot(self):
+        """create_filesystem_snapshot creates snapshot."""
+        mgr = self._manager()
+        c = self._make(mgr, "fs1")
+        r = mgr.create_filesystem_snapshot(c, "snap1")
+        self.assertEqual(r["status"], "completed")
+
+    def test_restore_snapshot(self):
+        """restore_filesystem_snapshot restores."""
+        mgr = self._manager()
+        c = self._make(mgr, "fs2")
+        mgr.create_filesystem_snapshot(c, "snap2")
+        r = mgr.restore_filesystem_snapshot("snap2")
+        self.assertTrue(r["restored"])
+        self.assertEqual(r["restore_count"], 1)
+
+    def test_list_snapshots(self):
+        """list_filesystem_snapshots returns all."""
+        mgr = self._manager()
+        c = self._make(mgr, "fs3")
+        mgr.create_filesystem_snapshot(c, "s1")
+        mgr.create_filesystem_snapshot(c, "s2")
+        r = mgr.list_filesystem_snapshots()
+        self.assertEqual(len(r), 2)
+
+    def test_compare_snapshots(self):
+        """compare_snapshots returns comparison."""
+        mgr = self._manager()
+        c = self._make(mgr, "fs4")
+        mgr.create_filesystem_snapshot(c, "a")
+        mgr.create_filesystem_snapshot(c, "b")
+        r = mgr.compare_snapshots("a", "b")
+        self.assertTrue(r["same_container"])
+
+    def test_format_human_snapshot(self):
+        """format_human handles list-fs-snapshots."""
+        from nyrqisctl import format_human
+        text = format_human("list-fs-snapshots", {"snapshots": [{"name": "snap1", "container_id": "abc123", "status": "completed", "restores": 2}]})
+        self.assertIn("snap1", text)
+        self.assertIn("2", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -32681,6 +32840,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestImageSigning))
     suite.addTests(loader.loadTestsFromTestCase(TestOpenTelemetry))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiClusterFederation))
+    suite.addTests(loader.loadTestsFromTestCase(TestBatchJobs))
+    suite.addTests(loader.loadTestsFromTestCase(TestMemoryCompaction))
+    suite.addTests(loader.loadTestsFromTestCase(TestFilesystemSnapshot))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
