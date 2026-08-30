@@ -2096,6 +2096,334 @@ class TestDNSResolution(unittest.TestCase):
         self.assertIn("example.com", text)
 
 
+class TestContainerNetworking(unittest.TestCase):
+    """Tests for container-to-container networking."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"]))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_create_and_remove_network(self):
+        """Create and remove a container network."""
+        mgr = self._manager()
+        r = mgr.create_container_network("test-net")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["name"], "test-net")
+        r2 = mgr.remove_container_network("test-net")
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["disconnected"], 0)
+
+    def test_duplicate_network(self):
+        """Creating duplicate network returns error."""
+        mgr = self._manager()
+        mgr.create_container_network("dup-net")
+        r = mgr.create_container_network("dup-net")
+        self.assertIn("error", r)
+        mgr.remove_container_network("dup-net")
+
+    def test_list_networks(self):
+        """list_container_networks returns all networks."""
+        mgr = self._manager()
+        mgr.create_container_network("net-a")
+        nets = mgr.list_container_networks()
+        self.assertEqual(len(nets), 1)
+        self.assertEqual(nets[0]["name"], "net-a")
+        mgr.remove_container_network("net-a")
+
+    def test_connect_disconnect(self):
+        """Connect and disconnect a container from a network."""
+        mgr = self._manager()
+        c = self._make(mgr, "conn1")
+        mgr.create_container_network("conn-net")
+        r = mgr.connect_to_network("conn-net", c, aliases=["web"])
+        self.assertTrue(r["ok"])
+        self.assertIn("ip", r)
+        self.assertEqual(r["aliases"], ["web"])
+        r2 = mgr.disconnect_from_network("conn-net", c.id)
+        self.assertTrue(r2["ok"])
+        mgr.remove_container_network("conn-net")
+
+    def test_connect_nonexistent_network(self):
+        """Connect to nonexistent network returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "conn2")
+        r = mgr.connect_to_network("no-such-net", c)
+        self.assertIn("error", r)
+
+    def test_network_topology(self):
+        """Topology shows all connected containers."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "topo1")
+        c2 = self._make(mgr, "topo2")
+        mgr.create_container_network("topo-net")
+        mgr.connect_to_network("topo-net", c1)
+        mgr.connect_to_network("topo-net", c2)
+        topo = mgr.get_network_topology("topo-net")
+        self.assertEqual(len(topo["nodes"]), 2)
+        self.assertIn("adjacency", topo)
+        mgr.remove_container_network("topo-net")
+
+    def test_network_dns_resolve(self):
+        """DNS resolution finds container by name and alias."""
+        mgr = self._manager()
+        c = self._make(mgr, "dns-c")
+        mgr.create_container_network("dns-net")
+        mgr.connect_to_network("dns-net", c, aliases=["myalias"])
+        r = mgr.resolve_network_dns("dns-net", "dns-c")
+        self.assertTrue(r["resolved"])
+        r2 = mgr.resolve_network_dns("dns-net", "myalias")
+        self.assertTrue(r2["resolved"])
+        mgr.remove_container_network("dns-net")
+
+    def test_format_human_create_network(self):
+        """format_human handles create-network."""
+        from nyrqisctl import format_human
+        resp = {"name": "foo", "subnet": "10.0.0.0/24", "gateway": "10.0.0.1"}
+        text = format_human("create-network", resp)
+        self.assertIn("foo", text)
+        self.assertIn("10.0.0.0/24", text)
+
+    def test_format_human_list_networks(self):
+        """format_human handles list-networks."""
+        from nyrqisctl import format_human
+        resp = {"networks": [{"name": "a", "subnet": "10.0.0.0/24", "container_count": 3}]}
+        text = format_human("list-networks", resp)
+        self.assertIn("a", text)
+        self.assertIn("3", text)
+
+
+class TestMigrationPlanning(unittest.TestCase):
+    """Tests for container migration planning."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=512)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def _setup_cluster(self, mgr):
+        mgr.register_node("node-1", node_url="unix:///tmp/n1.sock", capacity={"cpu": 4})
+        mgr.register_node("node-2", node_url="unix:///tmp/n2.sock", capacity={"cpu": 8})
+
+    def test_plan_migration_live(self):
+        """Plan a live migration."""
+        from backend.container import ResourceLimits
+        mgr = self._manager()
+        self._setup_cluster(mgr)
+        c = self._make(mgr, "mig1")
+        r = mgr.plan_migration(c, "node-2", strategy="live")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["strategy"], "live")
+        self.assertGreater(len(r["steps"]), 0)
+        self.assertIn("estimated_ms", r)
+
+    def test_plan_migration_stop(self):
+        """Plan a stop-migration."""
+        mgr = self._manager()
+        self._setup_cluster(mgr)
+        c = self._make(mgr, "mig2")
+        r = mgr.plan_migration(c, "node-2", strategy="stop")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["strategy"], "stop")
+
+    def test_plan_migration_no_target(self):
+        """Migration to nonexistent node returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "mig3")
+        r = mgr.plan_migration(c, "no-such-node")
+        self.assertIn("error", r)
+
+    def test_execute_migration_dry_run(self):
+        """Dry-run migration returns plan only."""
+        mgr = self._manager()
+        self._setup_cluster(mgr)
+        c = self._make(mgr, "mig4")
+        r = mgr.execute_migration(c, "node-2", dry_run=True)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["dry_run"])
+
+    def test_migration_history(self):
+        """Migration history is recorded."""
+        mgr = self._manager()
+        self._setup_cluster(mgr)
+        c = self._make(mgr, "mig5")
+        mgr.execute_migration(c, "node-2", dry_run=False)
+        hist = mgr.get_migration_history()
+        self.assertGreater(hist["count"], 0)
+        self.assertEqual(hist["migrations"][0]["container_id"], c.id)
+
+    def test_migration_cost(self):
+        """Migration cost estimation works."""
+        mgr = self._manager()
+        self._setup_cluster(mgr)
+        c = self._make(mgr, "mig6")
+        r = mgr.estimate_migration_cost(c, "node-2", strategy="live")
+        self.assertTrue(r["ok"])
+        self.assertIn("estimated_transfer_bytes", r)
+        self.assertIn("risks", r)
+
+    def test_format_human_plan_migration(self):
+        """format_human handles plan-migration."""
+        from nyrqisctl import format_human
+        resp = {
+            "container_id": "abc123", "source_node": "n1",
+            "target_node": "n2", "strategy": "live",
+            "estimated_ms": 500, "downtime_ok": True,
+            "steps": [{"step": 1, "action": "sync", "estimated_ms": 100}],
+            "risks": [],
+        }
+        text = format_human("plan-migration", resp)
+        self.assertIn("live", text)
+        self.assertIn("500ms", text)
+
+    def test_format_human_migration_cost(self):
+        """format_human handles migration-cost."""
+        from nyrqisctl import format_human
+        resp = {
+            "container_id": "abc123", "strategy": "live",
+            "memory_mb": 1024, "estimated_transfer_bytes": 10485760,
+            "estimated_transfer_seconds": 0.1, "estimated_total_seconds": 0.6,
+            "downtime_ms": 500, "risks": [],
+        }
+        text = format_human("migration-cost", resp)
+        self.assertIn("1024", text)
+        self.assertIn("live", text)
+
+
+class TestAnomalyAlerting(unittest.TestCase):
+    """Tests for anomaly alerting with configurable channels."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_configure_and_list_channels(self):
+        """Configure and list alert channels."""
+        mgr = self._manager()
+        r = mgr.configure_alert_channel("ch1", "webhook",
+                                        config={"url": "http://x"})
+        self.assertTrue(r["ok"])
+        chs = mgr.list_alert_channels()
+        self.assertEqual(len(chs), 1)
+        self.assertEqual(chs[0]["id"], "ch1")
+        mgr.remove_alert_channel("ch1")
+
+    def test_enable_disable_channel(self):
+        """Enable and disable alert channels."""
+        mgr = self._manager()
+        mgr.configure_alert_channel("ch2", "log")
+        r = mgr.disable_alert_channel("ch2")
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["enabled"])
+        r = mgr.enable_alert_channel("ch2")
+        self.assertTrue(r["enabled"])
+        mgr.remove_alert_channel("ch2")
+
+    def test_invalid_channel_type(self):
+        """Invalid channel type returns error."""
+        mgr = self._manager()
+        r = mgr.configure_alert_channel("bad", "invalid_type")
+        self.assertIn("error", r)
+
+    def test_configure_and_get_rules(self):
+        """Configure and retrieve alert rules."""
+        mgr = self._manager()
+        c = self._make(mgr, "rules1")
+        r = mgr.configure_alert_rules(
+            container=c,
+            rules={"memory_pct_threshold": 80},
+        )
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["rules"]["memory_pct_threshold"], 80)
+        r2 = mgr.get_alert_rules(container_id=c.id)
+        self.assertEqual(r2["rules"]["memory_pct_threshold"], 80)
+
+    def test_fleet_wide_rules(self):
+        """Fleet-wide rules apply to all containers."""
+        mgr = self._manager()
+        r = mgr.configure_alert_rules(fleet_wide=True,
+                                      rules={"cooldown_seconds": 60})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["target"], "_fleet")
+
+    def test_evaluate_alerts_no_rules(self):
+        """Evaluate with no rules returns no alerts."""
+        mgr = self._manager()
+        c = self._make(mgr, "eval1")
+        r = mgr.evaluate_alerts(c)
+        self.assertEqual(r["alert_count"], 0)
+
+    def test_evaluate_alerts_with_rules(self):
+        """Evaluate triggers alerts when thresholds exceeded."""
+        mgr = self._manager()
+        mgr.configure_alert_channel("ch3", "log")
+        c = self._make(mgr, "eval2")
+        # Use memory_pct_threshold=0 so any usage triggers
+        mgr.configure_alert_rules(
+            container=c,
+            rules={"memory_pct_threshold": 0, "cooldown_seconds": 0, "channels": ["ch3"]},
+        )
+        r = mgr.evaluate_alerts(c)
+        self.assertGreater(r["alert_count"], 0)
+        self.assertGreater(r["notifications_sent"], 0)
+
+    def test_cooldown_prevents_duplicate(self):
+        """Cooldown prevents duplicate alerts."""
+        mgr = self._manager()
+        c = self._make(mgr, "cool1")
+        mgr.configure_alert_rules(
+            container=c,
+            rules={"memory_pct_threshold": 0, "cooldown_seconds": 600},
+        )
+        mgr.evaluate_alerts(c)  # first - triggers, sets cooldown
+        r = mgr.evaluate_alerts(c)  # cooldown blocks
+        self.assertEqual(r["alert_count"], 0)
+        self.assertIn("cooldown_remaining", r)
+
+    def test_alert_history(self):
+        """Alert history is recorded."""
+        mgr = self._manager()
+        mgr.configure_alert_channel("ch4", "log")
+        c = self._make(mgr, "hist1")
+        mgr.configure_alert_rules(
+            container=c,
+            rules={"memory_pct_threshold": 0, "cooldown_seconds": 0, "channels": ["ch4"]},
+        )
+        mgr.evaluate_alerts(c)
+        hist = mgr.get_alert_history()
+        self.assertGreater(hist["count"], 0)
+
+    def test_format_human_alert_history(self):
+        """format_human handles alert-history."""
+        from nyrqisctl import format_human
+        resp = {"alerts": [{"alert_type": "mem", "severity": "warning",
+                            "message": "Memory high"}], "count": 1}
+        text = format_human("alert-history", resp)
+        self.assertIn("mem", text)
+        self.assertIn("warning", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -27026,6 +27354,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestLogStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestImageDedupGC))
     suite.addTests(loader.loadTestsFromTestCase(TestDNSResolution))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworking))
+    suite.addTests(loader.loadTestsFromTestCase(TestMigrationPlanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAlerting))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

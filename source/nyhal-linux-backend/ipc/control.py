@@ -867,6 +867,69 @@ class ControlService:
             elif op == "dns_update":
                 self._dns_update(server, sender_path,
                                  msg.message_id, request)
+            elif op == "create_network":
+                self._create_network(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "remove_network":
+                self._remove_network(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "list_networks":
+                self._list_networks(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "connect_network":
+                self._connect_network(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "disconnect_network":
+                self._disconnect_network(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "network_topology":
+                self._network_topology(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "network_dns_resolve":
+                self._network_dns_resolve(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "test_connectivity":
+                self._test_connectivity(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "plan_migration":
+                self._plan_migration(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "execute_migration":
+                self._execute_migration(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "migration_history":
+                self._migration_history(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "migration_cost":
+                self._migration_cost(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "configure_alert_channel":
+                self._configure_alert_channel(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "remove_alert_channel":
+                self._remove_alert_channel(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "list_alert_channels":
+                self._list_alert_channels(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "enable_alert_channel":
+                self._enable_alert_channel(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "disable_alert_channel":
+                self._disable_alert_channel(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "configure_alert_rules":
+                self._configure_alert_rules(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_alert_rules":
+                self._get_alert_rules(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "evaluate_alerts":
+                self._evaluate_alerts(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "alert_history":
+                self._alert_history(server, sender_path,
+                                    msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5892,6 +5955,165 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })
+
+    # -- container-to-container networking handlers --
+
+    def _create_network(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_container_network(
+            request['name'],
+            subnet=request.get('subnet', '172.18.0.0/16'),
+            gateway=request.get('gateway', '172.18.0.1'),
+            enable_dns=request.get('enable_dns', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_network(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_container_network(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_networks(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_container_networks()
+        self._reply(server, sender_path, call_id, {"ok": True, "networks": result})
+
+    def _connect_network(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.connect_to_network(
+            request['network_name'], c,
+            aliases=request.get('aliases'),
+            ip_address=request.get('ip_address'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disconnect_network(self, server, sender_path, call_id, request):
+        result = self.container_manager.disconnect_from_network(
+            request['network_name'], request['container_id'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _network_topology(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_network_topology(request['network_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _network_dns_resolve(self, server, sender_path, call_id, request):
+        result = self.container_manager.resolve_network_dns(
+            request['network_name'], request['name'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _test_connectivity(self, server, sender_path, call_id, request):
+        result = self.container_manager.test_network_connectivity(
+            request['network_name'], request['src_container_id'], request['dst_ip'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- migration handlers --
+
+    def _plan_migration(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.plan_migration(
+            c, request['target_node'],
+            strategy=request.get('strategy', 'live'),
+            max_downtime_ms=request.get('max_downtime_ms', 1000),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _execute_migration(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.execute_migration(
+            c, request['target_node'],
+            strategy=request.get('strategy', 'live'),
+            dry_run=request.get('dry_run', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _migration_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_migration_history(
+            container_id=request.get('container_id'),
+            tail=request.get('tail', 20),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _migration_cost(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.estimate_migration_cost(
+            c, request['target_node'],
+            strategy=request.get('strategy', 'live'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- alerting handlers --
+
+    def _configure_alert_channel(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_alert_channel(
+            request['channel_id'], request['channel_type'],
+            config=request.get('config'),
+            enabled=request.get('enabled', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_alert_channel(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_alert_channel(request['channel_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_alert_channels(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_alert_channels()
+        self._reply(server, sender_path, call_id, {"ok": True, "channels": result})
+
+    def _enable_alert_channel(self, server, sender_path, call_id, request):
+        result = self.container_manager.enable_alert_channel(request['channel_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_alert_channel(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_alert_channel(request['channel_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _configure_alert_rules(self, server, sender_path, call_id, request):
+        c = None
+        if request.get('container_id'):
+            c = self.container_manager.get_container(request['container_id'])
+            if c is None:
+                self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+                return
+        result = self.container_manager.configure_alert_rules(
+            container=c,
+            rules=request.get('rules'),
+            fleet_wide=request.get('fleet_wide', False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_alert_rules(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_alert_rules(
+            container_id=request.get('container_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_alerts(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.evaluate_alerts(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _alert_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_alert_history(
+            container_id=request.get('container_id'),
+            alert_type=request.get('alert_type'),
+            tail=request.get('tail', 50),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container

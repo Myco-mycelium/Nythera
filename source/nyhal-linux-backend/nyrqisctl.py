@@ -2054,6 +2054,126 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "add_search_domains": getattr(args, 'add_search_domains', None),
             "remove_search_domains": getattr(args, 'remove_search_domains', None),
         }
+    if command == "create-network":
+        return {
+            "service": "control",
+            "op": "create_network",
+            "name": args.name,
+            "subnet": getattr(args, 'subnet', '172.18.0.0/16'),
+            "gateway": getattr(args, 'gateway', '172.18.0.1'),
+            "enable_dns": getattr(args, 'enable_dns', True),
+        }
+    if command == "remove-network":
+        return {"service": "control", "op": "remove_network", "name": args.name}
+    if command == "list-networks":
+        return {"service": "control", "op": "list_networks"}
+    if command == "connect-network":
+        return {
+            "service": "control",
+            "op": "connect_network",
+            "network_name": args.network_name,
+            "container_id": args.container_id,
+            "aliases": getattr(args, 'aliases', None),
+            "ip_address": getattr(args, 'ip_address', None),
+        }
+    if command == "disconnect-network":
+        return {
+            "service": "control",
+            "op": "disconnect_network",
+            "network_name": args.network_name,
+            "container_id": args.container_id,
+        }
+    if command == "network-topology":
+        return {"service": "control", "op": "network_topology", "network_name": args.network_name}
+    if command == "network-dns-resolve":
+        return {
+            "service": "control",
+            "op": "network_dns_resolve",
+            "network_name": args.network_name,
+            "name": args.name,
+        }
+    if command == "test-connectivity":
+        return {
+            "service": "control",
+            "op": "test_connectivity",
+            "network_name": args.network_name,
+            "src_container_id": args.src_container_id,
+            "dst_ip": args.dst_ip,
+        }
+    if command == "plan-migration":
+        return {
+            "service": "control",
+            "op": "plan_migration",
+            "container_id": args.container_id,
+            "target_node": args.target_node,
+            "strategy": getattr(args, 'strategy', 'live'),
+            "max_downtime_ms": getattr(args, 'max_downtime_ms', 1000),
+        }
+    if command == "execute-migration":
+        return {
+            "service": "control",
+            "op": "execute_migration",
+            "container_id": args.container_id,
+            "target_node": args.target_node,
+            "strategy": getattr(args, 'strategy', 'live'),
+            "dry_run": getattr(args, 'dry_run', True),
+        }
+    if command == "migration-history":
+        return {
+            "service": "control",
+            "op": "migration_history",
+            "container_id": getattr(args, 'container_id', None),
+            "tail": getattr(args, 'tail', 20),
+        }
+    if command == "migration-cost":
+        return {
+            "service": "control",
+            "op": "migration_cost",
+            "container_id": args.container_id,
+            "target_node": args.target_node,
+            "strategy": getattr(args, 'strategy', 'live'),
+        }
+    if command == "configure-alert-channel":
+        return {
+            "service": "control",
+            "op": "configure_alert_channel",
+            "channel_id": args.channel_id,
+            "channel_type": args.channel_type,
+            "config": getattr(args, 'config', None),
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "remove-alert-channel":
+        return {"service": "control", "op": "remove_alert_channel", "channel_id": args.channel_id}
+    if command == "list-alert-channels":
+        return {"service": "control", "op": "list_alert_channels"}
+    if command == "enable-alert-channel":
+        return {"service": "control", "op": "enable_alert_channel", "channel_id": args.channel_id}
+    if command == "disable-alert-channel":
+        return {"service": "control", "op": "disable_alert_channel", "channel_id": args.channel_id}
+    if command == "configure-alert-rules":
+        return {
+            "service": "control",
+            "op": "configure_alert_rules",
+            "container_id": getattr(args, 'container_id', None),
+            "rules": getattr(args, 'rules_json', None),
+            "fleet_wide": getattr(args, 'fleet_wide', False),
+        }
+    if command == "get-alert-rules":
+        return {
+            "service": "control",
+            "op": "get_alert_rules",
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "evaluate-alerts":
+        return {"service": "control", "op": "evaluate_alerts", "container_id": args.container_id}
+    if command == "alert-history":
+        return {
+            "service": "control",
+            "op": "alert_history",
+            "container_id": getattr(args, 'container_id', None),
+            "alert_type": getattr(args, 'alert_type', None),
+            "tail": getattr(args, 'tail', 50),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4911,6 +5031,123 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines)
     if command == "dns-update":
         return f"DNS updated for {resp.get('container_id', '?')[:12]}: nameservers={resp.get('nameservers', [])}, search={resp.get('search_domains', [])}"
+    if command == "create-network":
+        return f"Network '{resp.get('name', '?')}' created: subnet={resp.get('subnet', '?')}, gateway={resp.get('gateway', '?')}"
+    if command == "remove-network":
+        return f"Network '{resp.get('name', '?')}' removed, {resp.get('disconnected', 0)} containers disconnected"
+    if command == "list-networks":
+        nets = resp.get('networks', [])
+        if not nets:
+            return "No networks configured"
+        lines = ["Container networks:"]
+        for n in nets:
+            lines.append(f"  {n.get('name', '?')}: {n.get('subnet', '?')} ({n.get('container_count', 0)} containers)")
+        return "\n".join(lines)
+    if command == "connect-network":
+        return f"Connected {resp.get('container_id', '?')[:12]} to '{resp.get('network', '?')}' with IP {resp.get('ip', '?')}"
+    if command == "disconnect-network":
+        return f"Disconnected {resp.get('container_id', '?')[:12]} from '{resp.get('network', '?')}' (removed IP {resp.get('removed_ip', '?')})"
+    if command == "network-topology":
+        nodes = resp.get('nodes', [])
+        lines = [
+            f"Network '{resp.get('network', '?')}' ({resp.get('subnet', '?')}):",
+            f"  Gateway: {resp.get('gateway', '?')}",
+            f"  Nodes: {len(nodes)}",
+        ]
+        for n in nodes:
+            aliases = f" ({', '.join(n.get('aliases', []))})" if n.get('aliases') else ""
+            lines.append(f"    {n.get('name', '?')}: {n.get('ip', '?')}{aliases} [{n.get('state', '?')}]")
+        return "\n".join(lines)
+    if command == "network-dns-resolve":
+        if resp.get('resolved'):
+            return f"{resp.get('name', '?')} -> {resp.get('ip', '?')} (container: {resp.get('container_id', '?')[:12]})"
+        return f"{resp.get('name', '?')}: not found"
+    if command == "test-connectivity":
+        status = "reachable" if resp.get('reachable') else "unreachable"
+        rtt = f" (RTT: {resp.get('rtt_ms', 0):.1f}ms)" if resp.get('reachable') else ""
+        error = f" - {resp.get('error', '')}" if resp.get('error') else ""
+        return f"{resp.get('src', '?')[:12]} -> {resp.get('dst', '?')}: {status}{rtt}{error}"
+    if command == "plan-migration":
+        lines = [
+            f"Migration plan: {resp.get('container_id', '?')[:12]}",
+            f"  {resp.get('source_node', '?')} -> {resp.get('target_node', '?')} ({resp.get('strategy', '?')})",
+            f"  Estimated downtime: {resp.get('estimated_ms', 0)}ms",
+            f"  Downtime OK: {resp.get('downtime_ok', False)}",
+        ]
+        for s in resp.get('steps', []):
+            lines.append(f"  Step {s.get('step', '?')}: {s.get('action', '?')} ({s.get('estimated_ms', 0)}ms)")
+        for r in resp.get('risks', []):
+            lines.append(f"  ⚠ {r}")
+        return "\n".join(lines)
+    if command == "execute-migration":
+        mode = "DRY RUN" if resp.get('dry_run') else "EXECUTED"
+        return f"Migration {mode}: {resp.get('container_id', '?')[:12]} -> {resp.get('target_node', '?')} [{resp.get('status', '?')}] ({resp.get('duration_ms', 0)}ms)"
+    if command == "migration-history":
+        migrs = resp.get('migrations', [])
+        if not migrs:
+            return "No migration history"
+        lines = ["Migration history:"]
+        for m in migrs:
+            lines.append(f"  {m.get('container_id', '?')[:12]}: {m.get('source', '?')} -> {m.get('target', '?')} [{m.get('status', '?')}] ({m.get('strategy', '?')})")
+        return "\n".join(lines)
+    if command == "migration-cost":
+        lines = [
+            f"Migration cost for {resp.get('container_id', '?')[:12]} ({resp.get('strategy', '?')}):",
+            f"  Memory: {resp.get('memory_mb', 0)} MB",
+            f"  Transfer: {resp.get('estimated_transfer_bytes', 0):,} bytes ({resp.get('estimated_transfer_seconds', 0)}s)",
+            f"  Total: {resp.get('estimated_total_seconds', 0)}s (downtime: {resp.get('downtime_ms', 0)}ms)",
+        ]
+        for r in resp.get('risks', []):
+            lines.append(f"  ⚠ {r}")
+        return "\n".join(lines)
+    if command == "configure-alert-channel":
+        return f"Alert channel '{resp.get('channel_id', '?')}' ({resp.get('type', '?')}) enabled={resp.get('enabled', False)}"
+    if command == "remove-alert-channel":
+        return f"Alert channel '{resp.get('channel_id', '?')}' removed"
+    if command == "list-alert-channels":
+        chs = resp.get('channels', [])
+        if not chs:
+            return "No alert channels configured"
+        lines = ["Alert channels:"]
+        for ch in chs:
+            status = "enabled" if ch.get('enabled') else "disabled"
+            lines.append(f"  {ch.get('id', '?')}: {ch.get('type', '?')} [{status}] ({ch.get('alert_count', 0)} alerts)")
+        return "\n".join(lines)
+    if command == "enable-alert-channel":
+        return f"Alert channel '{resp.get('channel_id', '?')}' enabled"
+    if command == "disable-alert-channel":
+        return f"Alert channel '{resp.get('channel_id', '?')}' disabled"
+    if command == "configure-alert-rules":
+        rules = resp.get('rules', {})
+        lines = [f"Alert rules for {resp.get('target', '?')}:"]
+        for k, v in rules.items():
+            lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+    if command == "get-alert-rules":
+        rules = resp.get('rules', resp.get('fleet_rules', {}))
+        if not rules:
+            return "No alert rules configured"
+        lines = ["Alert rules:"]
+        for k, v in rules.items():
+            lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+    if command == "evaluate-alerts":
+        alerts = resp.get('alerts', [])
+        if not alerts:
+            return f"No alerts for {resp.get('container_id', '?')[:12]}"
+        lines = [f"Alerts for {resp.get('container_id', '?')[:12]}:"]
+        for a in alerts:
+            lines.append(f"  [{a.get('severity', '?')}] {a.get('message', '?')}")
+        lines.append(f"  Notifications sent: {resp.get('notifications_sent', 0)}")
+        return "\n".join(lines)
+    if command == "alert-history":
+        hist = resp.get('alerts', [])
+        if not hist:
+            return "No alert history"
+        lines = ["Alert history:"]
+        for h in hist:
+            lines.append(f"  {h.get('alert_type', '?')} [{h.get('severity', '?')}] {h.get('message', '?')[:60]}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -6423,6 +6660,116 @@ def build_parser() -> argparse.ArgumentParser:
     du.add_argument("--add-search-domains", nargs="+", default=None)
     du.add_argument("--remove-search-domains", nargs="+", default=None)
     du.set_defaults(command="dns-update")
+
+    # -- container networking commands --
+    cn = sub.add_parser("create-network", help="Create an isolated container network")
+    cn.add_argument("name", help="Network name")
+    cn.add_argument("--subnet", default="172.18.0.0/16")
+    cn.add_argument("--gateway", default="172.18.0.1")
+    cn.add_argument("--enable-dns", action="store_true", default=True)
+    cn.set_defaults(command="create-network")
+
+    rn = sub.add_parser("remove-network", help="Remove a container network")
+    rn.add_argument("name")
+    rn.set_defaults(command="remove-network")
+
+    ln = sub.add_parser("list-networks", help="List container networks")
+    ln.set_defaults(command="list-networks")
+
+    con = sub.add_parser("connect-network", help="Connect a container to a network")
+    con.add_argument("network_name")
+    con.add_argument("container_id")
+    con.add_argument("--aliases", nargs="+", default=None)
+    con.add_argument("--ip-address", default=None)
+    con.set_defaults(command="connect-network")
+
+    dis = sub.add_parser("disconnect-network", help="Disconnect a container from a network")
+    dis.add_argument("network_name")
+    dis.add_argument("container_id")
+    dis.set_defaults(command="disconnect-network")
+
+    topo = sub.add_parser("network-topology", help="Show network topology")
+    topo.add_argument("network_name")
+    topo.set_defaults(command="network-topology")
+
+    ndns = sub.add_parser("network-dns-resolve", help="Resolve a name on a network")
+    ndns.add_argument("network_name")
+    ndns.add_argument("name")
+    ndns.set_defaults(command="network-dns-resolve")
+
+    tc = sub.add_parser("test-connectivity", help="Test connectivity between containers")
+    tc.add_argument("network_name")
+    tc.add_argument("src_container_id")
+    tc.add_argument("dst_ip")
+    tc.set_defaults(command="test-connectivity")
+
+    # -- migration commands --
+    pm = sub.add_parser("plan-migration", help="Plan a container migration")
+    pm.add_argument("container_id")
+    pm.add_argument("target_node")
+    pm.add_argument("--strategy", choices=["live", "stop", "snapshot"], default="live")
+    pm.add_argument("--max-downtime-ms", type=int, default=1000)
+    pm.set_defaults(command="plan-migration")
+
+    em = sub.add_parser("execute-migration", help="Execute a container migration")
+    em.add_argument("container_id")
+    em.add_argument("target_node")
+    em.add_argument("--strategy", choices=["live", "stop", "snapshot"], default="live")
+    em.add_argument("--dry-run", action="store_true", default=True)
+    em.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    em.set_defaults(command="execute-migration")
+
+    mh = sub.add_parser("migration-history", help="Show migration history")
+    mh.add_argument("--container-id", default=None)
+    mh.add_argument("--tail", type=int, default=20)
+    mh.set_defaults(command="migration-history")
+
+    mc = sub.add_parser("migration-cost", help="Estimate migration cost")
+    mc.add_argument("container_id")
+    mc.add_argument("target_node")
+    mc.add_argument("--strategy", choices=["live", "stop", "snapshot"], default="live")
+    mc.set_defaults(command="migration-cost")
+
+    # -- alerting commands --
+    cac = sub.add_parser("configure-alert-channel", help="Configure an alert notification channel")
+    cac.add_argument("channel_id")
+    cac.add_argument("channel_type", choices=["webhook", "email", "log", "callback"])
+    cac.add_argument("--enabled", action="store_true", default=True)
+    cac.set_defaults(command="configure-alert-channel")
+
+    rac = sub.add_parser("remove-alert-channel", help="Remove an alert channel")
+    rac.add_argument("channel_id")
+    rac.set_defaults(command="remove-alert-channel")
+
+    lac = sub.add_parser("list-alert-channels", help="List alert channels")
+    lac.set_defaults(command="list-alert-channels")
+
+    eac = sub.add_parser("enable-alert-channel", help="Enable an alert channel")
+    eac.add_argument("channel_id")
+    eac.set_defaults(command="enable-alert-channel")
+
+    dac = sub.add_parser("disable-alert-channel", help="Disable an alert channel")
+    dac.add_argument("channel_id")
+    dac.set_defaults(command="disable-alert-channel")
+
+    car = sub.add_parser("configure-alert-rules", help="Configure alert rules")
+    car.add_argument("--container-id", default=None)
+    car.add_argument("--fleet-wide", action="store_true")
+    car.set_defaults(command="configure-alert-rules")
+
+    gar = sub.add_parser("get-alert-rules", help="Get alert rules")
+    gar.add_argument("--container-id", default=None)
+    gar.set_defaults(command="get-alert-rules")
+
+    ea = sub.add_parser("evaluate-alerts", help="Evaluate alert rules for a container")
+    ea.add_argument("container_id")
+    ea.set_defaults(command="evaluate-alerts")
+
+    ah = sub.add_parser("alert-history", help="Show alert history")
+    ah.add_argument("--container-id", default=None)
+    ah.add_argument("--alert-type", default=None)
+    ah.add_argument("--tail", type=int, default=50)
+    ah.set_defaults(command="alert-history")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

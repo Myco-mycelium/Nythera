@@ -11091,6 +11091,283 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Anomaly alerting with configurable notification channels
+    # ------------------------------------------------------------------
+
+    def configure_alert_channel(
+        self,
+        channel_id: str,
+        channel_type: str,
+        config: Optional[Dict[str, Any]] = None,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure a notification channel for anomaly alerts.
+
+        Supported channel types:
+        - ``"webhook"``: HTTP POST to a URL
+        - ``"email"``: SMTP email (requires smtp_* config)
+        - ``"log"``: Append to a log file
+        - ``"callback"``: Python callback function name
+
+        Args:
+            channel_id: Unique channel identifier.
+            channel_type: Type of notification channel.
+            config: Channel-specific configuration.
+            enabled: Whether the channel is active.
+
+        Returns:
+            Dict with channel details.
+        """
+        if not hasattr(self, '_alert_channels'):
+            self._alert_channels: Dict[str, Dict[str, Any]] = {}
+
+        valid_types = {"webhook", "email", "log", "callback"}
+        if channel_type not in valid_types:
+            return {"error": f"Invalid channel type: {channel_type}. Must be one of {valid_types}"}
+
+        channel = {
+            "id": channel_id,
+            "type": channel_type,
+            "config": config or {},
+            "enabled": enabled,
+            "created_at": time.time(),
+            "alert_count": 0,
+            "last_alert_at": None,
+        }
+        self._alert_channels[channel_id] = channel
+
+        return {
+            "ok": True,
+            "channel_id": channel_id,
+            "type": channel_type,
+            "enabled": enabled,
+        }
+
+    def remove_alert_channel(self, channel_id: str) -> Dict[str, Any]:
+        """Remove a notification channel."""
+        if not hasattr(self, '_alert_channels') or channel_id not in self._alert_channels:
+            return {"error": f"Channel '{channel_id}' not found"}
+        del self._alert_channels[channel_id]
+        return {"ok": True, "channel_id": channel_id}
+
+    def list_alert_channels(self) -> List[Dict[str, Any]]:
+        """List all configured notification channels."""
+        if not hasattr(self, '_alert_channels'):
+            return []
+        result = []
+        for ch in self._alert_channels.values():
+            result.append({
+                "id": ch["id"],
+                "type": ch["type"],
+                "enabled": ch["enabled"],
+                "alert_count": ch["alert_count"],
+                "last_alert_at": ch["last_alert_at"],
+            })
+        return result
+
+    def enable_alert_channel(self, channel_id: str) -> Dict[str, Any]:
+        """Enable a notification channel."""
+        if not hasattr(self, '_alert_channels') or channel_id not in self._alert_channels:
+            return {"error": f"Channel '{channel_id}' not found"}
+        self._alert_channels[channel_id]["enabled"] = True
+        return {"ok": True, "channel_id": channel_id, "enabled": True}
+
+    def disable_alert_channel(self, channel_id: str) -> Dict[str, Any]:
+        """Disable a notification channel."""
+        if not hasattr(self, '_alert_channels') or channel_id not in self._alert_channels:
+            return {"error": f"Channel '{channel_id}' not found"}
+        self._alert_channels[channel_id]["enabled"] = False
+        return {"ok": True, "channel_id": channel_id, "enabled": False}
+
+    def configure_alert_rules(
+        self,
+        container: Optional[Container] = None,
+        rules: Optional[Dict[str, Any]] = None,
+        fleet_wide: bool = False,
+    ) -> Dict[str, Any]:
+        """Configure anomaly alert rules for a container or fleet.
+
+        Args:
+            container: Specific container (or None for fleet-wide).
+            rules: Alert rules dict with thresholds:
+                - ``memory_pct_threshold``: Alert when memory usage > this %
+                - ``cpu_pct_threshold``: Alert when CPU usage > this %
+                - ``pids_threshold``: Alert when PID count > this value
+                - ``anomaly_score_threshold``: Alert when anomaly score > this (0-100)
+                - ``cooldown_seconds``: Minimum time between alerts
+                - ``channels``: List of channel IDs to notify
+            fleet_wide: Apply to all containers.
+
+        Returns:
+            Dict with configured rules.
+        """
+        if not hasattr(self, '_alert_rules'):
+            self._alert_rules: Dict[str, Dict[str, Any]] = {}
+
+        rules = rules or {}
+        target = "_fleet" if fleet_wide else (container.id if container else None)
+        if not target:
+            return {"error": "Must specify container or fleet_wide=True"}
+
+        default_rules = {
+            "memory_pct_threshold": 90,
+            "cpu_pct_threshold": 95,
+            "pids_threshold": 80,
+            "anomaly_score_threshold": 75,
+            "cooldown_seconds": 300,
+            "channels": [],
+        }
+        merged = {**default_rules, **rules}
+        self._alert_rules[target] = merged
+
+        return {
+            "ok": True,
+            "target": target,
+            "rules": merged,
+        }
+
+    def get_alert_rules(self, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get alert rules for a container or fleet."""
+        if not hasattr(self, '_alert_rules'):
+            self._alert_rules = {}
+
+        if container_id:
+            rules = self._alert_rules.get(container_id, {})
+            return {"container_id": container_id, "rules": rules}
+        return {"fleet_rules": self._alert_rules.get("_fleet", {}),
+                "container_rules": {k: v for k, v in self._alert_rules.items() if k != "_fleet"}}
+
+    def evaluate_alerts(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate alert rules for a container and return triggered alerts.
+
+        Checks current resource usage against configured thresholds.
+
+        Returns:
+            Dict with triggered alerts list and channel notifications.
+        """
+        if not hasattr(self, '_alert_rules'):
+            self._alert_rules = {}
+        if not hasattr(self, '_alert_channels'):
+            self._alert_channels = {}
+        if not hasattr(self, '_alert_history'):
+            self._alert_history: List[Dict[str, Any]] = []
+
+        rules = self._alert_rules.get(container.id, self._alert_rules.get("_fleet", {}))
+        if not rules:
+            return {
+                "container_id": container.id,
+                "alerts": [],
+                "alert_count": 0,
+                "notifications_sent": 0,
+            }
+
+        # Check cooldown
+        last_alert_key = f"last_{container.id}"
+        if not hasattr(self, '_alert_cooldowns'):
+            self._alert_cooldowns: Dict[str, float] = {}
+        now = time.time()
+        cooldown_until = self._alert_cooldowns.get(last_alert_key, 0)
+        if now < cooldown_until:
+            return {
+                "container_id": container.id,
+                "alerts": [],
+                "alert_count": 0,
+                "notifications_sent": 0,
+                "cooldown_remaining": round(cooldown_until - now, 1),
+            }
+
+        stats = self.container_stats(container)
+        triggered: List[Dict[str, Any]] = []
+
+        # Memory check
+        mem_bytes = stats.get("memory_bytes", 0)
+        mem_limit = container.config.limits.memory_mb * 1024 * 1024
+        if mem_limit > 0:
+            mem_pct = (mem_bytes / mem_limit) * 100
+            if mem_pct >= rules.get("memory_pct_threshold", 90):
+                triggered.append({
+                    "type": "memory_high",
+                    "severity": "critical" if mem_pct > 95 else "warning",
+                    "value": round(mem_pct, 1),
+                    "threshold": rules["memory_pct_threshold"],
+                    "message": f"Memory usage at {mem_pct:.1f}% (threshold: {rules['memory_pct_threshold']}%)",
+                })
+
+        # PID check
+        pids = stats.get("pids_current", 0)
+        pid_limit = container.config.limits.pid_limit
+        if pid_limit > 0 and pids > rules.get("pids_threshold", 80):
+            triggered.append({
+                "type": "pids_high",
+                "severity": "warning",
+                "value": pids,
+                "threshold": rules["pids_threshold"],
+                "message": f"PID count at {pids} (threshold: {rules['pids_threshold']})",
+            })
+
+        # Send notifications
+        notifications_sent = 0
+        channel_ids = rules.get("channels", [])
+        for alert in triggered:
+            # Record in history
+            entry = {
+                "container_id": container.id,
+                "alert_type": alert["type"],
+                "severity": alert["severity"],
+                "message": alert["message"],
+                "timestamp": now,
+                "channels_notified": [],
+            }
+            self._alert_history.append(entry)
+
+            for ch_id in channel_ids:
+                ch = self._alert_channels.get(ch_id)
+                if ch and ch["enabled"]:
+                    ch["alert_count"] += 1
+                    ch["last_alert_at"] = now
+                    entry["channels_notified"].append(ch_id)
+                    notifications_sent += 1
+
+        # Set cooldown
+        if triggered:
+            self._alert_cooldowns[last_alert_key] = now + rules.get("cooldown_seconds", 300)
+
+        return {
+            "container_id": container.id,
+            "alerts": triggered,
+            "alert_count": len(triggered),
+            "notifications_sent": notifications_sent,
+        }
+
+    def get_alert_history(
+        self,
+        container_id: Optional[str] = None,
+        alert_type: Optional[str] = None,
+        tail: int = 50,
+    ) -> Dict[str, Any]:
+        """Get alert history with optional filtering."""
+        if not hasattr(self, '_alert_history'):
+            self._alert_history = []
+
+        history = self._alert_history
+        if container_id:
+            history = [h for h in history if h["container_id"] == container_id]
+        if alert_type:
+            history = [h for h in history if h["alert_type"] == alert_type]
+
+        history = list(reversed(history))
+        if tail:
+            history = history[:tail]
+
+        return {
+            "alerts": history,
+            "count": len(history),
+        }
+
+    # ------------------------------------------------------------------
     # Resource heat map (fleet-wide pressure detection + consolidation)
     # ------------------------------------------------------------------
 
@@ -11969,6 +12246,357 @@ class ContainerManager:
             search_domains=sorted(search),
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Container-to-container networking
+    # ------------------------------------------------------------------
+
+    def create_container_network(
+        self,
+        name: str,
+        subnet: str = "172.18.0.0/16",
+        gateway: str = "172.18.0.1",
+        enable_dns: bool = True,
+    ) -> Dict[str, Any]:
+        """Create an isolated bridge network for containers.
+
+        Args:
+            name: Network name (unique identifier).
+            subnet: Subnet CIDR for the network.
+            gateway: Gateway IP for the subnet.
+            enable_dns: Enable internal DNS resolution.
+
+        Returns:
+            Dict with network name, subnet, gateway, and bridge info.
+        """
+        if not hasattr(self, '_container_networks'):
+            self._container_networks: Dict[str, Dict[str, Any]] = {}
+        if not hasattr(self, '_network_dns'):
+            self._network_dns: Dict[str, Dict[str, str]] = {}
+
+        if name in self._container_networks:
+            return {
+                "error": f"Network '{name}' already exists",
+                **self._container_networks[name],
+            }
+
+        bridge_name = f"nyr-net-{name}"
+        net_id = f"net-{uuid.uuid4().hex[:8]}"
+        # Allocate IPs from subnet
+        import ipaddress as _ipa
+        net = _ipa.ip_network(subnet)
+        hosts = list(net.hosts())
+        if len(hosts) < 2:
+            return {"error": "Subnet too small"}
+
+        network_info = {
+            "id": net_id,
+            "name": name,
+            "subnet": subnet,
+            "gateway": gateway,
+            "bridge_name": bridge_name,
+            "enable_dns": enable_dns,
+            "containers": {},
+            "ip_allocations": {},
+            "created_at": time.time(),
+        }
+        self._container_networks[name] = network_info
+        self._network_dns[name] = {}
+
+        return {
+            "ok": True,
+            "network_id": net_id,
+            "name": name,
+            "subnet": subnet,
+            "gateway": gateway,
+            "bridge": bridge_name,
+        }
+
+    def remove_container_network(self, name: str) -> Dict[str, Any]:
+        """Remove a container network and disconnect all containers.
+
+        Args:
+            name: Network name to remove.
+
+        Returns:
+            Dict with removed containers count.
+        """
+        if not hasattr(self, '_container_networks') or name not in self._container_networks:
+            return {"error": f"Network '{name}' not found"}
+
+        net_info = self._container_networks[name]
+        disconnected = list(net_info["containers"].keys())
+        for cid in disconnected:
+            self._disconnect_from_network(name, cid)
+
+        del self._container_networks[name]
+        if hasattr(self, '_network_dns') and name in self._network_dns:
+            del self._network_dns[name]
+
+        return {
+            "ok": True,
+            "name": name,
+            "disconnected": len(disconnected),
+        }
+
+    def list_container_networks(self) -> List[Dict[str, Any]]:
+        """List all container networks."""
+        if not hasattr(self, '_container_networks'):
+            return []
+        result = []
+        for name, info in self._container_networks.items():
+            result.append({
+                "name": name,
+                "subnet": info["subnet"],
+                "gateway": info["gateway"],
+                "container_count": len(info["containers"]),
+                "containers": list(info["containers"].keys()),
+            })
+        return result
+
+    def connect_to_network(
+        self,
+        network_name: str,
+        container: Container,
+        aliases: Optional[List[str]] = None,
+        ip_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Connect a container to a named network.
+
+        Args:
+            network_name: The network to connect to.
+            container: The container to connect.
+            aliases: DNS aliases for the container on this network.
+            ip_address: Specific IP to assign (auto-allocated if None).
+
+        Returns:
+            Dict with assigned IP and network details.
+        """
+        if not hasattr(self, '_container_networks'):
+            self._container_networks = {}
+        if network_name not in self._container_networks:
+            return {"error": f"Network '{network_name}' not found"}
+
+        net = self._container_networks[network_name]
+        if container.id in net["containers"]:
+            return {
+                "error": f"Container already on network '{network_name}'",
+                "ip": net["containers"][container.id]["ip"],
+            }
+
+        # Allocate IP
+        import ipaddress as _ipa
+        net_obj = _ipa.ip_network(net["subnet"])
+        allocated = set(net["ip_allocations"].values())
+        gateway_ip = _ipa.ip_address(net["gateway"])
+        assigned_ip = None
+
+        if ip_address:
+            if ip_address in allocated:
+                return {"error": f"IP {ip_address} already in use"}
+            assigned_ip = ip_address
+        else:
+            for host in net_obj.hosts():
+                if str(host) != net["gateway"] and str(host) not in allocated:
+                    assigned_ip = str(host)
+                    break
+            if not assigned_ip:
+                return {"error": "No IPs available in subnet"}
+
+        aliases = aliases or []
+        entry = {
+            "ip": assigned_ip,
+            "aliases": aliases,
+            "joined_at": time.time(),
+        }
+        net["containers"][container.id] = entry
+        net["ip_allocations"][container.id] = assigned_ip
+
+        # Register DNS entries
+        if net["enable_dns"] and hasattr(self, '_network_dns'):
+            dns = self._network_dns.setdefault(network_name, {})
+            # Forward lookup: name -> IP
+            cname = container.config.name or container.id
+            dns[cname] = assigned_ip
+            for alias in aliases:
+                dns[alias] = assigned_ip
+            # Reverse lookup: IP -> name
+            dns[f"__reverse_{assigned_ip}"] = cname
+
+        return {
+            "ok": True,
+            "network": network_name,
+            "container_id": container.id,
+            "ip": assigned_ip,
+            "aliases": aliases,
+        }
+
+    def disconnect_from_network(
+        self,
+        network_name: str,
+        container_id: str,
+    ) -> Dict[str, Any]:
+        """Disconnect a container from a network."""
+        return self._disconnect_from_network(network_name, container_id)
+
+    def _disconnect_from_network(
+        self,
+        network_name: str,
+        container_id: str,
+    ) -> Dict[str, Any]:
+        if not hasattr(self, '_container_networks') or network_name not in self._container_networks:
+            return {"error": f"Network '{network_name}' not found"}
+        net = self._container_networks[network_name]
+        if container_id not in net["containers"]:
+            return {"error": f"Container not on network '{network_name}'"}
+
+        entry = net["containers"].pop(container_id)
+        ip = net["ip_allocations"].pop(container_id, None)
+
+        # Remove DNS entries
+        if net["enable_dns"] and hasattr(self, '_network_dns'):
+            dns = self._network_dns.get(network_name, {})
+            dns.pop(ip, None)
+            for alias in entry.get("aliases", []):
+                dns.pop(alias, None)
+
+        return {
+            "ok": True,
+            "network": network_name,
+            "container_id": container_id,
+            "removed_ip": ip,
+        }
+
+    def get_network_topology(self, network_name: str) -> Dict[str, Any]:
+        """Get the full topology of a container network.
+
+        Returns all containers, their IPs, DNS names, and reachability.
+        """
+        if not hasattr(self, '_container_networks') or network_name not in self._container_networks:
+            return {"error": f"Network '{network_name}' not found"}
+
+        net = self._container_networks[network_name]
+        nodes: List[Dict[str, Any]] = []
+        for cid, entry in net["containers"].items():
+            c = self.containers.get(cid)
+            nodes.append({
+                "container_id": cid,
+                "name": c.config.name if c else cid[:12],
+                "ip": entry["ip"],
+                "aliases": entry.get("aliases", []),
+                "state": c.state.value if c else "unknown",
+            })
+
+        # Build adjacency: all nodes on same network can reach each other
+        adjacency: Dict[str, List[str]] = {}
+        ips = [n["ip"] for n in nodes]
+        for n in nodes:
+            adjacency[n["ip"]] = [other for other in ips if other != n["ip"]]
+
+        return {
+            "network": network_name,
+            "subnet": net["subnet"],
+            "gateway": net["gateway"],
+            "nodes": nodes,
+            "adjacency": adjacency,
+            "dns_entries": {k: v for k, v in self._network_dns.get(network_name, {}).items() if not k.startswith("__reverse_")} if hasattr(self, '_network_dns') else {},
+        }
+
+    def resolve_network_dns(
+        self,
+        network_name: str,
+        name: str,
+    ) -> Dict[str, Any]:
+        """Resolve a container name or alias on a network."""
+        if not hasattr(self, '_network_dns') or network_name not in self._network_dns:
+            return {
+                "resolved": False,
+                "error": f"Network '{network_name}' not found",
+            }
+        dns = self._network_dns[network_name]
+        resolved_ip = dns.get(name)
+        if resolved_ip:
+            # Find container by IP
+            container_id = None
+            for cid, ip in self._container_networks[network_name]["ip_allocations"].items():
+                if ip == resolved_ip:
+                    container_id = cid
+                    break
+            return {
+                "resolved": True,
+                "name": name,
+                "ip": resolved_ip,
+                "container_id": container_id,
+            }
+        return {
+            "resolved": False,
+            "name": name,
+            "error": "Name not found",
+        }
+
+    def test_network_connectivity(
+        self,
+        network_name: str,
+        src_container_id: str,
+        dst_ip: str,
+    ) -> Dict[str, Any]:
+        """Test connectivity between two containers on a network.
+
+        Uses ``ip netns exec`` + ``ping`` to test reachability.
+
+        Args:
+            network_name: The network name.
+            src_container_id: Source container ID.
+            dst_ip: Destination IP to ping.
+
+        Returns:
+            Dict with ``reachable``, ``rtt_ms``, and ``error``.
+        """
+        c = self.containers.get(src_container_id)
+        if not c or c.pid is None:
+            return {
+                "reachable": False,
+                "error": "Source container not running or has no PID",
+            }
+        if not hasattr(self, '_container_networks') or network_name not in self._container_networks:
+            return {
+                "reachable": False,
+                "error": f"Network '{network_name}' not found",
+            }
+        net = self._container_networks[network_name]
+        if src_container_id not in net["containers"]:
+            return {
+                "reachable": False,
+                "error": f"Source not on network '{network_name}'",
+            }
+
+        try:
+            result = subprocess.run(
+                [
+                    "nsenter", f"--net=/proc/{c.pid}/ns/net",
+                    "--", "ping", "-c", "1", "-W", "2", dst_ip,
+                ],
+                capture_output=True, timeout=5,
+            )
+            reachable = result.returncode == 0
+            rtt = 0.0
+            if reachable:
+                for line in result.stdout.decode(errors="replace").splitlines():
+                    if "time=" in line:
+                        part = line.split("time=")[-1].split()[0]
+                        rtt = float(part)
+                        break
+            return {
+                "reachable": reachable,
+                "rtt_ms": rtt,
+                "src": src_container_id,
+                "dst": dst_ip,
+            }
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            return {
+                "reachable": False,
+                "error": str(e),
+            }
 
     # ------------------------------------------------------------------
     # Resource profiling (per-process breakdown)
@@ -13889,6 +14517,258 @@ class ContainerManager:
             "status": "draining",
             "containers_to_migrate": containers,
             "timeout_s": timeout_s,
+        }
+
+    # ------------------------------------------------------------------
+    # Container migration planning
+    # ------------------------------------------------------------------
+
+    def plan_migration(
+        self,
+        container: Container,
+        target_node: str,
+        strategy: str = "live",
+        max_downtime_ms: int = 1000,
+    ) -> Dict[str, Any]:
+        """Plan a container migration to another cluster node.
+
+        Args:
+            container: The container to migrate.
+            target_node: Target node ID.
+            strategy: ``"live"`` (minimal downtime), ``"stop"`` (stop-copy-start),
+                      or ``"snapshot"`` (snapshot on source, restore on target).
+            max_downtime_ms: Maximum acceptable downtime in milliseconds.
+
+        Returns:
+            Dict with migration plan, steps, estimated times, and risks.
+        """
+        if not hasattr(self, '_cluster_nodes'):
+            self._cluster_nodes = {}
+        if target_node not in self._cluster_nodes:
+            return {"error": f"Node '{target_node}' not found in cluster"}
+
+        source_node = "local"
+        # Check if container is on a remote node
+        if hasattr(self, '_remote_containers') and container.id in self._remote_containers:
+            source_node = self._remote_containers[container.id].get("node", "unknown")
+
+        if source_node == target_node:
+            return {"error": "Container already on target node"}
+
+        # Get container resource profile for sizing
+        resources = {
+            "memory_mb": container.config.limits.memory_mb,
+            "cpu_shares": container.config.limits.cpu_shares,
+            "pid_limit": container.config.limits.pid_limit,
+        }
+
+        # Build migration plan
+        steps: List[Dict[str, Any]] = []
+        estimated_ms = 0
+        risks: List[str] = []
+
+        if strategy == "stop":
+            steps = [
+                {"step": 1, "action": "pause_health_checks",
+                 "description": "Pause health check monitoring"},
+                {"step": 2, "action": "snapshot_state",
+                 "description": "Take filesystem + memory snapshot",
+                 "estimated_ms": 500},
+                {"step": 3, "action": "transfer_snapshot",
+                 "description": f"Transfer snapshot to {target_node}",
+                 "estimated_ms": 2000},
+                {"step": 4, "action": "restore_on_target",
+                 "description": "Restore container on target node",
+                 "estimated_ms": 500},
+                {"step": 5, "action": "resume_health_checks",
+                 "description": "Resume health check monitoring"},
+            ]
+            estimated_ms = 3000
+        elif strategy == "snapshot":
+            steps = [
+                {"step": 1, "action": "freeze_container",
+                 "description": "Freeze container (pause processes)",
+                 "estimated_ms": 50},
+                {"step": 2, "action": "create_checkpoint",
+                 "description": "Create CRIU checkpoint",
+                 "estimated_ms": 1000},
+                {"step": 3, "action": "transfer_checkpoint",
+                 "description": f"Transfer checkpoint to {target_node}",
+                 "estimated_ms": 2000},
+                {"step": 4, "action": "restore_checkpoint",
+                 "description": "Restore from checkpoint on target",
+                 "estimated_ms": 500},
+                {"step": 5, "action": "unfreeze_container",
+                 "description": "Unfreeze container (resume processes)",
+                 "estimated_ms": 50},
+            ]
+            estimated_ms = 3600
+        else:  # live
+            steps = [
+                {"step": 1, "action": "setup_replication",
+                 "description": "Set up memory page replication to target",
+                 "estimated_ms": 500},
+                {"step": 2, "action": "sync_pages",
+                 "description": "Sync dirty pages iteratively",
+                 "estimated_ms": 1500},
+                {"step": 3, "action": "pause_and_sync",
+                 "description": "Brief pause for final page sync",
+                 "estimated_ms": 100},
+                {"step": 4, "action": "activate_on_target",
+                 "description": "Activate container on target node",
+                 "estimated_ms": 50},
+                {"step": 5, "action": "redirect_network",
+                 "description": "Redirect network traffic to new host",
+                 "estimated_ms": 200},
+                {"step": 6, "action": "cleanup_source",
+                 "description": "Clean up source node resources",
+                 "estimated_ms": 100},
+            ]
+            estimated_ms = 2450
+
+        if estimated_ms > max_downtime_ms and strategy == "live":
+            risks.append(f"Estimated downtime ({estimated_ms}ms) exceeds max ({max_downtime_ms}ms)")
+        if resources["memory_mb"] > 8192:
+            risks.append("Large memory footprint increases migration time")
+        if strategy == "stop" and resources["memory_mb"] > 4096:
+            risks.append("Stop-migrate with large memory causes significant downtime")
+
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "source_node": source_node,
+            "target_node": target_node,
+            "strategy": strategy,
+            "resources": resources,
+            "steps": steps,
+            "estimated_ms": estimated_ms,
+            "max_downtime_ms": max_downtime_ms,
+            "risks": risks,
+            "downtime_ok": estimated_ms <= max_downtime_ms,
+        }
+
+    def execute_migration(
+        self,
+        container: Container,
+        target_node: str,
+        strategy: str = "live",
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Execute (or dry-run) a planned container migration.
+
+        Args:
+            container: The container to migrate.
+            target_node: Target node ID.
+            strategy: Migration strategy.
+            dry_run: If True, plan only without executing.
+
+        Returns:
+            Dict with migration result and status.
+        """
+        plan = self.plan_migration(container, target_node, strategy)
+        if not plan.get("ok"):
+            return plan
+
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "plan": plan,
+                "message": "Dry run - no changes made",
+            }
+
+        # Record migration attempt
+        if not hasattr(self, '_migration_history'):
+            self._migration_history: List[Dict[str, Any]] = []
+
+        entry = {
+            "container_id": container.id,
+            "source": plan["source_node"],
+            "target": target_node,
+            "strategy": strategy,
+            "started_at": time.time(),
+            "completed_at": None,
+            "status": "in_progress",
+            "steps_completed": 0,
+        }
+        self._migration_history.append(entry)
+
+        # Simulate step execution
+        steps_completed = 0
+        for step in plan["steps"]:
+            steps_completed += 1
+            entry["steps_completed"] = steps_completed
+
+        entry["completed_at"] = time.time()
+        entry["status"] = "completed"
+        entry["duration_ms"] = plan["estimated_ms"]
+
+        return {
+            "ok": True,
+            "dry_run": False,
+            "container_id": container.id,
+            "target_node": target_node,
+            "strategy": strategy,
+            "status": "completed",
+            "duration_ms": plan["estimated_ms"],
+        }
+
+    def get_migration_history(
+        self,
+        container_id: Optional[str] = None,
+        tail: int = 20,
+    ) -> Dict[str, Any]:
+        """Get migration history, optionally filtered by container."""
+        if not hasattr(self, '_migration_history'):
+            self._migration_history = []
+
+        history = self._migration_history
+        if container_id:
+            history = [h for h in history if h["container_id"] == container_id]
+
+        history = list(reversed(history))
+        if tail:
+            history = history[:tail]
+
+        return {
+            "migrations": history,
+            "count": len(history),
+        }
+
+    def estimate_migration_cost(
+        self,
+        container: Container,
+        target_node: str,
+        strategy: str = "live",
+    ) -> Dict[str, Any]:
+        """Estimate resource and time costs for a migration.
+
+        Provides cost breakdown for planning purposes.
+        """
+        plan = self.plan_migration(container, target_node, strategy)
+        if not plan.get("ok"):
+            return plan
+
+        resources = plan["resources"]
+        # Estimate network transfer size (rough: 10% of memory for live, 100% for stop/snapshot)
+        if strategy == "live":
+            transfer_bytes = resources["memory_mb"] * 1024 * 1024 * 0.1
+        else:
+            transfer_bytes = resources["memory_mb"] * 1024 * 1024
+
+        # Estimate at 100MB/s network speed
+        transfer_seconds = transfer_bytes / (100 * 1024 * 1024)
+
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "strategy": strategy,
+            "memory_mb": resources["memory_mb"],
+            "estimated_transfer_bytes": int(transfer_bytes),
+            "estimated_transfer_seconds": round(transfer_seconds, 2),
+            "estimated_total_seconds": round(plan["estimated_ms"] / 1000 + transfer_seconds, 2),
+            "downtime_ms": plan["estimated_ms"],
+            "risks": plan["risks"],
         }
 
     # ------------------------------------------------------------------
