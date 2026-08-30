@@ -2877,6 +2877,119 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_ids": getattr(args, 'container_ids', None),
             "time_window": getattr(args, 'time_window', 3600.0),
         }
+    if command == "configure-network-monitoring":
+        return {
+            "service": "control",
+            "op": "configure_network_monitoring",
+            "container_id": args.container_id,
+            "interfaces": getattr(args, 'interfaces', None),
+            "sample_interval": getattr(args, 'sample_interval', 1.0),
+        }
+    if command == "record-network-sample":
+        return {
+            "service": "control",
+            "op": "record_network_sample",
+            "container_id": args.container_id,
+            "interface": getattr(args, 'interface', 'eth0'),
+            "latency_ms": float(getattr(args, 'latency_ms', 0)),
+            "rx_bytes": int(getattr(args, 'rx_bytes', 0)),
+            "tx_bytes": int(getattr(args, 'tx_bytes', 0)),
+        }
+    if command == "get-network-latency-stats":
+        return {
+            "service": "control",
+            "op": "get_network_latency_stats",
+            "container_id": args.container_id,
+        }
+    if command == "get-bandwidth-stats":
+        return {
+            "service": "control",
+            "op": "get_bandwidth_stats",
+            "container_id": args.container_id,
+        }
+    if command == "get-network-health":
+        return {
+            "service": "control",
+            "op": "get_network_health",
+            "container_id": args.container_id,
+        }
+    if command == "fleet-network-overview":
+        return {
+            "service": "control",
+            "op": "fleet_network_overview",
+        }
+    if command == "configure-storage-profiling":
+        return {
+            "service": "control",
+            "op": "configure_storage_profiling",
+            "container_id": args.container_id,
+            "cache_size_mb": getattr(args, 'cache_size_mb', 64),
+        }
+    if command == "record-storage-io":
+        return {
+            "service": "control",
+            "op": "record_storage_io",
+            "container_id": args.container_id,
+            "op_type": getattr(args, 'op_type', 'read'),
+            "path": getattr(args, 'path', '/'),
+            "bytes_count": int(getattr(args, 'bytes_count', 0)),
+            "duration_ms": float(getattr(args, 'duration_ms', 0)),
+        }
+    if command == "get-storage-io-stats":
+        return {
+            "service": "control",
+            "op": "get_storage_io_stats",
+            "container_id": args.container_id,
+        }
+    if command == "get-storage-io-latency":
+        return {
+            "service": "control",
+            "op": "get_storage_io_latency",
+            "container_id": args.container_id,
+        }
+    if command == "clear-storage-cache":
+        return {
+            "service": "control",
+            "op": "clear_storage_cache",
+            "container_id": args.container_id,
+        }
+    if command == "get-storage-hot-paths":
+        return {
+            "service": "control",
+            "op": "get_storage_hot_paths",
+            "container_id": args.container_id,
+        }
+    if command == "initialize-audit-integrity":
+        return {
+            "service": "control",
+            "op": "initialize_audit_integrity",
+            "container_id": args.container_id,
+        }
+    if command == "append-audit-event":
+        return {
+            "service": "control",
+            "op": "append_audit_event",
+            "container_id": args.container_id,
+            "op": args.audit_op,
+            "details": getattr(args, 'details', None),
+        }
+    if command == "verify-audit-integrity":
+        return {
+            "service": "control",
+            "op": "verify_audit_integrity",
+            "container_id": args.container_id,
+        }
+    if command == "audit-integrity-report":
+        return {
+            "service": "control",
+            "op": "get_audit_integrity_report",
+            "container_id": args.container_id,
+        }
+    if command == "tamper-summary":
+        return {
+            "service": "control",
+            "op": "get_tamper_summary",
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6391,6 +6504,39 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines) if lines[1:] else "No root causes identified"
     if command == "get-event-timeline":
         return f"Event timeline: {resp.get('count', 0)} events"
+    if command == "configure-network-monitoring":
+        cfg = resp.get('config', {})
+        return f"Network monitoring configured: interfaces={cfg.get('interfaces', [])}, interval={cfg.get('sample_interval', 0)}s"
+    if command == "get-network-latency-stats":
+        return f"Latency: avg={resp.get('avg_ms', 0)}ms, p95={resp.get('p95_ms', 0)}ms, p99={resp.get('p99_ms', 0)}ms"
+    if command == "get-bandwidth-stats":
+        return f"Bandwidth: RX={resp.get('total_rx_mb', 0)}MB, TX={resp.get('total_tx_mb', 0)}MB"
+    if command == "get-network-health":
+        return f"Network health: {resp.get('status', '?').upper()}, latency={resp.get('latency', 0)}ms, errors={resp.get('errors', 0)}"
+    if command == "fleet-network-overview":
+        return f"Fleet network: {resp.get('count', 0)} containers monitored"
+    if command == "configure-storage-profiling":
+        return f"Storage profiling configured: cache={resp.get('config', {}).get('cache_size_mb', 0)}MB"
+    if command == "get-storage-io-stats":
+        return f"Storage I/O: read={resp.get('read_mb', 0)}MB ({resp.get('read_ops', 0)} ops), write={resp.get('write_mb', 0)}MB ({resp.get('write_ops', 0)} ops), cache hit={resp.get('cache_hit_rate', 0)}%"
+    if command == "get-storage-io-latency":
+        return f"Storage latency: avg_read={resp.get('avg_read_ms', 0)}ms, avg_write={resp.get('avg_write_ms', 0)}ms"
+    if command == "clear-storage-cache":
+        return f"Cache cleared: {resp.get('cleared', 0)} entries"
+    if command == "get-storage-hot-paths":
+        lines = ["Hot paths:"]
+        for p in resp.get('hot_paths', [])[:5]:
+            lines.append(f"  {p['path']}: {p['count']} ops")
+        return "\n".join(lines)
+    if command == "verify-audit-integrity":
+        status = "VALID" if resp.get('valid') else f"TAMPERED ({resp.get('tampered_count', 0)} events)"
+        return f"Audit integrity: {status}, chain={resp.get('chain_length', 0)}"
+    if command == "audit-integrity-report":
+        status = "VALID" if resp.get('valid') else f"TAMPERED ({resp.get('tampered_count', 0)} events)"
+        return f"Audit report: {status}, events={resp.get('total_audit_events', 0)}"
+    if command == "tamper-summary":
+        status = "ALL VALID" if resp.get('all_valid') else f"{resp.get('total_tampered', 0)} TAMPERED"
+        return f"Tamper check: {resp.get('containers_checked', 0)} containers, {status}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -8623,6 +8769,87 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--container-ids", nargs="+", default=None)
     get.add_argument("--time-window", type=float, default=3600.0)
     get.set_defaults(command="get-event-timeline")
+
+    # Network monitoring subcommands
+    cnm = sub.add_parser("configure-network-monitoring", help="Configure network monitoring")
+    cnm.add_argument("container_id")
+    cnm.add_argument("--interfaces", nargs="+")
+    cnm.add_argument("--sample-interval", type=float, default=1.0)
+    cnm.set_defaults(command="configure-network-monitoring")
+
+    rns = sub.add_parser("record-network-sample", help="Record network sample")
+    rns.add_argument("container_id")
+    rns.add_argument("--interface", default="eth0")
+    rns.add_argument("--latency-ms", type=float, default=0)
+    rns.add_argument("--rx-bytes", type=int, default=0)
+    rns.add_argument("--tx-bytes", type=int, default=0)
+    rns.set_defaults(command="record-network-sample")
+
+    gnls = sub.add_parser("get-network-latency-stats", help="Get latency stats")
+    gnls.add_argument("container_id")
+    gnls.set_defaults(command="get-network-latency-stats")
+
+    gbs = sub.add_parser("get-bandwidth-stats", help="Get bandwidth stats")
+    gbs.add_argument("container_id")
+    gbs.set_defaults(command="get-bandwidth-stats")
+
+    gnh = sub.add_parser("get-network-health", help="Get network health")
+    gnh.add_argument("container_id")
+    gnh.set_defaults(command="get-network-health")
+
+    fno = sub.add_parser("fleet-network-overview", help="Fleet network overview")
+    fno.set_defaults(command="fleet-network-overview")
+
+    # Storage profiling subcommands
+    csp = sub.add_parser("configure-storage-profiling", help="Configure storage profiling")
+    csp.add_argument("container_id")
+    csp.add_argument("--cache-size-mb", type=int, default=64)
+    csp.set_defaults(command="configure-storage-profiling")
+
+    rsio = sub.add_parser("record-storage-io", help="Record storage I/O")
+    rsio.add_argument("container_id")
+    rsio.add_argument("--op-type", default="read", choices=["read", "write"])
+    rsio.add_argument("--path", default="/")
+    rsio.add_argument("--bytes-count", type=int, default=0)
+    rsio.add_argument("--duration-ms", type=float, default=0)
+    rsio.set_defaults(command="record-storage-io")
+
+    gsio = sub.add_parser("get-storage-io-stats", help="Get storage I/O stats")
+    gsio.add_argument("container_id")
+    gsio.set_defaults(command="get-storage-io-stats")
+
+    gsil = sub.add_parser("get-storage-io-latency", help="Get storage I/O latency")
+    gsil.add_argument("container_id")
+    gsil.set_defaults(command="get-storage-io-latency")
+
+    csc = sub.add_parser("clear-storage-cache", help="Clear storage cache")
+    csc.add_argument("container_id")
+    csc.set_defaults(command="clear-storage-cache")
+
+    gshp = sub.add_parser("get-storage-hot-paths", help="Get storage hot paths")
+    gshp.add_argument("container_id")
+    gshp.set_defaults(command="get-storage-hot-paths")
+
+    # Audit integrity subcommands
+    iai = sub.add_parser("initialize-audit-integrity", help="Initialize audit integrity")
+    iai.add_argument("container_id")
+    iai.set_defaults(command="initialize-audit-integrity")
+
+    aae = sub.add_parser("append-audit-event", help="Append audit event")
+    aae.add_argument("container_id")
+    aae.add_argument("audit_op")
+    aae.set_defaults(command="append-audit-event")
+
+    vai = sub.add_parser("verify-audit-integrity", help="Verify audit integrity")
+    vai.add_argument("container_id")
+    vai.set_defaults(command="verify-audit-integrity")
+
+    air = sub.add_parser("audit-integrity-report", help="Audit integrity report")
+    air.add_argument("container_id")
+    air.set_defaults(command="audit-integrity-report")
+
+    ts = sub.add_parser("tamper-summary", help="Tamper detection summary")
+    ts.set_defaults(command="tamper-summary")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

@@ -20757,6 +20757,441 @@ class ContainerManager:
         events.sort(key=lambda e: e["timestamp"])
         return {"events": events, "count": len(events)}
 
+    # ------------------------------------------------------------------
+    # Network latency monitoring and bandwidth tracking
+    # ------------------------------------------------------------------
+
+    def configure_network_monitoring(
+        self,
+        container: Container,
+        interfaces: Optional[List[str]] = None,
+        sample_interval: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Configure network monitoring for a container.
+
+        Args:
+            container: Target container.
+            interfaces: Network interfaces to monitor (default: all).
+            sample_interval: Seconds between samples.
+        """
+        import time as _time
+        if not hasattr(self, '_net_monitor'):
+            self._net_monitor = {}
+        config = {
+            "interfaces": interfaces or ["eth0", "lo"],
+            "sample_interval": sample_interval,
+            "enabled": True,
+            "created_at": _time.time(),
+        }
+        self._net_monitor[container.id] = {
+            "config": config,
+            "samples": [],
+            "latency_history": [],
+            "bandwidth_history": [],
+        }
+        return {
+            "container_id": container.id,
+            "config": config,
+        }
+
+    def record_network_sample(
+        self,
+        container_id: str,
+        interface: str = "eth0",
+        latency_ms: float = 0.0,
+        rx_bytes: int = 0,
+        tx_bytes: int = 0,
+        rx_packets: int = 0,
+        tx_packets: int = 0,
+        errors: int = 0,
+        dropped: int = 0,
+    ) -> Dict[str, Any]:
+        """Record a network sample for a container."""
+        import time as _time
+        if not hasattr(self, '_net_monitor'):
+            self._net_monitor = {}
+        if container_id not in self._net_monitor:
+            self._net_monitor[container_id] = {
+                "config": {}, "samples": [], "latency_history": [], "bandwidth_history": [],
+            }
+        mon = self._net_monitor[container_id]
+        sample = {
+            "interface": interface,
+            "latency_ms": latency_ms,
+            "rx_bytes": rx_bytes,
+            "tx_bytes": tx_bytes,
+            "rx_packets": rx_packets,
+            "tx_packets": tx_packets,
+            "errors": errors,
+            "dropped": dropped,
+            "timestamp": _time.time(),
+        }
+        mon["samples"].append(sample)
+        mon["latency_history"].append({"latency_ms": latency_ms, "time": _time.time()})
+        mon["bandwidth_history"].append({
+            "rx_bytes": rx_bytes, "tx_bytes": tx_bytes, "time": _time.time(),
+        })
+        # Keep bounded
+        for key in ("samples", "latency_history", "bandwidth_history"):
+            if len(mon[key]) > 1000:
+                mon[key] = mon[key][-1000:]
+        return {"container_id": container_id, "recorded": True}
+
+    def get_network_latency_stats(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get latency statistics for a container."""
+        if not hasattr(self, '_net_monitor'):
+            return {"error": "No monitoring data"}
+        mon = self._net_monitor.get(container_id)
+        if not mon or not mon["latency_history"]:
+            return {"error": "No latency data"}
+        lats = [s["latency_ms"] for s in mon["latency_history"]]
+        return {
+            "container_id": container_id,
+            "min_ms": round(min(lats), 2),
+            "max_ms": round(max(lats), 2),
+            "avg_ms": round(sum(lats) / len(lats), 2),
+            "samples": len(lats),
+            "p95_ms": round(sorted(lats)[int(len(lats) * 0.95)] if lats else 0, 2),
+            "p99_ms": round(sorted(lats)[int(len(lats) * 0.99)] if lats else 0, 2),
+        }
+
+    def get_bandwidth_stats(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get bandwidth statistics for a container."""
+        if not hasattr(self, '_net_monitor'):
+            return {"error": "No monitoring data"}
+        mon = self._net_monitor.get(container_id)
+        if not mon or not mon["bandwidth_history"]:
+            return {"error": "No bandwidth data"}
+        bw = mon["bandwidth_history"]
+        total_rx = sum(s["rx_bytes"] for s in bw)
+        total_tx = sum(s["tx_bytes"] for s in bw)
+        return {
+            "container_id": container_id,
+            "total_rx_bytes": total_rx,
+            "total_tx_bytes": total_tx,
+            "total_rx_mb": round(total_rx / (1024 * 1024), 2),
+            "total_tx_mb": round(total_tx / (1024 * 1024), 2),
+            "samples": len(bw),
+        }
+
+    def get_network_health(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get overall network health for a container."""
+        latency = self.get_network_latency_stats(container_id)
+        bandwidth = self.get_bandwidth_stats(container_id)
+        mon = self._net_monitor.get(container_id, {}) if hasattr(self, '_net_monitor') else {}
+        samples = mon.get("samples", [])
+        errors = sum(s.get("errors", 0) for s in samples)
+        dropped = sum(s.get("dropped", 0) for s in samples)
+        avg_lat = latency.get("avg_ms", 0)
+        status = "healthy"
+        if avg_lat > 100:
+            status = "degraded"
+        if avg_lat > 500 or errors > 10:
+            status = "unhealthy"
+        return {
+            "container_id": container_id,
+            "status": status,
+            "latency": latency.get("avg_ms", 0),
+            "errors": errors,
+            "dropped": dropped,
+        }
+
+    def fleet_network_overview(self) -> Dict[str, Any]:
+        """Get network overview across all monitored containers."""
+        if not hasattr(self, '_net_monitor'):
+            return {"containers": [], "count": 0}
+        result = []
+        for cid, mon in self._net_monitor.items():
+            health = self.get_network_health(cid)
+            result.append(health)
+        return {"containers": result, "count": len(result)}
+
+    # ------------------------------------------------------------------
+    # Storage I/O profiling and caching layer
+    # ------------------------------------------------------------------
+
+    def configure_storage_profiling(
+        self,
+        container: Container,
+        paths: Optional[List[str]] = None,
+        cache_size_mb: int = 64,
+    ) -> Dict[str, Any]:
+        """Configure storage I/O profiling for a container.
+
+        Args:
+            container: Target container.
+            paths: File paths to profile.
+            cache_size_mb: Size of the read cache.
+        """
+        import time as _time
+        if not hasattr(self, '_storage_profiler'):
+            self._storage_profiler = {}
+        config = {
+            "paths": paths or ["/"],
+            "cache_size_mb": cache_size_mb,
+            "enabled": True,
+        }
+        self._storage_profiler[container.id] = {
+            "config": config,
+            "read_ops": 0,
+            "write_ops": 0,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "io_history": [],
+            "cache": {},
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+        return {"container_id": container.id, "config": config}
+
+    def record_storage_io(
+        self,
+        container_id: str,
+        op_type: str = "read",
+        path: str = "/",
+        bytes_count: int = 0,
+        duration_ms: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Record a storage I/O operation."""
+        import time as _time
+        if not hasattr(self, '_storage_profiler'):
+            self._storage_profiler = {}
+        if container_id not in self._storage_profiler:
+            self._storage_profiler[container_id] = {
+                "config": {}, "read_ops": 0, "write_ops": 0,
+                "read_bytes": 0, "write_bytes": 0, "io_history": [],
+                "cache": {}, "cache_hits": 0, "cache_misses": 0,
+            }
+        prof = self._storage_profiler[container_id]
+        if op_type == "read":
+            prof["read_ops"] += 1
+            prof["read_bytes"] += bytes_count
+            # Check cache
+            if path in prof["cache"]:
+                prof["cache_hits"] += 1
+            else:
+                prof["cache_misses"] += 1
+                prof["cache"][path] = _time.time()
+        else:
+            prof["write_ops"] += 1
+            prof["write_bytes"] += bytes_count
+            prof["cache"].pop(path, None)  # Invalidate cache
+
+        prof["io_history"].append({
+            "op": op_type, "path": path, "bytes": bytes_count,
+            "duration_ms": duration_ms, "time": _time.time(),
+        })
+        if len(prof["io_history"]) > 1000:
+            prof["io_history"] = prof["io_history"][-1000:]
+        return {"container_id": container_id, "recorded": True}
+
+    def get_storage_io_stats(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get storage I/O statistics."""
+        if not hasattr(self, '_storage_profiler'):
+            return {"error": "No profiling data"}
+        prof = self._storage_profiler.get(container_id)
+        if not prof:
+            return {"error": "No profiling data for container"}
+        return {
+            "container_id": container_id,
+            "read_ops": prof["read_ops"],
+            "write_ops": prof["write_ops"],
+            "read_bytes": prof["read_bytes"],
+            "write_bytes": prof["write_bytes"],
+            "read_mb": round(prof["read_bytes"] / (1024 * 1024), 2),
+            "write_mb": round(prof["write_bytes"] / (1024 * 1024), 2),
+            "cache_hits": prof["cache_hits"],
+            "cache_misses": prof["cache_misses"],
+            "cache_hit_rate": round(
+                prof["cache_hits"] / (prof["cache_hits"] + prof["cache_misses"]) * 100, 1
+            ) if (prof["cache_hits"] + prof["cache_misses"]) > 0 else 0,
+        }
+
+    def get_storage_io_latency(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get storage I/O latency breakdown."""
+        if not hasattr(self, '_storage_profiler'):
+            return {"error": "No profiling data"}
+        prof = self._storage_profiler.get(container_id, {})
+        history = prof.get("io_history", [])
+        if not history:
+            return {"container_id": container_id, "avg_read_ms": 0, "avg_write_ms": 0}
+        read_durs = [h["duration_ms"] for h in history if h["op"] == "read"]
+        write_durs = [h["duration_ms"] for h in history if h["op"] == "write"]
+        return {
+            "container_id": container_id,
+            "avg_read_ms": round(sum(read_durs) / len(read_durs), 2) if read_durs else 0,
+            "avg_write_ms": round(sum(write_durs) / len(write_durs), 2) if write_durs else 0,
+            "max_read_ms": round(max(read_durs), 2) if read_durs else 0,
+            "max_write_ms": round(max(write_durs), 2) if write_durs else 0,
+            "total_io": len(history),
+        }
+
+    def clear_storage_cache(self, container_id: str) -> Dict[str, Any]:
+        """Clear the storage cache for a container."""
+        if not hasattr(self, '_storage_profiler'):
+            return {"error": "No profiling data"}
+        prof = self._storage_profiler.get(container_id)
+        if not prof:
+            return {"error": "No profiling data for container"}
+        cleared = len(prof["cache"])
+        prof["cache"] = {}
+        return {"container_id": container_id, "cleared": cleared}
+
+    def get_storage_hot_paths(
+        self, container_id: str, top_n: int = 10
+    ) -> Dict[str, Any]:
+        """Get the most frequently accessed paths."""
+        if not hasattr(self, '_storage_profiler'):
+            return {"error": "No profiling data"}
+        prof = self._storage_profiler.get(container_id, {})
+        history = prof.get("io_history", [])
+        path_counts = {}
+        for h in history:
+            path_counts[h["path"]] = path_counts.get(h["path"], 0) + 1
+        hot = sorted(path_counts.items(), key=lambda x: -x[1])[:top_n]
+        return {
+            "container_id": container_id,
+            "hot_paths": [{"path": p, "count": c} for p, c in hot],
+        }
+
+    # ------------------------------------------------------------------
+    # Audit log tamper detection and integrity checks
+    # ------------------------------------------------------------------
+
+    def initialize_audit_integrity(self, container: Container) -> Dict[str, Any]:
+        """Initialize audit log integrity tracking with hash chain."""
+        import hashlib
+        import time as _time
+        container._audit_hash_chain = []
+        container._audit_salt = hashlib.sha256(
+            f"{container.id}{_time.time()}".encode()
+        ).hexdigest()[:16]
+        return {
+            "container_id": container.id,
+            "initialized": True,
+            "salt": container._audit_salt,
+        }
+
+    def append_audit_event(
+        self,
+        container: Container,
+        op: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append an audit event with integrity hash."""
+        import hashlib
+        import time as _time
+        if not hasattr(container, '_audit_hash_chain'):
+            self.initialize_audit_integrity(container)
+
+        salt = container._audit_salt
+        chain = container._audit_hash_chain
+        prev_hash = chain[-1]["hash"] if chain else "0" * 64
+        ts = _time.time()
+        event_data = {
+            "op": op,
+            "details": details or {},
+            "timestamp": ts,
+            "prev_hash": prev_hash,
+        }
+        content = f"{salt}{prev_hash}{op}{ts}"
+        event_hash = hashlib.sha256(content.encode()).hexdigest()
+        event_data["hash"] = event_hash
+        chain.append(event_data)
+
+        # Also append to the existing audit trail
+        if not hasattr(container, '_audit_trail'):
+            container._audit_trail = []
+        container._audit_trail.append({
+            "op": op, "details": details, "time": _time.time(),
+            "integrity_hash": event_hash,
+        })
+
+        return {"event_hash": event_hash, "chain_length": len(chain)}
+
+    def verify_audit_integrity(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Verify the integrity of the audit hash chain."""
+        import hashlib
+        if not hasattr(container, '_audit_hash_chain'):
+            return {"error": "Audit integrity not initialized"}
+        salt = container._audit_salt
+        chain = container._audit_hash_chain
+        tampered = []
+        for i, event in enumerate(chain):
+            prev_hash = chain[i - 1]["hash"] if i > 0 else "0" * 64
+            content = f"{salt}{prev_hash}{event['op']}{event['timestamp']}"
+            expected = hashlib.sha256(content.encode()).hexdigest()
+            if event["hash"] != expected:
+                tampered.append({
+                    "index": i,
+                    "expected": expected,
+                    "actual": event["hash"],
+                })
+            if event["prev_hash"] != prev_hash:
+                tampered.append({
+                    "index": i,
+                    "type": "chain_break",
+                    "expected_prev": prev_hash,
+                    "actual_prev": event["prev_hash"],
+                })
+        return {
+            "container_id": container.id,
+            "chain_length": len(chain),
+            "tampered_count": len(tampered),
+            "tampered": tampered,
+            "valid": len(tampered) == 0,
+        }
+
+    def get_audit_integrity_report(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Generate a full audit integrity report."""
+        verification = self.verify_audit_integrity(container)
+        trail = getattr(container, '_audit_trail', [])
+        return {
+            "container_id": container.id,
+            "chain_length": verification["chain_length"],
+            "valid": verification["valid"],
+            "tampered_count": verification["tampered_count"],
+            "tampered_events": verification["tampered"],
+            "total_audit_events": len(trail),
+            "has_integrity": hasattr(container, '_audit_hash_chain'),
+        }
+
+    def get_tamper_summary(self) -> Dict[str, Any]:
+        """Get tamper detection summary across all containers."""
+        containers = self.list_containers()
+        results = []
+        for c in containers:
+            if hasattr(c, '_audit_hash_chain') and c._audit_hash_chain:
+                v = self.verify_audit_integrity(c)
+                results.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "valid": v["valid"],
+                    "chain_length": v["chain_length"],
+                    "tampered_count": v["tampered_count"],
+                })
+        total_tampered = sum(r["tampered_count"] for r in results)
+        return {
+            "containers_checked": len(results),
+            "total_tampered": total_tampered,
+            "all_valid": total_tampered == 0,
+            "details": results,
+        }
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

@@ -1287,6 +1287,57 @@ class ControlService:
             elif op == "get_event_timeline":
                 self._get_event_timeline(server, sender_path,
                                     msg.message_id, request)
+            elif op == "configure_network_monitoring":
+                self._configure_network_monitoring(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "record_network_sample":
+                self._record_network_sample(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_network_latency_stats":
+                self._get_network_latency_stats(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "get_bandwidth_stats":
+                self._get_bandwidth_stats(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "get_network_health":
+                self._get_network_health(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "fleet_network_overview":
+                self._fleet_network_overview(server, sender_path,
+                                        msg.message_id)
+            elif op == "configure_storage_profiling":
+                self._configure_storage_profiling(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "record_storage_io":
+                self._record_storage_io(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_storage_io_stats":
+                self._get_storage_io_stats(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_storage_io_latency":
+                self._get_storage_io_latency(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "clear_storage_cache":
+                self._clear_storage_cache(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_storage_hot_paths":
+                self._get_storage_hot_paths(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "initialize_audit_integrity":
+                self._initialize_audit_integrity(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "append_audit_event":
+                self._append_audit_event(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "verify_audit_integrity":
+                self._verify_audit_integrity(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "get_audit_integrity_report":
+                self._get_audit_integrity_report(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_tamper_summary":
+                self._get_tamper_summary(server, sender_path,
+                                    msg.message_id)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -7422,6 +7473,134 @@ class ControlService:
             container_ids=request.get('container_ids'),
             time_window=request.get('time_window', 3600.0),
         )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Network monitoring handlers
+    # ------------------------------------------------------------------
+
+    def _configure_network_monitoring(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_network_monitoring(
+            c, interfaces=request.get('interfaces'),
+            sample_interval=request.get('sample_interval', 1.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_network_sample(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_network_sample(
+            container_id=request['container_id'],
+            interface=request.get('interface', 'eth0'),
+            latency_ms=request.get('latency_ms', 0),
+            rx_bytes=request.get('rx_bytes', 0),
+            tx_bytes=request.get('tx_bytes', 0),
+            rx_packets=request.get('rx_packets', 0),
+            tx_packets=request.get('tx_packets', 0),
+            errors=request.get('errors', 0),
+            dropped=request.get('dropped', 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_network_latency_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_network_latency_stats(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_bandwidth_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_bandwidth_stats(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_network_health(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_network_health(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_network_overview(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_network_overview()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Storage profiling handlers
+    # ------------------------------------------------------------------
+
+    def _configure_storage_profiling(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_storage_profiling(
+            c, paths=request.get('paths'),
+            cache_size_mb=request.get('cache_size_mb', 64),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_storage_io(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_storage_io(
+            container_id=request['container_id'],
+            op_type=request.get('op_type', 'read'),
+            path=request.get('path', '/'),
+            bytes_count=request.get('bytes_count', 0),
+            duration_ms=request.get('duration_ms', 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_storage_io_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_storage_io_stats(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_storage_io_latency(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_storage_io_latency(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _clear_storage_cache(self, server, sender_path, call_id, request):
+        result = self.container_manager.clear_storage_cache(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_storage_hot_paths(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_storage_hot_paths(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Audit integrity handlers
+    # ------------------------------------------------------------------
+
+    def _initialize_audit_integrity(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.initialize_audit_integrity(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _append_audit_event(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.append_audit_event(
+            c, op=request['op'], details=request.get('details'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _verify_audit_integrity(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.verify_audit_integrity(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_audit_integrity_report(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_audit_integrity_report(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_tamper_summary(self, server, sender_path, call_id):
+        result = self.container_manager.get_tamper_summary()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

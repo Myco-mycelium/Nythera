@@ -4462,6 +4462,242 @@ class TestEventCorrelationAnalysis(unittest.TestCase):
         self.assertIn("80%", text)
 
 
+class TestNetworkMonitoring(unittest.TestCase):
+    """Tests for network latency monitoring and bandwidth tracking."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.transition_to(ContainerState.RUNNING)
+        return c
+
+    def test_configure_monitoring(self):
+        """configure_network_monitoring stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm1")
+        r = mgr.configure_network_monitoring(c, sample_interval=0.5)
+        self.assertEqual(r["config"]["sample_interval"], 0.5)
+
+    def test_record_sample(self):
+        """record_network_sample stores data."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm2")
+        r = mgr.record_network_sample(c.id, latency_ms=10.5, rx_bytes=1024)
+        self.assertTrue(r["recorded"])
+
+    def test_latency_stats(self):
+        """get_network_latency_stats computes stats."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm3")
+        for i in range(10):
+            mgr.record_network_sample(c.id, latency_ms=float(i))
+        r = mgr.get_network_latency_stats(c.id)
+        self.assertGreater(r["avg_ms"], 0)
+        self.assertIn("p95_ms", r)
+
+    def test_bandwidth_stats(self):
+        """get_bandwidth_stats computes totals."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm4")
+        mgr.record_network_sample(c.id, rx_bytes=1000, tx_bytes=500)
+        mgr.record_network_sample(c.id, rx_bytes=2000, tx_bytes=1000)
+        r = mgr.get_bandwidth_stats(c.id)
+        self.assertEqual(r["total_rx_bytes"], 3000)
+        self.assertEqual(r["total_tx_bytes"], 1500)
+
+    def test_network_health(self):
+        """get_network_health returns status."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm5")
+        mgr.record_network_sample(c.id, latency_ms=5.0)
+        r = mgr.get_network_health(c.id)
+        self.assertEqual(r["status"], "healthy")
+
+    def test_fleet_overview(self):
+        """fleet_network_overview returns all."""
+        mgr = self._manager()
+        c = self._make(mgr, "nm6")
+        mgr.configure_network_monitoring(c)
+        mgr.record_network_sample(c.id, latency_ms=1.0)
+        r = mgr.fleet_network_overview()
+        self.assertGreaterEqual(r["count"], 1)
+
+    def test_format_human_latency(self):
+        """format_human handles get-network-latency-stats."""
+        from nyrqisctl import format_human
+        text = format_human("get-network-latency-stats", {"avg_ms": 15.5, "p95_ms": 25.0, "p99_ms": 40.0})
+        self.assertIn("15.5", text)
+
+
+class TestStorageProfiling(unittest.TestCase):
+    """Tests for storage I/O profiling and caching layer."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_configure_profiling(self):
+        """configure_storage_profiling stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp1")
+        r = mgr.configure_storage_profiling(c, cache_size_mb=128)
+        self.assertEqual(r["config"]["cache_size_mb"], 128)
+
+    def test_record_io(self):
+        """record_storage_io updates counters."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp2")
+        mgr.record_storage_io(c.id, op_type="read", bytes_count=4096)
+        mgr.record_storage_io(c.id, op_type="write", bytes_count=2048)
+        r = mgr.get_storage_io_stats(c.id)
+        self.assertEqual(r["read_ops"], 1)
+        self.assertEqual(r["write_ops"], 1)
+
+    def test_io_stats(self):
+        """get_storage_io_stats returns totals."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp3")
+        mgr.record_storage_io(c.id, op_type="read", bytes_count=1048576)
+        r = mgr.get_storage_io_stats(c.id)
+        self.assertEqual(r["read_mb"], 1.0)
+
+    def test_io_latency(self):
+        """get_storage_io_latency computes averages."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp4")
+        mgr.record_storage_io(c.id, op_type="read", duration_ms=10.0)
+        mgr.record_storage_io(c.id, op_type="write", duration_ms=20.0)
+        r = mgr.get_storage_io_latency(c.id)
+        self.assertEqual(r["avg_read_ms"], 10.0)
+        self.assertEqual(r["avg_write_ms"], 20.0)
+
+    def test_clear_cache(self):
+        """clear_storage_cache clears entries."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp5")
+        mgr.record_storage_io(c.id, path="/file1")
+        mgr.record_storage_io(c.id, path="/file2")
+        r = mgr.clear_storage_cache(c.id)
+        self.assertEqual(r["cleared"], 2)
+
+    def test_hot_paths(self):
+        """get_storage_hot_paths returns top paths."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp6")
+        for _ in range(5):
+            mgr.record_storage_io(c.id, path="/hot")
+        mgr.record_storage_io(c.id, path="/cold")
+        r = mgr.get_storage_hot_paths(c.id)
+        self.assertEqual(r["hot_paths"][0]["path"], "/hot")
+        self.assertEqual(r["hot_paths"][0]["count"], 5)
+
+    def test_cache_hit_rate(self):
+        """Cache hit rate tracks correctly."""
+        mgr = self._manager()
+        c = self._make(mgr, "sp7")
+        mgr.record_storage_io(c.id, path="/a", op_type="read")  # miss
+        mgr.record_storage_io(c.id, path="/a", op_type="read")  # hit
+        r = mgr.get_storage_io_stats(c.id)
+        self.assertEqual(r["cache_hit_rate"], 50.0)
+
+    def test_format_human_stats(self):
+        """format_human handles get-storage-io-stats."""
+        from nyrqisctl import format_human
+        resp = {"read_mb": 10.5, "read_ops": 100, "write_mb": 5.2, "write_ops": 50, "cache_hit_rate": 75.0}
+        text = format_human("get-storage-io-stats", resp)
+        self.assertIn("10.5", text)
+
+
+class TestAuditIntegrity(unittest.TestCase):
+    """Tests for audit log tamper detection and integrity checks."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_initialize_integrity(self):
+        """initialize_audit_integrity sets up chain."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai1")
+        r = mgr.initialize_audit_integrity(c)
+        self.assertTrue(r["initialized"])
+        self.assertIn("salt", r)
+
+    def test_append_event(self):
+        """append_audit_event creates hash."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai2")
+        r = mgr.append_audit_event(c, op="test_op")
+        self.assertIn("event_hash", r)
+        self.assertEqual(r["chain_length"], 1)
+
+    def test_chain_integrity(self):
+        """Chain stays valid after multiple events."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai3")
+        mgr.append_audit_event(c, op="op1")
+        mgr.append_audit_event(c, op="op2")
+        mgr.append_audit_event(c, op="op3")
+        r = mgr.verify_audit_integrity(c)
+        self.assertTrue(r["valid"])
+        self.assertEqual(r["tampered_count"], 0)
+
+    def test_tamper_detection(self):
+        """verify detects tampered events."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai4")
+        mgr.append_audit_event(c, op="op1")
+        mgr.append_audit_event(c, op="op2")
+        # Tamper with the chain
+        c._audit_hash_chain[0]["op"] = "tampered"
+        r = mgr.verify_audit_integrity(c)
+        self.assertFalse(r["valid"])
+        self.assertGreater(r["tampered_count"], 0)
+
+    def test_integrity_report(self):
+        """get_audit_integrity_report returns full info."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai5")
+        mgr.append_audit_event(c, op="op1")
+        r = mgr.get_audit_integrity_report(c)
+        self.assertTrue(r["has_integrity"])
+        self.assertTrue(r["valid"])
+
+    def test_tamper_summary(self):
+        """get_tamper_summary covers fleet."""
+        mgr = self._manager()
+        c = self._make(mgr, "ai6")
+        mgr.append_audit_event(c, op="op1")
+        r = mgr.get_tamper_summary()
+        self.assertGreaterEqual(r["containers_checked"], 1)
+        self.assertTrue(r["all_valid"])
+
+    def test_format_human_verify(self):
+        """format_human handles verify-audit-integrity."""
+        from nyrqisctl import format_human
+        text = format_human("verify-audit-integrity", {"valid": True, "chain_length": 5})
+        self.assertIn("VALID", text)
+        self.assertIn("5", text)
+
+    def test_format_human_tampered(self):
+        """format_human handles tampered result."""
+        from nyrqisctl import format_human
+        text = format_human("verify-audit-integrity", {"valid": False, "tampered_count": 3, "chain_length": 10})
+        self.assertIn("TAMPERED", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -29544,6 +29780,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestGracefulShutdown))
     suite.addTests(loader.loadTestsFromTestCase(TestConfigHotReload))
     suite.addTests(loader.loadTestsFromTestCase(TestEventCorrelationAnalysis))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkMonitoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestStorageProfiling))
+    suite.addTests(loader.loadTestsFromTestCase(TestAuditIntegrity))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
