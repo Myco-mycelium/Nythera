@@ -2761,6 +2761,122 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "get_deployment_status",
             "container_id": args.container_id,
         }
+    if command == "configure-graceful-shutdown":
+        return {
+            "service": "control",
+            "op": "configure_graceful_shutdown",
+            "container_id": args.container_id,
+            "drain_timeout": getattr(args, 'drain_timeout', 30),
+            "signal": getattr(args, 'signal', 'SIGTERM'),
+            "pre_stop_hook": getattr(args, 'pre_stop_hook', None),
+        }
+    if command == "initiate-graceful-shutdown":
+        return {
+            "service": "control",
+            "op": "initiate_graceful_shutdown",
+            "container_id": args.container_id,
+        }
+    if command == "get-shutdown-status":
+        return {
+            "service": "control",
+            "op": "get_shutdown_status",
+            "container_id": args.container_id,
+        }
+    if command == "force-shutdown":
+        return {
+            "service": "control",
+            "op": "force_shutdown",
+            "container_id": args.container_id,
+        }
+    if command == "batch-graceful-shutdown":
+        return {
+            "service": "control",
+            "op": "batch_graceful_shutdown",
+            "container_ids": args.container_ids,
+            "drain_timeout": getattr(args, 'drain_timeout', 30),
+        }
+    if command == "get-drain-progress":
+        return {
+            "service": "control",
+            "op": "get_drain_progress",
+            "container_id": args.container_id,
+        }
+    if command == "register-config-watcher":
+        return {
+            "service": "control",
+            "op": "register_config_watcher",
+            "container_id": args.container_id,
+            "config_path": args.config_path,
+            "reload_action": getattr(args, 'reload_action', 'restart'),
+        }
+    if command == "trigger-config-reload":
+        return {
+            "service": "control",
+            "op": "trigger_config_reload",
+            "container_id": args.container_id,
+            "watcher_id": args.watcher_id,
+        }
+    if command == "get-config-watchers":
+        return {
+            "service": "control",
+            "op": "get_config_watchers",
+            "container_id": args.container_id,
+        }
+    if command == "remove-config-watcher":
+        return {
+            "service": "control",
+            "op": "remove_config_watcher",
+            "container_id": args.container_id,
+            "watcher_id": args.watcher_id,
+        }
+    if command == "hot-reload-config":
+        return {
+            "service": "control",
+            "op": "hot_reload_config",
+            "container_id": args.container_id,
+            "config": json.loads(args.config) if hasattr(args, 'config') and args.config else {},
+        }
+    if command == "get-reload-history":
+        return {
+            "service": "control",
+            "op": "get_reload_history",
+            "container_id": args.container_id,
+        }
+    if command == "record-event":
+        return {
+            "service": "control",
+            "op": "record_event",
+            "container_id": args.container_id,
+            "event_type": args.event_type,
+            "message": getattr(args, 'message', ''),
+            "severity": getattr(args, 'severity', 'info'),
+        }
+    if command == "correlate-events":
+        return {
+            "service": "control",
+            "op": "correlate_events",
+            "time_window": getattr(args, 'time_window', 300.0),
+            "min_containers": getattr(args, 'min_containers', 2),
+        }
+    if command == "analyze-event-patterns":
+        return {
+            "service": "control",
+            "op": "analyze_event_patterns",
+            "time_window": getattr(args, 'time_window', 3600.0),
+        }
+    if command == "suggest-root-cause":
+        return {
+            "service": "control",
+            "op": "suggest_root_cause",
+            "time_window": getattr(args, 'time_window', 300.0),
+        }
+    if command == "get-event-timeline":
+        return {
+            "service": "control",
+            "op": "get_event_timeline",
+            "container_ids": getattr(args, 'container_ids', None),
+            "time_window": getattr(args, 'time_window', 3600.0),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6232,6 +6348,49 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if current:
             return f"Current version: v{current['version']} ({current.get('notes', '')})"
         return "No deployments recorded"
+    if command == "configure-graceful-shutdown":
+        cfg = resp.get('shutdown_config', {})
+        return f"Graceful shutdown configured: drain={cfg.get('drain_timeout', 0)}s, signal={cfg.get('signal', '?')}"
+    if command == "initiate-graceful-shutdown":
+        return f"Graceful shutdown initiated: status={resp.get('status', '?')}, timeout={resp.get('drain_timeout', 0)}s"
+    if command == "get-shutdown-status":
+        state = resp.get('state', {})
+        return f"Shutdown status: {state.get('status', '?')}"
+    if command == "force-shutdown":
+        return f"Force shutdown: {resp.get('status', '?')}"
+    if command == "batch-graceful-shutdown":
+        return f"Batch shutdown: {resp.get('container_count', 0)} containers"
+    if command == "get-drain-progress":
+        return f"Drain progress: {resp.get('progress_pct', 0)}% ({resp.get('elapsed_seconds', 0)}s elapsed)"
+    if command == "register-config-watcher":
+        return f"Watcher registered: {resp.get('watcher_id', '?')} watching {resp.get('path', '?')}"
+    if command == "trigger-config-reload":
+        return f"Config reload: {resp.get('status', '?')} - {resp.get('message', '')}"
+    if command == "get-config-watchers":
+        return f"Config watchers: {resp.get('count', 0)}"
+    if command == "hot-reload-config":
+        return f"Hot reload: {resp.get('change_count', 0)} changes applied"
+    if command == "get-reload-history":
+        return f"Reload history: {resp.get('total_reloads', 0)} total reloads"
+    if command == "record-event":
+        return f"Event recorded (id={resp.get('event_id', '?')})"
+    if command == "correlate-events":
+        lines = ["Correlated events:"]
+        for c in resp.get('clusters', [])[:5]:
+            lines.append(f"  {c['event_type']}: {c['container_count']} containers, {c['event_count']} events")
+        return "\n".join(lines) if lines[1:] else "No correlations found"
+    if command == "analyze-event-patterns":
+        lines = [f"Event patterns ({resp.get('total_events', 0)} events):"]
+        for p in resp.get('patterns', [])[:5]:
+            lines.append(f"  {p['type']}: {p['count']} events")
+        return "\n".join(lines)
+    if command == "suggest-root-cause":
+        lines = ["Root cause suggestions:"]
+        for s in resp.get('suggestions', []):
+            lines.append(f"  {s['cause']} (confidence={s['confidence']:.0%}): {s['description']}")
+        return "\n".join(lines) if lines[1:] else "No root causes identified"
+    if command == "get-event-timeline":
+        return f"Event timeline: {resp.get('count', 0)} events"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -8379,6 +8538,91 @@ def build_parser() -> argparse.ArgumentParser:
     dst = sub.add_parser("deployment-status", help="Current deployment status")
     dst.add_argument("container_id")
     dst.set_defaults(command="deployment-status")
+
+    # Graceful shutdown subcommands
+    cgs = sub.add_parser("configure-graceful-shutdown", help="Configure graceful shutdown")
+    cgs.add_argument("container_id")
+    cgs.add_argument("--drain-timeout", type=int, default=30)
+    cgs.add_argument("--signal", default="SIGTERM", choices=["SIGTERM", "SIGINT"])
+    cgs.add_argument("--pre-stop-hook", default=None)
+    cgs.set_defaults(command="configure-graceful-shutdown")
+
+    igs = sub.add_parser("initiate-graceful-shutdown", help="Initiate graceful shutdown")
+    igs.add_argument("container_id")
+    igs.set_defaults(command="initiate-graceful-shutdown")
+
+    gss = sub.add_parser("get-shutdown-status", help="Get shutdown status")
+    gss.add_argument("container_id")
+    gss.set_defaults(command="get-shutdown-status")
+
+    fs = sub.add_parser("force-shutdown", help="Force-kill container")
+    fs.add_argument("container_id")
+    fs.set_defaults(command="force-shutdown")
+
+    bgs = sub.add_parser("batch-graceful-shutdown", help="Batch graceful shutdown")
+    bgs.add_argument("container_ids", nargs="+")
+    bgs.add_argument("--drain-timeout", type=int, default=30)
+    bgs.set_defaults(command="batch-graceful-shutdown")
+
+    gdp = sub.add_parser("get-drain-progress", help="Get drain progress")
+    gdp.add_argument("container_id")
+    gdp.set_defaults(command="get-drain-progress")
+
+    # Config hot-reload subcommands
+    rcw = sub.add_parser("register-config-watcher", help="Register config watcher")
+    rcw.add_argument("container_id")
+    rcw.add_argument("config_path")
+    rcw.add_argument("--reload-action", default="restart", choices=["restart", "signal", "in-place"])
+    rcw.set_defaults(command="register-config-watcher")
+
+    tcr = sub.add_parser("trigger-config-reload", help="Trigger config reload")
+    tcr.add_argument("container_id")
+    tcr.add_argument("watcher_id")
+    tcr.set_defaults(command="trigger-config-reload")
+
+    gcw = sub.add_parser("get-config-watchers", help="Get config watchers")
+    gcw.add_argument("container_id")
+    gcw.set_defaults(command="get-config-watchers")
+
+    rcw2 = sub.add_parser("remove-config-watcher", help="Remove config watcher")
+    rcw2.add_argument("container_id")
+    rcw2.add_argument("watcher_id")
+    rcw2.set_defaults(command="remove-config-watcher")
+
+    hrc = sub.add_parser("hot-reload-config", help="Hot-reload config")
+    hrc.add_argument("container_id")
+    hrc.add_argument("--config", help='JSON config changes')
+    hrc.set_defaults(command="hot-reload-config")
+
+    grh = sub.add_parser("get-reload-history", help="Get reload history")
+    grh.add_argument("container_id")
+    grh.set_defaults(command="get-reload-history")
+
+    # Event correlation subcommands
+    re2 = sub.add_parser("record-event", help="Record an event")
+    re2.add_argument("container_id")
+    re2.add_argument("event_type")
+    re2.add_argument("--message", default="")
+    re2.add_argument("--severity", default="info", choices=["debug", "info", "warning", "error", "critical"])
+    re2.set_defaults(command="record-event")
+
+    ce = sub.add_parser("correlate-events", help="Correlate events across containers")
+    ce.add_argument("--time-window", type=float, default=300.0)
+    ce.add_argument("--min-containers", type=int, default=2)
+    ce.set_defaults(command="correlate-events")
+
+    aep = sub.add_parser("analyze-event-patterns", help="Analyze event patterns")
+    aep.add_argument("--time-window", type=float, default=3600.0)
+    aep.set_defaults(command="analyze-event-patterns")
+
+    src = sub.add_parser("suggest-root-cause", help="Suggest root causes")
+    src.add_argument("--time-window", type=float, default=300.0)
+    src.set_defaults(command="suggest-root-cause")
+
+    get = sub.add_parser("get-event-timeline", help="Get event timeline")
+    get.add_argument("--container-ids", nargs="+", default=None)
+    get.add_argument("--time-window", type=float, default=3600.0)
+    get.set_defaults(command="get-event-timeline")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

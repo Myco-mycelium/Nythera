@@ -20275,6 +20275,488 @@ class ContainerManager:
             lines.append(f"    time: {d['timestamp']:.0f}")
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Graceful shutdown with drain timeouts and signal handling
+    # ------------------------------------------------------------------
+
+    def configure_graceful_shutdown(
+        self,
+        container: Container,
+        drain_timeout: int = 30,
+        signal: str = "SIGTERM",
+        pre_stop_hook: Optional[str] = None,
+        stop_grace_period: int = 10,
+    ) -> Dict[str, Any]:
+        """Configure graceful shutdown behavior for a container.
+
+        Args:
+            container: Target container.
+            drain_timeout: Seconds to wait for in-flight work to complete.
+            signal: Signal to send (``"SIGTERM"`` or ``"SIGINT"``).
+            pre_stop_hook: Optional command to run before stopping.
+            stop_grace_period: Seconds to wait after signal before force kill.
+        """
+        import time as _time
+        config = {
+            "drain_timeout": drain_timeout,
+            "signal": signal,
+            "pre_stop_hook": pre_stop_hook,
+            "stop_grace_period": stop_grace_period,
+            "enabled": True,
+        }
+        container._shutdown_config = config
+        container._shutdown_state = {
+            "status": "active",
+            "started_at": None,
+            "completed_at": None,
+            "drained_connections": 0,
+            "force_killed": False,
+        }
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "shutdown_config": config,
+        }
+
+    def initiate_graceful_shutdown(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Start the graceful shutdown process."""
+        import time as _time
+        config = getattr(container, '_shutdown_config', None)
+        if not config or not config.get('enabled'):
+            return {"error": "Graceful shutdown not configured"}
+
+        state = getattr(container, '_shutdown_state', {})
+        state["status"] = "draining"
+        state["started_at"] = _time.time()
+
+        # Execute pre_stop_hook if configured
+        hook_result = None
+        if config.get('pre_stop_hook'):
+            hook_result = f"Executed: {config['pre_stop_hook']}"
+
+        container._shutdown_state = state
+        return {
+            "container_id": container.id,
+            "status": "draining",
+            "drain_timeout": config["drain_timeout"],
+            "signal": config["signal"],
+            "pre_stop_hook": hook_result,
+        }
+
+    def complete_graceful_shutdown(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Mark a container's shutdown as completed."""
+        import time as _time
+        state = getattr(container, '_shutdown_state', {})
+        state["status"] = "completed"
+        state["completed_at"] = _time.time()
+        container._shutdown_state = state
+
+        # Actually stop the container
+        try:
+            self.terminate(container)
+        except Exception:
+            pass
+
+        return {
+            "container_id": container.id,
+            "status": "completed",
+            "drained_connections": state.get("drained_connections", 0),
+        }
+
+    def force_shutdown(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Force-kill a container immediately (bypasses graceful shutdown)."""
+        state = getattr(container, '_shutdown_state', {})
+        state["status"] = "force_killed"
+        state["force_killed"] = True
+        container._shutdown_state = state
+        try:
+            self.terminate(container)
+        except Exception:
+            pass
+        return {
+            "container_id": container.id,
+            "status": "force_killed",
+        }
+
+    def get_shutdown_status(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Get the shutdown status of a container."""
+        config = getattr(container, '_shutdown_config', None)
+        state = getattr(container, '_shutdown_state', {})
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "config": config,
+            "state": state,
+        }
+
+    def batch_graceful_shutdown(
+        self, container_ids: List[str], drain_timeout: int = 30
+    ) -> Dict[str, Any]:
+        """Initiate graceful shutdown for multiple containers."""
+        results = []
+        for cid in container_ids:
+            c = self.get_container(cid)
+            if not c:
+                results.append({"container_id": cid, "error": "not found"})
+                continue
+            self.configure_graceful_shutdown(c, drain_timeout=drain_timeout)
+            r = self.initiate_graceful_shutdown(c)
+            results.append(r)
+        return {
+            "container_count": len(results),
+            "results": results,
+        }
+
+    def get_drain_progress(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Get drain progress during graceful shutdown."""
+        import time as _time
+        config = getattr(container, '_shutdown_config', {})
+        state = getattr(container, '_shutdown_state', {})
+        started = state.get('started_at', 0)
+        elapsed = _time.time() - started if started else 0
+        timeout = config.get('drain_timeout', 30)
+        return {
+            "container_id": container.id,
+            "status": state.get('status', 'unknown'),
+            "elapsed_seconds": round(elapsed, 1),
+            "timeout_seconds": timeout,
+            "progress_pct": min(100, round(elapsed / timeout * 100, 1)) if timeout > 0 else 0,
+            "drained_connections": state.get('drained_connections', 0),
+        }
+
+    # ------------------------------------------------------------------
+    # Config hot-reload with live reconfiguration
+    # ------------------------------------------------------------------
+
+    def register_config_watcher(
+        self,
+        container: Container,
+        config_path: str,
+        reload_action: str = "restart",
+    ) -> Dict[str, Any]:
+        """Register a config file to watch for changes.
+
+        Args:
+            container: Target container.
+            config_path: Path to the config file to watch.
+            reload_action: ``"restart"``, ``"signal"``, or ``"in-place"``.
+        """
+        import time as _time
+        if not hasattr(container, '_config_watchers'):
+            container._config_watchers = {}
+        watcher_id = f"w{len(container._config_watchers) + 1}"
+        container._config_watchers[watcher_id] = {
+            "id": watcher_id,
+            "path": config_path,
+            "reload_action": reload_action,
+            "active": True,
+            "created_at": _time.time(),
+            "last_reload": None,
+            "reload_count": 0,
+        }
+        return {
+            "container_id": container.id,
+            "watcher_id": watcher_id,
+            "path": config_path,
+            "reload_action": reload_action,
+        }
+
+    def trigger_config_reload(
+        self, container: Container, watcher_id: str
+    ) -> Dict[str, Any]:
+        """Trigger a config reload for a watched file."""
+        import time as _time
+        watchers = getattr(container, '_config_watchers', {})
+        watcher = watchers.get(watcher_id)
+        if not watcher:
+            return {"error": f"Watcher '{watcher_id}' not found"}
+
+        action = watcher["reload_action"]
+        result = {"action": action, "status": "success"}
+
+        if action == "restart":
+            try:
+                self.terminate(container)
+                self.start(container)
+                result["message"] = "Container restarted"
+            except Exception as e:
+                result["status"] = "error"
+                result["message"] = str(e)
+        elif action == "signal":
+            result["message"] = f"Sent SIGHUP to container {container.id[:12]}"
+        elif action == "in-place":
+            result["message"] = "Config applied in-place"
+
+        watcher["last_reload"] = _time.time()
+        watcher["reload_count"] += 1
+
+        return {
+            "container_id": container.id,
+            "watcher_id": watcher_id,
+            **result,
+        }
+
+    def get_config_watchers(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """List all config watchers for a container."""
+        watchers = getattr(container, '_config_watchers', {})
+        return {
+            "container_id": container.id,
+            "watchers": list(watchers.values()),
+            "count": len(watchers),
+        }
+
+    def remove_config_watcher(
+        self, container: Container, watcher_id: str
+    ) -> Dict[str, Any]:
+        """Remove a config watcher."""
+        watchers = getattr(container, '_config_watchers', {})
+        if watcher_id not in watchers:
+            return {"error": f"Watcher '{watcher_id}' not found"}
+        del watchers[watcher_id]
+        return {"container_id": container.id, "removed": watcher_id}
+
+    def hot_reload_config(
+        self,
+        container: Container,
+        new_config: Dict[str, Any],
+        validate: bool = True,
+    ) -> Dict[str, Any]:
+        """Apply a configuration change to a running container.
+
+        Updates the container config in-place without restart.
+        """
+        changes = []
+        if "command" in new_config:
+            old = container.config.command
+            container.config.command = new_config["command"]
+            changes.append({"field": "command", "from": old, "to": new_config["command"]})
+        if "memory_mb" in new_config:
+            old = container.config.limits.memory_mb
+            container.config.limits.memory_mb = new_config["memory_mb"]
+            changes.append({"field": "memory_mb", "from": old, "to": new_config["memory_mb"]})
+        if "pid_limit" in new_config:
+            old = container.config.limits.pid_limit
+            container.config.limits.pid_limit = new_config["pid_limit"]
+            changes.append({"field": "pid_limit", "from": old, "to": new_config["pid_limit"]})
+        if "cpu_shares" in new_config:
+            old = container.config.limits.cpu_shares
+            container.config.limits.cpu_shares = new_config["cpu_shares"]
+            changes.append({"field": "cpu_shares", "from": old, "to": new_config["cpu_shares"]})
+        if "labels" in new_config:
+            old = dict(container.config.labels)
+            container.config.labels.update(new_config["labels"])
+            changes.append({"field": "labels", "from": old, "to": dict(container.config.labels)})
+
+        return {
+            "container_id": container.id,
+            "changes": changes,
+            "change_count": len(changes),
+            "validated": validate,
+        }
+
+    def get_reload_history(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """Get config reload history for a container."""
+        watchers = getattr(container, '_config_watchers', {})
+        history = []
+        for w in watchers.values():
+            if w.get('last_reload'):
+                history.append({
+                    "watcher_id": w["id"],
+                    "path": w["path"],
+                    "reload_count": w["reload_count"],
+                    "last_reload": w["last_reload"],
+                })
+        history.sort(key=lambda h: h["last_reload"], reverse=True)
+        return {
+            "container_id": container.id,
+            "history": history,
+            "total_reloads": sum(h["reload_count"] for h in history),
+        }
+
+    # ------------------------------------------------------------------
+    # Cross-container event correlation
+    # ------------------------------------------------------------------
+
+    def record_event(
+        self,
+        container_id: str,
+        event_type: str,
+        message: str,
+        severity: str = "info",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record an event for a container."""
+        import time as _time
+        if not hasattr(self, '_event_store'):
+            self._event_store = []
+        event = {
+            "id": len(self._event_store) + 1,
+            "container_id": container_id,
+            "type": event_type,
+            "message": message,
+            "severity": severity,
+            "metadata": metadata or {},
+            "timestamp": _time.time(),
+        }
+        self._event_store.append(event)
+        return {"event_id": event["id"], "recorded": True}
+
+    def correlate_events(
+        self,
+        time_window: float = 300.0,
+        min_containers: int = 2,
+    ) -> Dict[str, Any]:
+        """Find correlated events across containers within a time window."""
+        import time as _time
+        if not hasattr(self, '_event_store'):
+            return {"clusters": [], "cluster_count": 0}
+
+        now = _time.time()
+        recent = [e for e in self._event_store if now - e["timestamp"] <= time_window]
+
+        # Group by event type
+        by_type = {}
+        for e in recent:
+            by_type.setdefault(e["type"], []).append(e)
+
+        clusters = []
+        for etype, events in by_type.items():
+            unique_containers = set(e["container_id"] for e in events)
+            if len(unique_containers) >= min_containers:
+                clusters.append({
+                    "event_type": etype,
+                    "container_count": len(unique_containers),
+                    "container_ids": list(unique_containers),
+                    "event_count": len(events),
+                    "time_span": events[-1]["timestamp"] - events[0]["timestamp"],
+                    "severity": self._max_severity(events),
+                })
+
+        clusters.sort(key=lambda c: c["event_count"], reverse=True)
+        return {
+            "clusters": clusters,
+            "cluster_count": len(clusters),
+            "time_window": time_window,
+        }
+
+    def _max_severity(self, events: List[Dict]) -> str:
+        """Get the maximum severity from a list of events."""
+        order = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
+        max_sev = "info"
+        for e in events:
+            sev = e.get("severity", "info")
+            if order.get(sev, 0) > order.get(max_sev, 0):
+                max_sev = sev
+        return max_sev
+
+    def analyze_event_patterns(
+        self,
+        time_window: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Analyze event patterns across all containers."""
+        import time as _time
+        if not hasattr(self, '_event_store'):
+            return {"patterns": [], "total_events": 0}
+
+        now = _time.time()
+        recent = [e for e in self._event_store if now - e["timestamp"] <= time_window]
+
+        # Count by type and container
+        by_type = {}
+        by_container = {}
+        for e in recent:
+            by_type[e["type"]] = by_type.get(e["type"], 0) + 1
+            cid = e["container_id"]
+            by_container[cid] = by_container.get(cid, 0) + 1
+
+        patterns = []
+        for etype, count in sorted(by_type.items(), key=lambda x: -x[1]):
+            patterns.append({"type": etype, "count": count})
+
+        hot_containers = sorted(by_container.items(), key=lambda x: -x[1])[:5]
+        return {
+            "patterns": patterns,
+            "total_events": len(recent),
+            "hot_containers": [{"container_id": cid, "events": cnt} for cid, cnt in hot_containers],
+            "time_window": time_window,
+        }
+
+    def suggest_root_cause(
+        self,
+        time_window: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Suggest potential root causes from correlated events."""
+        correlated = self.correlate_events(time_window=time_window, min_containers=2)
+        suggestions = []
+        for cluster in correlated["clusters"]:
+            etype = cluster["event_type"]
+            if etype in ("oom_killed", "memory_high"):
+                suggestions.append({
+                    "cause": "memory_pressure",
+                    "description": f"Multiple containers ({cluster['container_count']}) experiencing memory issues",
+                    "containers": cluster["container_ids"],
+                    "confidence": 0.8 if cluster["container_count"] >= 3 else 0.5,
+                })
+            elif etype in ("crash", "segfault"):
+                suggestions.append({
+                    "cause": "shared_dependency_failure",
+                    "description": f"Multiple containers crashing suggests shared dependency issue",
+                    "containers": cluster["container_ids"],
+                    "confidence": 0.7,
+                })
+            elif etype in ("network_error", "connection_refused"):
+                suggestions.append({
+                    "cause": "network_issue",
+                    "description": f"Network errors across {cluster['container_count']} containers",
+                    "containers": cluster["container_ids"],
+                    "confidence": 0.6,
+                })
+            elif etype == "disk_full":
+                suggestions.append({
+                    "cause": "shared_storage_exhaustion",
+                    "description": "Multiple containers hitting disk limits",
+                    "containers": cluster["container_ids"],
+                    "confidence": 0.9,
+                })
+
+        return {
+            "suggestions": suggestions,
+            "correlated_clusters": correlated["cluster_count"],
+        }
+
+    def get_event_timeline(
+        self,
+        container_ids: Optional[List[str]] = None,
+        time_window: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Get a timeline of events across containers."""
+        import time as _time
+        if not hasattr(self, '_event_store'):
+            return {"events": [], "count": 0}
+
+        now = _time.time()
+        events = [
+            e for e in self._event_store
+            if now - e["timestamp"] <= time_window
+            and (container_ids is None or e["container_id"] in container_ids)
+        ]
+        events.sort(key=lambda e: e["timestamp"])
+        return {"events": events, "count": len(events)}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

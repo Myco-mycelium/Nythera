@@ -1236,6 +1236,57 @@ class ControlService:
             elif op == "get_deployment_status":
                 self._get_deployment_status(server, sender_path,
                                        msg.message_id, request)
+            elif op == "configure_graceful_shutdown":
+                self._configure_graceful_shutdown(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "initiate_graceful_shutdown":
+                self._initiate_graceful_shutdown(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "get_shutdown_status":
+                self._get_shutdown_status(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "force_shutdown":
+                self._force_shutdown(server, sender_path,
+                               msg.message_id, request)
+            elif op == "batch_graceful_shutdown":
+                self._batch_graceful_shutdown(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "get_drain_progress":
+                self._get_drain_progress(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "register_config_watcher":
+                self._register_config_watcher(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "trigger_config_reload":
+                self._trigger_config_reload(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_config_watchers":
+                self._get_config_watchers(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "remove_config_watcher":
+                self._remove_config_watcher(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "hot_reload_config":
+                self._hot_reload_config(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_reload_history":
+                self._get_reload_history(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "record_event":
+                self._record_event(server, sender_path,
+                              msg.message_id, request)
+            elif op == "correlate_events":
+                self._correlate_events(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "analyze_event_patterns":
+                self._analyze_event_patterns(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "suggest_root_cause":
+                self._suggest_root_cause(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_event_timeline":
+                self._get_event_timeline(server, sender_path,
+                                    msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -7218,6 +7269,159 @@ class ControlService:
 
     def _get_deployment_status(self, server, sender_path, call_id, request):
         result = self.container_manager.get_deployment_status(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Graceful shutdown handlers
+    # ------------------------------------------------------------------
+
+    def _configure_graceful_shutdown(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_graceful_shutdown(
+            c, drain_timeout=request.get('drain_timeout', 30),
+            signal=request.get('signal', 'SIGTERM'),
+            pre_stop_hook=request.get('pre_stop_hook'),
+            stop_grace_period=request.get('stop_grace_period', 10),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _initiate_graceful_shutdown(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.initiate_graceful_shutdown(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_shutdown_status(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_shutdown_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _force_shutdown(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.force_shutdown(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _batch_graceful_shutdown(self, server, sender_path, call_id, request):
+        result = self.container_manager.batch_graceful_shutdown(
+            container_ids=request.get('container_ids', []),
+            drain_timeout=request.get('drain_timeout', 30),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_drain_progress(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_drain_progress(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Config hot-reload handlers
+    # ------------------------------------------------------------------
+
+    def _register_config_watcher(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.register_config_watcher(
+            c, config_path=request['config_path'],
+            reload_action=request.get('reload_action', 'restart'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _trigger_config_reload(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.trigger_config_reload(c, request['watcher_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_config_watchers(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_config_watchers(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_config_watcher(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.remove_config_watcher(c, request['watcher_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _hot_reload_config(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.hot_reload_config(
+            c, new_config=request.get('config', {}),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_reload_history(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_reload_history(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Event correlation handlers
+    # ------------------------------------------------------------------
+
+    def _record_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_event(
+            container_id=request['container_id'],
+            event_type=request['event_type'],
+            message=request.get('message', ''),
+            severity=request.get('severity', 'info'),
+            metadata=request.get('metadata'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _correlate_events(self, server, sender_path, call_id, request):
+        result = self.container_manager.correlate_events(
+            time_window=request.get('time_window', 300.0),
+            min_containers=request.get('min_containers', 2),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _analyze_event_patterns(self, server, sender_path, call_id, request):
+        result = self.container_manager.analyze_event_patterns(
+            time_window=request.get('time_window', 3600.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _suggest_root_cause(self, server, sender_path, call_id, request):
+        result = self.container_manager.suggest_root_cause(
+            time_window=request.get('time_window', 300.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_event_timeline(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_event_timeline(
+            container_ids=request.get('container_ids'),
+            time_window=request.get('time_window', 3600.0),
+        )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

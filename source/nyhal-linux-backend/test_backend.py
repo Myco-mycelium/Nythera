@@ -4253,6 +4253,215 @@ class TestDeploymentRollback(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestGracefulShutdown(unittest.TestCase):
+    """Tests for graceful shutdown with drain timeouts."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.transition_to(ContainerState.RUNNING)
+        return c
+
+    def test_configure_shutdown(self):
+        """configure_graceful_shutdown stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs1")
+        r = mgr.configure_graceful_shutdown(c, drain_timeout=60)
+        self.assertEqual(r["shutdown_config"]["drain_timeout"], 60)
+
+    def test_initiate_shutdown(self):
+        """initiate_graceful_shutdown starts draining."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs2")
+        mgr.configure_graceful_shutdown(c)
+        r = mgr.initiate_graceful_shutdown(c)
+        self.assertEqual(r["status"], "draining")
+
+    def test_complete_shutdown(self):
+        """complete_graceful_shutdown finishes."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs3")
+        mgr.configure_graceful_shutdown(c)
+        mgr.initiate_graceful_shutdown(c)
+        r = mgr.complete_graceful_shutdown(c)
+        self.assertEqual(r["status"], "completed")
+
+    def test_force_shutdown(self):
+        """force_shutdown bypasses graceful."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs4")
+        mgr.configure_graceful_shutdown(c)
+        r = mgr.force_shutdown(c)
+        self.assertEqual(r["status"], "force_killed")
+
+    def test_shutdown_status(self):
+        """get_shutdown_status returns state."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs5")
+        mgr.configure_graceful_shutdown(c)
+        r = mgr.get_shutdown_status(c)
+        self.assertEqual(r["state"]["status"], "active")
+
+    def test_batch_shutdown(self):
+        """batch_graceful_shutdown handles multiple."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "gs6")
+        c2 = self._make(mgr, "gs7")
+        r = mgr.batch_graceful_shutdown([c1.id, c2.id])
+        self.assertEqual(r["container_count"], 2)
+
+    def test_drain_progress(self):
+        """get_drain_progress shows percentage."""
+        mgr = self._manager()
+        c = self._make(mgr, "gs8")
+        mgr.configure_graceful_shutdown(c)
+        mgr.initiate_graceful_shutdown(c)
+        r = mgr.get_drain_progress(c)
+        self.assertIn("progress_pct", r)
+
+    def test_format_human_configure(self):
+        """format_human handles configure-graceful-shutdown."""
+        from nyrqisctl import format_human
+        text = format_human("configure-graceful-shutdown", {"shutdown_config": {"drain_timeout": 60, "signal": "SIGTERM"}})
+        self.assertIn("60", text)
+
+
+class TestConfigHotReload(unittest.TestCase):
+    """Tests for config hot-reload with live reconfiguration."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo", "test"]))
+
+    def test_register_watcher(self):
+        """register_config_watcher stores watcher."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr1")
+        r = mgr.register_config_watcher(c, "/etc/app.conf")
+        self.assertIn("watcher_id", r)
+        self.assertEqual(r["path"], "/etc/app.conf")
+
+    def test_trigger_reload(self):
+        """trigger_config_reload executes."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr2")
+        r = mgr.register_config_watcher(c, "/etc/app.conf", reload_action="signal")
+        result = mgr.trigger_config_reload(c, r["watcher_id"])
+        self.assertEqual(result["status"], "success")
+
+    def test_list_watchers(self):
+        """get_config_watchers returns all."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr3")
+        mgr.register_config_watcher(c, "/a.conf")
+        mgr.register_config_watcher(c, "/b.conf")
+        r = mgr.get_config_watchers(c)
+        self.assertEqual(r["count"], 2)
+
+    def test_remove_watcher(self):
+        """remove_config_watcher deletes."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr4")
+        r = mgr.register_config_watcher(c, "/c.conf")
+        d = mgr.remove_config_watcher(c, r["watcher_id"])
+        self.assertIn("removed", d)
+
+    def test_hot_reload(self):
+        """hot_reload_config applies changes."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr5")
+        r = mgr.hot_reload_config(c, {"memory_mb": 512})
+        self.assertEqual(r["change_count"], 1)
+        self.assertEqual(c.config.limits.memory_mb, 512)
+
+    def test_reload_history(self):
+        """get_reload_history tracks reloads."""
+        mgr = self._manager()
+        c = self._make(mgr, "hr6")
+        r = mgr.register_config_watcher(c, "/d.conf")
+        mgr.trigger_config_reload(c, r["watcher_id"])
+        mgr.trigger_config_reload(c, r["watcher_id"])
+        h = mgr.get_reload_history(c)
+        self.assertEqual(h["total_reloads"], 2)
+
+    def test_format_human_reload(self):
+        """format_human handles hot-reload-config."""
+        from nyrqisctl import format_human
+        text = format_human("hot-reload-config", {"change_count": 3})
+        self.assertIn("3", text)
+
+
+class TestEventCorrelationAnalysis(unittest.TestCase):
+    """Tests for cross-container event correlation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_record_event(self):
+        """record_event stores events."""
+        mgr = self._manager()
+        r = mgr.record_event("c1", "crash", "Segfault")
+        self.assertTrue(r["recorded"])
+
+    def test_correlate_events(self):
+        """correlate_events finds cross-container patterns."""
+        mgr = self._manager()
+        mgr.record_event("c1", "oom_killed", "Out of memory")
+        mgr.record_event("c2", "oom_killed", "Out of memory")
+        mgr.record_event("c3", "oom_killed", "Out of memory")
+        r = mgr.correlate_events(min_containers=2)
+        self.assertGreaterEqual(r["cluster_count"], 1)
+
+    def test_analyze_patterns(self):
+        """analyze_event_patterns returns statistics."""
+        mgr = self._manager()
+        mgr.record_event("c1", "crash", "error")
+        mgr.record_event("c1", "crash", "error")
+        mgr.record_event("c2", "restart", "ok")
+        r = mgr.analyze_event_patterns()
+        self.assertEqual(r["total_events"], 3)
+
+    def test_suggest_root_cause(self):
+        """suggest_root_cause returns suggestions."""
+        mgr = self._manager()
+        mgr.record_event("c1", "oom_killed", "mem")
+        mgr.record_event("c2", "oom_killed", "mem")
+        r = mgr.suggest_root_cause()
+        self.assertTrue(len(r["suggestions"]) > 0)
+        self.assertEqual(r["suggestions"][0]["cause"], "memory_pressure")
+
+    def test_event_timeline(self):
+        """get_event_timeline returns sorted events."""
+        mgr = self._manager()
+        mgr.record_event("c1", "a", "msg1")
+        mgr.record_event("c2", "b", "msg2")
+        r = mgr.get_event_timeline()
+        self.assertEqual(r["count"], 2)
+
+    def test_format_human_correlate(self):
+        """format_human handles correlate-events."""
+        from nyrqisctl import format_human
+        resp = {"clusters": [{"event_type": "crash", "container_count": 3, "event_count": 5}]}
+        text = format_human("correlate-events", resp)
+        self.assertIn("crash", text)
+
+    def test_format_human_root_cause(self):
+        """format_human handles suggest-root-cause."""
+        from nyrqisctl import format_human
+        resp = {"suggestions": [{"cause": "net", "confidence": 0.8, "description": "network"}]}
+        text = format_human("suggest-root-cause", resp)
+        self.assertIn("80%", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -29332,6 +29541,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSecretManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestNamespaceQuotas))
     suite.addTests(loader.loadTestsFromTestCase(TestDeploymentRollback))
+    suite.addTests(loader.loadTestsFromTestCase(TestGracefulShutdown))
+    suite.addTests(loader.loadTestsFromTestCase(TestConfigHotReload))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventCorrelationAnalysis))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
