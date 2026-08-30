@@ -2885,6 +2885,267 @@ class TestFederation(unittest.TestCase):
         self.assertIn("remote", text)
 
 
+class TestEventDrivenScaling(unittest.TestCase):
+    """Tests for event-driven resource scaling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_configure_and_list_triggers(self):
+        """Configure and list event triggers."""
+        mgr = self._manager()
+        r = mgr.configure_event_trigger("t1", "cpu_spike", "scale_up")
+        self.assertTrue(r["ok"])
+        triggers = mgr.list_event_triggers()
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0]["event_type"], "cpu_spike")
+        mgr.remove_event_trigger("t1")
+
+    def test_enable_disable_trigger(self):
+        """Enable and disable triggers."""
+        mgr = self._manager()
+        mgr.configure_event_trigger("t2", "memory_high", "alert")
+        r = mgr.disable_event_trigger("t2")
+        self.assertFalse(r["enabled"])
+        r = mgr.enable_event_trigger("t2")
+        self.assertTrue(r["enabled"])
+        mgr.remove_event_trigger("t2")
+
+    def test_fire_event(self):
+        """Firing an event triggers matching rules."""
+        mgr = self._manager()
+        c = self._make(mgr, "ev1")
+        mgr.configure_event_trigger("t3", "container_start", "alert")
+        r = mgr.fire_event("container_start", container_id=c.id)
+        self.assertEqual(r["triggers_fired"], 1)
+        self.assertEqual(r["fired"][0]["action"], "alert")
+        mgr.remove_event_trigger("t3")
+
+    def test_fire_event_no_match(self):
+        """Non-matching events don't fire triggers."""
+        mgr = self._manager()
+        mgr.configure_event_trigger("t4", "cpu_spike", "alert")
+        r = mgr.fire_event("memory_high")
+        self.assertEqual(r["triggers_fired"], 0)
+        mgr.remove_event_trigger("t4")
+
+    def test_event_log(self):
+        """Event log records fired events."""
+        mgr = self._manager()
+        mgr.fire_event("test_event")
+        log = mgr.get_event_log()
+        self.assertGreater(log["count"], 0)
+        self.assertEqual(log["events"][0]["type"], "test_event")
+
+    def test_trigger_stats(self):
+        """Trigger stats aggregate correctly."""
+        mgr = self._manager()
+        mgr.configure_event_trigger("t5", "cpu_spike", "alert")
+        mgr.configure_event_trigger("t6", "memory_high", "scale_down")
+        stats = mgr.get_trigger_stats()
+        self.assertEqual(stats["total_triggers"], 2)
+        self.assertEqual(stats["enabled_triggers"], 2)
+        mgr.remove_event_trigger("t5")
+        mgr.remove_event_trigger("t6")
+
+    def test_invalid_event_type(self):
+        """Invalid event type returns error."""
+        mgr = self._manager()
+        r = mgr.configure_event_trigger("bad", "invalid_event", "alert")
+        self.assertIn("error", r)
+
+    def test_format_human_list_triggers(self):
+        """format_human handles list-event-triggers."""
+        from nyrqisctl import format_human
+        resp = {"triggers": [{"id": "t1", "event_type": "cpu_spike",
+                              "action": "alert", "enabled": True,
+                              "fired_count": 5}]}
+        text = format_human("list-event-triggers", resp)
+        self.assertIn("cpu_spike", text)
+        self.assertIn("5", text)
+
+    def test_format_human_event_log(self):
+        """format_human handles get-event-log."""
+        from nyrqisctl import format_human
+        resp = {"events": [{"type": "test", "container_id": "abc123"}], "count": 1}
+        text = format_human("get-event-log", resp)
+        self.assertIn("test", text)
+
+
+class TestClusterDashboard(unittest.TestCase):
+    """Tests for cluster health dashboard."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=256)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_dashboard_generation(self):
+        """Dashboard generates with all required fields."""
+        mgr = self._manager()
+        c = self._make(mgr, "dash1")
+        r = mgr.generate_cluster_dashboard()
+        self.assertIn("status", r)
+        self.assertIn("containers", r)
+        self.assertIn("resources", r)
+        self.assertIn("health", r)
+        self.assertIn("cluster", r)
+        self.assertEqual(r["containers"]["running"], 1)
+
+    def test_dashboard_empty_cluster(self):
+        """Dashboard works with no containers."""
+        mgr = self._manager()
+        r = mgr.generate_cluster_dashboard()
+        self.assertEqual(r["containers"]["total"], 0)
+        self.assertEqual(r["status"], "healthy")
+
+    def test_dashboard_summary(self):
+        """Dashboard summary is human-readable."""
+        mgr = self._manager()
+        self._make(mgr, "dash2")
+        text = mgr.generate_dashboard_summary()
+        self.assertIn("Container", text)
+        self.assertIn("Memory", text)
+
+    def test_format_human_dashboard(self):
+        """format_human handles generate-cluster-dashboard."""
+        from nyrqisctl import format_human
+        resp = {"status": "healthy", "containers": {"running": 3, "total": 5},
+                "resources": {"total_memory_mb": 1024, "used_memory_mb": 512, "memory_utilization_pct": 50.0},
+                "health": {"average_score": 85, "unhealthy_containers": 0},
+                "alerts": {"recent_count": 0},
+                "triggers": {"total_triggers": 2, "enabled_triggers": 2, "total_fired": 10},
+                "cluster": {"nodes": 2, "networks": 1, "federation_peers": 0},
+                "anomalies": {"detected": 0}}
+        text = format_human("generate-cluster-dashboard", resp)
+        self.assertIn("HEALTHY", text)
+        self.assertIn("3", text)
+
+
+class TestNetworkPolicyAdvanced(unittest.TestCase):
+    """Tests for advanced network policy management."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_configure_and_list_rules(self):
+        """Configure and list network rules."""
+        mgr = self._manager()
+        r = mgr.configure_network_rule("r1", "ingress", "allow", port=80)
+        self.assertTrue(r["ok"])
+        rules = mgr.list_network_rules()
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["port"], 80)
+        mgr.remove_network_rule("r1")
+
+    def test_enable_disable_rule(self):
+        """Enable and disable network rules."""
+        mgr = self._manager()
+        mgr.configure_network_rule("r2", "egress", "deny")
+        r = mgr.disable_network_rule("r2")
+        self.assertFalse(r["enabled"])
+        r = mgr.enable_network_rule("r2")
+        self.assertTrue(r["enabled"])
+        mgr.remove_network_rule("r2")
+
+    def test_evaluate_access_allow(self):
+        """Evaluate access returns allow when matching rule exists."""
+        mgr = self._manager()
+        c = self._make(mgr, "net1")
+        mgr.configure_network_rule("r3", "ingress", "allow", port=443,
+                                   container_filter=c.id)
+        r = mgr.evaluate_network_access(c.id, "ingress", port=443)
+        self.assertTrue(r["allowed"])
+        self.assertEqual(r["action"], "allow")
+        mgr.remove_network_rule("r3")
+
+    def test_evaluate_access_deny(self):
+        """Evaluate access returns deny when matching deny rule exists."""
+        mgr = self._manager()
+        c = self._make(mgr, "net2")
+        mgr.configure_network_rule("r4", "egress", "deny", port=25,
+                                   container_filter="all")
+        r = mgr.evaluate_network_access(c.id, "egress", port=25)
+        self.assertFalse(r["allowed"])
+        self.assertEqual(r["action"], "deny")
+        mgr.remove_network_rule("r4")
+
+    def test_evaluate_no_rules_default_allow(self):
+        """No rules means default allow."""
+        mgr = self._manager()
+        r = mgr.evaluate_network_access("any", "ingress", port=80)
+        self.assertTrue(r["allowed"])
+        self.assertIn("default allow", r["reason"])
+
+    def test_rule_stats(self):
+        """Rule stats aggregate correctly."""
+        mgr = self._manager()
+        mgr.configure_network_rule("r5", "ingress", "allow")
+        mgr.configure_network_rule("r6", "egress", "deny")
+        stats = mgr.get_network_rule_stats()
+        self.assertEqual(stats["total_rules"], 2)
+        self.assertEqual(stats["ingress_rules"], 1)
+        self.assertEqual(stats["egress_rules"], 1)
+        mgr.remove_network_rule("r5")
+        mgr.remove_network_rule("r6")
+
+    def test_priority_ordering(self):
+        """Lower priority rule wins."""
+        mgr = self._manager()
+        c = self._make(mgr, "net3")
+        mgr.configure_network_rule("high", "ingress", "deny", priority=10,
+                                   container_filter=c.id)
+        mgr.configure_network_rule("low", "ingress", "allow", priority=100,
+                                   container_filter=c.id)
+        r = mgr.evaluate_network_access(c.id, "ingress")
+        self.assertFalse(r["allowed"])
+        self.assertEqual(r["rule_id"], "high")
+        mgr.remove_network_rule("high")
+        mgr.remove_network_rule("low")
+
+    def test_format_human_list_rules(self):
+        """format_human handles list-network-rules."""
+        from nyrqisctl import format_human
+        resp = {"rules": [{"id": "r1", "direction": "ingress", "action": "allow",
+                            "protocol": "tcp", "port": 80, "enabled": True,
+                            "hit_count": 42}]}
+        text = format_human("list-network-rules", resp)
+        self.assertIn("ingress", text)
+        self.assertIn("42", text)
+
+    def test_format_human_evaluate(self):
+        """format_human handles evaluate-network-access."""
+        from nyrqisctl import format_human
+        resp = {"allowed": True, "action": "allow", "reason": "matched rule r1", "rule_id": "r1"}
+        text = format_human("evaluate-network-access", resp)
+        self.assertIn("ALLOWED", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -27824,6 +28085,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestDynamicResourceLimits))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyGraph))
     suite.addTests(loader.loadTestsFromTestCase(TestFederation))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventDrivenScaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestClusterDashboard))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicyAdvanced))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

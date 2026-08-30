@@ -990,6 +990,54 @@ class ControlService:
             elif op == "plan_cross_cluster_migration":
                 self._plan_cross_cluster_migration(server, sender_path,
                                                  msg.message_id, request)
+            elif op == "configure_event_trigger":
+                self._configure_event_trigger(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "remove_event_trigger":
+                self._remove_event_trigger(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "list_event_triggers":
+                self._list_event_triggers(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "enable_event_trigger":
+                self._enable_event_trigger(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "disable_event_trigger":
+                self._disable_event_trigger(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "fire_event":
+                self._fire_event(server, sender_path,
+                               msg.message_id, request)
+            elif op == "get_event_log":
+                self._get_event_log(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_trigger_stats":
+                self._get_trigger_stats(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "generate_cluster_dashboard":
+                self._generate_cluster_dashboard(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "configure_network_rule":
+                self._configure_network_rule(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "remove_network_rule":
+                self._remove_network_rule(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_network_rules":
+                self._list_network_rules(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "enable_network_rule":
+                self._enable_network_rule(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "disable_network_rule":
+                self._disable_network_rule(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "evaluate_network_access":
+                self._evaluate_network_access(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_network_rule_stats":
+                self._get_network_rule_stats(server, sender_path,
+                                          msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6350,6 +6398,105 @@ class ControlService:
             c, request['target_peer_id'],
             strategy=request.get('strategy', 'snapshot'),
         )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- event-driven scaling handlers --
+
+    def _configure_event_trigger(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_event_trigger(
+            request['trigger_id'], request['event_type'], request['action'],
+            conditions=request.get('conditions'),
+            enabled=request.get('enabled', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_event_trigger(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_event_trigger(request['trigger_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_event_triggers(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_event_triggers()
+        self._reply(server, sender_path, call_id, {"ok": True, "triggers": result})
+
+    def _enable_event_trigger(self, server, sender_path, call_id, request):
+        result = self.container_manager.enable_event_trigger(request['trigger_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_event_trigger(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_event_trigger(request['trigger_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fire_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.fire_event(
+            request['event_type'],
+            container_id=request.get('container_id'),
+            data=request.get('data'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_event_log(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_event_log(
+            event_type=request.get('event_type'),
+            container_id=request.get('container_id'),
+            tail=request.get('tail', 50),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_trigger_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_trigger_stats()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- cluster dashboard handler --
+
+    def _generate_cluster_dashboard(self, server, sender_path, call_id, request):
+        result = self.container_manager.generate_cluster_dashboard()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- network rule handlers --
+
+    def _configure_network_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_network_rule(
+            request['rule_id'], request['direction'], request['action'],
+            protocol=request.get('protocol', 'tcp'),
+            port=request.get('port'),
+            source=request.get('source'),
+            destination=request.get('destination'),
+            container_filter=request.get('container_filter'),
+            priority=request.get('priority', 100),
+            enabled=request.get('enabled', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_network_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_network_rule(request['rule_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_network_rules(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_network_rules(
+            direction=request.get('direction'),
+            container_id=request.get('container_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, "rules": result})
+
+    def _enable_network_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.enable_network_rule(request['rule_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_network_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_network_rule(request['rule_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_network_access(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_network_access(
+            request['container_id'], request['direction'],
+            protocol=request.get('protocol', 'tcp'),
+            port=request.get('port'),
+            remote_ip=request.get('remote_ip'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_network_rule_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_network_rule_stats()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

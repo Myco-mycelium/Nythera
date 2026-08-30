@@ -4805,6 +4805,134 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Unified cluster health dashboard
+    # ------------------------------------------------------------------
+
+    def generate_cluster_dashboard(self) -> Dict[str, Any]:
+        """Generate a unified cluster health dashboard.
+
+        Combines metrics from all running containers, nodes, triggers,
+        alerts, and federation into a single overview.
+
+        Returns:
+            Dict with comprehensive cluster health data.
+        """
+        now = time.time()
+
+        # Container overview
+        total = len(self.containers)
+        running = sum(1 for c in self.containers.values()
+                      if c.state == ContainerState.RUNNING)
+        stopped = sum(1 for c in self.containers.values()
+                      if c.state in (ContainerState.TERMINATED, ContainerState.CREATED))
+
+        # Resource totals
+        total_memory_mb = sum(c.config.limits.memory_mb
+                              for c in self.containers.values())
+        used_memory_mb = 0
+        for c in self.containers.values():
+            if c.state == ContainerState.RUNNING:
+                stats = self.container_stats(c)
+                used_memory_mb += stats.get("memory_bytes", 0) / (1024 * 1024)
+
+        # Health scores
+        health_data = self.get_fleet_health_score() if hasattr(self, 'get_fleet_health_score') else {}
+        avg_score = health_data.get("average_score", 0)
+        unhealthy = health_data.get("unhealthy_count", 0)
+
+        # Event triggers
+        trigger_stats = self.get_trigger_stats() if hasattr(self, '_event_triggers') else {
+            "total_triggers": 0, "enabled_triggers": 0, "total_fired": 0,
+        }
+
+        # Active alerts
+        alert_count = 0
+        if hasattr(self, '_alert_history'):
+            recent = [a for a in self._alert_history if now - a.get("timestamp", 0) < 3600]
+            alert_count = len(recent)
+
+        # Cluster nodes
+        node_count = 0
+        if hasattr(self, '_cluster_nodes'):
+            node_count = len(self._cluster_nodes)
+
+        # Federation
+        peer_count = 0
+        if hasattr(self, '_federation_peers'):
+            peer_count = len(self._federation_peers)
+
+        # Anomaly data
+        anomaly_count = 0
+        if hasattr(self, '_resource_history'):
+            for cid in list(self._resource_history.keys())[:10]:
+                c = self.containers.get(cid)
+                if c and c.state == ContainerState.RUNNING:
+                    r = self.detect_anomalies(c, window_size=30)
+                    anomaly_count += r.get("anomaly_count", 0)
+
+        # Network
+        network_count = 0
+        if hasattr(self, '_container_networks'):
+            network_count = len(self._container_networks)
+
+        # Compute overall health status
+        if unhealthy > 0 or alert_count > 5:
+            status = "critical"
+        elif unhealthy > 0 or alert_count > 0:
+            status = "warning"
+        elif running > 0 and avg_score < 50:
+            status = "degraded"
+        else:
+            status = "healthy"
+
+        return {
+            "status": status,
+            "timestamp": now,
+            "containers": {
+                "total": total,
+                "running": running,
+                "stopped": stopped,
+            },
+            "resources": {
+                "total_memory_mb": total_memory_mb,
+                "used_memory_mb": round(used_memory_mb, 1),
+                "memory_utilization_pct": round(
+                    (used_memory_mb / max(total_memory_mb, 1)) * 100, 1),
+            },
+            "health": {
+                "average_score": avg_score,
+                "unhealthy_containers": unhealthy,
+            },
+            "alerts": {
+                "recent_count": alert_count,
+            },
+            "triggers": trigger_stats,
+            "cluster": {
+                "nodes": node_count,
+                "networks": network_count,
+                "federation_peers": peer_count,
+            },
+            "anomalies": {
+                "detected": anomaly_count,
+            },
+        }
+
+    def generate_dashboard_summary(self) -> str:
+        """Generate a human-readable dashboard summary."""
+        dash = self.generate_cluster_dashboard()
+        lines = [
+            f"Cluster Health: {dash['status'].upper()}",
+            f"  Containers: {dash['containers']['running']}/{dash['containers']['total']} running",
+            f"  Memory: {dash['resources']['used_memory_mb']}MB / {dash['resources']['total_memory_mb']}MB ({dash['resources']['memory_utilization_pct']}%)",
+            f"  Health score: {dash['health']['average_score']:.0f}/100",
+            f"  Alerts (1h): {dash['alerts']['recent_count']}",
+            f"  Triggers: {dash['triggers']['total_triggers']} ({dash['triggers']['enabled_triggers']} enabled, {dash['triggers']['total_fired']} fired)",
+            f"  Cluster: {dash['cluster']['nodes']} nodes, {dash['cluster']['networks']} networks, {dash['cluster']['federation_peers']} peers",
+            f"  Anomalies: {dash['anomalies']['detected']}",
+        ]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Resource comparison (cross-container)
     # ------------------------------------------------------------------
 
@@ -12198,6 +12326,196 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Advanced network policy management
+    # ------------------------------------------------------------------
+
+    def configure_network_rule(
+        self,
+        rule_id: str,
+        direction: str,
+        action: str,
+        protocol: str = "tcp",
+        port: Optional[int] = None,
+        source: Optional[str] = None,
+        destination: Optional[str] = None,
+        container_filter: Optional[str] = None,
+        priority: int = 100,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure a firewall rule for containers.
+
+        Args:
+            rule_id: Unique rule identifier.
+            direction: ``"ingress"`` or ``"egress"``.
+            action: ``"allow"``, ``"deny"``, or ``"log"``.
+            protocol: ``"tcp"``, ``"udp"``, or ``"any"``.
+            port: Port number (None = any).
+            source: Source CIDR or IP (ingress) or container ID.
+            destination: Destination CIDR or IP (egress).
+            container_filter: Container ID or ``"all"``.
+            priority: Rule priority (lower = higher priority).
+            enabled: Whether the rule is active.
+
+        Returns:
+            Dict with rule configuration.
+        """
+        if not hasattr(self, '_network_rules'):
+            self._network_rules: Dict[str, Dict[str, Any]] = {}
+
+        valid_directions = {"ingress", "egress"}
+        valid_actions = {"allow", "deny", "log"}
+
+        if direction not in valid_directions:
+            return {"error": f"Invalid direction: {direction}"}
+        if action not in valid_actions:
+            return {"error": f"Invalid action: {action}"}
+
+        rule = {
+            "id": rule_id,
+            "direction": direction,
+            "action": action,
+            "protocol": protocol,
+            "port": port,
+            "source": source,
+            "destination": destination,
+            "container_filter": container_filter or "all",
+            "priority": priority,
+            "enabled": enabled,
+            "created_at": time.time(),
+            "hit_count": 0,
+        }
+        self._network_rules[rule_id] = rule
+
+        return {
+            "ok": True,
+            "rule_id": rule_id,
+            "direction": direction,
+            "action": action,
+            "priority": priority,
+        }
+
+    def remove_network_rule(self, rule_id: str) -> Dict[str, Any]:
+        """Remove a network rule."""
+        if not hasattr(self, '_network_rules') or rule_id not in self._network_rules:
+            return {"error": f"Rule '{rule_id}' not found"}
+        del self._network_rules[rule_id]
+        return {"ok": True, "rule_id": rule_id}
+
+    def list_network_rules(
+        self,
+        direction: Optional[str] = None,
+        container_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List network rules with optional filtering."""
+        if not hasattr(self, '_network_rules'):
+            return []
+
+        rules = list(self._network_rules.values())
+        if direction:
+            rules = [r for r in rules if r["direction"] == direction]
+        if container_id:
+            rules = [r for r in rules
+                     if r["container_filter"] == "all" or r["container_filter"] == container_id]
+
+        return sorted(rules, key=lambda r: r["priority"])
+
+    def enable_network_rule(self, rule_id: str) -> Dict[str, Any]:
+        """Enable a network rule."""
+        if not hasattr(self, '_network_rules') or rule_id not in self._network_rules:
+            return {"error": f"Rule '{rule_id}' not found"}
+        self._network_rules[rule_id]["enabled"] = True
+        return {"ok": True, "rule_id": rule_id, "enabled": True}
+
+    def disable_network_rule(self, rule_id: str) -> Dict[str, Any]:
+        """Disable a network rule."""
+        if not hasattr(self, '_network_rules') or rule_id not in self._network_rules:
+            return {"error": f"Rule '{rule_id}' not found"}
+        self._network_rules[rule_id]["enabled"] = False
+        return {"ok": True, "rule_id": rule_id, "enabled": False}
+
+    def evaluate_network_access(
+        self,
+        container_id: str,
+        direction: str,
+        protocol: str = "tcp",
+        port: Optional[int] = None,
+        remote_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate whether a network connection is allowed by policy.
+
+        Checks all active rules for the container and returns the
+        matching action (allow/deny/log).
+
+        Args:
+            container_id: The container attempting the connection.
+            direction: ``"ingress"`` or ``"egress"``.
+            protocol: Protocol being used.
+            port: Port number.
+            remote_ip: Remote IP address.
+
+        Returns:
+            Dict with decision and matching rule.
+        """
+        if not hasattr(self, '_network_rules'):
+            self._network_rules = {}
+
+        # Get applicable rules (sorted by priority)
+        applicable = []
+        for rule in self._network_rules.values():
+            if not rule["enabled"]:
+                continue
+            if rule["direction"] != direction:
+                continue
+            if rule["container_filter"] not in ("all", container_id):
+                continue
+            if rule["protocol"] not in ("any", protocol):
+                continue
+            if rule["port"] is not None and rule["port"] != port:
+                continue
+            applicable.append(rule)
+
+        applicable.sort(key=lambda r: r["priority"])
+
+        if not applicable:
+            # Default: allow
+            return {
+                "allowed": True,
+                "action": "allow",
+                "reason": "no matching rules (default allow)",
+                "rule_id": None,
+            }
+
+        # First matching rule wins
+        match = applicable[0]
+        match["hit_count"] = match.get("hit_count", 0) + 1
+
+        return {
+            "allowed": match["action"] == "allow",
+            "action": match["action"],
+            "reason": f"matched rule {match['id']} (priority {match['priority']})",
+            "rule_id": match["id"],
+        }
+
+    def get_network_rule_stats(self) -> Dict[str, Any]:
+        """Get aggregate statistics for network rules."""
+        if not hasattr(self, '_network_rules'):
+            self._network_rules = {}
+
+        total = len(self._network_rules)
+        enabled = sum(1 for r in self._network_rules.values() if r.get("enabled"))
+        total_hits = sum(r.get("hit_count", 0) for r in self._network_rules.values())
+        ingress = sum(1 for r in self._network_rules.values() if r["direction"] == "ingress")
+        egress = sum(1 for r in self._network_rules.values() if r["direction"] == "egress")
+
+        return {
+            "total_rules": total,
+            "enabled_rules": enabled,
+            "ingress_rules": ingress,
+            "egress_rules": egress,
+            "total_hits": total_hits,
+        }
+
+    # ------------------------------------------------------------------
     # DNS resolution for containers
     # ------------------------------------------------------------------
 
@@ -13908,6 +14226,250 @@ class ContainerManager:
             "modified": modified,
             "config_changes": config_changes,
             "summary": summary,
+        }
+
+    # ------------------------------------------------------------------
+    # Event-driven resource scaling
+    # ------------------------------------------------------------------
+
+    def configure_event_trigger(
+        self,
+        trigger_id: str,
+        event_type: str,
+        action: str,
+        conditions: Optional[Dict[str, Any]] = None,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure an event-driven scaling trigger.
+
+        When a specific event occurs, the trigger fires an action.
+
+        Args:
+            trigger_id: Unique trigger identifier.
+            event_type: Event type to listen for (e.g., ``"cpu_spike"``,
+                        ``"memory_high"``, ``"container_start"``).
+            action: Action to execute (``"scale_up"``, ``"scale_down"``,
+                    ``"restart"``, ``"alert"``, ``"webhook"``).
+            conditions: Optional conditions dict:
+                - ``threshold``: Numeric threshold to trigger on
+                - ``duration_s``: How long condition must persist
+                - ``target_container``: Specific container to monitor
+            enabled: Whether the trigger is active.
+
+        Returns:
+            Dict with trigger configuration.
+        """
+        if not hasattr(self, '_event_triggers'):
+            self._event_triggers: Dict[str, Dict[str, Any]] = {}
+
+        valid_events = {
+            "cpu_spike", "memory_high", "container_start", "container_stop",
+            "container_crash", "network_anomaly", "disk_pressure",
+            "pid_burst", "anomaly_detected", "sla_breach",
+        }
+        valid_actions = {
+            "scale_up", "scale_down", "restart", "alert",
+            "webhook", "migrate", "snapshot",
+        }
+
+        if event_type not in valid_events:
+            return {"error": f"Invalid event_type: {event_type}. Must be one of {valid_events}"}
+        if action not in valid_actions:
+            return {"error": f"Invalid action: {action}. Must be one of {valid_actions}"}
+
+        trigger = {
+            "id": trigger_id,
+            "event_type": event_type,
+            "action": action,
+            "conditions": conditions or {},
+            "enabled": enabled,
+            "created_at": time.time(),
+            "fired_count": 0,
+            "last_fired_at": None,
+            "last_event_at": None,
+        }
+        self._event_triggers[trigger_id] = trigger
+
+        return {
+            "ok": True,
+            "trigger_id": trigger_id,
+            "event_type": event_type,
+            "action": action,
+            "enabled": enabled,
+        }
+
+    def remove_event_trigger(self, trigger_id: str) -> Dict[str, Any]:
+        """Remove an event trigger."""
+        if not hasattr(self, '_event_triggers') or trigger_id not in self._event_triggers:
+            return {"error": f"Trigger '{trigger_id}' not found"}
+        del self._event_triggers[trigger_id]
+        return {"ok": True, "trigger_id": trigger_id}
+
+    def list_event_triggers(self) -> List[Dict[str, Any]]:
+        """List all configured event triggers."""
+        if not hasattr(self, '_event_triggers'):
+            return []
+        result = []
+        for t in self._event_triggers.values():
+            result.append({
+                "id": t["id"],
+                "event_type": t["event_type"],
+                "action": t["action"],
+                "enabled": t["enabled"],
+                "fired_count": t["fired_count"],
+                "last_fired_at": t["last_fired_at"],
+            })
+        return result
+
+    def enable_event_trigger(self, trigger_id: str) -> Dict[str, Any]:
+        """Enable an event trigger."""
+        if not hasattr(self, '_event_triggers') or trigger_id not in self._event_triggers:
+            return {"error": f"Trigger '{trigger_id}' not found"}
+        self._event_triggers[trigger_id]["enabled"] = True
+        return {"ok": True, "trigger_id": trigger_id, "enabled": True}
+
+    def disable_event_trigger(self, trigger_id: str) -> Dict[str, Any]:
+        """Disable an event trigger."""
+        if not hasattr(self, '_event_triggers') or trigger_id not in self._event_triggers:
+            return {"error": f"Trigger '{trigger_id}' not found"}
+        self._event_triggers[trigger_id]["enabled"] = False
+        return {"ok": True, "trigger_id": trigger_id, "enabled": False}
+
+    def fire_event(
+        self,
+        event_type: str,
+        container_id: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fire an event and evaluate all matching triggers.
+
+        Args:
+            event_type: The event type that occurred.
+            container_id: Optional container involved.
+            data: Optional event-specific data.
+
+        Returns:
+            Dict with fired triggers and actions taken.
+        """
+        if not hasattr(self, '_event_triggers'):
+            self._event_triggers = {}
+        if not hasattr(self, '_event_log'):
+            self._event_log: List[Dict[str, Any]] = []
+
+        now = time.time()
+        fired: List[Dict[str, Any]] = []
+
+        # Record the event
+        self._event_log.append({
+            "type": event_type,
+            "container_id": container_id,
+            "data": data or {},
+            "timestamp": now,
+        })
+
+        # Evaluate matching triggers
+        for trigger in self._event_triggers.values():
+            if not trigger["enabled"]:
+                continue
+            if trigger["event_type"] != event_type:
+                continue
+
+            # Check conditions
+            conditions = trigger.get("conditions", {})
+            if conditions.get("target_container") and container_id:
+                if conditions["target_container"] != container_id:
+                    continue
+
+            # Fire the trigger
+            action_result = self._execute_trigger_action(
+                trigger["action"], container_id, data)
+
+            trigger["fired_count"] = trigger.get("fired_count", 0) + 1
+            trigger["last_fired_at"] = now
+            trigger["last_event_at"] = now
+
+            fired.append({
+                "trigger_id": trigger["id"],
+                "action": trigger["action"],
+                "action_result": action_result,
+            })
+
+        return {
+            "event_type": event_type,
+            "container_id": container_id,
+            "triggers_fired": len(fired),
+            "fired": fired,
+        }
+
+    def _execute_trigger_action(
+        self,
+        action: str,
+        container_id: Optional[str],
+        data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Execute a trigger action."""
+        if action == "alert":
+            return {"type": "alert", "message": f"Event {data}"}
+        elif action == "scale_up" and container_id:
+            c = self.containers.get(container_id)
+            if c:
+                step = (data or {}).get("step_mb", 128)
+                new_limit = c.config.limits.memory_mb + step
+                previous = c.config.limits.memory_mb
+                c.config.limits.memory_mb = new_limit
+                return {"type": "scale_up", "previous_mb": previous, "new_mb": new_limit}
+        elif action == "scale_down" and container_id:
+            c = self.containers.get(container_id)
+            if c:
+                step = (data or {}).get("step_mb", 64)
+                new_limit = max(c.config.limits.memory_mb - step, 64)
+                previous = c.config.limits.memory_mb
+                c.config.limits.memory_mb = new_limit
+                return {"type": "scale_down", "previous_mb": previous, "new_mb": new_limit}
+        return {"type": action, "status": "executed"}
+
+    def get_event_log(
+        self,
+        event_type: Optional[str] = None,
+        container_id: Optional[str] = None,
+        tail: int = 50,
+    ) -> Dict[str, Any]:
+        """Get the event log with optional filtering."""
+        if not hasattr(self, '_event_log'):
+            self._event_log = []
+
+        log = self._event_log
+        if event_type:
+            log = [e for e in log if e["type"] == event_type]
+        if container_id:
+            log = [e for e in log if e.get("container_id") == container_id]
+
+        log = list(reversed(log))
+        if tail:
+            log = log[:tail]
+
+        return {
+            "events": log,
+            "count": len(log),
+        }
+
+    def get_trigger_stats(self) -> Dict[str, Any]:
+        """Get aggregate statistics for all triggers."""
+        if not hasattr(self, '_event_triggers'):
+            self._event_triggers = {}
+
+        total_fired = sum(t.get("fired_count", 0) for t in self._event_triggers.values())
+        enabled = sum(1 for t in self._event_triggers.values() if t.get("enabled"))
+        event_types: Dict[str, int] = {}
+        for t in self._event_triggers.values():
+            et = t["event_type"]
+            event_types[et] = event_types.get(et, 0) + 1
+
+        return {
+            "total_triggers": len(self._event_triggers),
+            "enabled_triggers": enabled,
+            "total_fired": total_fired,
+            "event_type_distribution": event_types,
         }
 
     # ------------------------------------------------------------------

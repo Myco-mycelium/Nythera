@@ -2298,6 +2298,81 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "target_peer_id": args.target_peer_id,
             "strategy": getattr(args, 'strategy', 'snapshot'),
         }
+    if command == "configure-event-trigger":
+        return {
+            "service": "control",
+            "op": "configure_event_trigger",
+            "trigger_id": args.trigger_id,
+            "event_type": args.event_type,
+            "action": args.action,
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "remove-event-trigger":
+        return {"service": "control", "op": "remove_event_trigger", "trigger_id": args.trigger_id}
+    if command == "list-event-triggers":
+        return {"service": "control", "op": "list_event_triggers"}
+    if command == "enable-event-trigger":
+        return {"service": "control", "op": "enable_event_trigger", "trigger_id": args.trigger_id}
+    if command == "disable-event-trigger":
+        return {"service": "control", "op": "disable_event_trigger", "trigger_id": args.trigger_id}
+    if command == "fire-event":
+        return {
+            "service": "control",
+            "op": "fire_event",
+            "event_type": args.event_type,
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "get-event-log":
+        return {
+            "service": "control",
+            "op": "get_event_log",
+            "event_type": getattr(args, 'event_type', None),
+            "container_id": getattr(args, 'container_id', None),
+            "tail": getattr(args, 'tail', 50),
+        }
+    if command == "get-trigger-stats":
+        return {"service": "control", "op": "get_trigger_stats"}
+    if command == "generate-cluster-dashboard":
+        return {"service": "control", "op": "generate_cluster_dashboard"}
+    if command == "configure-network-rule":
+        return {
+            "service": "control",
+            "op": "configure_network_rule",
+            "rule_id": args.rule_id,
+            "direction": args.direction,
+            "action": args.action,
+            "protocol": getattr(args, 'protocol', 'tcp'),
+            "port": getattr(args, 'port', None),
+            "source": getattr(args, 'source', None),
+            "destination": getattr(args, 'destination', None),
+            "container_filter": getattr(args, 'container_filter', None),
+            "priority": getattr(args, 'priority', 100),
+        }
+    if command == "remove-network-rule":
+        return {"service": "control", "op": "remove_network_rule", "rule_id": args.rule_id}
+    if command == "list-network-rules":
+        return {
+            "service": "control",
+            "op": "list_network_rules",
+            "direction": getattr(args, 'direction', None),
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "enable-network-rule":
+        return {"service": "control", "op": "enable_network_rule", "rule_id": args.rule_id}
+    if command == "disable-network-rule":
+        return {"service": "control", "op": "disable_network_rule", "rule_id": args.rule_id}
+    if command == "evaluate-network-access":
+        return {
+            "service": "control",
+            "op": "evaluate_network_access",
+            "container_id": args.container_id,
+            "direction": args.direction,
+            "protocol": getattr(args, 'protocol', 'tcp'),
+            "port": getattr(args, 'port', None),
+            "remote_ip": getattr(args, 'remote_ip', None),
+        }
+    if command == "get-network-rule-stats":
+        return {"service": "control", "op": "get_network_rule_stats"}
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5393,6 +5468,68 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for s in resp.get('steps', []):
             lines.append(f"  Step {s.get('step', '?')}: {s.get('action', '?')}")
         return "\n".join(lines)
+    if command == "configure-event-trigger":
+        return f"Event trigger '{resp.get('trigger_id', '?')}' created: {resp.get('event_type', '?')} -> {resp.get('action', '?')}"
+    if command == "remove-event-trigger":
+        return f"Event trigger '{resp.get('trigger_id', '?')}' removed"
+    if command == "list-event-triggers":
+        triggers = resp.get('triggers', [])
+        if not triggers:
+            return "No event triggers configured"
+        lines = ["Event triggers:"]
+        for t in triggers:
+            status = "enabled" if t.get('enabled') else "disabled"
+            lines.append(f"  {t.get('id', '?')}: {t.get('event_type', '?')} -> {t.get('action', '?')} [{status}] ({t.get('fired_count', 0)} fired)")
+        return "\n".join(lines)
+    if command in ("enable-event-trigger", "disable-event-trigger"):
+        return f"Event trigger '{resp.get('trigger_id', '?')}' {'enabled' if resp.get('enabled') else 'disabled'}"
+    if command == "fire-event":
+        lines = [f"Event '{resp.get('event_type', '?')}' fired:"]
+        for f in resp.get('fired', []):
+            lines.append(f"  Trigger {f.get('trigger_id', '?')}: {f.get('action', '?')}")
+        return "\n".join(lines)
+    if command == "get-event-log":
+        events = resp.get('events', [])
+        if not events:
+            return "No events logged"
+        lines = ["Event log:"]
+        for e in events[:10]:
+            lines.append(f"  [{e.get('type', '?')}] {e.get('container_id', 'global')[:12]}")
+        return "\n".join(lines)
+    if command == "get-trigger-stats":
+        return f"Triggers: {resp.get('total_triggers', 0)} total, {resp.get('enabled_triggers', 0)} enabled, {resp.get('total_fired', 0)} fired"
+    if command == "generate-cluster-dashboard":
+        lines = [
+            f"Cluster Health: {resp.get('status', '?').upper()}",
+            f"  Containers: {resp.get('containers', {}).get('running', 0)}/{resp.get('containers', {}).get('total', 0)} running",
+            f"  Memory: {resp.get('resources', {}).get('used_memory_mb', 0)}MB / {resp.get('resources', {}).get('total_memory_mb', 0)}MB ({resp.get('resources', {}).get('memory_utilization_pct', 0)}%)",
+            f"  Health score: {resp.get('health', {}).get('average_score', 0):.0f}/100",
+            f"  Alerts (1h): {resp.get('alerts', {}).get('recent_count', 0)}",
+            f"  Triggers: {resp.get('triggers', {}).get('total_triggers', 0)} ({resp.get('triggers', {}).get('total_fired', 0)} fired)",
+            f"  Cluster: {resp.get('cluster', {}).get('nodes', 0)} nodes, {resp.get('cluster', {}).get('networks', 0)} networks",
+        ]
+        return "\n".join(lines)
+    if command == "configure-network-rule":
+        return f"Network rule '{resp.get('rule_id', '?')}' created: {resp.get('direction', '?')} {resp.get('action', '?')} (priority {resp.get('priority', 0)})"
+    if command == "remove-network-rule":
+        return f"Network rule '{resp.get('rule_id', '?')}' removed"
+    if command == "list-network-rules":
+        rules = resp.get('rules', [])
+        if not rules:
+            return "No network rules configured"
+        lines = ["Network rules:"]
+        for r in rules:
+            status = "enabled" if r.get('enabled') else "disabled"
+            port_str = f":{r['port']}" if r.get('port') else "*"
+            lines.append(f"  {r.get('id', '?')}: {r.get('direction', '?')} {r.get('action', '?')} {r.get('protocol', '?')}{port_str} [{status}] (hits: {r.get('hit_count', 0)})")
+        return "\n".join(lines)
+    if command in ("enable-network-rule", "disable-network-rule"):
+        return f"Network rule '{resp.get('rule_id', '?')}' {'enabled' if resp.get('enabled') else 'disabled'}"
+    if command == "evaluate-network-access":
+        allowed = "ALLOWED" if resp.get('allowed') else "DENIED"
+        return f"{allowed}: {resp.get('reason', '?')}"
+    if command == "get-network-rule-stats":
+        return f"Rules: {resp.get('total_rules', 0)} total ({resp.get('ingress_rules', 0)} ingress, {resp.get('egress_rules', 0)} egress), {resp.get('total_hits', 0)} hits"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -7127,6 +7264,88 @@ def build_parser() -> argparse.ArgumentParser:
     pcm.add_argument("target_peer_id")
     pcm.add_argument("--strategy", choices=["snapshot", "live"], default="snapshot")
     pcm.set_defaults(command="plan-cross-cluster-migration")
+
+    # -- event-driven scaling commands --
+    cet = sub.add_parser("configure-event-trigger", help="Configure an event trigger")
+    cet.add_argument("trigger_id")
+    cet.add_argument("event_type")
+    cet.add_argument("action")
+    cet.add_argument("--enabled", action="store_true", default=True)
+    cet.set_defaults(command="configure-event-trigger")
+
+    ret = sub.add_parser("remove-event-trigger", help="Remove an event trigger")
+    ret.add_argument("trigger_id")
+    ret.set_defaults(command="remove-event-trigger")
+
+    let = sub.add_parser("list-event-triggers", help="List event triggers")
+    let.set_defaults(command="list-event-triggers")
+
+    eet = sub.add_parser("enable-event-trigger", help="Enable an event trigger")
+    eet.add_argument("trigger_id")
+    eet.set_defaults(command="enable-event-trigger")
+
+    det = sub.add_parser("disable-event-trigger", help="Disable an event trigger")
+    det.add_argument("trigger_id")
+    det.set_defaults(command="disable-event-trigger")
+
+    fe = sub.add_parser("fire-event", help="Fire an event manually")
+    fe.add_argument("event_type")
+    fe.add_argument("--container-id", default=None)
+    fe.set_defaults(command="fire-event")
+
+    gel = sub.add_parser("get-event-log", help="Get event log")
+    gel.add_argument("--event-type", default=None)
+    gel.add_argument("--container-id", default=None)
+    gel.add_argument("--tail", type=int, default=50)
+    gel.set_defaults(command="get-event-log")
+
+    gts = sub.add_parser("get-trigger-stats", help="Get trigger statistics")
+    gts.set_defaults(command="get-trigger-stats")
+
+    # -- cluster dashboard commands --
+    gcd = sub.add_parser("generate-cluster-dashboard", help="Generate cluster health dashboard")
+    gcd.set_defaults(command="generate-cluster-dashboard")
+
+    # -- network rule commands --
+    cnr = sub.add_parser("configure-network-rule", help="Configure a network firewall rule")
+    cnr.add_argument("rule_id")
+    cnr.add_argument("direction", choices=["ingress", "egress"])
+    cnr.add_argument("action", choices=["allow", "deny", "log"])
+    cnr.add_argument("--protocol", default="tcp")
+    cnr.add_argument("--port", type=int, default=None)
+    cnr.add_argument("--source", default=None)
+    cnr.add_argument("--destination", default=None)
+    cnr.add_argument("--container-filter", default=None)
+    cnr.add_argument("--priority", type=int, default=100)
+    cnr.set_defaults(command="configure-network-rule")
+
+    rnr = sub.add_parser("remove-network-rule", help="Remove a network rule")
+    rnr.add_argument("rule_id")
+    rnr.set_defaults(command="remove-network-rule")
+
+    lnr = sub.add_parser("list-network-rules", help="List network rules")
+    lnr.add_argument("--direction", choices=["ingress", "egress"], default=None)
+    lnr.add_argument("--container-id", default=None)
+    lnr.set_defaults(command="list-network-rules")
+
+    enr = sub.add_parser("enable-network-rule", help="Enable a network rule")
+    enr.add_argument("rule_id")
+    enr.set_defaults(command="enable-network-rule")
+
+    dnr = sub.add_parser("disable-network-rule", help="Disable a network rule")
+    dnr.add_argument("rule_id")
+    dnr.set_defaults(command="disable-network-rule")
+
+    ena = sub.add_parser("evaluate-network-access", help="Evaluate network access for a container")
+    ena.add_argument("container_id")
+    ena.add_argument("direction", choices=["ingress", "egress"])
+    ena.add_argument("--protocol", default="tcp")
+    ena.add_argument("--port", type=int, default=None)
+    ena.add_argument("--remote-ip", default=None)
+    ena.set_defaults(command="evaluate-network-access")
+
+    gnrs = sub.add_parser("get-network-rule-stats", help="Get network rule statistics")
+    gnrs.set_defaults(command="get-network-rule-stats")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
