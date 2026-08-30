@@ -1137,6 +1137,48 @@ class ControlService:
             elif op == "generate_cost_report":
                 self._generate_cost_report(server, sender_path,
                                        msg.message_id, request)
+            elif op == "configure_health_check":
+                self._configure_health_check(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "get_health_check":
+                self._get_health_check(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "evaluate_health_check":
+                self._evaluate_health_check(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_readiness_status":
+                self._get_readiness_status(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_liveness_status":
+                self._get_liveness_status(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "fleet_health_overview":
+                self._fleet_health_overview(server, sender_path,
+                                       msg.message_id)
+            elif op == "configure_escalation_chain":
+                self._configure_escalation_chain(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "evaluate_escalation":
+                self._evaluate_escalation(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_escalation_status":
+                self._get_escalation_status(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "reset_escalation_state":
+                self._reset_escalation_state(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "disable_escalation_chain":
+                self._disable_escalation_chain(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "generate_compliance_report":
+                self._generate_compliance_report(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "export_audit_logs":
+                self._export_audit_logs(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_compliance_summary":
+                self._get_compliance_summary(server, sender_path,
+                                        msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6856,6 +6898,141 @@ class ControlService:
     def _generate_cost_report(self, server, sender_path, call_id, request):
         result = self.container_manager.generate_cost_report(
             container_ids=request.get('container_ids'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Health check handlers
+    # ------------------------------------------------------------------
+
+    def _configure_health_check(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_health_check(
+            c, check_type=request.get('check_type', 'http'),
+            endpoint=request.get('endpoint', '/'),
+            port=request.get('port', 80),
+            interval_seconds=request.get('interval_seconds', 30),
+            timeout_seconds=request.get('timeout_seconds', 5),
+            failure_threshold=request.get('failure_threshold', 3),
+            success_threshold=request.get('success_threshold', 1),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_health_check(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_health_check(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_health_check(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.evaluate_health_check(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_readiness_status(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_readiness_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_liveness_status(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_liveness_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_health_overview(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_health_overview()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Escalation chain handlers
+    # ------------------------------------------------------------------
+
+    def _configure_escalation_chain(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_escalation_chain(
+            c, name=request.get('name', 'default'),
+            steps=request.get('steps'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_escalation(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.evaluate_escalation(
+            c, severity=request.get('severity', 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_escalation_status(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_escalation_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _reset_escalation_state(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.reset_escalation_state(
+            c, chain_name=request.get('chain_name'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_escalation_chain(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.disable_escalation_chain(
+            c, chain_name=request['chain_name'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Compliance handlers
+    # ------------------------------------------------------------------
+
+    def _generate_compliance_report(self, server, sender_path, call_id, request):
+        result = self.container_manager.generate_compliance_report(
+            container_ids=request.get('container_ids'),
+            policy=request.get('policy', 'basic'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _export_audit_logs(self, server, sender_path, call_id, request):
+        result = self.container_manager.export_audit_logs(
+            container_ids=request.get('container_ids'),
+            format=request.get('format', 'json'),
+            start_time=request.get('start_time'),
+            end_time=request.get('end_time'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_compliance_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_compliance_summary(
+            policy=request.get('policy', 'basic'),
+        )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

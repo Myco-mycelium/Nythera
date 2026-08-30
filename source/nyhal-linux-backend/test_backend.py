@@ -3761,6 +3761,249 @@ class TestComparisonReports(unittest.TestCase):
         self.assertIn("3.6", text)
 
 
+class TestHealthProbes(unittest.TestCase):
+    """Tests for health check endpoints and readiness probes."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.transition_to(ContainerState.RUNNING)
+        c.pid = os.getpid()
+        return c
+
+    def test_configure_health_check(self):
+        """configure_health_check stores config on container."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc1")
+        r = mgr.configure_health_check(c, check_type="process")
+        self.assertEqual(r["health_check"]["type"], "process")
+        self.assertEqual(c.health_check["type"], "process")
+
+    def test_configure_invalid_type(self):
+        """Invalid check type returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc2")
+        r = mgr.configure_health_check(c, check_type="invalid")
+        self.assertIn("error", r)
+
+    def test_evaluate_process_check(self):
+        """Process health check detects running PID."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc3")
+        mgr.configure_health_check(c, check_type="process")
+        r = mgr.evaluate_health_check(c)
+        self.assertEqual(r["status"], "healthy")
+        self.assertTrue(r["changed"])
+
+    def test_evaluate_no_check(self):
+        """evaluate without config returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc4")
+        r = mgr.evaluate_health_check(c)
+        self.assertIn("error", r)
+
+    def test_readiness_status(self):
+        """get_readiness_status reflects health."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc5")
+        mgr.configure_health_check(c, check_type="process")
+        mgr.evaluate_health_check(c)
+        r = mgr.get_readiness_status(c)
+        self.assertTrue(r["ready"])
+
+    def test_liveness_status(self):
+        """get_liveness_status reflects health."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc6")
+        mgr.configure_health_check(c, check_type="process")
+        mgr.evaluate_health_check(c)
+        r = mgr.get_liveness_status(c)
+        self.assertTrue(r["alive"])
+
+    def test_fleet_health_overview(self):
+        """fleet_health_overview groups containers."""
+        mgr = self._manager()
+        c = self._make(mgr, "hc7")
+        mgr.configure_health_check(c, check_type="process")
+        r = mgr.fleet_health_overview()
+        self.assertIn("healthy", r)
+        self.assertIn("unhealthy", r)
+
+    def test_format_human_overview(self):
+        """format_human handles fleet-health-overview."""
+        from nyrqisctl import format_human
+        resp = {"summary": {"healthy_count": 3, "unhealthy_count": 1, "pending_count": 0, "no_check_count": 2}}
+        text = format_human("fleet-health-overview", resp)
+        self.assertIn("Healthy: 3", text)
+        self.assertIn("Unhealthy: 1", text)
+
+
+class TestEscalationChains(unittest.TestCase):
+    """Tests for anomaly auto-response escalation chains."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.transition_to(ContainerState.RUNNING)
+        return c
+
+    def test_configure_chain(self):
+        """configure_escalation_chain stores chain."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc1")
+        r = mgr.configure_escalation_chain(c, name="test")
+        self.assertEqual(r["chain"]["name"], "test")
+        self.assertEqual(len(r["chain"]["steps"]), 4)
+
+    def test_evaluate_triggers_action(self):
+        """High severity triggers escalation action."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc2")
+        mgr.configure_escalation_chain(c)
+        r = mgr.evaluate_escalation(c, severity=99)
+        self.assertTrue(len(r["actions_taken"]) > 0)
+        self.assertEqual(r["actions_taken"][0]["action"], "kill")
+
+    def test_evaluate_low_severity(self):
+        """Low severity triggers alert only."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc3")
+        mgr.configure_escalation_chain(c)
+        r = mgr.evaluate_escalation(c, severity=35)
+        actions = r["actions_taken"]
+        self.assertTrue(len(actions) > 0)
+        self.assertEqual(actions[0]["action"], "alert")
+
+    def test_cooldown_prevents_duplicate(self):
+        """Cooldown prevents duplicate actions."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc4")
+        # Use alert step (severity 30, cooldown 300s)
+        mgr.configure_escalation_chain(c, steps=[
+            {"severity": 30, "action": "alert", "cooldown_seconds": 300, "notify": []},
+        ])
+        r1 = mgr.evaluate_escalation(c, severity=50)
+        self.assertTrue(len(r1["actions_taken"]) > 0)
+        r2 = mgr.evaluate_escalation(c, severity=50)
+        # Second call blocked by cooldown
+        self.assertEqual(len(r2["actions_taken"]), 0)
+
+    def test_get_status(self):
+        """get_escalation_status returns chain info."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc5")
+        mgr.configure_escalation_chain(c)
+        r = mgr.get_escalation_status(c)
+        self.assertIn("default", r["chains"])
+        self.assertTrue(r["chains"]["default"]["active"])
+
+    def test_disable_chain(self):
+        """disable_escalation_chain deactivates."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc6")
+        mgr.configure_escalation_chain(c)
+        r = mgr.disable_escalation_chain(c, "default")
+        self.assertFalse(r["active"])
+
+    def test_reset_state(self):
+        """reset_escalation_state clears history."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc7")
+        mgr.configure_escalation_chain(c)
+        mgr.evaluate_escalation(c, severity=99)
+        r = mgr.reset_escalation_state(c)
+        self.assertTrue(r["reset"])
+
+    def test_no_chain_error(self):
+        """evaluate without chains returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "esc8")
+        r = mgr.evaluate_escalation(c, severity=50)
+        self.assertIn("error", r)
+
+
+class TestComplianceReporting(unittest.TestCase):
+    """Tests for audit log compliance reporting and export."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_generate_report(self):
+        """generate_compliance_report runs without error."""
+        mgr = self._manager()
+        c = self._make(mgr, "comp1")
+        r = mgr.generate_compliance_report()
+        self.assertIn("overall_status", r)
+        self.assertIn("average_score", r)
+        self.assertGreaterEqual(r["average_score"], 0)
+
+    def test_export_audit_logs(self):
+        """export_audit_logs returns events."""
+        mgr = self._manager()
+        c = self._make(mgr, "comp2")
+        r = mgr.export_audit_logs()
+        self.assertIn("events", r)
+        self.assertIn("event_count", r)
+
+    def test_compliance_summary(self):
+        """get_compliance_summary returns summary."""
+        mgr = self._manager()
+        c = self._make(mgr, "comp3")
+        r = mgr.get_compliance_summary(policy="strict")
+        self.assertEqual(r["policy"], "strict")
+        self.assertIn("recommendations", r)
+
+    def test_format_human_summary(self):
+        """format_human handles get-compliance-summary."""
+        from nyrqisctl import format_human
+        resp = {"policy": "pci", "overall_status": "non_compliant", "average_score": 45.0, "recommendations": ["Fix it"]}
+        text = format_human("get-compliance-summary", resp)
+        self.assertIn("PCI", text.upper())
+        self.assertIn("45.0", text)
+
+    def test_format_human_report(self):
+        """format_human handles generate-compliance-report."""
+        from nyrqisctl import format_human
+        resp = {"policy": "basic", "overall_status": "compliant", "average_score": 95.0, "critical_count": 0, "warning_count": 2}
+        text = format_human("generate-compliance-report", resp)
+        self.assertIn("COMPLIANT", text)
+        self.assertIn("95.0", text)
+
+    def test_format_human_export(self):
+        """format_human handles export-audit-logs."""
+        from nyrqisctl import format_human
+        resp = {"event_count": 42, "format": "json"}
+        text = format_human("export-audit-logs", resp)
+        self.assertIn("42", text)
+
+    def test_policy_strict(self):
+        """Strict policy has tighter thresholds."""
+        mgr = self._manager()
+        c = self._make(mgr, "comp4")
+        r = mgr.generate_compliance_report(policy="strict")
+        self.assertEqual(r["policy"], "strict")
+
+    def test_policy_hipaa(self):
+        """HIPAA policy has strictest thresholds."""
+        mgr = self._manager()
+        c = self._make(mgr, "comp5")
+        r = mgr.generate_compliance_report(policy="hipaa")
+        self.assertEqual(r["policy"], "hipaa")
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -28834,6 +29077,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStateScopes))
     suite.addTests(loader.loadTestsFromTestCase(TestBehaviorLogicGraphs))
     suite.addTests(loader.loadTestsFromTestCase(TestNstudioCodecConformance))
+    suite.addTests(loader.loadTestsFromTestCase(TestHealthProbes))
+    suite.addTests(loader.loadTestsFromTestCase(TestEscalationChains))
+    suite.addTests(loader.loadTestsFromTestCase(TestComplianceReporting))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

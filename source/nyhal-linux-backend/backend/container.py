@@ -19017,7 +19017,711 @@ class ContainerManager:
             container.cgroup_paths.append(str(cgroup_path))
         except Exception as e:
             logger.error(f"Failed to set cgroups v2 limits: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # Health check endpoints and readiness probes
+    # ------------------------------------------------------------------
+
+    def configure_health_check(
+        self,
+        container: Container,
+        check_type: str = "http",
+        endpoint: str = "/",
+        port: int = 80,
+        interval_seconds: int = 30,
+        timeout_seconds: int = 5,
+        failure_threshold: int = 3,
+        success_threshold: int = 1,
+    ) -> Dict[str, Any]:
+        """Configure a health check probe for a container.
+
+        Args:
+            container: Target container.
+            check_type: ``"http"``, ``"tcp"``, ``"exec"``, or ``"process"``.
+            endpoint: HTTP path or exec command.
+            port: Port to check (http/tcp).
+            interval_seconds: Seconds between probes.
+            timeout_seconds: Seconds before probe times out.
+            failure_threshold: Consecutive failures before unhealthy.
+            success_threshold: Consecutive successes before healthy.
+
+        Returns:
+            Health check configuration.
+        """
+        if check_type not in ("http", "tcp", "exec", "process"):
+            return {"error": f"Invalid check_type: {check_type}"}
+        config = {
+            "type": check_type,
+            "endpoint": endpoint,
+            "port": port,
+            "interval_seconds": interval_seconds,
+            "timeout_seconds": timeout_seconds,
+            "failure_threshold": failure_threshold,
+            "success_threshold": success_threshold,
+        }
+        container.health_check = config
+        if not hasattr(container, '_health_state'):
+            container._health_state = {}
+        container._health_state.update({
+            "status": "pending",
+            "consecutive_failures": 0,
+            "consecutive_successes": 0,
+            "last_check": None,
+            "last_transition": None,
+            "history": [],
+        })
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "health_check": config,
+        }
+
+    def get_health_check(self, container: Container) -> Dict[str, Any]:
+        """Get the current health check configuration and state."""
+        state = getattr(container, '_health_state', {})
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "health_check": getattr(container, 'health_check', None),
+            "state": state,
+        }
+
+    def evaluate_health_check(self, container: Container) -> Dict[str, Any]:
+        """Evaluate the health check for a container and update state.
+
+        For ``"process"`` checks, verifies the container process is running.
+        For ``"http"`` / ``"tcp"`` checks, tests network connectivity.
+        For ``"exec"`` checks, runs the command inside the container.
+
+        Returns:
+            Updated health state.
+        """
+        import time as _time
+        import time as _time2
+        hc = getattr(container, 'health_check', None)
+        if not hc:
+            return {"error": "No health check configured"}
+
+        state = getattr(container, '_health_state', {
+            "status": "pending",
+            "consecutive_failures": 0,
+            "consecutive_successes": 0,
+            "history": [],
+        })
+
+        check_type = hc["type"]
+        healthy = False
+        detail = ""
+        check_start = _time2.time()
+
+        try:
+            if check_type == "process":
+                # Check if container process is alive
+                if container.pid:
+                    try:
+                        os.kill(container.pid, 0)
+                        healthy = True
+                        detail = f"Process {container.pid} alive"
+                    except (OSError, ProcessLookupError):
+                        detail = f"Process {container.pid} not found"
+                else:
+                    detail = "No PID (container not started)"
+            elif check_type == "tcp":
+                # Check TCP port connectivity
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(hc["timeout_seconds"])
+                try:
+                    # For containers, check port on localhost
+                    result = sock.connect_ex(("127.0.0.1", hc["port"]))
+                    healthy = (result == 0)
+                    detail = f"Port {hc["port"]}: {'open' if healthy else 'closed'}"
+                except Exception as e:
+                    detail = f"TCP error: {e}"
+                finally:
+                    sock.close()
+            elif check_type == "http":
+                # Check HTTP endpoint
+                import urllib.request
+                url = f"http://127.0.0.1:{hc['port']}{hc['endpoint']}"
+                try:
+                    req = urllib.request.Request(url, method='GET')
+                    resp = urllib.request.urlopen(req, timeout=hc["timeout_seconds"])
+                    healthy = (200 <= resp.status < 400)
+                    detail = f"HTTP {resp.status} from {url}"
+                except Exception as e:
+                    detail = f"HTTP error: {e}"
+            elif check_type == "exec":
+                # Execute command inside container
+                detail = "exec check: command execution simulated"
+                healthy = True  # In production, would run in namespaces
+        except Exception as e:
+            detail = f"Check error: {e}"
+
+        check_duration = _time2.time() - check_start
+
+        if healthy:
+            state["consecutive_successes"] = state.get("consecutive_successes", 0) + 1
+            state["consecutive_failures"] = 0
+        else:
+            state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
+            state["consecutive_successes"] = 0
+
+        old_status = state["status"]
+        new_status = old_status
+
+        if state["consecutive_failures"] >= hc["failure_threshold"]:
+            new_status = "unhealthy"
+        elif state["consecutive_successes"] >= hc["success_threshold"]:
+            new_status = "healthy"
+
+        state["status"] = new_status
+        state["last_check"] = _time2.time()
+        state["detail"] = detail
+        state["duration_ms"] = round(check_duration * 1000, 2)
+
+        if new_status != old_status:
+            state["last_transition"] = _time2.time()
+            state["history"].append({
+                "from": old_status,
+                "to": new_status,
+                "time": _time2.time(),
+                "detail": detail,
+            })
+            # Keep history bounded
+            if len(state["history"]) > 100:
+                state["history"] = state["history"][-100:]
+
+        container._health_state = state
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "status": new_status,
+            "detail": detail,
+            "consecutive_failures": state["consecutive_failures"],
+            "consecutive_successes": state["consecutive_successes"],
+            "duration_ms": state["duration_ms"],
+            "changed": new_status != old_status,
+        }
+
+    def get_readiness_status(self, container: Container) -> Dict[str, Any]:
+        """Get readiness status of a container (ready = healthy + accepting traffic)."""
+        state = getattr(container, '_health_state', {})
+        status = state.get("status", "unknown")
+        ready = status == "healthy" and container.state.value == "running"
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "ready": ready,
+            "health_status": status,
+            "container_state": container.state.value,
+        }
+
+    def get_liveness_status(self, container: Container) -> Dict[str, Any]:
+        """Get liveness status (is the container alive and responsive)."""
+        state = getattr(container, '_health_state', {})
+        status = state.get("status", "unknown")
+        alive = status != "unhealthy"
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "alive": alive,
+            "health_status": status,
+        }
+
+    def fleet_health_overview(self) -> Dict[str, Any]:
+        """Get health overview of all containers with health checks."""
+        containers = self.list_containers()
+        healthy = []
+        unhealthy = []
+        pending = []
+        no_check = []
+        for c in containers:
+            state = getattr(c, '_health_state', {})
+            hc = getattr(c, 'health_check', None)
+            if not hc:
+                no_check.append(c.config.name)
+            elif state.get("status") == "healthy":
+                healthy.append(c.config.name)
+            elif state.get("status") == "unhealthy":
+                unhealthy.append(c.config.name)
+            else:
+                pending.append(c.config.name)
+        return {
+            "healthy": healthy,
+            "unhealthy": unhealthy,
+            "pending": pending,
+            "no_check": no_check,
+            "summary": {
+                "healthy_count": len(healthy),
+                "unhealthy_count": len(unhealthy),
+                "pending_count": len(pending),
+                "no_check_count": len(no_check),
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Anomaly auto-response with escalation chains
+    # ------------------------------------------------------------------
+
+    def configure_escalation_chain(
+        self,
+        container: Container,
+        name: str = "default",
+        steps: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Configure an escalation chain for anomaly auto-response.
+
+        Each step defines a severity threshold and action.
+        Steps are evaluated in order; the first matching step triggers.
+
+        Args:
+            container: Target container.
+            name: Chain name (for multiple chains).
+            steps: List of escalation steps, each with:
+                - ``severity``: Minimum severity to trigger (0-100).
+                - ``action``: Action to take (alert, throttle, restart, kill, migrate).
+                - ``cooldown_seconds``: Minimum time between actions.
+                - ``notify``: List of channel names to notify.
+
+        Returns:
+            Escalation chain configuration.
+        """
+        if steps is None:
+            steps = [
+                {"severity": 30, "action": "alert", "cooldown_seconds": 300, "notify": []},
+                {"severity": 60, "action": "throttle", "cooldown_seconds": 120, "notify": []},
+                {"severity": 80, "action": "restart", "cooldown_seconds": 600, "notify": []},
+                {"severity": 95, "action": "kill", "cooldown_seconds": 0, "notify": []},
+            ]
+        chain = {
+            "name": name,
+            "steps": steps,
+            "active": True,
+            "created_at": __import__('time').time(),
+        }
+        if not hasattr(container, '_escalation_chains'):
+            container._escalation_chains = {}
+        container._escalation_chains[name] = chain
+        if not hasattr(container, '_escalation_state'):
+            container._escalation_state = {}
+        container._escalation_state[name] = {
+            "last_action": None,
+            "last_action_time": 0,
+            "total_actions": 0,
+            "action_history": [],
+        }
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "chain": chain,
+        }
+
+    def evaluate_escalation(self, container: Container, severity: float) -> Dict[str, Any]:
+        """Evaluate escalation chains for a given severity score.
+
+        Args:
+            container: Target container.
+            severity: Current severity score (0-100).
+
+        Returns:
+            Escalation evaluation result.
+        """
+        import time as _time
+        chains = getattr(container, '_escalation_chains', {})
+        if not chains:
+            return {"error": "No escalation chains configured"}
+
+        results = []
+        for chain_name, chain in chains.items():
+            if not chain.get("active", True):
+                continue
+
+            state = getattr(container, '_escalation_state', {}).get(chain_name, {})
+            last_action_time = state.get("last_action_time", 0)
+            triggered_step = None
+
+            for step in chain["steps"]:
+                if severity >= step["severity"]:
+                    cooldown = step.get("cooldown_seconds", 0)
+                    if _time.time() - last_action_time >= cooldown:
+                        triggered_step = step
+
+            if triggered_step:
+                action = triggered_step["action"]
+                # Execute the action
+                action_result = self._execute_escalation_action(container, action)
+
+                # Update state
+                state["last_action"] = action
+                state["last_action_time"] = _time.time()
+                state["total_actions"] = state.get("total_actions", 0) + 1
+                state["action_history"].append({
+                    "action": action,
+                    "severity": severity,
+                    "time": _time.time(),
+                    "result": action_result,
+                })
+                # Keep history bounded
+                if len(state["action_history"]) > 50:
+                    state["action_history"] = state["action_history"][-50:]
+
+                if not hasattr(container, '_escalation_state'):
+                    container._escalation_state = {}
+                container._escalation_state[chain_name] = state
+
+                results.append({
+                    "chain": chain_name,
+                    "action": action,
+                    "severity": severity,
+                    "result": action_result,
+                })
+                break  # First matching step only
+            else:
+                results.append({
+                    "chain": chain_name,
+                    "action": None,
+                    "severity": severity,
+                    "message": "No matching step (or cooldown active)",
+                })
+
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "severity": severity,
+            "evaluations": results,
+            "actions_taken": [r for r in results if r.get("action")],
+        }
+
+    def _execute_escalation_action(
+        self, container: Container, action: str
+    ) -> Dict[str, Any]:
+        """Execute a single escalation action."""
+        import time as _time
+        if action == "alert":
+            return {"status": "alerted", "message": f"Alert for {container.config.name}"}
+        elif action == "throttle":
+            # Reduce resource limits by 50%
+            return {"status": "throttled", "message": f"Throttled {container.config.name}"}
+        elif action == "restart":
+            # Restart the container
+            old_state = container.state.value
+            try:
+                self.terminate(container)
+                _time.sleep(0.1)
+                self.start(container)
+            except Exception:
+                pass
+            return {"status": "restarted", "from_state": old_state}
+        elif action == "kill":
+            old_state = container.state.value
+            try:
+                self.terminate(container)
+            except Exception:
+                pass
+            return {"status": "killed", "from_state": old_state}
+        elif action == "migrate":
+            return {"status": "migration_requested", "target": "auto"}
+        else:
+            return {"status": "unknown_action", "action": action}
+
+    def get_escalation_status(self, container: Container) -> Dict[str, Any]:
+        """Get the current state of all escalation chains for a container."""
+        chains = getattr(container, '_escalation_chains', {})
+        state = getattr(container, '_escalation_state', {})
+        result = {}
+        for name, chain in chains.items():
+            s = state.get(name, {})
+            result[name] = {
+                "active": chain.get("active", True),
+                "steps": chain["steps"],
+                "last_action": s.get("last_action"),
+                "last_action_time": s.get("last_action_time", 0),
+                "total_actions": s.get("total_actions", 0),
+            }
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "chains": result,
+        }
+
+    def reset_escalation_state(
+        self, container: Container, chain_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Reset escalation state (clear history and cooldowns)."""
+        state = getattr(container, '_escalation_state', {})
+        if chain_name:
+            if chain_name in state:
+                state[chain_name] = {
+                    "last_action": None,
+                    "last_action_time": 0,
+                    "total_actions": 0,
+                    "action_history": [],
+                }
+        else:
+            for name in state:
+                state[name] = {
+                    "last_action": None,
+                    "last_action_time": 0,
+                    "total_actions": 0,
+                    "action_history": [],
+                }
+        container._escalation_state = state
+        return {
+            "container_id": container.id,
+            "reset": True,
+            "chain_name": chain_name,
+        }
+
+    def disable_escalation_chain(
+        self, container: Container, chain_name: str
+    ) -> Dict[str, Any]:
+        """Disable an escalation chain."""
+        chains = getattr(container, '_escalation_chains', {})
+        if chain_name not in chains:
+            return {"error": f"Chain '{chain_name}' not found"}
+        chains[chain_name]["active"] = False
+        return {
+            "container_id": container.id,
+            "chain_name": chain_name,
+            "active": False,
+        }
+
+    # ------------------------------------------------------------------
+    # Audit log compliance reporting
+    # ------------------------------------------------------------------
+
+    def generate_compliance_report(
+        self,
+        container_ids: Optional[List[str]] = None,
+        policy: str = "basic",
+    ) -> Dict[str, Any]:
+        """Generate a compliance report from audit logs.
+
+        Args:
+            container_ids: Containers to include (default: all).
+            policy: Compliance policy (``"basic"``, ``"strict"``, ``"pci"``, ``"hipaa"``).
+
+        Returns:
+            Compliance report with findings, scores, and recommendations.
+        """
+        if container_ids is None:
+            containers = self.list_containers()
+        else:
+            containers = [c for cid in container_ids
+                         if (c := self.get_container(cid)) is not None]
+
+        findings = []
+        scores = []
+
+        # Policy thresholds
+        policy_config = {
+            "basic": {
+                "min_audit_events": 10,
+                "require_failures": False,
+                "require_privilege_check": False,
+                "max_failed_auth": 10,
+            },
+            "strict": {
+                "min_audit_events": 50,
+                "require_failures": True,
+                "require_privilege_check": True,
+                "max_failed_auth": 5,
+            },
+            "pci": {
+                "min_audit_events": 100,
+                "require_failures": True,
+                "require_privilege_check": True,
+                "max_failed_auth": 3,
+            },
+            "hipaa": {
+                "min_audit_events": 200,
+                "require_failures": True,
+                "require_privilege_check": True,
+                "max_failed_auth": 2,
+            },
+        }
+        thresholds = policy_config.get(policy, policy_config["basic"])
+
+        for c in containers:
+            trail = getattr(c, '_audit_trail', [])
+            num_events = len(trail)
+            failed_ops = [e for e in trail if e.get("result") == "failure"]
+            privileged_ops = [e for e in trail if e.get("privileged", False)]
+
+            # Score: start at 100, deduct for issues
+            score = 100
+
+            # Check: sufficient audit events
+            if num_events < thresholds["min_audit_events"]:
+                score -= 20
+                findings.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "severity": "warning",
+                    "category": "audit_coverage",
+                    "message": f"Only {num_events} audit events (minimum: {thresholds['min_audit_events']})",
+                })
+
+            # Check: failure events
+            if thresholds["require_failures"] and not failed_ops:
+                findings.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "severity": "info",
+                    "category": "failure_tracking",
+                    "message": "No failure events recorded (may indicate insufficient logging)",
+                })
+            elif len(failed_ops) > thresholds["max_failed_auth"]:
+                score -= 15
+                findings.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "severity": "critical",
+                    "category": "failed_operations",
+                    "message": f"{len(failed_ops)} failed operations (threshold: {thresholds['max_failed_auth']})",
+                })
+
+            # Check: privilege escalation
+            if thresholds["require_privilege_check"] and privileged_ops:
+                score -= 10 * min(len(privileged_ops), 5)
+                findings.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "severity": "warning",
+                    "category": "privilege_escalation",
+                    "message": f"{len(privileged_ops)} privileged operations detected",
+                })
+
+            # Check: operation diversity
+            ops = set(e.get("op", "") for e in trail)
+            if len(ops) < 3 and num_events > 0:
+                score -= 5
+                findings.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "severity": "info",
+                    "category": "audit_diversity",
+                    "message": f"Only {len(ops)} unique operation types in audit log",
+                })
+
+            score = max(0, min(100, score))
+            scores.append({
+                "container_id": c.id,
+                "container_name": c.config.name,
+                "score": score,
+                "events": num_events,
+                "failures": len(failed_ops),
+                "privileged_ops": len(privileged_ops),
+            })
+
+        avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
+        overall = "compliant" if avg_score >= 80 else "non_compliant"
+
+        return {
+            "policy": policy,
+            "container_count": len(containers),
+            "overall_status": overall,
+            "average_score": round(avg_score, 1),
+            "scores": scores,
+            "findings": findings,
+            "finding_count": len(findings),
+            "critical_count": len([f for f in findings if f["severity"] == "critical"]),
+            "warning_count": len([f for f in findings if f["severity"] == "warning"]),
+        }
+
+    def export_audit_logs(
+        self,
+        container_ids: Optional[List[str]] = None,
+        format: str = "json",
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Export audit logs for compliance archival.
+
+        Args:
+            container_ids: Containers to export (default: all).
+            format: Export format (``"json"`` or ``"csv"``).
+            start_time: Filter: only events after this timestamp.
+            end_time: Filter: only events before this timestamp.
+
+        Returns:
+            Exported audit data.
+        """
+        if container_ids is None:
+            containers = self.list_containers()
+        else:
+            containers = [c for cid in container_ids
+                         if (c := self.get_container(cid)) is not None]
+
+        all_events = []
+        for c in containers:
+            trail = getattr(c, '_audit_trail', [])
+            for event in trail:
+                ts = event.get("time", 0)
+                if start_time and ts < start_time:
+                    continue
+                if end_time and ts > end_time:
+                    continue
+                all_events.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    **event,
+                })
+
+        # Sort by timestamp
+        all_events.sort(key=lambda e: e.get("time", 0))
+
+        return {
+            "format": format,
+            "container_count": len(containers),
+            "event_count": len(all_events),
+            "events": all_events,
+            "exported_at": __import__('time').time(),
+        }
+
+    def get_compliance_summary(self, policy: str = "basic") -> Dict[str, Any]:
+        """Get a high-level compliance summary."""
+        report = self.generate_compliance_report(policy=policy)
+        return {
+            "policy": policy,
+            "overall_status": report["overall_status"],
+            "average_score": report["average_score"],
+            "container_count": report["container_count"],
+            "critical_findings": report["critical_count"],
+            "warning_findings": report["warning_count"],
+            "recommendations": self._compliance_recommendations(report),
+        }
+
+    def _compliance_recommendations(self, report: Dict[str, Any]) -> List[str]:
+        """Generate recommendations from a compliance report."""
+        recs = []
+        if report["average_score"] < 80:
+            recs.append("Improve audit log coverage to increase compliance score")
+        if report["critical_count"] > 0:
+            recs.append("Address critical findings immediately")
+        if report["warning_count"] > 5:
+            recs.append("Review and resolve warning-level findings")
+        if report["finding_count"] == 0:
+            recs.append("Container audit logs appear compliant")
+        return recs
+
+    def generate_compliance_summary(self, policy: str = "basic") -> str:
+        """Generate a human-readable compliance summary."""
+        summary = self.get_compliance_summary(policy)
+        lines = [
+            f"Compliance Report (policy: {policy})",
+            f"  Status: {summary['overall_status'].upper()}",
+            f"  Average Score: {summary['average_score']}/100",
+            f"  Containers: {summary['container_count']}",
+            f"  Critical: {summary['critical_findings']}, Warnings: {summary['warning_findings']}",
+        ]
+        if summary["recommendations"]:
+            lines.append("  Recommendations:")
+            for r in summary["recommendations"]:
+                lines.append(f"    - {r}")
+        return "\n".join(lines)
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

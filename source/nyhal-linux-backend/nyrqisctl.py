@@ -2541,6 +2541,102 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "generate_cost_report",
             "container_ids": getattr(args, 'container_ids', None),
         }
+    if command == "configure-health-check":
+        return {
+            "service": "control",
+            "op": "configure_health_check",
+            "container_id": args.container_id,
+            "check_type": getattr(args, 'check_type', 'http'),
+            "endpoint": getattr(args, 'endpoint', '/'),
+            "port": getattr(args, 'port', 80),
+            "interval_seconds": getattr(args, 'interval_seconds', 30),
+            "timeout_seconds": getattr(args, 'timeout_seconds', 5),
+            "failure_threshold": getattr(args, 'failure_threshold', 3),
+            "success_threshold": getattr(args, 'success_threshold', 1),
+        }
+    if command == "get-health-check":
+        return {
+            "service": "control",
+            "op": "get_health_check",
+            "container_id": args.container_id,
+        }
+    if command == "evaluate-health-check":
+        return {
+            "service": "control",
+            "op": "evaluate_health_check",
+            "container_id": args.container_id,
+        }
+    if command == "get-readiness-status":
+        return {
+            "service": "control",
+            "op": "get_readiness_status",
+            "container_id": args.container_id,
+        }
+    if command == "get-liveness-status":
+        return {
+            "service": "control",
+            "op": "get_liveness_status",
+            "container_id": args.container_id,
+        }
+    if command == "fleet-health-overview":
+        return {
+            "service": "control",
+            "op": "fleet_health_overview",
+        }
+    if command == "configure-escalation-chain":
+        return {
+            "service": "control",
+            "op": "configure_escalation_chain",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+        }
+    if command == "evaluate-escalation":
+        return {
+            "service": "control",
+            "op": "evaluate_escalation",
+            "container_id": args.container_id,
+            "severity": getattr(args, 'severity', 0),
+        }
+    if command == "get-escalation-status":
+        return {
+            "service": "control",
+            "op": "get_escalation_status",
+            "container_id": args.container_id,
+        }
+    if command == "reset-escalation-state":
+        return {
+            "service": "control",
+            "op": "reset_escalation_state",
+            "container_id": args.container_id,
+            "chain_name": getattr(args, 'chain_name', None),
+        }
+    if command == "disable-escalation-chain":
+        return {
+            "service": "control",
+            "op": "disable_escalation_chain",
+            "container_id": args.container_id,
+            "chain_name": args.chain_name,
+        }
+    if command == "generate-compliance-report":
+        return {
+            "service": "control",
+            "op": "generate_compliance_report",
+            "container_ids": getattr(args, 'container_ids', None),
+            "policy": getattr(args, 'policy', 'basic'),
+        }
+    if command == "export-audit-logs":
+        return {
+            "service": "control",
+            "op": "export_audit_logs",
+            "container_ids": getattr(args, 'container_ids', None),
+            "format": getattr(args, 'format', 'json'),
+        }
+    if command == "get-compliance-summary":
+        return {
+            "service": "control",
+            "op": "get_compliance_summary",
+            "policy": getattr(args, 'policy', 'basic'),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5883,6 +5979,66 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for c in resp.get("containers", [])[:5]:
             lines.append(f"  {c.get('name', '?')}: ${c.get('cost_per_hour', 0):.4f}/h ({c.get('memory_mb', 0)}MB)")
         return "\n".join(lines)
+    if command == "configure-health-check":
+        return f"Health check configured for {resp.get('container_name', '?')}: type={resp.get('health_check', {}).get('type', '?')}"
+    if command == "get-health-check":
+        hc = resp.get('health_check', {})
+        state = resp.get('state', {})
+        lines = [
+            f"Health check for {resp.get('container_name', '?')}:",
+            f"  Type: {hc.get('type', 'none') if hc else 'none'}",
+            f"  Status: {state.get('status', 'unknown')}",
+            f"  Failures: {state.get('consecutive_failures', 0)}, Successes: {state.get('consecutive_successes', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "evaluate-health-check":
+        return f"Health check for {resp.get('container_name', '?')}: {resp.get('status', '?')} - {resp.get('detail', '')}"
+    if command == "get-readiness-status":
+        return f"Readiness for {resp.get('container_name', '?')}: ready={resp.get('ready', False)}, health={resp.get('health_status', '?')}"
+    if command == "get-liveness-status":
+        return f"Liveness for {resp.get('container_name', '?')}: alive={resp.get('alive', False)}, health={resp.get('health_status', '?')}"
+    if command == "fleet-health-overview":
+        s = resp.get('summary', {})
+        lines = [
+            "Fleet Health Overview:",
+            f"  Healthy: {s.get('healthy_count', 0)}",
+            f"  Unhealthy: {s.get('unhealthy_count', 0)}",
+            f"  Pending: {s.get('pending_count', 0)}",
+            f"  No check: {s.get('no_check_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "configure-escalation-chain":
+        chain = resp.get('chain', {})
+        return f"Escalation chain '{chain.get('name', '?')}' configured for {resp.get('container_name', '?')} with {len(chain.get('steps', []))} steps"
+    if command == "evaluate-escalation":
+        lines = [f"Escalation for {resp.get('container_name', '?')} (severity={resp.get('severity', 0)}):"]
+        for e in resp.get('evaluations', []):
+            lines.append(f"  Chain {e.get('chain', '?')}: {e.get('action', 'none') or e.get('message', '')}")
+        return "\n".join(lines)
+    if command == "get-escalation-status":
+        lines = [f"Escalation status for {resp.get('container_name', '?')}:"]
+        for name, chain in resp.get('chains', {}).items():
+            lines.append(f"  {name}: active={chain.get('active')}, actions={chain.get('total_actions', 0)}")
+        return "\n".join(lines)
+    if command == "generate-compliance-report":
+        lines = [
+            f"Compliance Report (policy: {resp.get('policy', '?')}):",
+            f"  Status: {resp.get('overall_status', '?').upper()}",
+            f"  Score: {resp.get('average_score', 0)}/100",
+            f"  Critical: {resp.get('critical_count', 0)}, Warnings: {resp.get('warning_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "export-audit-logs":
+        return f"Exported {resp.get('event_count', 0)} audit events ({resp.get('format', '?')} format)"
+    if command == "get-compliance-summary":
+        lines = [
+            f"Compliance Summary (policy: {resp.get('policy', '?')}):",
+            f"  Status: {resp.get('overall_status', '?').upper()}",
+            f"  Score: {resp.get('average_score', 0)}/100",
+        ]
+        for r in resp.get('recommendations', []):
+            lines.append(f"  - {r}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -7870,6 +8026,77 @@ def build_parser() -> argparse.ArgumentParser:
     gcrep = sub.add_parser("generate-cost-report", help="Generate cost report")
     gcrep.add_argument("--container-ids", nargs="+", default=None)
     gcrep.set_defaults(command="generate-cost-report")
+
+    # Health check subcommands
+    chc = sub.add_parser("configure-health-check", help="Configure health check probe")
+    chc.add_argument("container_id")
+    chc.add_argument("--check-type", default="http", choices=["http", "tcp", "exec", "process"])
+    chc.add_argument("--endpoint", default="/")
+    chc.add_argument("--port", type=int, default=80)
+    chc.add_argument("--interval-seconds", type=int, default=30)
+    chc.add_argument("--timeout-seconds", type=int, default=5)
+    chc.add_argument("--failure-threshold", type=int, default=3)
+    chc.add_argument("--success-threshold", type=int, default=1)
+    chc.set_defaults(command="configure-health-check")
+
+    ghc = sub.add_parser("get-health-check", help="Get health check config")
+    ghc.add_argument("container_id")
+    ghc.set_defaults(command="get-health-check")
+
+    ehc = sub.add_parser("evaluate-health-check", help="Evaluate health check")
+    ehc.add_argument("container_id")
+    ehc.set_defaults(command="evaluate-health-check")
+
+    grs = sub.add_parser("get-readiness-status", help="Get readiness status")
+    grs.add_argument("container_id")
+    grs.set_defaults(command="get-readiness-status")
+
+    gls = sub.add_parser("get-liveness-status", help="Get liveness status")
+    gls.add_argument("container_id")
+    gls.set_defaults(command="get-liveness-status")
+
+    fho = sub.add_parser("fleet-health-overview", help="Fleet health overview")
+    fho.set_defaults(command="fleet-health-overview")
+
+    # Escalation chain subcommands
+    cec = sub.add_parser("configure-escalation-chain", help="Configure escalation chain")
+    cec.add_argument("container_id")
+    cec.add_argument("--name", default="default")
+    cec.set_defaults(command="configure-escalation-chain")
+
+    eev = sub.add_parser("evaluate-escalation", help="Evaluate escalation")
+    eev.add_argument("container_id")
+    eev.add_argument("--severity", type=float, default=0)
+    eev.set_defaults(command="evaluate-escalation")
+
+    ges = sub.add_parser("get-escalation-status", help="Get escalation status")
+    ges.add_argument("container_id")
+    ges.set_defaults(command="get-escalation-status")
+
+    res = sub.add_parser("reset-escalation-state", help="Reset escalation state")
+    res.add_argument("container_id")
+    res.add_argument("--chain-name", default=None)
+    res.set_defaults(command="reset-escalation-state")
+
+    dec = sub.add_parser("disable-escalation-chain", help="Disable escalation chain")
+    dec.add_argument("container_id")
+    dec.add_argument("chain_name")
+    dec.set_defaults(command="disable-escalation-chain")
+
+    # Compliance subcommands
+    gcr3 = sub.add_parser("generate-compliance-report", help="Generate compliance report")
+    gcr3.add_argument("--container-ids", nargs="+", default=None)
+    gcr3.add_argument("--policy", default="basic", choices=["basic", "strict", "pci", "hipaa"])
+    gcr3.set_defaults(command="generate-compliance-report")
+
+    eal = sub.add_parser("export-audit-logs", help="Export audit logs")
+    eal.add_argument("--container-ids", nargs="+", default=None)
+    eal.add_argument("--format", default="json", choices=["json", "csv"])
+    eal.set_defaults(command="export-audit-logs")
+
+    gcs = sub.add_parser("get-compliance-summary", help="Get compliance summary")
+    gcs.add_argument("--policy", default="basic", choices=["basic", "strict", "pci", "hipaa"])
+    gcs.set_defaults(command="get-compliance-summary")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
