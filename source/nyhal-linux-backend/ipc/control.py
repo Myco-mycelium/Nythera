@@ -1845,6 +1845,57 @@ class ControlService:
             elif op == "stop_composition":
                 self._stop_composition(server, sender_path,
                                   msg.message_id, request)
+            elif op == "create_workload_identity":
+                self._create_workload_identity(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "validate_workload_identity":
+                self._validate_workload_identity(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "rotate_workload_identity":
+                self._rotate_workload_identity(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "revoke_workload_identity":
+                self._revoke_workload_identity(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "list_workload_identities":
+                self._list_workload_identities(server, sender_path,
+                                         msg.message_id)
+            elif op == "scan_image_vulnerabilities":
+                self._scan_image_vulnerabilities(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "set_vuln_scan_policy":
+                self._set_vuln_scan_policy(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "evaluate_vuln_policy":
+                self._evaluate_vuln_policy(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "get_scan_history":
+                self._get_scan_history(server, sender_path,
+                                  msg.message_id)
+            elif op == "register_ebpf_hook":
+                self._register_ebpf_hook(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "attach_ebpf_hook":
+                self._attach_ebpf_hook(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "detach_ebpf_hook":
+                self._detach_ebpf_hook(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "record_ebpf_event":
+                self._record_ebpf_event(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_ebpf_metrics":
+                self._get_ebpf_metrics(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_ebpf_hooks":
+                self._list_ebpf_hooks(server, sender_path,
+                                msg.message_id)
+            elif op == "toggle_ebpf_hook":
+                self._toggle_ebpf_hook(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "delete_ebpf_hook":
+                self._delete_ebpf_hook(server, sender_path,
+                                 msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9271,6 +9322,110 @@ class ControlService:
 
     def _stop_composition(self, server, sender_path, call_id, request):
         result = self.container_manager.stop_composition(request.get("composition_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_workload_identity(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_workload_identity(
+            name=request.get("name", "default"),
+            spiffe_id=request.get("spiffe_id", ""),
+            trust_domain=request.get("trust_domain", "nyrqis.local"),
+            sans=request.get("sans"),
+            ttl_seconds=request.get("ttl_seconds", 3600.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _validate_workload_identity(self, server, sender_path, call_id, request):
+        result = self.container_manager.validate_workload_identity(request.get("name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rotate_workload_identity(self, server, sender_path, call_id, request):
+        result = self.container_manager.rotate_workload_identity(
+            name=request.get("name", "default"),
+            new_ttl_seconds=request.get("new_ttl_seconds"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _revoke_workload_identity(self, server, sender_path, call_id, request):
+        result = self.container_manager.revoke_workload_identity(request.get("name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_workload_identities(self, server, sender_path, call_id):
+        result = self.container_manager.list_workload_identities()
+        self._reply(server, sender_path, call_id, {"ok": True, "identities": result})
+
+    def _scan_image_vulnerabilities(self, server, sender_path, call_id, request):
+        result = self.container_manager.scan_image_vulnerabilities(
+            image_ref=request.get("image_ref", ""),
+            severity_filter=request.get("severity_filter"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _set_vuln_scan_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.set_vuln_scan_policy(
+            name=request.get("name", "default"),
+            block_on_critical=request.get("block_on_critical", True),
+            block_on_high=request.get("block_on_high", False),
+            max_vulns=request.get("max_vulns", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_vuln_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_vuln_policy(
+            policy_name=request.get("policy_name", "default"),
+            image_ref=request.get("image_ref", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_scan_history(self, server, sender_path, call_id):
+        result = self.container_manager.get_scan_history()
+        self._reply(server, sender_path, call_id, {"ok": True, "scans": result})
+
+    def _register_ebpf_hook(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_ebpf_hook(
+            name=request.get("name", "default"),
+            hook_type=request.get("hook_type", "kprobe"),
+            target=request.get("target", ""),
+            metric_name=request.get("metric_name", ""),
+            description=request.get("description", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _attach_ebpf_hook(self, server, sender_path, call_id, request):
+        result = self.container_manager.attach_ebpf_hook(
+            hook_name=request.get("hook_name", "default"),
+            container_id=request.get("container_id"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detach_ebpf_hook(self, server, sender_path, call_id, request):
+        result = self.container_manager.detach_ebpf_hook(request.get("hook_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_ebpf_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_ebpf_event(
+            hook_name=request.get("hook_name", "default"),
+            value=request.get("value", 1.0),
+            labels=request.get("labels"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_ebpf_metrics(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_ebpf_metrics(request.get("metric_name"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_ebpf_hooks(self, server, sender_path, call_id):
+        result = self.container_manager.list_ebpf_hooks()
+        self._reply(server, sender_path, call_id, {"ok": True, "hooks": result})
+
+    def _toggle_ebpf_hook(self, server, sender_path, call_id, request):
+        result = self.container_manager.toggle_ebpf_hook(
+            hook_name=request.get("hook_name", "default"),
+            enabled=request.get("enabled", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_ebpf_hook(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_ebpf_hook(request.get("hook_name", "default"))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

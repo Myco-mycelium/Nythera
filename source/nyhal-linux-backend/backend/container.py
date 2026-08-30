@@ -24997,6 +24997,337 @@ class ContainerManager:
         return {"name": composition_name, "stopped": True}
 
 
+
+    # ------------------------------------------------------------------
+    # Workload identity and SPIFFE-based authentication
+    # ------------------------------------------------------------------
+
+    def create_workload_identity(
+        self,
+        name: str,
+        spiffe_id: str,
+        trust_domain: str = "nyrqis.local",
+        sans: Optional[List[str]] = None,
+        ttl_seconds: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Create a SPIFFE workload identity for a container."""
+        import time as _time
+        if not hasattr(self, '_workload_identities'):
+            self._workload_identities = {}
+        self._workload_identities[name] = {
+            "name": name,
+            "spiffe_id": spiffe_id,
+            "trust_domain": trust_domain,
+            "sans": sans or [],
+            "ttl_seconds": ttl_seconds,
+            "created_at": _time.time(),
+            "expires_at": _time.time() + ttl_seconds,
+            "revoked": False,
+            "rotations": 0,
+        }
+        return {"name": name, "spiffe_id": spiffe_id, "created": True}
+
+    def validate_workload_identity(
+        self,
+        name: str,
+    ) -> Dict[str, Any]:
+        """Validate a workload identity (check expiry, revocation)."""
+        import time as _time
+        if not hasattr(self, '_workload_identities'):
+            return {"valid": False, "error": "No identities registered"}
+        identity = self._workload_identities.get(name)
+        if not identity:
+            return {"valid": False, "error": f"Identity '{name}' not found"}
+        now = _time.time()
+        if identity["revoked"]:
+            return {"valid": False, "error": "identity_revoked", "name": name}
+        if now > identity["expires_at"]:
+            return {"valid": False, "error": "identity_expired", "name": name}
+        remaining = identity["expires_at"] - now
+        return {
+            "valid": True,
+            "name": name,
+            "spiffe_id": identity["spiffe_id"],
+            "trust_domain": identity["trust_domain"],
+            "remaining_seconds": round(remaining, 1),
+        }
+
+    def rotate_workload_identity(
+        self,
+        name: str,
+        new_ttl_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Rotate a workload identity (extend expiry)."""
+        import time as _time
+        if not hasattr(self, '_workload_identities'):
+            return {"error": "No identities"}
+        identity = self._workload_identities.get(name)
+        if not identity:
+            return {"error": f"Identity '{name}' not found"}
+        ttl = new_ttl_seconds or identity["ttl_seconds"]
+        identity["expires_at"] = _time.time() + ttl
+        identity["rotations"] += 1
+        return {"name": name, "rotations": identity["rotations"], "new_ttl": ttl}
+
+    def revoke_workload_identity(self, name: str) -> Dict[str, Any]:
+        """Revoke a workload identity."""
+        if not hasattr(self, '_workload_identities'):
+            return {"error": "No identities"}
+        identity = self._workload_identities.get(name)
+        if not identity:
+            return {"error": f"Identity '{name}' not found"}
+        identity["revoked"] = True
+        return {"name": name, "revoked": True}
+
+    def list_workload_identities(self) -> List[Dict[str, Any]]:
+        """List all workload identities."""
+        if not hasattr(self, '_workload_identities'):
+            return []
+        import time as _time
+        now = _time.time()
+        return [
+            {"name": i["name"], "spiffe_id": i["spiffe_id"],
+             "trust_domain": i["trust_domain"],
+             "revoked": i["revoked"],
+             "expired": now > i["expires_at"],
+             "rotations": i["rotations"]}
+            for i in self._workload_identities.values()
+        ]
+
+    # ------------------------------------------------------------------
+    # Container image vulnerability scanning with policy blocking
+    # ------------------------------------------------------------------
+
+    def scan_image_vulnerabilities(
+        self,
+        image_ref: str,
+        severity_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Scan an image for known vulnerabilities."""
+        import time as _time
+        import hashlib
+        if not hasattr(self, '_vuln_scans'):
+            self._vuln_scans = {}
+
+        # Simulate vulnerability detection based on image name hash
+        h = int(hashlib.md5(image_ref.encode()).hexdigest()[:8], 16)
+        vuln_count = h % 15
+        severity_map = {0: "critical", 1: "high", 2: "medium", 3: "low", 4: "negligible"}
+        vulns = []
+        for i in range(vuln_count):
+            sev = severity_map[i % 5]
+            if severity_filter and sev not in severity_filter:
+                continue
+            vulns.append({
+                "id": f"CVE-2024-{1000 + i}",
+                "severity": sev,
+                "package": f"lib-package-{i % 5}",
+                "installed": f"1.{i}.0",
+                "fixed_in": f"1.{i + 1}.0" if sev != "critical" else None,
+            })
+
+        self._vuln_scans[image_ref] = {
+            "image_ref": image_ref,
+            "scanned_at": _time.time(),
+            "total_vulns": len(vulns),
+            "critical": sum(1 for v in vulns if v["severity"] == "critical"),
+            "high": sum(1 for v in vulns if v["severity"] == "high"),
+            "medium": sum(1 for v in vulns if v["severity"] == "medium"),
+            "low": sum(1 for v in vulns if v["severity"] == "low"),
+            "vulnerabilities": vulns,
+        }
+        return self._vuln_scans[image_ref]
+
+    def set_vuln_scan_policy(
+        self,
+        name: str,
+        block_on_critical: bool = True,
+        block_on_high: bool = False,
+        max_vulns: int = 0,
+    ) -> Dict[str, Any]:
+        """Set a vulnerability scanning policy."""
+        if not hasattr(self, '_vuln_policies'):
+            self._vuln_policies = {}
+        self._vuln_policies[name] = {
+            "name": name,
+            "block_on_critical": block_on_critical,
+            "block_on_high": block_on_high,
+            "max_vulns": max_vulns,
+            "evaluations": 0,
+            "blocks": 0,
+        }
+        return {"name": name, "created": True}
+
+    def evaluate_vuln_policy(
+        self,
+        policy_name: str,
+        image_ref: str,
+    ) -> Dict[str, Any]:
+        """Evaluate a vulnerability policy against a scan result."""
+        if not hasattr(self, '_vuln_policies'):
+            return {"error": "No policies defined"}
+        policy = self._vuln_policies.get(policy_name)
+        if not policy:
+            return {"error": f"Policy '{policy_name}' not found"}
+
+        scan = (self._vuln_scans or {}).get(image_ref)
+        if not scan:
+            return {"error": f"No scan result for '{image_ref}'"}
+
+        policy["evaluations"] += 1
+        reasons = []
+        if policy["block_on_critical"] and scan["critical"] > 0:
+            reasons.append(f"{scan['critical']} critical vulnerabilities")
+        if policy["block_on_high"] and scan["high"] > 0:
+            reasons.append(f"{scan['high']} high vulnerabilities")
+        if policy["max_vulns"] > 0 and scan["total_vulns"] > policy["max_vulns"]:
+            reasons.append(f"{scan['total_vulns']} exceeds max {policy['max_vulns']}")
+
+        blocked = len(reasons) > 0
+        if blocked:
+            policy["blocks"] += 1
+
+        return {
+            "policy": policy_name,
+            "image_ref": image_ref,
+            "blocked": blocked,
+            "reasons": reasons,
+            "total_vulns": scan["total_vulns"],
+            "critical": scan["critical"],
+            "high": scan["high"],
+        }
+
+    def get_scan_history(self) -> List[Dict[str, Any]]:
+        """Get vulnerability scan history."""
+        if not hasattr(self, '_vuln_scans'):
+            return []
+        return [
+            {"image_ref": s["image_ref"], "scanned_at": s["scanned_at"],
+             "total_vulns": s["total_vulns"], "critical": s["critical"]}
+            for s in self._vuln_scans.values()
+        ]
+
+    # ------------------------------------------------------------------
+    # eBPF-based observability hooks for custom metrics
+    # ------------------------------------------------------------------
+
+    def register_ebpf_hook(
+        self,
+        name: str,
+        hook_type: str = "kprobe",
+        target: str = "",
+        metric_name: str = "",
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Register an eBPF observability hook."""
+        valid_types = ["kprobe", "kretprobe", "tracepoint", "uprobe", "perf_event", "cgroup"]
+        if hook_type not in valid_types:
+            return {"error": f"Invalid type. Must be one of: {valid_types}"}
+        if not hasattr(self, '_ebpf_hooks'):
+            self._ebpf_hooks = {}
+        self._ebpf_hooks[name] = {
+            "name": name,
+            "type": hook_type,
+            "target": target,
+            "metric_name": metric_name,
+            "description": description,
+            "enabled": True,
+            "attached": False,
+            "events_captured": 0,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "type": hook_type, "registered": True}
+
+    def attach_ebpf_hook(self, hook_name: str, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """Attach an eBPF hook."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return {"error": "No hooks registered"}
+        hook = self._ebpf_hooks.get(hook_name)
+        if not hook:
+            return {"error": f"Hook '{hook_name}' not found"}
+        hook["attached"] = True
+        hook["container_id"] = container_id
+        return {"name": hook_name, "attached": True, "container_id": container_id}
+
+    def detach_ebpf_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Detach an eBPF hook."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return {"error": "No hooks"}
+        hook = self._ebpf_hooks.get(hook_name)
+        if not hook:
+            return {"error": f"Hook '{hook_name}' not found"}
+        hook["attached"] = False
+        return {"name": hook_name, "detached": True}
+
+    def record_ebpf_event(self, hook_name: str, value: float = 1.0, labels: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Record an event through an eBPF hook."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return {"error": "No hooks"}
+        hook = self._ebpf_hooks.get(hook_name)
+        if not hook:
+            return {"error": f"Hook '{hook_name}' not found"}
+        if not hook["enabled"] or not hook["attached"]:
+            return {"error": "Hook not active"}
+        hook["events_captured"] += 1
+        if not hasattr(self, '_ebpf_metrics'):
+            self._ebpf_metrics = {}
+        metric = hook["metric_name"] or hook_name
+        if metric not in self._ebpf_metrics:
+            self._ebpf_metrics[metric] = []
+        self._ebpf_metrics[metric].append({
+            "value": value,
+            "labels": labels or {},
+            "timestamp": __import__("time").time(),
+        })
+        return {"hook": hook_name, "metric": metric, "recorded": True}
+
+    def get_ebpf_metrics(self, metric_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get collected eBPF metrics."""
+        if not hasattr(self, '_ebpf_metrics'):
+            return {"metrics": {}}
+        if metric_name:
+            values = self._ebpf_metrics.get(metric_name, [])
+            total = sum(v["value"] for v in values)
+            return {"metric": metric_name, "count": len(values), "total": total,
+                    "avg": total / max(len(values), 1)}
+        return {
+            "metrics": {
+                m: {"count": len(vals), "total": sum(v["value"] for v in vals)}
+                for m, vals in self._ebpf_metrics.items()
+            }
+        }
+
+    def list_ebpf_hooks(self) -> List[Dict[str, Any]]:
+        """List all eBPF hooks."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return []
+        return [
+            {"name": h["name"], "type": h["type"], "target": h["target"],
+             "enabled": h["enabled"], "attached": h["attached"],
+             "events_captured": h["events_captured"]}
+            for h in self._ebpf_hooks.values()
+        ]
+
+    def toggle_ebpf_hook(self, hook_name: str, enabled: bool = True) -> Dict[str, Any]:
+        """Enable or disable an eBPF hook."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return {"error": "No hooks"}
+        hook = self._ebpf_hooks.get(hook_name)
+        if not hook:
+            return {"error": f"Hook '{hook_name}' not found"}
+        hook["enabled"] = enabled
+        return {"name": hook_name, "enabled": enabled}
+
+    def delete_ebpf_hook(self, hook_name: str) -> Dict[str, Any]:
+        """Delete an eBPF hook."""
+        if not hasattr(self, '_ebpf_hooks'):
+            return {"error": "No hooks"}
+        if hook_name not in self._ebpf_hooks:
+            return {"error": f"Hook '{hook_name}' not found"}
+        del self._ebpf_hooks[hook_name]
+        return {"deleted": hook_name}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

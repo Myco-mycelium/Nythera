@@ -31572,6 +31572,164 @@ class TestContainerComposition(unittest.TestCase):
         self.assertIn("2", text)
 
 
+class TestWorkloadIdentity(unittest.TestCase):
+    """Tests for workload identity and SPIFFE-based authentication."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_identity(self):
+        """create_workload_identity stores identity."""
+        mgr = self._manager()
+        r = mgr.create_workload_identity("svc1", spiffe_id="spiffe://nyrqis.local/svc1")
+        self.assertTrue(r["created"])
+
+    def test_validate_valid(self):
+        """validate_workload_identity passes for valid identity."""
+        mgr = self._manager()
+        mgr.create_workload_identity("svc2", spiffe_id="spiffe://nyrqis.local/svc2", ttl_seconds=3600)
+        r = mgr.validate_workload_identity("svc2")
+        self.assertTrue(r["valid"])
+
+    def test_validate_revoked(self):
+        """validate_workload_identity fails for revoked identity."""
+        mgr = self._manager()
+        mgr.create_workload_identity("svc3", spiffe_id="spiffe://nyrqis.local/svc3")
+        mgr.revoke_workload_identity("svc3")
+        r = mgr.validate_workload_identity("svc3")
+        self.assertFalse(r["valid"])
+        self.assertEqual(r["error"], "identity_revoked")
+
+    def test_rotate_identity(self):
+        """rotate_workload_identity extends expiry."""
+        mgr = self._manager()
+        mgr.create_workload_identity("svc4", spiffe_id="spiffe://nyrqis.local/svc4")
+        r = mgr.rotate_workload_identity("svc4", new_ttl_seconds=7200)
+        self.assertEqual(r["rotations"], 1)
+
+    def test_list_identities(self):
+        """list_workload_identities returns all."""
+        mgr = self._manager()
+        mgr.create_workload_identity("svc5", spiffe_id="spiffe://nyrqis.local/svc5")
+        mgr.create_workload_identity("svc6", spiffe_id="spiffe://nyrqis.local/svc6")
+        r = mgr.list_workload_identities()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_identity(self):
+        """format_human handles validate-workload-identity."""
+        from nyrqisctl import format_human
+        text = format_human("validate-workload-identity", {"name": "svc1", "valid": True, "spiffe_id": "spiffe://nyrqis.local/svc1", "remaining_seconds": 3600})
+        self.assertIn("VALID", text)
+
+
+class TestVulnScanning(unittest.TestCase):
+    """Tests for vulnerability scanning with policy blocking."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_scan_image(self):
+        """scan_image_vulnerabilities returns results."""
+        mgr = self._manager()
+        r = mgr.scan_image_vulnerabilities("nginx:latest")
+        self.assertIn("total_vulns", r)
+        self.assertIn("vulnerabilities", r)
+
+    def test_set_vuln_policy(self):
+        """set_vuln_scan_policy stores policy."""
+        mgr = self._manager()
+        r = mgr.set_vuln_scan_policy("strict", block_on_critical=True, block_on_high=True)
+        self.assertTrue(r["created"])
+
+    def test_evaluate_vuln_policy_block(self):
+        """evaluate_vuln_policy blocks on critical."""
+        mgr = self._manager()
+        mgr.scan_image_vulnerabilities("nginx:latest")
+        mgr.set_vuln_scan_policy("block-crit", block_on_critical=True, max_vulns=0)
+        r = mgr.evaluate_vuln_policy("block-crit", "nginx:latest")
+        # Should block if there are critical vulns (deterministic from hash)
+        self.assertIn("blocked", r)
+        self.assertIn("reasons", r)
+
+    def test_scan_history(self):
+        """get_scan_history returns scans."""
+        mgr = self._manager()
+        mgr.scan_image_vulnerabilities("img1:latest")
+        mgr.scan_image_vulnerabilities("img2:latest")
+        r = mgr.get_scan_history()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_scan(self):
+        """format_human handles scan-image."""
+        from nyrqisctl import format_human
+        text = format_human("scan-image", {"image_ref": "nginx:latest", "total_vulns": 5, "critical": 1, "high": 2})
+        self.assertIn("5", text)
+        self.assertIn("1", text)
+
+
+class TestEBPFObservability(unittest.TestCase):
+    """Tests for eBPF-based observability hooks."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_register_hook(self):
+        """register_ebpf_hook stores hook."""
+        mgr = self._manager()
+        r = mgr.register_ebpf_hook("syscalls", hook_type="tracepoint", target="sys_enter_open")
+        self.assertTrue(r["registered"])
+        self.assertEqual(r["type"], "tracepoint")
+
+    def test_register_invalid_type(self):
+        """register_ebpf_hook rejects invalid type."""
+        mgr = self._manager()
+        r = mgr.register_ebpf_hook("bad", hook_type="invalid")
+        self.assertIn("error", r)
+
+    def test_attach_hook(self):
+        """attach_ebpf_hook attaches to container."""
+        mgr = self._manager()
+        mgr.register_ebpf_hook("net-trace", hook_type="kprobe", target="tcp_sendmsg")
+        r = mgr.attach_ebpf_hook("net-trace", container_id="c1")
+        self.assertTrue(r["attached"])
+
+    def test_record_event(self):
+        """record_ebpf_event stores metrics."""
+        mgr = self._manager()
+        mgr.register_ebpf_hook("io-latency", hook_type="kprobe", target="blk_mq_start_request", metric_name="io_latency_us")
+        mgr.attach_ebpf_hook("io-latency")
+        mgr.record_ebpf_event("io-latency", value=42.5)
+        mgr.record_ebpf_event("io-latency", value=18.3)
+        r = mgr.get_ebpf_metrics("io_latency_us")
+        self.assertEqual(r["count"], 2)
+        self.assertAlmostEqual(r["total"], 60.8)
+
+    def test_record_event_inactive(self):
+        """record_ebpf_event rejects inactive hook."""
+        mgr = self._manager()
+        mgr.register_ebpf_hook("inactive", hook_type="kprobe")
+        r = mgr.record_ebpf_event("inactive")
+        self.assertIn("error", r)
+
+    def test_list_hooks(self):
+        """list_ebpf_hooks returns all."""
+        mgr = self._manager()
+        mgr.register_ebpf_hook("h1", hook_type="kprobe")
+        mgr.register_ebpf_hook("h2", hook_type="tracepoint")
+        r = mgr.list_ebpf_hooks()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_hook(self):
+        """format_human handles list-ebpf-hooks."""
+        from nyrqisctl import format_human
+        text = format_human("list-ebpf-hooks", {"hooks": [{"name": "syscalls", "type": "tracepoint", "target": "sys_enter", "enabled": True, "attached": True, "events_captured": 42}]})
+        self.assertIn("syscalls", text)
+        self.assertIn("42", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -31793,6 +31951,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestGPUScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestPolicyEngine))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerComposition))
+    suite.addTests(loader.loadTestsFromTestCase(TestWorkloadIdentity))
+    suite.addTests(loader.loadTestsFromTestCase(TestVulnScanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestEBPFObservability))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

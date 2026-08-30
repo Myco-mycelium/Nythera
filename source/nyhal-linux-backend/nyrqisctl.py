@@ -4076,6 +4076,103 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "stop_composition",
             "composition_name": args.composition_name,
         }
+    if command == "create-workload-identity":
+        return {
+            "service": "control",
+            "op": "create_workload_identity",
+            "name": args.name,
+            "spiffe_id": args.spiffe_id,
+            "trust_domain": getattr(args, 'trust_domain', 'nyrqis.local'),
+            "sans": getattr(args, 'sans', None),
+            "ttl_seconds": getattr(args, 'ttl_seconds', 3600.0),
+        }
+    if command == "validate-workload-identity":
+        return {
+            "service": "control",
+            "op": "validate_workload_identity",
+            "name": args.name,
+        }
+    if command == "rotate-workload-identity":
+        return {
+            "service": "control",
+            "op": "rotate_workload_identity",
+            "name": args.name,
+            "new_ttl_seconds": getattr(args, 'new_ttl_seconds', None),
+        }
+    if command == "revoke-workload-identity":
+        return {
+            "service": "control",
+            "op": "revoke_workload_identity",
+            "name": args.name,
+        }
+    if command == "list-workload-identities":
+        return {
+            "service": "control",
+            "op": "list_workload_identities",
+        }
+    if command == "scan-image":
+        return {
+            "service": "control",
+            "op": "scan_image_vulnerabilities",
+            "image_ref": args.image_ref,
+            "severity_filter": getattr(args, 'severity_filter', None),
+        }
+    if command == "set-vuln-policy":
+        return {
+            "service": "control",
+            "op": "set_vuln_scan_policy",
+            "name": args.name,
+            "block_on_critical": getattr(args, 'block_on_critical', True),
+            "block_on_high": getattr(args, 'block_on_high', False),
+            "max_vulns": getattr(args, 'max_vulns', 0),
+        }
+    if command == "evaluate-vuln-policy":
+        return {
+            "service": "control",
+            "op": "evaluate_vuln_policy",
+            "policy_name": args.policy_name,
+            "image_ref": args.image_ref,
+        }
+    if command == "scan-history":
+        return {
+            "service": "control",
+            "op": "get_scan_history",
+        }
+    if command == "register-ebpf-hook":
+        return {
+            "service": "control",
+            "op": "register_ebpf_hook",
+            "name": args.name,
+            "hook_type": getattr(args, 'hook_type', 'kprobe'),
+            "target": getattr(args, 'target', ''),
+            "metric_name": getattr(args, 'metric_name', ''),
+            "description": getattr(args, 'description', ''),
+        }
+    if command == "attach-ebpf-hook":
+        return {
+            "service": "control",
+            "op": "attach_ebpf_hook",
+            "hook_name": args.hook_name,
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "record-ebpf-event":
+        return {
+            "service": "control",
+            "op": "record_ebpf_event",
+            "hook_name": args.hook_name,
+            "value": getattr(args, 'value', 1.0),
+        }
+    if command == "ebpf-metrics":
+        return {
+            "service": "control",
+            "op": "get_ebpf_metrics",
+            "metric_name": getattr(args, 'metric_name', None),
+        }
+    if command == "list-ebpf-hooks":
+        return {
+            "service": "control",
+            "op": "list_ebpf_hooks",
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7971,6 +8068,70 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return f"Composition '{resp.get('name', '?')}' started ({resp.get('total', 0)} containers)"
     if command == "stop-composition":
         return f"Composition '{resp.get('name', '?')}' stopped"
+    if command == "create-workload-identity":
+        return f"Identity '{resp.get('name', '?')}' created (SPIFFE: {resp.get('spiffe_id', '?')})"
+    if command == "validate-workload-identity":
+        valid = resp.get("valid", False)
+        status = "VALID" if valid else f"INVALID ({resp.get('error', '?')})"
+        lines = [f"Identity '{resp.get('name', '?')}': {status}"]
+        if valid:
+            lines.append(f"  spiffe_id: {resp.get('spiffe_id', '?')}")
+            lines.append(f"  remaining: {resp.get('remaining_seconds', 0):.0f}s")
+        return "\n".join(lines)
+    if command == "rotate-workload-identity":
+        return f"Identity '{resp.get('name', '?')}' rotated (#{resp.get('rotations', 0)})"
+    if command == "revoke-workload-identity":
+        return f"Identity '{resp.get('name', '?')}' revoked"
+    if command == "list-workload-identities":
+        ids = resp.get("identities", [])
+        lines = ["Workload Identities:"]
+        for i in ids:
+            status = "revoked" if i["revoked"] else ("expired" if i["expired"] else "active")
+            lines.append(f"  {i['name']}: {i['spiffe_id']} [{status}] (rotations: {i['rotations']})")
+        if not ids:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "scan-image":
+        lines = [f"Scan: {resp.get('image_ref', '?')}",
+                 f"  total: {resp.get('total_vulns', 0)}, critical: {resp.get('critical', 0)}, high: {resp.get('high', 0)}"]
+        return "\n".join(lines)
+    if command == "evaluate-vuln-policy":
+        status = "BLOCKED" if resp.get("blocked") else "PASSED"
+        lines = [f"Vuln policy '{resp.get('policy', '?')}': {status}"]
+        for r in resp.get("reasons", []):
+            lines.append(f"  REASON: {r}")
+        return "\n".join(lines)
+    if command == "scan-history":
+        scans = resp.get("scans", [])
+        lines = ["Scan History:"]
+        for s in scans:
+            lines.append(f"  {s['image_ref']}: {s['total_vulns']} vulns ({s['critical']} critical)")
+        if not scans:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "register-ebpf-hook":
+        return f"eBPF hook '{resp.get('name', '?')}' registered as {resp.get('type', '?')}"
+    if command == "attach-ebpf-hook":
+        return f"eBPF hook '{resp.get('name', '?')}' attached"
+    if command == "ebpf-metrics":
+        metrics = resp.get("metrics", {})
+        if "metric" in resp:
+            return f"Metric '{resp['metric']}': count={resp['count']}, total={resp['total']:.2f}, avg={resp['avg']:.2f}"
+        lines = ["eBPF Metrics:"]
+        for m, info in metrics.items():
+            lines.append(f"  {m}: count={info['count']}, total={info['total']:.2f}")
+        if not metrics:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "list-ebpf-hooks":
+        hooks = resp.get("hooks", [])
+        lines = ["eBPF Hooks:"]
+        for h in hooks:
+            status = "attached" if h["attached"] else "detached"
+            lines.append(f"  {h['name']} ({h['type']}): {status}, {h['events_captured']} events")
+        if not hooks:
+            lines.append("  (none)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -11834,6 +11995,78 @@ def build_parser() -> argparse.ArgumentParser:
     stcomp = sub.add_parser("stop-composition", help="Stop composition")
     stcomp.add_argument("composition_name")
     stcomp.set_defaults(command="stop-composition")
+
+    # Workload identity
+    cwi = sub.add_parser("create-workload-identity", help="Create workload identity")
+    cwi.add_argument("name")
+    cwi.add_argument("spiffe_id")
+    cwi.add_argument("--trust-domain", default="nyrqis.local")
+    cwi.add_argument("--sans", nargs="+")
+    cwi.add_argument("--ttl", type=float, dest="ttl_seconds", default=3600.0)
+    cwi.set_defaults(command="create-workload-identity")
+
+    vwi = sub.add_parser("validate-workload-identity", help="Validate workload identity")
+    vwi.add_argument("name")
+    vwi.set_defaults(command="validate-workload-identity")
+
+    rwi = sub.add_parser("rotate-workload-identity", help="Rotate workload identity")
+    rwi.add_argument("name")
+    rwi.add_argument("--ttl", type=float, dest="new_ttl_seconds", default=None)
+    rwi.set_defaults(command="rotate-workload-identity")
+
+    revwi = sub.add_parser("revoke-workload-identity", help="Revoke workload identity")
+    revwi.add_argument("name")
+    revwi.set_defaults(command="revoke-workload-identity")
+
+    lwi = sub.add_parser("list-workload-identities", help="List workload identities")
+    lwi.set_defaults(command="list-workload-identities")
+
+    # Vulnerability scanning
+    si = sub.add_parser("scan-image", help="Scan image for vulnerabilities")
+    si.add_argument("image_ref")
+    si.add_argument("--severity-filter", nargs="+")
+    si.set_defaults(command="scan-image")
+
+    svp = sub.add_parser("set-vuln-policy", help="Set vulnerability policy")
+    svp.add_argument("name")
+    svp.add_argument("--block-on-critical", type=lambda x: x.lower() == 'true', default=True)
+    svp.add_argument("--block-on-high", type=lambda x: x.lower() == 'true', default=False)
+    svp.add_argument("--max-vulns", type=int, default=0)
+    svp.set_defaults(command="set-vuln-policy")
+
+    evp = sub.add_parser("evaluate-vuln-policy", help="Evaluate vulnerability policy")
+    evp.add_argument("policy_name")
+    evp.add_argument("image_ref")
+    evp.set_defaults(command="evaluate-vuln-policy")
+
+    sh = sub.add_parser("scan-history", help="Vulnerability scan history")
+    sh.set_defaults(command="scan-history")
+
+    # eBPF observability
+    rebpf = sub.add_parser("register-ebpf-hook", help="Register eBPF hook")
+    rebpf.add_argument("name")
+    rebpf.add_argument("--type", dest="hook_type", default="kprobe", choices=["kprobe", "kretprobe", "tracepoint", "uprobe", "perf_event", "cgroup"])
+    rebpf.add_argument("--target", default="")
+    rebpf.add_argument("--metric-name", default="")
+    rebpf.add_argument("--description", default="")
+    rebpf.set_defaults(command="register-ebpf-hook")
+
+    aebpf = sub.add_parser("attach-ebpf-hook", help="Attach eBPF hook")
+    aebpf.add_argument("hook_name")
+    aebpf.add_argument("--container-id", default=None)
+    aebpf.set_defaults(command="attach-ebpf-hook")
+
+    rebpf2 = sub.add_parser("record-ebpf-event", help="Record eBPF event")
+    rebpf2.add_argument("hook_name")
+    rebpf2.add_argument("--value", type=float, default=1.0)
+    rebpf2.set_defaults(command="record-ebpf-event")
+
+    ebpfm = sub.add_parser("ebpf-metrics", help="Get eBPF metrics")
+    ebpfm.add_argument("--metric-name", default=None)
+    ebpfm.set_defaults(command="ebpf-metrics")
+
+    lebpf = sub.add_parser("list-ebpf-hooks", help="List eBPF hooks")
+    lebpf.set_defaults(command="list-ebpf-hooks")
 
     return parser
 
