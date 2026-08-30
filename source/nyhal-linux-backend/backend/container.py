@@ -6820,6 +6820,211 @@ class ContainerManager:
             result["stderr"] = container._stderr_buffer.get_lines(tail)
         return result
 
+    # ------------------------------------------------------------------
+    # Container log streaming (real-time tail, filter, export)
+    # ------------------------------------------------------------------
+
+    def stream_container_logs(
+        self,
+        container: Container,
+        follow: bool = True,
+        interval_s: float = 0.5,
+        max_lines: int = 1000,
+        timeout_s: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Stream container logs in real-time using a polling follow loop.
+
+        Simulates ``docker logs -f`` by polling the ring buffers at
+        *interval_s* until *timeout_s* expires or the container stops.
+
+        Returns:
+            Dict with ``lines`` (list of log entries), ``total_lines``,
+            ``timed_out``, and ``container_stopped``.
+        """
+        import select as _select
+        lines: List[Dict[str, Any]] = []
+        start = time.time()
+        seen_stdout = 0
+        seen_stderr = 0
+        container_stopped = False
+        timed_out = False
+
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= timeout_s:
+                timed_out = True
+                break
+
+            if container.state != ContainerState.RUNNING:
+                container_stopped = True
+                break
+
+            new_lines = False
+            if container._stdout_buffer is not None:
+                all_stdout = container._stdout_buffer.get_lines()
+                if len(all_stdout) > seen_stdout:
+                    for line in all_stdout[seen_stdout:]:
+                        lines.append({"stream": "stdout", "line": line,
+                                      "ts": time.time()})
+                    seen_stdout = len(all_stdout)
+                    new_lines = True
+
+            if container._stderr_buffer is not None:
+                all_stderr = container._stderr_buffer.get_lines()
+                if len(all_stderr) > seen_stderr:
+                    for line in all_stderr[seen_stderr:]:
+                        lines.append({"stream": "stderr", "line": line,
+                                      "ts": time.time()})
+                    seen_stderr = len(all_stderr)
+                    new_lines = True
+
+            if len(lines) >= max_lines:
+                break
+
+            if not follow and not new_lines:
+                break
+
+            if not new_lines and follow:
+                time.sleep(interval_s)
+
+        return {
+            "container_id": container.id,
+            "lines": lines[-max_lines:],
+            "total_lines": len(lines),
+            "timed_out": timed_out,
+            "container_stopped": container_stopped,
+        }
+
+    def filter_container_logs(
+        self,
+        container: Container,
+        pattern: str = "",
+        stream: str = "both",
+        tail: Optional[int] = None,
+        case_insensitive: bool = False,
+        max_matches: int = 500,
+    ) -> Dict[str, Any]:
+        """Filter container log lines by a regex pattern.
+
+        Args:
+            container: The container whose logs to filter.
+            pattern: Regex pattern to match against log lines.
+            stream: ``"stdout"``, ``"stderr"``, or ``"both"``.
+            tail: If set, only examine the last N lines per stream.
+            case_insensitive: Enable case-insensitive matching.
+            max_matches: Maximum number of matches to return.
+
+        Returns:
+            Dict with ``matches`` (list of matching entries) and counts.
+        """
+        import re as _re
+        if container._stdout_buffer is None:
+            return {
+                "container_id": container.id,
+                "matches": [],
+                "total_scanned": 0,
+                "match_count": 0,
+            }
+
+        flags = _re.IGNORECASE if case_insensitive else 0
+        try:
+            compiled = _re.compile(pattern, flags) if pattern else None
+        except _re.error as e:
+            return {
+                "container_id": container.id,
+                "error": f"Invalid regex: {e}",
+                "matches": [],
+                "total_scanned": 0,
+                "match_count": 0,
+            }
+
+        matches: List[Dict[str, Any]] = []
+        total_scanned = 0
+
+        if stream in ("stdout", "both"):
+            lines = container._stdout_buffer.get_lines(tail)
+            for i, line in enumerate(lines):
+                total_scanned += 1
+                if compiled is None or compiled.search(line):
+                    matches.append({"stream": "stdout", "line": line,
+                                    "index": i})
+                    if len(matches) >= max_matches:
+                        break
+
+        if stream in ("stderr", "both") and container._stderr_buffer is not None:
+            lines = container._stderr_buffer.get_lines(tail)
+            for i, line in enumerate(lines):
+                total_scanned += 1
+                if compiled is None or compiled.search(line):
+                    matches.append({"stream": "stderr", "line": line,
+                                    "index": i})
+                    if len(matches) >= max_matches:
+                        break
+
+        return {
+            "container_id": container.id,
+            "matches": matches,
+            "total_scanned": total_scanned,
+            "match_count": len(matches),
+        }
+
+    def export_container_logs(
+        self,
+        container: Container,
+        dest_path: str,
+        format: str = "text",
+        stream: str = "both",
+        tail: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Export container logs to a file.
+
+        Args:
+            container: The container whose logs to export.
+            dest_path: Destination file path.
+            format: ``"text"`` (one line per entry) or ``"json"``.
+            stream: ``"stdout"``, ``"stderr"``, or ``"both"``.
+            tail: If set, export only the last N lines per stream.
+
+        Returns:
+            Dict with ``written``, ``path``, and ``format``.
+        """
+        import json as _json
+
+        if container._stdout_buffer is None:
+            return {
+                "container_id": container.id,
+                "written": 0,
+                "path": dest_path,
+                "format": format,
+            }
+
+        entries: List[Dict[str, Any]] = []
+        if stream in ("stdout", "both"):
+            for line in container._stdout_buffer.get_lines(tail):
+                entries.append({"stream": "stdout", "line": line})
+        if stream in ("stderr", "both") and container._stderr_buffer is not None:
+            for line in container._stderr_buffer.get_lines(tail):
+                entries.append({"stream": "stderr", "line": line})
+
+        os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+        if format == "json":
+            with open(dest_path, "w") as fh:
+                _json.dump({
+                    "container_id": container.id,
+                    "entries": entries,
+                }, fh, indent=2)
+        else:
+            with open(dest_path, "w") as fh:
+                for entry in entries:
+                    fh.write(f"[{entry['stream']}] {entry['line']}\n")
+
+        return {
+            "container_id": container.id,
+            "written": len(entries),
+            "path": dest_path,
+            "format": format,
+        }
+
     def container_exec(self, container: Container, command: List[str],
                        timeout_s: float = 10.0) -> Dict[str, Any]:
         """Execute a command inside a running container's namespaces.
@@ -11589,6 +11794,183 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # DNS resolution for containers
+    # ------------------------------------------------------------------
+
+    def generate_resolv_conf(
+        self,
+        container: Container,
+        nameservers: Optional[List[str]] = None,
+        search_domains: Optional[List[str]] = None,
+        options: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Generate /etc/resolv.conf content for a container.
+
+        Creates a resolv.conf file inside the container's rootfs with
+        the specified nameservers and search domains.
+
+        Args:
+            container: The container to configure.
+            nameservers: DNS server IPs. Defaults to ['8.8.8.8', '8.8.4.4'].
+            search_domains: Search domains (e.g., ['example.com']).
+            options: resolv.conf options (e.g., ['ndots:5', 'timeout:2']).
+
+        Returns:
+            Dict with ``path``, ``content``, and ``written``.
+        """
+        ns = nameservers or ["8.8.8.8", "8.8.4.4"]
+        search = search_domains or []
+        opts = options or ["ndots:2", "timeout:2", "attempts:3"]
+
+        lines = ["# Auto-generated by Nyrqis"]
+        for s in search:
+            lines.append(f"search {s}")
+        lines.append(f"options {' '.join(opts)}")
+        for server in ns:
+            lines.append(f"nameserver {server}")
+        content = "\n".join(lines) + "\n"
+
+        # Write to container rootfs if available
+        written = False
+        resolv_path = None
+        if container.config.rootfs:
+            resolv_path = os.path.join(container.config.rootfs, "etc", "resolv.conf")
+            try:
+                os.makedirs(os.path.dirname(resolv_path), exist_ok=True)
+                with open(resolv_path, "w") as fh:
+                    fh.write(content)
+                written = True
+            except OSError:
+                resolv_path = None
+
+        return {
+            "container_id": container.id,
+            "path": resolv_path or "/etc/resolv.conf",
+            "content": content,
+            "written": written,
+            "nameservers": ns,
+            "search_domains": search,
+            "options": opts,
+        }
+
+    def resolve_dns(
+        self,
+        hostname: str,
+        nameservers: Optional[List[str]] = None,
+        timeout_s: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Resolve a hostname using the specified nameservers.
+
+        Args:
+            hostname: The hostname to resolve.
+            nameservers: DNS server IPs. Defaults to system resolvers.
+            timeout_s: Resolution timeout.
+
+        Returns:
+            Dict with ``addresses``, ``hostname``, and ``resolved``.
+        """
+        import socket
+        addresses: List[str] = []
+        error = None
+
+        try:
+            result = socket.getaddrinfo(
+                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM,
+            )
+            addresses = list({r[4][0] for r in result})
+        except socket.gaierror as e:
+            error = str(e)
+
+        return {
+            "hostname": hostname,
+            "addresses": sorted(addresses),
+            "resolved": len(addresses) > 0,
+            "error": error,
+        }
+
+    def get_dns_config(self, container: Container) -> Dict[str, Any]:
+        """Get the current DNS configuration for a container.
+
+        Reads the resolv.conf from the container's rootfs if available,
+        otherwise returns the default configuration.
+        """
+        nameservers: List[str] = []
+        search_domains: List[str] = []
+        options_list: List[str] = []
+        source = "default"
+        path = None
+
+        if container.config.rootfs:
+            candidate = os.path.join(container.config.rootfs, "etc", "resolv.conf")
+            if os.path.isfile(candidate):
+                path = candidate
+                source = "container"
+                try:
+                    with open(candidate) as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line.startswith("nameserver "):
+                                nameservers.append(line.split(None, 1)[1])
+                            elif line.startswith("search "):
+                                search_domains = line.split(None, 1)[1].split()
+                            elif line.startswith("options "):
+                                options_list = line.split(None, 1)[1].split()
+                except OSError:
+                    pass
+
+        if not nameservers:
+            nameservers = ["8.8.8.8", "8.8.4.4"]
+
+        return {
+            "container_id": container.id,
+            "nameservers": nameservers,
+            "search_domains": search_domains,
+            "options": options_list,
+            "source": source,
+            "path": path,
+        }
+
+    def update_dns(
+        self,
+        container: Container,
+        add_nameservers: Optional[List[str]] = None,
+        remove_nameservers: Optional[List[str]] = None,
+        add_search_domains: Optional[List[str]] = None,
+        remove_search_domains: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Update DNS configuration for a container incrementally.
+
+        Args:
+            container: The container to update.
+            add_nameservers: Nameservers to add.
+            remove_nameservers: Nameservers to remove.
+            add_search_domains: Search domains to add.
+            remove_search_domains: Search domains to remove.
+
+        Returns:
+            Dict with the updated configuration.
+        """
+        current = self.get_dns_config(container)
+        ns = set(current["nameservers"])
+        search = set(current["search_domains"])
+
+        if add_nameservers:
+            ns.update(add_nameservers)
+        if remove_nameservers:
+            ns -= set(remove_nameservers)
+        if add_search_domains:
+            search.update(add_search_domains)
+        if remove_search_domains:
+            search -= set(remove_search_domains)
+
+        result = self.generate_resolv_conf(
+            container,
+            nameservers=sorted(ns),
+            search_domains=sorted(search),
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Resource profiling (per-process breakdown)
     # ------------------------------------------------------------------
 
@@ -13080,6 +13462,210 @@ class ContainerManager:
         return {
             "images": data.get("images", []),
             "registry_url": registry_url,
+        }
+
+    # ------------------------------------------------------------------
+    # Image deduplication and garbage collection
+    # ------------------------------------------------------------------
+
+    def deduplicate_images(self, images_dir: str) -> Dict[str, Any]:
+        """Detect and merge duplicate image layers using content hashing.
+
+        Scans *images_dir* for image directories, computes SHA-256 of
+        each layer's file contents, and identifies duplicate layers.
+        Returns deduplication report with bytes saved.
+        """
+        import hashlib as _hl
+        images_path = Path(images_dir)
+        if not images_path.is_dir():
+            return {"error": f"Directory not found: {images_dir}",
+                    "duplicates": [], "bytes_saved": 0}
+
+        layer_hashes: Dict[str, List[str]] = {}  # hash -> [image_paths]
+        layer_sizes: Dict[str, int] = {}
+        scanned = 0
+
+        for image_dir in images_path.iterdir():
+            if not image_dir.is_dir():
+                continue
+            state_dir = image_dir / "state"
+            if not state_dir.is_dir():
+                continue
+            # Compute hash of all files in the state directory
+            h = _hl.sha256()
+            file_count = 0
+            total_size = 0
+            for root, dirs, files in os.walk(str(state_dir)):
+                for fname in sorted(files):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "rb") as fh:
+                            data = fh.read()
+                            h.update(data)
+                            total_size += len(data)
+                            file_count += 1
+                    except OSError:
+                        pass
+            if file_count == 0:
+                continue
+            digest = h.hexdigest()
+            scanned += 1
+            layer_hashes.setdefault(digest, []).append(str(image_dir))
+            layer_sizes[digest] = total_size
+
+        duplicates: List[Dict[str, Any]] = []
+        bytes_saved = 0
+        for digest, paths in layer_hashes.items():
+            if len(paths) > 1:
+                dup_size = layer_sizes.get(digest, 0)
+                bytes_saved += dup_size * (len(paths) - 1)
+                duplicates.append({
+                    "hash": digest[:16],
+                    "count": len(paths),
+                    "paths": paths,
+                    "size_bytes": dup_size,
+                })
+
+        return {
+            "images_scanned": scanned,
+            "duplicates": duplicates,
+            "duplicate_count": len(duplicates),
+            "bytes_saved": bytes_saved,
+        }
+
+    def garbage_collect_images(
+        self,
+        images_dir: str,
+        dry_run: bool = True,
+        max_age_days: Optional[int] = None,
+        unused_only: bool = False,
+    ) -> Dict[str, Any]:
+        """Remove unused or old image layers to reclaim disk space.
+
+        Args:
+            images_dir: Root directory containing image subdirectories.
+            dry_run: If True, report what would be deleted without changes.
+            max_age_days: Delete images older than this many days.
+            unused_only: Only delete images not referenced by any container.
+
+        Returns:
+            Dict with deleted count, bytes reclaimed, and details.
+        """
+        images_path = Path(images_dir)
+        if not images_path.is_dir():
+            return {"error": f"Directory not found: {images_dir}",
+                    "deleted": 0, "bytes_reclaimed": 0}
+
+        # Collect IDs of images in use by containers
+        used_images: set = set()
+        for cid, c in self.containers.items():
+            if c.config.image:
+                used_images.add(c.config.image)
+
+        now = time.time()
+        max_age_s = max_age_days * 86400 if max_age_days else None
+        deleted: List[Dict[str, Any]] = []
+        bytes_reclaimed = 0
+        skipped: List[str] = []
+
+        for image_dir in images_path.iterdir():
+            if not image_dir.is_dir():
+                continue
+            state_file = image_dir / "state" / "metadata.json"
+            if not state_file.is_file():
+                continue
+
+            # Check if in use
+            image_id = image_dir.name
+            if unused_only and image_id in used_images:
+                skipped.append(image_id)
+                continue
+
+            # Check age
+            if max_age_s is not None:
+                try:
+                    with open(state_file) as fh:
+                        meta = json.load(fh)
+                    created = meta.get("created_at", meta.get("created", 0))
+                    if isinstance(created, str):
+                        created = 0  # can't compare strings
+                    if now - created < max_age_s:
+                        skipped.append(image_id)
+                        continue
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Calculate size
+            dir_size = 0
+            for root, dirs, files in os.walk(str(image_dir)):
+                for fname in files:
+                    try:
+                        dir_size += os.path.getsize(os.path.join(root, fname))
+                    except OSError:
+                        pass
+
+            deleted.append({
+                "image_id": image_id,
+                "path": str(image_dir),
+                "size_bytes": dir_size,
+            })
+            bytes_reclaimed += dir_size
+
+            if not dry_run:
+                import shutil as _shutil
+                try:
+                    _shutil.rmtree(str(image_dir))
+                except OSError as e:
+                    deleted[-1]["error"] = str(e)
+                    bytes_reclaimed -= dir_size
+
+        return {
+            "dry_run": dry_run,
+            "deleted": len(deleted),
+            "bytes_reclaimed": bytes_reclaimed,
+            "details": deleted,
+            "skipped_count": len(skipped),
+        }
+
+    def image_layer_stats(self, images_dir: str) -> Dict[str, Any]:
+        """Get size statistics for all image layers.
+
+        Returns per-image size, total size, and layer count.
+        """
+        images_path = Path(images_dir)
+        if not images_path.is_dir():
+            return {"error": f"Directory not found: {images_dir}",
+                    "images": [], "total_size_bytes": 0}
+
+        images: List[Dict[str, Any]] = []
+        total_size = 0
+
+        for image_dir in sorted(images_path.iterdir()):
+            if not image_dir.is_dir():
+                continue
+            meta_file = image_dir / "state" / "metadata.json"
+            if not meta_file.is_file():
+                continue
+            dir_size = 0
+            file_count = 0
+            for root, dirs, files in os.walk(str(image_dir)):
+                for fname in files:
+                    try:
+                        dir_size += os.path.getsize(os.path.join(root, fname))
+                        file_count += 1
+                    except OSError:
+                        pass
+            images.append({
+                "image_id": image_dir.name,
+                "size_bytes": dir_size,
+                "file_count": file_count,
+            })
+            total_size += dir_size
+
+        return {
+            "images": images,
+            "image_count": len(images),
+            "total_size_bytes": total_size,
         }
 
     # ------------------------------------------------------------------

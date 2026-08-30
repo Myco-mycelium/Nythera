@@ -1969,6 +1969,91 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "suggest_tier_upgrade",
             "container_id": args.container_id,
         }
+    if command == "log-stream":
+        return {
+            "service": "control",
+            "op": "log_stream",
+            "container_id": args.container_id,
+            "follow": getattr(args, 'follow', False),
+            "interval_s": getattr(args, 'interval_s', 0.5),
+            "max_lines": getattr(args, 'max_lines', 1000),
+            "timeout_s": getattr(args, 'timeout_s', 5.0),
+        }
+    if command == "log-filter":
+        return {
+            "service": "control",
+            "op": "log_filter",
+            "container_id": args.container_id,
+            "pattern": getattr(args, 'pattern', ''),
+            "stream": getattr(args, 'stream', 'both'),
+            "tail": getattr(args, 'tail', None),
+            "case_insensitive": getattr(args, 'case_insensitive', False),
+            "max_matches": getattr(args, 'max_matches', 500),
+        }
+    if command == "log-export":
+        return {
+            "service": "control",
+            "op": "log_export",
+            "container_id": args.container_id,
+            "dest_path": args.dest_path,
+            "format": getattr(args, 'format', 'text'),
+            "stream": getattr(args, 'stream', 'both'),
+            "tail": getattr(args, 'tail', None),
+        }
+    if command == "image-dedup":
+        return {
+            "service": "control",
+            "op": "image_dedup",
+            "images_dir": getattr(args, 'images_dir', None),
+        }
+    if command == "image-gc":
+        return {
+            "service": "control",
+            "op": "image_gc",
+            "images_dir": getattr(args, 'images_dir', None),
+            "dry_run": getattr(args, 'dry_run', True),
+            "max_age_days": getattr(args, 'max_age_days', None),
+            "unused_only": getattr(args, 'unused_only', False),
+        }
+    if command == "image-layer-stats":
+        return {
+            "service": "control",
+            "op": "image_layer_stats",
+            "images_dir": getattr(args, 'images_dir', None),
+        }
+    if command == "dns-generate":
+        return {
+            "service": "control",
+            "op": "dns_generate",
+            "container_id": args.container_id,
+            "nameservers": getattr(args, 'nameservers', None),
+            "search_domains": getattr(args, 'search_domains', None),
+            "options": getattr(args, 'options', None),
+        }
+    if command == "dns-resolve":
+        return {
+            "service": "control",
+            "op": "dns_resolve",
+            "hostname": args.hostname,
+            "nameservers": getattr(args, 'nameservers', None),
+            "timeout_s": getattr(args, 'timeout_s', 5.0),
+        }
+    if command == "dns-get-config":
+        return {
+            "service": "control",
+            "op": "dns_get_config",
+            "container_id": args.container_id,
+        }
+    if command == "dns-update":
+        return {
+            "service": "control",
+            "op": "dns_update",
+            "container_id": args.container_id,
+            "add_nameservers": getattr(args, 'add_nameservers', None),
+            "remove_nameservers": getattr(args, 'remove_nameservers', None),
+            "add_search_domains": getattr(args, 'add_search_domains', None),
+            "remove_search_domains": getattr(args, 'remove_search_domains', None),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4757,6 +4842,75 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for s in resp.get('suggestions', []):
             lines.append(f"  - {s}")
         return "\n".join(lines)
+    if command == "log-stream":
+        lines = []
+        for entry in resp.get('lines', []):
+            lines.append(f"[{entry.get('stream', '?')}] {entry.get('line', '')}")
+        summary = f"\nTotal lines: {resp.get('total_lines', 0)}"
+        if resp.get('timed_out'):
+            summary += " (timed out)"
+        if resp.get('container_stopped'):
+            summary += " (container stopped)"
+        return "\n".join(lines) + summary
+    if command == "log-filter":
+        matches = resp.get('matches', [])
+        lines = []
+        for m in matches:
+            lines.append(f"[{m.get('stream', '?')}] {m.get('line', '')}")
+        lines.append(f"\n{resp.get('match_count', 0)} matches / {resp.get('total_scanned', 0)} scanned")
+        return "\n".join(lines)
+    if command == "log-export":
+        return f"Exported {resp.get('written', 0)} log entries to {resp.get('path', '?')} ({resp.get('format', '?')})"
+    if command == "image-dedup":
+        lines = [
+            f"Scanned {resp.get('images_scanned', 0)} images",
+            f"Duplicates: {resp.get('duplicate_count', 0)}",
+            f"Bytes saved: {resp.get('bytes_saved', 0):,}",
+        ]
+        for d in resp.get('duplicates', []):
+            lines.append(f"  hash={d.get('hash', '?')} count={d.get('count', 0)} size={d.get('size_bytes', 0):,}")
+        return "\n".join(lines)
+    if command == "image-gc":
+        mode = "DRY RUN" if resp.get('dry_run') else "EXECUTED"
+        lines = [
+            f"GC {mode}: {resp.get('deleted', 0)} images, {resp.get('bytes_reclaimed', 0):,} bytes reclaimed",
+            f"Skipped: {resp.get('skipped_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "image-layer-stats":
+        lines = [
+            f"Images: {resp.get('image_count', 0)}",
+            f"Total size: {resp.get('total_size_bytes', 0):,} bytes",
+        ]
+        for img in resp.get('images', []):
+            lines.append(f"  {img.get('image_id', '?')}: {img.get('size_bytes', 0):,} bytes, {img.get('file_count', 0)} files")
+        return "\n".join(lines)
+    if command == "dns-generate":
+        lines = [
+            f"Generated resolv.conf for {resp.get('container_id', '?')[:12]}:",
+            f"  Nameservers: {', '.join(resp.get('nameservers', []))}",
+            f"  Search domains: {', '.join(resp.get('search_domains', []))}",
+            f"  Written: {resp.get('written', False)}",
+        ]
+        return "\n".join(lines)
+    if command == "dns-resolve":
+        host = resp.get('hostname', '?')
+        addrs = resp.get('addresses', [])
+        status = "resolved" if resp.get('resolved') else f"failed: {resp.get('error', '?')}"
+        lines = [f"{host}: {status}"]
+        for addr in addrs:
+            lines.append(f"  {addr}")
+        return "\n".join(lines)
+    if command == "dns-get-config":
+        lines = [
+            f"DNS config for {resp.get('container_id', '?')[:12]} (source: {resp.get('source', '?')}):",
+            f"  Nameservers: {', '.join(resp.get('nameservers', []))}",
+            f"  Search domains: {', '.join(resp.get('search_domains', []))}",
+            f"  Options: {', '.join(resp.get('options', []))}",
+        ]
+        return "\n".join(lines)
+    if command == "dns-update":
+        return f"DNS updated for {resp.get('container_id', '?')[:12]}: nameservers={resp.get('nameservers', [])}, search={resp.get('search_domains', [])}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -6200,6 +6354,75 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Suggest tier upgrade changes")
     stu.add_argument("container_id", help="Container ID")
     stu.set_defaults(command="suggest-tier-upgrade")
+
+    # -- log streaming commands --
+    ls = sub.add_parser("log-stream", help="Stream container logs in real-time")
+    ls.add_argument("container_id")
+    ls.add_argument("--follow", action="store_true", help="Follow log output")
+    ls.add_argument("--interval-s", type=float, default=0.5)
+    ls.add_argument("--max-lines", type=int, default=1000)
+    ls.add_argument("--timeout-s", type=float, default=5.0)
+    ls.set_defaults(command="log-stream")
+
+    lf = sub.add_parser("log-filter", help="Filter container logs by regex")
+    lf.add_argument("container_id")
+    lf.add_argument("pattern", help="Regex pattern")
+    lf.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    lf.add_argument("--tail", type=int, default=None)
+    lf.add_argument("--case-insensitive", action="store_true")
+    lf.add_argument("--max-matches", type=int, default=500)
+    lf.set_defaults(command="log-filter")
+
+    le = sub.add_parser("log-export", help="Export container logs to file")
+    le.add_argument("container_id")
+    le.add_argument("dest_path", help="Output file path")
+    le.add_argument("--format", choices=["text", "json"], default="text")
+    le.add_argument("--stream", choices=["stdout", "stderr", "both"], default="both")
+    le.add_argument("--tail", type=int, default=None)
+    le.set_defaults(command="log-export")
+
+    # -- image dedup/GC commands --
+    id_ = sub.add_parser("image-dedup", help="Detect duplicate image layers")
+    id_.add_argument("--images-dir", default=None)
+    id_.set_defaults(command="image-dedup")
+
+    ig = sub.add_parser("image-gc", help="Garbage collect unused images")
+    ig.add_argument("--images-dir", default=None)
+    ig.add_argument("--dry-run", action="store_true", default=True)
+    ig.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    ig.add_argument("--max-age-days", type=int, default=None)
+    ig.add_argument("--unused-only", action="store_true")
+    ig.set_defaults(command="image-gc")
+
+    il = sub.add_parser("image-layer-stats", help="Show image layer statistics")
+    il.add_argument("--images-dir", default=None)
+    il.set_defaults(command="image-layer-stats")
+
+    # -- DNS commands --
+    dg = sub.add_parser("dns-generate", help="Generate resolv.conf for a container")
+    dg.add_argument("container_id")
+    dg.add_argument("--nameservers", nargs="+", default=None)
+    dg.add_argument("--search-domains", nargs="+", default=None)
+    dg.add_argument("--options", nargs="+", default=None)
+    dg.set_defaults(command="dns-generate")
+
+    dr = sub.add_parser("dns-resolve", help="Resolve a hostname")
+    dr.add_argument("hostname")
+    dr.add_argument("--nameservers", nargs="+", default=None)
+    dr.add_argument("--timeout-s", type=float, default=5.0)
+    dr.set_defaults(command="dns-resolve")
+
+    dc = sub.add_parser("dns-get-config", help="Show container DNS config")
+    dc.add_argument("container_id")
+    dc.set_defaults(command="dns-get-config")
+
+    du = sub.add_parser("dns-update", help="Update container DNS config")
+    du.add_argument("container_id")
+    du.add_argument("--add-nameservers", nargs="+", default=None)
+    du.add_argument("--remove-nameservers", nargs="+", default=None)
+    du.add_argument("--add-search-domains", nargs="+", default=None)
+    du.add_argument("--remove-search-domains", nargs="+", default=None)
+    du.set_defaults(command="dns-update")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

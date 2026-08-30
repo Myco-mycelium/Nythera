@@ -837,6 +837,36 @@ class ControlService:
             elif op == "suggest_tier_upgrade":
                 self._suggest_tier_upgrade(
                     server, sender_path, msg.message_id, request)
+            elif op == "log_stream":
+                self._log_stream(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "log_filter":
+                self._log_filter(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "log_export":
+                self._log_export(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "image_dedup":
+                self._image_dedup(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "image_gc":
+                self._image_gc(server, sender_path,
+                               msg.message_id, request)
+            elif op == "image_layer_stats":
+                self._image_layer_stats(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "dns_generate":
+                self._dns_generate(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "dns_resolve":
+                self._dns_resolve(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "dns_get_config":
+                self._dns_get_config(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "dns_update":
+                self._dns_update(server, sender_path,
+                                 msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5694,6 +5724,171 @@ class ControlService:
             })
             return
         result = self.container_manager.suggest_tier_upgrade(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # -- log streaming handlers --
+
+    def _log_stream(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.stream_container_logs(
+            c,
+            follow=request.get('follow', False),
+            interval_s=request.get('interval_s', 0.5),
+            max_lines=request.get('max_lines', 1000),
+            timeout_s=request.get('timeout_s', 5.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _log_filter(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.filter_container_logs(
+            c,
+            pattern=request.get('pattern', ''),
+            stream=request.get('stream', 'both'),
+            tail=request.get('tail'),
+            case_insensitive=request.get('case_insensitive', False),
+            max_matches=request.get('max_matches', 500),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _log_export(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.export_container_logs(
+            c,
+            dest_path=request['dest_path'],
+            format=request.get('format', 'text'),
+            stream=request.get('stream', 'both'),
+            tail=request.get('tail'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # -- image dedup/GC handlers --
+
+    def _image_dedup(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        result = self.container_manager.deduplicate_images(
+            request.get('images_dir', self.container_manager.base_dir),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _image_gc(self, server, sender_path: str,
+                  call_id: str,
+                  request: Dict[str, Any]) -> None:
+        result = self.container_manager.garbage_collect_images(
+            request.get('images_dir', self.container_manager.base_dir),
+            dry_run=request.get('dry_run', True),
+            max_age_days=request.get('max_age_days'),
+            unused_only=request.get('unused_only', False),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _image_layer_stats(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        result = self.container_manager.image_layer_stats(
+            request.get('images_dir', self.container_manager.base_dir),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    # -- DNS handlers --
+
+    def _dns_generate(self, server, sender_path: str,
+                      call_id: str,
+                      request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.generate_resolv_conf(
+            c,
+            nameservers=request.get('nameservers'),
+            search_domains=request.get('search_domains'),
+            options=request.get('options'),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _dns_resolve(self, server, sender_path: str,
+                     call_id: str,
+                     request: Dict[str, Any]) -> None:
+        result = self.container_manager.resolve_dns(
+            request['hostname'],
+            nameservers=request.get('nameservers'),
+            timeout_s=request.get('timeout_s', 5.0),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _dns_get_config(self, server, sender_path: str,
+                        call_id: str,
+                        request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.get_dns_config(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _dns_update(self, server, sender_path: str,
+                    call_id: str,
+                    request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.update_dns(
+            c,
+            add_nameservers=request.get('add_nameservers'),
+            remove_nameservers=request.get('remove_nameservers'),
+            add_search_domains=request.get('add_search_domains'),
+            remove_search_domains=request.get('remove_search_domains'),
+        )
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

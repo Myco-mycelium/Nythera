@@ -1733,6 +1733,369 @@ class TestImageManagement(unittest.TestCase):
         self.assertIn("imported", text)
 
 
+class TestLogStreaming(unittest.TestCase):
+    """Tests for container log streaming, filtering, and export."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make_running(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo", "test"]))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_stream_stopped_container(self):
+        """stream returns immediately for stopped container."""
+        mgr = self._manager()
+        c = self._make_running(mgr, "stream1")
+        c.state = ContainerState.TERMINATED
+        result = mgr.stream_container_logs(c, follow=False, timeout_s=0.1)
+        self.assertTrue(result["container_stopped"])
+        self.assertEqual(result["total_lines"], 0)
+
+    def test_stream_with_buffered_logs(self):
+        """stream picks up buffered log lines."""
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "stream2")
+        c._stdout_buffer = RingBuffer(100)
+        c._stdout_buffer.append("hello world")
+        c._stdout_buffer.append("second line")
+        result = mgr.stream_container_logs(c, follow=False, timeout_s=0.1)
+        self.assertEqual(result["total_lines"], 2)
+        self.assertEqual(result["lines"][0]["line"], "hello world")
+        self.assertEqual(result["lines"][1]["stream"], "stdout")
+
+    def test_stream_follow_timeout(self):
+        """stream times out when follow is True and no new data."""
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "stream3")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        result = mgr.stream_container_logs(
+            c, follow=True, interval_s=0.05, timeout_s=0.2)
+        self.assertTrue(result["timed_out"])
+
+    def test_filter_basic(self):
+        """filter_container_logs matches lines."""
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "filt1")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        for line in ["hello", "world", "foo bar", "baz"]:
+            c._stdout_buffer.append(line)
+        result = mgr.filter_container_logs(c, pattern="bar")
+        self.assertEqual(result["match_count"], 1)
+        self.assertIn("foo bar", result["matches"][0]["line"])
+
+    def test_filter_case_insensitive(self):
+        """filter with case_insensitive matches regardless of case."""
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "filt2")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        c._stdout_buffer.append("ERROR: something")
+        result = mgr.filter_container_logs(c, pattern="error",
+                                          case_insensitive=True)
+        self.assertEqual(result["match_count"], 1)
+
+    def test_filter_invalid_regex(self):
+        """filter returns error for invalid regex."""
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "filt3")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        result = mgr.filter_container_logs(c, pattern="[invalid")
+        self.assertIn("error", result)
+        self.assertEqual(result["match_count"], 0)
+
+    def test_export_text(self):
+        """export_container_logs writes text format."""
+        import tempfile, os
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "exp1")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        c._stdout_buffer.append("line1")
+        c._stdout_buffer.append("line2")
+        dest = os.path.join(tempfile.mkdtemp(), "logs.txt")
+        result = mgr.export_container_logs(c, dest, format="text")
+        self.assertEqual(result["written"], 2)
+        self.assertTrue(os.path.exists(dest))
+        with open(dest) as f:
+            content = f.read()
+        self.assertIn("[stdout] line1", content)
+
+    def test_export_json(self):
+        """export_container_logs writes JSON format."""
+        import tempfile, os, json
+        from backend.container import RingBuffer
+        mgr = self._manager()
+        c = self._make_running(mgr, "exp2")
+        c._stdout_buffer = RingBuffer(100)
+        c._stderr_buffer = RingBuffer(100)
+        c._stderr_buffer.append("err line")
+        dest = os.path.join(tempfile.mkdtemp(), "logs.json")
+        result = mgr.export_container_logs(c, dest, format="json")
+        self.assertEqual(result["written"], 1)
+        with open(dest) as f:
+            data = json.load(f)
+        self.assertEqual(data["entries"][0]["stream"], "stderr")
+
+    def test_export_no_logs(self):
+        """export returns 0 for container with no log capture."""
+        import tempfile, os
+        mgr = self._manager()
+        c = self._make_running(mgr, "exp3")
+        dest = os.path.join(tempfile.mkdtemp(), "empty.txt")
+        result = mgr.export_container_logs(c, dest)
+        self.assertEqual(result["written"], 0)
+
+    def test_log_stream_format_human(self):
+        """format_human handles log-stream response."""
+        from nyrqisctl import format_human
+        resp = {
+            "lines": [{"stream": "stdout", "line": "hello"}],
+            "total_lines": 1, "timed_out": False,
+            "container_stopped": False,
+        }
+        text = format_human("log-stream", resp)
+        self.assertIn("hello", text)
+        self.assertIn("1", text)
+
+
+class TestImageDedupGC(unittest.TestCase):
+    """Tests for image deduplication and garbage collection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def test_dedup_nonexistent_dir(self):
+        """deduplicate_images handles missing directory."""
+        mgr = self._manager()
+        result = mgr.deduplicate_images("/nonexistent/path")
+        self.assertIn("error", result)
+
+    def test_gc_nonexistent_dir(self):
+        """garbage_collect_images handles missing directory."""
+        mgr = self._manager()
+        result = mgr.garbage_collect_images("/nonexistent/path")
+        self.assertIn("error", result)
+
+    def test_dedup_empty_dir(self):
+        """deduplicate_images with no images returns zero duplicates."""
+        import tempfile
+        mgr = self._manager()
+        d = tempfile.mkdtemp()
+        result = mgr.deduplicate_images(d)
+        self.assertEqual(result["duplicate_count"], 0)
+        self.assertEqual(result["images_scanned"], 0)
+
+    def test_gc_dry_run(self):
+        """garbage_collect_images dry run does not delete."""
+        import tempfile, os, json
+        mgr = self._manager()
+        d = tempfile.mkdtemp()
+        # Create a fake image
+        img = os.path.join(d, "img1", "state")
+        os.makedirs(img)
+        with open(os.path.join(img, "metadata.json"), "w") as f:
+            json.dump({"created_at": 0}, f)
+        result = mgr.garbage_collect_images(d, dry_run=True, max_age_days=0)
+        self.assertEqual(result["deleted"], 1)
+        self.assertTrue(result["dry_run"])
+        self.assertTrue(os.path.exists(os.path.join(d, "img1")))
+
+    def test_gc_execute(self):
+        """garbage_collect_images actually deletes when dry_run=False."""
+        import tempfile, os, json
+        mgr = self._manager()
+        d = tempfile.mkdtemp()
+        img = os.path.join(d, "img2", "state")
+        os.makedirs(img)
+        with open(os.path.join(img, "metadata.json"), "w") as f:
+            json.dump({"created_at": 0}, f)
+        result = mgr.garbage_collect_images(d, dry_run=False, max_age_days=0)
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(os.path.exists(os.path.join(d, "img2")))
+
+    def test_layer_stats_nonexistent(self):
+        """image_layer_stats handles missing directory."""
+        mgr = self._manager()
+        result = mgr.image_layer_stats("/nonexistent")
+        self.assertIn("error", result)
+
+    def test_layer_stats_with_image(self):
+        """image_layer_stats reports image sizes."""
+        import tempfile, os, json
+        mgr = self._manager()
+        d = tempfile.mkdtemp()
+        img = os.path.join(d, "myimg", "state")
+        os.makedirs(img)
+        with open(os.path.join(img, "metadata.json"), "w") as f:
+            json.dump({"tree": {}}, f)
+        result = mgr.image_layer_stats(d)
+        self.assertEqual(result["image_count"], 1)
+        self.assertGreater(result["total_size_bytes"], 0)
+
+    def test_format_human_dedup(self):
+        """format_human handles image-dedup response."""
+        from nyrqisctl import format_human
+        resp = {"images_scanned": 5, "duplicate_count": 2,
+                "bytes_saved": 1024, "duplicates": []}
+        text = format_human("image-dedup", resp)
+        self.assertIn("5", text)
+        self.assertIn("2", text)
+
+    def test_format_human_gc(self):
+        """format_human handles image-gc response."""
+        from nyrqisctl import format_human
+        resp = {"dry_run": True, "deleted": 3, "bytes_reclaimed": 4096,
+                "skipped_count": 1}
+        text = format_human("image-gc", resp)
+        self.assertIn("DRY RUN", text)
+        self.assertIn("3", text)
+
+    def test_format_human_layer_stats(self):
+        """format_human handles image-layer-stats response."""
+        from nyrqisctl import format_human
+        resp = {"image_count": 2, "total_size_bytes": 2048, "images": []}
+        text = format_human("image-layer-stats", resp)
+        self.assertIn("2", text)
+
+
+class TestDNSResolution(unittest.TestCase):
+    """Tests for container DNS resolution."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name, rootfs=None):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       rootfs=rootfs))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_generate_resolv_conf_default(self):
+        """generate_resolv_conf uses default nameservers."""
+        mgr = self._manager()
+        c = self._make(mgr, "dns1")
+        result = mgr.generate_resolv_conf(c)
+        self.assertIn("8.8.8.8", result["content"])
+        self.assertIn("8.8.4.4", result["content"])
+        self.assertFalse(result["written"])
+
+    def test_generate_resolv_conf_custom(self):
+        """generate_resolv_conf with custom nameservers."""
+        mgr = self._manager()
+        c = self._make(mgr, "dns2")
+        result = mgr.generate_resolv_conf(
+            c, nameservers=["1.1.1.1"],
+            search_domains=["example.com"],
+        )
+        self.assertIn("1.1.1.1", result["content"])
+        self.assertIn("search example.com", result["content"])
+
+    def test_generate_resolv_conf_with_rootfs(self):
+        """generate_resolv_conf writes to rootfs when available."""
+        import tempfile, os
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        os.makedirs(os.path.join(rootfs, "etc"))
+        c = self._make(mgr, "dns3", rootfs=rootfs)
+        result = mgr.generate_resolv_conf(c)
+        self.assertTrue(result["written"])
+        resolv = os.path.join(rootfs, "etc", "resolv.conf")
+        self.assertTrue(os.path.isfile(resolv))
+        with open(resolv) as f:
+            self.assertIn("8.8.8.8", f.read())
+
+    def test_resolve_dns_localhost(self):
+        """resolve_dns resolves localhost."""
+        mgr = self._manager()
+        result = mgr.resolve_dns("localhost")
+        self.assertTrue(result["resolved"])
+        self.assertIn("127.0.0.1", result["addresses"])
+
+    def test_resolve_dns_unresolvable(self):
+        """resolve_dns handles unresolvable hostname."""
+        mgr = self._manager()
+        result = mgr.resolve_dns("this-host-does-not-exist-xyz123.example")
+        self.assertFalse(result["resolved"])
+        self.assertIn("error", result)
+
+    def test_get_dns_config_default(self):
+        """get_dns_config returns defaults when no resolv.conf exists."""
+        mgr = self._manager()
+        c = self._make(mgr, "dns4")
+        result = mgr.get_dns_config(c)
+        self.assertEqual(result["source"], "default")
+        self.assertIn("8.8.8.8", result["nameservers"])
+
+    def test_get_dns_config_from_rootfs(self):
+        """get_dns_config reads from rootfs resolv.conf."""
+        import tempfile, os
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        etc_dir = os.path.join(rootfs, "etc")
+        os.makedirs(etc_dir)
+        with open(os.path.join(etc_dir, "resolv.conf"), "w") as f:
+            f.write("nameserver 9.9.9.9\nsearch foo.com\n")
+        c = self._make(mgr, "dns5", rootfs=rootfs)
+        result = mgr.get_dns_config(c)
+        self.assertEqual(result["source"], "container")
+        self.assertIn("9.9.9.9", result["nameservers"])
+        self.assertIn("foo.com", result["search_domains"])
+
+    def test_update_dns(self):
+        """update_dns adds and removes nameservers."""
+        mgr = self._manager()
+        c = self._make(mgr, "dns6")
+        result = mgr.update_dns(c, add_nameservers=["9.9.9.9"])
+        self.assertIn("9.9.9.9", result["nameservers"])
+        self.assertIn("8.8.8.8", result["nameservers"])
+
+    def test_format_human_dns_generate(self):
+        """format_human handles dns-generate response."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "nameservers": ["8.8.8.8"],
+                "search_domains": [], "written": True}
+        text = format_human("dns-generate", resp)
+        self.assertIn("8.8.8.8", text)
+        self.assertIn("True", text)
+
+    def test_format_human_dns_resolve(self):
+        """format_human handles dns-resolve response."""
+        from nyrqisctl import format_human
+        resp = {"hostname": "localhost", "addresses": ["127.0.0.1"],
+                "resolved": True, "error": None}
+        text = format_human("dns-resolve", resp)
+        self.assertIn("localhost", text)
+        self.assertIn("resolved", text)
+
+    def test_format_human_dns_get_config(self):
+        """format_human handles dns-get-config response."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "nameservers": ["1.1.1.1"],
+                "search_domains": ["example.com"], "options": [],
+                "source": "default"}
+        text = format_human("dns-get-config", resp)
+        self.assertIn("1.1.1.1", text)
+        self.assertIn("example.com", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -26660,6 +27023,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerTop))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworkStats))
     suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestLogStreaming))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageDedupGC))
+    suite.addTests(loader.loadTestsFromTestCase(TestDNSResolution))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))
