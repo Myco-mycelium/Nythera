@@ -26526,6 +26526,104 @@ class TestImageManagement(unittest.TestCase):
                 shutil.rmtree(imported)
 
 
+class TestClusterMode(unittest.TestCase):
+    """Tests for multi-node cluster discovery and orchestration."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_register_node(self):
+        mgr = self._mgr()
+        result = mgr.register_node("n1", "ipc:///run/n1.sock",
+                                   labels={"zone": "us-east"})
+        self.assertEqual(result["node_id"], "n1")
+        self.assertEqual(result["labels"]["zone"], "us-east")
+        self.assertEqual(result["status"], "active")
+
+    def test_unregister_node(self):
+        mgr = self._mgr()
+        mgr.register_node("n2", "ipc:///run/n2.sock")
+        self.assertTrue(mgr.unregister_node("n2"))
+        self.assertFalse(mgr.unregister_node("n2"))
+        self.assertEqual(len(mgr.get_cluster_nodes()), 0)
+
+    def test_node_heartbeat(self):
+        mgr = self._mgr()
+        mgr.register_node("n3", "ipc:///run/n3.sock")
+        result = mgr.node_heartbeat("n3", status="busy")
+        self.assertEqual(result["status"], "busy")
+
+    def test_node_heartbeat_unknown(self):
+        mgr = self._mgr()
+        with self.assertRaises(ValueError):
+            mgr.node_heartbeat("nonexistent")
+
+    def test_get_cluster_nodes(self):
+        mgr = self._mgr()
+        mgr.register_node("n4", "ipc:///run/n4.sock")
+        mgr.register_node("n5", "ipc:///run/n5.sock")
+        nodes = mgr.get_cluster_nodes()
+        self.assertEqual(len(nodes), 2)
+        ids = {n["node_id"] for n in nodes}
+        self.assertEqual(ids, {"n4", "n5"})
+
+    def test_cluster_status(self):
+        mgr = self._mgr()
+        mgr.register_node("n6", "ipc:///run/n6.sock")
+        result = mgr.get_cluster_status()
+        self.assertEqual(result["total_nodes"], 1)
+        self.assertEqual(result["active_nodes"], 1)
+        self.assertEqual(result["stale_nodes"], 0)
+
+    def test_schedule_least_loaded(self):
+        mgr = self._mgr()
+        mgr.register_node("n7", "ipc:///run/n7.sock",
+                         capacity={"memory_mb": 512})
+        mgr.register_node("n8", "ipc:///run/n8.sock",
+                         capacity={"memory_mb": 1024})
+        result = mgr.schedule_container({}, strategy="least_loaded")
+        self.assertIsNotNone(result["chosen_node"])
+        self.assertEqual(result["strategy"], "least_loaded")
+
+    def test_schedule_spread(self):
+        mgr = self._mgr()
+        mgr.register_node("n9", "ipc:///run/n9.sock")
+        mgr.register_node("n10", "ipc:///run/n10.sock")
+        result = mgr.schedule_container({}, strategy="spread")
+        self.assertIn(result["chosen_node"], ["n9", "n10"])
+
+    def test_schedule_no_nodes(self):
+        mgr = self._mgr()
+        result = mgr.schedule_container({}, strategy="least_loaded")
+        self.assertIsNone(result["chosen_node"])
+        self.assertIn("no active nodes", result["reasons"][0])
+
+    def test_drain_node(self):
+        mgr = self._mgr()
+        mgr.register_node("n11", "ipc:///run/n11.sock")
+        result = mgr.drain_node("n11")
+        self.assertEqual(result["status"], "draining")
+        self.assertIsInstance(result["containers_to_migrate"], list)
+
+    def test_drain_unknown_node(self):
+        mgr = self._mgr()
+        with self.assertRaises(ValueError):
+            mgr.drain_node("nonexistent")
+
+    def test_cluster_containers_local(self):
+        mgr = self._mgr()
+        result = mgr.get_cluster_containers()
+        self.assertIsInstance(result, list)
+
+    def test_stale_node_detection(self):
+        mgr = self._mgr()
+        node = mgr.register_node("n12", "ipc:///run/n12.sock")
+        node["last_heartbeat"] = 0  # make it stale
+        nodes = mgr.get_cluster_nodes()
+        self.assertEqual(nodes[0]["status"], "stale")
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -26634,6 +26732,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceHeatmap))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceTiering))
     suite.addTests(loader.loadTestsFromTestCase(TestImageManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestClusterMode))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

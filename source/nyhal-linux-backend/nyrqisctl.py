@@ -266,6 +266,57 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "registry_catalog",
             "registry_url": args.registry_url,
         }
+    if command == "cluster-register-node":
+        return {
+            "service": "control",
+            "op": "cluster_register_node",
+            "node_id": args.node_id,
+            "node_url": args.node_url,
+            "labels": json.loads(args.labels) if args.labels else None,
+            "capacity": json.loads(args.capacity) if args.capacity else None,
+        }
+    if command == "cluster-unregister-node":
+        return {
+            "service": "control",
+            "op": "cluster_unregister_node",
+            "node_id": args.node_id,
+        }
+    if command == "cluster-heartbeat":
+        return {
+            "service": "control",
+            "op": "cluster_heartbeat",
+            "node_id": args.node_id,
+            "status": args.status,
+        }
+    if command == "cluster-nodes":
+        return {
+            "service": "control",
+            "op": "cluster_nodes",
+        }
+    if command == "cluster-status":
+        return {
+            "service": "control",
+            "op": "cluster_status",
+        }
+    if command == "cluster-schedule":
+        return {
+            "service": "control",
+            "op": "cluster_schedule",
+            "container_config": json.loads(args.container_config) if args.container_config else {},
+            "strategy": args.strategy,
+        }
+    if command == "cluster-containers":
+        return {
+            "service": "control",
+            "op": "cluster_containers",
+        }
+    if command == "cluster-drain-node":
+        return {
+            "service": "control",
+            "op": "cluster_drain_node",
+            "node_id": args.node_id,
+            "timeout_s": args.timeout_s,
+        }
     if command == "containers-checkpoint":
         payload: Dict[str, Any] = {
             "service": "control",
@@ -2200,6 +2251,49 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for img in images:
             lines.append(f"  {img}")
         return "\n".join(lines)
+    if command == "cluster-register-node":
+        return f"node registered: {resp.get('node_id')} at {resp.get('node_url')}"
+    if command == "cluster-unregister-node":
+        return f"node unregistered: {resp.get('ok')}"
+    if command == "cluster-heartbeat":
+        return f"heartbeat acknowledged for {resp.get('node_id')}"
+    if command == "cluster-nodes":
+        nodes = resp.get('nodes', [])
+        if not nodes:
+            return "no nodes registered"
+        lines = ["Cluster nodes:"]
+        for n in nodes:
+            lines.append(
+                f"  {n['node_id']}: {n['status']} "
+                f"(url={n['node_url']})")
+        return "\n".join(lines)
+    if command == "cluster-status":
+        return (
+            f"Cluster: {resp.get('active_nodes', 0)} active, "
+            f"{resp.get('stale_nodes', 0)} stale, "
+            f"{resp.get('total_containers', 0)} containers")
+    if command == "cluster-schedule":
+        chosen = resp.get('chosen_node')
+        if chosen is None:
+            return "no node available for scheduling"
+        return (
+            f"scheduled to: {chosen} "
+            f"(strategy={resp.get('strategy')})")
+    if command == "cluster-containers":
+        containers = resp.get('containers', [])
+        if not containers:
+            return "no containers in cluster"
+        lines = ["Cluster containers:"]
+        for c in containers:
+            lines.append(
+                f"  {c['container_id'][:12]}: {c['state']} "
+                f"(node={c['node']})")
+        return "\n".join(lines)
+    if command == "cluster-drain-node":
+        to_migrate = resp.get('containers_to_migrate', [])
+        return (
+            f"draining {resp.get('node_id')}: "
+            f"{len(to_migrate)} containers to migrate")
     if command == "containers-checkpoint":
         return (
             f"checkpoint saved: {resp.get('checkpoint_path')} "
@@ -6573,6 +6667,57 @@ def build_parser() -> argparse.ArgumentParser:
                         help="List images in registry")
     rc.add_argument("registry_url", help="Registry base URL")
     rc.set_defaults(command="registry-catalog")
+
+    crn = sub.add_parser("cluster-register-node",
+                         help="Register a node in the cluster")
+    crn.add_argument("node_id", help="Node identifier")
+    crn.add_argument("node_url", help="Node IPC URL")
+    crn.add_argument("--labels", default=None,
+                     help='JSON dict of labels')
+    crn.add_argument("--capacity", default=None,
+                     help='JSON dict of resource capacity')
+    crn.set_defaults(command="cluster-register-node")
+
+    cun = sub.add_parser("cluster-unregister-node",
+                         help="Remove a node from the cluster")
+    cun.add_argument("node_id", help="Node identifier")
+    cun.set_defaults(command="cluster-unregister-node")
+
+    chb = sub.add_parser("cluster-heartbeat",
+                         help="Send node heartbeat")
+    chb.add_argument("node_id", help="Node identifier")
+    chb.add_argument("--status", default="active",
+                     help="Node status (default: active)")
+    chb.set_defaults(command="cluster-heartbeat")
+
+    cn = sub.add_parser("cluster-nodes",
+                        help="List cluster nodes")
+    cn.set_defaults(command="cluster-nodes")
+
+    cs = sub.add_parser("cluster-status",
+                        help="Cluster status summary")
+    cs.set_defaults(command="cluster-status")
+
+    csc = sub.add_parser("cluster-schedule",
+                         help="Schedule a container to a node")
+    csc.add_argument("--config", dest="container_config",
+                     default=None,
+                     help='JSON container config')
+    csc.add_argument("--strategy", default="least_loaded",
+                     choices=["least_loaded", "spread", "round_robin"],
+                     help="Scheduling strategy")
+    csc.set_defaults(command="cluster-schedule")
+
+    ccl = sub.add_parser("cluster-containers",
+                         help="List containers across all nodes")
+    ccl.set_defaults(command="cluster-containers")
+
+    cdn = sub.add_parser("cluster-drain-node",
+                         help="Drain a node (evict containers)")
+    cdn.add_argument("node_id", help="Node identifier")
+    cdn.add_argument("--timeout", dest="timeout_s", type=float,
+                     default=30.0, help="Timeout in seconds")
+    cdn.set_defaults(command="cluster-drain-node")
 
     vault = sub.add_parser(
         "vault", help="NyVault storage service ops (ADR-0022) — "

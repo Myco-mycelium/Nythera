@@ -13083,6 +13083,229 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Cluster mode (multi-node discovery + container orchestration)
+    # ------------------------------------------------------------------
+
+    def register_node(
+        self,
+        node_id: str,
+        node_url: str,
+        labels: Optional[Dict[str, str]] = None,
+        capacity: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register a node in the cluster.
+
+        Args:
+            node_id: Unique node identifier.
+            node_url: IPC URL for the node's control service.
+            labels: Optional key-value labels (e.g., zone, tier).
+            capacity: Optional resource capacity (memory_mb, cpu_cores, pid_max).
+
+        Returns:
+            { node_id, node_url, labels, capacity, registered_at }
+        """
+        if not hasattr(self, '_cluster_nodes'):
+            self._cluster_nodes: Dict[str, Dict[str, Any]] = {}
+
+        now = time.time()
+        self._cluster_nodes[node_id] = {
+            "node_id": node_id,
+            "node_url": node_url,
+            "labels": labels or {},
+            "capacity": capacity or {},
+            "registered_at": now,
+            "last_heartbeat": now,
+            "status": "active",
+            "containers": [],
+        }
+        self._record_event("cluster_node_registered", node_id,
+                           f"url={node_url}")
+        return self._cluster_nodes[node_id]
+
+    def unregister_node(self, node_id: str) -> bool:
+        """Remove a node from the cluster."""
+        if not hasattr(self, '_cluster_nodes'):
+            return False
+        if node_id not in self._cluster_nodes:
+            return False
+        del self._cluster_nodes[node_id]
+        self._record_event("cluster_node_removed", node_id, "")
+        return True
+
+    def node_heartbeat(
+        self,
+        node_id: str,
+        status: str = "active",
+        resource_usage: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update node heartbeat with current status."""
+        if not hasattr(self, '_cluster_nodes'):
+            raise ValueError("cluster not initialized")
+        node = self._cluster_nodes.get(node_id)
+        if node is None:
+            raise ValueError(f"node not found: {node_id}")
+        node["last_heartbeat"] = time.time()
+        node["status"] = status
+        if resource_usage:
+            node["resource_usage"] = resource_usage
+        return node
+
+    def get_cluster_nodes(self) -> List[Dict[str, Any]]:
+        """List all registered cluster nodes."""
+        if not hasattr(self, '_cluster_nodes'):
+            return []
+        nodes = []
+        for n in self._cluster_nodes.values():
+            node_info = dict(n)
+            # Mark stale nodes (no heartbeat in 60s)
+            if time.time() - n["last_heartbeat"] > 60:
+                node_info["status"] = "stale"
+            nodes.append(node_info)
+        return nodes
+
+    def get_cluster_status(self) -> Dict[str, Any]:
+        """Fleet-level cluster status summary."""
+        nodes = self.get_cluster_nodes()
+        active = sum(1 for n in nodes if n["status"] == "active")
+        stale = sum(1 for n in nodes if n["status"] == "stale")
+        total_containers = sum(
+            len(n.get("containers", [])) for n in nodes)
+        return {
+            "total_nodes": len(nodes),
+            "active_nodes": active,
+            "stale_nodes": stale,
+            "total_containers": total_containers,
+            "nodes": nodes,
+        }
+
+    def schedule_container(
+        self,
+        container_config: Dict[str, Any],
+        strategy: str = "least_loaded",
+        label_selector: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Choose the best node for a new container.
+
+        Strategies:
+        - ``least_loaded``: pick node with most free memory.
+        - ``round_robin``: cycle through active nodes.
+        - ``spread``: pick node with fewest containers.
+
+        Args:
+            container_config: Container configuration dict.
+            strategy: Scheduling strategy.
+            label_selector: Required node labels.
+
+        Returns:
+            { chosen_node, strategy, reasons, alternatives }
+        """
+        nodes = self.get_cluster_nodes()
+        active = [n for n in nodes if n["status"] == "active"]
+
+        # Filter by label selector
+        if label_selector:
+            active = [
+                n for n in active
+                if all(n["labels"].get(k) == v
+                       for k, v in label_selector.items())
+            ]
+
+        if not active:
+            return {
+                "chosen_node": None,
+                "strategy": strategy,
+                "reasons": ["no active nodes available"],
+                "alternatives": [],
+            }
+
+        def _free_mem(node: Dict) -> int:
+            cap = node.get("capacity", {})
+            usage = node.get("resource_usage", {})
+            total = cap.get("memory_mb", 256) * 1024 * 1024
+            used = usage.get("memory_bytes", 0)
+            return total - used
+
+        def _container_count(node: Dict) -> int:
+            return len(node.get("containers", []))
+
+        if strategy == "least_loaded":
+            chosen = max(active, key=_free_mem)
+            reasons = [f"most free memory ({_free_mem(chosen):,} bytes)"]
+        elif strategy == "spread":
+            chosen = min(active, key=_container_count)
+            reasons = [f"fewest containers ({_container_count(chosen)})"]
+        else:  # round_robin
+            if not hasattr(self, '_rr_index'):
+                self._rr_index = 0
+            chosen = active[self._rr_index % len(active)]
+            self._rr_index += 1
+            reasons = ["round-robin selection"]
+
+        alternatives = [
+            {"node_id": n["node_id"],
+             "free_memory": _free_mem(n),
+             "containers": _container_count(n)}
+            for n in active if n["node_id"] != chosen["node_id"]
+        ]
+
+        return {
+            "chosen_node": chosen["node_id"],
+            "strategy": strategy,
+            "reasons": reasons,
+            "alternatives": alternatives[:5],
+        }
+
+    def get_cluster_containers(self) -> List[Dict[str, Any]]:
+        """List containers across all nodes."""
+        result = []
+        # Local containers
+        for c in self.containers.values():
+            result.append({
+                "container_id": c.id,
+                "name": c.config.name,
+                "state": c.state.value,
+                "node": "local",
+            })
+        # Cluster node containers (from heartbeat data)
+        if hasattr(self, '_cluster_nodes'):
+            for node in self._cluster_nodes.values():
+                for cid in node.get("containers", []):
+                    result.append({
+                        "container_id": cid,
+                        "name": cid,
+                        "state": "unknown",
+                        "node": node["node_id"],
+                    })
+        return result
+
+    def drain_node(
+        self,
+        node_id: str,
+        timeout_s: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Gracefully drain a node (evict all containers).
+
+        Marks the node as draining and returns the list of containers
+        that would need to be migrated.
+        """
+        if not hasattr(self, '_cluster_nodes'):
+            raise ValueError("cluster not initialized")
+        node = self._cluster_nodes.get(node_id)
+        if node is None:
+            raise ValueError(f"node not found: {node_id}")
+
+        node["status"] = "draining"
+        containers = node.get("containers", [])
+        self._record_event("cluster_node_draining", node_id,
+                           f"containers={len(containers)}")
+        return {
+            "node_id": node_id,
+            "status": "draining",
+            "containers_to_migrate": containers,
+            "timeout_s": timeout_s,
+        }
+
+    # ------------------------------------------------------------------
     # Process management (per-process control within a container)
     # ------------------------------------------------------------------
 

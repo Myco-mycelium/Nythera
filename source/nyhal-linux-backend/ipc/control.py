@@ -166,6 +166,30 @@ class ControlService:
             elif op == "registry_catalog":
                 self._registry_catalog(server, sender_path,
                                        msg.message_id, request)
+            elif op == "cluster_register_node":
+                self._cluster_register_node(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "cluster_unregister_node":
+                self._cluster_unregister_node(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "cluster_heartbeat":
+                self._cluster_heartbeat(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "cluster_nodes":
+                self._cluster_nodes(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "cluster_status":
+                self._cluster_status(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "cluster_schedule":
+                self._cluster_schedule(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "cluster_containers":
+                self._cluster_containers(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "cluster_drain_node":
+                self._cluster_drain_node(server, sender_path,
+                                         msg.message_id, request)
             elif op == "container_checkpoint":
                 self._container_checkpoint(server, sender_path,
                                            msg.message_id, request)
@@ -1239,6 +1263,80 @@ class ControlService:
                           request: Dict[str, Any]) -> None:
         result = self.container_manager.registry_catalog(
             registry_url=request["registry_url"])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cluster_register_node(self, server, sender_path: str, call_id: str,
+                               request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.register_node(
+                node_id=request["node_id"],
+                node_url=request["node_url"],
+                labels=request.get("labels"),
+                capacity=request.get("capacity"),
+            )
+        except (ValueError, KeyError) as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cluster_unregister_node(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        ok = self.container_manager.unregister_node(request["node_id"])
+        self._reply(server, sender_path, call_id, {"ok": ok})
+
+    def _cluster_heartbeat(self, server, sender_path: str, call_id: str,
+                           request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.node_heartbeat(
+                node_id=request["node_id"],
+                status=request.get("status", "active"),
+                resource_usage=request.get("resource_usage"),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cluster_nodes(self, server, sender_path: str, call_id: str,
+                       request: Dict[str, Any]) -> None:
+        nodes = self.container_manager.get_cluster_nodes()
+        self._reply(server, sender_path, call_id,
+                    {"ok": True, "nodes": nodes})
+
+    def _cluster_status(self, server, sender_path: str, call_id: str,
+                        request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_cluster_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cluster_schedule(self, server, sender_path: str, call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.schedule_container(
+            container_config=request.get("container_config", {}),
+            strategy=request.get("strategy", "least_loaded"),
+            label_selector=request.get("label_selector"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cluster_containers(self, server, sender_path: str, call_id: str,
+                            request: Dict[str, Any]) -> None:
+        containers = self.container_manager.get_cluster_containers()
+        self._reply(server, sender_path, call_id,
+                    {"ok": True, "containers": containers})
+
+    def _cluster_drain_node(self, server, sender_path: str, call_id: str,
+                            request: Dict[str, Any]) -> None:
+        try:
+            result = self.container_manager.drain_node(
+                node_id=request["node_id"],
+                timeout_s=float(request.get("timeout_s", 30.0)),
+            )
+        except ValueError as e:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": str(e)})
+            return
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _container_checkpoint(self, server, sender_path: str, call_id: str,
