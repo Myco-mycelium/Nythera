@@ -5162,6 +5162,212 @@ class TestDistributedTracing(unittest.TestCase):
         self.assertIn("123.4", text)
 
 
+class TestChaosEngineering(unittest.TestCase):
+    """Tests for chaos engineering with fault injection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_experiment(self):
+        """create_chaos_experiment stores experiment."""
+        mgr = self._manager()
+        r = mgr.create_chaos_experiment("exp1", ["c1", "c2"], fault_type="latency")
+        self.assertEqual(r["fault_type"], "latency")
+        self.assertEqual(r["targets"], 2)
+
+    def test_start_experiment(self):
+        """start_chaos_experiment begins injection."""
+        mgr = self._manager()
+        mgr.create_chaos_experiment("exp2", ["c1"], blast_radius=100)
+        r = mgr.start_chaos_experiment("exp2")
+        self.assertEqual(r["status"], "running")
+        self.assertEqual(r["injected_count"], 1)
+
+    def test_record_observation(self):
+        """record_chaos_observation tracks data."""
+        mgr = self._manager()
+        mgr.create_chaos_experiment("exp3", ["c1"])
+        mgr.start_chaos_experiment("exp3")
+        r = mgr.record_chaos_observation("exp3", "c1", "latency_ms", 150.0)
+        self.assertTrue(r["recorded"])
+
+    def test_stop_experiment(self):
+        """stop_chaos_experiment completes."""
+        mgr = self._manager()
+        mgr.create_chaos_experiment("exp4", ["c1"])
+        mgr.start_chaos_experiment("exp4")
+        r = mgr.stop_chaos_experiment("exp4")
+        self.assertEqual(r["status"], "completed")
+
+    def test_get_results(self):
+        """get_chaos_results returns summary."""
+        mgr = self._manager()
+        mgr.create_chaos_experiment("exp5", ["c1"])
+        mgr.start_chaos_experiment("exp5")
+        mgr.record_chaos_observation("exp5", "c1", "cpu", 80.0)
+        mgr.record_chaos_observation("exp5", "c1", "cpu", 90.0)
+        r = mgr.get_chaos_results("exp5")
+        self.assertEqual(r["observations"], 2)
+
+    def test_list_experiments(self):
+        """list_chaos_experiments returns all."""
+        mgr = self._manager()
+        mgr.create_chaos_experiment("e1", ["c1"])
+        mgr.create_chaos_experiment("e2", ["c2"])
+        r = mgr.list_chaos_experiments()
+        self.assertEqual(r["count"], 2)
+
+    def test_game_day(self):
+        """create_game_day stores schedule."""
+        mgr = self._manager()
+        r = mgr.create_game_day("gd1", "DB failure scenario", ["team-a", "team-b"])
+        self.assertEqual(r["participants"], 2)
+
+    def test_format_human_results(self):
+        """format_human handles get-chaos-results."""
+        from nyrqisctl import format_human
+        text = format_human("get-chaos-results", {"observations": 5, "status": "completed"})
+        self.assertIn("5", text)
+
+
+class TestCostAllocation(unittest.TestCase):
+    """Tests for cost allocation with per-service billing."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_configure_cost(self):
+        """configure_cost_allocation stores cost config."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca1")
+        r = mgr.configure_cost_allocation(c, cost_per_hour=0.5, team="platform")
+        self.assertEqual(r["cost_per_hour"], 0.5)
+        self.assertEqual(r["team"], "platform")
+
+    def test_container_cost(self):
+        """get_container_cost calculates total."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca2")
+        mgr.configure_cost_allocation(c, cost_per_hour=1.0)
+        r = mgr.get_container_cost(c.id, hours=24)
+        self.assertEqual(r["total_cost"], 24.0)
+
+    def test_team_cost(self):
+        """get_team_cost_summary aggregates."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ca3")
+        c2 = self._make(mgr, "ca4")
+        mgr.configure_cost_allocation(c1, cost_per_hour=1.0, team="dev")
+        mgr.configure_cost_allocation(c2, cost_per_hour=2.0, team="dev")
+        r = mgr.get_team_cost_summary("dev", hours=1)
+        self.assertEqual(r["total_cost"], 3.0)
+        self.assertEqual(r["container_count"], 2)
+
+    def test_fleet_cost(self):
+        """get_fleet_cost_summary shows all teams."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca5")
+        mgr.configure_cost_allocation(c, cost_per_hour=1.0, team="a")
+        r = mgr.get_fleet_cost_summary(hours=1)
+        self.assertIn("a", r["teams"])
+
+    def test_billing_breakdown(self):
+        """get_billing_breakdown groups by tag."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca6")
+        mgr.configure_cost_allocation(c, cost_per_hour=1.0, billing_tag="prod")
+        r = mgr.get_billing_breakdown(hours=1)
+        self.assertIn("prod", r["tags"])
+
+    def test_format_human_cost(self):
+        """format_human handles get-container-cost."""
+        from nyrqisctl import format_human
+        text = format_human("get-container-cost", {"total_cost": 4.567, "hours": 24, "cost_per_hour": 0.19})
+        self.assertIn("4.567", text)
+
+
+class TestSLOTracking(unittest.TestCase):
+    """Tests for SLO/SLI tracking with error budgets."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_slo(self):
+        """create_slo stores SLO config."""
+        mgr = self._manager()
+        r = mgr.create_slo("availability", target_percentage=99.9)
+        self.assertEqual(r["target_percentage"], 99.9)
+
+    def test_record_event(self):
+        """record_sli_event updates counters."""
+        mgr = self._manager()
+        mgr.create_slo("sl1", target_percentage=99.0)
+        for _ in range(99):
+            mgr.record_sli_event("sl1", is_good=True)
+        mgr.record_sli_event("sl1", is_good=False)
+        r = mgr.get_slo_status("sl1")
+        self.assertEqual(r["current_sli"], 99.0)
+        self.assertTrue(r["met"])
+
+    def test_slo_breached(self):
+        """SLO breaches when SLI drops below target."""
+        mgr = self._manager()
+        mgr.create_slo("sl2", target_percentage=99.0)
+        for _ in range(90):
+            mgr.record_sli_event("sl2", is_good=True)
+        for _ in range(10):
+            mgr.record_sli_event("sl2", is_good=False)
+        r = mgr.get_slo_status("sl2")
+        self.assertFalse(r["met"])
+
+    def test_error_budget(self):
+        """Error budget tracks remaining allowance."""
+        mgr = self._manager()
+        mgr.create_slo("sl3", target_percentage=99.9)
+        for _ in range(999):
+            mgr.record_sli_event("sl3", is_good=True)
+        mgr.record_sli_event("sl3", is_good=False)
+        r = mgr.get_slo_status("sl3")
+        self.assertGreater(r["error_budget_remaining"], 0)
+
+    def test_list_slos(self):
+        """list_slos returns all."""
+        mgr = self._manager()
+        mgr.create_slo("s1")
+        mgr.create_slo("s2")
+        r = mgr.list_slos()
+        self.assertEqual(r["count"], 2)
+
+    def test_error_budget_report(self):
+        """get_error_budget_report aggregates."""
+        mgr = self._manager()
+        mgr.create_slo("r1", target_percentage=99.0)
+        mgr.record_sli_event("r1", is_good=True)
+        r = mgr.get_error_budget_report()
+        self.assertIn("total_budget_used_pct", r)
+
+    def test_delete_slo(self):
+        """delete_slo removes SLO."""
+        mgr = self._manager()
+        mgr.create_slo("del1")
+        r = mgr.delete_slo("del1")
+        self.assertIn("deleted", r)
+
+    def test_format_human_status(self):
+        """format_human handles get-slo-status."""
+        from nyrqisctl import format_human
+        text = format_human("get-slo-status", {"name": "avail", "met": True, "current_sli": 99.95, "target_percentage": 99.9, "error_budget_remaining": 0.05})
+        self.assertIn("MET", text)
+        self.assertIn("99.95", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -30253,6 +30459,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCanaryDeployment))
     suite.addTests(loader.loadTestsFromTestCase(TestServiceDiscovery))
     suite.addTests(loader.loadTestsFromTestCase(TestDistributedTracing))
+    suite.addTests(loader.loadTestsFromTestCase(TestChaosEngineering))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostAllocation))
+    suite.addTests(loader.loadTestsFromTestCase(TestSLOTracking))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

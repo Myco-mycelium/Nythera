@@ -1464,6 +1464,66 @@ class ControlService:
             elif op == "list_traces":
                 self._list_traces(server, sender_path,
                              msg.message_id, request)
+            elif op == "create_chaos_experiment":
+                self._create_chaos_experiment(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "start_chaos_experiment":
+                self._start_chaos_experiment(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "record_chaos_observation":
+                self._record_chaos_observation(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "stop_chaos_experiment":
+                self._stop_chaos_experiment(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_chaos_results":
+                self._get_chaos_results(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_chaos_experiments":
+                self._list_chaos_experiments(server, sender_path,
+                                        msg.message_id)
+            elif op == "create_game_day":
+                self._create_game_day(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "get_game_day":
+                self._get_game_day(server, sender_path,
+                             msg.message_id, request)
+            elif op == "list_game_days":
+                self._list_game_days(server, sender_path,
+                                msg.message_id)
+            elif op == "configure_cost_allocation":
+                self._configure_cost_allocation(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "get_container_cost":
+                self._get_container_cost(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_team_cost_summary":
+                self._get_team_cost_summary(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_fleet_cost_summary":
+                self._get_fleet_cost_summary(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "get_billing_breakdown":
+                self._get_billing_breakdown(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "create_slo":
+                self._create_slo(server, sender_path,
+                            msg.message_id, request)
+            elif op == "record_sli_event":
+                self._record_sli_event(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_slo_status":
+                self._get_slo_status(server, sender_path,
+                                msg.message_id, request)
+            elif op == "list_slos":
+                self._list_slos(server, sender_path,
+                           msg.message_id)
+            elif op == "get_error_budget_report":
+                self._get_error_budget_report(server, sender_path,
+                                         msg.message_id)
+            elif op == "delete_slo":
+                self._delete_slo(server, sender_path,
+                            msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8023,6 +8083,142 @@ class ControlService:
 
     def _list_traces(self, server, sender_path, call_id, request):
         result = self.container_manager.list_traces(limit=request.get('limit', 20))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Chaos engineering handlers
+    # ------------------------------------------------------------------
+
+    def _create_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_chaos_experiment(
+            name=request['name'],
+            target_containers=request.get('target_containers', []),
+            fault_type=request.get('fault_type', 'latency'),
+            fault_config=request.get('fault_config'),
+            duration_seconds=int(request.get('duration_seconds', 60)),
+            blast_radius=float(request.get('blast_radius', 50)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _start_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.start_chaos_experiment(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_chaos_observation(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_chaos_observation(
+            experiment_name=request['experiment_name'],
+            container_id=request['container_id'],
+            metric=request['metric'],
+            value=float(request.get('value', 0)),
+            notes=request.get('notes', ''),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_chaos_experiment(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_chaos_results(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_chaos_results(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_chaos_experiments(self, server, sender_path, call_id):
+        result = self.container_manager.list_chaos_experiments()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_game_day(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_game_day(
+            name=request['name'],
+            scenario=request['scenario'],
+            participants=request.get('participants', []),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_game_day(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_game_day(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_game_days(self, server, sender_path, call_id):
+        result = self.container_manager.list_game_days()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Cost allocation handlers
+    # ------------------------------------------------------------------
+
+    def _configure_cost_allocation(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_cost_allocation(
+            c, cost_per_hour=float(request.get('cost_per_hour', 0)),
+            billing_tag=request.get('billing_tag', ''),
+            team=request.get('team', ''),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_container_cost(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_container_cost(
+            container_id=request['container_id'],
+            hours=float(request.get('hours', 24)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_team_cost_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_team_cost_summary(
+            team=request['team'],
+            hours=float(request.get('hours', 24)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_fleet_cost_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_fleet_cost_summary(
+            hours=float(request.get('hours', 24)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_billing_breakdown(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_billing_breakdown(
+            hours=float(request.get('hours', 24)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # SLO/SLI tracking handlers
+    # ------------------------------------------------------------------
+
+    def _create_slo(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_slo(
+            name=request['name'],
+            target_percentage=float(request.get('target_percentage', 99.9)),
+            window_days=int(request.get('window_days', 30)),
+            sli_type=request.get('sli_type', 'availability'),
+            description=request.get('description', ''),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_sli_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_sli_event(
+            slo_name=request['slo_name'],
+            is_good=request.get('is_good', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_slo_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_slo_status(request['slo_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_slos(self, server, sender_path, call_id):
+        result = self.container_manager.list_slos()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_error_budget_report(self, server, sender_path, call_id):
+        result = self.container_manager.get_error_budget_report()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_slo(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_slo(request['name'])
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

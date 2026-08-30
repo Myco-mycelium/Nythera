@@ -22129,6 +22129,465 @@ class ContainerManager:
         traces.sort(key=lambda t: t["created_at"], reverse=True)
         return {"traces": traces[:limit], "count": len(traces)}
 
+    # ------------------------------------------------------------------
+    # Chaos engineering with fault injection and game days
+    # ------------------------------------------------------------------
+
+    def create_chaos_experiment(
+        self,
+        name: str,
+        target_containers: List[str],
+        fault_type: str = "latency",
+        fault_config: Optional[Dict[str, Any]] = None,
+        duration_seconds: int = 60,
+        blast_radius: float = 50.0,
+    ) -> Dict[str, Any]:
+        """Create a chaos engineering experiment.
+
+        Args:
+            name: Experiment name.
+            target_containers: Container IDs to inject faults into.
+            fault_type: ``"latency"``, ``"cpu_stress"``, ``"memory_stress"``,
+                ``"network_loss"``, ``"disk_fill"``, ``"process_kill"``.
+            fault_config: Type-specific configuration.
+            duration_seconds: How long to run the experiment.
+            blast_radius: Percentage of target containers to affect (0-100).
+        """
+        import time as _time
+        if not hasattr(self, '_chaos'):
+            self._chaos = {}
+        if fault_config is None:
+            fault_config = {}
+        experiment = {
+            "name": name,
+            "target_containers": target_containers,
+            "fault_type": fault_type,
+            "fault_config": fault_config,
+            "duration_seconds": duration_seconds,
+            "blast_radius": blast_radius,
+            "status": "created",
+            "created_at": _time.time(),
+            "started_at": None,
+            "completed_at": None,
+            "injected_containers": [],
+            "observations": [],
+        }
+        self._chaos[name] = experiment
+        return {
+            "name": name,
+            "fault_type": fault_type,
+            "targets": len(target_containers),
+            "duration": duration_seconds,
+        }
+
+    def start_chaos_experiment(self, name: str) -> Dict[str, Any]:
+        """Start a chaos experiment, injecting faults."""
+        import time as _time
+        if not hasattr(self, '_chaos'):
+            return {"error": "No chaos experiments"}
+        exp = self._chaos.get(name)
+        if not exp:
+            return {"error": f"Experiment '{name}' not found"}
+        if exp["status"] != "created":
+            return {"error": f"Experiment is {exp['status']}, not created"}
+
+        # Determine which containers to inject based on blast radius
+        import random
+        targets = exp["target_containers"]
+        affected_count = max(1, int(len(targets) * exp["blast_radius"] / 100))
+        affected = random.sample(targets, min(affected_count, len(targets)))
+
+        exp["status"] = "running"
+        exp["started_at"] = _time.time()
+        exp["injected_containers"] = affected
+
+        return {
+            "name": name,
+            "status": "running",
+            "injected_count": len(affected),
+            "duration": exp["duration_seconds"],
+        }
+
+    def record_chaos_observation(
+        self,
+        experiment_name: str,
+        container_id: str,
+        metric: str,
+        value: float,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        """Record an observation during a chaos experiment."""
+        import time as _time
+        if not hasattr(self, '_chaos'):
+            return {"error": "No chaos experiments"}
+        exp = self._chaos.get(experiment_name)
+        if not exp:
+            return {"error": f"Experiment '{experiment_name}' not found"}
+        exp["observations"].append({
+            "container_id": container_id,
+            "metric": metric,
+            "value": value,
+            "notes": notes,
+            "time": _time.time(),
+        })
+        return {"recorded": True}
+
+    def stop_chaos_experiment(self, name: str) -> Dict[str, Any]:
+        """Stop a chaos experiment."""
+        import time as _time
+        if not hasattr(self, '_chaos'):
+            return {"error": "No chaos experiments"}
+        exp = self._chaos.get(name)
+        if not exp:
+            return {"error": f"Experiment '{name}' not found"}
+        exp["status"] = "completed"
+        exp["completed_at"] = _time.time()
+        return {"name": name, "status": "completed", "observations": len(exp["observations"])}
+
+    def get_chaos_results(self, name: str) -> Dict[str, Any]:
+        """Get results of a chaos experiment."""
+        if not hasattr(self, '_chaos'):
+            return {"error": "No chaos experiments"}
+        exp = self._chaos.get(name)
+        if not exp:
+            return {"error": f"Experiment '{name}' not found"}
+        obs = exp["observations"]
+        metrics = {}
+        for o in obs:
+            if o["metric"] not in metrics:
+                metrics[o["metric"]] = {"values": [], "containers": set()}
+            metrics[o["metric"]]["values"].append(o["value"])
+            metrics[o["metric"]]["containers"].add(o["container_id"])
+
+        summary = {}
+        for metric, data in metrics.items():
+            vals = data["values"]
+            summary[metric] = {
+                "min": min(vals),
+                "max": max(vals),
+                "avg": round(sum(vals) / len(vals), 2),
+                "affected_containers": len(data["containers"]),
+            }
+
+        return {
+            "name": name,
+            "status": exp["status"],
+            "fault_type": exp["fault_type"],
+            "injected_containers": len(exp["injected_containers"]),
+            "observations": len(obs),
+            "metrics_summary": summary,
+        }
+
+    def list_chaos_experiments(self) -> Dict[str, Any]:
+        """List all chaos experiments."""
+        if not hasattr(self, '_chaos'):
+            return {"experiments": [], "count": 0}
+        result = []
+        for name, exp in self._chaos.items():
+            result.append({
+                "name": name,
+                "fault_type": exp["fault_type"],
+                "status": exp["status"],
+                "targets": len(exp["target_containers"]),
+            })
+        return {"experiments": result, "count": len(result)}
+
+    def create_game_day(
+        self, name: str, scenario: str, participants: List[str]
+    ) -> Dict[str, Any]:
+        """Create a game day schedule."""
+        import time as _time
+        if not hasattr(self, '_game_days'):
+            self._game_days = {}
+        self._game_days[name] = {
+            "name": name,
+            "scenario": scenario,
+            "participants": participants,
+            "status": "scheduled",
+            "created_at": _time.time(),
+            "experiments": [],
+        }
+        return {"name": name, "scenario": scenario, "participants": len(participants)}
+
+    def get_game_day(self, name: str) -> Dict[str, Any]:
+        """Get game day details."""
+        if not hasattr(self, '_game_days'):
+            return {"error": "No game days"}
+        gd = self._game_days.get(name)
+        if not gd:
+            return {"error": f"Game day '{name}' not found"}
+        return gd
+
+    def list_game_days(self) -> Dict[str, Any]:
+        """List all game days."""
+        if not hasattr(self, '_game_days'):
+            return {"game_days": [], "count": 0}
+        result = []
+        for name, gd in self._game_days.items():
+            result.append({
+                "name": name,
+                "scenario": gd["scenario"],
+                "status": gd["status"],
+                "participants": len(gd["participants"]),
+            })
+        return {"game_days": result, "count": len(result)}
+
+    # ------------------------------------------------------------------
+    # Cost allocation with per-service billing
+    # ------------------------------------------------------------------
+
+    def configure_cost_allocation(
+        self,
+        container: Container,
+        cost_per_hour: float = 0.0,
+        billing_tag: str = "",
+        team: str = "",
+    ) -> Dict[str, Any]:
+        """Configure cost allocation for a container."""
+        container._cost_config = {
+            "cost_per_hour": cost_per_hour,
+            "billing_tag": billing_tag,
+            "team": team,
+        }
+        return {
+            "container_id": container.id,
+            "cost_per_hour": cost_per_hour,
+            "billing_tag": billing_tag,
+            "team": team,
+        }
+
+    def get_container_cost(
+        self, container_id: str, hours: float = 24.0
+    ) -> Dict[str, Any]:
+        """Calculate cost for a container over a time period."""
+        import time as _time
+        c = self.get_container(container_id)
+        if not c:
+            return {"error": "Container not found"}
+        config = getattr(c, '_cost_config', {})
+        rate = config.get("cost_per_hour", 0)
+        total = rate * hours
+        return {
+            "container_id": container_id,
+            "cost_per_hour": rate,
+            "hours": hours,
+            "total_cost": round(total, 4),
+            "billing_tag": config.get("billing_tag", ""),
+            "team": config.get("team", ""),
+        }
+
+    def get_team_cost_summary(
+        self, team: str, hours: float = 24.0
+    ) -> Dict[str, Any]:
+        """Get cost summary for a team."""
+        containers = self.list_containers()
+        team_containers = []
+        total_cost = 0.0
+        for c in containers:
+            config = getattr(c, '_cost_config', {})
+            if config.get("team") == team:
+                rate = config.get("cost_per_hour", 0)
+                cost = rate * hours
+                total_cost += cost
+                team_containers.append({
+                    "container_id": c.id,
+                    "container_name": c.config.name,
+                    "cost_per_hour": rate,
+                    "period_cost": round(cost, 4),
+                })
+        return {
+            "team": team,
+            "hours": hours,
+            "total_cost": round(total_cost, 4),
+            "container_count": len(team_containers),
+            "containers": team_containers,
+        }
+
+    def get_fleet_cost_summary(self, hours: float = 24.0) -> Dict[str, Any]:
+        """Get cost summary across all containers."""
+        containers = self.list_containers()
+        teams = {}
+        total = 0.0
+        for c in containers:
+            config = getattr(c, '_cost_config', {})
+            rate = config.get("cost_per_hour", 0)
+            cost = rate * hours
+            total += cost
+            team = config.get("team", "unassigned")
+            if team not in teams:
+                teams[team] = {"cost": 0.0, "count": 0}
+            teams[team]["cost"] += cost
+            teams[team]["count"] += 1
+        return {
+            "total_cost": round(total, 4),
+            "hours": hours,
+            "container_count": len(containers),
+            "teams": {t: {"cost": round(v["cost"], 4), "count": v["count"]} for t, v in teams.items()},
+        }
+
+    def get_billing_breakdown(self, hours: float = 24.0) -> Dict[str, Any]:
+        """Get billing breakdown by billing tag."""
+        containers = self.list_containers()
+        tags = {}
+        for c in containers:
+            config = getattr(c, '_cost_config', {})
+            tag = config.get("billing_tag", "untagged") or "untagged"
+            rate = config.get("cost_per_hour", 0)
+            cost = rate * hours
+            if tag not in tags:
+                tags[tag] = {"cost": 0.0, "count": 0}
+            tags[tag]["cost"] += cost
+            tags[tag]["count"] += 1
+        return {
+            "hours": hours,
+            "tags": {t: {"cost": round(v["cost"], 4), "count": v["count"]} for t, v in tags.items()},
+        }
+
+    # ------------------------------------------------------------------
+    # SLO/SLI tracking with error budgets
+    # ------------------------------------------------------------------
+
+    def create_slo(
+        self,
+        name: str,
+        target_percentage: float = 99.9,
+        window_days: int = 30,
+        sli_type: str = "availability",
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Create a Service Level Objective.
+
+        Args:
+            name: SLO name.
+            target_percentage: Target SLI percentage (e.g., 99.9).
+            window_days: Rolling window in days.
+            sli_type: ``"availability"``, ``"latency"``, ``"error_rate"``.
+            description: Human-readable description.
+        """
+        import time as _time
+        if not hasattr(self, '_slos'):
+            self._slos = {}
+        slo = {
+            "name": name,
+            "target_percentage": target_percentage,
+            "window_days": window_days,
+            "sli_type": sli_type,
+            "description": description,
+            "created_at": _time.time(),
+            "good_events": 0,
+            "total_events": 0,
+            "error_budget_remaining": 100.0 - target_percentage,
+            "violations": [],
+        }
+        self._slos[name] = slo
+        return {
+            "name": name,
+            "target_percentage": target_percentage,
+            "window_days": window_days,
+            "sli_type": sli_type,
+        }
+
+    def record_sli_event(
+        self, slo_name: str, is_good: bool
+    ) -> Dict[str, Any]:
+        """Record an SLI event (good or bad)."""
+        import time as _time
+        if not hasattr(self, '_slos'):
+            return {"error": "No SLOs"}
+        slo = self._slos.get(slo_name)
+        if not slo:
+            return {"error": f"SLO '{slo_name}' not found"}
+        slo["total_events"] += 1
+        if is_good:
+            slo["good_events"] += 1
+        else:
+            slo["violations"].append({"time": _time.time()})
+
+        # Calculate current SLI
+        if slo["total_events"] > 0:
+            current_sli = slo["good_events"] / slo["total_events"] * 100
+        else:
+            current_sli = 100.0
+
+        # Calculate error budget
+        error_budget_used = max(0, slo["target_percentage"] - current_sli)
+        slo["error_budget_remaining"] = max(0, (100.0 - slo["target_percentage"]) - error_budget_used)
+
+        return {
+            "slo": slo_name,
+            "current_sli": round(current_sli, 4),
+            "error_budget_remaining": round(slo["error_budget_remaining"], 4),
+            "total_events": slo["total_events"],
+        }
+
+    def get_slo_status(self, slo_name: str) -> Dict[str, Any]:
+        """Get SLO status and error budget."""
+        if not hasattr(self, '_slos'):
+            return {"error": "No SLOs"}
+        slo = self._slos.get(slo_name)
+        if not slo:
+            return {"error": f"SLO '{slo_name}' not found"}
+        current_sli = (slo["good_events"] / slo["total_events"] * 100) if slo["total_events"] > 0 else 100.0
+        return {
+            "name": slo["name"],
+            "target_percentage": slo["target_percentage"],
+            "current_sli": round(current_sli, 4),
+            "error_budget_remaining": round(slo["error_budget_remaining"], 4),
+            "error_budget_total": round(100.0 - slo["target_percentage"], 4),
+            "total_events": slo["total_events"],
+            "violations": len(slo["violations"]),
+            "met": current_sli >= slo["target_percentage"],
+        }
+
+    def list_slos(self) -> Dict[str, Any]:
+        """List all SLOs."""
+        if not hasattr(self, '_slos'):
+            return {"slos": [], "count": 0}
+        result = []
+        for name, slo in self._slos.items():
+            current_sli = (slo["good_events"] / slo["total_events"] * 100) if slo["total_events"] > 0 else 100.0
+            result.append({
+                "name": name,
+                "target_percentage": slo["target_percentage"],
+                "current_sli": round(current_sli, 4),
+                "sli_type": slo["sli_type"],
+                "met": current_sli >= slo["target_percentage"],
+            })
+        return {"slos": result, "count": len(result)}
+
+    def get_error_budget_report(self) -> Dict[str, Any]:
+        """Get error budget report across all SLOs."""
+        if not hasattr(self, '_slos'):
+            return {"slos": [], "total_budget_used": 0}
+        slos = []
+        total_budget = 0.0
+        used_budget = 0.0
+        for name, slo in self._slos.items():
+            budget_total = 100.0 - slo["target_percentage"]
+            budget_used = max(0, budget_total - slo["error_budget_remaining"])
+            total_budget += budget_total
+            used_budget += budget_used
+            slos.append({
+                "name": name,
+                "budget_total": round(budget_total, 4),
+                "budget_used": round(budget_used, 4),
+                "budget_remaining": round(slo["error_budget_remaining"], 4),
+                "utilization_pct": round(budget_used / budget_total * 100, 1) if budget_total > 0 else 0,
+            })
+        return {
+            "slos": slos,
+            "total_budget_used_pct": round(used_budget / total_budget * 100, 1) if total_budget > 0 else 0,
+        }
+
+    def delete_slo(self, name: str) -> Dict[str, Any]:
+        """Delete an SLO."""
+        if not hasattr(self, '_slos'):
+            return {"error": "No SLOs"}
+        slo = self._slos.pop(name, None)
+        if not slo:
+            return {"error": f"SLO '{name}' not found"}
+        return {"deleted": name}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

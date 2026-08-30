@@ -3268,6 +3268,125 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "list_traces",
             "limit": int(getattr(args, 'limit', 20)),
         }
+    if command == "create-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "create_chaos_experiment",
+            "name": args.name,
+            "target_containers": args.target_containers,
+            "fault_type": getattr(args, 'fault_type', 'latency'),
+            "duration_seconds": int(getattr(args, 'duration_seconds', 60)),
+            "blast_radius": float(getattr(args, 'blast_radius', 50)),
+        }
+    if command == "start-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "start_chaos_experiment",
+            "name": args.name,
+        }
+    if command == "stop-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "stop_chaos_experiment",
+            "name": args.name,
+        }
+    if command == "get-chaos-results":
+        return {
+            "service": "control",
+            "op": "get_chaos_results",
+            "name": args.name,
+        }
+    if command == "list-chaos":
+        return {
+            "service": "control",
+            "op": "list_chaos_experiments",
+        }
+    if command == "create-game-day":
+        return {
+            "service": "control",
+            "op": "create_game_day",
+            "name": args.name,
+            "scenario": args.scenario,
+            "participants": args.participants,
+        }
+    if command == "list-game-days":
+        return {
+            "service": "control",
+            "op": "list_game_days",
+        }
+    if command == "configure-cost-allocation":
+        return {
+            "service": "control",
+            "op": "configure_cost_allocation",
+            "container_id": args.container_id,
+            "cost_per_hour": float(getattr(args, 'cost_per_hour', 0)),
+            "billing_tag": getattr(args, 'billing_tag', ''),
+            "team": getattr(args, 'team', ''),
+        }
+    if command == "get-container-cost":
+        return {
+            "service": "control",
+            "op": "get_container_cost",
+            "container_id": args.container_id,
+            "hours": float(getattr(args, 'hours', 24)),
+        }
+    if command == "get-team-cost":
+        return {
+            "service": "control",
+            "op": "get_team_cost_summary",
+            "team": args.team,
+            "hours": float(getattr(args, 'hours', 24)),
+        }
+    if command == "get-fleet-cost":
+        return {
+            "service": "control",
+            "op": "get_fleet_cost_summary",
+            "hours": float(getattr(args, 'hours', 24)),
+        }
+    if command == "get-billing-breakdown":
+        return {
+            "service": "control",
+            "op": "get_billing_breakdown",
+            "hours": float(getattr(args, 'hours', 24)),
+        }
+    if command == "create-slo":
+        return {
+            "service": "control",
+            "op": "create_slo",
+            "name": args.name,
+            "target_percentage": float(getattr(args, 'target_percentage', 99.9)),
+            "window_days": int(getattr(args, 'window_days', 30)),
+            "sli_type": getattr(args, 'sli_type', 'availability'),
+        }
+    if command == "record-sli-event":
+        return {
+            "service": "control",
+            "op": "record_sli_event",
+            "slo_name": args.slo_name,
+            "is_good": getattr(args, 'is_good', True),
+        }
+    if command == "get-slo-status":
+        return {
+            "service": "control",
+            "op": "get_slo_status",
+            "slo_name": args.slo_name,
+        }
+    if command == "list-slos":
+        return {
+            "service": "control",
+            "op": "list_slos",
+        }
+    if command == "get-error-budget-report":
+        return {
+            "service": "control",
+            "op": "get_error_budget_report",
+        }
+    if command == "delete-slo":
+        return {
+            "service": "control",
+            "op": "delete_slo",
+            "name": args.name,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6891,6 +7010,46 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return f"Trace {resp.get('trace_id', '?')[:12]}: {resp.get('span_count', 0)} spans, {resp.get('duration_ms', 0)}ms, {errors} errors"
     if command == "list-traces":
         return f"Traces: {resp.get('count', 0)}"
+    if command == "create-chaos-experiment":
+        return f"Chaos experiment '{resp.get('name', '?')}' created: {resp.get('fault_type', '?')}, {resp.get('targets', 0)} targets"
+    if command == "get-chaos-results":
+        return f"Chaos results: {resp.get('observations', 0)} observations, status={resp.get('status', '?')}"
+    if command == "list-chaos":
+        lines = ["Chaos experiments:"]
+        for e in resp.get('experiments', []):
+            lines.append(f"  {e['name']}: {e['fault_type']} ({e['status']})")
+        return "\n".join(lines) if lines[1:] else "No experiments"
+    if command == "list-game-days":
+        return f"Game days: {resp.get('count', 0)}"
+    if command == "configure-cost-allocation":
+        return f"Cost configured: ${resp.get('cost_per_hour', 0)}/hr, team={resp.get('team', '?')}"
+    if command == "get-container-cost":
+        return f"Cost: ${resp.get('total_cost', 0):.4f} for {resp.get('hours', 0)}h @ ${resp.get('cost_per_hour', 0)}/hr"
+    if command == "get-team-cost":
+        return f"Team '{resp.get('team', '?')}': ${resp.get('total_cost', 0):.4f} for {resp.get('container_count', 0)} containers"
+    if command == "get-fleet-cost":
+        lines = [f"Fleet cost: ${resp.get('total_cost', 0):.4f} for {resp.get('container_count', 0)} containers"]
+        for team, info in resp.get('teams', {}).items():
+            lines.append(f"  {team}: ${info['cost']:.4f} ({info['count']} containers)")
+        return "\n".join(lines)
+    if command == "get-billing-breakdown":
+        lines = ["Billing breakdown:"]
+        for tag, info in resp.get('tags', {}).items():
+            lines.append(f"  {tag}: ${info['cost']:.4f} ({info['count']})")
+        return "\n".join(lines)
+    if command == "create-slo":
+        return f"SLO '{resp.get('name', '?')}' created: {resp.get('target_percentage', 0)}% target"
+    if command == "get-slo-status":
+        status = "MET" if resp.get('met') else "BREACHED"
+        return f"SLO '{resp.get('name', '?')}': {status}, SLI={resp.get('current_sli', 0)}%, budget={resp.get('error_budget_remaining', 0)}%"
+    if command == "list-slos":
+        lines = ["SLOs:"]
+        for s in resp.get('slos', []):
+            status = "MET" if s['met'] else "BREACHED"
+            lines.append(f"  {s['name']}: {status} ({s['current_sli']}/{s['target_percentage']}%)")
+        return "\n".join(lines) if lines[1:] else "No SLOs"
+    if command == "get-error-budget-report":
+        return f"Error budget utilization: {resp.get('total_budget_used_pct', 0)}%"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -9406,6 +9565,92 @@ def build_parser() -> argparse.ArgumentParser:
     lt = sub.add_parser("list-traces", help="List traces")
     lt.add_argument("--limit", type=int, default=20)
     lt.set_defaults(command="list-traces")
+
+    # Chaos engineering subcommands
+    cce = sub.add_parser("create-chaos-experiment", help="Create chaos experiment")
+    cce.add_argument("name")
+    cce.add_argument("target_containers", nargs="+")
+    cce.add_argument("--fault-type", default="latency", choices=["latency", "cpu_stress", "memory_stress", "network_loss", "disk_fill", "process_kill"])
+    cce.add_argument("--duration-seconds", type=int, default=60)
+    cce.add_argument("--blast-radius", type=float, default=50)
+    cce.set_defaults(command="create-chaos-experiment")
+
+    sce = sub.add_parser("start-chaos-experiment", help="Start chaos experiment")
+    sce.add_argument("name")
+    sce.set_defaults(command="start-chaos-experiment")
+
+    xce = sub.add_parser("stop-chaos-experiment", help="Stop chaos experiment")
+    xce.add_argument("name")
+    xce.set_defaults(command="stop-chaos-experiment")
+
+    gcr = sub.add_parser("get-chaos-results", help="Get chaos results")
+    gcr.add_argument("name")
+    gcr.set_defaults(command="get-chaos-results")
+
+    lch = sub.add_parser("list-chaos", help="List chaos experiments")
+    lch.set_defaults(command="list-chaos")
+
+    cg = sub.add_parser("create-game-day", help="Create game day")
+    cg.add_argument("name")
+    cg.add_argument("scenario")
+    cg.add_argument("participants", nargs="+")
+    cg.set_defaults(command="create-game-day")
+
+    lgd = sub.add_parser("list-game-days", help="List game days")
+    lgd.set_defaults(command="list-game-days")
+
+    # Cost allocation subcommands
+    cca = sub.add_parser("configure-cost-allocation", help="Configure cost allocation")
+    cca.add_argument("container_id")
+    cca.add_argument("--cost-per-hour", type=float, default=0)
+    cca.add_argument("--billing-tag", default="")
+    cca.add_argument("--team", default="")
+    cca.set_defaults(command="configure-cost-allocation")
+
+    gcc = sub.add_parser("get-container-cost", help="Get container cost")
+    gcc.add_argument("container_id")
+    gcc.add_argument("--hours", type=float, default=24)
+    gcc.set_defaults(command="get-container-cost")
+
+    gtc = sub.add_parser("get-team-cost", help="Get team cost summary")
+    gtc.add_argument("team")
+    gtc.add_argument("--hours", type=float, default=24)
+    gtc.set_defaults(command="get-team-cost")
+
+    gfc = sub.add_parser("get-fleet-cost", help="Get fleet cost summary")
+    gfc.add_argument("--hours", type=float, default=24)
+    gfc.set_defaults(command="get-fleet-cost")
+
+    gbb = sub.add_parser("get-billing-breakdown", help="Get billing breakdown")
+    gbb.add_argument("--hours", type=float, default=24)
+    gbb.set_defaults(command="get-billing-breakdown")
+
+    # SLO/SLI tracking subcommands
+    cslo = sub.add_parser("create-slo", help="Create SLO")
+    cslo.add_argument("name")
+    cslo.add_argument("--target-percentage", type=float, default=99.9)
+    cslo.add_argument("--window-days", type=int, default=30)
+    cslo.add_argument("--sli-type", default="availability", choices=["availability", "latency", "error_rate"])
+    cslo.set_defaults(command="create-slo")
+
+    rse = sub.add_parser("record-sli-event", help="Record SLI event")
+    rse.add_argument("slo_name")
+    rse.add_argument("--is-good", action="store_true", default=True)
+    rse.set_defaults(command="record-sli-event")
+
+    gss = sub.add_parser("get-slo-status", help="Get SLO status")
+    gss.add_argument("slo_name")
+    gss.set_defaults(command="get-slo-status")
+
+    lslo = sub.add_parser("list-slos", help="List SLOs")
+    lslo.set_defaults(command="list-slos")
+
+    geb = sub.add_parser("get-error-budget-report", help="Get error budget report")
+    geb.set_defaults(command="get-error-budget-report")
+
+    dslo = sub.add_parser("delete-slo", help="Delete SLO")
+    dslo.add_argument("name")
+    dslo.set_defaults(command="delete-slo")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
