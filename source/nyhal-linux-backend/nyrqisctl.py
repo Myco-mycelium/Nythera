@@ -2478,6 +2478,69 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"service": "control", "op": "forecast_fleet_capacity"}
     if command == "get-capacity-recommendations":
         return {"service": "control", "op": "get_capacity_recommendations"}
+    if command == "read-container-file":
+        return {
+            "service": "control",
+            "op": "read_container_file",
+            "container_id": args.container_id,
+            "path": args.path,
+            "max_size": getattr(args, 'max_size', 1048576),
+        }
+    if command == "write-container-file":
+        return {
+            "service": "control",
+            "op": "write_container_file",
+            "container_id": args.container_id,
+            "path": args.path,
+            "content": args.content,
+            "create_dirs": getattr(args, 'create_dirs', True),
+        }
+    if command == "list-container-files":
+        return {
+            "service": "control",
+            "op": "list_container_files",
+            "container_id": args.container_id,
+            "path": getattr(args, 'path', '/'),
+            "recursive": getattr(args, 'recursive', False),
+            "max_entries": getattr(args, 'max_entries', 500),
+        }
+    if command == "delete-container-file":
+        return {
+            "service": "control",
+            "op": "delete_container_file",
+            "container_id": args.container_id,
+            "path": args.path,
+        }
+    if command == "get-file-info":
+        return {
+            "service": "control",
+            "op": "get_file_info",
+            "container_id": args.container_id,
+            "path": args.path,
+        }
+    if command == "get-process-tree":
+        return {
+            "service": "control",
+            "op": "get_process_tree",
+            "container_id": args.container_id,
+            "root_pid": getattr(args, 'root_pid', None),
+            "max_depth": getattr(args, 'max_depth', 10),
+        }
+    if command == "get-process-stats":
+        return {"service": "control", "op": "get_process_stats", "container_id": args.container_id}
+    if command == "generate-comparison-report":
+        return {
+            "service": "control",
+            "op": "generate_comparison_report",
+            "container_ids": getattr(args, 'container_ids', None),
+            "include_recommendations": getattr(args, 'include_recommendations', True),
+        }
+    if command == "generate-cost-report":
+        return {
+            "service": "control",
+            "op": "generate_cost_report",
+            "container_ids": getattr(args, 'container_ids', None),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5757,6 +5820,69 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for r in resp.get('recommendations', [])[:5]:
             lines.append(f"  {r.get('container_id', '?')[:12]}: {r.get('metric', '?')} in {r.get('time_to_threshold_hours', 0):.0f}h ({r.get('action', '?')})")
         return "\n".join(lines)
+    if command == "read-container-file":
+        if resp.get('error'):
+            return f"Error: {resp['error']}"
+        lines = [f"{resp.get('path', '?')} ({resp.get('size', 0)} bytes):"]
+        content = resp.get('content', '')
+        for line in content.splitlines()[:20]:
+            lines.append(f"  {line}")
+        if resp.get('truncated'):
+            lines.append("  ... (truncated)")
+        return "\n".join(lines)
+    if command == "write-container-file":
+        if resp.get('error'):
+            return f"Error: {resp['error']}"
+        return f"Written {resp.get('bytes_written', 0)} bytes to {resp.get('path', '?')}"
+    if command == "list-container-files":
+        if resp.get('error'):
+            return f"Error: {resp['error']}"
+        lines = [f"Files in {resp.get('path', '?')}: {resp.get('entry_count', 0)} entries"]
+        for e in resp.get('entries', [])[:20]:
+            icon = "📁" if e.get('type') == 'directory' else "📄"
+            lines.append(f"  {icon} {e.get('path', '?')} ({e.get('size', 0)} bytes)")
+        return "\n".join(lines)
+    if command == "delete-container-file":
+        if resp.get('error'):
+            return f"Error: {resp['error']}"
+        return f"Deleted {resp.get('path', '?')}"
+    if command == "get-file-info":
+        if resp.get('error'):
+            return f"Error: {resp['error']}"
+        return f"{resp.get('path', '?')}: {resp.get('type', '?')}, {resp.get('size', 0)} bytes, mode={resp.get('mode', '?')}"
+    if command == "get-process-tree":
+        lines = [f"Process tree: {resp.get('total_processes', 0)} processes"]
+        for proc in resp.get('tree', [])[:10]:
+            lines.append(f"  🟢 {proc.get('name', '?')} (PID {proc.get('pid', '?')})")
+            for child in proc.get('children', [])[:5]:
+                lines.append(f"    └── {child.get('name', '?')} (PID {child.get('pid', '?')})")
+        return "\n".join(lines)
+    if command == "get-process-stats":
+        return f"Processes: {resp.get('total_processes', 0)} total (running: {resp.get('running', 0)}, sleeping: {resp.get('sleeping', 0)}, zombie: {resp.get('zombie', 0)})"
+    if command == "generate-comparison-report":
+        lines = [
+            f"Comparison Report ({resp.get('container_count', 0)} containers):",
+            f"  Total memory: {resp.get('totals', {}).get('memory_mb', 0)}MB",
+            f"  Total cost: ${resp.get('totals', {}).get('cost_per_hour', 0):.4f}/hour",
+            f"  Average performance: {resp.get('totals', {}).get('average_performance', 0)}/100",
+        ]
+        for d in resp.get("containers", []):
+            lines.append(f"  {d.get('name', '?')}: {d.get('memory_mb', 0)}MB ({d.get('memory_utilization', 0)}% used), score={d.get('performance_score', 0)}, ${d.get('cost_per_hour', 0):.4f}/h")
+        if resp.get('recommendations'):
+            lines.append(f"  Recommendations ({resp.get('recommendation_count', 0)}):")
+            for r in resp['recommendations'][:3]:
+                lines.append(f"    - {r.get('message', '?')}")
+        return "\n".join(lines)
+    if command == "generate-cost-report":
+        lines = [
+            f"Cost Report:",
+            f"  Per hour: ${resp.get('total_cost_per_hour', 0):.4f}",
+            f"  Per day: ${resp.get('total_cost_per_day', 0):.2f}",
+            f"  Per month: ${resp.get('total_cost_per_month', 0):.2f}",
+        ]
+        for c in resp.get("containers", [])[:5]:
+            lines.append(f"  {c.get('name', '?')}: ${c.get('cost_per_hour', 0):.4f}/h ({c.get('memory_mb', 0)}MB)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -7692,6 +7818,58 @@ def build_parser() -> argparse.ArgumentParser:
 
     gcr = sub.add_parser("get-capacity-recommendations", help="Get capacity recommendations")
     gcr.set_defaults(command="get-capacity-recommendations")
+
+    # -- filesystem commands --
+    rcf = sub.add_parser("read-container-file", help="Read a file from a container")
+    rcf.add_argument("container_id")
+    rcf.add_argument("path")
+    rcf.add_argument("--max-size", type=int, default=1048576)
+    rcf.set_defaults(command="read-container-file")
+
+    wcf = sub.add_parser("write-container-file", help="Write a file to a container")
+    wcf.add_argument("container_id")
+    wcf.add_argument("path")
+    wcf.add_argument("content")
+    wcf.add_argument("--no-create-dirs", dest="create_dirs", action="store_false")
+    wcf.set_defaults(command="write-container-file")
+
+    lcf = sub.add_parser("list-container-files", help="List files in a container")
+    lcf.add_argument("container_id")
+    lcf.add_argument("--path", default="/")
+    lcf.add_argument("--recursive", action="store_true")
+    lcf.add_argument("--max-entries", type=int, default=500)
+    lcf.set_defaults(command="list-container-files")
+
+    dcf = sub.add_parser("delete-container-file", help="Delete a file from a container")
+    dcf.add_argument("container_id")
+    dcf.add_argument("path")
+    dcf.set_defaults(command="delete-container-file")
+
+    gfi = sub.add_parser("get-file-info", help="Get file metadata from a container")
+    gfi.add_argument("container_id")
+    gfi.add_argument("path")
+    gfi.set_defaults(command="get-file-info")
+
+    # -- process tree commands --
+    gpt = sub.add_parser("get-process-tree", help="Get container process tree")
+    gpt.add_argument("container_id")
+    gpt.add_argument("--root-pid", type=int, default=None)
+    gpt.add_argument("--max-depth", type=int, default=10)
+    gpt.set_defaults(command="get-process-tree")
+
+    gps = sub.add_parser("get-process-stats", help="Get process statistics")
+    gps.add_argument("container_id")
+    gps.set_defaults(command="get-process-stats")
+
+    # -- comparison report commands --
+    gcr2 = sub.add_parser("generate-comparison-report", help="Generate comparison report")
+    gcr2.add_argument("--container-ids", nargs="+", default=None)
+    gcr2.add_argument("--no-recommendations", dest="include_recommendations", action="store_false")
+    gcr2.set_defaults(command="generate-comparison-report")
+
+    gcrep = sub.add_parser("generate-cost-report", help="Generate cost report")
+    gcrep.add_argument("--container-ids", nargs="+", default=None)
+    gcrep.set_defaults(command="generate-cost-report")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

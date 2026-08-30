@@ -7855,6 +7855,388 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Container process tree visualization
+    # ------------------------------------------------------------------
+
+    def get_process_tree(
+        self,
+        container: Container,
+        root_pid: Optional[int] = None,
+        max_depth: int = 10,
+    ) -> Dict[str, Any]:
+        """Get the process tree for a container.
+
+        Builds a hierarchical view of all processes.
+
+        Args:
+            container: Container to inspect.
+            root_pid: Root PID to start from (container PID-1 if None).
+            max_depth: Maximum tree depth.
+
+        Returns:
+            Dict with process tree.
+        """
+        if container.pid is None:
+            return {
+                "container_id": container.id,
+                "tree": [],
+                "total_processes": 0,
+                "error": "No PID available",
+            }
+
+        # Collect all processes with parent mapping
+        procs: Dict[int, Dict[str, Any]] = {}
+        children: Dict[int, List[int]] = {}
+
+        try:
+            proc_dir = f"/proc/{container.pid}/task/{container.pid}"
+            if not os.path.isdir(proc_dir):
+                proc_dir = f"/proc/{container.pid}"
+
+            # Read children from /proc/PID/task/PID/children
+            children_file = os.path.join(proc_dir, "children")
+            if os.path.isfile(children_file):
+                with open(children_file) as f:
+                    child_pids = [int(x) for x in f.read().split() if x.isdigit()]
+            else:
+                child_pids = []
+
+            # Build process list from /proc
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                pid = int(entry)
+                try:
+                    stat_file = f"/proc/{pid}/stat"
+                    with open(stat_file) as f:
+                        parts = f.read().split()
+                    ppid = int(parts[3])
+                    state = parts[2]
+                    # Read comm (process name) - handle parentheses
+                    comm_start = parts[0].rfind("(")
+                    comm_end = parts[0].rfind(")")
+                    comm = parts[0][comm_start+1:comm_end] if comm_start >= 0 else "?"
+
+                    procs[pid] = {
+                        "pid": pid,
+                        "ppid": ppid,
+                        "name": comm,
+                        "state": state,
+                    }
+                    children.setdefault(ppid, []).append(pid)
+                except (OSError, IndexError, ValueError):
+                    pass
+        except OSError:
+            pass
+
+        # Build tree
+        def build_tree(pid: int, depth: int) -> List[Dict[str, Any]]:
+            if depth >= max_depth:
+                return []
+            tree: List[Dict[str, Any]] = []
+            for child_pid in sorted(children.get(pid, [])):
+                proc = procs.get(child_pid, {"pid": child_pid, "name": "?"})
+                node = {
+                    "pid": child_pid,
+                    "name": proc.get("name", "?"),
+                    "state": proc.get("state", "?"),
+                    "children": build_tree(child_pid, depth + 1),
+                }
+                tree.append(node)
+            return tree
+
+        root = root_pid or container.pid
+        tree = build_tree(root, 0)
+
+        return {
+            "container_id": container.id,
+            "root_pid": root,
+            "tree": tree,
+            "total_processes": len(procs),
+        }
+
+    def format_process_tree(
+        self,
+        tree_data: Dict[str, Any],
+        format: str = "ascii",
+    ) -> str:
+        """Format a process tree as a human-readable string.
+
+        Args:
+            tree_data: Process tree from get_process_tree.
+            format: ``"ascii"`` or ``"json"``.
+
+        Returns:
+            Formatted process tree string.
+        """
+        if format == "json":
+            import json as _json
+            return _json.dumps(tree_data, indent=2)
+
+        lines: List[str] = []
+        lines.append(f"Process tree for {tree_data.get('container_id', '?')}")
+        lines.append(f"Total processes: {tree_data.get('total_processes', 0)}")
+        lines.append("")
+
+        def render_node(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
+            connector = "└── " if is_last else "├── "
+            state_icon = {"S": "💤", "R": "🟢", "Z": "👻", "T": "⏸"}.get(
+                node.get("state", "?"), "❓")
+            lines.append(f"{prefix}{connector}{state_icon} {node.get('name', '?')} (PID {node.get('pid', '?')})")
+            children = node.get("children", [])
+            for i, child in enumerate(children):
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                render_node(child, new_prefix, i == len(children) - 1)
+
+        for i, root in enumerate(tree_data.get("tree", [])):
+            render_node(root, "", i == len(tree_data.get("tree", [])) - 1)
+
+        return "\n".join(lines)
+
+    def get_process_stats(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get aggregate process statistics for a container."""
+        tree = self.get_process_tree(container)
+        procs = tree.get("total_processes", 0)
+
+        # Count by state
+        states: Dict[str, int] = {}
+        def count_states(nodes: List[Dict[str, Any]]) -> None:
+            for node in nodes:
+                state = node.get("state", "?")
+                states[state] = states.get(state, 0) + 1
+                count_states(node.get("children", []))
+        count_states(tree.get("tree", []))
+
+        return {
+            "container_id": container.id,
+            "total_processes": procs,
+            "state_distribution": states,
+            "running": states.get("R", 0),
+            "sleeping": states.get("S", 0),
+            "zombie": states.get("Z", 0),
+        }
+
+    # ------------------------------------------------------------------
+    # Container filesystem operations
+    # ------------------------------------------------------------------
+
+    def read_container_file(
+        self,
+        container: Container,
+        path: str,
+        max_size: int = 1048576,
+    ) -> Dict[str, Any]:
+        """Read a file from a container's filesystem.
+
+        Args:
+            container: Container to read from.
+            path: File path inside the container.
+            max_size: Maximum bytes to read.
+
+        Returns:
+            Dict with content, size, and metadata.
+        """
+        if not container.config.rootfs or not os.path.isdir(container.config.rootfs):
+            return {"error": "No rootfs available", "path": path}
+
+        full_path = os.path.join(container.config.rootfs, path.lstrip("/"))
+        if not os.path.isfile(full_path):
+            return {"error": f"File not found: {path}", "path": path}
+
+        try:
+            size = os.path.getsize(full_path)
+            truncated = size > max_size
+            with open(full_path, "r", errors="replace") as fh:
+                content = fh.read(max_size)
+
+            return {
+                "path": path,
+                "content": content,
+                "size": size,
+                "truncated": truncated,
+                "readable": True,
+            }
+        except OSError as e:
+            return {"error": str(e), "path": path, "readable": False}
+
+    def write_container_file(
+        self,
+        container: Container,
+        path: str,
+        content: str,
+        create_dirs: bool = True,
+    ) -> Dict[str, Any]:
+        """Write a file to a container's filesystem.
+
+        Args:
+            container: Container to write to.
+            path: File path inside the container.
+            content: Content to write.
+            create_dirs: Create parent directories if needed.
+
+        Returns:
+            Dict with write status.
+        """
+        if not container.config.rootfs or not os.path.isdir(container.config.rootfs):
+            return {"error": "No rootfs available", "path": path}
+
+        full_path = os.path.join(container.config.rootfs, path.lstrip("/"))
+
+        try:
+            if create_dirs:
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w") as fh:
+                fh.write(content)
+            size = os.path.getsize(full_path)
+            return {
+                "path": path,
+                "written": True,
+                "bytes_written": size,
+            }
+        except OSError as e:
+            return {"error": str(e), "path": path, "written": False}
+
+    def list_container_files(
+        self,
+        container: Container,
+        path: str = "/",
+        recursive: bool = False,
+        max_entries: int = 500,
+    ) -> Dict[str, Any]:
+        """List files in a container's filesystem.
+
+        Args:
+            container: Container to list files from.
+            path: Directory path inside the container.
+            recursive: List recursively.
+            max_entries: Maximum entries to return.
+
+        Returns:
+            Dict with file listing.
+        """
+        if not container.config.rootfs or not os.path.isdir(container.config.rootfs):
+            return {"error": "No rootfs available", "path": path, "entries": []}
+
+        full_path = os.path.join(container.config.rootfs, path.lstrip("/"))
+        if not os.path.isdir(full_path):
+            return {"error": f"Not a directory: {path}", "path": path, "entries": []}
+
+        entries: List[Dict[str, Any]] = []
+        try:
+            if recursive:
+                for root, dirs, files in os.walk(full_path):
+                    for fname in sorted(files + dirs):
+                        fpath = os.path.join(root, fname)
+                        rel = os.path.relpath(fpath, container.config.rootfs)
+                        is_dir = os.path.isdir(fpath)
+                        try:
+                            size = os.path.getsize(fpath) if not is_dir else 0
+                            mode = os.stat(fpath).st_mode
+                        except OSError:
+                            size = 0
+                            mode = 0
+                        entries.append({
+                            "path": "/" + rel,
+                            "type": "directory" if is_dir else "file",
+                            "size": size,
+                            "mode": oct(mode)[-3:] if mode else "?",
+                        })
+                        if len(entries) >= max_entries:
+                            break
+                    if len(entries) >= max_entries:
+                        break
+            else:
+                for item in sorted(os.listdir(full_path)):
+                    fpath = os.path.join(full_path, item)
+                    rel = os.path.relpath(fpath, container.config.rootfs)
+                    is_dir = os.path.isdir(fpath)
+                    try:
+                        size = os.path.getsize(fpath) if not is_dir else 0
+                        mode = os.stat(fpath).st_mode
+                    except OSError:
+                        size = 0
+                        mode = 0
+                    entries.append({
+                        "path": "/" + rel,
+                        "type": "directory" if is_dir else "file",
+                        "size": size,
+                        "mode": oct(mode)[-3:] if mode else "?",
+                    })
+                    if len(entries) >= max_entries:
+                        break
+        except OSError as e:
+            return {"error": str(e), "path": path, "entries": entries}
+
+        return {
+            "path": path,
+            "entries": entries,
+            "entry_count": len(entries),
+            "truncated": len(entries) >= max_entries,
+        }
+
+    def delete_container_file(
+        self,
+        container: Container,
+        path: str,
+    ) -> Dict[str, Any]:
+        """Delete a file from a container's filesystem.
+
+        Args:
+            container: Container to delete from.
+            path: File path inside the container.
+
+        Returns:
+            Dict with deletion status.
+        """
+        if not container.config.rootfs or not os.path.isdir(container.config.rootfs):
+            return {"error": "No rootfs available", "path": path}
+
+        full_path = os.path.join(container.config.rootfs, path.lstrip("/"))
+        if not os.path.exists(full_path):
+            return {"error": f"Not found: {path}", "path": path, "deleted": False}
+
+        try:
+            if os.path.isdir(full_path):
+                import shutil
+                shutil.rmtree(full_path)
+            else:
+                os.unlink(full_path)
+            return {"path": path, "deleted": True}
+        except OSError as e:
+            return {"error": str(e), "path": path, "deleted": False}
+
+    def get_file_info(
+        self,
+        container: Container,
+        path: str,
+    ) -> Dict[str, Any]:
+        """Get metadata about a file in a container's filesystem."""
+        if not container.config.rootfs or not os.path.isdir(container.config.rootfs):
+            return {"error": "No rootfs available", "path": path}
+
+        full_path = os.path.join(container.config.rootfs, path.lstrip("/"))
+        if not os.path.exists(full_path):
+            return {"error": f"Not found: {path}", "path": path}
+
+        try:
+            stat = os.stat(full_path)
+            return {
+                "path": path,
+                "type": "directory" if os.path.isdir(full_path) else "file",
+                "size": stat.st_size,
+                "mode": oct(stat.st_mode)[-3:],
+                "uid": stat.st_uid,
+                "gid": stat.st_gid,
+                "modified": stat.st_mtime,
+                "accessible": True,
+            }
+        except OSError as e:
+            return {"error": str(e), "path": path, "accessible": False}
+
+    # ------------------------------------------------------------------
     # Container security scanning
     # ------------------------------------------------------------------
 
@@ -8232,6 +8614,150 @@ class ContainerManager:
             "comparison": containers_data,
             "totals": totals,
             "rankings": rankings,
+        }
+
+    # ------------------------------------------------------------------
+    # Resource comparison reports
+    # ------------------------------------------------------------------
+
+    def generate_comparison_report(
+        self,
+        container_ids: Optional[List[str]] = None,
+        include_recommendations: bool = True,
+    ) -> Dict[str, Any]:
+        """Generate a comprehensive comparison report across containers.
+
+        Includes resource usage, performance scores, cost allocation,
+        and optimization recommendations.
+
+        Args:
+            container_ids: Containers to compare (all if None).
+            include_recommendations: Include optimization suggestions.
+
+        Returns:
+            Dict with detailed comparison report.
+        """
+        if container_ids is None:
+            container_ids = list(self.containers.keys())
+
+        containers_data: List[Dict[str, Any]] = []
+        for cid in container_ids:
+            c = self.containers.get(cid)
+            if c is None:
+                continue
+
+            stats = self.container_stats(c)
+            profile = self.profile_container_performance(c)
+
+            # Cost estimate (simple model: $0.01/MB-hour for memory)
+            mem_mb = c.config.limits.memory_mb
+            cost_per_hour = mem_mb * 0.01
+
+            entry = {
+                "id": cid,
+                "name": c.config.name,
+                "state": c.state.value,
+                "memory_mb": mem_mb,
+                "memory_bytes_used": stats.get("memory_bytes", 0),
+                "memory_utilization": round(
+                    stats.get("memory_bytes", 0) / max(mem_mb * 1024 * 1024, 1) * 100, 1),
+                "pids_current": stats.get("pids_current", 0),
+                "pids_limit": c.config.limits.pid_limit,
+                "performance_score": profile.get("performance_score", 0),
+                "rating": profile.get("rating", "unknown"),
+                "cost_per_hour": round(cost_per_hour, 4),
+                "bottlenecks": profile.get("bottlenecks", []),
+            }
+            containers_data.append(entry)
+
+        # Fleet totals
+        total_memory = sum(d["memory_mb"] for d in containers_data)
+        total_used = sum(d["memory_bytes_used"] for d in containers_data)
+        total_cost = sum(d["cost_per_hour"] for d in containers_data)
+        avg_perf = sum(d["performance_score"] for d in containers_data) / max(len(containers_data), 1)
+
+        # Rankings
+        rankings: Dict[str, List[Dict[str, Any]]] = {}
+        for metric in ["memory_mb", "memory_utilization", "performance_score", "cost_per_hour"]:
+            ranked = sorted(containers_data, key=lambda x: x.get(metric, 0), reverse=True)
+            rankings[metric] = [
+                {"rank": i + 1, "id": r["id"], "name": r["name"],
+                 "value": r.get(metric, 0)}
+                for i, r in enumerate(ranked)
+            ]
+
+        # Recommendations
+        recommendations: List[Dict[str, Any]] = []
+        if include_recommendations:
+            for d in containers_data:
+                if d["memory_utilization"] > 90:
+                    recommendations.append({
+                        "container_id": d["id"],
+                        "type": "memory_high",
+                        "message": f"{d['name']}: memory at {d['memory_utilization']}% - consider scaling up",
+                    })
+                elif d["memory_utilization"] < 10 and d["memory_mb"] > 128:
+                    recommendations.append({
+                        "container_id": d["id"],
+                        "type": "memory_overprovisioned",
+                        "message": f"{d['name']}: memory at {d['memory_utilization']}% - limit can be reduced",
+                    })
+                if d["bottlenecks"]:
+                    recommendations.append({
+                        "container_id": d["id"],
+                        "type": "bottleneck",
+                        "message": f"{d['name']}: bottlenecks detected ({', '.join(d['bottlenecks'])})",
+                    })
+
+        return {
+            "container_count": len(containers_data),
+            "containers": containers_data,
+            "totals": {
+                "memory_mb": total_memory,
+                "memory_used_bytes": total_used,
+                "cost_per_hour": round(total_cost, 4),
+                "average_performance": round(avg_perf, 1),
+            },
+            "rankings": rankings,
+            "recommendations": recommendations,
+            "recommendation_count": len(recommendations),
+        }
+
+    def generate_comparison_summary(self, container_ids: Optional[List[str]] = None) -> str:
+        """Generate a human-readable comparison summary."""
+        report = self.generate_comparison_report(container_ids)
+        lines = [
+            f"Comparison Report ({report['container_count']} containers)",
+            f"  Total memory: {report['totals']['memory_mb']}MB",
+            f"  Total cost: ${report['totals']['cost_per_hour']:.4f}/hour",
+            f"  Average performance: {report['totals']['average_performance']}/100",
+        ]
+        for d in report["containers"]:
+            lines.append(
+                f"  {d['name']}: {d['memory_mb']}MB ({d['memory_utilization']}% used), "
+                f"score={d['performance_score']}, ${d['cost_per_hour']:.4f}/h")
+        if report["recommendations"]:
+            lines.append(f"Recommendations ({report['recommendation_count']}):")
+            for r in report["recommendations"]:
+                lines.append(f"  - {r['message']}")
+        return "\n".join(lines)
+
+    def generate_cost_report(
+        self, container_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Generate a cost-focused comparison report."""
+        report = self.generate_comparison_report(container_ids)
+        cost_ranked = sorted(
+            report["containers"], key=lambda x: x["cost_per_hour"], reverse=True)
+
+        return {
+            "total_cost_per_hour": report["totals"]["cost_per_hour"],
+            "total_cost_per_day": round(report["totals"]["cost_per_hour"] * 24, 2),
+            "total_cost_per_month": round(report["totals"]["cost_per_hour"] * 24 * 30, 2),
+            "containers": [
+                {"name": c["name"], "cost_per_hour": c["cost_per_hour"],
+                 "memory_mb": c["memory_mb"]}
+                for c in cost_ranked
+            ],
         }
 
     # ------------------------------------------------------------------

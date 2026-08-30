@@ -3543,6 +3543,224 @@ class TestCapacityForecasting(unittest.TestCase):
         self.assertIn("1", text)
 
 
+class TestContainerFilesystem(unittest.TestCase):
+    """Tests for container filesystem operations."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name, rootfs=None):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       rootfs=rootfs))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_write_and_read_file(self):
+        """Write and read a file."""
+        import tempfile, os
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        c = self._make(mgr, "fs1", rootfs=rootfs)
+        r = mgr.write_container_file(c, "/test.txt", "hello world")
+        self.assertTrue(r["written"])
+        r2 = mgr.read_container_file(c, "/test.txt")
+        self.assertEqual(r2["content"], "hello world")
+        self.assertEqual(r2["size"], 11)
+
+    def test_list_files(self):
+        """List files in a directory."""
+        import tempfile, os
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        c = self._make(mgr, "fs2", rootfs=rootfs)
+        mgr.write_container_file(c, "/a.txt", "a")
+        mgr.write_container_file(c, "/b.txt", "b")
+        os.makedirs(os.path.join(rootfs, "sub"))
+        r = mgr.list_container_files(c, "/")
+        self.assertEqual(r["entry_count"], 3)  # a.txt, b.txt, sub/
+
+    def test_delete_file(self):
+        """Delete a file."""
+        import tempfile
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        c = self._make(mgr, "fs3", rootfs=rootfs)
+        mgr.write_container_file(c, "/del.txt", "delete me")
+        r = mgr.delete_container_file(c, "/del.txt")
+        self.assertTrue(r["deleted"])
+        r2 = mgr.read_container_file(c, "/del.txt")
+        self.assertIn("error", r2)
+
+    def test_file_info(self):
+        """Get file metadata."""
+        import tempfile
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        c = self._make(mgr, "fs4", rootfs=rootfs)
+        mgr.write_container_file(c, "/info.txt", "data")
+        r = mgr.get_file_info(c, "/info.txt")
+        self.assertEqual(r["type"], "file")
+        self.assertEqual(r["size"], 4)
+        self.assertTrue(r["accessible"])
+
+    def test_read_nonexistent(self):
+        """Read nonexistent file returns error."""
+        import tempfile
+        mgr = self._manager()
+        rootfs = tempfile.mkdtemp()
+        c = self._make(mgr, "fs5", rootfs=rootfs)
+        r = mgr.read_container_file(c, "/nope.txt")
+        self.assertIn("error", r)
+
+    def test_format_human_read(self):
+        """format_human handles read-container-file."""
+        from nyrqisctl import format_human
+        resp = {"path": "/test.txt", "content": "hello", "size": 5, "truncated": False}
+        text = format_human("read-container-file", resp)
+        self.assertIn("hello", text)
+        self.assertIn("5", text)
+
+    def test_format_human_list_files(self):
+        """format_human handles list-container-files."""
+        from nyrqisctl import format_human
+        resp = {"path": "/", "entries": [{"path": "/a.txt", "type": "file", "size": 10}],
+                "entry_count": 1, "truncated": False}
+        text = format_human("list-container-files", resp)
+        self.assertIn("1", text)
+        self.assertIn("a.txt", text)
+
+
+class TestProcessTree(unittest.TestCase):
+    """Tests for container process tree visualization."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_process_tree_no_pid(self):
+        """Process tree returns error when no PID."""
+        mgr = self._manager()
+        c = self._make(mgr, "pt1")
+        c.pid = None
+        r = mgr.get_process_tree(c)
+        self.assertIn("error", r)
+        self.assertEqual(r["total_processes"], 0)
+
+    def test_process_tree_with_pid(self):
+        """Process tree returns tree structure."""
+        mgr = self._manager()
+        c = self._make(mgr, "pt2")
+        c.pid = 1  # PID 1 always exists
+        r = mgr.get_process_tree(c)
+        self.assertIn("tree", r)
+        self.assertIn("total_processes", r)
+
+    def test_process_stats(self):
+        """Process stats aggregate correctly."""
+        mgr = self._manager()
+        c = self._make(mgr, "pt3")
+        c.pid = 1
+        r = mgr.get_process_stats(c)
+        self.assertIn("total_processes", r)
+        self.assertIn("state_distribution", r)
+        self.assertIn("running", r)
+        self.assertIn("sleeping", r)
+
+    def test_format_human_tree(self):
+        """format_human handles get-process-tree."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "total_processes": 5,
+                "tree": [{"pid": 1, "name": "init", "state": "S", "children": []}]}
+        text = format_human("get-process-tree", resp)
+        self.assertIn("5", text)
+        self.assertIn("init", text)
+
+    def test_format_human_stats(self):
+        """format_human handles get-process-stats."""
+        from nyrqisctl import format_human
+        resp = {"total_processes": 10, "running": 2, "sleeping": 7, "zombie": 1}
+        text = format_human("get-process-stats", resp)
+        self.assertIn("10", text)
+        self.assertIn("2", text)
+
+
+class TestComparisonReports(unittest.TestCase):
+    """Tests for resource comparison reports."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name, mem=256):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=mem)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_comparison_report(self):
+        """Generate comparison report."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cmp1", mem=128)
+        c2 = self._make(mgr, "cmp2", mem=256)
+        r = mgr.generate_comparison_report()
+        self.assertEqual(r["container_count"], 2)
+        self.assertIn("totals", r)
+        self.assertIn("rankings", r)
+        self.assertIn("recommendations", r)
+
+    def test_cost_report(self):
+        """Generate cost report."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cost1", mem=512)
+        c2 = self._make(mgr, "cost2", mem=1024)
+        r = mgr.generate_cost_report()
+        self.assertIn("total_cost_per_hour", r)
+        self.assertIn("total_cost_per_day", r)
+        self.assertIn("total_cost_per_month", r)
+        self.assertIn("containers", r)
+        self.assertEqual(len(r["containers"]), 2)
+
+    def test_comparison_summary(self):
+        """Comparison summary is human-readable."""
+        mgr = self._manager()
+        self._make(mgr, "sum1")
+        text = mgr.generate_comparison_summary()
+        self.assertIn("Comparison Report", text)
+        self.assertIn("sum1", text)
+
+    def test_format_human_comparison(self):
+        """format_human handles generate-comparison-report."""
+        from nyrqisctl import format_human
+        resp = {"container_count": 2, "totals": {"memory_mb": 512, "cost_per_hour": 0.05, "average_performance": 80},
+                "containers": [{"name": "web", "memory_mb": 256, "memory_utilization": 50, "performance_score": 85, "cost_per_hour": 0.0256}],
+                "recommendations": [], "recommendation_count": 0}
+        text = format_human("generate-comparison-report", resp)
+        self.assertIn("512", text)
+        self.assertIn("web", text)
+
+    def test_format_human_cost(self):
+        """format_human handles generate-cost-report."""
+        from nyrqisctl import format_human
+        resp = {"total_cost_per_hour": 0.15, "total_cost_per_day": 3.6, "total_cost_per_month": 108.0,
+                "containers": [{"name": "web", "cost_per_hour": 0.1, "memory_mb": 1024}]}
+        text = format_human("generate-cost-report", resp)
+        self.assertIn("0.15", text)
+        self.assertIn("3.6", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -28491,6 +28709,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestVulnerabilityScanning))
     suite.addTests(loader.loadTestsFromTestCase(TestPerformanceProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestCapacityForecasting))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerFilesystem))
+    suite.addTests(loader.loadTestsFromTestCase(TestProcessTree))
+    suite.addTests(loader.loadTestsFromTestCase(TestComparisonReports))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

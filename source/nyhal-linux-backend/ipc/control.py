@@ -1110,6 +1110,33 @@ class ControlService:
             elif op == "get_capacity_recommendations":
                 self._get_capacity_recommendations(server, sender_path,
                                                msg.message_id, request)
+            elif op == "read_container_file":
+                self._read_container_file(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "write_container_file":
+                self._write_container_file(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_container_files":
+                self._list_container_files(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "delete_container_file":
+                self._delete_container_file(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "get_file_info":
+                self._get_file_info(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "get_process_tree":
+                self._get_process_tree(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_process_stats":
+                self._get_process_stats(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "generate_comparison_report":
+                self._generate_comparison_report(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "generate_cost_report":
+                self._generate_cost_report(server, sender_path,
+                                       msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6748,6 +6775,87 @@ class ControlService:
 
     def _get_capacity_recommendations(self, server, sender_path, call_id, request):
         result = self.container_manager.get_capacity_recommendations()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- filesystem handlers --
+
+    def _read_container_file(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.read_container_file(
+            c, request['path'], max_size=request.get('max_size', 1048576))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _write_container_file(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.write_container_file(
+            c, request['path'], request['content'],
+            create_dirs=request.get('create_dirs', True))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_container_files(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.list_container_files(
+            c, request.get('path', '/'),
+            recursive=request.get('recursive', False),
+            max_entries=request.get('max_entries', 500))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_container_file(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.delete_container_file(c, request['path'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_file_info(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_file_info(c, request['path'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- process tree handlers --
+
+    def _get_process_tree(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_process_tree(
+            c, root_pid=request.get('root_pid'),
+            max_depth=request.get('max_depth', 10))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_process_stats(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_process_stats(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- comparison report handlers --
+
+    def _generate_comparison_report(self, server, sender_path, call_id, request):
+        result = self.container_manager.generate_comparison_report(
+            container_ids=request.get('container_ids'),
+            include_recommendations=request.get('include_recommendations', True))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _generate_cost_report(self, server, sender_path, call_id, request):
+        result = self.container_manager.generate_cost_report(
+            container_ids=request.get('container_ids'))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
