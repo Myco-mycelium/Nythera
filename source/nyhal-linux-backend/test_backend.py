@@ -32085,6 +32085,202 @@ class TestCostOptimization(unittest.TestCase):
         self.assertIn("stable", text)
 
 
+class TestAffinityRules(unittest.TestCase):
+    """Tests for container affinity and anti-affinity rules."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_affinity_rule(self):
+        """create_affinity_rule stores rule."""
+        mgr = self._manager()
+        r = mgr.create_affinity_rule("prefer-web", rule_type="affinity", match_labels={"role": "web"})
+        self.assertTrue(r["created"])
+        self.assertEqual(r["type"], "affinity")
+
+    def test_create_anti_affinity(self):
+        """create_affinity_rule creates anti-affinity."""
+        mgr = self._manager()
+        r = mgr.create_affinity_rule("spread", rule_type="anti-affinity")
+        self.assertEqual(r["type"], "anti-affinity")
+
+    def test_evaluate_affinity_match(self):
+        """evaluate_affinity matches labels."""
+        mgr = self._manager()
+        c = self._make(mgr, "af1")
+        mgr.create_affinity_rule("r1", match_labels={"role": "web"})
+        r = mgr.evaluate_affinity(c, {"role": "web"})
+        self.assertIn("r1", r["matched"])
+        self.assertTrue(r["schedulable"])
+
+    def test_evaluate_anti_affinity_reject(self):
+        """evaluate_affinity rejects on anti-affinity."""
+        mgr = self._manager()
+        c = self._make(mgr, "af2")
+        mgr.create_affinity_rule("anti", rule_type="anti-affinity", match_labels={"role": "db"})
+        r = mgr.evaluate_affinity(c, {"role": "db"})
+        self.assertTrue(len(r["rejected"]) > 0)
+
+    def test_list_rules(self):
+        """get_affinity_rules returns all."""
+        mgr = self._manager()
+        mgr.create_affinity_rule("a")
+        mgr.create_affinity_rule("b")
+        r = mgr.get_affinity_rules()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_affinity(self):
+        """format_human handles evaluate-affinity."""
+        from nyrqisctl import format_human
+        text = format_human("evaluate-affinity", {"schedulable": True, "score": 100, "matched": ["r1"], "rejected": []})
+        self.assertIn("SCHEDULABLE", text)
+        self.assertIn("100", text)
+
+
+class TestPreemption(unittest.TestCase):
+    """Tests for container preemption with priority classes."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_priority_class(self):
+        """create_priority_class stores class."""
+        mgr = self._manager()
+        r = mgr.create_priority_class("critical", value=1000)
+        self.assertTrue(r["created"])
+        self.assertEqual(r["value"], 1000)
+
+    def test_assign_priority(self):
+        """assign_priority_class assigns to container."""
+        mgr = self._manager()
+        c = self._make(mgr, "pr1")
+        mgr.create_priority_class("high", value=500)
+        r = mgr.assign_priority_class(c, "high")
+        self.assertEqual(r["priority_value"], 500)
+
+    def test_evaluate_preemption(self):
+        """evaluate_preemption detects higher priority."""
+        mgr = self._manager()
+        high = self._make(mgr, "pr2")
+        low = self._make(mgr, "pr3")
+        mgr.create_priority_class("high", value=100)
+        mgr.create_priority_class("low", value=10)
+        mgr.assign_priority_class(high, "high")
+        mgr.assign_priority_class(low, "low")
+        r = mgr.evaluate_preemption(high, low)
+        self.assertTrue(r["preempt"])
+        self.assertEqual(r["evictor_priority"], 100)
+
+    def test_no_preemption_same_priority(self):
+        """evaluate_preemption fails for equal priority."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "pr4")
+        c2 = self._make(mgr, "pr5")
+        mgr.create_priority_class("same", value=50)
+        mgr.assign_priority_class(c1, "same")
+        mgr.assign_priority_class(c2, "same")
+        r = mgr.evaluate_preemption(c1, c2)
+        self.assertFalse(r["preempt"])
+
+    def test_list_classes(self):
+        """list_priority_classes returns all."""
+        mgr = self._manager()
+        mgr.create_priority_class("a", value=10)
+        mgr.create_priority_class("b", value=20)
+        r = mgr.list_priority_classes()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_priority(self):
+        """format_human handles list-priority-classes."""
+        from nyrqisctl import format_human
+        text = format_human("list-priority-classes", {"classes": [{"name": "critical", "value": 1000, "preemption_policy": "PreemptLowerPriority"}]})
+        self.assertIn("critical", text)
+        self.assertIn("1000", text)
+
+
+class TestAutoScaling(unittest.TestCase):
+    """Tests for resource elastic auto-scaling with predictive ML."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_configure_autoscaler(self):
+        """configure_autoscaler stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "as1")
+        r = mgr.configure_autoscaler(c, min_replicas=2, max_replicas=5, predictive=True)
+        self.assertTrue(r["configured"])
+        self.assertTrue(r["predictive"])
+
+    def test_evaluate_scale_up(self):
+        """evaluate_autoscaling triggers scale up."""
+        mgr = self._manager()
+        c = self._make(mgr, "as2")
+        mgr.configure_autoscaler(c, target_cpu_pct=70.0, max_replicas=10)
+        # Force cooldown to pass by setting last_scale_time in the past
+        import time as _time
+        mgr._autoscalers[c.id]["last_scale_time"] = _time.time() - 120
+        r = mgr.evaluate_autoscaling(c, current_cpu_pct=90.0)
+        self.assertEqual(r["action"], "scale_up")
+        self.assertEqual(r["desired_replicas"], 2)
+
+    def test_evaluate_scale_down(self):
+        """evaluate_autoscaling triggers scale down."""
+        mgr = self._manager()
+        c = self._make(mgr, "as3")
+        mgr.configure_autoscaler(c, min_replicas=1, max_replicas=10)
+        # Set current replicas to 3
+        mgr._autoscalers[c.id]["current_replicas"] = 3
+        import time as _time
+        mgr._autoscalers[c.id]["last_scale_time"] = _time.time() - 600
+        r = mgr.evaluate_autoscaling(c, current_cpu_pct=10.0, current_memory_pct=10.0)
+        self.assertEqual(r["action"], "scale_down")
+
+    def test_autoscaler_status(self):
+        """get_autoscaler_status returns info."""
+        mgr = self._manager()
+        c = self._make(mgr, "as4")
+        mgr.configure_autoscaler(c, min_replicas=1, max_replicas=5)
+        r = mgr.get_autoscaler_status(c)
+        self.assertEqual(r["min"], 1)
+        self.assertEqual(r["max"], 5)
+
+    def test_list_autoscalers(self):
+        """list_autoscalers returns all."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "as5")
+        c2 = self._make(mgr, "as6")
+        mgr.configure_autoscaler(c1)
+        mgr.configure_autoscaler(c2)
+        r = mgr.list_autoscalers()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_autoscaler(self):
+        """format_human handles autoscaler-status."""
+        from nyrqisctl import format_human
+        text = format_human("autoscaler-status", {"container_id": "abc123", "current": 3, "min": 1, "max": 10, "target_cpu": 70, "target_memory": 80, "predictive": True, "total_scaling_events": 5})
+        self.assertIn("3", text)
+        self.assertIn("True", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -32315,6 +32511,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRuntimeClasses))
     suite.addTests(loader.loadTestsFromTestCase(TestReplayDebugging))
     suite.addTests(loader.loadTestsFromTestCase(TestCostOptimization))
+    suite.addTests(loader.loadTestsFromTestCase(TestAffinityRules))
+    suite.addTests(loader.loadTestsFromTestCase(TestPreemption))
+    suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

@@ -26034,6 +26034,355 @@ class ContainerManager:
         }
 
 
+
+    # ------------------------------------------------------------------
+    # Container affinity and anti-affinity rules with soft/hard preferences
+    # ------------------------------------------------------------------
+
+    def create_affinity_rule(
+        self,
+        name: str,
+        rule_type: str = "affinity",
+        match_labels: Optional[Dict[str, str]] = None,
+        weight: int = 100,
+        required: bool = False,
+        topology_key: str = "kubernetes.io/hostname",
+    ) -> Dict[str, Any]:
+        """Create an affinity or anti-affinity rule."""
+        valid_types = ["affinity", "anti-affinity"]
+        if rule_type not in valid_types:
+            return {"error": f"Invalid type. Must be one of: {valid_types}"}
+        if not hasattr(self, '_affinity_rules'):
+            self._affinity_rules = {}
+        self._affinity_rules[name] = {
+            "name": name,
+            "type": rule_type,
+            "match_labels": match_labels or {},
+            "weight": weight,
+            "required": required,
+            "topology_key": topology_key,
+            "applied_count": 0,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "type": rule_type, "created": True}
+
+    def evaluate_affinity(
+        self,
+        container: Container,
+        target_labels: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Evaluate affinity/anti-affinity rules for a container against target labels."""
+        if not hasattr(self, '_affinity_rules'):
+            return {"matched": [], "rejected": [], "score": 0}
+
+        matched = []
+        rejected = []
+        score = 0
+
+        for rule in self._affinity_rules.values():
+            # Check if labels match
+            labels_match = all(
+                target_labels.get(k) == v
+                for k, v in rule["match_labels"].items()
+            )
+
+            if rule["type"] == "affinity":
+                if labels_match:
+                    matched.append(rule["name"])
+                    score += rule["weight"] if not rule["required"] else 1000
+                    rule["applied_count"] += 1
+                elif rule["required"]:
+                    rejected.append({"rule": rule["name"], "reason": "required affinity not met"})
+            elif rule["type"] == "anti-affinity":
+                if labels_match:
+                    rejected.append({"rule": rule["name"], "reason": "anti-affinity conflict"})
+                    score -= rule["weight"] if not rule["required"] else 10000
+                else:
+                    matched.append(rule["name"])
+
+        return {
+            "container_id": container.id,
+            "matched": matched,
+            "rejected": rejected,
+            "score": score,
+            "schedulable": len([r for r in rejected if "required" in r.get("reason", "")]) == 0,
+        }
+
+    def get_affinity_rules(self) -> List[Dict[str, Any]]:
+        """List all affinity rules."""
+        if not hasattr(self, '_affinity_rules'):
+            return []
+        return [
+            {"name": r["name"], "type": r["type"], "required": r["required"],
+             "weight": r["weight"], "labels": r["match_labels"],
+             "applied": r["applied_count"]}
+            for r in self._affinity_rules.values()
+        ]
+
+    def delete_affinity_rule(self, name: str) -> Dict[str, Any]:
+        """Delete an affinity rule."""
+        if not hasattr(self, '_affinity_rules'):
+            return {"error": "No rules"}
+        if name not in self._affinity_rules:
+            return {"error": f"Rule '{name}' not found"}
+        del self._affinity_rules[name]
+        return {"deleted": name}
+
+    # ------------------------------------------------------------------
+    # Container preemption with priority classes and eviction policies
+    # ------------------------------------------------------------------
+
+    def create_priority_class(
+        self,
+        name: str,
+        value: int = 0,
+        preemption_policy: str = "PreemptLowerPriority",
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Create a priority class for containers."""
+        valid_policies = ["PreemptLowerPriority", "Never"]
+        if preemption_policy not in valid_policies:
+            return {"error": f"Invalid policy. Must be one of: {valid_policies}"}
+        if not hasattr(self, '_priority_classes'):
+            self._priority_classes = {}
+        self._priority_classes[name] = {
+            "name": name,
+            "value": value,
+            "preemption_policy": preemption_policy,
+            "description": description,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "value": value, "created": True}
+
+    def assign_priority_class(
+        self,
+        container: Container,
+        class_name: str,
+    ) -> Dict[str, Any]:
+        """Assign a priority class to a container."""
+        if not hasattr(self, '_priority_classes'):
+            return {"error": "No priority classes"}
+        pc = self._priority_classes.get(class_name)
+        if not pc:
+            return {"error": f"Priority class '{class_name}' not found"}
+        if not hasattr(self, '_container_priority'):
+            self._container_priority = {}
+        self._container_priority[container.id] = class_name
+        return {"container_id": container.id, "priority_class": class_name, "priority_value": pc["value"]}
+
+    def evaluate_preemption(
+        self,
+        evictor_container: Container,
+        victim_container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate whether evictor can preempt victim."""
+        if not hasattr(self, '_container_priority'):
+            return {"preempt": False, "reason": "No priority data"}
+
+        evictor_class = self._container_priority.get(evictor_container.id)
+        victim_class = self._container_priority.get(victim_container.id)
+
+        if not evictor_class or not victim_class:
+            return {"preempt": False, "reason": "Missing priority class"}
+
+        evictor_pc = self._priority_classes.get(evictor_class, {})
+        victim_pc = self._priority_classes.get(victim_class, {})
+
+        evictor_val = evictor_pc.get("value", 0)
+        victim_val = victim_pc.get("value", 0)
+
+        if evictor_val > victim_val:
+            policy = evictor_pc.get("preemption_policy", "PreemptLowerPriority")
+            can_preempt = policy == "PreemptLowerPriority"
+            return {
+                "preempt": can_preempt,
+                "evictor_priority": evictor_val,
+                "victim_priority": victim_val,
+                "policy": policy,
+                "reason": "Higher priority" if can_preempt else "Preemption disabled",
+            }
+        return {"preempt": False, "reason": "Equal or lower priority"}
+
+    def list_priority_classes(self) -> List[Dict[str, Any]]:
+        """List all priority classes."""
+        if not hasattr(self, '_priority_classes'):
+            return []
+        return [
+            {"name": pc["name"], "value": pc["value"],
+             "preemption_policy": pc["preemption_policy"]}
+            for pc in self._priority_classes.values()
+        ]
+
+    def get_eviction_candidates(
+        self,
+        incoming_container: Container,
+    ) -> List[Dict[str, Any]]:
+        """Find containers that could be evicted by the incoming container."""
+        if not hasattr(self, '_container_priority') or not hasattr(self, '_priority_classes'):
+            return []
+
+        incoming_class = self._container_priority.get(incoming_container.id)
+        if not incoming_class:
+            return []
+        incoming_val = self._priority_classes.get(incoming_class, {}).get("value", 0)
+
+        candidates = []
+        for cid, class_name in self._container_priority.items():
+            pc = self._priority_classes.get(class_name, {})
+            if pc.get("value", 0) < incoming_val:
+                candidates.append({
+                    "container_id": cid,
+                    "priority_class": class_name,
+                    "priority_value": pc.get("value", 0),
+                })
+        return sorted(candidates, key=lambda x: x["priority_value"])
+
+    # ------------------------------------------------------------------
+    # Container resource elastic auto-scaling with predictive ML
+    # ------------------------------------------------------------------
+
+    def configure_autoscaler(
+        self,
+        container: Container,
+        min_replicas: int = 1,
+        max_replicas: int = 10,
+        target_cpu_pct: float = 70.0,
+        target_memory_pct: float = 80.0,
+        scale_up_cooldown_s: float = 60.0,
+        scale_down_cooldown_s: float = 300.0,
+        predictive: bool = False,
+    ) -> Dict[str, Any]:
+        """Configure predictive auto-scaling for a container."""
+        if not hasattr(self, '_autoscalers'):
+            self._autoscalers = {}
+        self._autoscalers[container.id] = {
+            "container_id": container.id,
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+            "target_cpu_pct": target_cpu_pct,
+            "target_memory_pct": target_memory_pct,
+            "scale_up_cooldown_s": scale_up_cooldown_s,
+            "scale_down_cooldown_s": scale_down_cooldown_s,
+            "predictive": predictive,
+            "current_replicas": min_replicas,
+            "last_scale_time": __import__("time").time(),
+            "scaling_events": [],
+        }
+        return {"container_id": container.id, "configured": True, "predictive": predictive}
+
+    def evaluate_autoscaling(
+        self,
+        container: Container,
+        current_cpu_pct: float = 0.0,
+        current_memory_pct: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Evaluate whether auto-scaling should trigger."""
+        if not hasattr(self, '_autoscalers'):
+            return {"action": "none", "reason": "No autoscaler configured"}
+        scaler = self._autoscalers.get(container.id)
+        if not scaler:
+            return {"action": "none", "reason": "No autoscaler for this container"}
+
+        import time as _time
+        now = _time.time()
+        current = scaler["current_replicas"]
+        desired = current
+
+        # Scale up
+        if current_cpu_pct > scaler["target_cpu_pct"] or current_memory_pct > scaler["target_memory_pct"]:
+            if now - scaler["last_scale_time"] > scaler["scale_up_cooldown_s"]:
+                desired = min(current + 1, scaler["max_replicas"])
+        # Scale down
+        elif current_cpu_pct < scaler["target_cpu_pct"] * 0.5 and current_memory_pct < scaler["target_memory_pct"] * 0.5:
+            if now - scaler["last_scale_time"] > scaler["scale_down_cooldown_s"]:
+                desired = max(current - 1, scaler["min_replicas"])
+
+        # Predictive scaling
+        if scaler["predictive"] and desired == current:
+            predicted = self._predict_load(container)
+            if predicted > scaler["target_cpu_pct"]:
+                desired = min(current + 1, scaler["max_replicas"])
+
+        action = "none"
+        if desired > current:
+            action = "scale_up"
+        elif desired < current:
+            action = "scale_down"
+
+        if action != "none":
+            scaler["current_replicas"] = desired
+            scaler["last_scale_time"] = now
+            scaler["scaling_events"].append({
+                "action": action,
+                "from": current,
+                "to": desired,
+                "timestamp": now,
+                "cpu_pct": current_cpu_pct,
+                "memory_pct": current_memory_pct,
+            })
+
+        return {
+            "action": action,
+            "current_replicas": current,
+            "desired_replicas": desired,
+            "cpu_pct": current_cpu_pct,
+            "memory_pct": current_memory_pct,
+            "predictive": scaler["predictive"],
+        }
+
+    def _predict_load(self, container: Container) -> float:
+        """Predict future load using simple exponential smoothing."""
+        if not hasattr(self, '_autoscalers'):
+            return 0.0
+        scaler = self._autoscalers.get(container.id)
+        if not scaler or not scaler["scaling_events"]:
+            return 50.0  # default prediction
+
+        # Simple moving average of recent scaling events
+        recent = scaler["scaling_events"][-5:]
+        avg_cpu = sum(e.get("cpu_pct", 50) for e in recent) / max(len(recent), 1)
+        return avg_cpu * 1.1  # 10% buffer
+
+    def get_autoscaler_status(self, container: Container) -> Dict[str, Any]:
+        """Get auto-scaler status."""
+        if not hasattr(self, '_autoscalers'):
+            return {"error": "No autoscalers"}
+        scaler = self._autoscalers.get(container.id)
+        if not scaler:
+            return {"error": "No autoscaler for this container"}
+        return {
+            "container_id": container.id,
+            "current_replicas": scaler["current_replicas"],
+            "min": scaler["min_replicas"],
+            "max": scaler["max_replicas"],
+            "target_cpu": scaler["target_cpu_pct"],
+            "target_memory": scaler["target_memory_pct"],
+            "predictive": scaler["predictive"],
+            "total_scaling_events": len(scaler["scaling_events"]),
+        }
+
+    def list_autoscalers(self) -> List[Dict[str, Any]]:
+        """List all autoscalers."""
+        if not hasattr(self, '_autoscalers'):
+            return []
+        return [
+            {"container_id": s["container_id"], "current": s["current_replicas"],
+             "min": s["min_replicas"], "max": s["max_replicas"],
+             "predictive": s["predictive"],
+             "events": len(s["scaling_events"])}
+            for s in self._autoscalers.values()
+        ]
+
+    def delete_autoscaler(self, container_id: str) -> Dict[str, Any]:
+        """Delete an autoscaler."""
+        if not hasattr(self, '_autoscalers'):
+            return {"error": "No autoscalers"}
+        if container_id not in self._autoscalers:
+            return {"error": "No autoscaler for this container"}
+        del self._autoscalers[container_id]
+        return {"deleted": container_id}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

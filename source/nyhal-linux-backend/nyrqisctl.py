@@ -4349,6 +4349,78 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "container_id": args.container_id,
             "days_ahead": getattr(args, 'days_ahead', 30),
         }
+    if command == "create-affinity-rule":
+        return {
+            "service": "control",
+            "op": "create_affinity_rule",
+            "name": args.name,
+            "rule_type": getattr(args, 'rule_type', 'affinity'),
+            "required": getattr(args, 'required', False),
+            "weight": getattr(args, 'weight', 100),
+        }
+    if command == "evaluate-affinity":
+        return {
+            "service": "control",
+            "op": "evaluate_affinity",
+            "container_id": args.container_id,
+            "target_labels": getattr(args, 'target_labels', {}),
+        }
+    if command == "create-priority-class":
+        return {
+            "service": "control",
+            "op": "create_priority_class",
+            "name": args.name,
+            "value": getattr(args, 'value', 0),
+            "preemption_policy": getattr(args, 'preemption_policy', 'PreemptLowerPriority'),
+        }
+    if command == "assign-priority-class":
+        return {
+            "service": "control",
+            "op": "assign_priority_class",
+            "container_id": args.container_id,
+            "class_name": args.class_name,
+        }
+    if command == "evaluate-preemption":
+        return {
+            "service": "control",
+            "op": "evaluate_preemption",
+            "evictor_id": args.evictor_id,
+            "victim_id": args.victim_id,
+        }
+    if command == "list-priority-classes":
+        return {
+            "service": "control",
+            "op": "list_priority_classes",
+        }
+    if command == "configure-autoscaler":
+        return {
+            "service": "control",
+            "op": "configure_autoscaler",
+            "container_id": args.container_id,
+            "min_replicas": getattr(args, 'min_replicas', 1),
+            "max_replicas": getattr(args, 'max_replicas', 10),
+            "target_cpu_pct": getattr(args, 'target_cpu_pct', 70.0),
+            "predictive": getattr(args, 'predictive', False),
+        }
+    if command == "evaluate-autoscaling":
+        return {
+            "service": "control",
+            "op": "evaluate_autoscaling",
+            "container_id": args.container_id,
+            "current_cpu_pct": getattr(args, 'current_cpu_pct', 0.0),
+            "current_memory_pct": getattr(args, 'current_memory_pct', 0.0),
+        }
+    if command == "autoscaler-status":
+        return {
+            "service": "control",
+            "op": "get_autoscaler_status",
+            "container_id": args.container_id,
+        }
+    if command == "list-autoscalers":
+        return {
+            "service": "control",
+            "op": "list_autoscalers",
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -8410,6 +8482,44 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "forecast-cost":
         lines = ["Cost Forecast:", f"  daily: ${resp.get('daily_cost', 0):.2f}", f"  current monthly: ${resp.get('current_monthly', 0):.2f}", f"  projected monthly: ${resp.get('projected_monthly', 0):.2f} ({resp.get('change_pct', 0):+.1f}%)"]
         return "\n".join(lines)
+    if command == "create-affinity-rule":
+        return f"Affinity rule '{resp.get('name', '?')}' created ({resp.get('type', '?')})"
+    if command == "evaluate-affinity":
+        schedulable = "SCHEDULABLE" if resp.get("schedulable") else "NOT SCHEDULABLE"
+        lines = [f"Affinity result [{schedulable}] (score={resp.get('score', 0)}):", f"  matched: {resp.get('matched', [])}"]
+        for r in resp.get("rejected", []):
+            lines.append(f"  REJECTED: {r.get('rule', '?')} - {r.get('reason', '?')}")
+        return "\n".join(lines)
+    if command == "create-priority-class":
+        return f"Priority class '{resp.get('name', '?')}' created (value={resp.get('value', 0)})"
+    if command == "evaluate-preemption":
+        can = "CAN preempt" if resp.get("preempt") else "CANNOT preempt"
+        return f"Preemption: {can} (evictor={resp.get('evictor_priority', 0)}, victim={resp.get('victim_priority', 0)}): {resp.get('reason', '?')}"
+    if command == "list-priority-classes":
+        classes = resp.get("classes", [])
+        lines = ["Priority Classes:"]
+        for pc in classes:
+            lines.append(f"  {pc['name']}: value={pc['value']}, policy={pc['preemption_policy']}")
+        if not classes:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "configure-autoscaler":
+        return f"Autoscaler configured for {resp.get('container_id', '?')[:12]} (predictive={resp.get('predictive', False)})"
+    if command == "evaluate-autoscaling":
+        action = resp.get("action", "none")
+        return f"Autoscaling: {action} (current={resp.get('current_replicas', 0)}, desired={resp.get('desired_replicas', 0)}, cpu={resp.get('cpu_pct', 0):.1f}%)"
+    if command == "autoscaler-status":
+        s = resp
+        lines = [f"Autoscaler for {s.get('container_id', '?')[:12]}:", f"  replicas: {s.get('current', 0)} ({s.get('min', 0)}-{s.get('max', 0)})", f"  targets: cpu={s.get('target_cpu', 0)}%, memory={s.get('target_memory', 0)}%", f"  predictive: {s.get('predictive', False)}, events: {s.get('total_scaling_events', 0)}"]
+        return "\n".join(lines)
+    if command == "list-autoscalers":
+        autos = resp.get("autoscalers", [])
+        lines = ["Autoscalers:"]
+        for a in autos:
+            lines.append(f"  {a['container_id'][:12]}: {a['current']} replicas ({a['min']}-{a['max']}), events={a['events']}")
+        if not autos:
+            lines.append("  (none)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -12467,6 +12577,60 @@ def build_parser() -> argparse.ArgumentParser:
     fc.add_argument("container_id")
     fc.add_argument("--days", type=int, dest="days_ahead", default=30)
     fc.set_defaults(command="forecast-cost")
+
+    # Affinity rules
+    car = sub.add_parser("create-affinity-rule", help="Create affinity rule")
+    car.add_argument("name")
+    car.add_argument("--type", dest="rule_type", default="affinity", choices=["affinity", "anti-affinity"])
+    car.add_argument("--required", action="store_true", default=False)
+    car.add_argument("--weight", type=int, default=100)
+    car.set_defaults(command="create-affinity-rule")
+
+    ea = sub.add_parser("evaluate-affinity", help="Evaluate affinity rules")
+    ea.add_argument("container_id")
+    ea.set_defaults(command="evaluate-affinity")
+
+    # Priority classes
+    cpc = sub.add_parser("create-priority-class", help="Create priority class")
+    cpc.add_argument("name")
+    cpc.add_argument("--value", type=int, default=0)
+    cpc.add_argument("--preemption-policy", default="PreemptLowerPriority", choices=["PreemptLowerPriority", "Never"])
+    cpc.set_defaults(command="create-priority-class")
+
+    apc = sub.add_parser("assign-priority-class", help="Assign priority class")
+    apc.add_argument("container_id")
+    apc.add_argument("class_name")
+    apc.set_defaults(command="assign-priority-class")
+
+    ep = sub.add_parser("evaluate-preemption", help="Evaluate preemption")
+    ep.add_argument("evictor_id")
+    ep.add_argument("victim_id")
+    ep.set_defaults(command="evaluate-preemption")
+
+    lpc = sub.add_parser("list-priority-classes", help="List priority classes")
+    lpc.set_defaults(command="list-priority-classes")
+
+    # Autoscaling
+    cas = sub.add_parser("configure-autoscaler", help="Configure autoscaler")
+    cas.add_argument("container_id")
+    cas.add_argument("--min", type=int, dest="min_replicas", default=1)
+    cas.add_argument("--max", type=int, dest="max_replicas", default=10)
+    cas.add_argument("--target-cpu", type=float, dest="target_cpu_pct", default=70.0)
+    cas.add_argument("--predictive", action="store_true", default=False)
+    cas.set_defaults(command="configure-autoscaler")
+
+    eas = sub.add_parser("evaluate-autoscaling", help="Evaluate autoscaling")
+    eas.add_argument("container_id")
+    eas.add_argument("--cpu", type=float, dest="current_cpu_pct", default=0.0)
+    eas.add_argument("--memory", type=float, dest="current_memory_pct", default=0.0)
+    eas.set_defaults(command="evaluate-autoscaling")
+
+    ast = sub.add_parser("autoscaler-status", help="Autoscaler status")
+    ast.add_argument("container_id")
+    ast.set_defaults(command="autoscaler-status")
+
+    las = sub.add_parser("list-autoscalers", help="List autoscalers")
+    las.set_defaults(command="list-autoscalers")
 
     return parser
 

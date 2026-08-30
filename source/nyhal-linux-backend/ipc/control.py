@@ -1989,6 +1989,48 @@ class ControlService:
             elif op == "forecast_cost":
                 self._forecast_cost(server, sender_path,
                               msg.message_id, request)
+            elif op == "create_affinity_rule":
+                self._create_affinity_rule(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "evaluate_affinity":
+                self._evaluate_affinity(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_affinity_rules":
+                self._get_affinity_rules(server, sender_path,
+                                    msg.message_id)
+            elif op == "delete_affinity_rule":
+                self._delete_affinity_rule(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "create_priority_class":
+                self._create_priority_class(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "assign_priority_class":
+                self._assign_priority_class(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "evaluate_preemption":
+                self._evaluate_preemption(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "list_priority_classes":
+                self._list_priority_classes(server, sender_path,
+                                      msg.message_id)
+            elif op == "get_eviction_candidates":
+                self._get_eviction_candidates(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "configure_autoscaler":
+                self._configure_autoscaler(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "evaluate_autoscaling":
+                self._evaluate_autoscaling(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "get_autoscaler_status":
+                self._get_autoscaler_status(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "list_autoscalers":
+                self._list_autoscalers(server, sender_path,
+                                  msg.message_id)
+            elif op == "delete_autoscaler":
+                self._delete_autoscaler(server, sender_path,
+                                   msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9739,6 +9781,117 @@ class ControlService:
             self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
             return
         result = self.container_manager.forecast_cost(c, request.get("days_ahead", 30))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_affinity_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_affinity_rule(
+            name=request.get("name", "default"),
+            rule_type=request.get("rule_type", "affinity"),
+            match_labels=request.get("match_labels"),
+            weight=request.get("weight", 100),
+            required=request.get("required", False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_affinity(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.evaluate_affinity(c, request.get("target_labels", {}))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_affinity_rules(self, server, sender_path, call_id):
+        result = self.container_manager.get_affinity_rules()
+        self._reply(server, sender_path, call_id, {"ok": True, "rules": result})
+
+    def _delete_affinity_rule(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_affinity_rule(request.get("name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_priority_class(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_priority_class(
+            name=request.get("name", "default"),
+            value=request.get("value", 0),
+            preemption_policy=request.get("preemption_policy", "PreemptLowerPriority"),
+            description=request.get("description", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _assign_priority_class(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.assign_priority_class(c, request.get("class_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_preemption(self, server, sender_path, call_id, request):
+        evictor = self.container_manager.containers.get(request.get("evictor_id"))
+        victim = self.container_manager.containers.get(request.get("victim_id"))
+        if not evictor or not victim:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.evaluate_preemption(evictor, victim)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_priority_classes(self, server, sender_path, call_id):
+        result = self.container_manager.list_priority_classes()
+        self._reply(server, sender_path, call_id, {"ok": True, "classes": result})
+
+    def _get_eviction_candidates(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_eviction_candidates(c)
+        self._reply(server, sender_path, call_id, {"ok": True, "candidates": result})
+
+    def _configure_autoscaler(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.configure_autoscaler(
+            c, min_replicas=request.get("min_replicas", 1),
+            max_replicas=request.get("max_replicas", 10),
+            target_cpu_pct=request.get("target_cpu_pct", 70.0),
+            target_memory_pct=request.get("target_memory_pct", 80.0),
+            predictive=request.get("predictive", False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_autoscaling(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.evaluate_autoscaling(
+            c, current_cpu_pct=request.get("current_cpu_pct", 0.0),
+            current_memory_pct=request.get("current_memory_pct", 0.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_autoscaler_status(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_autoscaler_status(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_autoscalers(self, server, sender_path, call_id):
+        result = self.container_manager.list_autoscalers()
+        self._reply(server, sender_path, call_id, {"ok": True, "autoscalers": result})
+
+    def _delete_autoscaler(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_autoscaler(request.get("container_id", ""))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
