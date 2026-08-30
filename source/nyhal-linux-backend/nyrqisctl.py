@@ -3498,6 +3498,117 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_auto_rollback",
             "slo_name": args.slo_name,
         }
+    if command == "run-benchmark":
+        return {
+            "service": "control",
+            "op": "run_benchmark",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+            "iterations": int(getattr(args, 'iterations', 100)),
+        }
+    if command == "detect-regression":
+        return {
+            "service": "control",
+            "op": "detect_regression",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+            "threshold_pct": float(getattr(args, 'threshold_pct', 20)),
+        }
+    if command == "get-benchmark-history":
+        return {
+            "service": "control",
+            "op": "get_benchmark_history",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+        }
+    if command == "fleet-benchmark-summary":
+        return {
+            "service": "control",
+            "op": "fleet_benchmark_summary",
+        }
+    if command == "create-tenant":
+        return {
+            "service": "control",
+            "op": "create_tenant",
+            "name": args.name,
+            "isolation_level": getattr(args, 'isolation_level', 'strict'),
+        }
+    if command == "assign-to-tenant":
+        return {
+            "service": "control",
+            "op": "assign_container_to_tenant",
+            "tenant_name": args.tenant_name,
+            "container_id": args.container_id,
+        }
+    if command == "remove-from-tenant":
+        return {
+            "service": "control",
+            "op": "remove_container_from_tenant",
+            "tenant_name": args.tenant_name,
+            "container_id": args.container_id,
+        }
+    if command == "get-tenant-usage":
+        return {
+            "service": "control",
+            "op": "get_tenant_usage",
+            "tenant_name": args.tenant_name,
+        }
+    if command == "list-tenants":
+        return {
+            "service": "control",
+            "op": "list_tenants",
+        }
+    if command == "delete-tenant":
+        return {
+            "service": "control",
+            "op": "delete_tenant",
+            "name": args.name,
+        }
+    if command == "check-tenant-isolation":
+        return {
+            "service": "control",
+            "op": "check_tenant_isolation",
+            "tenant_a": args.tenant_a,
+            "tenant_b": args.tenant_b,
+        }
+    if command == "start-profile":
+        return {
+            "service": "control",
+            "op": "start_profile",
+            "container_id": args.container_id,
+            "profile_type": getattr(args, 'profile_type', 'cpu'),
+            "duration_seconds": int(getattr(args, 'duration_seconds', 30)),
+        }
+    if command == "stop-profile":
+        return {
+            "service": "control",
+            "op": "stop_profile",
+            "profile_id": args.profile_id,
+        }
+    if command == "get-flame-graph":
+        return {
+            "service": "control",
+            "op": "get_flame_graph",
+            "profile_id": args.profile_id,
+        }
+    if command == "get-profile-summary":
+        return {
+            "service": "control",
+            "op": "get_profile_summary",
+            "profile_id": args.profile_id,
+        }
+    if command == "list-profiles":
+        return {
+            "service": "control",
+            "op": "list_profiles",
+            "container_id": getattr(args, 'container_id', None),
+        }
+    if command == "delete-profile":
+        return {
+            "service": "control",
+            "op": "delete_profile",
+            "profile_id": args.profile_id,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7189,6 +7300,29 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             status = "enabled" if c['enabled'] else "disabled"
             lines.append(f"  SLO {c['slo_name']}: {status}, triggered={c['trigger_count']}")
         return "\n".join(lines) if lines[1:] else "No auto-rollbacks"
+    if command == "run-benchmark":
+        return f"Benchmark: avg={resp.get('avg_ms', 0)}ms, p95={resp.get('p95_ms', 0)}ms, ops/s={resp.get('ops_per_second', 0)}"
+    if command == "detect-regression":
+        status = "REGRESSION DETECTED" if resp.get('has_regression') else "No regression"
+        return f"Regression: {status} ({resp.get('regression_pct', 0)}% change)"
+    if command == "fleet-benchmark-summary":
+        return f"Fleet benchmarks: {resp.get('total_runs', 0)} total runs across {len(resp.get('benchmarks', []))} benchmarks"
+    if command == "get-tenant-usage":
+        usage = resp.get('usage', {})
+        quota = resp.get('quota', {})
+        return f"Tenant '{resp.get('tenant', '?')}': {usage.get('containers', 0)} containers, {usage.get('memory_mb', 0)}MB memory"
+    if command == "list-tenants":
+        lines = ["Tenants:"]
+        for t in resp.get('tenants', []):
+            lines.append(f"  {t['name']}: {t['isolation_level']}, {t['containers']} containers")
+        return "\n".join(lines) if lines[1:] else "No tenants"
+    if command == "get-profile-summary":
+        lines = [f"Profile {resp.get('profile_id', '?')[:20]} ({resp.get('type', '?')}):"]
+        for f in resp.get('hottest_functions', [])[:3]:
+            lines.append(f"  {f['function']}: {f['value']}")
+        return "\n".join(lines)
+    if command == "list-profiles":
+        return f"Profiles: {resp.get('count', 0)}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -9868,6 +10002,86 @@ def build_parser() -> argparse.ArgumentParser:
     delar = sub.add_parser("delete-auto-rollback", help="Delete auto-rollback")
     delar.add_argument("slo_name")
     delar.set_defaults(command="delete-auto-rollback")
+
+    # Benchmarking subcommands
+    rb = sub.add_parser("run-benchmark", help="Run benchmark")
+    rb.add_argument("container_id")
+    rb.add_argument("--name", default="default")
+    rb.add_argument("--iterations", type=int, default=100)
+    rb.set_defaults(command="run-benchmark")
+
+    dr = sub.add_parser("detect-regression", help="Detect regression")
+    dr.add_argument("container_id")
+    dr.add_argument("--name", default="default")
+    dr.add_argument("--threshold-pct", type=float, default=20)
+    dr.set_defaults(command="detect-regression")
+
+    gbh = sub.add_parser("get-benchmark-history", help="Get benchmark history")
+    gbh.add_argument("container_id")
+    gbh.add_argument("--name", default="default")
+    gbh.set_defaults(command="get-benchmark-history")
+
+    fbs = sub.add_parser("fleet-benchmark-summary", help="Fleet benchmark summary")
+    fbs.set_defaults(command="fleet-benchmark-summary")
+
+    # Multi-tenancy subcommands
+    ct = sub.add_parser("create-tenant", help="Create tenant")
+    ct.add_argument("name")
+    ct.add_argument("--isolation-level", default="strict", choices=["strict", "shared", "none"])
+    ct.set_defaults(command="create-tenant")
+
+    att = sub.add_parser("assign-to-tenant", help="Assign container to tenant")
+    att.add_argument("tenant_name")
+    att.add_argument("container_id")
+    att.set_defaults(command="assign-to-tenant")
+
+    rft = sub.add_parser("remove-from-tenant", help="Remove container from tenant")
+    rft.add_argument("tenant_name")
+    rft.add_argument("container_id")
+    rft.set_defaults(command="remove-from-tenant")
+
+    gtu = sub.add_parser("get-tenant-usage", help="Get tenant usage")
+    gtu.add_argument("tenant_name")
+    gtu.set_defaults(command="get-tenant-usage")
+
+    lt = sub.add_parser("list-tenants", help="List tenants")
+    lt.set_defaults(command="list-tenants")
+
+    dt = sub.add_parser("delete-tenant", help="Delete tenant")
+    dt.add_argument("name")
+    dt.set_defaults(command="delete-tenant")
+
+    cti = sub.add_parser("check-tenant-isolation", help="Check tenant isolation")
+    cti.add_argument("tenant_a")
+    cti.add_argument("tenant_b")
+    cti.set_defaults(command="check-tenant-isolation")
+
+    # Continuous profiling subcommands
+    sp = sub.add_parser("start-profile", help="Start profiling")
+    sp.add_argument("container_id")
+    sp.add_argument("--profile-type", default="cpu", choices=["cpu", "memory", "io"])
+    sp.add_argument("--duration-seconds", type=int, default=30)
+    sp.set_defaults(command="start-profile")
+
+    spp = sub.add_parser("stop-profile", help="Stop profiling")
+    spp.add_argument("profile_id")
+    spp.set_defaults(command="stop-profile")
+
+    gfg = sub.add_parser("get-flame-graph", help="Get flame graph")
+    gfg.add_argument("profile_id")
+    gfg.set_defaults(command="get-flame-graph")
+
+    gps = sub.add_parser("get-profile-summary", help="Get profile summary")
+    gps.add_argument("profile_id")
+    gps.set_defaults(command="get-profile-summary")
+
+    lp = sub.add_parser("list-profiles", help="List profiles")
+    lp.add_argument("--container-id", default=None)
+    lp.set_defaults(command="list-profiles")
+
+    dp = sub.add_parser("delete-profile", help="Delete profile")
+    dp.add_argument("profile_id")
+    dp.set_defaults(command="delete-profile")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

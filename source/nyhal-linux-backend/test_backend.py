@@ -5583,6 +5583,245 @@ class TestAutoRollback(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestPerformanceBenchmarking(unittest.TestCase):
+    """Tests for performance benchmarking with regression detection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_run_benchmark(self):
+        """run_benchmark returns timing stats."""
+        mgr = self._manager()
+        c = self._make(mgr, "bm1")
+        r = mgr.run_benchmark(c.id, iterations=10)
+        self.assertGreater(r["iterations"], 0)
+        self.assertIn("avg_ms", r)
+        self.assertIn("ops_per_second", r)
+
+    def test_detect_no_regression(self):
+        """detect_regression returns no regression with insufficient data."""
+        mgr = self._manager()
+        c = self._make(mgr, "bm2")
+        mgr.run_benchmark(c.id)
+        r = mgr.detect_regression(c.id)
+        self.assertFalse(r["has_regression"])
+        self.assertEqual(r["reason"], "insufficient_history")
+
+    def test_detect_regression(self):
+        """detect_regression finds degradation."""
+        mgr = self._manager()
+        c = self._make(mgr, "bm3")
+        # Run baseline
+        mgr.run_benchmark(c.id, iterations=10)
+        # Inject slow result by manipulating history
+        key = f"{c.id}:default"
+        mgr._benchmarks[key][-1]["avg_ms"] = 1.0  # fast baseline
+        mgr.run_benchmark(c.id, iterations=10)
+        mgr._benchmarks[key][-1]["avg_ms"] = 100.0  # slow current
+        r = mgr.detect_regression(c.id, threshold_pct=10)
+        self.assertTrue(r["has_regression"])
+        self.assertGreater(r["regression_pct"], 0)
+
+    def test_benchmark_history(self):
+        """get_benchmark_history returns runs."""
+        mgr = self._manager()
+        c = self._make(mgr, "bm4")
+        mgr.run_benchmark(c.id)
+        mgr.run_benchmark(c.id)
+        r = mgr.get_benchmark_history(c.id)
+        self.assertEqual(r["count"], 2)
+
+    def test_fleet_summary(self):
+        """fleet_benchmark_summary aggregates."""
+        mgr = self._manager()
+        c = self._make(mgr, "bm5")
+        mgr.run_benchmark(c.id)
+        r = mgr.fleet_benchmark_summary()
+        self.assertGreater(r["total_runs"], 0)
+
+    def test_format_human_benchmark(self):
+        """format_human handles run-benchmark."""
+        from nyrqisctl import format_human
+        text = format_human("run-benchmark", {"avg_ms": 1.5, "p95_ms": 3.0, "ops_per_second": 500})
+        self.assertIn("1.5", text)
+        self.assertIn("500", text)
+
+
+class TestMultiTenancy(unittest.TestCase):
+    """Tests for multi-tenancy with isolation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_create_tenant(self):
+        """create_tenant stores tenant."""
+        mgr = self._manager()
+        r = mgr.create_tenant("team-a", isolation_level="strict")
+        self.assertEqual(r["isolation_level"], "strict")
+
+    def test_assign_container(self):
+        """assign_container_to_tenant adds container."""
+        mgr = self._manager()
+        c = self._make(mgr, "mt1")
+        mgr.create_tenant("t1")
+        r = mgr.assign_container_to_tenant("t1", c.id)
+        self.assertTrue(r["assigned"])
+
+    def test_assign_quota_exceeded(self):
+        """assign_container_to_tenant rejects on quota."""
+        mgr = self._manager()
+        mgr.create_tenant("t2", resource_quota={"containers": 1})
+        c1 = self._make(mgr, "mt2")
+        c2 = self._make(mgr, "mt3")
+        mgr.assign_container_to_tenant("t2", c1.id)
+        r = mgr.assign_container_to_tenant("t2", c2.id)
+        self.assertIn("error", r)
+
+    def test_remove_container(self):
+        """remove_container_from_tenant removes container."""
+        mgr = self._manager()
+        c = self._make(mgr, "mt4")
+        mgr.create_tenant("t3")
+        mgr.assign_container_to_tenant("t3", c.id)
+        r = mgr.remove_container_from_tenant("t3", c.id)
+        self.assertTrue(r["removed"])
+
+    def test_tenant_usage(self):
+        """get_tenant_usage returns resource usage."""
+        mgr = self._manager()
+        c = self._make(mgr, "mt5")
+        mgr.create_tenant("t4")
+        mgr.assign_container_to_tenant("t4", c.id)
+        r = mgr.get_tenant_usage("t4")
+        self.assertEqual(r["usage"]["containers"], 1)
+
+    def test_list_tenants(self):
+        """list_tenants returns all."""
+        mgr = self._manager()
+        mgr.create_tenant("a")
+        mgr.create_tenant("b")
+        r = mgr.list_tenants()
+        self.assertEqual(r["count"], 2)
+
+    def test_isolation_check(self):
+        """check_tenant_isolation checks levels."""
+        mgr = self._manager()
+        mgr.create_tenant("s1", isolation_level="strict")
+        mgr.create_tenant("s2", isolation_level="shared")
+        r = mgr.check_tenant_isolation("s1", "s2")
+        self.assertTrue(r["isolated"])
+
+    def test_format_human_list(self):
+        """format_human handles list-tenants."""
+        from nyrqisctl import format_human
+        resp = {"tenants": [{"name": "t1", "isolation_level": "strict", "containers": 3}]}
+        text = format_human("list-tenants", resp)
+        self.assertIn("t1", text)
+        self.assertIn("3", text)
+
+
+class TestContinuousProfiling(unittest.TestCase):
+    """Tests for continuous profiling with flame graphs."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_start_profile(self):
+        """start_profile returns profile_id."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp1")
+        r = mgr.start_profile(c.id, profile_type="cpu")
+        self.assertIn("profile_id", r)
+        self.assertEqual(r["status"], "running")
+
+    def test_record_sample(self):
+        """record_profile_sample stores sample."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp2")
+        r = mgr.start_profile(c.id)
+        mgr.record_profile_sample(r["profile_id"], ["main", "func_a", "func_b"])
+        mgr.record_profile_sample(r["profile_id"], ["main", "func_a", "func_c"])
+        s = mgr.get_profile_summary(r["profile_id"])
+        self.assertEqual(s["samples"], 2)
+
+    def test_stop_profile(self):
+        """stop_profile completes and builds flame graph."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp3")
+        r = mgr.start_profile(c.id)
+        mgr.record_profile_sample(r["profile_id"], ["main", "worker"])
+        mgr.record_profile_sample(r["profile_id"], ["main", "worker"])
+        result = mgr.stop_profile(r["profile_id"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["samples"], 2)
+
+    def test_flame_graph(self):
+        """get_flame_graph returns tree structure."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp4")
+        r = mgr.start_profile(c.id)
+        mgr.record_profile_sample(r["profile_id"], ["main", "func_a"])
+        mgr.record_profile_sample(r["profile_id"], ["main", "func_b"])
+        mgr.stop_profile(r["profile_id"])
+        fg = mgr.get_flame_graph(r["profile_id"])
+        self.assertIn("flame_graph", fg)
+        self.assertEqual(fg["flame_graph"]["name"], "root")
+
+    def test_profile_summary(self):
+        """get_profile_summary finds hottest functions."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp5")
+        r = mgr.start_profile(c.id)
+        mgr.record_profile_sample(r["profile_id"], ["hot_func", "a"])
+        mgr.record_profile_sample(r["profile_id"], ["hot_func", "b"])
+        mgr.record_profile_sample(r["profile_id"], ["cold_func", "c"])
+        mgr.stop_profile(r["profile_id"])
+        s = mgr.get_profile_summary(r["profile_id"])
+        self.assertGreater(len(s["hottest_functions"]), 0)
+        self.assertEqual(s["hottest_functions"][0]["function"], "hot_func")
+
+    def test_list_profiles(self):
+        """list_profiles returns all."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cp6a")
+        c2 = self._make(mgr, "cp6b")
+        mgr.start_profile(c1.id)
+        mgr.start_profile(c2.id)
+        r = mgr.list_profiles()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_profile(self):
+        """delete_profile removes profile."""
+        mgr = self._manager()
+        c = self._make(mgr, "cp7")
+        r = mgr.start_profile(c.id)
+        d = mgr.delete_profile(r["profile_id"])
+        self.assertIn("deleted", d)
+
+    def test_format_human_summary(self):
+        """format_human handles get-profile-summary."""
+        from nyrqisctl import format_human
+        resp = {"profile_id": "prof_abc12345_123", "type": "cpu", "hottest_functions": [{"function": "main", "value": 50}]}
+        text = format_human("get-profile-summary", resp)
+        self.assertIn("main", text)
+        self.assertIn("50", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -30680,6 +30919,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceRightSizing))
     suite.addTests(loader.loadTestsFromTestCase(TestServiceMesh))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRollback))
+    suite.addTests(loader.loadTestsFromTestCase(TestPerformanceBenchmarking))
+    suite.addTests(loader.loadTestsFromTestCase(TestMultiTenancy))
+    suite.addTests(loader.loadTestsFromTestCase(TestContinuousProfiling))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

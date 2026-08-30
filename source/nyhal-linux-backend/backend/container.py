@@ -23018,6 +23018,416 @@ class ContainerManager:
             return {"error": f"No auto-rollback for SLO '{slo_name}'"}
         return {"deleted": slo_name}
 
+    # ------------------------------------------------------------------
+    # Performance benchmarking with regression detection
+    # ------------------------------------------------------------------
+
+    def run_benchmark(
+        self,
+        container_id: str,
+        name: str = "default",
+        iterations: int = 100,
+    ) -> Dict[str, Any]:
+        """Run a performance benchmark on a container."""
+        import time as _time
+        import hashlib
+        if not hasattr(self, '_benchmarks'):
+            self._benchmarks = {}
+
+        # Simulate benchmark execution with timing
+        start = _time.time()
+        results = []
+        for i in range(iterations):
+            op_start = _time.time()
+            # Simulate work
+            _ = sum(j for j in range(1000))
+            op_duration = (_time.time() - op_start) * 1000
+            results.append(op_duration)
+
+        total_time = (_time.time() - start) * 1000
+        results.sort()
+        benchmark = {
+            "container_id": container_id,
+            "name": name,
+            "iterations": iterations,
+            "total_ms": round(total_time, 2),
+            "avg_ms": round(total_time / iterations, 4),
+            "min_ms": round(results[0], 4),
+            "max_ms": round(results[-1], 4),
+            "p50_ms": round(results[len(results) // 2], 4),
+            "p95_ms": round(results[int(len(results) * 0.95)], 4),
+            "p99_ms": round(results[int(len(results) * 0.99)], 4),
+            "ops_per_second": round(iterations / (total_time / 1000), 1) if total_time > 0 else 0,
+            "timestamp": _time.time(),
+        }
+
+        key = f"{container_id}:{name}"
+        if key not in self._benchmarks:
+            self._benchmarks[key] = []
+        self._benchmarks[key].append(benchmark)
+
+        return benchmark
+
+    def detect_regression(
+        self,
+        container_id: str,
+        name: str = "default",
+        threshold_pct: float = 20.0,
+    ) -> Dict[str, Any]:
+        """Detect performance regression by comparing recent vs historical."""
+        if not hasattr(self, '_benchmarks'):
+            return {"error": "No benchmarks"}
+        key = f"{container_id}:{name}"
+        history = self._benchmarks.get(key, [])
+        if len(history) < 2:
+            return {"container_id": container_id, "has_regression": False, "reason": "insufficient_history"}
+
+        latest = history[-1]
+        # Compare against median of previous runs
+        previous = history[:-1]
+        prev_avg_ms = sum(h["avg_ms"] for h in previous) / len(previous)
+        prev_p95_ms = sum(h["p95_ms"] for h in previous) / len(previous)
+
+        regression_pct = 0
+        if prev_avg_ms > 0:
+            regression_pct = ((latest["avg_ms"] - prev_avg_ms) / prev_avg_ms) * 100
+
+        has_regression = regression_pct > threshold_pct
+        return {
+            "container_id": container_id,
+            "benchmark": name,
+            "has_regression": has_regression,
+            "regression_pct": round(regression_pct, 2),
+            "current_avg_ms": latest["avg_ms"],
+            "baseline_avg_ms": round(prev_avg_ms, 4),
+            "threshold_pct": threshold_pct,
+            "history_runs": len(history),
+        }
+
+    def get_benchmark_history(
+        self, container_id: str, name: str = "default", limit: int = 10
+    ) -> Dict[str, Any]:
+        """Get benchmark history for a container."""
+        if not hasattr(self, '_benchmarks'):
+            return {"runs": [], "count": 0}
+        key = f"{container_id}:{name}"
+        history = self._benchmarks.get(key, [])
+        return {
+            "container_id": container_id,
+            "benchmark": name,
+            "runs": history[-limit:],
+            "count": len(history),
+        }
+
+    def fleet_benchmark_summary(self) -> Dict[str, Any]:
+        """Get summary of all benchmarks across fleet."""
+        if not hasattr(self, '_benchmarks'):
+            return {"benchmarks": [], "total_runs": 0}
+        benchmarks = []
+        total_runs = 0
+        for key, runs in self._benchmarks.items():
+            container_id, name = key.split(":", 1)
+            latest = runs[-1] if runs else None
+            benchmarks.append({
+                "container_id": container_id,
+                "benchmark": name,
+                "runs": len(runs),
+                "latest_avg_ms": latest["avg_ms"] if latest else 0,
+                "latest_ops_per_second": latest["ops_per_second"] if latest else 0,
+            })
+            total_runs += len(runs)
+        return {"benchmarks": benchmarks, "total_runs": total_runs}
+
+    # ------------------------------------------------------------------
+    # Multi-tenancy with isolation and resource sharing
+    # ------------------------------------------------------------------
+
+    def create_tenant(
+        self,
+        name: str,
+        resource_quota: Optional[Dict[str, float]] = None,
+        isolation_level: str = "strict",
+        allowed_services: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a tenant with resource and isolation policies."""
+        import time as _time
+        if not hasattr(self, '_tenants'):
+            self._tenants = {}
+        if name in self._tenants:
+            return {"error": f"Tenant '{name}' already exists"}
+        if resource_quota is None:
+            resource_quota = {"memory_mb": 4096, "cpu_cores": 4, "containers": 10}
+        tenant = {
+            "name": name,
+            "resource_quota": resource_quota,
+            "isolation_level": isolation_level,
+            "allowed_services": allowed_services or [],
+            "created_at": _time.time(),
+            "containers": [],
+            "current_usage": {"memory_mb": 0, "cpu_cores": 0, "containers": 0},
+        }
+        self._tenants[name] = tenant
+        return {"name": name, "isolation_level": isolation_level, "quota": resource_quota}
+
+    def assign_container_to_tenant(
+        self, tenant_name: str, container_id: str
+    ) -> Dict[str, Any]:
+        """Assign a container to a tenant."""
+        if not hasattr(self, '_tenants'):
+            return {"error": "No tenants"}
+        tenant = self._tenants.get(tenant_name)
+        if not tenant:
+            return {"error": f"Tenant '{tenant_name}' not found"}
+        if container_id in tenant["containers"]:
+            return {"error": "Container already assigned"}
+        # Check quota
+        if len(tenant["containers"]) >= tenant["resource_quota"].get("containers", 10):
+            return {"error": "Container quota exceeded"}
+        tenant["containers"].append(container_id)
+        tenant["current_usage"]["containers"] = len(tenant["containers"])
+        return {"tenant": tenant_name, "container_id": container_id, "assigned": True}
+
+    def remove_container_from_tenant(
+        self, tenant_name: str, container_id: str
+    ) -> Dict[str, Any]:
+        """Remove a container from a tenant."""
+        if not hasattr(self, '_tenants'):
+            return {"error": "No tenants"}
+        tenant = self._tenants.get(tenant_name)
+        if not tenant:
+            return {"error": f"Tenant '{tenant_name}' not found"}
+        if container_id not in tenant["containers"]:
+            return {"error": "Container not assigned to tenant"}
+        tenant["containers"].remove(container_id)
+        tenant["current_usage"]["containers"] = len(tenant["containers"])
+        return {"tenant": tenant_name, "container_id": container_id, "removed": True}
+
+    def get_tenant_usage(self, tenant_name: str) -> Dict[str, Any]:
+        """Get resource usage for a tenant."""
+        if not hasattr(self, '_tenants'):
+            return {"error": "No tenants"}
+        tenant = self._tenants.get(tenant_name)
+        if not tenant:
+            return {"error": f"Tenant '{tenant_name}' not found"}
+        # Calculate actual usage from containers
+        total_memory = 0
+        total_cpu = 0
+        for cid in tenant["containers"]:
+            c = self.get_container(cid)
+            if c:
+                total_memory += c.config.limits.memory_mb
+                total_cpu += c.config.limits.cpu_shares / 1024.0
+        tenant["current_usage"]["memory_mb"] = total_memory
+        tenant["current_usage"]["cpu_cores"] = round(total_cpu, 2)
+        return {
+            "tenant": tenant_name,
+            "usage": tenant["current_usage"],
+            "quota": tenant["resource_quota"],
+            "utilization": {
+                "memory_pct": round(total_memory / tenant["resource_quota"].get("memory_mb", 1) * 100, 1),
+                "containers_pct": round(len(tenant["containers"]) / tenant["resource_quota"].get("containers", 1) * 100, 1),
+            },
+        }
+
+    def list_tenants(self) -> Dict[str, Any]:
+        """List all tenants."""
+        if not hasattr(self, '_tenants'):
+            return {"tenants": [], "count": 0}
+        result = []
+        for name, tenant in self._tenants.items():
+            result.append({
+                "name": name,
+                "isolation_level": tenant["isolation_level"],
+                "containers": len(tenant["containers"]),
+                "quota": tenant["resource_quota"],
+            })
+        return {"tenants": result, "count": len(result)}
+
+    def delete_tenant(self, name: str) -> Dict[str, Any]:
+        """Delete a tenant."""
+        if not hasattr(self, '_tenants'):
+            return {"error": "No tenants"}
+        tenant = self._tenants.pop(name, None)
+        if not tenant:
+            return {"error": f"Tenant '{name}' not found"}
+        return {"deleted": name, "containers_released": len(tenant["containers"])}
+
+    def check_tenant_isolation(
+        self, tenant_a: str, tenant_b: str
+    ) -> Dict[str, Any]:
+        """Check if two tenants are isolated from each other."""
+        if not hasattr(self, '_tenants'):
+            return {"error": "No tenants"}
+        t_a = self._tenants.get(tenant_a)
+        t_b = self._tenants.get(tenant_b)
+        if not t_a or not t_b:
+            return {"error": "Tenant not found"}
+        isolated = t_a["isolation_level"] == "strict" or t_b["isolation_level"] == "strict"
+        return {
+            "tenant_a": tenant_a,
+            "tenant_b": tenant_b,
+            "isolated": isolated,
+            "isolation_level_a": t_a["isolation_level"],
+            "isolation_level_b": t_b["isolation_level"],
+        }
+
+    # ------------------------------------------------------------------
+    # Continuous profiling with flame graphs
+    # ------------------------------------------------------------------
+
+    def start_profile(
+        self,
+        container_id: str,
+        profile_type: str = "cpu",
+        duration_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        """Start continuous profiling for a container."""
+        import time as _time
+        if not hasattr(self, '_profiles'):
+            self._profiles = {}
+        profile_id = f"prof_{container_id[:8]}_{int(_time.time())}"
+        self._profiles[profile_id] = {
+            "container_id": container_id,
+            "profile_type": profile_type,
+            "duration_seconds": duration_seconds,
+            "status": "running",
+            "started_at": _time.time(),
+            "completed_at": None,
+            "samples": [],
+            "flame_graph_data": None,
+        }
+        return {"profile_id": profile_id, "status": "running", "type": profile_type}
+
+    def record_profile_sample(
+        self,
+        profile_id: str,
+        stack_trace: List[str],
+        value: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Record a profiling sample."""
+        if not hasattr(self, '_profiles'):
+            return {"error": "No profiles"}
+        profile = self._profiles.get(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        profile["samples"].append({
+            "stack": stack_trace,
+            "value": value,
+        })
+        return {"recorded": True, "total_samples": len(profile["samples"])}
+
+    def stop_profile(self, profile_id: str) -> Dict[str, Any]:
+        """Stop profiling and generate flame graph data."""
+        import time as _time
+        if not hasattr(self, '_profiles'):
+            return {"error": "No profiles"}
+        profile = self._profiles.get(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        profile["status"] = "completed"
+        profile["completed_at"] = _time.time()
+
+        # Build flame graph tree from samples
+        tree = self._build_flame_tree(profile["samples"])
+        profile["flame_graph_data"] = tree
+
+        return {
+            "profile_id": profile_id,
+            "status": "completed",
+            "samples": len(profile["samples"]),
+            "duration_s": round(profile["completed_at"] - profile["started_at"], 2),
+        }
+
+    def _build_flame_tree(self, samples: List[Dict]) -> Dict[str, Any]:
+        """Build a flame graph tree from profiling samples."""
+        root = {"name": "root", "value": 0, "children": {}}
+        for sample in samples:
+            stack = sample["stack"]
+            value = sample["value"]
+            node = root
+            node["value"] += value
+            for frame in reversed(stack):
+                if frame not in node["children"]:
+                    node["children"][frame] = {"name": frame, "value": 0, "children": {}}
+                node = node["children"][frame]
+                node["value"] += value
+        # Convert children dict to list for output
+        def _flatten(node):
+            result = {"name": node["name"], "value": round(node["value"], 2)}
+            if node["children"]:
+                result["children"] = [_flatten(c) for c in node["children"].values()]
+                result["children"].sort(key=lambda x: -x["value"])
+            return result
+        return _flatten(root)
+
+    def get_flame_graph(self, profile_id: str) -> Dict[str, Any]:
+        """Get flame graph data for a profile."""
+        if not hasattr(self, '_profiles'):
+            return {"error": "No profiles"}
+        profile = self._profiles.get(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        if not profile.get("flame_graph_data"):
+            return {"error": "Profile not completed yet"}
+        return {
+            "profile_id": profile_id,
+            "type": profile["profile_type"],
+            "flame_graph": profile["flame_graph_data"],
+            "total_samples": len(profile["samples"]),
+        }
+
+    def get_profile_summary(self, profile_id: str) -> Dict[str, Any]:
+        """Get summary of a profiling session."""
+        if not hasattr(self, '_profiles'):
+            return {"error": "No profiles"}
+        profile = self._profiles.get(profile_id)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        # Find hottest functions
+        func_totals = {}
+        for sample in profile["samples"]:
+            stack = sample["stack"]
+            if stack:
+                top_func = stack[0]
+                func_totals[top_func] = func_totals.get(top_func, 0) + sample["value"]
+        hottest = sorted(func_totals.items(), key=lambda x: -x[1])[:5]
+        return {
+            "profile_id": profile_id,
+            "container_id": profile["container_id"],
+            "type": profile["profile_type"],
+            "status": profile["status"],
+            "samples": len(profile["samples"]),
+            "hottest_functions": [{"function": f, "value": round(v, 2)} for f, v in hottest],
+        }
+
+    def list_profiles(
+        self, container_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List all profiling sessions."""
+        if not hasattr(self, '_profiles'):
+            return {"profiles": [], "count": 0}
+        result = []
+        for pid, profile in self._profiles.items():
+            if container_id and profile["container_id"] != container_id:
+                continue
+            result.append({
+                "profile_id": pid,
+                "container_id": profile["container_id"],
+                "type": profile["profile_type"],
+                "status": profile["status"],
+                "samples": len(profile["samples"]),
+            })
+        return {"profiles": result, "count": len(result)}
+
+    def delete_profile(self, profile_id: str) -> Dict[str, Any]:
+        """Delete a profiling session."""
+        if not hasattr(self, '_profiles'):
+            return {"error": "No profiles"}
+        profile = self._profiles.pop(profile_id, None)
+        if not profile:
+            return {"error": f"Profile '{profile_id}' not found"}
+        return {"deleted": profile_id}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

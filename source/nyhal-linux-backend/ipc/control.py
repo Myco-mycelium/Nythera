@@ -1575,6 +1575,60 @@ class ControlService:
             elif op == "delete_auto_rollback":
                 self._delete_auto_rollback(server, sender_path,
                                       msg.message_id, request)
+            elif op == "run_benchmark":
+                self._run_benchmark(server, sender_path,
+                               msg.message_id, request)
+            elif op == "detect_regression":
+                self._detect_regression(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_benchmark_history":
+                self._get_benchmark_history(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "fleet_benchmark_summary":
+                self._fleet_benchmark_summary(server, sender_path,
+                                         msg.message_id)
+            elif op == "create_tenant":
+                self._create_tenant(server, sender_path,
+                              msg.message_id, request)
+            elif op == "assign_container_to_tenant":
+                self._assign_container_to_tenant(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "remove_container_from_tenant":
+                self._remove_container_from_tenant(server, sender_path,
+                                              msg.message_id, request)
+            elif op == "get_tenant_usage":
+                self._get_tenant_usage(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_tenants":
+                self._list_tenants(server, sender_path,
+                             msg.message_id)
+            elif op == "delete_tenant":
+                self._delete_tenant(server, sender_path,
+                               msg.message_id, request)
+            elif op == "check_tenant_isolation":
+                self._check_tenant_isolation(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "start_profile":
+                self._start_profile(server, sender_path,
+                              msg.message_id, request)
+            elif op == "record_profile_sample":
+                self._record_profile_sample(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "stop_profile":
+                self._stop_profile(server, sender_path,
+                             msg.message_id, request)
+            elif op == "get_flame_graph":
+                self._get_flame_graph(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "get_profile_summary":
+                self._get_profile_summary(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "list_profiles":
+                self._list_profiles(server, sender_path,
+                               msg.message_id, request)
+            elif op == "delete_profile":
+                self._delete_profile(server, sender_path,
+                                msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8368,6 +8422,114 @@ class ControlService:
 
     def _delete_auto_rollback(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_auto_rollback(request['slo_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Benchmarking handlers
+    # ------------------------------------------------------------------
+
+    def _run_benchmark(self, server, sender_path, call_id, request):
+        result = self.container_manager.run_benchmark(
+            container_id=request['container_id'],
+            name=request.get('name', 'default'),
+            iterations=int(request.get('iterations', 100)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detect_regression(self, server, sender_path, call_id, request):
+        result = self.container_manager.detect_regression(
+            container_id=request['container_id'],
+            name=request.get('name', 'default'),
+            threshold_pct=float(request.get('threshold_pct', 20)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_benchmark_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_benchmark_history(
+            container_id=request['container_id'],
+            name=request.get('name', 'default'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_benchmark_summary(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_benchmark_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Multi-tenancy handlers
+    # ------------------------------------------------------------------
+
+    def _create_tenant(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_tenant(
+            name=request['name'],
+            resource_quota=request.get('resource_quota'),
+            isolation_level=request.get('isolation_level', 'strict'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _assign_container_to_tenant(self, server, sender_path, call_id, request):
+        result = self.container_manager.assign_container_to_tenant(
+            tenant_name=request['tenant_name'],
+            container_id=request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_container_from_tenant(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_container_from_tenant(
+            tenant_name=request['tenant_name'],
+            container_id=request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_tenant_usage(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_tenant_usage(request['tenant_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_tenants(self, server, sender_path, call_id):
+        result = self.container_manager.list_tenants()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_tenant(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_tenant(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_tenant_isolation(self, server, sender_path, call_id, request):
+        result = self.container_manager.check_tenant_isolation(
+            tenant_a=request['tenant_a'],
+            tenant_b=request['tenant_b'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Continuous profiling handlers
+    # ------------------------------------------------------------------
+
+    def _start_profile(self, server, sender_path, call_id, request):
+        result = self.container_manager.start_profile(
+            container_id=request['container_id'],
+            profile_type=request.get('profile_type', 'cpu'),
+            duration_seconds=int(request.get('duration_seconds', 30)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_profile_sample(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_profile_sample(
+            profile_id=request['profile_id'],
+            stack_trace=request.get('stack_trace', []),
+            value=float(request.get('value', 1.0)))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_profile(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_profile(request['profile_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_flame_graph(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_flame_graph(request['profile_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_profile_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_profile_summary(request['profile_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_profiles(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_profiles(
+            container_id=request.get('container_id'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_profile(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_profile(request['profile_id'])
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
