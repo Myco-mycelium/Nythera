@@ -774,6 +774,15 @@ class ControlService:
             elif op == "anomaly_correlation_report":
                 self._anomaly_correlation_report(
                     server, sender_path, msg.message_id, request)
+            elif op == "resource_heatmap":
+                self._resource_heatmap(
+                    server, sender_path, msg.message_id, request)
+            elif op == "container_pressure_detail":
+                self._container_pressure_detail(
+                    server, sender_path, msg.message_id, request)
+            elif op == "record_pressure_snapshot":
+                self._record_pressure_snapshot(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5408,6 +5417,40 @@ class ControlService:
             time_window_s=float(
                 request.get('time_window_s', 300.0)),
         )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _resource_heatmap(self, server, sender_path: str,
+                          call_id: str,
+                          request: Dict[str, Any]) -> None:
+        result = self.container_manager.generate_resource_heatmap(
+            window_s=float(request.get('window_s', 300.0)),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _container_pressure_detail(self, server, sender_path: str,
+                                  call_id: str,
+                                  request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.get_container_pressure_detail(
+            c, window_s=float(request.get('window_s', 300.0)),
+        )
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _record_pressure_snapshot(self, server, sender_path: str,
+                                 call_id: str,
+                                 request: Dict[str, Any]) -> None:
+        result = self.container_manager.record_pressure_snapshot()
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

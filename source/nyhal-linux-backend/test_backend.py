@@ -26161,6 +26161,117 @@ class TestAnomalyCorrelation(unittest.TestCase):
         self.assertIn('clusters', replies[0])
 
 
+class TestResourceHeatmap(unittest.TestCase):
+    """Tests for resource heat map, pressure detail, and snapshots."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make_running(self, mgr, name, **kwargs):
+        """Create a container and force it to RUNNING state for testing."""
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"], **kwargs))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        return c
+
+    def test_generate_heatmap_empty(self):
+        """Heat map with no running containers."""
+        mgr = self._manager()
+        result = mgr.generate_resource_heatmap()
+        self.assertIsInstance(result, dict)
+        self.assertIn('heatmap', result)
+        self.assertIn('pressure_zones', result)
+        self.assertIn('fleet_pressure_score', result)
+        self.assertEqual(result['total_containers'], 0)
+
+    def test_generate_heatmap_with_container(self):
+        """Heat map includes running containers."""
+        mgr = self._manager()
+        c = self._make_running(mgr, "heat1")
+        result = mgr.generate_resource_heatmap()
+        self.assertIn('heatmap', result)
+        self.assertEqual(len(result['heatmap']), 1)
+        entry = result['heatmap'][0]
+        self.assertEqual(entry['container_id'], c.id)
+        self.assertIn(entry['overall_zone'],
+                      ['critical', 'high', 'medium', 'low', 'idle'])
+        self.assertIn('zones', entry)
+        self.assertIn('memory', entry['zones'])
+        self.assertIn('cpu', entry['zones'])
+
+    def test_heatmap_pressure_zones_count(self):
+        """Pressure zones are counted correctly."""
+        mgr = self._manager()
+        self._make_running(mgr, "heat2")
+        result = mgr.generate_resource_heatmap()
+        zones = result['pressure_zones']
+        self.assertIsInstance(zones, dict)
+        self.assertEqual(sum(zones.values()), 1)
+
+    def test_heatmap_pressure_by_resource(self):
+        """Pressure by resource dimension is tracked."""
+        mgr = self._manager()
+        self._make_running(mgr, "heat3")
+        result = mgr.generate_resource_heatmap()
+        by_res = result['pressure_by_resource']
+        self.assertIn('memory', by_res)
+        self.assertIn('cpu', by_res)
+        self.assertIn('pids', by_res)
+
+    def test_heatmap_skips_non_running(self):
+        """Non-running containers are excluded from heat map."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="heat4", command=["echo"]))
+        # Don't start it
+        result = mgr.generate_resource_heatmap()
+        ids = [e['container_id'] for e in result['heatmap']]
+        self.assertNotIn(c.id, ids)
+
+    def test_container_pressure_detail(self):
+        """Pressure detail returns ratios and trends."""
+        mgr = self._manager()
+        c = self._make_running(mgr, "pres1")
+        detail = mgr.get_container_pressure_detail(c)
+        self.assertIn('ratios', detail)
+        self.assertIn('memory', detail['ratios'])
+        self.assertIn('cpu', detail['ratios'])
+        self.assertIn('trends', detail)
+        self.assertIn('warnings', detail)
+        self.assertIsInstance(detail['warnings'], list)
+
+    def test_record_pressure_snapshot(self):
+        """record_pressure_snapshot records data for running containers."""
+        mgr = self._manager()
+        self._make_running(mgr, "snap1")
+        result = mgr.record_pressure_snapshot()
+        self.assertEqual(result['recorded'], 1)
+        self.assertIn('timestamp', result)
+
+    def test_record_pressure_snapshot_stores_history(self):
+        """Snapshot data is stored in resource history."""
+        mgr = self._manager()
+        c = self._make_running(mgr, "snap2")
+        mgr.record_pressure_snapshot()
+        self.assertIn(c.id, mgr._resource_history)
+        self.assertGreater(len(mgr._resource_history[c.id]), 0)
+        point = mgr._resource_history[c.id][-1]
+        self.assertIn('mem_ratio', point)
+        self.assertIn('cpu_ratio', point)
+        self.assertIn('pid_ratio', point)
+
+    def test_heatmap_consolidation_candidates(self):
+        """Idle containers appear as consolidation candidates."""
+        mgr = self._manager()
+        c1 = self._make_running(mgr, "cons1")
+        c2 = self._make_running(mgr, "cons2")
+        result = mgr.generate_resource_heatmap()
+        candidates = result['consolidation_candidates']
+        self.assertIsInstance(candidates, list)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -26266,6 +26377,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyPrediction))
     suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyCorrelation))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceHeatmap))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

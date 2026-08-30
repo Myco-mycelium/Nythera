@@ -1832,6 +1832,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "anomaly_correlation_report",
             "time_window_s": getattr(args, 'time_window_s', 300.0),
         }
+    if command == "resource-heatmap":
+        return {
+            "service": "control",
+            "op": "resource_heatmap",
+            "window_s": getattr(args, 'window_s', 300.0),
+        }
+    if command == "container-pressure-detail":
+        return {
+            "service": "control",
+            "op": "container_pressure_detail",
+            "container_id": args.container_id,
+            "window_s": getattr(args, 'window_s', 300.0),
+        }
+    if command == "record-pressure-snapshot":
+        return {
+            "service": "control",
+            "op": "record_pressure_snapshot",
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4472,6 +4490,45 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
                 f"    {c['container_id']}: "
                 f"{c['cluster_count']} clusters")
         return "\n".join(lines)
+    if command == "resource-heatmap":
+        lines = [
+            f"Resource heat map (fleet pressure: {resp.get('fleet_pressure_score', 0):.2f}):",
+            f"  total containers: {resp.get('total_containers', 0)}",
+        ]
+        zones = resp.get('pressure_zones', {})
+        for zone, count in zones.items():
+            if count > 0:
+                lines.append(f"  {zone}: {count}")
+        candidates = resp.get('consolidation_candidates', [])
+        if candidates:
+            lines.append(f"  consolidation candidates: {len(candidates)}")
+            for cand in candidates[:3]:
+                names = ', '.join(c['name'] for c in cand['containers'])
+                lines.append(f"    - {names}: {cand['reason']}")
+        return "\n".join(lines)
+    if command == "container-pressure-detail":
+        lines = [
+            f"Pressure detail for {resp.get('container_name', '?')} ({resp.get('container_id', '?')[:12]}):",
+        ]
+        ratios = resp.get('ratios', {})
+        trends = resp.get('trends', {})
+        for resource, ratio in ratios.items():
+            trend = trends.get(resource, 'stable')
+            lines.append(f"  {resource}: {ratio:.2%} ({trend})")
+        warnings = resp.get('warnings', [])
+        if warnings:
+            lines.append("  warnings:")
+            for w in warnings:
+                lines.append(f"    - {w}")
+        else:
+            lines.append("  warnings: none")
+        lines.append(f"  history points: {resp.get('history_points', 0)}")
+        return "\n".join(lines)
+    if command == "record-pressure-snapshot":
+        return (
+            f"Recorded pressure snapshot for "
+            f"{resp.get('recorded', 0)} containers at "
+            f"{resp.get('timestamp', 0):.0f}")
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5884,6 +5941,23 @@ def build_parser() -> argparse.ArgumentParser:
     acr.add_argument("--time-window", type=float, default=300.0,
                      help="Time window in seconds (default: 300)")
     acr.set_defaults(command="anomaly-correlation-report")
+
+    rhm = sub.add_parser("resource-heatmap",
+                        help="Generate fleet-wide resource heat map")
+    rhm.add_argument("--window", type=float, default=300.0,
+                     help="Time window in seconds (default: 300)")
+    rhm.set_defaults(command="resource-heatmap")
+
+    cpd = sub.add_parser("container-pressure-detail",
+                        help="Get detailed pressure analysis for a container")
+    cpd.add_argument("container_id", help="Container ID")
+    cpd.add_argument("--window", type=float, default=300.0,
+                     help="Time window in seconds (default: 300)")
+    cpd.set_defaults(command="container-pressure-detail")
+
+    rps = sub.add_parser("record-pressure-snapshot",
+                        help="Record pressure snapshot for all containers")
+    rps.set_defaults(command="record-pressure-snapshot")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

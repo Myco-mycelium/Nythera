@@ -10886,6 +10886,303 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource heat map (fleet-wide pressure detection + consolidation)
+    # ------------------------------------------------------------------
+
+    def generate_resource_heatmap(
+        self,
+        window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Generate a fleet-wide resource heat map.
+
+        Classifies each running container into pressure zones (critical /
+        high / medium / low / idle) per resource dimension and suggests
+        consolidation opportunities.
+
+        Returns:
+            { heatmap: [...], pressure_zones: {...},
+              consolidation_candidates: [...], fleet_pressure_score: float }
+        """
+        import time as _time
+        now = _time.time()
+        containers = list(self.containers.values())
+
+        # Classify each container
+        heatmap = []
+        zone_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "idle": 0}
+        zone_by_resource: Dict[str, Dict[str, int]] = {
+            "memory": {"critical": 0, "high": 0, "medium": 0, "low": 0, "idle": 0},
+            "cpu": {"critical": 0, "high": 0, "medium": 0, "low": 0, "idle": 0},
+            "pids": {"critical": 0, "high": 0, "medium": 0, "low": 0, "idle": 0},
+        }
+
+        for c in containers:
+            if c.state != ContainerState.RUNNING:
+                continue
+
+            stats = self.container_stats(c)
+            limits = c.config.limits
+
+            # Memory pressure ratio (0-1+)
+            mem_ratio = 0.0
+            mem_limit_bytes = limits.memory_mb * 1024 * 1024
+            if mem_limit_bytes > 0:
+                mem_ratio = stats.get("memory_bytes", 0) / mem_limit_bytes
+            elif limits.memory_high and limits.memory_high > 0:
+                mem_ratio = stats.get("memory_bytes", 0) / limits.memory_high
+
+            # CPU pressure ratio (from cumulative cpu_usage_usec + uptime)
+            cpu_ratio = 0.0
+            uptime_s = stats.get("uptime_s", 0) or 0.0
+            cpu_usec = stats.get("cpu_usage_usec", 0)
+            if uptime_s > 0 and cpu_usec > 0:
+                cpu_pct = min((cpu_usec / 10000.0) / uptime_s, 100.0)
+                if limits.cpu_quota_us and limits.cpu_period_us > 0:
+                    cpu_cores = limits.cpu_quota_us / limits.cpu_period_us
+                    if cpu_cores > 0:
+                        cpu_ratio = cpu_pct / (cpu_cores * 100.0)
+
+            # PID pressure ratio
+            pid_ratio = 0.0
+            if limits.pid_limit and limits.pid_limit > 0:
+                pid_cur = stats.get("pids_current", 0)
+                pid_ratio = pid_cur / limits.pid_limit
+
+            # Determine per-resource zone
+            def _zone(ratio: float) -> str:
+                if ratio >= 0.95:
+                    return "critical"
+                if ratio >= 0.75:
+                    return "high"
+                if ratio >= 0.40:
+                    return "medium"
+                if ratio >= 0.10:
+                    return "low"
+                return "idle"
+
+            mem_zone = _zone(mem_ratio)
+            cpu_zone = _zone(cpu_ratio)
+            pid_zone = _zone(pid_ratio)
+
+            # Overall zone = worst of the three
+            zone_priority = {"critical": 4, "high": 3, "medium": 2, "low": 1, "idle": 0}
+            overall_zone = max(
+                [mem_zone, cpu_zone, pid_zone],
+                key=lambda z: zone_priority[z],
+            )
+
+            zone_counts[overall_zone] += 1
+            zone_by_resource["memory"][mem_zone] += 1
+            zone_by_resource["cpu"][cpu_zone] += 1
+            zone_by_resource["pids"][pid_zone] += 1
+
+            heatmap.append({
+                "container_id": c.id,
+                "container_name": c.config.name,
+                "overall_zone": overall_zone,
+                "zones": {
+                    "memory": {"zone": mem_zone, "ratio": round(mem_ratio, 4)},
+                    "cpu": {"zone": cpu_zone, "ratio": round(cpu_ratio, 4)},
+                    "pids": {"zone": pid_zone, "ratio": round(pid_ratio, 4)},
+                },
+                "usage_snapshot": {
+                    "memory_bytes": stats.get("memory_bytes", 0),
+                    "cpu_percent": stats.get("cpu_percent", 0.0),
+                    "pids_current": stats.get("pids_current", 0),
+                },
+            })
+
+        # Fleet pressure score: weighted average of ratios across all running
+        total_running = sum(1 for c in containers if c.state == ContainerState.RUNNING)
+        fleet_pressure = 0.0
+        if total_running > 0:
+            ratios = []
+            for h in heatmap:
+                for r in h["zones"].values():
+                    ratios.append(r["ratio"])
+            fleet_pressure = sum(ratios) / len(ratios) if ratios else 0.0
+
+        # Consolidation candidates: pairs of containers where both are
+        # idle/low and the combined resource usage is still safe
+        consolidation_candidates = []
+        idle_or_low = [h for h in heatmap if h["overall_zone"] in ("idle", "low")]
+        for i, a in enumerate(idle_or_low):
+            for b in idle_or_low[i + 1:]:
+                a_mem = a["usage_snapshot"]["memory_bytes"]
+                b_mem = b["usage_snapshot"]["memory_bytes"]
+                # Combined memory stays under typical 1GB limit
+                if a_mem + b_mem < 1024 * 1024 * 1024:
+                    a_cpu = a["usage_snapshot"]["cpu_percent"]
+                    b_cpu = b["usage_snapshot"]["cpu_percent"]
+                    if a_cpu + b_cpu < 80.0:
+                        consolidation_candidates.append({
+                            "containers": [
+                                {"id": a["container_id"], "name": a["container_name"]},
+                                {"id": b["container_id"], "name": b["container_name"]},
+                            ],
+                            "reason": "Combined resource usage is within safe limits",
+                            "estimated_savings": {
+                                "memory_bytes": a_mem + b_mem,
+                                "cpu_percent": round(a_cpu + b_cpu, 1),
+                            },
+                        })
+
+        return {
+            "heatmap": heatmap,
+            "pressure_zones": zone_counts,
+            "pressure_by_resource": zone_by_resource,
+            "consolidation_candidates": consolidation_candidates,
+            "fleet_pressure_score": round(fleet_pressure, 4),
+            "total_containers": total_running,
+        }
+
+    def get_container_pressure_detail(
+        self,
+        container: Container,
+        window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Get detailed pressure analysis for a single container.
+
+        Includes current ratios, historical trend, and specific warnings.
+        """
+        import time as _time
+        now = _time.time()
+        stats = self.container_stats(container)
+        limits = container.config.limits
+
+        # Current ratios
+        mem_ratio = 0.0
+        mem_limit_bytes = limits.memory_mb * 1024 * 1024
+        if mem_limit_bytes > 0:
+            mem_ratio = stats.get("memory_bytes", 0) / mem_limit_bytes
+        elif limits.memory_high and limits.memory_high > 0:
+            mem_ratio = stats.get("memory_bytes", 0) / limits.memory_high
+
+        cpu_ratio = 0.0
+        uptime_s = stats.get("uptime_s", 0) or 0.0
+        cpu_usec = stats.get("cpu_usage_usec", 0)
+        if uptime_s > 0 and cpu_usec > 0:
+            cpu_pct = min((cpu_usec / 10000.0) / uptime_s, 100.0)
+            if limits.cpu_quota_us and limits.cpu_period_us > 0:
+                cpu_cores = limits.cpu_quota_us / limits.cpu_period_us
+                if cpu_cores > 0:
+                    cpu_ratio = cpu_pct / (cpu_cores * 100.0)
+
+        pid_ratio = 0.0
+        if limits.pid_limit and limits.pid_limit > 0:
+            pid_ratio = stats.get("pids_current", 0) / limits.pid_limit
+
+        # History-based trend
+        self._init_resource_history(container)
+        history = self._resource_history.get(container.id, [])
+        recent = [e for e in history if (now - e.get("ts", now)) <= window_s]
+
+        mem_trend = "stable"
+        cpu_trend = "stable"
+        if len(recent) >= 3:
+            mem_vals = [e.get("mem_ratio", 0) for e in recent[-10:]]
+            cpu_vals = [e.get("cpu_ratio", 0) for e in recent[-10:]]
+            if len(mem_vals) >= 2:
+                mem_delta = mem_vals[-1] - mem_vals[0]
+                if mem_delta > 0.05:
+                    mem_trend = "increasing"
+                elif mem_delta < -0.05:
+                    mem_trend = "decreasing"
+            if len(cpu_vals) >= 2:
+                cpu_delta = cpu_vals[-1] - cpu_vals[0]
+                if cpu_delta > 0.05:
+                    cpu_trend = "increasing"
+                elif cpu_delta < -0.05:
+                    cpu_trend = "decreasing"
+
+        # Generate warnings
+        warnings = []
+        if mem_ratio >= 0.95:
+            warnings.append("Memory usage at critical level - OOM risk")
+        elif mem_ratio >= 0.75:
+            warnings.append("Memory usage high - consider increasing limit")
+        if cpu_ratio >= 0.95:
+            warnings.append("CPU usage at critical level - throttling likely")
+        elif cpu_ratio >= 0.75:
+            warnings.append("CPU usage high - check for CPU-intensive workloads")
+        if pid_ratio >= 0.95:
+            warnings.append("PID usage at critical level - fork bomb risk")
+        elif pid_ratio >= 0.75:
+            warnings.append("PID usage high - check for process leaks")
+        if mem_trend == "increasing" and mem_ratio > 0.50:
+            warnings.append("Memory usage trending upward - may breach limit soon")
+        if cpu_trend == "increasing" and cpu_ratio > 0.50:
+            warnings.append("CPU usage trending upward - may need more capacity")
+
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "ratios": {
+                "memory": round(mem_ratio, 4),
+                "cpu": round(cpu_ratio, 4),
+                "pids": round(pid_ratio, 4),
+            },
+            "trends": {
+                "memory": mem_trend,
+                "cpu": cpu_trend,
+            },
+            "warnings": warnings,
+            "history_points": len(recent),
+        }
+
+    def record_pressure_snapshot(self) -> Dict[str, Any]:
+        """Record a pressure snapshot for all running containers.
+
+        Stores current ratios for trend analysis.
+        """
+        import time as _time
+        now = _time.time()
+        containers = list(self.containers.values())
+        recorded = 0
+
+        for c in containers:
+            if c.state != ContainerState.RUNNING:
+                continue
+
+            stats = self.container_stats(c)
+            limits = c.config.limits
+
+            mem_ratio = 0.0
+            mem_limit_bytes = limits.memory_mb * 1024 * 1024
+            if mem_limit_bytes > 0:
+                mem_ratio = stats.get("memory_bytes", 0) / mem_limit_bytes
+
+            cpu_ratio = 0.0
+            uptime_s = stats.get("uptime_s", 0) or 0.0
+            cpu_usec = stats.get("cpu_usage_usec", 0)
+            if uptime_s > 0 and cpu_usec > 0:
+                cpu_pct = min((cpu_usec / 10000.0) / uptime_s, 100.0)
+                if limits.cpu_quota_us and limits.cpu_period_us > 0:
+                    cpu_cores = limits.cpu_quota_us / limits.cpu_period_us
+                    if cpu_cores > 0:
+                        cpu_ratio = cpu_pct / (cpu_cores * 100.0)
+
+            self._init_resource_history(c)
+            self._resource_history[c.id].append({
+                "ts": now,
+                "mem_ratio": round(mem_ratio, 4),
+                "cpu_ratio": round(cpu_ratio, 4),
+                "pid_ratio": round(
+                    stats.get("pids_current", 0) / limits.pid_limit
+                    if limits.pid_limit and limits.pid_limit > 0 else 0.0, 4
+                ),
+            })
+            # Keep last 3600 points (1h at 1/s)
+            if len(self._resource_history[c.id]) > 3600:
+                self._resource_history[c.id] = self._resource_history[c.id][-3600:]
+            recorded += 1
+
+        return {
+            "recorded": recorded,
+            "timestamp": now,
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 
