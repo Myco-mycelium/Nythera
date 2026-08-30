@@ -4929,6 +4929,239 @@ class TestBlueGreenDeployment(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestCanaryDeployment(unittest.TestCase):
+    """Tests for canary deployments with auto promotion/rollback."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_create_canary(self):
+        """create_canary_deployment creates deployment."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn1")
+        c2 = self._make(mgr, "cn2")
+        r = mgr.create_canary_deployment("web", c1.id, c2.id, traffic_percentage=20)
+        self.assertEqual(r["traffic_percentage"], 20)
+
+    def test_record_metric(self):
+        """record_canary_metric tracks requests."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn3")
+        c2 = self._make(mgr, "cn4")
+        mgr.create_canary_deployment("svc", c1.id, c2.id)
+        mgr.record_canary_metric("svc", "canary", latency_ms=10.0)
+        mgr.record_canary_metric("svc", "canary", latency_ms=15.0, is_error=True)
+        status = mgr.get_canary_status("svc")
+        self.assertEqual(status["canary_requests"], 2)
+        self.assertEqual(status["canary_errors"], 1)
+
+    def test_evaluate_health(self):
+        """evaluate_canary_health returns action."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn5")
+        c2 = self._make(mgr, "cn6")
+        mgr.create_canary_deployment("ev", c1.id, c2.id)
+        r = mgr.evaluate_canary_health("ev")
+        self.assertIn("action", r)
+        self.assertEqual(r["action"], "continue")  # Not enough samples
+
+    def test_promote(self):
+        """promote_canary sets 100% traffic."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn7")
+        c2 = self._make(mgr, "cn8")
+        mgr.create_canary_deployment("pr", c1.id, c2.id)
+        r = mgr.promote_canary("pr")
+        self.assertEqual(r["phase"], "promoted")
+        self.assertEqual(r["traffic_percentage"], 100.0)
+
+    def test_rollback(self):
+        """rollback_canary sets 0% traffic."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn9")
+        c2 = self._make(mgr, "cn10")
+        mgr.create_canary_deployment("rb", c1.id, c2.id)
+        r = mgr.rollback_canary("rb")
+        self.assertEqual(r["phase"], "rolled_back")
+        self.assertEqual(r["traffic_percentage"], 0.0)
+
+    def test_list(self):
+        """list_canary_deployments returns all."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cn11")
+        c2 = self._make(mgr, "cn12")
+        mgr.create_canary_deployment("d1", c1.id, c2.id)
+        r = mgr.list_canary_deployments()
+        self.assertEqual(r["count"], 1)
+
+    def test_format_human(self):
+        """format_human handles get-canary-status."""
+        from nyrqisctl import format_human
+        text = format_human("get-canary-status", {"name": "web", "phase": "canary", "traffic_percentage": 10})
+        self.assertIn("canary", text)
+        self.assertIn("10", text)
+
+
+class TestServiceDiscovery(unittest.TestCase):
+    """Tests for service discovery registry."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_register_service(self):
+        """register_service adds instance."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd1")
+        r = mgr.register_service("api", c.id, port=8080)
+        self.assertEqual(r["port"], 8080)
+
+    def test_discover_service(self):
+        """discover_service returns healthy instances."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd2")
+        mgr.register_service("web", c.id, tags=["v1"])
+        r = mgr.discover_service("web")
+        self.assertEqual(r["count"], 1)
+
+    def test_discover_with_tag(self):
+        """discover_service filters by tag."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "sd3")
+        c2 = self._make(mgr, "sd4")
+        mgr.register_service("svc", c1.id, tags=["v1"])
+        mgr.register_service("svc", c2.id, tags=["v2"])
+        r = mgr.discover_service("svc", tag="v1")
+        self.assertEqual(r["count"], 1)
+
+    def test_deregister(self):
+        """deregister_service removes instance."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd5")
+        mgr.register_service("rm", c.id)
+        r = mgr.deregister_service("rm", c.id)
+        self.assertEqual(r["removed"], 1)
+
+    def test_heartbeat(self):
+        """service_heartbeat updates timestamp."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd6")
+        mgr.register_service("hb", c.id)
+        r = mgr.service_heartbeat("hb", c.id)
+        self.assertTrue(r["heartbeat"])
+
+    def test_inject_dependency(self):
+        """inject_dependency sets env var."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd7")
+        mgr.register_service("db", c.id, port=5432)
+        r = mgr.inject_dependency(c, "db", "DATABASE_URL")
+        self.assertTrue(r["injected"])
+        self.assertIn("5432", r["value"])
+
+    def test_list_services(self):
+        """list_services returns all."""
+        mgr = self._manager()
+        c = self._make(mgr, "sd8")
+        mgr.register_service("a", c.id)
+        mgr.register_service("b", c.id)
+        r = mgr.list_services()
+        self.assertEqual(r["count"], 2)
+
+    def test_format_human_list(self):
+        """format_human handles list-services."""
+        from nyrqisctl import format_human
+        resp = {"services": [{"name": "api", "healthy_instances": 3, "total_instances": 3}]}
+        text = format_human("list-services", resp)
+        self.assertIn("api", text)
+        self.assertIn("3/3", text)
+
+
+class TestDistributedTracing(unittest.TestCase):
+    """Tests for distributed tracing with span propagation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_trace(self):
+        """create_trace returns trace_id."""
+        mgr = self._manager()
+        r = mgr.create_trace("request")
+        self.assertIn("trace_id", r)
+
+    def test_start_and_finish_span(self):
+        """start_span and finish_span track duration."""
+        mgr = self._manager()
+        t = mgr.create_trace("test")
+        s = mgr.start_span(t["trace_id"], "http-get")
+        r = mgr.finish_span(t["trace_id"], s["span_id"])
+        self.assertIn("duration_ms", r)
+
+    def test_span_attributes(self):
+        """add_span_attribute stores attributes."""
+        mgr = self._manager()
+        t = mgr.create_trace("attr")
+        s = mgr.start_span(t["trace_id"], "db-query")
+        mgr.add_span_attribute(t["trace_id"], s["span_id"], "sql", "SELECT 1")
+        trace = mgr.get_trace(t["trace_id"])
+        self.assertEqual(trace["spans"][0]["attributes"]["sql"], "SELECT 1")
+
+    def test_parent_child(self):
+        """Spans can have parents."""
+        mgr = self._manager()
+        t = mgr.create_trace("tree")
+        parent = mgr.start_span(t["trace_id"], "root")
+        child = mgr.start_span(t["trace_id"], "child", parent_span_id=parent["span_id"])
+        mgr.finish_span(t["trace_id"], child["span_id"])
+        mgr.finish_span(t["trace_id"], parent["span_id"])
+        trace = mgr.get_trace(t["trace_id"])
+        self.assertEqual(trace["span_count"], 2)
+
+    def test_finish_trace(self):
+        """finish_trace records total duration."""
+        mgr = self._manager()
+        t = mgr.create_trace("done")
+        mgr.start_span(t["trace_id"], "op1")
+        r = mgr.finish_trace(t["trace_id"])
+        self.assertIn("duration_ms", r)
+        self.assertEqual(r["span_count"], 1)
+
+    def test_trace_summary(self):
+        """get_trace_summary returns overview."""
+        mgr = self._manager()
+        t = mgr.create_trace("sum")
+        mgr.start_span(t["trace_id"], "op1")
+        mgr.finish_trace(t["trace_id"])
+        r = mgr.get_trace_summary(t["trace_id"])
+        self.assertEqual(r["span_count"], 1)
+        self.assertEqual(r["error_spans"], 0)
+
+    def test_list_traces(self):
+        """list_traces returns recent."""
+        mgr = self._manager()
+        mgr.create_trace("t1")
+        mgr.create_trace("t2")
+        r = mgr.list_traces()
+        self.assertEqual(r["count"], 2)
+
+    def test_format_human_trace(self):
+        """format_human handles get-trace-summary."""
+        from nyrqisctl import format_human
+        text = format_human("get-trace-summary", {"trace_id": "abc123def456", "span_count": 5, "duration_ms": 123.4, "error_spans": 0})
+        self.assertIn("5", text)
+        self.assertIn("123.4", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -30017,6 +30250,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestRateLimiting))
     suite.addTests(loader.loadTestsFromTestCase(TestFeatureFlags))
     suite.addTests(loader.loadTestsFromTestCase(TestBlueGreenDeployment))
+    suite.addTests(loader.loadTestsFromTestCase(TestCanaryDeployment))
+    suite.addTests(loader.loadTestsFromTestCase(TestServiceDiscovery))
+    suite.addTests(loader.loadTestsFromTestCase(TestDistributedTracing))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

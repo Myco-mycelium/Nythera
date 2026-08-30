@@ -21627,6 +21627,508 @@ class ContainerManager:
             return {"error": f"Deployment '{name}' not found"}
         return {"deleted": name}
 
+    # ------------------------------------------------------------------
+    # Canary deployment with auto promotion and rollback
+    # ------------------------------------------------------------------
+
+    def create_canary_deployment(
+        self,
+        name: str,
+        stable_container_id: str,
+        canary_container_id: str,
+        traffic_percentage: float = 10.0,
+        error_threshold: float = 5.0,
+        latency_threshold_ms: float = 200.0,
+    ) -> Dict[str, Any]:
+        """Create a canary deployment.
+
+        Args:
+            name: Deployment name.
+            stable_container_id: The stable (production) container.
+            canary_container_id: The canary container.
+            traffic_percentage: Initial traffic to canary (0-100).
+            error_threshold: Error rate % to trigger rollback.
+            latency_threshold_ms: Latency to trigger rollback.
+        """
+        import time as _time
+        if not hasattr(self, '_canary'):
+            self._canary = {}
+        deployment = {
+            "name": name,
+            "stable_id": stable_container_id,
+            "canary_id": canary_container_id,
+            "traffic_percentage": traffic_percentage,
+            "status": "active",
+            "phase": "canary",
+            "error_threshold": error_threshold,
+            "latency_threshold_ms": latency_threshold_ms,
+            "canary_requests": 0,
+            "canary_errors": 0,
+            "canary_latency_sum": 0.0,
+            "stable_requests": 0,
+            "stable_errors": 0,
+            "stable_latency_sum": 0.0,
+            "created_at": _time.time(),
+            "promoted_at": None,
+            "rolled_back_at": None,
+            "history": [],
+        }
+        self._canary[name] = deployment
+        return {
+            "name": name,
+            "stable": stable_container_id,
+            "canary": canary_container_id,
+            "traffic_percentage": traffic_percentage,
+        }
+
+    def record_canary_metric(
+        self,
+        deployment_name: str,
+        slot: str,
+        latency_ms: float = 0.0,
+        is_error: bool = False,
+    ) -> Dict[str, Any]:
+        """Record a request metric for canary or stable slot."""
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        if slot == "canary":
+            dep["canary_requests"] += 1
+            dep["canary_latency_sum"] += latency_ms
+            if is_error:
+                dep["canary_errors"] += 1
+        else:
+            dep["stable_requests"] += 1
+            dep["stable_latency_sum"] += latency_ms
+            if is_error:
+                dep["stable_errors"] += 1
+        return {"recorded": True, "slot": slot}
+
+    def evaluate_canary_health(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Evaluate canary health and decide on promotion/rollback."""
+        import time as _time
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+
+        # Calculate canary metrics
+        canary_reqs = dep["canary_requests"]
+        canary_errors = dep["canary_errors"]
+        canary_latency = dep["canary_latency_sum"] / canary_reqs if canary_reqs > 0 else 0
+        canary_error_rate = (canary_errors / canary_reqs * 100) if canary_reqs > 0 else 0
+
+        # Calculate stable metrics
+        stable_reqs = dep["stable_requests"]
+        stable_latency = dep["stable_latency_sum"] / stable_reqs if stable_reqs > 0 else 0
+
+        action = "continue"  # continue canary, promote, or rollback
+        if canary_reqs >= 10:  # Need minimum samples
+            if canary_error_rate > dep["error_threshold"]:
+                action = "rollback"
+            elif canary_latency > dep["latency_threshold_ms"]:
+                action = "rollback"
+            elif canary_error_rate < dep["error_threshold"] / 2 and canary_latency <= stable_latency * 1.1:
+                action = "promote"
+
+        return {
+            "name": deployment_name,
+            "status": dep["status"],
+            "canary_error_rate": round(canary_error_rate, 2),
+            "canary_avg_latency_ms": round(canary_latency, 2),
+            "stable_avg_latency_ms": round(stable_latency, 2),
+            "canary_requests": canary_reqs,
+            "action": action,
+        }
+
+    def promote_canary(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Promote canary to 100% traffic."""
+        import time as _time
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        dep["traffic_percentage"] = 100.0
+        dep["phase"] = "promoted"
+        dep["promoted_at"] = _time.time()
+        dep["history"].append({"action": "promote", "time": _time.time()})
+        return {
+            "name": deployment_name,
+            "phase": "promoted",
+            "traffic_percentage": 100.0,
+        }
+
+    def rollback_canary(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Rollback canary to 0% traffic."""
+        import time as _time
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        dep["traffic_percentage"] = 0.0
+        dep["phase"] = "rolled_back"
+        dep["rolled_back_at"] = _time.time()
+        dep["history"].append({"action": "rollback", "time": _time.time()})
+        return {
+            "name": deployment_name,
+            "phase": "rolled_back",
+            "traffic_percentage": 0.0,
+        }
+
+    def get_canary_status(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Get canary deployment status."""
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        return {
+            "name": dep["name"],
+            "stable_id": dep["stable_id"],
+            "canary_id": dep["canary_id"],
+            "traffic_percentage": dep["traffic_percentage"],
+            "phase": dep["phase"],
+            "canary_requests": dep["canary_requests"],
+            "canary_errors": dep["canary_errors"],
+        }
+
+    def list_canary_deployments(self) -> Dict[str, Any]:
+        """List all canary deployments."""
+        if not hasattr(self, '_canary'):
+            return {"deployments": [], "count": 0}
+        result = []
+        for name, dep in self._canary.items():
+            result.append({
+                "name": name,
+                "phase": dep["phase"],
+                "traffic_percentage": dep["traffic_percentage"],
+            })
+        return {"deployments": result, "count": len(result)}
+
+    def delete_canary_deployment(self, name: str) -> Dict[str, Any]:
+        """Delete a canary deployment."""
+        if not hasattr(self, '_canary'):
+            return {"error": "No canary deployments"}
+        dep = self._canary.pop(name, None)
+        if not dep:
+            return {"error": f"Deployment '{name}' not found"}
+        return {"deleted": name}
+
+    # ------------------------------------------------------------------
+    # Service discovery registry with dependency injection
+    # ------------------------------------------------------------------
+
+    def register_service(
+        self,
+        name: str,
+        container_id: str,
+        port: int = 80,
+        health_endpoint: str = "/health",
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register a service in the discovery registry."""
+        import time as _time
+        if not hasattr(self, '_service_registry'):
+            self._service_registry = {}
+        if name not in self._service_registry:
+            self._service_registry[name] = []
+        instance = {
+            "container_id": container_id,
+            "port": port,
+            "health_endpoint": health_endpoint,
+            "tags": tags or [],
+            "metadata": metadata or {},
+            "status": "healthy",
+            "registered_at": _time.time(),
+            "last_heartbeat": _time.time(),
+        }
+        self._service_registry[name].append(instance)
+        return {
+            "service": name,
+            "container_id": container_id,
+            "port": port,
+        }
+
+    def deregister_service(
+        self, name: str, container_id: str
+    ) -> Dict[str, Any]:
+        """Remove a service instance from the registry."""
+        if not hasattr(self, '_service_registry'):
+            return {"error": "No service registry"}
+        instances = self._service_registry.get(name, [])
+        before = len(instances)
+        self._service_registry[name] = [
+            i for i in instances if i["container_id"] != container_id
+        ]
+        removed = before - len(self._service_registry[name])
+        return {"service": name, "removed": removed}
+
+    def discover_service(
+        self, name: str, tag: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Discover healthy instances of a service."""
+        if not hasattr(self, '_service_registry'):
+            return {"instances": [], "count": 0}
+        instances = self._service_registry.get(name, [])
+        healthy = [
+            i for i in instances
+            if i["status"] == "healthy"
+            and (tag is None or tag in i["tags"])
+        ]
+        return {
+            "service": name,
+            "instances": healthy,
+            "count": len(healthy),
+        }
+
+    def service_heartbeat(
+        self, name: str, container_id: str
+    ) -> Dict[str, Any]:
+        """Update heartbeat for a service instance."""
+        import time as _time
+        if not hasattr(self, '_service_registry'):
+            return {"error": "No service registry"}
+        for i in self._service_registry.get(name, []):
+            if i["container_id"] == container_id:
+                i["last_heartbeat"] = _time.time()
+                i["status"] = "healthy"
+                return {"service": name, "heartbeat": True}
+        return {"error": "Instance not found"}
+
+    def get_service_instances(
+        self, name: str
+    ) -> Dict[str, Any]:
+        """Get all instances of a service."""
+        if not hasattr(self, '_service_registry'):
+            return {"instances": [], "count": 0}
+        instances = self._service_registry.get(name, [])
+        result = []
+        for i in instances:
+            result.append({
+                "container_id": i["container_id"],
+                "port": i["port"],
+                "status": i["status"],
+                "tags": i["tags"],
+            })
+        return {"service": name, "instances": result, "count": len(result)}
+
+    def inject_dependency(
+        self,
+        container: Container,
+        service_name: str,
+        env_var: str,
+        required: bool = True,
+    ) -> Dict[str, Any]:
+        """Inject a service dependency as an environment variable."""
+        discovered = self.discover_service(service_name)
+        if discovered["count"] == 0:
+            if required:
+                return {"error": f"No healthy instances of '{service_name}'"}
+            container.config.environment[env_var] = ""
+            return {"service": service_name, "injected": False, "reason": "no_instances"}
+        # Pick the first healthy instance
+        instance = discovered["instances"][0]
+        connection_string = f"127.0.0.1:{instance['port']}"
+        container.config.environment[env_var] = connection_string
+        return {
+            "service": service_name,
+            "injected": True,
+            "env_var": env_var,
+            "value": connection_string,
+        }
+
+    def list_services(self) -> Dict[str, Any]:
+        """List all registered services."""
+        if not hasattr(self, '_service_registry'):
+            return {"services": [], "count": 0}
+        services = []
+        for name, instances in self._service_registry.items():
+            healthy = sum(1 for i in instances if i["status"] == "healthy")
+            services.append({
+                "name": name,
+                "total_instances": len(instances),
+                "healthy_instances": healthy,
+            })
+        return {"services": services, "count": len(services)}
+
+    # ------------------------------------------------------------------
+    # Distributed tracing with span propagation
+    # ------------------------------------------------------------------
+
+    def create_trace(
+        self,
+        name: str,
+        container_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a new distributed trace."""
+        import hashlib
+        import time as _time
+        trace_id = hashlib.sha256(f"{name}{_time.time()}".encode()).hexdigest()[:16]
+        if not hasattr(self, '_traces'):
+            self._traces = {}
+        self._traces[trace_id] = {
+            "name": name,
+            "container_id": container_id,
+            "spans": [],
+            "created_at": _time.time(),
+            "finished_at": None,
+        }
+        return {"trace_id": trace_id, "name": name}
+
+    def start_span(
+        self,
+        trace_id: str,
+        operation: str,
+        container_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Start a new span within a trace."""
+        import hashlib
+        import time as _time
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+
+        span_id = hashlib.sha256(f"{trace_id}{operation}{_time.time()}".encode()).hexdigest()[:12]
+        span = {
+            "span_id": span_id,
+            "operation": operation,
+            "container_id": container_id,
+            "parent_span_id": parent_span_id,
+            "start_time": _time.time(),
+            "end_time": None,
+            "duration_ms": None,
+            "status": "ok",
+            "attributes": {},
+            "events": [],
+        }
+        trace["spans"].append(span)
+        return {"trace_id": trace_id, "span_id": span_id}
+
+    def finish_span(
+        self, trace_id: str, span_id: str, status: str = "ok"
+    ) -> Dict[str, Any]:
+        """Finish a span."""
+        import time as _time
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+        for span in trace["spans"]:
+            if span["span_id"] == span_id:
+                span["end_time"] = _time.time()
+                span["duration_ms"] = round((span["end_time"] - span["start_time"]) * 1000, 2)
+                span["status"] = status
+                return {"trace_id": trace_id, "span_id": span_id, "duration_ms": span["duration_ms"]}
+        return {"error": f"Span '{span_id}' not found"}
+
+    def add_span_attribute(
+        self, trace_id: str, span_id: str, key: str, value: str
+    ) -> Dict[str, Any]:
+        """Add an attribute to a span."""
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+        for span in trace["spans"]:
+            if span["span_id"] == span_id:
+                span["attributes"][key] = value
+                return {"added": True}
+        return {"error": f"Span '{span_id}' not found"}
+
+    def finish_trace(self, trace_id: str) -> Dict[str, Any]:
+        """Finish a trace."""
+        import time as _time
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+        trace["finished_at"] = _time.time()
+        total_spans = len(trace["spans"])
+        total_duration = trace["finished_at"] - trace["created_at"]
+        return {
+            "trace_id": trace_id,
+            "span_count": total_spans,
+            "duration_ms": round(total_duration * 1000, 2),
+        }
+
+    def get_trace(
+        self, trace_id: str, include_attributes: bool = True
+    ) -> Dict[str, Any]:
+        """Get full trace details."""
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+        spans = trace["spans"]
+        if not include_attributes:
+            for s in spans:
+                s.pop("attributes", None)
+        return {
+            "trace_id": trace_id,
+            "name": trace["name"],
+            "spans": spans,
+            "span_count": len(spans),
+            "created_at": trace["created_at"],
+            "finished_at": trace["finished_at"],
+        }
+
+    def get_trace_summary(
+        self, trace_id: str
+    ) -> Dict[str, Any]:
+        """Get a summary of a trace."""
+        if not hasattr(self, '_traces'):
+            return {"error": "No traces"}
+        trace = self._traces.get(trace_id)
+        if not trace:
+            return {"error": f"Trace '{trace_id}' not found"}
+        spans = trace["spans"]
+        total_duration = (trace["finished_at"] or trace["created_at"]) - trace["created_at"]
+        error_spans = sum(1 for s in spans if s["status"] != "ok")
+        return {
+            "trace_id": trace_id,
+            "name": trace["name"],
+            "span_count": len(spans),
+            "error_spans": error_spans,
+            "duration_ms": round(total_duration * 1000, 2),
+            "containers": list(set(s["container_id"] for s in spans if s.get("container_id"))),
+        }
+
+    def list_traces(self, limit: int = 20) -> Dict[str, Any]:
+        """List recent traces."""
+        if not hasattr(self, '_traces'):
+            return {"traces": [], "count": 0}
+        traces = []
+        for tid, trace in self._traces.items():
+            traces.append({
+                "trace_id": tid,
+                "name": trace["name"],
+                "span_count": len(trace["spans"]),
+                "created_at": trace["created_at"],
+            })
+        traces.sort(key=lambda t: t["created_at"], reverse=True)
+        return {"traces": traces[:limit], "count": len(traces)}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

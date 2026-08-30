@@ -3119,6 +3119,155 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_bluegreen_deployment",
             "name": args.name,
         }
+    if command == "create-canary":
+        return {
+            "service": "control",
+            "op": "create_canary_deployment",
+            "name": args.name,
+            "stable_container_id": args.stable_container_id,
+            "canary_container_id": args.canary_container_id,
+            "traffic_percentage": float(getattr(args, 'traffic_percentage', 10)),
+            "error_threshold": float(getattr(args, 'error_threshold', 5)),
+            "latency_threshold_ms": float(getattr(args, 'latency_threshold_ms', 200)),
+        }
+    if command == "record-canary-metric":
+        return {
+            "service": "control",
+            "op": "record_canary_metric",
+            "deployment_name": args.deployment_name,
+            "slot": args.slot,
+            "latency_ms": float(getattr(args, 'latency_ms', 0)),
+            "is_error": getattr(args, 'is_error', False),
+        }
+    if command == "evaluate-canary-health":
+        return {
+            "service": "control",
+            "op": "evaluate_canary_health",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "promote-canary":
+        return {
+            "service": "control",
+            "op": "promote_canary",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "rollback-canary":
+        return {
+            "service": "control",
+            "op": "rollback_canary",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "get-canary-status":
+        return {
+            "service": "control",
+            "op": "get_canary_status",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "list-canary":
+        return {
+            "service": "control",
+            "op": "list_canary_deployments",
+        }
+    if command == "delete-canary":
+        return {
+            "service": "control",
+            "op": "delete_canary_deployment",
+            "name": args.name,
+        }
+    if command == "register-service":
+        return {
+            "service": "control",
+            "op": "register_service",
+            "name": args.name,
+            "container_id": args.container_id,
+            "port": int(getattr(args, 'port', 80)),
+            "tags": getattr(args, 'tags', None),
+        }
+    if command == "deregister-service":
+        return {
+            "service": "control",
+            "op": "deregister_service",
+            "name": args.name,
+            "container_id": args.container_id,
+        }
+    if command == "discover-service":
+        return {
+            "service": "control",
+            "op": "discover_service",
+            "name": args.name,
+            "tag": getattr(args, 'tag', None),
+        }
+    if command == "service-heartbeat":
+        return {
+            "service": "control",
+            "op": "service_heartbeat",
+            "name": args.name,
+            "container_id": args.container_id,
+        }
+    if command == "get-service-instances":
+        return {
+            "service": "control",
+            "op": "get_service_instances",
+            "name": args.name,
+        }
+    if command == "inject-dependency":
+        return {
+            "service": "control",
+            "op": "inject_dependency",
+            "container_id": args.container_id,
+            "service_name": args.service_name,
+            "env_var": args.env_var,
+        }
+    if command == "list-services":
+        return {
+            "service": "control",
+            "op": "list_services",
+        }
+    if command == "create-trace":
+        return {
+            "service": "control",
+            "op": "create_trace",
+            "name": args.name,
+        }
+    if command == "start-span":
+        return {
+            "service": "control",
+            "op": "start_span",
+            "trace_id": args.trace_id,
+            "operation": args.operation,
+            "parent_span_id": getattr(args, 'parent_span_id', None),
+        }
+    if command == "finish-span":
+        return {
+            "service": "control",
+            "op": "finish_span",
+            "trace_id": args.trace_id,
+            "span_id": args.span_id,
+        }
+    if command == "finish-trace":
+        return {
+            "service": "control",
+            "op": "finish_trace",
+            "trace_id": args.trace_id,
+        }
+    if command == "get-trace":
+        return {
+            "service": "control",
+            "op": "get_trace",
+            "trace_id": args.trace_id,
+        }
+    if command == "get-trace-summary":
+        return {
+            "service": "control",
+            "op": "get_trace_summary",
+            "trace_id": args.trace_id,
+        }
+    if command == "list-traces":
+        return {
+            "service": "control",
+            "op": "list_traces",
+            "limit": int(getattr(args, 'limit', 20)),
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6702,6 +6851,46 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for d in resp.get('deployments', []):
             lines.append(f"  {d['name']}: active={d['active_slot']}")
         return "\n".join(lines) if lines[1:] else "No deployments"
+    if command == "create-canary":
+        return f"Canary '{resp.get('name', '?')}' created: traffic={resp.get('traffic_percentage', 0)}%"
+    if command == "evaluate-canary-health":
+        action = resp.get('action', '?').upper()
+        return f"Canary: {action}, error_rate={resp.get('canary_error_rate', 0)}%, latency={resp.get('canary_avg_latency_ms', 0)}ms"
+    if command == "promote-canary":
+        return f"Canary promoted to {resp.get('traffic_percentage', 0)}% traffic"
+    if command == "rollback-canary":
+        return f"Canary rolled back to {resp.get('traffic_percentage', 0)}% traffic"
+    if command == "get-canary-status":
+        return f"Canary '{resp.get('name', '?')}': phase={resp.get('phase', '?')}, traffic={resp.get('traffic_percentage', 0)}%"
+    if command == "list-canary":
+        lines = ["Canary deployments:"]
+        for d in resp.get('deployments', []):
+            lines.append(f"  {d['name']}: {d['phase']}, {d['traffic_percentage']}%")
+        return "\n".join(lines) if lines[1:] else "No canary deployments"
+    if command == "register-service":
+        return f"Service '{resp.get('service', '?')}' registered on port {resp.get('port', 0)}"
+    if command == "discover-service":
+        return f"Discovered {resp.get('count', 0)} instance(s) of '{resp.get('service', '?')}'"
+    if command == "list-services":
+        lines = ["Services:"]
+        for s in resp.get('services', []):
+            lines.append(f"  {s['name']}: {s['healthy_instances']}/{s['total_instances']} healthy")
+        return "\n".join(lines) if lines[1:] else "No services"
+    if command == "inject-dependency":
+        if resp.get('injected'):
+            return f"Injected {resp.get('service', '?')} -> {resp.get('env_var', '?')}={resp.get('value', '?')}"
+        return f"Dependency '{resp.get('service', '?')}' not available"
+    if command == "create-trace":
+        return f"Trace created: {resp.get('trace_id', '?')} ({resp.get('name', '?')})"
+    if command == "start-span":
+        return f"Span started: {resp.get('span_id', '?')}"
+    if command == "finish-trace":
+        return f"Trace finished: {resp.get('span_count', 0)} spans, {resp.get('duration_ms', 0)}ms"
+    if command == "get-trace-summary":
+        errors = resp.get('error_spans', 0)
+        return f"Trace {resp.get('trace_id', '?')[:12]}: {resp.get('span_count', 0)} spans, {resp.get('duration_ms', 0)}ms, {errors} errors"
+    if command == "list-traces":
+        return f"Traces: {resp.get('count', 0)}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -9109,6 +9298,114 @@ def build_parser() -> argparse.ArgumentParser:
     dbg = sub.add_parser("delete-bluegreen", help="Delete blue-green deployment")
     dbg.add_argument("name")
     dbg.set_defaults(command="delete-bluegreen")
+
+    # Canary deployment subcommands
+    cc = sub.add_parser("create-canary", help="Create canary deployment")
+    cc.add_argument("name")
+    cc.add_argument("stable_container_id")
+    cc.add_argument("canary_container_id")
+    cc.add_argument("--traffic-percentage", type=float, default=10)
+    cc.add_argument("--error-threshold", type=float, default=5)
+    cc.add_argument("--latency-threshold-ms", type=float, default=200)
+    cc.set_defaults(command="create-canary")
+
+    rcm = sub.add_parser("record-canary-metric", help="Record canary metric")
+    rcm.add_argument("deployment_name")
+    rcm.add_argument("slot", choices=["canary", "stable"])
+    rcm.add_argument("--latency-ms", type=float, default=0)
+    rcm.add_argument("--is-error", action="store_true")
+    rcm.set_defaults(command="record-canary-metric")
+
+    ech = sub.add_parser("evaluate-canary-health", help="Evaluate canary health")
+    ech.add_argument("deployment_name")
+    ech.set_defaults(command="evaluate-canary-health")
+
+    pc = sub.add_parser("promote-canary", help="Promote canary")
+    pc.add_argument("deployment_name")
+    pc.set_defaults(command="promote-canary")
+
+    rc = sub.add_parser("rollback-canary", help="Rollback canary")
+    rc.add_argument("deployment_name")
+    rc.set_defaults(command="rollback-canary")
+
+    gcs = sub.add_parser("get-canary-status", help="Get canary status")
+    gcs.add_argument("deployment_name")
+    gcs.set_defaults(command="get-canary-status")
+
+    lcan = sub.add_parser("list-canary", help="List canary deployments")
+    lcan.set_defaults(command="list-canary")
+
+    dcan = sub.add_parser("delete-canary", help="Delete canary deployment")
+    dcan.add_argument("name")
+    dcan.set_defaults(command="delete-canary")
+
+    # Service discovery subcommands
+    rs = sub.add_parser("register-service", help="Register service")
+    rs.add_argument("name")
+    rs.add_argument("container_id")
+    rs.add_argument("--port", type=int, default=80)
+    rs.add_argument("--tags", nargs="+")
+    rs.set_defaults(command="register-service")
+
+    ds = sub.add_parser("deregister-service", help="Deregister service")
+    ds.add_argument("name")
+    ds.add_argument("container_id")
+    ds.set_defaults(command="deregister-service")
+
+    dis = sub.add_parser("discover-service", help="Discover service")
+    dis.add_argument("name")
+    dis.add_argument("--tag", default=None)
+    dis.set_defaults(command="discover-service")
+
+    sh = sub.add_parser("service-heartbeat", help="Service heartbeat")
+    sh.add_argument("name")
+    sh.add_argument("container_id")
+    sh.set_defaults(command="service-heartbeat")
+
+    gsi = sub.add_parser("get-service-instances", help="Get service instances")
+    gsi.add_argument("name")
+    gsi.set_defaults(command="get-service-instances")
+
+    idep = sub.add_parser("inject-dependency", help="Inject service dependency")
+    idep.add_argument("container_id")
+    idep.add_argument("service_name")
+    idep.add_argument("env_var")
+    idep.set_defaults(command="inject-dependency")
+
+    ls = sub.add_parser("list-services", help="List services")
+    ls.set_defaults(command="list-services")
+
+    # Distributed tracing subcommands
+    ct = sub.add_parser("create-trace", help="Create trace")
+    ct.add_argument("name")
+    ct.set_defaults(command="create-trace")
+
+    ss = sub.add_parser("start-span", help="Start span")
+    ss.add_argument("trace_id")
+    ss.add_argument("operation")
+    ss.add_argument("--parent-span-id", default=None)
+    ss.set_defaults(command="start-span")
+
+    fs = sub.add_parser("finish-span", help="Finish span")
+    fs.add_argument("trace_id")
+    fs.add_argument("span_id")
+    fs.set_defaults(command="finish-span")
+
+    ft = sub.add_parser("finish-trace", help="Finish trace")
+    ft.add_argument("trace_id")
+    ft.set_defaults(command="finish-trace")
+
+    gt = sub.add_parser("get-trace", help="Get trace")
+    gt.add_argument("trace_id")
+    gt.set_defaults(command="get-trace")
+
+    gts = sub.add_parser("get-trace-summary", help="Get trace summary")
+    gts.add_argument("trace_id")
+    gts.set_defaults(command="get-trace-summary")
+
+    lt = sub.add_parser("list-traces", help="List traces")
+    lt.add_argument("--limit", type=int, default=20)
+    lt.set_defaults(command="list-traces")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

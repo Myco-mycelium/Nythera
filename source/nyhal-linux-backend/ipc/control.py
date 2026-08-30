@@ -1395,6 +1395,75 @@ class ControlService:
             elif op == "delete_bluegreen_deployment":
                 self._delete_bluegreen_deployment(server, sender_path,
                                             msg.message_id, request)
+            elif op == "create_canary_deployment":
+                self._create_canary_deployment(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "record_canary_metric":
+                self._record_canary_metric(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "evaluate_canary_health":
+                self._evaluate_canary_health(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "promote_canary":
+                self._promote_canary(server, sender_path,
+                               msg.message_id, request)
+            elif op == "rollback_canary":
+                self._rollback_canary(server, sender_path,
+                                msg.message_id, request)
+            elif op == "get_canary_status":
+                self._get_canary_status(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_canary_deployments":
+                self._list_canary_deployments(server, sender_path,
+                                         msg.message_id)
+            elif op == "delete_canary_deployment":
+                self._delete_canary_deployment(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "register_service":
+                self._register_service(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "deregister_service":
+                self._deregister_service(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "discover_service":
+                self._discover_service(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "service_heartbeat":
+                self._service_heartbeat(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_service_instances":
+                self._get_service_instances(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "inject_dependency":
+                self._inject_dependency(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_services":
+                self._list_services(server, sender_path,
+                               msg.message_id)
+            elif op == "create_trace":
+                self._create_trace(server, sender_path,
+                              msg.message_id, request)
+            elif op == "start_span":
+                self._start_span(server, sender_path,
+                           msg.message_id, request)
+            elif op == "finish_span":
+                self._finish_span(server, sender_path,
+                            msg.message_id, request)
+            elif op == "add_span_attribute":
+                self._add_span_attribute(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "finish_trace":
+                self._finish_trace(server, sender_path,
+                             msg.message_id, request)
+            elif op == "get_trace":
+                self._get_trace(server, sender_path,
+                          msg.message_id, request)
+            elif op == "get_trace_summary":
+                self._get_trace_summary(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_traces":
+                self._list_traces(server, sender_path,
+                             msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -7798,6 +7867,162 @@ class ControlService:
 
     def _delete_bluegreen_deployment(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_bluegreen_deployment(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Canary deployment handlers
+    # ------------------------------------------------------------------
+
+    def _create_canary_deployment(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_canary_deployment(
+            name=request['name'],
+            stable_container_id=request['stable_container_id'],
+            canary_container_id=request['canary_container_id'],
+            traffic_percentage=float(request.get('traffic_percentage', 10)),
+            error_threshold=float(request.get('error_threshold', 5)),
+            latency_threshold_ms=float(request.get('latency_threshold_ms', 200)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_canary_metric(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_canary_metric(
+            deployment_name=request['deployment_name'],
+            slot=request['slot'],
+            latency_ms=float(request.get('latency_ms', 0)),
+            is_error=request.get('is_error', False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_canary_health(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_canary_health(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _promote_canary(self, server, sender_path, call_id, request):
+        result = self.container_manager.promote_canary(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rollback_canary(self, server, sender_path, call_id, request):
+        result = self.container_manager.rollback_canary(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_canary_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_canary_status(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_canary_deployments(self, server, sender_path, call_id):
+        result = self.container_manager.list_canary_deployments()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_canary_deployment(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_canary_deployment(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Service discovery handlers
+    # ------------------------------------------------------------------
+
+    def _register_service(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_service(
+            name=request['name'],
+            container_id=request['container_id'],
+            port=int(request.get('port', 80)),
+            health_endpoint=request.get('health_endpoint', '/health'),
+            tags=request.get('tags'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _deregister_service(self, server, sender_path, call_id, request):
+        result = self.container_manager.deregister_service(
+            name=request['name'],
+            container_id=request['container_id'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _discover_service(self, server, sender_path, call_id, request):
+        result = self.container_manager.discover_service(
+            name=request['name'],
+            tag=request.get('tag'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _service_heartbeat(self, server, sender_path, call_id, request):
+        result = self.container_manager.service_heartbeat(
+            name=request['name'],
+            container_id=request['container_id'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_service_instances(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_service_instances(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _inject_dependency(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.inject_dependency(
+            c, service_name=request['service_name'],
+            env_var=request['env_var'],
+            required=request.get('required', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_services(self, server, sender_path, call_id):
+        result = self.container_manager.list_services()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Distributed tracing handlers
+    # ------------------------------------------------------------------
+
+    def _create_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_trace(
+            name=request['name'],
+            container_id=request.get('container_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _start_span(self, server, sender_path, call_id, request):
+        result = self.container_manager.start_span(
+            trace_id=request['trace_id'],
+            operation=request['operation'],
+            container_id=request.get('container_id'),
+            parent_span_id=request.get('parent_span_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _finish_span(self, server, sender_path, call_id, request):
+        result = self.container_manager.finish_span(
+            trace_id=request['trace_id'],
+            span_id=request['span_id'],
+            status=request.get('status', 'ok'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _add_span_attribute(self, server, sender_path, call_id, request):
+        result = self.container_manager.add_span_attribute(
+            trace_id=request['trace_id'],
+            span_id=request['span_id'],
+            key=request['key'],
+            value=request['value'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _finish_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.finish_trace(request['trace_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_trace(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_trace(request['trace_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_trace_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_trace_summary(request['trace_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_traces(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_traces(limit=request.get('limit', 20))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
