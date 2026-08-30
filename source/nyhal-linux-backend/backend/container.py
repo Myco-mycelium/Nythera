@@ -21192,6 +21192,441 @@ class ContainerManager:
             "details": results,
         }
 
+    # ------------------------------------------------------------------
+    # Rate limiting with token bucket algorithm
+    # ------------------------------------------------------------------
+
+    def configure_rate_limit(
+        self,
+        container: Container,
+        name: str = "default",
+        rate: float = 100.0,
+        burst: int = 200,
+        unit: str = "requests_per_second",
+    ) -> Dict[str, Any]:
+        """Configure a token bucket rate limiter.
+
+        Args:
+            container: Target container.
+            name: Limiter name (allows multiple limiters).
+            rate: Tokens added per second (sustained rate).
+            burst: Maximum tokens in bucket (burst capacity).
+            unit: Description of what is being limited.
+        """
+        import time as _time
+        if not hasattr(container, '_rate_limiters'):
+            container._rate_limiters = {}
+        limiter = {
+            "name": name,
+            "rate": rate,
+            "burst": burst,
+            "unit": unit,
+            "tokens": float(burst),
+            "last_refill": _time.time(),
+            "total_allowed": 0,
+            "total_rejected": 0,
+            "history": [],
+        }
+        container._rate_limiters[name] = limiter
+        return {
+            "container_id": container.id,
+            "limiter": name,
+            "rate": rate,
+            "burst": burst,
+        }
+
+    def check_rate_limit(
+        self, container: Container, name: str = "default", tokens: int = 1
+    ) -> Dict[str, Any]:
+        """Check if a request is allowed by the rate limiter.
+
+        Uses the token bucket algorithm: tokens are added at the configured
+        rate, up to the burst limit. Each request consumes tokens.
+        """
+        import time as _time
+        limiters = getattr(container, '_rate_limiters', {})
+        limiter = limiters.get(name)
+        if not limiter:
+            return {"error": f"Limiter '{name}' not found"}
+
+        # Refill tokens based on elapsed time
+        now = _time.time()
+        elapsed = now - limiter["last_refill"]
+        limiter["tokens"] = min(
+            limiter["burst"],
+            limiter["tokens"] + elapsed * limiter["rate"],
+        )
+        limiter["last_refill"] = now
+
+        # Check if enough tokens
+        allowed = limiter["tokens"] >= tokens
+        if allowed:
+            limiter["tokens"] -= tokens
+            limiter["total_allowed"] += 1
+        else:
+            limiter["total_rejected"] += 1
+
+        limiter["history"].append({
+            "allowed": allowed,
+            "tokens": round(limiter["tokens"], 2),
+            "time": now,
+        })
+        if len(limiter["history"]) > 200:
+            limiter["history"] = limiter["history"][-200:]
+
+        return {
+            "container_id": container.id,
+            "limiter": name,
+            "allowed": allowed,
+            "tokens_remaining": round(limiter["tokens"], 2),
+        }
+
+    def get_rate_limit_stats(
+        self, container: Container, name: str = "default"
+    ) -> Dict[str, Any]:
+        """Get statistics for a rate limiter."""
+        limiters = getattr(container, '_rate_limiters', {})
+        limiter = limiters.get(name)
+        if not limiter:
+            return {"error": f"Limiter '{name}' not found"}
+        total = limiter["total_allowed"] + limiter["total_rejected"]
+        return {
+            "container_id": container.id,
+            "limiter": name,
+            "rate": limiter["rate"],
+            "burst": limiter["burst"],
+            "tokens_remaining": round(limiter["tokens"], 2),
+            "total_allowed": limiter["total_allowed"],
+            "total_rejected": limiter["total_rejected"],
+            "rejection_rate": round(
+                limiter["total_rejected"] / total * 100, 1
+            ) if total > 0 else 0,
+        }
+
+    def get_all_rate_limiters(
+        self, container: Container
+    ) -> Dict[str, Any]:
+        """List all rate limiters for a container."""
+        limiters = getattr(container, '_rate_limiters', {})
+        result = []
+        for name, limiter in limiters.items():
+            result.append({
+                "name": name,
+                "rate": limiter["rate"],
+                "burst": limiter["burst"],
+                "tokens_remaining": round(limiter["tokens"], 2),
+            })
+        return {
+            "container_id": container.id,
+            "limiters": result,
+            "count": len(result),
+        }
+
+    def reset_rate_limit(
+        self, container: Container, name: str = "default"
+    ) -> Dict[str, Any]:
+        """Reset a rate limiter to full burst capacity."""
+        import time as _time
+        limiters = getattr(container, '_rate_limiters', {})
+        limiter = limiters.get(name)
+        if not limiter:
+            return {"error": f"Limiter '{name}' not found"}
+        limiter["tokens"] = float(limiter["burst"])
+        limiter["last_refill"] = _time.time()
+        limiter["total_allowed"] = 0
+        limiter["total_rejected"] = 0
+        return {"container_id": container.id, "limiter": name, "reset": True}
+
+    def delete_rate_limit(
+        self, container: Container, name: str = "default"
+    ) -> Dict[str, Any]:
+        """Delete a rate limiter."""
+        limiters = getattr(container, '_rate_limiters', {})
+        if name not in limiters:
+            return {"error": f"Limiter '{name}' not found"}
+        del limiters[name]
+        return {"container_id": container.id, "deleted": name}
+
+    # ------------------------------------------------------------------
+    # Feature flags with gradual rollout
+    # ------------------------------------------------------------------
+
+    def create_feature_flag(
+        self,
+        name: str,
+        enabled: bool = False,
+        rollout_percentage: float = 0.0,
+        target_containers: Optional[List[str]] = None,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Create a feature flag.
+
+        Args:
+            name: Flag name.
+            enabled: Whether the flag is globally enabled.
+            rollout_percentage: Percentage of containers that see this flag (0-100).
+            target_containers: Specific container IDs to target (overrides percentage).
+            description: Human-readable description.
+        """
+        import time as _time
+        if not hasattr(self, '_feature_flags'):
+            self._feature_flags = {}
+        flag = {
+            "name": name,
+            "enabled": enabled,
+            "rollout_percentage": rollout_percentage,
+            "target_containers": target_containers or [],
+            "description": description,
+            "created_at": _time.time(),
+            "updated_at": _time.time(),
+            "evaluation_count": 0,
+        }
+        self._feature_flags[name] = flag
+        return {
+            "name": name,
+            "enabled": enabled,
+            "rollout_percentage": rollout_percentage,
+        }
+
+    def evaluate_feature_flag(
+        self, container_id: str, flag_name: str
+    ) -> Dict[str, Any]:
+        """Evaluate a feature flag for a specific container."""
+        import hashlib
+        if not hasattr(self, '_feature_flags'):
+            return {"error": "No feature flags"}
+        flag = self._feature_flags.get(flag_name)
+        if not flag:
+            return {"error": f"Flag '{flag_name}' not found"}
+
+        flag["evaluation_count"] += 1
+
+        if not flag["enabled"]:
+            return {"flag": flag_name, "active": False, "reason": "disabled"}
+
+        # Check targeted containers
+        if flag["target_containers"]:
+            active = container_id in flag["target_containers"]
+            return {
+                "flag": flag_name,
+                "active": active,
+                "reason": "targeted" if active else "not_targeted",
+            }
+
+        # Check rollout percentage using deterministic hash
+        hash_val = int(hashlib.md5(f"{flag_name}{container_id}".encode()).hexdigest(), 16) % 100
+        active = hash_val < flag["rollout_percentage"]
+        return {
+            "flag": flag_name,
+            "active": active,
+            "reason": "rollout" if active else "not_in_rollout",
+            "hash_bucket": hash_val,
+        }
+
+    def update_feature_flag(
+        self, name: str, **kwargs
+    ) -> Dict[str, Any]:
+        """Update a feature flag's configuration."""
+        import time as _time
+        if not hasattr(self, '_feature_flags'):
+            return {"error": "No feature flags"}
+        flag = self._feature_flags.get(name)
+        if not flag:
+            return {"error": f"Flag '{name}' not found"}
+        for key in ("enabled", "rollout_percentage", "target_containers", "description"):
+            if key in kwargs:
+                flag[key] = kwargs[key]
+        flag["updated_at"] = _time.time()
+        return {
+            "name": name,
+            "enabled": flag["enabled"],
+            "rollout_percentage": flag["rollout_percentage"],
+        }
+
+    def list_feature_flags(self) -> Dict[str, Any]:
+        """List all feature flags."""
+        if not hasattr(self, '_feature_flags'):
+            return {"flags": [], "count": 0}
+        flags = []
+        for name, flag in self._feature_flags.items():
+            flags.append({
+                "name": name,
+                "enabled": flag["enabled"],
+                "rollout_percentage": flag["rollout_percentage"],
+                "evaluation_count": flag["evaluation_count"],
+            })
+        return {"flags": flags, "count": len(flags)}
+
+    def delete_feature_flag(self, name: str) -> Dict[str, Any]:
+        """Delete a feature flag."""
+        if not hasattr(self, '_feature_flags'):
+            return {"error": "No feature flags"}
+        flag = self._feature_flags.pop(name, None)
+        if not flag:
+            return {"error": f"Flag '{name}' not found"}
+        return {"deleted": name}
+
+    def get_feature_flag_summary(self) -> Dict[str, Any]:
+        """Get summary of all feature flags."""
+        if not hasattr(self, '_feature_flags'):
+            return {"total": 0, "enabled": 0, "flags": []}
+        enabled_count = sum(1 for f in self._feature_flags.values() if f["enabled"])
+        return {
+            "total": len(self._feature_flags),
+            "enabled": enabled_count,
+            "disabled": len(self._feature_flags) - enabled_count,
+        }
+
+    # ------------------------------------------------------------------
+    # Blue-green deployment with traffic switching
+    # ------------------------------------------------------------------
+
+    def create_bluegreen_deployment(
+        self,
+        name: str,
+        blue_container_id: str,
+        green_container_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a blue-green deployment."""
+        import time as _time
+        if not hasattr(self, '_bluegreen'):
+            self._bluegreen = {}
+        deployment = {
+            "name": name,
+            "blue_container_id": blue_container_id,
+            "green_container_id": green_container_id,
+            "active_slot": "blue",
+            "traffic_percentage": {"blue": 100, "green": 0},
+            "created_at": _time.time(),
+            "last_switch": None,
+            "switch_history": [],
+            "health_checks_passed": False,
+        }
+        self._bluegreen[name] = deployment
+        return {
+            "name": name,
+            "blue": blue_container_id,
+            "green": green_container_id,
+            "active_slot": "blue",
+        }
+
+    def switch_traffic(
+        self,
+        deployment_name: str,
+        target_slot: str,
+        percentage: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Switch traffic between blue and green slots.
+
+        Args:
+            deployment_name: Deployment name.
+            target_slot: ``"blue"`` or ``"green"``.
+            percentage: Gradual traffic shift (0-100). If None, full switch.
+        """
+        import time as _time
+        if not hasattr(self, '_bluegreen'):
+            return {"error": "No blue-green deployments"}
+        dep = self._bluegreen.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        if target_slot not in ("blue", "green"):
+            return {"error": f"Invalid slot: {target_slot}"}
+
+        old_slot = dep["active_slot"]
+        if percentage is not None:
+            percentage = max(0, min(100, percentage))
+            dep["traffic_percentage"][target_slot] = percentage
+            dep["traffic_percentage"]["blue" if target_slot == "green" else "green"] = 100 - percentage
+        else:
+            dep["active_slot"] = target_slot
+            dep["traffic_percentage"] = {"blue": 0, "green": 0}
+            dep["traffic_percentage"][target_slot] = 100
+
+        dep["last_switch"] = _time.time()
+        dep["switch_history"].append({
+            "from": old_slot,
+            "to": target_slot,
+            "percentage": percentage,
+            "time": _time.time(),
+        })
+
+        return {
+            "name": deployment_name,
+            "active_slot": dep["active_slot"],
+            "traffic_percentage": dep["traffic_percentage"],
+        }
+
+    def get_bluegreen_status(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Get blue-green deployment status."""
+        if not hasattr(self, '_bluegreen'):
+            return {"error": "No blue-green deployments"}
+        dep = self._bluegreen.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        return {
+            "name": dep["name"],
+            "blue_container_id": dep["blue_container_id"],
+            "green_container_id": dep["green_container_id"],
+            "active_slot": dep["active_slot"],
+            "traffic_percentage": dep["traffic_percentage"],
+            "last_switch": dep["last_switch"],
+            "switch_count": len(dep["switch_history"]),
+        }
+
+    def rollback_bluegreen(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Rollback to the previous slot."""
+        if not hasattr(self, '_bluegreen'):
+            return {"error": "No blue-green deployments"}
+        dep = self._bluegreen.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        if not dep["switch_history"]:
+            return {"error": "No switch history to rollback"}
+        prev = dep["switch_history"][-1]
+        return self.switch_traffic(deployment_name, prev["from"])
+
+    def get_bluegreen_history(
+        self, deployment_name: str
+    ) -> Dict[str, Any]:
+        """Get switch history for a deployment."""
+        if not hasattr(self, '_bluegreen'):
+            return {"switches": [], "count": 0}
+        dep = self._bluegreen.get(deployment_name)
+        if not dep:
+            return {"error": f"Deployment '{deployment_name}' not found"}
+        return {
+            "name": deployment_name,
+            "switches": list(reversed(dep["switch_history"])),
+            "count": len(dep["switch_history"]),
+        }
+
+    def list_bluegreen_deployments(self) -> Dict[str, Any]:
+        """List all blue-green deployments."""
+        if not hasattr(self, '_bluegreen'):
+            return {"deployments": [], "count": 0}
+        result = []
+        for name, dep in self._bluegreen.items():
+            result.append({
+                "name": name,
+                "active_slot": dep["active_slot"],
+                "blue": dep["blue_container_id"],
+                "green": dep["green_container_id"],
+            })
+        return {"deployments": result, "count": len(result)}
+
+    def delete_bluegreen_deployment(self, name: str) -> Dict[str, Any]:
+        """Delete a blue-green deployment."""
+        if not hasattr(self, '_bluegreen'):
+            return {"error": "No blue-green deployments"}
+        dep = self._bluegreen.pop(name, None)
+        if not dep:
+            return {"error": f"Deployment '{name}' not found"}
+        return {"deleted": name}
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

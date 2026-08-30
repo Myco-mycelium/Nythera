@@ -4698,6 +4698,237 @@ class TestAuditIntegrity(unittest.TestCase):
         self.assertIn("TAMPERED", text)
 
 
+class TestRateLimiting(unittest.TestCase):
+    """Tests for rate limiting with token bucket algorithm."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.transition_to(ContainerState.RUNNING)
+        return c
+
+    def test_configure_limiter(self):
+        """configure_rate_limit stores limiter."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl1")
+        r = mgr.configure_rate_limit(c, rate=50, burst=100)
+        self.assertEqual(r["rate"], 50)
+        self.assertEqual(r["burst"], 100)
+
+    def test_check_allowed(self):
+        """check_rate_limit allows within burst."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl2")
+        mgr.configure_rate_limit(c, rate=100, burst=10)
+        r = mgr.check_rate_limit(c, tokens=1)
+        self.assertTrue(r["allowed"])
+
+    def test_check_rejected(self):
+        """check_rate_limit rejects when exhausted."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl3")
+        mgr.configure_rate_limit(c, rate=0, burst=2)
+        mgr.check_rate_limit(c)
+        mgr.check_rate_limit(c)
+        r = mgr.check_rate_limit(c)  # Should be rejected
+        self.assertFalse(r["allowed"])
+
+    def test_stats(self):
+        """get_rate_limit_stats returns counters."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl4")
+        mgr.configure_rate_limit(c, rate=100, burst=5)
+        for _ in range(3):
+            mgr.check_rate_limit(c)
+        r = mgr.get_rate_limit_stats(c)
+        self.assertEqual(r["total_allowed"], 3)
+        self.assertEqual(r["total_rejected"], 0)
+
+    def test_reset(self):
+        """reset_rate_limit restores capacity."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl5")
+        mgr.configure_rate_limit(c, rate=0, burst=1)
+        mgr.check_rate_limit(c)
+        mgr.reset_rate_limit(c)
+        r = mgr.check_rate_limit(c)
+        self.assertTrue(r["allowed"])
+
+    def test_delete(self):
+        """delete_rate_limit removes limiter."""
+        mgr = self._manager()
+        c = self._make(mgr, "rl6")
+        mgr.configure_rate_limit(c)
+        r = mgr.delete_rate_limit(c)
+        self.assertIn("deleted", r)
+
+    def test_format_human(self):
+        """format_human handles get-rate-limit-stats."""
+        from nyrqisctl import format_human
+        text = format_human("get-rate-limit-stats", {"limiter": "api", "total_allowed": 100, "total_rejected": 5, "rejection_rate": 4.8})
+        self.assertIn("100", text)
+
+
+class TestFeatureFlags(unittest.TestCase):
+    """Tests for feature flags with gradual rollout."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_flag(self):
+        """create_feature_flag stores flag."""
+        mgr = self._manager()
+        r = mgr.create_feature_flag("dark_mode", enabled=True, rollout_percentage=50)
+        self.assertTrue(r["enabled"])
+        self.assertEqual(r["rollout_percentage"], 50)
+
+    def test_evaluate_enabled(self):
+        """evaluate_feature_flag returns active when enabled."""
+        mgr = self._manager()
+        mgr.create_feature_flag("test_flag", enabled=True, rollout_percentage=100)
+        r = mgr.evaluate_feature_flag("container1", "test_flag")
+        self.assertTrue(r["active"])
+
+    def test_evaluate_disabled(self):
+        """evaluate_feature_flag returns inactive when disabled."""
+        mgr = self._manager()
+        mgr.create_feature_flag("off_flag", enabled=False)
+        r = mgr.evaluate_feature_flag("container1", "off_flag")
+        self.assertFalse(r["active"])
+
+    def test_evaluate_targeted(self):
+        """evaluate_feature_flag respects target containers."""
+        mgr = self._manager()
+        mgr.create_feature_flag("targeted", enabled=True, target_containers=["c1", "c2"])
+        r1 = mgr.evaluate_feature_flag("c1", "targeted")
+        r2 = mgr.evaluate_feature_flag("c3", "targeted")
+        self.assertTrue(r1["active"])
+        self.assertFalse(r2["active"])
+
+    def test_list_flags(self):
+        """list_feature_flags returns all."""
+        mgr = self._manager()
+        mgr.create_feature_flag("f1")
+        mgr.create_feature_flag("f2")
+        r = mgr.list_feature_flags()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_flag(self):
+        """delete_feature_flag removes flag."""
+        mgr = self._manager()
+        mgr.create_feature_flag("to_delete")
+        r = mgr.delete_feature_flag("to_delete")
+        self.assertIn("deleted", r)
+
+    def test_summary(self):
+        """get_feature_flag_summary returns counts."""
+        mgr = self._manager()
+        mgr.create_feature_flag("on", enabled=True)
+        mgr.create_feature_flag("off", enabled=False)
+        r = mgr.get_feature_flag_summary()
+        self.assertEqual(r["total"], 2)
+        self.assertEqual(r["enabled"], 1)
+
+    def test_format_human_list(self):
+        """format_human handles list-feature-flags."""
+        from nyrqisctl import format_human
+        resp = {"flags": [{"name": "dark_mode", "enabled": True, "rollout_percentage": 100, "evaluation_count": 5}]}
+        text = format_human("list-feature-flags", resp)
+        self.assertIn("dark_mode", text)
+        self.assertIn("ON", text)
+
+
+class TestBlueGreenDeployment(unittest.TestCase):
+    """Tests for blue-green deployment with traffic switching."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_create_deployment(self):
+        """create_bluegreen_deployment creates deployment."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg1")
+        c2 = self._make(mgr, "bg2")
+        r = mgr.create_bluegreen_deployment("web", c1.id, c2.id)
+        self.assertEqual(r["active_slot"], "blue")
+
+    def test_switch_traffic(self):
+        """switch_traffic changes active slot."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg3")
+        c2 = self._make(mgr, "bg4")
+        mgr.create_bluegreen_deployment("svc", c1.id, c2.id)
+        r = mgr.switch_traffic("svc", "green")
+        self.assertEqual(r["active_slot"], "green")
+        self.assertEqual(r["traffic_percentage"]["green"], 100)
+
+    def test_gradual_switch(self):
+        """switch_traffic with percentage does gradual shift."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg5")
+        c2 = self._make(mgr, "bg6")
+        mgr.create_bluegreen_deployment("grad", c1.id, c2.id)
+        r = mgr.switch_traffic("grad", "green", percentage=30)
+        self.assertEqual(r["traffic_percentage"]["green"], 30)
+        self.assertEqual(r["traffic_percentage"]["blue"], 70)
+
+    def test_rollback(self):
+        """rollback_bluegreen reverts to previous slot."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg7")
+        c2 = self._make(mgr, "bg8")
+        mgr.create_bluegreen_deployment("rb", c1.id, c2.id)
+        mgr.switch_traffic("rb", "green")
+        r = mgr.rollback_bluegreen("rb")
+        self.assertEqual(r["active_slot"], "blue")
+
+    def test_status(self):
+        """get_bluegreen_status returns info."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg9")
+        mgr.create_bluegreen_deployment("st", c1.id)
+        r = mgr.get_bluegreen_status("st")
+        self.assertEqual(r["active_slot"], "blue")
+        self.assertEqual(r["switch_count"], 0)
+
+    def test_history(self):
+        """get_bluegreen_history returns switches."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg10")
+        c2 = self._make(mgr, "bg11")
+        mgr.create_bluegreen_deployment("hist", c1.id, c2.id)
+        mgr.switch_traffic("hist", "green")
+        mgr.switch_traffic("hist", "blue")
+        r = mgr.get_bluegreen_history("hist")
+        self.assertEqual(r["count"], 2)
+
+    def test_list_deployments(self):
+        """list_bluegreen_deployments returns all."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "bg12")
+        mgr.create_bluegreen_deployment("d1", c1.id)
+        mgr.create_bluegreen_deployment("d2", c1.id)
+        r = mgr.list_bluegreen_deployments()
+        self.assertEqual(r["count"], 2)
+
+    def test_format_human_status(self):
+        """format_human handles get-bluegreen-status."""
+        from nyrqisctl import format_human
+        text = format_human("get-bluegreen-status", {"name": "web", "active_slot": "green", "switch_count": 3})
+        self.assertIn("green", text)
+        self.assertIn("3", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -29783,6 +30014,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageProfiling))
     suite.addTests(loader.loadTestsFromTestCase(TestAuditIntegrity))
+    suite.addTests(loader.loadTestsFromTestCase(TestRateLimiting))
+    suite.addTests(loader.loadTestsFromTestCase(TestFeatureFlags))
+    suite.addTests(loader.loadTestsFromTestCase(TestBlueGreenDeployment))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

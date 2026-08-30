@@ -1338,6 +1338,63 @@ class ControlService:
             elif op == "get_tamper_summary":
                 self._get_tamper_summary(server, sender_path,
                                     msg.message_id)
+            elif op == "configure_rate_limit":
+                self._configure_rate_limit(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "check_rate_limit":
+                self._check_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_rate_limit_stats":
+                self._get_rate_limit_stats(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_all_rate_limiters":
+                self._get_all_rate_limiters(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "reset_rate_limit":
+                self._reset_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "delete_rate_limit":
+                self._delete_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "create_feature_flag":
+                self._create_feature_flag(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "evaluate_feature_flag":
+                self._evaluate_feature_flag(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "update_feature_flag":
+                self._update_feature_flag(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "list_feature_flags":
+                self._list_feature_flags(server, sender_path,
+                                    msg.message_id)
+            elif op == "delete_feature_flag":
+                self._delete_feature_flag(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_feature_flag_summary":
+                self._get_feature_flag_summary(server, sender_path,
+                                          msg.message_id)
+            elif op == "create_bluegreen_deployment":
+                self._create_bluegreen_deployment(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "switch_traffic":
+                self._switch_traffic(server, sender_path,
+                               msg.message_id, request)
+            elif op == "get_bluegreen_status":
+                self._get_bluegreen_status(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "rollback_bluegreen":
+                self._rollback_bluegreen(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_bluegreen_history":
+                self._get_bluegreen_history(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "list_bluegreen_deployments":
+                self._list_bluegreen_deployments(server, sender_path,
+                                           msg.message_id)
+            elif op == "delete_bluegreen_deployment":
+                self._delete_bluegreen_deployment(server, sender_path,
+                                            msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -7601,6 +7658,146 @@ class ControlService:
 
     def _get_tamper_summary(self, server, sender_path, call_id):
         result = self.container_manager.get_tamper_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Rate limiting handlers
+    # ------------------------------------------------------------------
+
+    def _configure_rate_limit(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.configure_rate_limit(
+            c, name=request.get('name', 'default'),
+            rate=float(request.get('rate', 100)),
+            burst=int(request.get('burst', 200)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_rate_limit(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.check_rate_limit(
+            c, name=request.get('name', 'default'),
+            tokens=int(request.get('tokens', 1)),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_rate_limit_stats(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_rate_limit_stats(c, request.get('name', 'default'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_all_rate_limiters(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.get_all_rate_limiters(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _reset_rate_limit(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.reset_rate_limit(c, request.get('name', 'default'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_rate_limit(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.delete_rate_limit(c, request.get('name', 'default'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Feature flag handlers
+    # ------------------------------------------------------------------
+
+    def _create_feature_flag(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_feature_flag(
+            name=request['name'],
+            enabled=request.get('enabled', False),
+            rollout_percentage=float(request.get('rollout_percentage', 0)),
+            target_containers=request.get('target_containers'),
+            description=request.get('description', ''),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_feature_flag(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_feature_flag(
+            container_id=request['container_id'],
+            flag_name=request['flag_name'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _update_feature_flag(self, server, sender_path, call_id, request):
+        kwargs = {}
+        for key in ('enabled', 'rollout_percentage', 'target_containers', 'description'):
+            if key in request:
+                kwargs[key] = request[key]
+        result = self.container_manager.update_feature_flag(request['name'], **kwargs)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_feature_flags(self, server, sender_path, call_id):
+        result = self.container_manager.list_feature_flags()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_feature_flag(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_feature_flag(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_feature_flag_summary(self, server, sender_path, call_id):
+        result = self.container_manager.get_feature_flag_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Blue-green deployment handlers
+    # ------------------------------------------------------------------
+
+    def _create_bluegreen_deployment(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_bluegreen_deployment(
+            name=request['name'],
+            blue_container_id=request['blue_container_id'],
+            green_container_id=request.get('green_container_id'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _switch_traffic(self, server, sender_path, call_id, request):
+        result = self.container_manager.switch_traffic(
+            deployment_name=request['deployment_name'],
+            target_slot=request['target_slot'],
+            percentage=request.get('percentage'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_bluegreen_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_bluegreen_status(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rollback_bluegreen(self, server, sender_path, call_id, request):
+        result = self.container_manager.rollback_bluegreen(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_bluegreen_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_bluegreen_history(request['deployment_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_bluegreen_deployments(self, server, sender_path, call_id):
+        result = self.container_manager.list_bluegreen_deployments()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_bluegreen_deployment(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_bluegreen_deployment(request['name'])
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

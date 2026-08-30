@@ -2990,6 +2990,135 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "get_tamper_summary",
         }
+    if command == "configure-rate-limit":
+        return {
+            "service": "control",
+            "op": "configure_rate_limit",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+            "rate": float(getattr(args, 'rate', 100)),
+            "burst": int(getattr(args, 'burst', 200)),
+        }
+    if command == "check-rate-limit":
+        return {
+            "service": "control",
+            "op": "check_rate_limit",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+            "tokens": int(getattr(args, 'tokens', 1)),
+        }
+    if command == "get-rate-limit-stats":
+        return {
+            "service": "control",
+            "op": "get_rate_limit_stats",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+        }
+    if command == "get-all-rate-limiters":
+        return {
+            "service": "control",
+            "op": "get_all_rate_limiters",
+            "container_id": args.container_id,
+        }
+    if command == "reset-rate-limit":
+        return {
+            "service": "control",
+            "op": "reset_rate_limit",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+        }
+    if command == "delete-rate-limit":
+        return {
+            "service": "control",
+            "op": "delete_rate_limit",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'default'),
+        }
+    if command == "create-feature-flag":
+        return {
+            "service": "control",
+            "op": "create_feature_flag",
+            "name": args.name,
+            "enabled": getattr(args, 'enabled', False),
+            "rollout_percentage": float(getattr(args, 'rollout_percentage', 0)),
+            "description": getattr(args, 'description', ''),
+        }
+    if command == "evaluate-feature-flag":
+        return {
+            "service": "control",
+            "op": "evaluate_feature_flag",
+            "container_id": args.container_id,
+            "flag_name": args.flag_name,
+        }
+    if command == "update-feature-flag":
+        return {
+            "service": "control",
+            "op": "update_feature_flag",
+            "name": args.name,
+            "enabled": getattr(args, 'enabled', None),
+            "rollout_percentage": float(getattr(args, 'rollout_percentage', 0)) if hasattr(args, 'rollout_percentage') and args.rollout_percentage is not None else None,
+        }
+    if command == "list-feature-flags":
+        return {
+            "service": "control",
+            "op": "list_feature_flags",
+        }
+    if command == "delete-feature-flag":
+        return {
+            "service": "control",
+            "op": "delete_feature_flag",
+            "name": args.name,
+        }
+    if command == "feature-flag-summary":
+        return {
+            "service": "control",
+            "op": "get_feature_flag_summary",
+        }
+    if command == "create-bluegreen":
+        return {
+            "service": "control",
+            "op": "create_bluegreen_deployment",
+            "name": args.name,
+            "blue_container_id": args.blue_container_id,
+            "green_container_id": getattr(args, 'green_container_id', None),
+        }
+    if command == "switch-traffic":
+        return {
+            "service": "control",
+            "op": "switch_traffic",
+            "deployment_name": args.deployment_name,
+            "target_slot": args.target_slot,
+            "percentage": float(args.percentage) if hasattr(args, 'percentage') and args.percentage is not None else None,
+        }
+    if command == "get-bluegreen-status":
+        return {
+            "service": "control",
+            "op": "get_bluegreen_status",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "rollback-bluegreen":
+        return {
+            "service": "control",
+            "op": "rollback_bluegreen",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "get-bluegreen-history":
+        return {
+            "service": "control",
+            "op": "get_bluegreen_history",
+            "deployment_name": args.deployment_name,
+        }
+    if command == "list-bluegreen":
+        return {
+            "service": "control",
+            "op": "list_bluegreen_deployments",
+        }
+    if command == "delete-bluegreen":
+        return {
+            "service": "control",
+            "op": "delete_bluegreen_deployment",
+            "name": args.name,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6537,6 +6666,42 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
     if command == "tamper-summary":
         status = "ALL VALID" if resp.get('all_valid') else f"{resp.get('total_tampered', 0)} TAMPERED"
         return f"Tamper check: {resp.get('containers_checked', 0)} containers, {status}"
+    if command == "configure-rate-limit":
+        return f"Rate limit '{resp.get('limiter', '?')}' configured: rate={resp.get('rate', 0)}/s, burst={resp.get('burst', 0)}"
+    if command == "check-rate-limit":
+        status = "ALLOWED" if resp.get('allowed') else "REJECTED"
+        return f"Rate limit: {status}, tokens={resp.get('tokens_remaining', 0)}"
+    if command == "get-rate-limit-stats":
+        return f"Rate limit '{resp.get('limiter', '?')}': allowed={resp.get('total_allowed', 0)}, rejected={resp.get('total_rejected', 0)}, rejection={resp.get('rejection_rate', 0)}%"
+    if command == "get-all-rate-limiters":
+        return f"Rate limiters: {resp.get('count', 0)}"
+    if command == "create-feature-flag":
+        return f"Feature flag '{resp.get('name', '?')}' created: enabled={resp.get('enabled', False)}, rollout={resp.get('rollout_percentage', 0)}%"
+    if command == "evaluate-feature-flag":
+        status = "ACTIVE" if resp.get('active') else "INACTIVE"
+        return f"Flag '{resp.get('flag', '?')}': {status} ({resp.get('reason', '?')})"
+    if command == "list-feature-flags":
+        lines = ["Feature flags:"]
+        for f in resp.get('flags', []):
+            status = "ON" if f['enabled'] else "OFF"
+            lines.append(f"  {f['name']}: {status} (rollout={f['rollout_percentage']}%, evals={f['evaluation_count']})")
+        return "\n".join(lines) if lines[1:] else "No feature flags"
+    if command == "feature-flag-summary":
+        return f"Feature flags: {resp.get('total', 0)} total, {resp.get('enabled', 0)} enabled"
+    if command == "create-bluegreen":
+        return f"Blue-green '{resp.get('name', '?')}' created: active={resp.get('active_slot', '?')}"
+    if command == "switch-traffic":
+        pct = resp.get('traffic_percentage', {})
+        return f"Traffic switched: blue={pct.get('blue', 0)}%, green={pct.get('green', 0)}%"
+    if command == "get-bluegreen-status":
+        return f"Blue-green '{resp.get('name', '?')}': active={resp.get('active_slot', '?')}, switches={resp.get('switch_count', 0)}"
+    if command == "get-bluegreen-history":
+        return f"Switch history: {resp.get('count', 0)} switches"
+    if command == "list-bluegreen":
+        lines = ["Blue-green deployments:"]
+        for d in resp.get('deployments', []):
+            lines.append(f"  {d['name']}: active={d['active_slot']}")
+        return "\n".join(lines) if lines[1:] else "No deployments"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -8850,6 +9015,100 @@ def build_parser() -> argparse.ArgumentParser:
 
     ts = sub.add_parser("tamper-summary", help="Tamper detection summary")
     ts.set_defaults(command="tamper-summary")
+
+    # Rate limiting subcommands
+    crl = sub.add_parser("configure-rate-limit", help="Configure rate limiter")
+    crl.add_argument("container_id")
+    crl.add_argument("--name", default="default")
+    crl.add_argument("--rate", type=float, default=100)
+    crl.add_argument("--burst", type=int, default=200)
+    crl.set_defaults(command="configure-rate-limit")
+
+    chl = sub.add_parser("check-rate-limit", help="Check rate limit")
+    chl.add_argument("container_id")
+    chl.add_argument("--name", default="default")
+    chl.add_argument("--tokens", type=int, default=1)
+    chl.set_defaults(command="check-rate-limit")
+
+    grls = sub.add_parser("get-rate-limit-stats", help="Get rate limit stats")
+    grls.add_argument("container_id")
+    grls.add_argument("--name", default="default")
+    grls.set_defaults(command="get-rate-limit-stats")
+
+    garl = sub.add_parser("get-all-rate-limiters", help="Get all rate limiters")
+    garl.add_argument("container_id")
+    garl.set_defaults(command="get-all-rate-limiters")
+
+    rrl = sub.add_parser("reset-rate-limit", help="Reset rate limiter")
+    rrl.add_argument("container_id")
+    rrl.add_argument("--name", default="default")
+    rrl.set_defaults(command="reset-rate-limit")
+
+    drl = sub.add_parser("delete-rate-limit", help="Delete rate limiter")
+    drl.add_argument("container_id")
+    drl.add_argument("--name", default="default")
+    drl.set_defaults(command="delete-rate-limit")
+
+    # Feature flag subcommands
+    cff = sub.add_parser("create-feature-flag", help="Create feature flag")
+    cff.add_argument("name")
+    cff.add_argument("--enabled", action="store_true")
+    cff.add_argument("--rollout-percentage", type=float, default=0)
+    cff.add_argument("--description", default="")
+    cff.set_defaults(command="create-feature-flag")
+
+    eff = sub.add_parser("evaluate-feature-flag", help="Evaluate feature flag")
+    eff.add_argument("container_id")
+    eff.add_argument("flag_name")
+    eff.set_defaults(command="evaluate-feature-flag")
+
+    uff = sub.add_parser("update-feature-flag", help="Update feature flag")
+    uff.add_argument("name")
+    uff.add_argument("--enabled", action="store_true", default=None)
+    uff.add_argument("--rollout-percentage", type=float, default=None)
+    uff.set_defaults(command="update-feature-flag")
+
+    lff = sub.add_parser("list-feature-flags", help="List feature flags")
+    lff.set_defaults(command="list-feature-flags")
+
+    dff = sub.add_parser("delete-feature-flag", help="Delete feature flag")
+    dff.add_argument("name")
+    dff.set_defaults(command="delete-feature-flag")
+
+    ffs = sub.add_parser("feature-flag-summary", help="Feature flag summary")
+    ffs.set_defaults(command="feature-flag-summary")
+
+    # Blue-green deployment subcommands
+    cbg = sub.add_parser("create-bluegreen", help="Create blue-green deployment")
+    cbg.add_argument("name")
+    cbg.add_argument("blue_container_id")
+    cbg.add_argument("--green-container-id", default=None)
+    cbg.set_defaults(command="create-bluegreen")
+
+    st = sub.add_parser("switch-traffic", help="Switch traffic slot")
+    st.add_argument("deployment_name")
+    st.add_argument("target_slot", choices=["blue", "green"])
+    st.add_argument("--percentage", type=float, default=None)
+    st.set_defaults(command="switch-traffic")
+
+    gbs = sub.add_parser("get-bluegreen-status", help="Get blue-green status")
+    gbs.add_argument("deployment_name")
+    gbs.set_defaults(command="get-bluegreen-status")
+
+    rbg = sub.add_parser("rollback-bluegreen", help="Rollback blue-green")
+    rbg.add_argument("deployment_name")
+    rbg.set_defaults(command="rollback-bluegreen")
+
+    gbh = sub.add_parser("get-bluegreen-history", help="Get blue-green history")
+    gbh.add_argument("deployment_name")
+    gbh.set_defaults(command="get-bluegreen-history")
+
+    lbg = sub.add_parser("list-bluegreen", help="List blue-green deployments")
+    lbg.set_defaults(command="list-bluegreen")
+
+    dbg = sub.add_parser("delete-bluegreen", help="Delete blue-green deployment")
+    dbg.add_argument("name")
+    dbg.set_defaults(command="delete-bluegreen")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
