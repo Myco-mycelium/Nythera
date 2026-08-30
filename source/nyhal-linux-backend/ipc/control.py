@@ -783,6 +783,15 @@ class ControlService:
             elif op == "record_pressure_snapshot":
                 self._record_pressure_snapshot(
                     server, sender_path, msg.message_id, request)
+            elif op == "classify_tier":
+                self._classify_tier(
+                    server, sender_path, msg.message_id, request)
+            elif op == "fleet_tier_summary":
+                self._fleet_tier_summary(
+                    server, sender_path, msg.message_id, request)
+            elif op == "suggest_tier_upgrade":
+                self._suggest_tier_upgrade(
+                    server, sender_path, msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -5451,6 +5460,42 @@ class ControlService:
                                  call_id: str,
                                  request: Dict[str, Any]) -> None:
         result = self.container_manager.record_pressure_snapshot()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _classify_tier(self, server, sender_path: str,
+                       call_id: str,
+                       request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.classify_container_tier(c)
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _fleet_tier_summary(self, server, sender_path: str,
+                           call_id: str,
+                           request: Dict[str, Any]) -> None:
+        result = self.container_manager.get_fleet_tier_summary()
+        self._reply(server, sender_path, call_id, {
+            "ok": True, **result,
+        })
+
+    def _suggest_tier_upgrade(self, server, sender_path: str,
+                             call_id: str,
+                             request: Dict[str, Any]) -> None:
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {
+                "ok": False, "error": "container not found",
+            })
+            return
+        result = self.container_manager.suggest_tier_upgrade(c)
         self._reply(server, sender_path, call_id, {
             "ok": True, **result,
         })

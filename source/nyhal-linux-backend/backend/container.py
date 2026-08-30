@@ -11183,6 +11183,171 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Resource tiering (QoS classification)
+    # ------------------------------------------------------------------
+
+    TIER_GUARANTEED = "guaranteed"
+    TIER_BURSTABLE = "burstable"
+    TIER_BESTEFFORT = "besteffort"
+
+    def classify_container_tier(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Classify a container into a QoS tier.
+
+        - Guaranteed: memory and CPU limits are set, and usage stays
+          below limits (no throttling / OOM risk).
+        - Burstable: limits are set but usage periodically approaches
+          or exceeds them; or only one of memory/CPU limits is set.
+        - BestEffort: no resource limits configured at all.
+
+        Returns:
+            { tier, memory_guaranteed, cpu_guaranteed, reasons }
+        """
+        limits = container.config.limits
+        has_mem_limit = limits.memory_mb is not None and limits.memory_mb > 0
+        has_cpu_limit = (
+            (limits.cpu_quota_us is not None and limits.cpu_quota_us > 0)
+            or limits.cpu_weight is not None
+        )
+
+        reasons: List[str] = []
+
+        # No limits at all -> BestEffort
+        if not has_mem_limit and not has_cpu_limit:
+            return {
+                "container_id": container.id,
+                "tier": self.TIER_BESTEFFORT,
+                "memory_guaranteed": False,
+                "cpu_guaranteed": False,
+                "reasons": ["no memory limit configured",
+                             "no CPU limit configured"],
+            }
+
+        memory_guaranteed = has_mem_limit
+        cpu_guaranteed = has_cpu_limit
+
+        # Check usage vs limits
+        stats = self.container_stats(container)
+        if stats.get("available"):
+            mem_bytes = stats.get("memory_bytes", 0)
+            mem_limit_bytes = limits.memory_mb * 1024 * 1024 if has_mem_limit else 0
+            if has_mem_limit and mem_limit_bytes > 0:
+                mem_ratio = mem_bytes / mem_limit_bytes
+                if mem_ratio >= 0.90:
+                    reasons.append(
+                        f"memory usage at {mem_ratio:.0%} of limit")
+
+            # CPU throttle check
+            throttle_pct = stats.get("cpu_throttle_pct", 0.0)
+            if throttle_pct > 0:
+                reasons.append(
+                    f"CPU throttled {throttle_pct:.1f}% of periods")
+
+        if has_mem_limit and has_cpu_limit:
+            if not reasons:
+                tier = self.TIER_GUARANTEED
+            else:
+                tier = self.TIER_BURSTABLE
+        else:
+            tier = self.TIER_BURSTABLE
+            if not has_mem_limit:
+                reasons.append("no memory limit — burstable on memory")
+            if not has_cpu_limit:
+                reasons.append("no CPU limit — burstable on CPU")
+
+        return {
+            "container_id": container.id,
+            "tier": tier,
+            "memory_guaranteed": memory_guaranteed,
+            "cpu_guaranteed": cpu_guaranteed,
+            "reasons": reasons,
+        }
+
+    def get_fleet_tier_summary(self) -> Dict[str, Any]:
+        """Classify all running containers and return fleet-level tier
+        distribution.
+
+        Returns:
+            { tiers: { guaranteed: N, burstable: N, besteffort: N },
+              containers: [...], total: N }
+        """
+        containers = list(self.containers.values())
+        tier_counts = {
+            self.TIER_GUARANTEED: 0,
+            self.TIER_BURSTABLE: 0,
+            self.TIER_BESTEFFORT: 0,
+        }
+        classifications = []
+
+        for c in containers:
+            if c.state != ContainerState.RUNNING:
+                continue
+            cl = self.classify_container_tier(c)
+            tier_counts[cl["tier"]] += 1
+            classifications.append(cl)
+
+        return {
+            "tiers": tier_counts,
+            "containers": classifications,
+            "total": len(classifications),
+        }
+
+    def suggest_tier_upgrade(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Suggest how to upgrade a container to a higher QoS tier.
+
+        Returns the current tier, target tier, and the specific
+        configuration changes needed.
+        """
+        current = self.classify_container_tier(container)
+        limits = container.config.limits
+        suggestions: List[str] = []
+
+        if current["tier"] == self.TIER_BESTEFFORT:
+            if limits.memory_mb <= 0 or not limits.memory_mb:
+                suggestions.append(
+                    "Set memory_mb to a fixed limit (e.g., 256)")
+            if (not limits.cpu_quota_us or limits.cpu_quota_us <= 0) and not limits.cpu_weight:
+                suggestions.append(
+                    "Set cpu_quota_us or cpu_weight for CPU guarantee")
+            target = self.TIER_BURSTABLE
+        elif current["tier"] == self.TIER_BURSTABLE:
+            target = self.TIER_GUARANTEED
+            if limits.memory_mb <= 0 or not limits.memory_mb:
+                suggestions.append("Add a memory limit")
+            if (not limits.cpu_quota_us or limits.cpu_quota_us <= 0) and not limits.cpu_weight:
+                suggestions.append("Add a CPU quota or weight")
+            # Check if usage is too high to safely guarantee
+            stats = self.container_stats(container)
+            if stats.get("available"):
+                mem_bytes = stats.get("memory_bytes", 0)
+                mem_limit_bytes = limits.memory_mb * 1024 * 1024
+                if mem_limit_bytes > 0 and mem_bytes / mem_limit_bytes > 0.80:
+                    suggestions.append(
+                        "Memory usage > 80% of limit — increase limit "
+                        "before upgrading to guaranteed")
+                throttle = stats.get("cpu_throttle_pct", 0.0)
+                if throttle > 5.0:
+                    suggestions.append(
+                        f"CPU throttled {throttle:.1f}% — increase "
+                        "cpu_quota_us before upgrading to guaranteed")
+        else:
+            target = self.TIER_GUARANTEED
+            suggestions.append("Already guaranteed — no changes needed")
+
+        return {
+            "container_id": container.id,
+            "current_tier": current["tier"],
+            "target_tier": target,
+            "suggestions": suggestions,
+            "current_reasons": current["reasons"],
+        }
+
+    # ------------------------------------------------------------------
     # Network traffic analysis
     # ------------------------------------------------------------------
 

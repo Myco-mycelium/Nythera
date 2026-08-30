@@ -26272,6 +26272,110 @@ class TestResourceHeatmap(unittest.TestCase):
         self.assertIsInstance(candidates, list)
 
 
+class TestResourceTiering(unittest.TestCase):
+    """Tests for QoS tier classification."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        return c
+
+    def test_besteffort_no_limits(self):
+        from backend.container import ContainerConfig, ContainerState, ResourceLimits
+        mgr = self._mgr()
+        c = mgr.create(ContainerConfig(
+            name="t1", command=["sleep", "10"],
+            limits=ResourceLimits(memory_mb=0)))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        result = mgr.classify_container_tier(c)
+        self.assertEqual(result['tier'], 'besteffort')
+        self.assertFalse(result['memory_guaranteed'])
+        self.assertFalse(result['cpu_guaranteed'])
+        self.assertGreater(len(result['reasons']), 0)
+
+    def test_burstable_memory_only(self):
+        from backend.container import ContainerConfig, ContainerState, ResourceLimits
+        mgr = self._mgr()
+        c = mgr.create(ContainerConfig(
+            name="t2", command=["sleep", "10"],
+            limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        result = mgr.classify_container_tier(c)
+        self.assertEqual(result['tier'], 'burstable')
+        self.assertTrue(result['memory_guaranteed'])
+        self.assertFalse(result['cpu_guaranteed'])
+
+    def test_fleet_summary(self):
+        mgr = self._mgr()
+        self._make(mgr, "f1")
+        self._make(mgr, "f2")
+        result = mgr.get_fleet_tier_summary()
+        self.assertIn('tiers', result)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(sum(result['tiers'].values()), 2)
+
+    def test_suggest_upgrade_besteffort(self):
+        from backend.container import ContainerConfig, ContainerState, ResourceLimits
+        mgr = self._mgr()
+        c = mgr.create(ContainerConfig(
+            name="u1", command=["sleep", "10"],
+            limits=ResourceLimits(memory_mb=0)))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        result = mgr.suggest_tier_upgrade(c)
+        self.assertEqual(result['current_tier'], 'besteffort')
+        self.assertEqual(result['target_tier'], 'burstable')
+        self.assertGreater(len(result['suggestions']), 0)
+
+    def test_suggest_upgrade_already_guaranteed(self):
+        from backend.container import ContainerConfig, ContainerState, ResourceLimits
+        mgr = self._mgr()
+        c = mgr.create(ContainerConfig(
+            name="u2", command=["sleep", "10"],
+            limits=ResourceLimits(memory_mb=128, cpu_quota_us=50000)))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        result = mgr.suggest_tier_upgrade(c)
+        self.assertEqual(result['current_tier'], 'guaranteed')
+        self.assertEqual(result['target_tier'], 'guaranteed')
+
+    def test_fleet_summary_empty(self):
+        mgr = self._mgr()
+        result = mgr.get_fleet_tier_summary()
+        self.assertEqual(result['total'], 0)
+        self.assertEqual(result['tiers']['guaranteed'], 0)
+
+    def test_classify_tier_structure(self):
+        mgr = self._mgr()
+        c = self._make(mgr, "s1")
+        result = mgr.classify_container_tier(c)
+        self.assertIn('container_id', result)
+        self.assertIn('tier', result)
+        self.assertIn('reasons', result)
+        self.assertIsInstance(result['reasons'], list)
+
+    def test_burstable_cpu_only(self):
+        from backend.container import ContainerConfig, ContainerState, ResourceLimits
+        mgr = self._mgr()
+        c = mgr.create(ContainerConfig(
+            name="t3", command=["sleep", "10"],
+            limits=ResourceLimits(memory_mb=0, cpu_quota_us=50000)))
+        c.state = ContainerState.RUNNING
+        c.started_at = __import__('time').time()
+        result = mgr.classify_container_tier(c)
+        self.assertEqual(result['tier'], 'burstable')
+        self.assertFalse(result['memory_guaranteed'])
+        self.assertTrue(result['cpu_guaranteed'])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -26378,6 +26482,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyCorrelation))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceHeatmap))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceTiering))
     suite.addTests(loader.loadTestsFromTestCase(TestLSMPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestVethBridgeNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestBootLifecycle))

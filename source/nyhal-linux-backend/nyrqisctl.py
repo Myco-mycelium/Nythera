@@ -1850,6 +1850,23 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "record_pressure_snapshot",
         }
+    if command == "classify-tier":
+        return {
+            "service": "control",
+            "op": "classify_tier",
+            "container_id": args.container_id,
+        }
+    if command == "fleet-tier-summary":
+        return {
+            "service": "control",
+            "op": "fleet_tier_summary",
+        }
+    if command == "suggest-tier-upgrade":
+        return {
+            "service": "control",
+            "op": "suggest_tier_upgrade",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -4529,6 +4546,32 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
             f"Recorded pressure snapshot for "
             f"{resp.get('recorded', 0)} containers at "
             f"{resp.get('timestamp', 0):.0f}")
+    if command == "classify-tier":
+        lines = [
+            f"Container: {resp.get('container_id', '?')[:12]}",
+            f"  tier: {resp.get('tier', '?')}",
+        ]
+        for r in resp.get('reasons', []):
+            lines.append(f"  - {r}")
+        return "\n".join(lines)
+    if command == "fleet-tier-summary":
+        t = resp.get('tiers', {})
+        lines = [
+            f"Fleet tier summary ({resp.get('total', 0)} containers):",
+            f"  guaranteed: {t.get('guaranteed', 0)}",
+            f"  burstable: {t.get('burstable', 0)}",
+            f"  besteffort: {t.get('besteffort', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "suggest-tier-upgrade":
+        lines = [
+            f"Tier upgrade for {resp.get('container_id', '?')[:12]}:",
+            f"  current: {resp.get('current_tier', '?')}",
+            f"  target: {resp.get('target_tier', '?')}",
+        ]
+        for s in resp.get('suggestions', []):
+            lines.append(f"  - {s}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -5958,6 +6001,20 @@ def build_parser() -> argparse.ArgumentParser:
     rps = sub.add_parser("record-pressure-snapshot",
                         help="Record pressure snapshot for all containers")
     rps.set_defaults(command="record-pressure-snapshot")
+
+    ct = sub.add_parser("classify-tier",
+                        help="Classify container QoS tier")
+    ct.add_argument("container_id", help="Container ID")
+    ct.set_defaults(command="classify-tier")
+
+    fts = sub.add_parser("fleet-tier-summary",
+                         help="Fleet-wide tier distribution")
+    fts.set_defaults(command="fleet-tier-summary")
+
+    stu = sub.add_parser("suggest-tier-upgrade",
+                         help="Suggest tier upgrade changes")
+    stu.add_argument("container_id", help="Container ID")
+    stu.set_defaults(command="suggest-tier-upgrade")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)
