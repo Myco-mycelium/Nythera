@@ -2031,6 +2031,48 @@ class ControlService:
             elif op == "delete_autoscaler":
                 self._delete_autoscaler(server, sender_path,
                                    msg.message_id, request)
+            elif op == "sign_image":
+                self._sign_image(server, sender_path,
+                            msg.message_id, request)
+            elif op == "verify_image_signature":
+                self._verify_image_signature(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_signed_images":
+                self._list_signed_images(server, sender_path,
+                                    msg.message_id)
+            elif op == "revoke_image_signature":
+                self._revoke_image_signature(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "configure_otel_exporter":
+                self._configure_otel_exporter(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "record_otel_metric":
+                self._record_otel_metric(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_otel_status":
+                self._get_otel_status(server, sender_path,
+                                 msg.message_id)
+            elif op == "get_container_metrics":
+                self._get_container_metrics(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "register_federation_cluster":
+                self._register_federation_cluster(server, sender_path,
+                                             msg.message_id, request)
+            elif op == "global_schedule":
+                self._global_schedule(server, sender_path,
+                                msg.message_id, request)
+            elif op == "get_federation_status":
+                self._get_federation_status(server, sender_path,
+                                       msg.message_id)
+            elif op == "list_federation_clusters":
+                self._list_federation_clusters(server, sender_path,
+                                          msg.message_id)
+            elif op == "get_federation_workloads":
+                self._get_federation_workloads(server, sender_path,
+                                          msg.message_id)
+            elif op == "remove_federation_cluster":
+                self._remove_federation_cluster(server, sender_path,
+                                          msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9892,6 +9934,98 @@ class ControlService:
 
     def _delete_autoscaler(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_autoscaler(request.get("container_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _sign_image(self, server, sender_path, call_id, request):
+        result = self.container_manager.sign_image(
+            image_ref=request.get("image_ref", ""),
+            key_ref=request.get("key_ref", "cosign-key"),
+            annotations=request.get("annotations"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _verify_image_signature(self, server, sender_path, call_id, request):
+        result = self.container_manager.verify_image_signature(
+            image_ref=request.get("image_ref", ""),
+            key_ref=request.get("key_ref"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_signed_images(self, server, sender_path, call_id):
+        result = self.container_manager.list_signed_images()
+        self._reply(server, sender_path, call_id, {"ok": True, "images": result})
+
+    def _revoke_image_signature(self, server, sender_path, call_id, request):
+        result = self.container_manager.revoke_image_signature(request.get("image_ref", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _configure_otel_exporter(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_otel_exporter(
+            endpoint=request.get("endpoint", "http://localhost:4317"),
+            protocol=request.get("protocol", "grpc"),
+            service_name=request.get("service_name", "nyrqis"),
+            batch_size=request.get("batch_size", 100),
+            flush_interval_s=request.get("flush_interval_s", 5.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_otel_metric(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_otel_metric(
+            name=request.get("name", ""),
+            value=request.get("value", 0.0),
+            metric_type=request.get("metric_type", "gauge"),
+            attributes=request.get("attributes"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_otel_status(self, server, sender_path, call_id):
+        result = self.container_manager.get_otel_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_container_metrics(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_container_metrics(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _register_federation_cluster(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_federation_cluster(
+            cluster_id=request.get("cluster_id", ""),
+            endpoint=request.get("endpoint", ""),
+            region=request.get("region", "us-east-1"),
+            zone=request.get("zone", "us-east-1a"),
+            capacity=request.get("capacity"),
+            labels=request.get("labels"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _global_schedule(self, server, sender_path, call_id, request):
+        result = self.container_manager.global_schedule(
+            workload_name=request.get("workload_name", ""),
+            required_cpu=request.get("required_cpu", 1),
+            required_memory_mb=request.get("required_memory_mb", 256),
+            preferred_region=request.get("preferred_region"),
+            cluster_selector=request.get("cluster_selector"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_federation_status(self, server, sender_path, call_id):
+        result = self.container_manager.get_federation_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_federation_clusters(self, server, sender_path, call_id):
+        result = self.container_manager.list_federation_clusters()
+        self._reply(server, sender_path, call_id, {"ok": True, "clusters": result})
+
+    def _get_federation_workloads(self, server, sender_path, call_id):
+        result = self.container_manager.get_federation_workloads()
+        self._reply(server, sender_path, call_id, {"ok": True, "workloads": result})
+
+    def _remove_federation_cluster(self, server, sender_path, call_id, request):
+        result = self.container_manager.remove_federation_cluster(request.get("cluster_id", ""))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

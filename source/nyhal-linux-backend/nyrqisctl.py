@@ -4421,6 +4421,91 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "list_autoscalers",
         }
+    if command == "sign-image":
+        return {
+            "service": "control",
+            "op": "sign_image",
+            "image_ref": args.image_ref,
+            "key_ref": getattr(args, 'key_ref', 'cosign-key'),
+        }
+    if command == "verify-image-signature":
+        return {
+            "service": "control",
+            "op": "verify_image_signature",
+            "image_ref": args.image_ref,
+            "key_ref": getattr(args, 'key_ref', None),
+        }
+    if command == "list-signed-images":
+        return {
+            "service": "control",
+            "op": "list_signed_images",
+        }
+    if command == "revoke-image-signature":
+        return {
+            "service": "control",
+            "op": "revoke_image_signature",
+            "image_ref": args.image_ref,
+        }
+    if command == "configure-otel":
+        return {
+            "service": "control",
+            "op": "configure_otel_exporter",
+            "endpoint": getattr(args, 'endpoint', 'http://localhost:4317'),
+            "protocol": getattr(args, 'protocol', 'grpc'),
+            "service_name": getattr(args, 'service_name', 'nyrqis'),
+        }
+    if command == "record-otel-metric":
+        return {
+            "service": "control",
+            "op": "record_otel_metric",
+            "name": args.name,
+            "value": args.value,
+            "metric_type": getattr(args, 'metric_type', 'gauge'),
+        }
+    if command == "otel-status":
+        return {
+            "service": "control",
+            "op": "get_otel_status",
+        }
+    if command == "container-metrics":
+        return {
+            "service": "control",
+            "op": "get_container_metrics",
+            "container_id": args.container_id,
+        }
+    if command == "register-fed-cluster":
+        return {
+            "service": "control",
+            "op": "register_federation_cluster",
+            "cluster_id": args.cluster_id,
+            "endpoint": getattr(args, 'endpoint', ''),
+            "region": getattr(args, 'region', 'us-east-1'),
+            "zone": getattr(args, 'zone', 'us-east-1a'),
+        }
+    if command == "global-schedule":
+        return {
+            "service": "control",
+            "op": "global_schedule",
+            "workload_name": args.workload_name,
+            "required_cpu": getattr(args, 'required_cpu', 1),
+            "required_memory_mb": getattr(args, 'required_memory_mb', 256),
+            "preferred_region": getattr(args, 'preferred_region', None),
+        }
+    if command == "federation-status":
+        return {
+            "service": "control",
+            "op": "get_federation_status",
+        }
+    if command == "list-fed-clusters":
+        return {
+            "service": "control",
+            "op": "list_federation_clusters",
+        }
+    if command == "fed-workloads":
+        return {
+            "service": "control",
+            "op": "get_federation_workloads",
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -8518,6 +8603,51 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for a in autos:
             lines.append(f"  {a['container_id'][:12]}: {a['current']} replicas ({a['min']}-{a['max']}), events={a['events']}")
         if not autos:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "sign-image":
+        return f"Image '{resp.get('image_ref', '?')}' signed (sig: {resp.get('signature_id', '?')})"
+    if command == "verify-image-signature":
+        status = "VERIFIED" if resp.get("verified") else "FAILED"
+        return f"Image '{resp.get('image_ref', '?')}' signature: {status}"
+    if command == "list-signed-images":
+        images = resp.get("images", [])
+        lines = ["Signed Images:"]
+        for img in images:
+            lines.append(f"  {img['image_ref']}: sig={img['signature_id']}, key={img['key_ref']}")
+        if not images:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "configure-otel":
+        return f"OTel exporter configured: {resp.get('endpoint', '?')} ({resp.get('protocol', '?')})"
+    if command == "record-otel-metric":
+        return f"Recorded {resp.get('metric', '?')} (buffer: {resp.get('buffer_size', 0)})"
+    if command == "otel-status":
+        lines = ["OpenTelemetry:", f"  enabled: {resp.get('enabled', False)}", f"  endpoint: {resp.get('endpoint', '?')}", f"  exported: {resp.get('metrics_exported', 0)}, buffer: {resp.get('buffer_size', 0)}"]
+        return "\n".join(lines)
+    if command == "register-fed-cluster":
+        return f"Cluster '{resp.get('cluster_id', '?')}' registered in {resp.get('region', '?')}"
+    if command == "global-schedule":
+        if resp.get("scheduled"):
+            return f"Workload '{resp.get('workload', '?')}' scheduled on {resp.get('cluster', '?')} ({resp.get('region', '?')})"
+        return f"Scheduling failed: {resp.get('error', '?')}"
+    if command == "federation-status":
+        return f"Federation: {resp.get('clusters', 0)} clusters ({resp.get('healthy', 0)} healthy) in {len(resp.get('regions', []))} regions"
+    if command == "list-fed-clusters":
+        clusters = resp.get("clusters", [])
+        lines = ["Federation Clusters:"]
+        for c in clusters:
+            status = "healthy" if c["healthy"] else "unhealthy"
+            lines.append(f"  {c['cluster_id']}: {c['region']}/{c['zone']} [{status}] cpu={c['cpu_capacity']} workloads={c['workloads']}")
+        if not clusters:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "fed-workloads":
+        workloads = resp.get("workloads", [])
+        lines = ["Federated Workloads:"]
+        for w in workloads:
+            lines.append(f"  {w['workload']}: cluster={w['cluster']}, region={w['region']}, cpu={w['cpu']}")
+        if not workloads:
             lines.append("  (none)")
         return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
@@ -12631,6 +12761,60 @@ def build_parser() -> argparse.ArgumentParser:
 
     las = sub.add_parser("list-autoscalers", help="List autoscalers")
     las.set_defaults(command="list-autoscalers")
+
+    # Image signing
+    si = sub.add_parser("sign-image", help="Sign image with Cosign")
+    si.add_argument("image_ref")
+    si.add_argument("--key-ref", default="cosign-key")
+    si.set_defaults(command="sign-image")
+
+    vis = sub.add_parser("verify-image-signature", help="Verify image signature")
+    vis.add_argument("image_ref")
+    vis.add_argument("--key-ref", default=None)
+    vis.set_defaults(command="verify-image-signature")
+
+    lsi = sub.add_parser("list-signed-images", help="List signed images")
+    lsi.set_defaults(command="list-signed-images")
+
+    # OpenTelemetry
+    cot = sub.add_parser("configure-otel", help="Configure OpenTelemetry exporter")
+    cot.add_argument("--endpoint", default="http://localhost:4317")
+    cot.add_argument("--protocol", default="grpc", choices=["grpc", "http"])
+    cot.add_argument("--service-name", default="nyrqis")
+    cot.set_defaults(command="configure-otel")
+
+    rom = sub.add_parser("record-otel-metric", help="Record OTel metric")
+    rom.add_argument("name")
+    rom.add_argument("value", type=float)
+    rom.add_argument("--type", dest="metric_type", default="gauge", choices=["gauge", "counter", "histogram"])
+    rom.set_defaults(command="record-otel-metric")
+
+    ots = sub.add_parser("otel-status", help="OTel exporter status")
+    ots.set_defaults(command="otel-status")
+
+    # Federation
+    rfc = sub.add_parser("register-fed-cluster", help="Register federation cluster")
+    rfc.add_argument("cluster_id")
+    rfc.add_argument("--endpoint", default="")
+    rfc.add_argument("--region", default="us-east-1")
+    rfc.add_argument("--zone", default="us-east-1a")
+    rfc.set_defaults(command="register-fed-cluster")
+
+    gs = sub.add_parser("global-schedule", help="Schedule workload globally")
+    gs.add_argument("workload_name")
+    gs.add_argument("--cpu", type=int, dest="required_cpu", default=1)
+    gs.add_argument("--memory", type=int, dest="required_memory_mb", default=256)
+    gs.add_argument("--region", dest="preferred_region", default=None)
+    gs.set_defaults(command="global-schedule")
+
+    fs = sub.add_parser("federation-status", help="Federation status")
+    fs.set_defaults(command="federation-status")
+
+    lfc = sub.add_parser("list-fed-clusters", help="List federation clusters")
+    lfc.set_defaults(command="list-fed-clusters")
+
+    fw = sub.add_parser("fed-workloads", help="List federated workloads")
+    fw.set_defaults(command="fed-workloads")
 
     return parser
 

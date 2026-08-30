@@ -32281,6 +32281,170 @@ class TestAutoScaling(unittest.TestCase):
         self.assertIn("True", text)
 
 
+class TestImageSigning(unittest.TestCase):
+    """Tests for image signing with Sigstore/Cosign integration."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_sign_image(self):
+        """sign_image creates signature."""
+        mgr = self._manager()
+        r = mgr.sign_image("nginx:latest", key_ref="cosign-key")
+        self.assertTrue(r["signed"])
+        self.assertIn("signature_id", r)
+
+    def test_verify_valid(self):
+        """verify_image_signature passes for signed image."""
+        mgr = self._manager()
+        mgr.sign_image("app:v1", key_ref="key1")
+        r = mgr.verify_image_signature("app:v1")
+        self.assertTrue(r["verified"])
+
+    def test_verify_wrong_key(self):
+        """verify_image_signature fails for wrong key."""
+        mgr = self._manager()
+        mgr.sign_image("app:v2", key_ref="key1")
+        r = mgr.verify_image_signature("app:v2", key_ref="key2")
+        self.assertFalse(r["verified"])
+
+    def test_verify_unsigned(self):
+        """verify_image_signature fails for unsigned image."""
+        mgr = self._manager()
+        r = mgr.verify_image_signature("unknown:v1")
+        self.assertFalse(r["verified"])
+
+    def test_revoke_signature(self):
+        """revoke_image_signature removes signature."""
+        mgr = self._manager()
+        mgr.sign_image("del:v1")
+        r = mgr.revoke_image_signature("del:v1")
+        self.assertIn("revoked", r)
+
+    def test_list_signed(self):
+        """list_signed_images returns all."""
+        mgr = self._manager()
+        mgr.sign_image("a:v1")
+        mgr.sign_image("b:v1")
+        r = mgr.list_signed_images()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_sign(self):
+        """format_human handles sign-image."""
+        from nyrqisctl import format_human
+        text = format_human("sign-image", {"image_ref": "nginx", "signature_id": "abc123"})
+        self.assertIn("abc123", text)
+
+
+class TestOpenTelemetry(unittest.TestCase):
+    """Tests for runtime metrics with OpenTelemetry export."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_configure_otel(self):
+        """configure_otel_exporter stores config."""
+        mgr = self._manager()
+        r = mgr.configure_otel_exporter(endpoint="http://otel:4317", protocol="grpc")
+        self.assertTrue(r["configured"])
+        self.assertEqual(r["protocol"], "grpc")
+
+    def test_record_metric(self):
+        """record_otel_metric stores metric."""
+        mgr = self._manager()
+        mgr.configure_otel_exporter()
+        r = mgr.record_otel_metric("cpu_usage", 42.5, metric_type="gauge")
+        self.assertTrue(r["recorded"])
+
+    def test_record_unconfigured(self):
+        """record_otel_metric fails when not configured."""
+        mgr = self._manager()
+        r = mgr.record_otel_metric("cpu", 1.0)
+        self.assertIn("error", r)
+
+    def test_otel_status(self):
+        """get_otel_status returns info."""
+        mgr = self._manager()
+        mgr.configure_otel_exporter(service_name="test-svc")
+        mgr.record_otel_metric("test", 1.0)
+        r = mgr.get_otel_status()
+        self.assertTrue(r["enabled"])
+        self.assertEqual(r["metrics_exported"], 1)
+
+    def test_container_metrics(self):
+        """get_container_metrics returns OTel format."""
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="m1", command=["sleep", "10"]))
+        r = mgr.get_container_metrics(c)
+        self.assertEqual(r["format"], "opentelemetry")
+        self.assertGreater(len(r["metrics"]), 0)
+
+    def test_format_human_otel(self):
+        """format_human handles otel-status."""
+        from nyrqisctl import format_human
+        text = format_human("otel-status", {"enabled": True, "endpoint": "http://otel:4317", "service_name": "nyrqis", "metrics_exported": 42, "buffer_size": 5})
+        self.assertIn("True", text)
+        self.assertIn("42", text)
+
+
+class TestMultiClusterFederation(unittest.TestCase):
+    """Tests for multi-cluster federation with global scheduling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_register_cluster(self):
+        """register_federation_cluster stores cluster."""
+        mgr = self._manager()
+        r = mgr.register_federation_cluster("cluster-1", region="us-east-1", capacity={"cpu": 50, "memory_mb": 128000})
+        self.assertTrue(r["registered"])
+        self.assertEqual(r["region"], "us-east-1")
+
+    def test_global_schedule(self):
+        """global_schedule assigns to cluster."""
+        mgr = self._manager()
+        mgr.register_federation_cluster("c1", capacity={"cpu": 10, "memory_mb": 20000})
+        mgr.register_federation_cluster("c2", capacity={"cpu": 50, "memory_mb": 100000})
+        r = mgr.global_schedule("web-app", required_cpu=2, required_memory_mb=512)
+        self.assertTrue(r["scheduled"])
+        self.assertEqual(r["cluster"], "c2")
+
+    def test_schedule_no_capacity(self):
+        """global_schedule fails when insufficient capacity."""
+        mgr = self._manager()
+        mgr.register_federation_cluster("small", capacity={"cpu": 1, "memory_mb": 100})
+        r = mgr.global_schedule("big-app", required_cpu=100, required_memory_mb=1000)
+        self.assertFalse(r["scheduled"])
+
+    def test_federation_status(self):
+        """get_federation_status returns overview."""
+        mgr = self._manager()
+        mgr.register_federation_cluster("c1", region="us-east-1")
+        mgr.register_federation_cluster("c2", region="us-west-2")
+        r = mgr.get_federation_status()
+        self.assertEqual(r["clusters"], 2)
+        self.assertEqual(r["healthy"], 2)
+        self.assertIn("us-east-1", r["regions"])
+
+    def test_list_clusters(self):
+        """list_federation_clusters returns all."""
+        mgr = self._manager()
+        mgr.register_federation_cluster("c1")
+        mgr.register_federation_cluster("c2")
+        r = mgr.list_federation_clusters()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_federation(self):
+        """format_human handles federation-status."""
+        from nyrqisctl import format_human
+        text = format_human("federation-status", {"clusters": 3, "healthy": 2, "regions": ["us-east-1", "eu-west-1"]})
+        self.assertIn("3", text)
+        self.assertIn("2", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -32514,6 +32678,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAffinityRules))
     suite.addTests(loader.loadTestsFromTestCase(TestPreemption))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoScaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageSigning))
+    suite.addTests(loader.loadTestsFromTestCase(TestOpenTelemetry))
+    suite.addTests(loader.loadTestsFromTestCase(TestMultiClusterFederation))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
