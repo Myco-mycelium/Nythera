@@ -31370,6 +31370,208 @@ class TestResourcePools(unittest.TestCase):
         self.assertIn("3", text)
 
 
+class TestGPUScheduling(unittest.TestCase):
+    """Tests for GPU device scheduling with time-sharing."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_gpu(self):
+        """register_gpu_device stores GPU."""
+        mgr = self._manager()
+        r = mgr.register_gpu_device("gpu-0", device_type="nvidia", memory_mb=16384)
+        self.assertTrue(r["registered"])
+
+    def test_assign_gpu(self):
+        """assign_gpu assigns to container."""
+        mgr = self._manager()
+        c = self._make(mgr, "gpu1")
+        mgr.register_gpu_device("gpu-0")
+        r = mgr.assign_gpu("gpu-0", c, timeslice_ms=10)
+        self.assertTrue(r["assigned"])
+
+    def test_assign_gpu_busy(self):
+        """assign_gpu rejects when GPU is allocated."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "gpu2")
+        c2 = self._make(mgr, "gpu3")
+        mgr.register_gpu_device("gpu-0")
+        mgr.assign_gpu("gpu-0", c1)
+        r = mgr.assign_gpu("gpu-0", c2)
+        self.assertIn("error", r)
+
+    def test_release_gpu(self):
+        """release_gpu frees the device."""
+        mgr = self._manager()
+        c = self._make(mgr, "gpu4")
+        mgr.register_gpu_device("gpu-0")
+        mgr.assign_gpu("gpu-0", c)
+        r = mgr.release_gpu("gpu-0")
+        self.assertEqual(r["device_id"], "gpu-0")
+
+    def test_gpu_status(self):
+        """get_gpu_status lists devices."""
+        mgr = self._manager()
+        mgr.register_gpu_device("gpu-0", memory_mb=8192)
+        r = mgr.get_gpu_status()
+        self.assertEqual(len(r), 1)
+        self.assertFalse(r[0]["allocated"])
+
+    def test_format_human_gpu(self):
+        """format_human handles gpu-status."""
+        from nyrqisctl import format_human
+        text = format_human("gpu-status", {"gpus": [{"device_id": "gpu-0", "type": "nvidia", "memory_mb": 8192, "allocated": False, "assigned_to": None, "timeslice_ms": 0}]})
+        self.assertIn("gpu-0", text)
+        self.assertIn("free", text)
+
+
+class TestPolicyEngine(unittest.TestCase):
+    """Tests for policy-as-code engine with rule evaluation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name, **kwargs):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"], **kwargs))
+        return c
+
+    def test_create_policy(self):
+        """create_policy stores policy."""
+        mgr = self._manager()
+        r = mgr.create_policy("mem-limit", rules=[{"type": "memory", "field": "memory_mb", "operator": "lte", "value": 512}])
+        self.assertTrue(r["created"])
+        self.assertEqual(r["rule_count"], 1)
+
+    def test_evaluate_compliant(self):
+        """evaluate_policy passes for compliant container."""
+        mgr = self._manager()
+        c = self._make(mgr, "pol1")
+        mgr.create_policy("mem-check", rules=[{"field": "memory_mb", "operator": "lte", "value": 999999}])
+        r = mgr.evaluate_policy("mem-check", c)
+        self.assertEqual(r["result"], "compliant")
+
+    def test_evaluate_violation(self):
+        """evaluate_policy detects violations."""
+        mgr = self._manager()
+        c = self._make(mgr, "pol2")
+        mgr.create_policy("mem-check2", rules=[{"field": "memory_mb", "operator": "lt", "value": 0}])
+        r = mgr.evaluate_policy("mem-check2", c)
+        self.assertEqual(r["result"], "violation")
+        self.assertGreater(r["violation_count"], 0)
+
+    def test_evaluate_disabled(self):
+        """evaluate_policy returns disabled for disabled policy."""
+        mgr = self._manager()
+        c = self._make(mgr, "pol3")
+        mgr.create_policy("off", rules=[]) 
+        mgr.toggle_policy("off", enabled=False)
+        r = mgr.evaluate_policy("off", c)
+        self.assertEqual(r["result"], "disabled")
+
+    def test_list_policies(self):
+        """list_policies returns all."""
+        mgr = self._manager()
+        mgr.create_policy("p1", rules=[])
+        mgr.create_policy("p2", rules=[])
+        r = mgr.list_policies()
+        self.assertEqual(len(r), 2)
+
+    def test_format_human_policy(self):
+        """format_human handles evaluate-policy."""
+        from nyrqisctl import format_human
+        text = format_human("evaluate-policy", {"policy": "mem", "result": "compliant", "violations": []})
+        self.assertIn("COMPLIANT", text)
+
+
+class TestContainerComposition(unittest.TestCase):
+    """Tests for container composition with sidecar and init containers."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_composition(self):
+        """create_composition creates pod group."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp1")
+        c2 = self._make(mgr, "comp2")
+        r = mgr.create_composition("web-pod", [c1, c2])
+        self.assertTrue(r["created"])
+        self.assertEqual(r["container_count"], 2)
+
+    def test_add_sidecar(self):
+        """add_sidecar adds to composition."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp3")
+        side = self._make(mgr, "log-sidecar")
+        mgr.create_composition("pod1", [c1])
+        r = mgr.add_sidecar("pod1", side, mount_paths=["/var/log"])
+        self.assertTrue(r["added"])
+
+    def test_add_init_container(self):
+        """add_init_container adds to composition."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp4")
+        init = self._make(mgr, "db-init")
+        mgr.create_composition("pod2", [c1])
+        r = mgr.add_init_container("pod2", init, phase="pre-start")
+        self.assertTrue(r["added"])
+
+    def test_composition_status(self):
+        """get_composition_status returns counts."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp5")
+        side = self._make(mgr, "side1")
+        init = self._make(mgr, "init1")
+        mgr.create_composition("pod3", [c1])
+        mgr.add_sidecar("pod3", side)
+        mgr.add_init_container("pod3", init)
+        r = mgr.get_composition_status("pod3")
+        self.assertEqual(r["containers"], 1)
+        self.assertEqual(r["sidecars"], 1)
+        self.assertEqual(r["init_containers"], 1)
+
+    def test_start_stop_composition(self):
+        """start/stop composition changes status."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp6")
+        mgr.create_composition("pod4", [c1])
+        mgr.start_composition("pod4")
+        r = mgr.get_composition_status("pod4")
+        self.assertEqual(r["status"], "running")
+        mgr.stop_composition("pod4")
+        r = mgr.get_composition_status("pod4")
+        self.assertEqual(r["status"], "stopped")
+
+    def test_list_compositions(self):
+        """list_compositions returns all."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "comp7")
+        mgr.create_composition("pod5", [c1])
+        r = mgr.list_compositions()
+        self.assertEqual(len(r), 1)
+
+    def test_format_human_composition(self):
+        """format_human handles composition-status."""
+        from nyrqisctl import format_human
+        text = format_human("composition-status", {"name": "web", "status": "running", "containers": 2, "sidecars": 1, "init_containers": 0})
+        self.assertIn("running", text)
+        self.assertIn("2", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -31588,6 +31790,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAdmissionWebhooks))
     suite.addTests(loader.loadTestsFromTestCase(TestSupplyChain))
     suite.addTests(loader.loadTestsFromTestCase(TestResourcePools))
+    suite.addTests(loader.loadTestsFromTestCase(TestGPUScheduling))
+    suite.addTests(loader.loadTestsFromTestCase(TestPolicyEngine))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerComposition))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

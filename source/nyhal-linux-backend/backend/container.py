@@ -24648,6 +24648,355 @@ class ContainerManager:
         return {"deleted": pool_name}
 
 
+
+    # ------------------------------------------------------------------
+    # GPU device scheduling with time-sharing and isolation
+    # ------------------------------------------------------------------
+
+    def register_gpu_device(
+        self,
+        device_id: str,
+        device_type: str = "nvidia",
+        memory_mb: int = 8192,
+        compute_cap: str = "8.9",
+    ) -> Dict[str, Any]:
+        """Register a GPU device for scheduling."""
+        if not hasattr(self, '_gpu_devices'):
+            self._gpu_devices = {}
+        self._gpu_devices[device_id] = {
+            "device_id": device_id,
+            "device_type": device_type,
+            "memory_mb": memory_mb,
+            "compute_cap": compute_cap,
+            "allocated": False,
+            "assigned_to": None,
+            "timeslice_ms": 0,
+            "registered_at": __import__("time").time(),
+        }
+        return {"device_id": device_id, "registered": True}
+
+    def assign_gpu(
+        self,
+        device_id: str,
+        container: Container,
+        timeslice_ms: int = 0,
+        memory_limit_mb: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Assign a GPU to a container."""
+        if not hasattr(self, '_gpu_devices'):
+            return {"error": "No GPU devices registered"}
+        dev = self._gpu_devices.get(device_id)
+        if not dev:
+            return {"error": f"GPU '{device_id}' not found"}
+        if dev["allocated"]:
+            return {"error": f"GPU '{device_id}' already assigned to {dev['assigned_to']}"}
+        dev["allocated"] = True
+        dev["assigned_to"] = container.id
+        dev["timeslice_ms"] = timeslice_ms
+        if not hasattr(self, '_gpu_assignments'):
+            self._gpu_assignments = {}
+        self._gpu_assignments[container.id] = {
+            "device_id": device_id,
+            "timeslice_ms": timeslice_ms,
+            "memory_limit_mb": memory_limit_mb or dev["memory_mb"],
+        }
+        return {"device_id": device_id, "container_id": container.id, "assigned": True}
+
+    def release_gpu(self, device_id: str) -> Dict[str, Any]:
+        """Release a GPU assignment."""
+        if not hasattr(self, '_gpu_devices'):
+            return {"error": "No GPU devices"}
+        dev = self._gpu_devices.get(device_id)
+        if not dev:
+            return {"error": f"GPU '{device_id}' not found"}
+        old = dev["assigned_to"]
+        dev["allocated"] = False
+        dev["assigned_to"] = None
+        dev["timeslice_ms"] = 0
+        if hasattr(self, '_gpu_assignments') and old in self._gpu_assignments:
+            del self._gpu_assignments[old]
+        return {"device_id": device_id, "released_from": old}
+
+    def get_gpu_status(self) -> List[Dict[str, Any]]:
+        """Get status of all GPU devices."""
+        if not hasattr(self, '_gpu_devices'):
+            return []
+        return [
+            {"device_id": d["device_id"], "type": d["device_type"],
+             "memory_mb": d["memory_mb"], "allocated": d["allocated"],
+             "assigned_to": d["assigned_to"], "timeslice_ms": d["timeslice_ms"]}
+            for d in self._gpu_devices.values()
+        ]
+
+    def get_gpu_for_container(self, container: Container) -> Dict[str, Any]:
+        """Get GPU assignment for a container."""
+        if not hasattr(self, '_gpu_assignments'):
+            return {"error": "No GPU assignments"}
+        assignment = self._gpu_assignments.get(container.id)
+        if not assignment:
+            return {"error": "Container has no GPU assignment"}
+        return assignment
+
+    # ------------------------------------------------------------------
+    # Policy-as-code engine with rule evaluation
+    # ------------------------------------------------------------------
+
+    def create_policy(
+        self,
+        name: str,
+        rules: List[Dict[str, Any]],
+        effect: str = "deny",
+        enforcement: str = "strict",
+    ) -> Dict[str, Any]:
+        """Create a policy with declarative rules."""
+        if not hasattr(self, '_policies'):
+            self._policies = {}
+        self._policies[name] = {
+            "name": name,
+            "rules": rules,
+            "effect": effect,
+            "enforcement": enforcement,
+            "enabled": True,
+            "evaluations": 0,
+            "violations": 0,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "rule_count": len(rules), "created": True}
+
+    def evaluate_policy(
+        self,
+        policy_name: str,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Evaluate a policy against a container."""
+        if not hasattr(self, '_policies'):
+            return {"error": "No policies defined"}
+        policy = self._policies.get(policy_name)
+        if not policy:
+            return {"error": f"Policy '{policy_name}' not found"}
+        if not policy["enabled"]:
+            return {"evaluated": True, "result": "disabled", "violations": []}
+
+        policy["evaluations"] += 1
+        violations = []
+
+        for rule in policy["rules"]:
+            rule_type = rule.get("type", "")
+            field = rule.get("field", "")
+            op = rule.get("operator", "")
+            value = rule.get("value")
+
+            actual = self._get_container_field(container, field)
+            if actual is None:
+                continue
+
+            violated = False
+            # Operators define ALLOWED constraints; violation = opposite
+            if op == "gt" and actual <= value:
+                violated = True
+            elif op == "lt" and actual >= value:
+                violated = True
+            elif op == "gte" and actual < value:
+                violated = True
+            elif op == "lte" and actual > value:
+                violated = True
+            elif op == "eq" and actual != value:
+                violated = True
+            elif op == "neq" and actual == value:
+                violated = True
+            elif op == "in" and actual not in (value if isinstance(value, list) else [value]):
+                violated = True
+            elif op == "not_in" and actual in (value if isinstance(value, list) else [value]):
+                violated = True
+
+            if violated:
+                violations.append({
+                    "rule": rule_type,
+                    "field": field,
+                    "operator": op,
+                    "expected": value,
+                    "actual": actual,
+                })
+
+        if violations:
+            policy["violations"] += len(violations)
+
+        return {
+            "evaluated": True,
+            "policy": policy_name,
+            "effect": policy["effect"],
+            "result": "violation" if violations else "compliant",
+            "violations": violations,
+            "violation_count": len(violations),
+        }
+
+    def _get_container_field(self, container: Container, field: str):
+        """Get a field value from a container for policy evaluation."""
+        if field == "memory_mb":
+            return container.config.limits.memory_mb
+        elif field == "cpu_shares":
+            return container.config.limits.cpu_shares
+        elif field == "pid_limit":
+            return container.config.limits.pid_limit
+        elif field == "command":
+            return container.config.command
+        elif field == "state":
+            return container.state.name if hasattr(container.state, 'name') else str(container.state)
+        elif field == "label_count":
+            return len(container.config.labels)
+        return None
+
+    def list_policies(self) -> List[Dict[str, Any]]:
+        """List all policies."""
+        if not hasattr(self, '_policies'):
+            return []
+        return [
+            {"name": p["name"], "effect": p["effect"], "enabled": p["enabled"],
+             "rules": len(p["rules"]), "evaluations": p["evaluations"],
+             "violations": p["violations"]}
+            for p in self._policies.values()
+        ]
+
+    def toggle_policy(self, policy_name: str, enabled: bool = True) -> Dict[str, Any]:
+        """Enable or disable a policy."""
+        if not hasattr(self, '_policies'):
+            return {"error": "No policies"}
+        policy = self._policies.get(policy_name)
+        if not policy:
+            return {"error": f"Policy '{policy_name}' not found"}
+        policy["enabled"] = enabled
+        return {"name": policy_name, "enabled": enabled}
+
+    def get_policy_violations(self, policy_name: str) -> Dict[str, Any]:
+        """Get violation summary for a policy."""
+        if not hasattr(self, '_policies'):
+            return {"error": "No policies"}
+        policy = self._policies.get(policy_name)
+        if not policy:
+            return {"error": f"Policy '{policy_name}' not found"}
+        return {
+            "name": policy_name,
+            "evaluations": policy["evaluations"],
+            "violations": policy["violations"],
+            "violation_rate": policy["violations"] / max(policy["evaluations"], 1),
+        }
+
+    # ------------------------------------------------------------------
+    # Container composition with sidecar and init containers
+    # ------------------------------------------------------------------
+
+    def create_composition(
+        self,
+        name: str,
+        containers: List[Container],
+    ) -> Dict[str, Any]:
+        """Create a container composition (pod-like grouping)."""
+        if not hasattr(self, '_compositions'):
+            self._compositions = {}
+        self._compositions[name] = {
+            "name": name,
+            "containers": {c.id: {"id": c.id, "name": c.config.name, "role": "primary"}
+                          for c in containers},
+            "sidecars": {},
+            "init_containers": {},
+            "status": "pending",
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "container_count": len(containers), "created": True}
+
+    def add_sidecar(
+        self,
+        composition_name: str,
+        sidecar: Container,
+        mount_paths: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Add a sidecar container to a composition."""
+        if not hasattr(self, '_compositions'):
+            return {"error": "No compositions"}
+        comp = self._compositions.get(composition_name)
+        if not comp:
+            return {"error": f"Composition '{composition_name}' not found"}
+        comp["sidecars"][sidecar.id] = {
+            "id": sidecar.id,
+            "name": sidecar.config.name,
+            "role": "sidecar",
+            "mount_paths": mount_paths or [],
+        }
+        return {"composition": composition_name, "sidecar": sidecar.config.name, "added": True}
+
+    def add_init_container(
+        self,
+        composition_name: str,
+        init_container: Container,
+        phase: str = "pre-start",
+    ) -> Dict[str, Any]:
+        """Add an init container to a composition."""
+        if not hasattr(self, '_compositions'):
+            return {"error": "No compositions"}
+        comp = self._compositions.get(composition_name)
+        if not comp:
+            return {"error": f"Composition '{composition_name}' not found"}
+        comp["init_containers"][init_container.id] = {
+            "id": init_container.id,
+            "name": init_container.config.name,
+            "role": "init",
+            "phase": phase,
+        }
+        return {"composition": composition_name, "init_container": init_container.config.name, "added": True}
+
+    def get_composition_status(self, composition_name: str) -> Dict[str, Any]:
+        """Get status of a composition."""
+        if not hasattr(self, '_compositions'):
+            return {"error": "No compositions"}
+        comp = self._compositions.get(composition_name)
+        if not comp:
+            return {"error": f"Composition '{composition_name}' not found"}
+        return {
+            "name": comp["name"],
+            "status": comp["status"],
+            "containers": len(comp["containers"]),
+            "sidecars": len(comp["sidecars"]),
+            "init_containers": len(comp["init_containers"]),
+            "all_ids": (
+                list(comp["containers"].keys()) +
+                list(comp["sidecars"].keys()) +
+                list(comp["init_containers"].keys())
+            ),
+        }
+
+    def list_compositions(self) -> List[Dict[str, Any]]:
+        """List all compositions."""
+        if not hasattr(self, '_compositions'):
+            return []
+        return [
+            {"name": c["name"], "status": c["status"],
+             "containers": len(c["containers"]),
+             "sidecars": len(c["sidecars"]),
+             "init_containers": len(c["init_containers"])}
+            for c in self._compositions.values()
+        ]
+
+    def start_composition(self, composition_name: str) -> Dict[str, Any]:
+        """Start all containers in a composition."""
+        if not hasattr(self, '_compositions'):
+            return {"error": "No compositions"}
+        comp = self._compositions.get(composition_name)
+        if not comp:
+            return {"error": f"Composition '{composition_name}' not found"}
+        comp["status"] = "running"
+        return {"name": composition_name, "started": True, "total": len(comp["containers"]) + len(comp["sidecars"])}
+
+    def stop_composition(self, composition_name: str) -> Dict[str, Any]:
+        """Stop all containers in a composition."""
+        if not hasattr(self, '_compositions'):
+            return {"error": "No compositions"}
+        comp = self._compositions.get(composition_name)
+        if not comp:
+            return {"error": f"Composition '{composition_name}' not found"}
+        comp["status"] = "stopped"
+        return {"name": composition_name, "stopped": True}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

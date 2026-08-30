@@ -1794,6 +1794,57 @@ class ControlService:
             elif op == "delete_resource_pool":
                 self._delete_resource_pool(server, sender_path,
                                       msg.message_id, request)
+            elif op == "register_gpu_device":
+                self._register_gpu_device(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "assign_gpu":
+                self._assign_gpu(server, sender_path,
+                            msg.message_id, request)
+            elif op == "release_gpu":
+                self._release_gpu(server, sender_path,
+                            msg.message_id, request)
+            elif op == "get_gpu_status":
+                self._get_gpu_status(server, sender_path,
+                                msg.message_id)
+            elif op == "get_gpu_for_container":
+                self._get_gpu_for_container(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "create_policy":
+                self._create_policy(server, sender_path,
+                               msg.message_id, request)
+            elif op == "evaluate_policy":
+                self._evaluate_policy(server, sender_path,
+                                msg.message_id, request)
+            elif op == "list_policies":
+                self._list_policies(server, sender_path,
+                               msg.message_id)
+            elif op == "toggle_policy":
+                self._toggle_policy(server, sender_path,
+                              msg.message_id, request)
+            elif op == "get_policy_violations":
+                self._get_policy_violations(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "create_composition":
+                self._create_composition(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "add_sidecar":
+                self._add_sidecar(server, sender_path,
+                             msg.message_id, request)
+            elif op == "add_init_container":
+                self._add_init_container(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_composition_status":
+                self._get_composition_status(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_compositions":
+                self._list_compositions(server, sender_path,
+                                   msg.message_id)
+            elif op == "start_composition":
+                self._start_composition(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "stop_composition":
+                self._stop_composition(server, sender_path,
+                                  msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9093,6 +9144,133 @@ class ControlService:
 
     def _delete_resource_pool(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_resource_pool(request.get("pool_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _register_gpu_device(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_gpu_device(
+            device_id=request.get("device_id", "gpu-0"),
+            device_type=request.get("device_type", "nvidia"),
+            memory_mb=request.get("memory_mb", 8192),
+            compute_cap=request.get("compute_cap", "8.9"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _assign_gpu(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.assign_gpu(
+            device_id=request.get("device_id", "gpu-0"),
+            container=c,
+            timeslice_ms=request.get("timeslice_ms", 0),
+            memory_limit_mb=request.get("memory_limit_mb"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _release_gpu(self, server, sender_path, call_id, request):
+        result = self.container_manager.release_gpu(request.get("device_id", "gpu-0"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_gpu_status(self, server, sender_path, call_id):
+        result = self.container_manager.get_gpu_status()
+        self._reply(server, sender_path, call_id, {"ok": True, "gpus": result})
+
+    def _get_gpu_for_container(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_gpu_for_container(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_policy(
+            name=request.get("name", "default"),
+            rules=request.get("rules", []),
+            effect=request.get("effect", "deny"),
+            enforcement=request.get("enforcement", "strict"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_policy(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.evaluate_policy(
+            policy_name=request.get("policy_name", "default"),
+            container=c,
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_policies(self, server, sender_path, call_id):
+        result = self.container_manager.list_policies()
+        self._reply(server, sender_path, call_id, {"ok": True, "policies": result})
+
+    def _toggle_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.toggle_policy(
+            policy_name=request.get("policy_name", "default"),
+            enabled=request.get("enabled", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_policy_violations(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_policy_violations(request.get("policy_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_composition(self, server, sender_path, call_id, request):
+        container_ids = request.get("container_ids", [])
+        containers = [self.container_manager.containers[cid] for cid in container_ids if cid in self.container_manager.containers]
+        result = self.container_manager.create_composition(
+            name=request.get("name", "default"),
+            containers=containers,
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _add_sidecar(self, server, sender_path, call_id, request):
+        cid = request.get("sidecar_container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.add_sidecar(
+            composition_name=request.get("composition_name", "default"),
+            sidecar=c,
+            mount_paths=request.get("mount_paths"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _add_init_container(self, server, sender_path, call_id, request):
+        cid = request.get("init_container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.add_init_container(
+            composition_name=request.get("composition_name", "default"),
+            init_container=c,
+            phase=request.get("phase", "pre-start"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_composition_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_composition_status(request.get("composition_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_compositions(self, server, sender_path, call_id):
+        result = self.container_manager.list_compositions()
+        self._reply(server, sender_path, call_id, {"ok": True, "compositions": result})
+
+    def _start_composition(self, server, sender_path, call_id, request):
+        result = self.container_manager.start_composition(request.get("composition_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_composition(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_composition(request.get("composition_name", "default"))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

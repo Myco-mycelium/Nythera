@@ -3967,6 +3967,115 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_resource_pool",
             "pool_name": args.pool_name,
         }
+    if command == "register-gpu":
+        return {
+            "service": "control",
+            "op": "register_gpu_device",
+            "device_id": args.device_id,
+            "device_type": getattr(args, 'device_type', 'nvidia'),
+            "memory_mb": getattr(args, 'memory_mb', 8192),
+            "compute_cap": getattr(args, 'compute_cap', '8.9'),
+        }
+    if command == "assign-gpu":
+        return {
+            "service": "control",
+            "op": "assign_gpu",
+            "device_id": args.device_id,
+            "container_id": args.container_id,
+            "timeslice_ms": getattr(args, 'timeslice_ms', 0),
+            "memory_limit_mb": getattr(args, 'memory_limit_mb', None),
+        }
+    if command == "release-gpu":
+        return {
+            "service": "control",
+            "op": "release_gpu",
+            "device_id": args.device_id,
+        }
+    if command == "gpu-status":
+        return {
+            "service": "control",
+            "op": "get_gpu_status",
+        }
+    if command == "create-policy":
+        return {
+            "service": "control",
+            "op": "create_policy",
+            "name": args.name,
+            "rules": getattr(args, 'rules', []),
+            "effect": getattr(args, 'effect', 'deny'),
+            "enforcement": getattr(args, 'enforcement', 'strict'),
+        }
+    if command == "evaluate-policy":
+        return {
+            "service": "control",
+            "op": "evaluate_policy",
+            "policy_name": args.policy_name,
+            "container_id": args.container_id,
+        }
+    if command == "list-policies":
+        return {
+            "service": "control",
+            "op": "list_policies",
+        }
+    if command == "toggle-policy":
+        return {
+            "service": "control",
+            "op": "toggle_policy",
+            "policy_name": args.policy_name,
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "policy-violations":
+        return {
+            "service": "control",
+            "op": "get_policy_violations",
+            "policy_name": args.policy_name,
+        }
+    if command == "create-composition":
+        return {
+            "service": "control",
+            "op": "create_composition",
+            "name": args.name,
+            "container_ids": getattr(args, 'container_ids', []),
+        }
+    if command == "add-sidecar":
+        return {
+            "service": "control",
+            "op": "add_sidecar",
+            "composition_name": args.composition_name,
+            "sidecar_container_id": args.sidecar_container_id,
+            "mount_paths": getattr(args, 'mount_paths', None),
+        }
+    if command == "add-init-container":
+        return {
+            "service": "control",
+            "op": "add_init_container",
+            "composition_name": args.composition_name,
+            "init_container_id": args.init_container_id,
+            "phase": getattr(args, 'phase', 'pre-start'),
+        }
+    if command == "composition-status":
+        return {
+            "service": "control",
+            "op": "get_composition_status",
+            "composition_name": args.composition_name,
+        }
+    if command == "list-compositions":
+        return {
+            "service": "control",
+            "op": "list_compositions",
+        }
+    if command == "start-composition":
+        return {
+            "service": "control",
+            "op": "start_composition",
+            "composition_name": args.composition_name,
+        }
+    if command == "stop-composition":
+        return {
+            "service": "control",
+            "op": "stop_composition",
+            "composition_name": args.composition_name,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7813,6 +7922,55 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not pools:
             lines.append("  (none)")
         return "\n".join(lines)
+    if command == "register-gpu":
+        return f"GPU '{resp.get('device_id', '?')}' registered"
+    if command == "assign-gpu":
+        return f"GPU '{resp.get('device_id', '?')}' assigned to container {resp.get('container_id', '?')[:12]}"
+    if command == "release-gpu":
+        return f"GPU '{resp.get('device_id', '?')}' released"
+    if command == "gpu-status":
+        gpus = resp.get("gpus", [])
+        lines = ["GPU Devices:"]
+        for g in gpus:
+            status = "allocated" if g["allocated"] else "free"
+            lines.append(f"  {g['device_id']} ({g['type']}): {g['memory_mb']}MB, {status}")
+        if not gpus:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "evaluate-policy":
+        result = resp.get("result", "?")
+        lines = [f"Policy '{resp.get('policy', '?')}': {result.upper()}"]
+        for v in resp.get("violations", []):
+            lines.append(f"  VIOLATION: {v['field']} {v['operator']} {v['expected']} (actual={v['actual']})")
+        return "\n".join(lines)
+    if command == "list-policies":
+        policies = resp.get("policies", [])
+        lines = ["Policies:"]
+        for p in policies:
+            lines.append(f"  {p['name']} ({p['effect']}): {p['rules']} rules, {p['evaluations']} evals, {p['violations']} violations")
+        if not policies:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "policy-violations":
+        return f"Policy '{resp.get('name', '?')}': {resp.get('violations', 0)} violations in {resp.get('evaluations', 0)} evaluations (rate: {resp.get('violation_rate', 0):.1%})"
+    if command == "composition-status":
+        lines = [
+            f"Composition '{resp.get('name', '?')}' [{resp.get('status', '?')}]:",
+            f"  containers: {resp.get('containers', 0)}, sidecars: {resp.get('sidecars', 0)}, init: {resp.get('init_containers', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "list-compositions":
+        comps = resp.get("compositions", [])
+        lines = ["Compositions:"]
+        for c in comps:
+            lines.append(f"  {c['name']} [{c['status']}]: {c['containers']} containers, {c['sidecars']} sidecars")
+        if not comps:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "start-composition":
+        return f"Composition '{resp.get('name', '?')}' started ({resp.get('total', 0)} containers)"
+    if command == "stop-composition":
+        return f"Composition '{resp.get('name', '?')}' stopped"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -11597,6 +11755,85 @@ def build_parser() -> argparse.ArgumentParser:
     drp = sub.add_parser("delete-resource-pool", help="Delete resource pool")
     drp.add_argument("pool_name")
     drp.set_defaults(command="delete-resource-pool")
+
+    # GPU scheduling
+    rgpu = sub.add_parser("register-gpu", help="Register GPU device")
+    rgpu.add_argument("device_id")
+    rgpu.add_argument("--type", dest="device_type", default="nvidia")
+    rgpu.add_argument("--memory-mb", type=int, default=8192)
+    rgpu.add_argument("--compute-cap", default="8.9")
+    rgpu.set_defaults(command="register-gpu")
+
+    agpu = sub.add_parser("assign-gpu", help="Assign GPU to container")
+    agpu.add_argument("device_id")
+    agpu.add_argument("container_id")
+    agpu.add_argument("--timeslice-ms", type=int, default=0)
+    agpu.add_argument("--memory-limit-mb", type=int, default=None)
+    agpu.set_defaults(command="assign-gpu")
+
+    rgpu2 = sub.add_parser("release-gpu", help="Release GPU")
+    rgpu2.add_argument("device_id")
+    rgpu2.set_defaults(command="release-gpu")
+
+    gpus = sub.add_parser("gpu-status", help="GPU device status")
+    gpus.set_defaults(command="gpu-status")
+
+    # Policy engine
+    cpolicy = sub.add_parser("create-policy", help="Create policy")
+    cpolicy.add_argument("name")
+    cpolicy.add_argument("--effect", default="deny", choices=["deny", "audit"])
+    cpolicy.add_argument("--enforcement", default="strict", choices=["strict", "permissive"])
+    cpolicy.set_defaults(command="create-policy")
+
+    epolicy = sub.add_parser("evaluate-policy", help="Evaluate policy")
+    epolicy.add_argument("policy_name")
+    epolicy.add_argument("container_id")
+    epolicy.set_defaults(command="evaluate-policy")
+
+    lpolicy = sub.add_parser("list-policies", help="List policies")
+    lpolicy.set_defaults(command="list-policies")
+
+    tpolicy = sub.add_parser("toggle-policy", help="Enable/disable policy")
+    tpolicy.add_argument("policy_name")
+    tpolicy.add_argument("--enabled", type=lambda x: x.lower() == 'true', default=True)
+    tpolicy.set_defaults(command="toggle-policy")
+
+    pv = sub.add_parser("policy-violations", help="Policy violation summary")
+    pv.add_argument("policy_name")
+    pv.set_defaults(command="policy-violations")
+
+    # Container composition
+    ccomp = sub.add_parser("create-composition", help="Create composition")
+    ccomp.add_argument("name")
+    ccomp.add_argument("--container-ids", nargs="+", default=[]) 
+    ccomp.set_defaults(command="create-composition")
+
+    asc = sub.add_parser("add-sidecar", help="Add sidecar to composition")
+    asc.add_argument("composition_name")
+    asc.add_argument("sidecar_container_id")
+    asc.add_argument("--mount-paths", nargs="+", default=None)
+    asc.set_defaults(command="add-sidecar")
+
+    aic = sub.add_parser("add-init-container", help="Add init container")
+    aic.add_argument("composition_name")
+    aic.add_argument("init_container_id")
+    aic.add_argument("--phase", default="pre-start")
+    aic.set_defaults(command="add-init-container")
+
+    cstatus = sub.add_parser("composition-status", help="Composition status")
+    cstatus.add_argument("composition_name")
+    cstatus.set_defaults(command="composition-status")
+
+    lcomp = sub.add_parser("list-compositions", help="List compositions")
+    lcomp.set_defaults(command="list-compositions")
+
+    scomp = sub.add_parser("start-composition", help="Start composition")
+    scomp.add_argument("composition_name")
+    scomp.set_defaults(command="start-composition")
+
+    stcomp = sub.add_parser("stop-composition", help="Stop composition")
+    stcomp.add_argument("composition_name")
+    stcomp.set_defaults(command="stop-composition")
 
     return parser
 
