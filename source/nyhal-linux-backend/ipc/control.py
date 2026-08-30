@@ -1179,6 +1179,63 @@ class ControlService:
             elif op == "get_compliance_summary":
                 self._get_compliance_summary(server, sender_path,
                                         msg.message_id, request)
+            elif op == "create_secret":
+                self._create_secret(server, sender_path,
+                               msg.message_id, request)
+            elif op == "get_secret":
+                self._get_secret(server, sender_path,
+                            msg.message_id, request)
+            elif op == "delete_secret":
+                self._delete_secret(server, sender_path,
+                               msg.message_id, request)
+            elif op == "rotate_secret":
+                self._rotate_secret(server, sender_path,
+                               msg.message_id, request)
+            elif op == "list_secrets":
+                self._list_secrets(server, sender_path,
+                              msg.message_id, request)
+            elif op == "get_secret_usage":
+                self._get_secret_usage(server, sender_path,
+                                  msg.message_id)
+            elif op == "create_namespace":
+                self._create_namespace(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "set_resource_quota":
+                self._set_resource_quota(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_resource_quota":
+                self._get_resource_quota(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "check_quota_compliance":
+                self._check_quota_compliance(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_namespaces":
+                self._list_namespaces(server, sender_path,
+                                 msg.message_id)
+            elif op == "delete_namespace":
+                self._delete_namespace(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_namespace_summary":
+                self._get_namespace_summary(server, sender_path,
+                                       msg.message_id)
+            elif op == "record_deployment":
+                self._record_deployment(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_deployment_history":
+                self._get_deployment_history(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "rollback_deployment":
+                self._rollback_deployment(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "get_deployment_diff":
+                self._get_deployment_diff(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "get_rollback_candidates":
+                self._get_rollback_candidates(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "get_deployment_status":
+                self._get_deployment_status(server, sender_path,
+                                       msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -7033,6 +7090,134 @@ class ControlService:
         result = self.container_manager.get_compliance_summary(
             policy=request.get('policy', 'basic'),
         )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Secret management handlers
+    # ------------------------------------------------------------------
+
+    def _create_secret(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_secret(
+            name=request['name'],
+            data=request.get('data', {}),
+            namespace=request.get('namespace', 'default'),
+            secret_type=request.get('secret_type', 'opaque'),
+            labels=request.get('labels'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_secret(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_secret(
+            secret_id=request['secret_id'],
+            decrypt=request.get('decrypt', False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_secret(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_secret(request['secret_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rotate_secret(self, server, sender_path, call_id, request):
+        result = self.container_manager.rotate_secret(
+            secret_id=request['secret_id'],
+            new_data=request.get('new_data', {}),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_secrets(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_secrets(
+            namespace=request.get('namespace'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_secret_usage(self, server, sender_path, call_id):
+        result = self.container_manager.get_secret_usage()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Namespace / resource quota handlers
+    # ------------------------------------------------------------------
+
+    def _create_namespace(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_namespace(
+            name=request['name'],
+            labels=request.get('labels'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _set_resource_quota(self, server, sender_path, call_id, request):
+        result = self.container_manager.set_resource_quota(
+            namespace=request['namespace'],
+            resource_type=request['resource_type'],
+            hard_limit=request['hard_limit'],
+            soft_limit=request.get('soft_limit'),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_resource_quota(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_resource_quota(request['namespace'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_quota_compliance(self, server, sender_path, call_id, request):
+        result = self.container_manager.check_quota_compliance(request['namespace'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_namespaces(self, server, sender_path, call_id):
+        result = self.container_manager.list_namespaces()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_namespace(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_namespace(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_namespace_summary(self, server, sender_path, call_id):
+        result = self.container_manager.get_namespace_summary()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Deployment rollback handlers
+    # ------------------------------------------------------------------
+
+    def _record_deployment(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.record_deployment(
+            c,
+            config_snapshot=request.get('config_snapshot'),
+            notes=request.get('notes', ''),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_deployment_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_deployment_history(
+            container_id=request['container_id'],
+            limit=request.get('limit', 10),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rollback_deployment(self, server, sender_path, call_id, request):
+        result = self.container_manager.rollback_deployment(
+            container_id=request['container_id'],
+            version=request['version'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_deployment_diff(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_deployment_diff(
+            container_id=request['container_id'],
+            version_a=request['version_a'],
+            version_b=request['version_b'],
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_rollback_candidates(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_rollback_candidates(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_deployment_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_deployment_status(request['container_id'])
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

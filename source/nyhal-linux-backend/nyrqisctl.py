@@ -2637,6 +2637,130 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "get_compliance_summary",
             "policy": getattr(args, 'policy', 'basic'),
         }
+    if command == "create-secret":
+        return {
+            "service": "control",
+            "op": "create_secret",
+            "name": args.name,
+            "data": json.loads(args.data) if hasattr(args, 'data') and args.data else {},
+            "namespace": getattr(args, 'namespace', 'default'),
+            "secret_type": getattr(args, 'secret_type', 'opaque'),
+        }
+    if command == "get-secret":
+        return {
+            "service": "control",
+            "op": "get_secret",
+            "secret_id": args.secret_id,
+            "decrypt": getattr(args, 'decrypt', False),
+        }
+    if command == "delete-secret":
+        return {
+            "service": "control",
+            "op": "delete_secret",
+            "secret_id": args.secret_id,
+        }
+    if command == "rotate-secret":
+        return {
+            "service": "control",
+            "op": "rotate_secret",
+            "secret_id": args.secret_id,
+            "new_data": json.loads(args.new_data) if hasattr(args, 'new_data') and args.new_data else {},
+        }
+    if command == "list-secrets":
+        return {
+            "service": "control",
+            "op": "list_secrets",
+            "namespace": getattr(args, 'namespace', None),
+        }
+    if command == "secret-usage":
+        return {
+            "service": "control",
+            "op": "get_secret_usage",
+        }
+    if command == "create-namespace":
+        return {
+            "service": "control",
+            "op": "create_namespace",
+            "name": args.name,
+        }
+    if command == "set-resource-quota":
+        return {
+            "service": "control",
+            "op": "set_resource_quota",
+            "namespace": args.namespace,
+            "resource_type": args.resource_type,
+            "hard_limit": float(args.hard_limit),
+            "soft_limit": float(args.soft_limit) if hasattr(args, 'soft_limit') and args.soft_limit else None,
+        }
+    if command == "get-resource-quota":
+        return {
+            "service": "control",
+            "op": "get_resource_quota",
+            "namespace": args.namespace,
+        }
+    if command == "check-quota-compliance":
+        return {
+            "service": "control",
+            "op": "check_quota_compliance",
+            "namespace": args.namespace,
+        }
+    if command == "list-namespaces":
+        return {
+            "service": "control",
+            "op": "list_namespaces",
+        }
+    if command == "delete-namespace":
+        return {
+            "service": "control",
+            "op": "delete_namespace",
+            "name": args.name,
+        }
+    if command == "namespace-summary":
+        return {
+            "service": "control",
+            "op": "get_namespace_summary",
+        }
+    if command == "record-deployment":
+        return {
+            "service": "control",
+            "op": "record_deployment",
+            "container_id": args.container_id,
+            "notes": getattr(args, 'notes', ''),
+        }
+    if command == "deployment-history":
+        return {
+            "service": "control",
+            "op": "get_deployment_history",
+            "container_id": args.container_id,
+            "limit": getattr(args, 'limit', 10),
+        }
+    if command == "rollback-deployment":
+        return {
+            "service": "control",
+            "op": "rollback_deployment",
+            "container_id": args.container_id,
+            "version": int(args.version),
+        }
+    if command == "deployment-diff":
+        return {
+            "service": "control",
+            "op": "get_deployment_diff",
+            "container_id": args.container_id,
+            "version_a": int(args.version_a),
+            "version_b": int(args.version_b),
+        }
+    if command == "rollback-candidates":
+        return {
+            "service": "control",
+            "op": "get_rollback_candidates",
+            "container_id": args.container_id,
+        }
+    if command == "deployment-status":
+        return {
+            "service": "control",
+            "op": "get_deployment_status",
+            "container_id": args.container_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -6039,6 +6163,75 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for r in resp.get('recommendations', []):
             lines.append(f"  - {r}")
         return "\n".join(lines)
+    if command == "create-secret":
+        return f"Secret '{resp.get('name', '?')}' created (id={resp.get('id', '?')})"
+    if command == "get-secret":
+        lines = [f"Secret {resp.get('name', '?')} ({resp.get('type', '?')}):", f"  ID: {resp.get('id', '?')}", f"  Namespace: {resp.get('namespace', '?')}"]
+        for k in resp.get('keys', []):
+            lines.append(f"  Key: {k}")
+        return "\n".join(lines)
+    if command == "rotate-secret":
+        return f"Secret rotated (rotation #{resp.get('rotation_count', 0)})"
+    if command == "list-secrets":
+        lines = [f"Secrets ({resp.get('count', 0)}):"]
+        for s in resp.get('secrets', [])[:10]:
+            lines.append(f"  {s['name']}: {s['type']} ({', '.join(s.get('keys', []))})")
+        return "\n".join(lines)
+    if command == "secret-usage":
+        lines = [f"Secret usage ({resp.get('total', 0)} total):"]
+        for ns, info in resp.get('namespaces', {}).items():
+            lines.append(f"  {ns}: {info['count']} secrets")
+        return "\n".join(lines)
+    if command == "create-namespace":
+        return f"Namespace '{resp.get('name', '?')}' created"
+    if command == "set-resource-quota":
+        return f"Quota set: {resp.get('resource', '?')} = {resp.get('hard_limit', 0)} (soft={resp.get('soft_limit', 0)})"
+    if command == "get-resource-quota":
+        lines = [f"Quotas for {resp.get('namespace', '?')}:"]
+        for r, q in resp.get('quotas', {}).items():
+            lines.append(f"  {r}: hard={q['hard']}, soft={q['soft']}")
+        return "\n".join(lines)
+    if command == "check-quota-compliance":
+        status = "COMPLIANT" if resp.get('compliant') else "VIOLATIONS"
+        lines = [f"Quota compliance for {resp.get('namespace', '?')}: {status}"]
+        for v in resp.get('violations', []):
+            lines.append(f"  {v['resource']}: {v['severity']} ({v['current']}/{v['limit']})")
+        return "\n".join(lines)
+    if command == "list-namespaces":
+        lines = ["Namespaces:"]
+        for ns in resp.get('namespaces', []):
+            lines.append(f"  {ns['name']}: {ns['quota_count']} quotas")
+        return "\n".join(lines)
+    if command == "namespace-summary":
+        lines = ["Namespace Summary:", f"  Namespaces: {resp.get('namespaces', 0)}", f"  Total quotas: {resp.get('total_quotas', 0)}"]
+        return "\n".join(lines)
+    if command == "record-deployment":
+        return f"Recorded deployment v{resp.get('version', '?')} for {resp.get('container_id', '?')[:12]}"
+    if command == "deployment-history":
+        lines = ["Deployment History:"]
+        for v in resp.get('versions', []):
+            tag = " [ROLLBACK]" if v.get('rolled_back') else ""
+            lines.append(f"  v{v['version']}{tag}: {v.get('notes', '') or 'no notes'}")
+        return "\n".join(lines)
+    if command == "rollback-deployment":
+        return f"Rolled back to v{resp.get('rolled_back_to', '?')} (new version: v{resp.get('new_version', '?')})"
+    if command == "deployment-diff":
+        lines = ["Changes:"]
+        for c in resp.get('changes', []):
+            lines.append(f"  {c['field']}: {c.get('from', '?')} -> {c.get('to', '?')}")
+        if not resp.get('changes'):
+            lines.append("  (no differences)")
+        return "\n".join(lines)
+    if command == "rollback-candidates":
+        lines = ["Rollback candidates:"]
+        for c in resp.get('candidates', []):
+            lines.append(f"  v{c['version']}: {c.get('notes', '')}")
+        return "\n".join(lines)
+    if command == "deployment-status":
+        current = resp.get('current')
+        if current:
+            return f"Current version: v{current['version']} ({current.get('notes', '')})"
+        return "No deployments recorded"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -8097,6 +8290,95 @@ def build_parser() -> argparse.ArgumentParser:
     gcs = sub.add_parser("get-compliance-summary", help="Get compliance summary")
     gcs.add_argument("--policy", default="basic", choices=["basic", "strict", "pci", "hipaa"])
     gcs.set_defaults(command="get-compliance-summary")
+
+    # Secret management subcommands
+    cs = sub.add_parser("create-secret", help="Create encrypted secret")
+    cs.add_argument("name")
+    cs.add_argument("--data", help='JSON key-value pairs (e.g. \'{"key":"value"}\')')
+    cs.add_argument("--namespace", default="default")
+    cs.add_argument("--secret-type", default="opaque", choices=["opaque", "tls", "docker-registry", "ssh"])
+    cs.set_defaults(command="create-secret")
+
+    gs = sub.add_parser("get-secret", help="Get secret")
+    gs.add_argument("secret_id")
+    gs.add_argument("--decrypt", action="store_true")
+    gs.set_defaults(command="get-secret")
+
+    ds = sub.add_parser("delete-secret", help="Delete secret")
+    ds.add_argument("secret_id")
+    ds.set_defaults(command="delete-secret")
+
+    rs = sub.add_parser("rotate-secret", help="Rotate secret")
+    rs.add_argument("secret_id")
+    rs.add_argument("--new-data", help='JSON key-value pairs')
+    rs.set_defaults(command="rotate-secret")
+
+    ls = sub.add_parser("list-secrets", help="List secrets")
+    ls.add_argument("--namespace", default=None)
+    ls.set_defaults(command="list-secrets")
+
+    su = sub.add_parser("secret-usage", help="Secret usage overview")
+    su.set_defaults(command="secret-usage")
+
+    # Namespace / resource quota subcommands
+    cn = sub.add_parser("create-namespace", help="Create namespace")
+    cn.add_argument("name")
+    cn.set_defaults(command="create-namespace")
+
+    sq = sub.add_parser("set-resource-quota", help="Set resource quota")
+    sq.add_argument("namespace")
+    sq.add_argument("resource_type", choices=["memory_mb", "cpu_cores", "pids", "containers", "storage_mb"])
+    sq.add_argument("hard_limit", type=float)
+    sq.add_argument("--soft-limit", type=float, default=None)
+    sq.set_defaults(command="set-resource-quota")
+
+    gq = sub.add_parser("get-resource-quota", help="Get resource quotas")
+    gq.add_argument("namespace")
+    gq.set_defaults(command="get-resource-quota")
+
+    cq = sub.add_parser("check-quota-compliance", help="Check quota compliance")
+    cq.add_argument("namespace")
+    cq.set_defaults(command="check-quota-compliance")
+
+    ln2 = sub.add_parser("list-namespaces", help="List namespaces")
+    ln2.set_defaults(command="list-namespaces")
+
+    dn = sub.add_parser("delete-namespace", help="Delete namespace")
+    dn.add_argument("name")
+    dn.set_defaults(command="delete-namespace")
+
+    ns2 = sub.add_parser("namespace-summary", help="Namespace summary")
+    ns2.set_defaults(command="namespace-summary")
+
+    # Deployment rollback subcommands
+    rd = sub.add_parser("record-deployment", help="Record deployment version")
+    rd.add_argument("container_id")
+    rd.add_argument("--notes", default="")
+    rd.set_defaults(command="record-deployment")
+
+    dh = sub.add_parser("deployment-history", help="Deployment version history")
+    dh.add_argument("container_id")
+    dh.add_argument("--limit", type=int, default=10)
+    dh.set_defaults(command="deployment-history")
+
+    rb = sub.add_parser("rollback-deployment", help="Rollback to a version")
+    rb.add_argument("container_id")
+    rb.add_argument("version", type=int)
+    rb.set_defaults(command="rollback-deployment")
+
+    ddf = sub.add_parser("deployment-diff", help="Diff two versions")
+    ddf.add_argument("container_id")
+    ddf.add_argument("version_a", type=int)
+    ddf.add_argument("version_b", type=int)
+    ddf.set_defaults(command="deployment-diff")
+
+    rc = sub.add_parser("rollback-candidates", help="List rollback candidates")
+    rc.add_argument("container_id")
+    rc.set_defaults(command="rollback-candidates")
+
+    dst = sub.add_parser("deployment-status", help="Current deployment status")
+    dst.add_argument("container_id")
+    dst.set_defaults(command="deployment-status")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

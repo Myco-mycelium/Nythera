@@ -4004,6 +4004,255 @@ class TestComplianceReporting(unittest.TestCase):
         self.assertEqual(r["policy"], "hipaa")
 
 
+class TestSecretManagement(unittest.TestCase):
+    """Tests for secret management with encryption and rotation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_secret(self):
+        """create_secret encrypts and stores."""
+        mgr = self._manager()
+        r = mgr.create_secret(name="db-pass", data={"password": "s3cret"})
+        self.assertIn("id", r)
+        self.assertEqual(r["name"], "db-pass")
+
+    def test_get_secret_masked(self):
+        """get_secret masks values by default."""
+        mgr = self._manager()
+        r = mgr.create_secret(name="k1", data={"key": "val"})
+        s = mgr.get_secret(r["id"])
+        self.assertEqual(s["data"]["key"], "***")
+
+    def test_get_secret_decrypt(self):
+        """get_secret decrypts when requested."""
+        mgr = self._manager()
+        r = mgr.create_secret(name="k2", data={"key": "plaintext"})
+        s = mgr.get_secret(r["id"], decrypt=True)
+        self.assertEqual(s["data"]["key"], "plaintext")
+
+    def test_rotate_secret(self):
+        """rotate_secret updates data."""
+        mgr = self._manager()
+        r = mgr.create_secret(name="k3", data={"old": "v1"})
+        mgr.rotate_secret(r["id"], {"new": "v2"})
+        s = mgr.get_secret(r["id"], decrypt=True)
+        self.assertEqual(s["data"]["new"], "v2")
+        self.assertEqual(s["rotation_count"], 1)
+
+    def test_delete_secret(self):
+        """delete_secret removes secret."""
+        mgr = self._manager()
+        r = mgr.create_secret(name="k4", data={"a": "b"})
+        d = mgr.delete_secret(r["id"])
+        self.assertTrue(d["deleted"])
+        s = mgr.get_secret(r["id"])
+        self.assertIn("error", s)
+
+    def test_list_secrets(self):
+        """list_secrets returns all secrets."""
+        mgr = self._manager()
+        mgr.create_secret(name="s1", data={"a": "1"})
+        mgr.create_secret(name="s2", data={"b": "2"})
+        r = mgr.list_secrets()
+        self.assertEqual(r["count"], 2)
+
+    def test_secret_usage(self):
+        """get_secret_usage shows namespace breakdown."""
+        mgr = self._manager()
+        mgr.create_secret(name="s1", data={"a": "1"}, namespace="prod")
+        mgr.create_secret(name="s2", data={"b": "2"}, namespace="prod")
+        r = mgr.get_secret_usage()
+        self.assertEqual(r["total"], 2)
+        self.assertIn("prod", r["namespaces"])
+
+    def test_format_human_create(self):
+        """format_human handles create-secret."""
+        from nyrqisctl import format_human
+        text = format_human("create-secret", {"id": "abc123", "name": "db", "type": "opaque"})
+        self.assertIn("db", text)
+
+    def test_format_human_list(self):
+        """format_human handles list-secrets."""
+        from nyrqisctl import format_human
+        resp = {"count": 2, "secrets": [{"name": "s1", "type": "opaque", "keys": ["k"]}]}
+        text = format_human("list-secrets", resp)
+        self.assertIn("2", text)
+
+
+class TestNamespaceQuotas(unittest.TestCase):
+    """Tests for resource quota management across namespaces."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_namespace(self):
+        """create_namespace creates a namespace."""
+        mgr = self._manager()
+        r = mgr.create_namespace("production")
+        self.assertEqual(r["name"], "production")
+
+    def test_create_duplicate(self):
+        """Duplicate namespace returns error."""
+        mgr = self._manager()
+        mgr.create_namespace("ns1")
+        r = mgr.create_namespace("ns1")
+        self.assertIn("error", r)
+
+    def test_set_quota(self):
+        """set_resource_quota stores quota."""
+        mgr = self._manager()
+        mgr.create_namespace("dev")
+        r = mgr.set_resource_quota("dev", "memory_mb", 4096)
+        self.assertEqual(r["hard_limit"], 4096)
+        self.assertEqual(r["soft_limit"], 3276.8)  # 80% of 4096
+
+    def test_get_quota(self):
+        """get_resource_quota returns quotas."""
+        mgr = self._manager()
+        mgr.create_namespace("staging")
+        mgr.set_resource_quota("staging", "cpu_cores", 8)
+        r = mgr.get_resource_quota("staging")
+        self.assertIn("cpu_cores", r["quotas"])
+
+    def test_check_compliance(self):
+        """check_quota_compliance runs without error."""
+        mgr = self._manager()
+        mgr.create_namespace("test")
+        mgr.set_resource_quota("test", "containers", 10)
+        r = mgr.check_quota_compliance("test")
+        self.assertIn("compliant", r)
+
+    def test_list_namespaces(self):
+        """list_namespaces returns all."""
+        mgr = self._manager()
+        mgr.create_namespace("a")
+        mgr.create_namespace("b")
+        r = mgr.list_namespaces()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_namespace(self):
+        """delete_namespace removes namespace."""
+        mgr = self._manager()
+        mgr.create_namespace("temp")
+        r = mgr.delete_namespace("temp")
+        self.assertTrue(r["deleted"])
+
+    def test_namespace_summary(self):
+        """get_namespace_summary returns overview."""
+        mgr = self._manager()
+        mgr.create_namespace("x")
+        mgr.set_resource_quota("x", "memory_mb", 1024)
+        r = mgr.get_namespace_summary()
+        self.assertEqual(r["namespaces"], 1)
+        self.assertEqual(r["total_quotas"], 1)
+
+    def test_format_human_quota(self):
+        """format_human handles set-resource-quota."""
+        from nyrqisctl import format_human
+        text = format_human("set-resource-quota", {"resource": "memory_mb", "hard_limit": 4096, "soft_limit": 3276.8})
+        self.assertIn("4096", text)
+
+
+class TestDeploymentRollback(unittest.TestCase):
+    """Tests for deployment rollback with version history."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_record_deployment(self):
+        """record_deployment creates a version."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr1")
+        r = mgr.record_deployment(c, notes="initial deploy")
+        self.assertEqual(r["version"], 1)
+
+    def test_deployment_history(self):
+        """get_deployment_history lists versions."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr2")
+        mgr.record_deployment(c, notes="v1")
+        mgr.record_deployment(c, notes="v2")
+        r = mgr.get_deployment_history(c.id)
+        self.assertEqual(r["count"], 2)
+
+    def test_rollback(self):
+        """rollback_deployment restores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr3")
+        mgr.record_deployment(c, notes="v1", config_snapshot={"command": ["sleep", "10"]})
+        mgr.record_deployment(c, notes="v2", config_snapshot={"command": ["echo", "hi"]})
+        r = mgr.rollback_deployment(c.id, version=1)
+        self.assertEqual(r["rolled_back_to"], 1)
+        self.assertEqual(c.config.command, ["sleep", "10"])
+
+    def test_rollback_nonexistent(self):
+        """Rollback to bad version returns error."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr4")
+        mgr.record_deployment(c)
+        r = mgr.rollback_deployment(c.id, version=99)
+        self.assertIn("error", r)
+
+    def test_deployment_diff(self):
+        """get_deployment_diff shows changes."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr5")
+        mgr.record_deployment(c, config_snapshot={"cmd": "a", "mem": 128})
+        mgr.record_deployment(c, config_snapshot={"cmd": "b", "mem": 128})
+        r = mgr.get_deployment_diff(c.id, 1, 2)
+        self.assertEqual(r["changed_fields"], 1)
+        self.assertEqual(r["changes"][0]["field"], "cmd")
+
+    def test_rollback_candidates(self):
+        """get_rollback_candidates lists non-rollback versions."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr6")
+        mgr.record_deployment(c, notes="v1")
+        mgr.record_deployment(c, notes="v2")
+        mgr.rollback_deployment(c.id, version=1)
+        r = mgr.get_rollback_candidates(c.id)
+        self.assertEqual(r["count"], 2)
+
+    def test_deployment_status(self):
+        """get_deployment_status shows current version."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr7")
+        mgr.record_deployment(c, notes="latest")
+        r = mgr.get_deployment_status(c.id)
+        self.assertEqual(r["versions"], 1)
+        self.assertEqual(r["current"]["notes"], "latest")
+
+    def test_changelog(self):
+        """generate_deployment_changelog is readable."""
+        mgr = self._manager()
+        c = self._make(mgr, "dr8")
+        mgr.record_deployment(c, notes="init")
+        text = mgr.generate_deployment_changelog(c.id)
+        self.assertIn("init", text)
+
+    def test_format_human_history(self):
+        """format_human handles deployment-history."""
+        from nyrqisctl import format_human
+        resp = {"versions": [{"version": 1, "notes": "init", "rolled_back": False}]}
+        text = format_human("deployment-history", resp)
+        self.assertIn("init", text)
+
+    def test_format_human_rollback(self):
+        """format_human handles rollback-deployment."""
+        from nyrqisctl import format_human
+        text = format_human("rollback-deployment", {"rolled_back_to": 1, "new_version": 3})
+        self.assertIn("1", text)
+        self.assertIn("3", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -28961,7 +29210,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLimitsMonitoring))
     suite.addTests(loader.loadTestsFromTestCase(TestPriorityScheduling))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkPolicy))
-    suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
+    suite.addTests(loader.loadTestsFromTestCase(TestNamespaceQuotas))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyOrdering))
     suite.addTests(loader.loadTestsFromTestCase(TestAutoRestart))
     suite.addTests(loader.loadTestsFromTestCase(TestEnvironmentManagement))
@@ -29080,6 +29329,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestHealthProbes))
     suite.addTests(loader.loadTestsFromTestCase(TestEscalationChains))
     suite.addTests(loader.loadTestsFromTestCase(TestComplianceReporting))
+    suite.addTests(loader.loadTestsFromTestCase(TestSecretManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestNamespaceQuotas))
+    suite.addTests(loader.loadTestsFromTestCase(TestDeploymentRollback))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

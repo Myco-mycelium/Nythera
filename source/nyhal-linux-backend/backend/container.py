@@ -19722,6 +19722,559 @@ class ContainerManager:
                 lines.append(f"    - {r}")
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Secret management with encryption and rotation
+    # ------------------------------------------------------------------
+
+    def create_secret(
+        self,
+        name: str,
+        data: Dict[str, str],
+        namespace: str = "default",
+        secret_type: str = "opaque",
+        labels: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Create an encrypted secret.
+
+        Args:
+            name: Secret name.
+            data: Key-value pairs (values are plaintext, stored encrypted).
+            namespace: Namespace for the secret.
+            secret_type: ``"opaque"``, ``"tls"``, ``"docker-registry"``, or ``"ssh"``.
+            labels: Optional labels.
+
+        Returns:
+            Created secret metadata.
+        """
+        import hashlib
+        import time as _time
+        import base64
+
+        secret_id = hashlib.sha256(f"{namespace}/{name}".encode()).hexdigest()[:16]
+
+        # Encrypt each value with a simple XOR-based demo encryption
+        # In production, this would use AES-256-GCM or similar
+        encrypted_data = {}
+        for k, v in data.items():
+            key_hash = hashlib.sha256(f"{secret_id}{k}".encode()).digest()
+            encrypted = bytes(b ^ key_hash[i % len(key_hash)] for i, b in enumerate(v.encode()))
+            encrypted_data[k] = base64.b64encode(encrypted).decode()
+
+        secret = {
+            "id": secret_id,
+            "name": name,
+            "namespace": namespace,
+            "type": secret_type,
+            "data": encrypted_data,
+            "keys": list(data.keys()),
+            "labels": labels or {},
+            "created_at": _time.time(),
+            "rotated_at": None,
+            "rotation_count": 0,
+            "expires_at": None,
+        }
+
+        if not hasattr(self, '_secrets'):
+            self._secrets = {}
+        self._secrets[secret_id] = secret
+
+        return {
+            "id": secret_id,
+            "name": name,
+            "namespace": namespace,
+            "type": secret_type,
+            "keys": list(data.keys()),
+        }
+
+    def get_secret(
+        self, secret_id: str, decrypt: bool = False
+    ) -> Dict[str, Any]:
+        """Get secret by ID. Decrypts values if requested."""
+        if not hasattr(self, '_secrets'):
+            return {"error": "No secrets store"}
+        secret = self._secrets.get(secret_id)
+        if not secret:
+            return {"error": f"Secret '{secret_id}' not found"}
+
+        result = {
+            "id": secret["id"],
+            "name": secret["name"],
+            "namespace": secret["namespace"],
+            "type": secret["type"],
+            "keys": secret["keys"],
+            "labels": secret["labels"],
+            "created_at": secret["created_at"],
+            "rotated_at": secret["rotated_at"],
+            "rotation_count": secret["rotation_count"],
+        }
+
+        if decrypt:
+            import hashlib
+            import base64
+            decrypted = {}
+            for k, v in secret["data"].items():
+                key_hash = hashlib.sha256(f"{secret_id}{k}".encode()).digest()
+                raw = base64.b64decode(v)
+                decrypted[k] = bytes(b ^ key_hash[i % len(key_hash)] for i, b in enumerate(raw)).decode()
+            result["data"] = decrypted
+        else:
+            result["data"] = {k: "***" for k in secret["data"]}
+
+        return result
+
+    def delete_secret(self, secret_id: str) -> Dict[str, Any]:
+        """Delete a secret."""
+        if not hasattr(self, '_secrets'):
+            return {"error": "No secrets store"}
+        secret = self._secrets.pop(secret_id, None)
+        if not secret:
+            return {"error": f"Secret '{secret_id}' not found"}
+        return {"deleted": True, "name": secret["name"]}
+
+    def rotate_secret(
+        self, secret_id: str, new_data: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """Rotate a secret with new data."""
+        import hashlib
+        import time as _time
+        import base64
+
+        if not hasattr(self, '_secrets'):
+            return {"error": "No secrets store"}
+        secret = self._secrets.get(secret_id)
+        if not secret:
+            return {"error": f"Secret '{secret_id}' not found"}
+
+        # Encrypt new values
+        encrypted_data = {}
+        for k, v in new_data.items():
+            key_hash = hashlib.sha256(f"{secret_id}{k}".encode()).digest()
+            encrypted = bytes(b ^ key_hash[i % len(key_hash)] for i, b in enumerate(v.encode()))
+            encrypted_data[k] = base64.b64encode(encrypted).decode()
+
+        secret["data"] = encrypted_data
+        secret["keys"] = list(new_data.keys())
+        secret["rotated_at"] = _time.time()
+        secret["rotation_count"] += 1
+
+        return {
+            "id": secret_id,
+            "name": secret["name"],
+            "rotation_count": secret["rotation_count"],
+            "rotated_at": secret["rotated_at"],
+        }
+
+    def list_secrets(
+        self, namespace: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List all secrets, optionally filtered by namespace."""
+        if not hasattr(self, '_secrets'):
+            return {"secrets": [], "count": 0}
+        secrets = []
+        for s in self._secrets.values():
+            if namespace and s["namespace"] != namespace:
+                continue
+            secrets.append({
+                "id": s["id"],
+                "name": s["name"],
+                "namespace": s["namespace"],
+                "type": s["type"],
+                "keys": s["keys"],
+                "rotation_count": s["rotation_count"],
+            })
+        return {"secrets": secrets, "count": len(secrets)}
+
+    def get_secret_usage(self) -> Dict[str, Any]:
+        """Get overview of secret usage across namespaces."""
+        if not hasattr(self, '_secrets'):
+            return {"total": 0, "namespaces": {}}
+        namespaces = {}
+        for s in self._secrets.values():
+            ns = s["namespace"]
+            if ns not in namespaces:
+                namespaces[ns] = {"count": 0, "types": {}}
+            namespaces[ns]["count"] += 1
+            t = s["type"]
+            namespaces[ns]["types"][t] = namespaces[ns]["types"].get(t, 0) + 1
+        return {"total": len(self._secrets), "namespaces": namespaces}
+
+    # ------------------------------------------------------------------
+    # Resource quota management across namespaces
+    # ------------------------------------------------------------------
+
+    def create_namespace(
+        self, name: str, labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """Create a namespace."""
+        import time as _time
+        if not hasattr(self, '_namespaces'):
+            self._namespaces = {}
+        if name in self._namespaces:
+            return {"error": f"Namespace '{name}' already exists"}
+        self._namespaces[name] = {
+            "name": name,
+            "labels": labels or {},
+            "created_at": _time.time(),
+            "quotas": {},
+        }
+        return {"name": name, "created_at": self._namespaces[name]["created_at"]}
+
+    def set_resource_quota(
+        self,
+        namespace: str,
+        resource_type: str,
+        hard_limit: float,
+        soft_limit: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Set a resource quota for a namespace.
+
+        Args:
+            namespace: Target namespace.
+            resource_type: ``"memory_mb"``, ``"cpu_cores"``, ``"pids"``, ``"containers"``, ``"storage_mb"``.
+            hard_limit: Maximum allowed.
+            soft_limit: Warning threshold (defaults to 80% of hard).
+        """
+        if not hasattr(self, '_namespaces'):
+            self._namespaces = {}
+        if namespace not in self._namespaces:
+            self._namespaces[namespace] = {"name": namespace, "labels": {}, "quotas": {}}
+
+        if soft_limit is None:
+            soft_limit = hard_limit * 0.8
+
+        self._namespaces[namespace]["quotas"][resource_type] = {
+            "hard": hard_limit,
+            "soft": soft_limit,
+        }
+        return {
+            "namespace": namespace,
+            "resource": resource_type,
+            "hard_limit": hard_limit,
+            "soft_limit": soft_limit,
+        }
+
+    def get_resource_quota(self, namespace: str) -> Dict[str, Any]:
+        """Get all quotas for a namespace."""
+        if not hasattr(self, '_namespaces'):
+            return {"error": "No namespaces"}
+        ns = self._namespaces.get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        return {
+            "namespace": namespace,
+            "quotas": ns["quotas"],
+        }
+
+    def check_quota_compliance(self, namespace: str) -> Dict[str, Any]:
+        """Check current resource usage against quotas."""
+        if not hasattr(self, '_namespaces'):
+            return {"error": "No namespaces"}
+        ns = self._namespaces.get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+
+        quotas = ns["quotas"]
+        if not quotas:
+            return {"namespace": namespace, "quotas": {}, "compliant": True}
+
+        # Calculate current usage from containers in this namespace
+        containers = self.list_containers()
+        ns_containers = [
+            c for c in containers
+            if getattr(c, 'namespace', 'default') == namespace
+        ]
+
+        usage = {"memory_mb": 0, "cpu_cores": 0, "pids": 0, "containers": len(ns_containers)}
+        for c in ns_containers:
+            usage["memory_mb"] += c.config.resources.memory_limit / (1024 * 1024) if c.config.resources.memory_limit else 0
+            usage["pids"] += c.config.resources.pid_limit or 0
+
+        violations = []
+        for resource, quota in quotas.items():
+            current = usage.get(resource, 0)
+            hard = quota["hard"]
+            soft = quota["soft"]
+            percentage = (current / hard * 100) if hard > 0 else 0
+            if current > hard:
+                violations.append({
+                    "resource": resource,
+                    "current": current,
+                    "limit": hard,
+                    "severity": "exceeded",
+                })
+            elif current > soft:
+                violations.append({
+                    "resource": resource,
+                    "current": current,
+                    "limit": soft,
+                    "severity": "warning",
+                })
+
+        return {
+            "namespace": namespace,
+            "quotas": quotas,
+            "usage": usage,
+            "violations": violations,
+            "compliant": len(violations) == 0,
+        }
+
+    def list_namespaces(self) -> Dict[str, Any]:
+        """List all namespaces."""
+        if not hasattr(self, '_namespaces'):
+            return {"namespaces": [], "count": 0}
+        ns_list = []
+        for name, ns in self._namespaces.items():
+            ns_list.append({
+                "name": name,
+                "labels": ns["labels"],
+                "quota_count": len(ns["quotas"]),
+            })
+        return {"namespaces": ns_list, "count": len(ns_list)}
+
+    def delete_namespace(self, name: str) -> Dict[str, Any]:
+        """Delete a namespace."""
+        if not hasattr(self, '_namespaces'):
+            return {"error": "No namespaces"}
+        ns = self._namespaces.pop(name, None)
+        if not ns:
+            return {"error": f"Namespace '{name}' not found"}
+        return {"deleted": True, "name": name}
+
+    def get_namespace_summary(self) -> Dict[str, Any]:
+        """Get summary of all namespaces and quota usage."""
+        if not hasattr(self, '_namespaces'):
+            return {"namespaces": 0, "total_quotas": 0, "details": []}
+        details = []
+        total_quotas = 0
+        for name, ns in self._namespaces.items():
+            quota_count = len(ns["quotas"])
+            total_quotas += quota_count
+            details.append({
+                "name": name,
+                "quotas": quota_count,
+                "resources": list(ns["quotas"].keys()),
+            })
+        return {
+            "namespaces": len(self._namespaces),
+            "total_quotas": total_quotas,
+            "details": details,
+        }
+
+    # ------------------------------------------------------------------
+    # Deployment rollback with version history
+    # ------------------------------------------------------------------
+
+    def record_deployment(
+        self,
+        container: Container,
+        config_snapshot: Optional[Dict[str, Any]] = None,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        """Record a deployment version for rollback tracking.
+
+        Args:
+            container: Target container.
+            config_snapshot: Configuration snapshot (auto-generated if not provided).
+            notes: Deployment notes.
+
+        Returns:
+            Deployment version info.
+        """
+        import time as _time
+
+        if not hasattr(self, '_deployment_history'):
+            self._deployment_history = {}
+
+        cid = container.id
+        if cid not in self._deployment_history:
+            self._deployment_history[cid] = []
+
+        if config_snapshot is None:
+            config_snapshot = {
+                "image": getattr(container.config, 'image', 'unknown'),
+                "command": container.config.command,
+                "memory_mb": container.config.limits.memory_mb,
+                "pid_limit": container.config.limits.pid_limit,
+            }
+
+        version = len(self._deployment_history[cid]) + 1
+        deployment = {
+            "version": version,
+            "container_id": cid,
+            "config": config_snapshot,
+            "notes": notes,
+            "timestamp": _time.time(),
+            "rolled_back": False,
+        }
+        self._deployment_history[cid].append(deployment)
+
+        return {
+            "container_id": cid,
+            "version": version,
+            "timestamp": deployment["timestamp"],
+        }
+
+    def get_deployment_history(
+        self, container_id: str, limit: int = 10
+    ) -> Dict[str, Any]:
+        """Get deployment version history."""
+        if not hasattr(self, '_deployment_history'):
+            return {"versions": [], "count": 0}
+        history = self._deployment_history.get(container_id, [])
+        history = list(reversed(history))[:limit]
+        return {
+            "container_id": container_id,
+            "versions": history,
+            "count": len(history),
+        }
+
+    def rollback_deployment(
+        self, container_id: str, version: int
+    ) -> Dict[str, Any]:
+        """Rollback a container to a previous deployment version.
+
+        Args:
+            container_id: Target container.
+            version: Version number to rollback to.
+
+        Returns:
+            Rollback result.
+        """
+        import time as _time
+
+        if not hasattr(self, '_deployment_history'):
+            return {"error": "No deployment history"}
+        history = self._deployment_history.get(container_id, [])
+        if not history:
+            return {"error": "No deployment history for this container"}
+
+        target = None
+        for d in history:
+            if d["version"] == version:
+                target = d
+                break
+
+        if not target:
+            return {"error": f"Version {version} not found"}
+
+        container = self.get_container(container_id)
+        if not container:
+            return {"error": "Container not found"}
+
+        old_config = {
+            "image": getattr(container.config, 'image', 'unknown'),
+            "command": container.config.command,
+        }
+
+        # Apply the old config
+        if "command" in target["config"]:
+            container.config.command = target["config"]["command"]
+        if "memory_mb" in target["config"]:
+            container.config.limits.memory_mb = target["config"]["memory_mb"]
+
+        # Record the rollback as a new deployment
+        rollback_version = len(history) + 1
+        rollback_deployment = {
+            "version": rollback_version,
+            "container_id": container_id,
+            "config": target["config"],
+            "notes": f"Rollback to version {version}",
+            "timestamp": _time.time(),
+            "rolled_back": True,
+            "rollback_from": version,
+        }
+        history.append(rollback_deployment)
+
+        return {
+            "container_id": container_id,
+            "rolled_back_to": version,
+            "new_version": rollback_version,
+            "old_config": old_config,
+            "restored_config": target["config"],
+        }
+
+    def get_deployment_diff(
+        self, container_id: str, version_a: int, version_b: int
+    ) -> Dict[str, Any]:
+        """Compare two deployment versions."""
+        if not hasattr(self, '_deployment_history'):
+            return {"error": "No deployment history"}
+        history = self._deployment_history.get(container_id, [])
+
+        a = next((d for d in history if d["version"] == version_a), None)
+        b = next((d for d in history if d["version"] == version_b), None)
+
+        if not a:
+            return {"error": f"Version {version_a} not found"}
+        if not b:
+            return {"error": f"Version {version_b} not found"}
+
+        changes = []
+        all_keys = set(list(a["config"].keys()) + list(b["config"].keys()))
+        for k in sorted(all_keys):
+            val_a = a["config"].get(k)
+            val_b = b["config"].get(k)
+            if val_a != val_b:
+                changes.append({
+                    "field": k,
+                    "from": val_a,
+                    "to": val_b,
+                })
+
+        return {
+            "container_id": container_id,
+            "version_a": version_a,
+            "version_b": version_b,
+            "changes": changes,
+            "changed_fields": len(changes),
+        }
+
+    def get_rollback_candidates(
+        self, container_id: str
+    ) -> Dict[str, Any]:
+        """Get list of versions that can be rolled back to."""
+        if not hasattr(self, '_deployment_history'):
+            return {"candidates": [], "count": 0}
+        history = self._deployment_history.get(container_id, [])
+        candidates = [
+            {"version": d["version"], "timestamp": d["timestamp"], "notes": d["notes"]}
+            for d in history if not d.get("rolled_back")
+        ]
+        return {
+            "container_id": container_id,
+            "candidates": list(reversed(candidates)),
+            "count": len(candidates),
+        }
+
+    def get_deployment_status(self, container_id: str) -> Dict[str, Any]:
+        """Get current deployment status."""
+        if not hasattr(self, '_deployment_history'):
+            return {"container_id": container_id, "versions": 0, "current": None}
+        history = self._deployment_history.get(container_id, [])
+        current = history[-1] if history else None
+        return {
+            "container_id": container_id,
+            "versions": len(history),
+            "current": current,
+        }
+
+    def generate_deployment_changelog(
+        self, container_id: str
+    ) -> str:
+        """Generate a human-readable changelog."""
+        if not hasattr(self, '_deployment_history'):
+            return "No deployment history"
+        history = self._deployment_history.get(container_id, [])
+        if not history:
+            return f"No deployments for {container_id}"
+
+        lines = [f"Deployment History ({container_id[:12]}):", ""]
+        for d in reversed(history):
+            tag = " [ROLLBACK]" if d.get("rolled_back") else ""
+            lines.append(f"  v{d['version']}{tag}: {d['notes'] or 'no notes'}")
+            lines.append(f"    time: {d['timestamp']:.0f}")
+        return "\n".join(lines)
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch
