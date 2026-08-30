@@ -31153,6 +31153,223 @@ class TestLifecycleHooks(unittest.TestCase):
         self.assertIn("pre-start", text)
 
 
+class TestAdmissionWebhooks(unittest.TestCase):
+    """Tests for admission webhook with mutation and validation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_webhook(self):
+        """register_admission_webhook stores webhook."""
+        mgr = self._manager()
+        r = mgr.register_admission_webhook("my-wh", webhook_type="validating")
+        self.assertTrue(r["registered"])
+        self.assertEqual(r["type"], "validating")
+
+    def test_register_invalid_type(self):
+        """register_admission_webhook rejects invalid type."""
+        mgr = self._manager()
+        r = mgr.register_admission_webhook("bad-wh", webhook_type="invalid")
+        self.assertIn("error", r)
+
+    def test_add_rule(self):
+        """add_webhook_rule adds a rule."""
+        mgr = self._manager()
+        mgr.register_admission_webhook("r1")
+        r = mgr.add_webhook_rule("r1", operations=["CREATE"], resources=["containers"])
+        self.assertEqual(r["rule_count"], 1)
+
+    def test_evaluate_admission(self):
+        """evaluate_admission returns allowed."""
+        mgr = self._manager()
+        c = self._make(mgr, "aw1")
+        mgr.register_admission_webhook("ev1")
+        mgr.add_webhook_rule("ev1", operations=["CREATE"], resources=["containers"])
+        r = mgr.evaluate_admission("ev1", c, operation="CREATE")
+        self.assertTrue(r["allowed"])
+        self.assertEqual(r["webhook"], "ev1")
+
+    def test_evaluate_disabled_webhook(self):
+        """evaluate_admission bypasses disabled webhook."""
+        mgr = self._manager()
+        c = self._make(mgr, "aw2")
+        mgr.register_admission_webhook("dis1")
+        mgr.toggle_webhook("dis1", enabled=False)
+        r = mgr.evaluate_admission("dis1", c)
+        self.assertTrue(r["allowed"])
+        self.assertEqual(r["reason"], "webhook_disabled")
+
+    def test_webhook_status(self):
+        """get_webhook_status returns stats."""
+        mgr = self._manager()
+        mgr.register_admission_webhook("st1")
+        r = mgr.get_webhook_status("st1")
+        self.assertEqual(r["invocations"], 0)
+
+    def test_format_human_webhook(self):
+        """format_human handles register-webhook."""
+        from nyrqisctl import format_human
+        text = format_human("register-webhook", {"name": "wh1", "type": "validating"})
+        self.assertIn("wh1", text)
+
+
+class TestSupplyChain(unittest.TestCase):
+    """Tests for supply chain verification with SLSA provenance."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_register_signature(self):
+        """register_image_signature stores signature."""
+        mgr = self._manager()
+        r = mgr.register_image_signature("nginx:latest", "sha256:abc123", "builder-ci")
+        self.assertTrue(r["verified"])
+
+    def test_set_provenance(self):
+        """set_build_provenance stores provenance."""
+        mgr = self._manager()
+        mgr.register_image_signature("app:v1", "sha256:def456", "builder-1")
+        r = mgr.set_build_provenance("app:v1", builder_id="builder-1", source_uri="github.com/org/repo")
+        self.assertTrue(r["provenance_set"])
+
+    def test_verify_image_signed(self):
+        """verify_image passes for signed image."""
+        mgr = self._manager()
+        mgr.register_image_signature("img:v1", "sha256:abc", "signer1")
+        r = mgr.verify_image("img:v1", require_signature=True)
+        self.assertTrue(r["verified"])
+
+    def test_verify_image_unsigned(self):
+        """verify_image fails for unknown image."""
+        mgr = self._manager()
+        r = mgr.verify_image("unknown:v1")
+        self.assertFalse(r["verified"])
+
+    def test_verify_with_provenance(self):
+        """verify_image fails without provenance when required."""
+        mgr = self._manager()
+        mgr.register_image_signature("img:v2", "sha256:xyz", "signer2")
+        r = mgr.verify_image("img:v2", require_provenance=True)
+        self.assertFalse(r["verified"])
+        self.assertIn("missing_provenance", r["issues"])
+
+    def test_supply_chain_status(self):
+        """get_supply_chain_status returns counts."""
+        mgr = self._manager()
+        mgr.register_image_signature("a:v1", "d1", "s1")
+        mgr.register_image_signature("b:v1", "d2", "s2")
+        mgr.set_build_provenance("a:v1", builder_id="b1")
+        r = mgr.get_supply_chain_status()
+        self.assertEqual(r["total"], 2)
+        self.assertEqual(r["signed"], 2)
+        self.assertEqual(r["with_provenance"], 1)
+
+    def test_format_human_verify(self):
+        """format_human handles verify-image."""
+        from nyrqisctl import format_human
+        text = format_human("verify-image", {"image_ref": "app:v1", "verified": True, "digest": "sha256:abc1234567890", "signer": "ci"})
+        self.assertIn("VERIFIED", text)
+
+
+class TestResourcePools(unittest.TestCase):
+    """Tests for resource pool with shared allocation and reservation."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_pool(self):
+        """create_resource_pool creates pool."""
+        mgr = self._manager()
+        r = mgr.create_resource_pool("pool1", total_memory_mb=2048)
+        self.assertTrue(r["created"])
+        self.assertEqual(r["name"], "pool1")
+
+    def test_join_pool(self):
+        """join_resource_pool adds container."""
+        mgr = self._manager()
+        c = self._make(mgr, "rp1")
+        mgr.create_resource_pool("pool2", total_memory_mb=1024, total_cpu_shares=1024)
+        r = mgr.join_resource_pool("pool2", c, memory_mb=256, cpu_shares=128)
+        self.assertTrue(r["joined"])
+
+    def test_join_pool_exceeds_capacity(self):
+        """join_resource_pool rejects when exceeding capacity."""
+        mgr = self._manager()
+        c = self._make(mgr, "rp2")
+        mgr.create_resource_pool("small", total_memory_mb=100)
+        r = mgr.join_resource_pool("small", c, memory_mb=200)
+        self.assertIn("error", r)
+
+    def test_leave_pool(self):
+        """leave_resource_pool removes container."""
+        mgr = self._manager()
+        c = self._make(mgr, "rp3")
+        mgr.create_resource_pool("pool3", total_memory_mb=512)
+        mgr.join_resource_pool("pool3", c, memory_mb=100)
+        r = mgr.leave_resource_pool("pool3", c.id)
+        self.assertTrue(r["left"])
+
+    def test_reserve_resources(self):
+        """reserve_pool_resources creates reservation."""
+        mgr = self._manager()
+        mgr.create_resource_pool("pool4", total_memory_mb=1024)
+        r = mgr.reserve_pool_resources("pool4", "res1", memory_mb=512)
+        self.assertTrue(r["reserved"])
+
+    def test_reserve_exceeds_available(self):
+        """reserve_pool_resources rejects when exceeding available."""
+        mgr = self._manager()
+        mgr.create_resource_pool("pool5", total_memory_mb=100)
+        r = mgr.reserve_pool_resources("pool5", "res2", memory_mb=200)
+        self.assertIn("error", r)
+
+    def test_pool_status(self):
+        """get_pool_status returns status."""
+        mgr = self._manager()
+        c = self._make(mgr, "rp4")
+        mgr.create_resource_pool("pool6", total_memory_mb=1024)
+        mgr.join_resource_pool("pool6", c, memory_mb=256)
+        r = mgr.get_pool_status("pool6")
+        self.assertEqual(r["allocated_memory_mb"], 256)
+        self.assertEqual(r["member_count"], 1)
+
+    def test_delete_pool_empty(self):
+        """delete_resource_pool works on empty pool."""
+        mgr = self._manager()
+        mgr.create_resource_pool("del1")
+        r = mgr.delete_resource_pool("del1")
+        self.assertIn("deleted", r)
+
+    def test_delete_pool_with_members(self):
+        """delete_resource_pool rejects non-empty pool."""
+        mgr = self._manager()
+        c = self._make(mgr, "rp5")
+        mgr.create_resource_pool("del2", total_memory_mb=1024)
+        mgr.join_resource_pool("del2", c, memory_mb=100)
+        r = mgr.delete_resource_pool("del2")
+        self.assertIn("error", r)
+
+    def test_format_human_pool(self):
+        """format_human handles pool-status."""
+        from nyrqisctl import format_human
+        text = format_human("pool-status", {"name": "p1", "total_memory_mb": 1024, "allocated_memory_mb": 256, "reserved_memory_mb": 128, "total_cpu_shares": 512, "allocated_cpu_shares": 100, "reserved_cpu_shares": 50, "member_count": 3, "reservation_count": 2})
+        self.assertIn("256", text)
+        self.assertIn("3", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -31368,6 +31585,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostAttribution))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkSimulation))
     suite.addTests(loader.loadTestsFromTestCase(TestLifecycleHooks))
+    suite.addTests(loader.loadTestsFromTestCase(TestAdmissionWebhooks))
+    suite.addTests(loader.loadTestsFromTestCase(TestSupplyChain))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourcePools))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

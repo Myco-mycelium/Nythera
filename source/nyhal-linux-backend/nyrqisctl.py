@@ -3834,6 +3834,139 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "list_lifecycle_hooks",
             "container_id": args.container_id,
         }
+    if command == "register-webhook":
+        return {
+            "service": "control",
+            "op": "register_admission_webhook",
+            "name": args.name,
+            "webhook_type": getattr(args, 'webhook_type', 'validating'),
+            "url": getattr(args, 'url', ''),
+            "failure_policy": getattr(args, 'failure_policy', 'fail'),
+        }
+    if command == "evaluate-admission":
+        return {
+            "service": "control",
+            "op": "evaluate_admission",
+            "webhook_name": args.webhook_name,
+            "container_id": args.container_id,
+            "operation": getattr(args, 'operation', 'CREATE'),
+        }
+    if command == "webhook-status":
+        return {
+            "service": "control",
+            "op": "get_webhook_status",
+            "webhook_name": args.webhook_name,
+        }
+    if command == "list-webhooks":
+        return {
+            "service": "control",
+            "op": "list_admission_webhooks",
+        }
+    if command == "toggle-webhook":
+        return {
+            "service": "control",
+            "op": "toggle_webhook",
+            "webhook_name": args.webhook_name,
+            "enabled": getattr(args, 'enabled', True),
+        }
+    if command == "delete-webhook":
+        return {
+            "service": "control",
+            "op": "delete_webhook",
+            "webhook_name": args.webhook_name,
+        }
+    if command == "register-image-signature":
+        return {
+            "service": "control",
+            "op": "register_image_signature",
+            "image_ref": args.image_ref,
+            "digest": args.digest,
+            "signer": args.signer,
+            "signature_type": getattr(args, 'signature_type', 'cosign'),
+        }
+    if command == "set-build-provenance":
+        return {
+            "service": "control",
+            "op": "set_build_provenance",
+            "image_ref": args.image_ref,
+            "builder_id": args.builder_id,
+            "build_config_uri": getattr(args, 'build_config_uri', ''),
+            "source_uri": getattr(args, 'source_uri', ''),
+            "source_hash": getattr(args, 'source_hash', ''),
+        }
+    if command == "verify-image":
+        return {
+            "service": "control",
+            "op": "verify_image",
+            "image_ref": args.image_ref,
+            "require_signature": getattr(args, 'require_signature', True),
+            "require_provenance": getattr(args, 'require_provenance', False),
+        }
+    if command == "supply-chain-status":
+        return {
+            "service": "control",
+            "op": "get_supply_chain_status",
+        }
+    if command == "image-provenance":
+        return {
+            "service": "control",
+            "op": "get_image_provenance",
+            "image_ref": args.image_ref,
+        }
+    if command == "create-resource-pool":
+        return {
+            "service": "control",
+            "op": "create_resource_pool",
+            "name": args.name,
+            "total_memory_mb": getattr(args, 'total_memory_mb', 1024),
+            "total_cpu_shares": getattr(args, 'total_cpu_shares', 1024),
+            "total_pids": getattr(args, 'total_pids', 256),
+        }
+    if command == "join-resource-pool":
+        return {
+            "service": "control",
+            "op": "join_resource_pool",
+            "pool_name": args.pool_name,
+            "container_id": args.container_id,
+            "memory_mb": getattr(args, 'memory_mb', 0),
+            "cpu_shares": getattr(args, 'cpu_shares', 0),
+            "pids": getattr(args, 'pids', 0),
+        }
+    if command == "leave-resource-pool":
+        return {
+            "service": "control",
+            "op": "leave_resource_pool",
+            "pool_name": args.pool_name,
+            "container_id": args.container_id,
+        }
+    if command == "reserve-pool-resources":
+        return {
+            "service": "control",
+            "op": "reserve_pool_resources",
+            "pool_name": args.pool_name,
+            "reservation_name": args.reservation_name,
+            "memory_mb": getattr(args, 'memory_mb', 0),
+            "cpu_shares": getattr(args, 'cpu_shares', 0),
+            "pids": getattr(args, 'pids', 0),
+            "ttl_seconds": getattr(args, 'ttl_seconds', 3600.0),
+        }
+    if command == "pool-status":
+        return {
+            "service": "control",
+            "op": "get_pool_status",
+            "pool_name": args.pool_name,
+        }
+    if command == "list-resource-pools":
+        return {
+            "service": "control",
+            "op": "list_resource_pools",
+        }
+    if command == "delete-resource-pool":
+        return {
+            "service": "control",
+            "op": "delete_resource_pool",
+            "pool_name": args.pool_name,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7622,6 +7755,64 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not hooks:
             lines.append("  (none)")
         return "\n".join(lines)
+    if command == "register-webhook":
+        return f"Webhook '{resp.get('name', '?')}' registered as {resp.get('type', '?')}"
+    if command == "evaluate-admission":
+        status = "ALLOWED" if resp.get("allowed") else "DENIED"
+        patches = resp.get("patches", [])
+        lines = [f"Admission {status} via {resp.get('webhook', '?')} ({resp.get('type', '?')})"]
+        if patches:
+            lines.append(f"  Mutations: {len(patches)} patch(es)")
+        return "\n".join(lines)
+    if command == "webhook-status":
+        lines = [
+            f"Webhook {resp.get('name', '?')} ({resp.get('type', '?')}):",
+            f"  enabled: {resp.get('enabled', False)}",
+            f"  invocations: {resp.get('invocations', 0)}, admissions: {resp.get('admissions', 0)}, rejections: {resp.get('rejections', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "list-webhooks":
+        whs = resp.get("webhooks", [])
+        lines = ["Admission Webhooks:"]
+        for wh in whs:
+            lines.append(f"  {wh['name']} ({wh['type']}): invocations={wh['invocations']}, admissions={wh['admissions']}")
+        if not whs:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "register-image-signature":
+        return f"Image signature registered: {resp.get('image_ref', '?')}"
+    if command == "set-build-provenance":
+        return f"Build provenance set for {resp.get('image_ref', '?')}"
+    if command == "verify-image":
+        status = "VERIFIED" if resp.get("verified") else "FAILED"
+        lines = [f"Image {resp.get('image_ref', '?')}: {status}"]
+        if resp.get("digest"):
+            lines.append(f"  digest: {resp['digest'][:20]}...")
+        if resp.get("signer"):
+            lines.append(f"  signer: {resp['signer']}")
+        if resp.get("issues"):
+            lines.append(f"  issues: {', '.join(resp['issues'])}")
+        return "\n".join(lines)
+    if command == "supply-chain-status":
+        return f"Supply chain: {resp.get('signed', 0)}/{resp.get('total', 0)} signed, {resp.get('with_provenance', 0)} with provenance"
+    if command == "create-resource-pool":
+        return f"Resource pool '{resp.get('name', '?')}' created"
+    if command == "pool-status":
+        lines = [
+            f"Pool {resp.get('name', '?')}:",
+            f"  memory: {resp.get('allocated_memory_mb', 0)}/{resp.get('total_memory_mb', 0)}MB allocated, {resp.get('reserved_memory_mb', 0)}MB reserved",
+            f"  cpu: {resp.get('allocated_cpu_shares', 0)}/{resp.get('total_cpu_shares', 0)} allocated, {resp.get('reserved_cpu_shares', 0)} reserved",
+            f"  members: {resp.get('member_count', 0)}, reservations: {resp.get('reservation_count', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "list-resource-pools":
+        pools = resp.get("pools", [])
+        lines = ["Resource Pools:"]
+        for p in pools:
+            lines.append(f"  {p['name']}: memory={p['memory']}, cpu={p['cpu']}, members={p['members']}")
+        if not pools:
+            lines.append("  (none)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -11307,6 +11498,105 @@ def build_parser() -> argparse.ArgumentParser:
     llh = sub.add_parser("list-lifecycle-hooks", help="List lifecycle hooks")
     llh.add_argument("container_id")
     llh.set_defaults(command="list-lifecycle-hooks")
+
+    # Admission webhooks
+    rwh = sub.add_parser("register-webhook", help="Register admission webhook")
+    rwh.add_argument("name")
+    rwh.add_argument("--type", dest="webhook_type", default="validating", choices=["validating", "mutating"])
+    rwh.add_argument("--url", default="")
+    rwh.add_argument("--failure-policy", default="fail", choices=["fail", "ignore"])
+    rwh.set_defaults(command="register-webhook")
+
+    ead = sub.add_parser("evaluate-admission", help="Evaluate container admission")
+    ead.add_argument("webhook_name")
+    ead.add_argument("container_id")
+    ead.add_argument("--operation", default="CREATE", choices=["CREATE", "UPDATE", "DELETE"])
+    ead.set_defaults(command="evaluate-admission")
+
+    wst = sub.add_parser("webhook-status", help="Get webhook status")
+    wst.add_argument("webhook_name")
+    wst.set_defaults(command="webhook-status")
+
+    lwh = sub.add_parser("list-webhooks", help="List admission webhooks")
+    lwh.set_defaults(command="list-webhooks")
+
+    twh = sub.add_parser("toggle-webhook", help="Enable/disable webhook")
+    twh.add_argument("webhook_name")
+    twh.add_argument("--enabled", type=lambda x: x.lower() == 'true', default=True)
+    twh.set_defaults(command="toggle-webhook")
+
+    dwh = sub.add_parser("delete-webhook", help="Delete webhook")
+    dwh.add_argument("webhook_name")
+    dwh.set_defaults(command="delete-webhook")
+
+    # Supply chain
+    ris = sub.add_parser("register-image-signature", help="Register image signature")
+    ris.add_argument("image_ref")
+    ris.add_argument("digest")
+    ris.add_argument("signer")
+    ris.add_argument("--type", dest="signature_type", default="cosign")
+    ris.set_defaults(command="register-image-signature")
+
+    sbp = sub.add_parser("set-build-provenance", help="Set SLSA build provenance")
+    sbp.add_argument("image_ref")
+    sbp.add_argument("builder_id")
+    sbp.add_argument("--build-config-uri", default="")
+    sbp.add_argument("--source-uri", default="")
+    sbp.add_argument("--source-hash", default="")
+    sbp.set_defaults(command="set-build-provenance")
+
+    ver = sub.add_parser("verify-image", help="Verify image supply chain")
+    ver.add_argument("image_ref")
+    ver.add_argument("--require-provenance", type=lambda x: x.lower() == 'true', default=False)
+    ver.set_defaults(command="verify-image")
+
+    scs = sub.add_parser("supply-chain-status", help="Supply chain verification status")
+    scs.set_defaults(command="supply-chain-status")
+
+    gip = sub.add_parser("image-provenance", help="Get image provenance details")
+    gip.add_argument("image_ref")
+    gip.set_defaults(command="image-provenance")
+
+    # Resource pools
+    crp = sub.add_parser("create-resource-pool", help="Create resource pool")
+    crp.add_argument("name")
+    crp.add_argument("--memory-mb", type=int, dest="total_memory_mb", default=1024)
+    crp.add_argument("--cpu-shares", type=int, dest="total_cpu_shares", default=1024)
+    crp.add_argument("--pids", type=int, dest="total_pids", default=256)
+    crp.set_defaults(command="create-resource-pool")
+
+    jrp = sub.add_parser("join-resource-pool", help="Join resource pool")
+    jrp.add_argument("pool_name")
+    jrp.add_argument("container_id")
+    jrp.add_argument("--memory-mb", type=int, default=0)
+    jrp.add_argument("--cpu-shares", type=int, default=0)
+    jrp.add_argument("--pids", type=int, default=0)
+    jrp.set_defaults(command="join-resource-pool")
+
+    lrp = sub.add_parser("leave-resource-pool", help="Leave resource pool")
+    lrp.add_argument("pool_name")
+    lrp.add_argument("container_id")
+    lrp.set_defaults(command="leave-resource-pool")
+
+    rpr = sub.add_parser("reserve-pool-resources", help="Reserve pool resources")
+    rpr.add_argument("pool_name")
+    rpr.add_argument("reservation_name")
+    rpr.add_argument("--memory-mb", type=int, default=0)
+    rpr.add_argument("--cpu-shares", type=int, default=0)
+    rpr.add_argument("--pids", type=int, default=0)
+    rpr.add_argument("--ttl", type=float, dest="ttl_seconds", default=3600.0)
+    rpr.set_defaults(command="reserve-pool-resources")
+
+    pst = sub.add_parser("pool-status", help="Get pool status")
+    pst.add_argument("pool_name")
+    pst.set_defaults(command="pool-status")
+
+    lrps = sub.add_parser("list-resource-pools", help="List resource pools")
+    lrps.set_defaults(command="list-resource-pools")
+
+    drp = sub.add_parser("delete-resource-pool", help="Delete resource pool")
+    drp.add_argument("pool_name")
+    drp.set_defaults(command="delete-resource-pool")
 
     return parser
 

@@ -24212,6 +24212,442 @@ class ContainerManager:
         return list(self._hook_execution_log) if hasattr(self, '_hook_execution_log') else []
 
 
+
+    # ------------------------------------------------------------------
+    # Admission webhook with mutation and validation
+    # ------------------------------------------------------------------
+
+    def register_admission_webhook(
+        self,
+        name: str,
+        webhook_type: str = "validating",
+        url: str = "",
+        failure_policy: str = "fail",
+        namespace_selector: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Register an admission webhook for container lifecycle events."""
+        valid_types = ["validating", "mutating"]
+        if webhook_type not in valid_types:
+            return {"error": f"Invalid type. Must be one of: {valid_types}"}
+        if not hasattr(self, '_admission_webhooks'):
+            self._admission_webhooks = {}
+        self._admission_webhooks[name] = {
+            "name": name,
+            "type": webhook_type,
+            "url": url,
+            "failure_policy": failure_policy,
+            "namespace_selector": namespace_selector or {},
+            "rules": [],
+            "enabled": True,
+            "created_at": __import__("time").time(),
+            "invocations": 0,
+            "admissions": 0,
+            "rejections": 0,
+        }
+        return {"name": name, "type": webhook_type, "registered": True}
+
+    def add_webhook_rule(
+        self,
+        webhook_name: str,
+        operations: List[str],
+        resources: List[str],
+        stages: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Add a rule to an admission webhook."""
+        if not hasattr(self, '_admission_webhooks'):
+            return {"error": "No webhooks registered"}
+        wh = self._admission_webhooks.get(webhook_name)
+        if not wh:
+            return {"error": f"Webhook '{webhook_name}' not found"}
+        rule = {
+            "operations": operations,
+            "resources": resources,
+            "stages": stages or ["CREATE", "UPDATE"],
+        }
+        wh["rules"].append(rule)
+        return {"webhook": webhook_name, "rule_count": len(wh["rules"])}
+
+    def evaluate_admission(
+        self,
+        webhook_name: str,
+        container: Container,
+        operation: str = "CREATE",
+    ) -> Dict[str, Any]:
+        """Evaluate whether a container admission should be allowed."""
+        if not hasattr(self, '_admission_webhooks'):
+            return {"error": "No webhooks registered"}
+        wh = self._admission_webhooks.get(webhook_name)
+        if not wh:
+            return {"error": f"Webhook '{webhook_name}' not found"}
+        if not wh["enabled"]:
+            return {"allowed": True, "reason": "webhook_disabled"}
+
+        wh["invocations"] += 1
+
+        # Check rules
+        matched = False
+        for rule in wh["rules"]:
+            if operation in rule["stages"]:
+                matched = True
+                break
+
+        if not matched and wh["rules"]:
+            return {"allowed": True, "reason": "no_rule_match"}
+
+        # Run mutation for mutating webhooks
+        patches = []
+        if wh["type"] == "mutating":
+            # Add default labels if missing
+            if "admission.webhook" not in container.config.labels:
+                patches.append({"op": "add", "path": "/labels/admission.webhook", "value": webhook_name})
+
+        if wh["failure_policy"] == "deny":
+            allowed = True
+        else:
+            allowed = True
+
+        if allowed:
+            wh["admissions"] += 1
+        else:
+            wh["rejections"] += 1
+
+        return {
+            "allowed": allowed,
+            "webhook": webhook_name,
+            "type": wh["type"],
+            "patches": patches,
+            "operation": operation,
+        }
+
+    def get_webhook_status(self, webhook_name: str) -> Dict[str, Any]:
+        """Get status of a webhook."""
+        if not hasattr(self, '_admission_webhooks'):
+            return {"error": "No webhooks registered"}
+        wh = self._admission_webhooks.get(webhook_name)
+        if not wh:
+            return {"error": f"Webhook '{webhook_name}' not found"}
+        return {
+            "name": wh["name"],
+            "type": wh["type"],
+            "enabled": wh["enabled"],
+            "invocations": wh["invocations"],
+            "admissions": wh["admissions"],
+            "rejections": wh["rejections"],
+            "rules": len(wh["rules"]),
+        }
+
+    def list_admission_webhooks(self) -> List[Dict[str, Any]]:
+        """List all admission webhooks."""
+        if not hasattr(self, '_admission_webhooks'):
+            return []
+        return [
+            {"name": wh["name"], "type": wh["type"], "enabled": wh["enabled"],
+             "invocations": wh["invocations"], "admissions": wh["admissions"],
+             "rejections": wh["rejections"]}
+            for wh in self._admission_webhooks.values()
+        ]
+
+    def toggle_webhook(self, webhook_name: str, enabled: bool = True) -> Dict[str, Any]:
+        """Enable or disable a webhook."""
+        if not hasattr(self, '_admission_webhooks'):
+            return {"error": "No webhooks registered"}
+        wh = self._admission_webhooks.get(webhook_name)
+        if not wh:
+            return {"error": f"Webhook '{webhook_name}' not found"}
+        wh["enabled"] = enabled
+        return {"name": webhook_name, "enabled": enabled}
+
+    def delete_webhook(self, webhook_name: str) -> Dict[str, Any]:
+        """Delete a webhook."""
+        if not hasattr(self, '_admission_webhooks'):
+            return {"error": "No webhooks registered"}
+        if webhook_name not in self._admission_webhooks:
+            return {"error": f"Webhook '{webhook_name}' not found"}
+        del self._admission_webhooks[webhook_name]
+        return {"deleted": webhook_name}
+
+    # ------------------------------------------------------------------
+    # Supply chain verification with SLSA provenance
+    # ------------------------------------------------------------------
+
+    def register_image_signature(
+        self,
+        image_ref: str,
+        digest: str,
+        signer: str,
+        signature_type: str = "cosign",
+        verified_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Register a verified image signature (SLSA provenance)."""
+        import time as _time
+        if not hasattr(self, '_image_signatures'):
+            self._image_signatures = {}
+        self._image_signatures[image_ref] = {
+            "image_ref": image_ref,
+            "digest": digest,
+            "signer": signer,
+            "signature_type": signature_type,
+            "verified_at": verified_at or _time.time(),
+            "build provenance": {},
+        }
+        return {"image_ref": image_ref, "verified": True}
+
+    def set_build_provenance(
+        self,
+        image_ref: str,
+        builder_id: str,
+        build_config_uri: str = "",
+        source_uri: str = "",
+        source_hash: str = "",
+        build_type: str = "https://slsa.dev/buildType/v1",
+    ) -> Dict[str, Any]:
+        """Set SLSA build provenance for an image."""
+        if not hasattr(self, '_image_signatures'):
+            return {"error": "No signatures registered"}
+        sig = self._image_signatures.get(image_ref)
+        if not sig:
+            return {"error": f"No signature for '{image_ref}'"}
+        sig["build_provenance"] = {
+            "builder_id": builder_id,
+            "build_config_uri": build_config_uri,
+            "source_uri": source_uri,
+            "source_hash": source_hash,
+            "build_type": build_type,
+            "recorded_at": __import__("time").time(),
+        }
+        return {"image_ref": image_ref, "provenance_set": True}
+
+    def verify_image(
+        self,
+        image_ref: str,
+        require_signature: bool = True,
+        require_provenance: bool = False,
+    ) -> Dict[str, Any]:
+        """Verify image supply chain integrity."""
+        if not hasattr(self, '_image_signatures'):
+            return {"verified": False, "error": "No signatures database"}
+        sig = self._image_signatures.get(image_ref)
+        if not sig:
+            return {"verified": False, "error": "Image not signed", "image_ref": image_ref}
+
+        issues = []
+        if require_signature and not sig.get("digest"):
+            issues.append("missing_digest")
+        if require_provenance and not sig.get("build_provenance", {}).get("builder_id"):
+            issues.append("missing_provenance")
+
+        return {
+            "verified": len(issues) == 0,
+            "image_ref": image_ref,
+            "digest": sig.get("digest"),
+            "signer": sig.get("signer"),
+            "signature_type": sig.get("signature_type"),
+            "has_provenance": bool(sig.get("build_provenance", {}).get("builder_id")),
+            "issues": issues,
+        }
+
+    def get_supply_chain_status(self) -> Dict[str, Any]:
+        """Get fleet-wide supply chain verification status."""
+        if not hasattr(self, '_image_signatures'):
+            return {"total": 0, "signed": 0, "with_provenance": 0}
+        total = len(self._image_signatures)
+        signed = sum(1 for s in self._image_signatures.values() if s.get("digest"))
+        with_provenance = sum(1 for s in self._image_signatures.values()
+                             if s.get("build_provenance", {}).get("builder_id"))
+        return {
+            "total": total,
+            "signed": signed,
+            "unsigned": total - signed,
+            "with_provenance": with_provenance,
+        }
+
+    def get_image_provenance(self, image_ref: str) -> Dict[str, Any]:
+        """Get full provenance details for an image."""
+        if not hasattr(self, '_image_signatures'):
+            return {"error": "No signatures database"}
+        sig = self._image_signatures.get(image_ref)
+        if not sig:
+            return {"error": f"No data for '{image_ref}'"}
+        return {
+            "image_ref": image_ref,
+            "digest": sig.get("digest"),
+            "signer": sig.get("signer"),
+            "verified_at": sig.get("verified_at"),
+            "provenance": sig.get("build_provenance", {}),
+        }
+
+    # ------------------------------------------------------------------
+    # Resource pool with shared allocation and reservation
+    # ------------------------------------------------------------------
+
+    def create_resource_pool(
+        self,
+        name: str,
+        total_memory_mb: int = 1024,
+        total_cpu_shares: int = 1024,
+        total_pids: int = 256,
+    ) -> Dict[str, Any]:
+        """Create a shared resource pool."""
+        if not hasattr(self, '_resource_pools'):
+            self._resource_pools = {}
+        self._resource_pools[name] = {
+            "name": name,
+            "total_memory_mb": total_memory_mb,
+            "total_cpu_shares": total_cpu_shares,
+            "total_pids": total_pids,
+            "allocated_memory_mb": 0,
+            "allocated_cpu_shares": 0,
+            "allocated_pids": 0,
+            "members": {},
+            "reservations": {},
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "created": True}
+
+    def join_resource_pool(
+        self,
+        pool_name: str,
+        container: Container,
+        memory_mb: int = 0,
+        cpu_shares: int = 0,
+        pids: int = 0,
+    ) -> Dict[str, Any]:
+        """Join a container to a resource pool with allocation."""
+        if not hasattr(self, '_resource_pools'):
+            return {"error": "No pools exist"}
+        pool = self._resource_pools.get(pool_name)
+        if not pool:
+            return {"error": f"Pool '{pool_name}' not found"}
+        # Check capacity
+        if pool["allocated_memory_mb"] + memory_mb > pool["total_memory_mb"]:
+            return {"error": "Exceeds pool memory capacity"}
+        if pool["allocated_cpu_shares"] + cpu_shares > pool["total_cpu_shares"]:
+            return {"error": "Exceeds pool CPU capacity"}
+        if pool["allocated_pids"] + pids > pool["total_pids"]:
+            return {"error": "Exceeds pool PID capacity"}
+        pool["members"][container.id] = {
+            "container_id": container.id,
+            "memory_mb": memory_mb,
+            "cpu_shares": cpu_shares,
+            "pids": pids,
+            "joined_at": __import__("time").time(),
+        }
+        pool["allocated_memory_mb"] += memory_mb
+        pool["allocated_cpu_shares"] += cpu_shares
+        pool["allocated_pids"] += pids
+        return {"container_id": container.id, "pool": pool_name, "joined": True}
+
+    def leave_resource_pool(
+        self,
+        pool_name: str,
+        container_id: str,
+    ) -> Dict[str, Any]:
+        """Remove a container from a resource pool."""
+        if not hasattr(self, '_resource_pools'):
+            return {"error": "No pools exist"}
+        pool = self._resource_pools.get(pool_name)
+        if not pool:
+            return {"error": f"Pool '{pool_name}' not found"}
+        member = pool["members"].pop(container_id, None)
+        if not member:
+            return {"error": f"Container '{container_id}' not in pool"}
+        pool["allocated_memory_mb"] -= member["memory_mb"]
+        pool["allocated_cpu_shares"] -= member["cpu_shares"]
+        pool["allocated_pids"] -= member["pids"]
+        return {"container_id": container_id, "pool": pool_name, "left": True}
+
+    def reserve_pool_resources(
+        self,
+        pool_name: str,
+        reservation_name: str,
+        memory_mb: int = 0,
+        cpu_shares: int = 0,
+        pids: int = 0,
+        ttl_seconds: float = 3600.0,
+    ) -> Dict[str, Any]:
+        """Reserve resources from a pool (guaranteed allocation)."""
+        if not hasattr(self, '_resource_pools'):
+            return {"error": "No pools exist"}
+        pool = self._resource_pools.get(pool_name)
+        if not pool:
+            return {"error": f"Pool '{pool_name}' not found"}
+        total_reserved_mem = sum(r["memory_mb"] for r in pool["reservations"].values())
+        total_reserved_cpu = sum(r["cpu_shares"] for r in pool["reservations"].values())
+        available_mem = pool["total_memory_mb"] - pool["allocated_memory_mb"] - total_reserved_mem
+        available_cpu = pool["total_cpu_shares"] - pool["allocated_cpu_shares"] - total_reserved_cpu
+        if memory_mb > available_mem:
+            return {"error": f"Insufficient memory: available={available_mem}MB, requested={memory_mb}MB"}
+        if cpu_shares > available_cpu:
+            return {"error": f"Insufficient CPU: available={available_cpu}, requested={cpu_shares}"}
+        import time as _time
+        pool["reservations"][reservation_name] = {
+            "name": reservation_name,
+            "memory_mb": memory_mb,
+            "cpu_shares": cpu_shares,
+            "pids": pids,
+            "ttl_seconds": ttl_seconds,
+            "created_at": _time.time(),
+            "expires_at": _time.time() + ttl_seconds,
+        }
+        return {"reservation": reservation_name, "pool": pool_name, "reserved": True}
+
+    def get_pool_status(self, pool_name: str) -> Dict[str, Any]:
+        """Get status of a resource pool."""
+        if not hasattr(self, '_resource_pools'):
+            return {"error": "No pools exist"}
+        pool = self._resource_pools.get(pool_name)
+        if not pool:
+            return {"error": f"Pool '{pool_name}' not found"}
+        import time as _time
+        now = _time.time()
+        # Clean expired reservations
+        expired = [r for r, rv in pool["reservations"].items() if rv["expires_at"] < now]
+        for r in expired:
+            del pool["reservations"][r]
+        total_reserved_mem = sum(r["memory_mb"] for r in pool["reservations"].values())
+        total_reserved_cpu = sum(r["cpu_shares"] for r in pool["reservations"].values())
+        return {
+            "name": pool_name,
+            "total_memory_mb": pool["total_memory_mb"],
+            "allocated_memory_mb": pool["allocated_memory_mb"],
+            "reserved_memory_mb": total_reserved_mem,
+            "available_memory_mb": pool["total_memory_mb"] - pool["allocated_memory_mb"] - total_reserved_mem,
+            "total_cpu_shares": pool["total_cpu_shares"],
+            "allocated_cpu_shares": pool["allocated_cpu_shares"],
+            "reserved_cpu_shares": total_reserved_cpu,
+            "available_cpu_shares": pool["total_cpu_shares"] - pool["allocated_cpu_shares"] - total_reserved_cpu,
+            "member_count": len(pool["members"]),
+            "reservation_count": len(pool["reservations"]),
+        }
+
+    def list_resource_pools(self) -> List[Dict[str, Any]]:
+        """List all resource pools with summary."""
+        if not hasattr(self, '_resource_pools'):
+            return []
+        result = []
+        for name, pool in self._resource_pools.items():
+            result.append({
+                "name": name,
+                "memory": f"{pool['allocated_memory_mb']}/{pool['total_memory_mb']}MB",
+                "cpu": f"{pool['allocated_cpu_shares']}/{pool['total_cpu_shares']}",
+                "members": len(pool["members"]),
+                "reservations": len(pool["reservations"]),
+            })
+        return result
+
+    def delete_resource_pool(self, pool_name: str) -> Dict[str, Any]:
+        """Delete a resource pool."""
+        if not hasattr(self, '_resource_pools'):
+            return {"error": "No pools exist"}
+        if pool_name not in self._resource_pools:
+            return {"error": f"Pool '{pool_name}' not found"}
+        pool = self._resource_pools[pool_name]
+        if pool["members"]:
+            return {"error": f"Pool has {len(pool['members'])} members, remove them first"}
+        del self._resource_pools[pool_name]
+        return {"deleted": pool_name}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

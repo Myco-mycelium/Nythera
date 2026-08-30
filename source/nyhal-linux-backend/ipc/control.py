@@ -1740,6 +1740,60 @@ class ControlService:
             elif op == "get_hook_execution_log":
                 self._get_hook_execution_log(server, sender_path,
                                         msg.message_id)
+            elif op == "register_admission_webhook":
+                self._register_admission_webhook(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "evaluate_admission":
+                self._evaluate_admission(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "get_webhook_status":
+                self._get_webhook_status(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "list_admission_webhooks":
+                self._list_admission_webhooks(server, sender_path,
+                                         msg.message_id)
+            elif op == "toggle_webhook":
+                self._toggle_webhook(server, sender_path,
+                                msg.message_id, request)
+            elif op == "delete_webhook":
+                self._delete_webhook(server, sender_path,
+                                msg.message_id, request)
+            elif op == "register_image_signature":
+                self._register_image_signature(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "set_build_provenance":
+                self._set_build_provenance(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "verify_image":
+                self._verify_image(server, sender_path,
+                              msg.message_id, request)
+            elif op == "get_supply_chain_status":
+                self._get_supply_chain_status(server, sender_path,
+                                         msg.message_id)
+            elif op == "get_image_provenance":
+                self._get_image_provenance(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "create_resource_pool":
+                self._create_resource_pool(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "join_resource_pool":
+                self._join_resource_pool(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "leave_resource_pool":
+                self._leave_resource_pool(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "reserve_pool_resources":
+                self._reserve_pool_resources(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "get_pool_status":
+                self._get_pool_status(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "list_resource_pools":
+                self._list_resource_pools(server, sender_path,
+                                     msg.message_id)
+            elif op == "delete_resource_pool":
+                self._delete_resource_pool(server, sender_path,
+                                      msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8909,6 +8963,137 @@ class ControlService:
     def _get_hook_execution_log(self, server, sender_path, call_id):
         result = self.container_manager.get_hook_execution_log()
         self._reply(server, sender_path, call_id, {"ok": True, "log": result})
+
+    def _register_admission_webhook(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_admission_webhook(
+            name=request.get("name", "default"),
+            webhook_type=request.get("webhook_type", "validating"),
+            url=request.get("url", ""),
+            failure_policy=request.get("failure_policy", "fail"),
+            namespace_selector=request.get("namespace_selector"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _evaluate_admission(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.evaluate_admission(
+            webhook_name=request.get("webhook_name", "default"),
+            container=c,
+            operation=request.get("operation", "CREATE"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_webhook_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_webhook_status(request.get("webhook_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_admission_webhooks(self, server, sender_path, call_id):
+        result = self.container_manager.list_admission_webhooks()
+        self._reply(server, sender_path, call_id, {"ok": True, "webhooks": result})
+
+    def _toggle_webhook(self, server, sender_path, call_id, request):
+        result = self.container_manager.toggle_webhook(
+            webhook_name=request.get("webhook_name", "default"),
+            enabled=request.get("enabled", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_webhook(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_webhook(request.get("webhook_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _register_image_signature(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_image_signature(
+            image_ref=request.get("image_ref", ""),
+            digest=request.get("digest", ""),
+            signer=request.get("signer", ""),
+            signature_type=request.get("signature_type", "cosign"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _set_build_provenance(self, server, sender_path, call_id, request):
+        result = self.container_manager.set_build_provenance(
+            image_ref=request.get("image_ref", ""),
+            builder_id=request.get("builder_id", ""),
+            build_config_uri=request.get("build_config_uri", ""),
+            source_uri=request.get("source_uri", ""),
+            source_hash=request.get("source_hash", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _verify_image(self, server, sender_path, call_id, request):
+        result = self.container_manager.verify_image(
+            image_ref=request.get("image_ref", ""),
+            require_signature=request.get("require_signature", True),
+            require_provenance=request.get("require_provenance", False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_supply_chain_status(self, server, sender_path, call_id):
+        result = self.container_manager.get_supply_chain_status()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_image_provenance(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_image_provenance(request.get("image_ref", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_resource_pool(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_resource_pool(
+            name=request.get("name", "default"),
+            total_memory_mb=request.get("total_memory_mb", 1024),
+            total_cpu_shares=request.get("total_cpu_shares", 1024),
+            total_pids=request.get("total_pids", 256),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _join_resource_pool(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.join_resource_pool(
+            pool_name=request.get("pool_name", "default"),
+            container=c,
+            memory_mb=request.get("memory_mb", 0),
+            cpu_shares=request.get("cpu_shares", 0),
+            pids=request.get("pids", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _leave_resource_pool(self, server, sender_path, call_id, request):
+        result = self.container_manager.leave_resource_pool(
+            pool_name=request.get("pool_name", "default"),
+            container_id=request.get("container_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _reserve_pool_resources(self, server, sender_path, call_id, request):
+        result = self.container_manager.reserve_pool_resources(
+            pool_name=request.get("pool_name", "default"),
+            reservation_name=request.get("reservation_name", "res1"),
+            memory_mb=request.get("memory_mb", 0),
+            cpu_shares=request.get("cpu_shares", 0),
+            pids=request.get("pids", 0),
+            ttl_seconds=request.get("ttl_seconds", 3600.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_pool_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_pool_status(request.get("pool_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_resource_pools(self, server, sender_path, call_id):
+        result = self.container_manager.list_resource_pools()
+        self._reply(server, sender_path, call_id, {"ok": True, "pools": result})
+
+    def _delete_resource_pool(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_resource_pool(request.get("pool_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
