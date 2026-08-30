@@ -4173,6 +4173,105 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "list_ebpf_hooks",
         }
+    if command == "register-topology-node":
+        return {
+            "service": "control",
+            "op": "register_topology_node",
+            "node_id": args.node_id,
+            "region": getattr(args, 'region', 'us-east-1'),
+            "zone": getattr(args, 'zone', 'us-east-1a'),
+            "labels": getattr(args, 'labels', None),
+            "taints": getattr(args, 'taints', None),
+            "resources": getattr(args, 'resources', None),
+        }
+    if command == "set-topology-constraints":
+        return {
+            "service": "control",
+            "op": "set_topology_constraints",
+            "container_id": args.container_id,
+            "node_selector": getattr(args, 'node_selector', None),
+            "preferred_region": getattr(args, 'preferred_region', None),
+            "anti_affinity_nodes": getattr(args, 'anti_affinity_nodes', None),
+        }
+    if command == "find-suitable-nodes":
+        return {
+            "service": "control",
+            "op": "find_suitable_nodes",
+            "container_id": args.container_id,
+        }
+    if command == "schedule-with-topology":
+        return {
+            "service": "control",
+            "op": "schedule_with_topology",
+            "container_id": args.container_id,
+        }
+    if command == "topology-view":
+        return {
+            "service": "control",
+            "op": "get_topology_view",
+        }
+    if command == "create-chaos-schedule":
+        return {
+            "service": "control",
+            "op": "create_chaos_schedule",
+            "name": args.name,
+            "fault_types": getattr(args, 'fault_types', ['process_kill']),
+            "schedule_cron": getattr(args, 'schedule_cron', '0 2 * * *'),
+            "targets": getattr(args, 'targets', None),
+            "max_targets": getattr(args, 'max_targets', 1),
+            "window_minutes": getattr(args, 'window_minutes', 30),
+            "auto_rollback": getattr(args, 'auto_rollback', True),
+        }
+    if command == "execute-chaos-attack":
+        return {
+            "service": "control",
+            "op": "execute_chaos_attack",
+            "schedule_name": args.schedule_name,
+            "dry_run": getattr(args, 'dry_run', False),
+        }
+    if command == "chaos-schedule-status":
+        return {
+            "service": "control",
+            "op": "get_chaos_schedule_status",
+            "schedule_name": args.schedule_name,
+        }
+    if command == "list-chaos-schedules":
+        return {
+            "service": "control",
+            "op": "list_chaos_schedules",
+        }
+    if command == "chaos-log":
+        return {
+            "service": "control",
+            "op": "get_chaos_log",
+            "limit": getattr(args, 'limit', 10),
+        }
+    if command == "register-multiarch-image":
+        return {
+            "service": "control",
+            "op": "register_multiarch_image",
+            "name": args.name,
+            "architectures": getattr(args, 'architectures', []),
+            "default_arch": getattr(args, 'default_arch', 'linux/amd64'),
+        }
+    if command == "resolve-image-arch":
+        return {
+            "service": "control",
+            "op": "resolve_image_for_arch",
+            "name": args.name,
+            "target_arch": getattr(args, 'target_arch', 'linux/amd64'),
+        }
+    if command == "list-multiarch-images":
+        return {
+            "service": "control",
+            "op": "list_multiarch_images",
+        }
+    if command == "build-matrix":
+        return {
+            "service": "control",
+            "op": "get_build_matrix",
+            "name": args.name,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -8132,6 +8231,63 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         if not hooks:
             lines.append("  (none)")
         return "\n".join(lines)
+    if command == "register-topology-node":
+        return f"Node '{resp.get('node_id', '?')}' registered in {resp.get('region', '?')}/{resp.get('zone', '?')}"
+    if command == "schedule-with-topology":
+        if resp.get("scheduled"):
+            return f"Scheduled on {resp.get('node', '?')} ({resp.get('region', '?')}/{resp.get('zone', '?')})"
+        return f"Scheduling failed: {resp.get('error', '?')}"
+    if command == "topology-view":
+        regions = resp.get("regions", {})
+        lines = [f"Topology ({resp.get('total_nodes', 0)} nodes):"]
+        for r, zones in regions.items():
+            lines.append(f"  {r}:")
+            for z, nodes in zones.items():
+                lines.append(f"    {z}: {', '.join(nodes)}")
+        if not regions:
+            lines.append("  (empty)")
+        return "\n".join(lines)
+    if command == "create-chaos-schedule":
+        return f"Chaos schedule '{resp.get('name', '?')}' created with faults: {', '.join(resp.get('fault_types', []))}"
+    if command == "execute-chaos-attack":
+        if resp.get("dry_run"):
+            return f"Dry run: would affect {resp.get('would_affect', [])}"
+        return f"Chaos attack: {resp.get('affected', 0)} targets affected"
+    if command == "chaos-schedule-status":
+        s = resp
+        status = "enabled" if s.get('enabled') else "disabled"
+        lines = [f"Chaos Schedule '{s.get('name', '?')}' [{status}]:"]
+        lines.append(f"  faults: {', '.join(s.get('fault_types', []))}")
+        lines.append(f"  cron: {s.get('schedule_cron', '?')}, executions: {s.get('executions', 0)}")
+        return "\n".join(lines)
+    if command == "list-chaos-schedules":
+        schedules = resp.get("schedules", [])
+        lines = ["Chaos Schedules:"]
+        for s in schedules:
+            lines.append(f"  {s['name']}: {', '.join(s['fault_types'])}, {s['executions']} runs")
+        if not schedules:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "register-multiarch-image":
+        return f"Image '{resp.get('name', '?')}' registered with {resp.get('arch_count', 0)} architectures"
+    if command == "resolve-image-arch":
+        if "error" in resp:
+            return f"Error: {resp['error']}"
+        return f"Resolved: {resp.get('image', '?')} -> {resp.get('resolved_arch', '?')} ({resp.get('size_bytes', 0)} bytes)"
+    if command == "list-multiarch-images":
+        images = resp.get("images", [])
+        lines = ["Multi-Arch Images:"]
+        for img in images:
+            lines.append(f"  {img['name']}: {', '.join(img['architectures'])}")
+        if not images:
+            lines.append("  (none)")
+        return "\n".join(lines)
+    if command == "build-matrix":
+        matrix = resp.get("matrix", [])
+        lines = [f"Build Matrix ({resp.get('count', 0)} variants):"]
+        for m in matrix:
+            lines.append(f"  {m['platform']}: goarch={m.get('goarch', '?')}, size={m.get('size_bytes', 0)}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -12067,6 +12223,72 @@ def build_parser() -> argparse.ArgumentParser:
 
     lebpf = sub.add_parser("list-ebpf-hooks", help="List eBPF hooks")
     lebpf.set_defaults(command="list-ebpf-hooks")
+
+    # Topology scheduling
+    rtn = sub.add_parser("register-topology-node", help="Register topology node")
+    rtn.add_argument("node_id")
+    rtn.add_argument("--region", default="us-east-1")
+    rtn.add_argument("--zone", default="us-east-1a")
+    rtn.set_defaults(command="register-topology-node")
+
+    stc = sub.add_parser("set-topology-constraints", help="Set topology constraints")
+    stc.add_argument("container_id")
+    stc.add_argument("--preferred-region", default=None)
+    stc.set_defaults(command="set-topology-constraints")
+
+    fsn = sub.add_parser("find-suitable-nodes", help="Find suitable nodes")
+    fsn.add_argument("container_id")
+    fsn.set_defaults(command="find-suitable-nodes")
+
+    swt = sub.add_parser("schedule-with-topology", help="Schedule with topology")
+    swt.add_argument("container_id")
+    swt.set_defaults(command="schedule-with-topology")
+
+    tv = sub.add_parser("topology-view", help="Topology view")
+    tv.set_defaults(command="topology-view")
+
+    # Chaos monkey
+    ccs = sub.add_parser("create-chaos-schedule", help="Create chaos schedule")
+    ccs.add_argument("name")
+    ccs.add_argument("--fault-types", nargs="+", default=["process_kill"])
+    ccs.add_argument("--cron", dest="schedule_cron", default="0 2 * * *")
+    ccs.add_argument("--targets", nargs="+")
+    ccs.add_argument("--max-targets", type=int, default=1)
+    ccs.set_defaults(command="create-chaos-schedule")
+
+    eca = sub.add_parser("execute-chaos-attack", help="Execute chaos attack")
+    eca.add_argument("schedule_name")
+    eca.add_argument("--dry-run", action="store_true", default=False)
+    eca.set_defaults(command="execute-chaos-attack")
+
+    css = sub.add_parser("chaos-schedule-status", help="Chaos schedule status")
+    css.add_argument("schedule_name")
+    css.set_defaults(command="chaos-schedule-status")
+
+    lcs = sub.add_parser("list-chaos-schedules", help="List chaos schedules")
+    lcs.set_defaults(command="list-chaos-schedules")
+
+    cl = sub.add_parser("chaos-log", help="Chaos execution log")
+    cl.add_argument("--limit", type=int, default=10)
+    cl.set_defaults(command="chaos-log")
+
+    # Multi-arch
+    rmi = sub.add_parser("register-multiarch-image", help="Register multi-arch image")
+    rmi.add_argument("name")
+    rmi.add_argument("--default-arch", default="linux/amd64")
+    rmi.set_defaults(command="register-multiarch-image")
+
+    ria = sub.add_parser("resolve-image-arch", help="Resolve image for arch")
+    ria.add_argument("name")
+    ria.add_argument("--target-arch", default="linux/amd64")
+    ria.set_defaults(command="resolve-image-arch")
+
+    lmi = sub.add_parser("list-multiarch-images", help="List multi-arch images")
+    lmi.set_defaults(command="list-multiarch-images")
+
+    bm = sub.add_parser("build-matrix", help="Build matrix")
+    bm.add_argument("name")
+    bm.set_defaults(command="build-matrix")
 
     return parser
 

@@ -25328,6 +25328,327 @@ class ContainerManager:
         return {"deleted": hook_name}
 
 
+
+    # ------------------------------------------------------------------
+    # Container-aware scheduling with topology constraints
+    # ------------------------------------------------------------------
+
+    def register_topology_node(
+        self,
+        node_id: str,
+        region: str = "us-east-1",
+        zone: str = "us-east-1a",
+        labels: Optional[Dict[str, str]] = None,
+        taints: Optional[List[str]] = None,
+        resources: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """Register a node with topology information for scheduling."""
+        if not hasattr(self, '_topology_nodes'):
+            self._topology_nodes = {}
+        self._topology_nodes[node_id] = {
+            "node_id": node_id,
+            "region": region,
+            "zone": zone,
+            "labels": labels or {},
+            "taints": taints or [],
+            "resources": resources or {"cpu": 8, "memory_mb": 16384, "gpu": 0},
+            "conditions": {"Ready": True},
+            "registered_at": __import__("time").time(),
+        }
+        return {"node_id": node_id, "region": region, "zone": zone, "registered": True}
+
+    def set_topology_constraints(
+        self,
+        container: Container,
+        node_selector: Optional[Dict[str, str]] = None,
+        required_taints: Optional[List[str]] = None,
+        preferred_region: Optional[str] = None,
+        anti_affinity_nodes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Set scheduling topology constraints for a container."""
+        if not hasattr(self, '_topology_constraints'):
+            self._topology_constraints = {}
+        self._topology_constraints[container.id] = {
+            "container_id": container.id,
+            "node_selector": node_selector or {},
+            "required_taints": required_taints or [],
+            "preferred_region": preferred_region,
+            "anti_affinity_nodes": anti_affinity_nodes or [],
+        }
+        return {"container_id": container.id, "constraints_set": True}
+
+    def find_suitable_nodes(
+        self,
+        container: Container,
+    ) -> List[Dict[str, Any]]:
+        """Find nodes that satisfy the container's topology constraints."""
+        if not hasattr(self, '_topology_nodes'):
+            return []
+        if not hasattr(self, '_topology_constraints'):
+            return list(self._topology_nodes.values())
+
+        constraints = self._topology_constraints.get(container.id, {})
+        suitable = []
+        for node in self._topology_nodes.values():
+            # Check node selector
+            selector = constraints.get("node_selector", {})
+            match = True
+            for k, v in selector.items():
+                if node["labels"].get(k) != v:
+                    match = False
+                    break
+            if not match:
+                continue
+            # Check anti-affinity
+            if node["node_id"] in constraints.get("anti_affinity_nodes", []):
+                continue
+            suitable.append(node)
+        return suitable
+
+    def schedule_with_topology(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Schedule a container respecting topology constraints."""
+        suitable = self.find_suitable_nodes(container)
+        if not suitable:
+            return {"scheduled": False, "error": "No suitable nodes found"}
+        # Prefer the preferred region
+        constraints = getattr(self, '_topology_constraints', {}).get(container.id, {})
+        preferred = constraints.get("preferred_region")
+        if preferred:
+            region_nodes = [n for n in suitable if n["region"] == preferred]
+            if region_nodes:
+                suitable = region_nodes
+        # Pick the node with most free resources
+        best = max(suitable, key=lambda n: n["resources"].get("memory_mb", 0))
+        if not hasattr(self, '_scheduled_containers'):
+            self._scheduled_containers = {}
+        self._scheduled_containers[container.id] = {
+            "node_id": best["node_id"],
+            "region": best["region"],
+            "zone": best["zone"],
+        }
+        return {"scheduled": True, "node": best["node_id"], "region": best["region"], "zone": best["zone"]}
+
+    def get_topology_view(self) -> Dict[str, Any]:
+        """Get a hierarchical view of the topology."""
+        if not hasattr(self, '_topology_nodes'):
+            return {"regions": {}}
+        regions: Dict[str, Dict[str, list]] = {}
+        for node in self._topology_nodes.values():
+            r = node["region"]
+            z = node["zone"]
+            if r not in regions:
+                regions[r] = {}
+            if z not in regions[r]:
+                regions[r][z] = []
+            regions[r][z].append(node["node_id"])
+        return {"regions": regions, "total_nodes": len(self._topology_nodes)}
+
+    # ------------------------------------------------------------------
+    # Chaos monkey with automated fault injection scheduling
+    # ------------------------------------------------------------------
+
+    def create_chaos_schedule(
+        self,
+        name: str,
+        fault_types: List[str],
+        schedule_cron: str = "0 2 * * *",
+        targets: Optional[List[str]] = None,
+        max_targets: int = 1,
+        window_minutes: int = 30,
+        auto_rollback: bool = True,
+    ) -> Dict[str, Any]:
+        """Create a scheduled chaos monkey attack."""
+        valid_faults = ["process_kill", "network_partition", "cpu_stress", "memory_stress", "disk_fill", "clock_skew", "dns_failure"]
+        for ft in fault_types:
+            if ft not in valid_faults:
+                return {"error": f"Invalid fault type '{ft}'. Valid: {valid_faults}"}
+        if not hasattr(self, '_chaos_schedules'):
+            self._chaos_schedules = {}
+        self._chaos_schedules[name] = {
+            "name": name,
+            "fault_types": fault_types,
+            "schedule_cron": schedule_cron,
+            "targets": targets or [],
+            "max_targets": max_targets,
+            "window_minutes": window_minutes,
+            "auto_rollback": auto_rollback,
+            "enabled": True,
+            "executions": 0,
+            "last_run": None,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "fault_types": fault_types, "created": True}
+
+    def execute_chaos_attack(
+        self,
+        schedule_name: str,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Execute a chaos attack (or simulate if dry_run)."""
+        import time as _time
+        if not hasattr(self, '_chaos_schedules'):
+            return {"error": "No schedules"}
+        schedule = self._chaos_schedules.get(schedule_name)
+        if not schedule:
+            return {"error": f"Schedule '{schedule_name}' not found"}
+        if not schedule["enabled"]:
+            return {"error": "Schedule is disabled"}
+
+        schedule["executions"] += 1
+        schedule["last_run"] = _time.time()
+
+        if dry_run:
+            return {
+                "schedule": schedule_name,
+                "dry_run": True,
+                "would_affect": schedule["targets"][:schedule["max_targets"]],
+                "fault_types": schedule["fault_types"],
+            }
+
+        # Simulate fault injection
+        import random
+        affected = random.sample(schedule["targets"], min(schedule["max_targets"], len(schedule["targets"]))) if schedule["targets"] else []
+        results = []
+        for target in affected:
+            fault = random.choice(schedule["fault_types"])
+            results.append({
+                "target": target,
+                "fault": fault,
+                "injected": True,
+                "timestamp": _time.time(),
+            })
+
+        if not hasattr(self, '_chaos_log'):
+            self._chaos_log = []
+        self._chaos_log.append({
+            "schedule": schedule_name,
+            "affected": len(results),
+            "results": results,
+            "timestamp": _time.time(),
+        })
+
+        return {
+            "schedule": schedule_name,
+            "executions": schedule["executions"],
+            "affected": len(results),
+            "results": results,
+        }
+
+    def get_chaos_schedule_status(self, schedule_name: str) -> Dict[str, Any]:
+        """Get status of a chaos schedule."""
+        if not hasattr(self, '_chaos_schedules'):
+            return {"error": "No schedules"}
+        s = self._chaos_schedules.get(schedule_name)
+        if not s:
+            return {"error": f"Schedule '{schedule_name}' not found"}
+        return {
+            "name": s["name"], "enabled": s["enabled"],
+            "fault_types": s["fault_types"], "schedule_cron": s["schedule_cron"],
+            "executions": s["executions"], "last_run": s["last_run"],
+            "max_targets": s["max_targets"], "auto_rollback": s["auto_rollback"],
+        }
+
+    def list_chaos_schedules(self) -> List[Dict[str, Any]]:
+        """List all chaos schedules."""
+        if not hasattr(self, '_chaos_schedules'):
+            return []
+        return [
+            {"name": s["name"], "enabled": s["enabled"],
+             "fault_types": s["fault_types"], "executions": s["executions"],
+             "last_run": s["last_run"]}
+            for s in self._chaos_schedules.values()
+        ]
+
+    def toggle_chaos_schedule(self, schedule_name: str, enabled: bool = True) -> Dict[str, Any]:
+        """Enable or disable a chaos schedule."""
+        if not hasattr(self, '_chaos_schedules'):
+            return {"error": "No schedules"}
+        s = self._chaos_schedules.get(schedule_name)
+        if not s:
+            return {"error": f"Schedule '{schedule_name}' not found"}
+        s["enabled"] = enabled
+        return {"name": schedule_name, "enabled": enabled}
+
+    def get_chaos_log(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent chaos execution log."""
+        if not hasattr(self, '_chaos_log'):
+            return []
+        return list(reversed(self._chaos_log[-limit:]))
+
+    # ------------------------------------------------------------------
+    # Multi-architecture image support with cross-compilation
+    # ------------------------------------------------------------------
+
+    def register_multiarch_image(
+        self,
+        name: str,
+        architectures: List[Dict[str, str]],
+        default_arch: str = "linux/amd64",
+    ) -> Dict[str, Any]:
+        """Register a multi-architecture image with platform variants."""
+        if not hasattr(self, '_multiarch_images'):
+            self._multiarch_images = {}
+        self._multiarch_images[name] = {
+            "name": name,
+            "architectures": architectures,
+            "default_arch": default_arch,
+            "created_at": __import__("time").time(),
+        }
+        return {"name": name, "arch_count": len(architectures), "registered": True}
+
+    def resolve_image_for_arch(
+        self,
+        name: str,
+        target_arch: str = "linux/amd64",
+    ) -> Dict[str, Any]:
+        """Resolve the correct image variant for a target architecture."""
+        if not hasattr(self, '_multiarch_images'):
+            return {"error": "No images registered"}
+        img = self._multiarch_images.get(name)
+        if not img:
+            return {"error": f"Image '{name}' not found"}
+        # Find matching arch
+        for arch in img["architectures"]:
+            if arch["platform"] == target_arch:
+                return {
+                    "image": name,
+                    "resolved_arch": target_arch,
+                    "digest": arch.get("digest", ""),
+                    "size_bytes": arch.get("size_bytes", 0),
+                }
+        return {"error": f"No variant for '{target_arch}'", "available": [a["platform"] for a in img["architectures"]]}
+
+    def list_multiarch_images(self) -> List[Dict[str, Any]]:
+        """List all multi-architecture images."""
+        if not hasattr(self, '_multiarch_images'):
+            return []
+        return [
+            {"name": img["name"], "default_arch": img["default_arch"],
+             "architectures": [a["platform"] for a in img["architectures"]]}
+            for img in self._multiarch_images.values()
+        ]
+
+    def get_build_matrix(self, name: str) -> Dict[str, Any]:
+        """Get the build matrix for a multi-arch image."""
+        if not hasattr(self, '_multiarch_images'):
+            return {"error": "No images"}
+        img = self._multiarch_images.get(name)
+        if not img:
+            return {"error": f"Image '{name}' not found"}
+        matrix = []
+        for arch in img["architectures"]:
+            matrix.append({
+                "platform": arch["platform"],
+                "goarch": arch.get("goarch", arch["platform"].split("/")[-1]),
+                "digest": arch.get("digest", ""),
+                "size_bytes": arch.get("size_bytes", 0),
+            })
+        return {"image": name, "matrix": matrix, "count": len(matrix)}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

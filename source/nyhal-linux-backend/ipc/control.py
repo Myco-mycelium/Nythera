@@ -1896,6 +1896,51 @@ class ControlService:
             elif op == "delete_ebpf_hook":
                 self._delete_ebpf_hook(server, sender_path,
                                  msg.message_id, request)
+            elif op == "register_topology_node":
+                self._register_topology_node(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "set_topology_constraints":
+                self._set_topology_constraints(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "find_suitable_nodes":
+                self._find_suitable_nodes(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "schedule_with_topology":
+                self._schedule_with_topology(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_topology_view":
+                self._get_topology_view(server, sender_path,
+                                   msg.message_id)
+            elif op == "create_chaos_schedule":
+                self._create_chaos_schedule(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "execute_chaos_attack":
+                self._execute_chaos_attack(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_chaos_schedule_status":
+                self._get_chaos_schedule_status(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "list_chaos_schedules":
+                self._list_chaos_schedules(server, sender_path,
+                                      msg.message_id)
+            elif op == "toggle_chaos_schedule":
+                self._toggle_chaos_schedule(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_chaos_log":
+                self._get_chaos_log(server, sender_path,
+                               msg.message_id, request)
+            elif op == "register_multiarch_image":
+                self._register_multiarch_image(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "resolve_image_for_arch":
+                self._resolve_image_for_arch(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "list_multiarch_images":
+                self._list_multiarch_images(server, sender_path,
+                                       msg.message_id)
+            elif op == "get_build_matrix":
+                self._get_build_matrix(server, sender_path,
+                                  msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -9426,6 +9471,115 @@ class ControlService:
 
     def _delete_ebpf_hook(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_ebpf_hook(request.get("hook_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _register_topology_node(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_topology_node(
+            node_id=request.get("node_id", "node-0"),
+            region=request.get("region", "us-east-1"),
+            zone=request.get("zone", "us-east-1a"),
+            labels=request.get("labels"),
+            taints=request.get("taints"),
+            resources=request.get("resources"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _set_topology_constraints(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.set_topology_constraints(
+            container=c,
+            node_selector=request.get("node_selector"),
+            required_taints=request.get("required_taints"),
+            preferred_region=request.get("preferred_region"),
+            anti_affinity_nodes=request.get("anti_affinity_nodes"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _find_suitable_nodes(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.find_suitable_nodes(c)
+        self._reply(server, sender_path, call_id, {"ok": True, "nodes": result})
+
+    def _schedule_with_topology(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager.containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.schedule_with_topology(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_topology_view(self, server, sender_path, call_id):
+        result = self.container_manager.get_topology_view()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_chaos_schedule(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_chaos_schedule(
+            name=request.get("name", "default"),
+            fault_types=request.get("fault_types", ["process_kill"]),
+            schedule_cron=request.get("schedule_cron", "0 2 * * *"),
+            targets=request.get("targets"),
+            max_targets=request.get("max_targets", 1),
+            window_minutes=request.get("window_minutes", 30),
+            auto_rollback=request.get("auto_rollback", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _execute_chaos_attack(self, server, sender_path, call_id, request):
+        result = self.container_manager.execute_chaos_attack(
+            schedule_name=request.get("schedule_name", "default"),
+            dry_run=request.get("dry_run", False),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_chaos_schedule_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_chaos_schedule_status(request.get("schedule_name", "default"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_chaos_schedules(self, server, sender_path, call_id):
+        result = self.container_manager.list_chaos_schedules()
+        self._reply(server, sender_path, call_id, {"ok": True, "schedules": result})
+
+    def _toggle_chaos_schedule(self, server, sender_path, call_id, request):
+        result = self.container_manager.toggle_chaos_schedule(
+            schedule_name=request.get("schedule_name", "default"),
+            enabled=request.get("enabled", True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_chaos_log(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_chaos_log(limit=request.get("limit", 10))
+        self._reply(server, sender_path, call_id, {"ok": True, "log": result})
+
+    def _register_multiarch_image(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_multiarch_image(
+            name=request.get("name", "default"),
+            architectures=request.get("architectures", []),
+            default_arch=request.get("default_arch", "linux/amd64"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _resolve_image_for_arch(self, server, sender_path, call_id, request):
+        result = self.container_manager.resolve_image_for_arch(
+            name=request.get("name", "default"),
+            target_arch=request.get("target_arch", "linux/amd64"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_multiarch_images(self, server, sender_path, call_id):
+        result = self.container_manager.list_multiarch_images()
+        self._reply(server, sender_path, call_id, {"ok": True, "images": result})
+
+    def _get_build_matrix(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_build_matrix(request.get("name", "default"))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:

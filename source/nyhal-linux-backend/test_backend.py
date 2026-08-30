@@ -31730,6 +31730,180 @@ class TestEBPFObservability(unittest.TestCase):
         self.assertIn("42", text)
 
 
+class TestTopologyScheduling(unittest.TestCase):
+    """Tests for container-aware scheduling with topology constraints."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_node(self):
+        """register_topology_node stores node."""
+        mgr = self._manager()
+        r = mgr.register_topology_node("n1", region="us-east-1", zone="us-east-1a", labels={"role": "web"})
+        self.assertTrue(r["registered"])
+
+    def test_set_constraints(self):
+        """set_topology_constraints stores constraints."""
+        mgr = self._manager()
+        c = self._make(mgr, "ts1")
+        r = mgr.set_topology_constraints(c, node_selector={"role": "web"})
+        self.assertTrue(r["constraints_set"])
+
+    def test_find_suitable_nodes(self):
+        """find_suitable_nodes returns matching nodes."""
+        mgr = self._manager()
+        c = self._make(mgr, "ts2")
+        mgr.register_topology_node("n1", labels={"role": "web"})
+        mgr.register_topology_node("n2", labels={"role": "db"})
+        mgr.set_topology_constraints(c, node_selector={"role": "web"})
+        r = mgr.find_suitable_nodes(c)
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0]["node_id"], "n1")
+
+    def test_schedule_with_topology(self):
+        """schedule_with_topology assigns a node."""
+        mgr = self._manager()
+        c = self._make(mgr, "ts3")
+        mgr.register_topology_node("n1", region="us-east-1")
+        r = mgr.schedule_with_topology(c)
+        self.assertTrue(r["scheduled"])
+        self.assertEqual(r["node"], "n1")
+
+    def test_topology_view(self):
+        """get_topology_view returns hierarchy."""
+        mgr = self._manager()
+        mgr.register_topology_node("n1", region="us-east-1", zone="us-east-1a")
+        mgr.register_topology_node("n2", region="us-east-1", zone="us-east-1b")
+        mgr.register_topology_node("n3", region="us-west-2", zone="us-west-2a")
+        r = mgr.get_topology_view()
+        self.assertEqual(r["total_nodes"], 3)
+        self.assertIn("us-east-1", r["regions"])
+
+    def test_format_human_topology(self):
+        """format_human handles topology-view."""
+        from nyrqisctl import format_human
+        text = format_human("topology-view", {"total_nodes": 2, "regions": {"us-east-1": {"us-east-1a": ["n1"]}}})
+        self.assertIn("2", text)
+        self.assertIn("us-east-1", text)
+
+
+class TestChaosMonkey(unittest.TestCase):
+    """Tests for chaos monkey with automated fault injection scheduling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_schedule(self):
+        """create_chaos_schedule stores schedule."""
+        mgr = self._manager()
+        r = mgr.create_chaos_schedule("daily-kill", fault_types=["process_kill"], targets=["c1", "c2"])
+        self.assertTrue(r["created"])
+
+    def test_create_invalid_fault(self):
+        """create_chaos_schedule rejects invalid fault type."""
+        mgr = self._manager()
+        r = mgr.create_chaos_schedule("bad", fault_types=["invalid_fault"])
+        self.assertIn("error", r)
+
+    def test_execute_dry_run(self):
+        """execute_chaos_attack dry run simulates."""
+        mgr = self._manager()
+        mgr.create_chaos_schedule("test", fault_types=["process_kill"], targets=["c1"])
+        r = mgr.execute_chaos_attack("test", dry_run=True)
+        self.assertTrue(r["dry_run"])
+        self.assertIn("would_affect", r)
+
+    def test_execute_real(self):
+        """execute_chaos_attack injects faults."""
+        mgr = self._manager()
+        mgr.create_chaos_schedule("real", fault_types=["process_kill", "cpu_stress"], targets=["c1", "c2", "c3"], max_targets=2)
+        r = mgr.execute_chaos_attack("real")
+        self.assertEqual(r["affected"], 2)
+        self.assertEqual(r["executions"], 1)
+
+    def test_schedule_status(self):
+        """get_chaos_schedule_status returns info."""
+        mgr = self._manager()
+        mgr.create_chaos_schedule("s1", fault_types=["network_partition"])
+        r = mgr.get_chaos_schedule_status("s1")
+        self.assertEqual(r["executions"], 0)
+        self.assertTrue(r["enabled"])
+
+    def test_chaos_log(self):
+        """get_chaos_log returns entries."""
+        mgr = self._manager()
+        mgr.create_chaos_schedule("log1", fault_types=["process_kill"], targets=["c1"])
+        mgr.execute_chaos_attack("log1")
+        r = mgr.get_chaos_log()
+        self.assertEqual(len(r), 1)
+
+    def test_format_human_chaos(self):
+        """format_human handles list-chaos-schedules."""
+        from nyrqisctl import format_human
+        text = format_human("list-chaos-schedules", {"schedules": [{"name": "daily", "fault_types": ["process_kill"], "executions": 5, "enabled": True, "last_run": None}]})
+        self.assertIn("daily", text)
+        self.assertIn("5", text)
+
+
+class TestMultiArch(unittest.TestCase):
+    """Tests for multi-architecture image support."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_register_image(self):
+        """register_multiarch_image stores image."""
+        mgr = self._manager()
+        r = mgr.register_multiarch_image("nginx", architectures=[{"platform": "linux/amd64", "digest": "abc123", "size_bytes": 1000000}, {"platform": "linux/arm64", "digest": "def456", "size_bytes": 900000}])
+        self.assertTrue(r["registered"])
+        self.assertEqual(r["arch_count"], 2)
+
+    def test_resolve_image(self):
+        """resolve_image_for_arch returns variant."""
+        mgr = self._manager()
+        mgr.register_multiarch_image("app", architectures=[{"platform": "linux/amd64", "digest": "a1", "size_bytes": 500}, {"platform": "linux/arm64", "digest": "b2", "size_bytes": 400}])
+        r = mgr.resolve_image_for_arch("app", "linux/arm64")
+        self.assertEqual(r["resolved_arch"], "linux/arm64")
+        self.assertEqual(r["digest"], "b2")
+
+    def test_resolve_unknown_arch(self):
+        """resolve_image_for_arch fails for unknown arch."""
+        mgr = self._manager()
+        mgr.register_multiarch_image("app2", architectures=[{"platform": "linux/amd64"}])
+        r = mgr.resolve_image_for_arch("app2", "linux/mips64")
+        self.assertIn("error", r)
+        self.assertIn("available", r)
+
+    def test_build_matrix(self):
+        """get_build_matrix returns matrix."""
+        mgr = self._manager()
+        mgr.register_multiarch_image("app3", architectures=[{"platform": "linux/amd64", "size_bytes": 100}, {"platform": "linux/arm64", "size_bytes": 200}])
+        r = mgr.get_build_matrix("app3")
+        self.assertEqual(r["count"], 2)
+
+    def test_list_images(self):
+        """list_multiarch_images returns all."""
+        mgr = self._manager()
+        mgr.register_multiarch_image("img1", architectures=[{"platform": "linux/amd64"}])
+        r = mgr.list_multiarch_images()
+        self.assertEqual(len(r), 1)
+
+    def test_format_human_multiarch(self):
+        """format_human handles list-multiarch-images."""
+        from nyrqisctl import format_human
+        text = format_human("list-multiarch-images", {"images": [{"name": "nginx", "default_arch": "linux/amd64", "architectures": ["linux/amd64", "linux/arm64"]}]})
+        self.assertIn("nginx", text)
+        self.assertIn("amd64", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -31954,6 +32128,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestWorkloadIdentity))
     suite.addTests(loader.loadTestsFromTestCase(TestVulnScanning))
     suite.addTests(loader.loadTestsFromTestCase(TestEBPFObservability))
+    suite.addTests(loader.loadTestsFromTestCase(TestTopologyScheduling))
+    suite.addTests(loader.loadTestsFromTestCase(TestChaosMonkey))
+    suite.addTests(loader.loadTestsFromTestCase(TestMultiArch))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
