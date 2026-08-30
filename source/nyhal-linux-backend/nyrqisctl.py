@@ -3764,6 +3764,76 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "service": "control",
             "op": "get_audit_stream_summary",
         }
+    if command == "configure-cost-attribution":
+        return {
+            "service": "control",
+            "op": "configure_cost_attribution",
+            "container_id": args.container_id,
+            "cost_per_hour": getattr(args, 'cost_per_hour', 0.0),
+            "billing_tag": getattr(args, 'billing_tag', 'default'),
+            "team": getattr(args, 'team', 'unassigned'),
+            "currency": getattr(args, 'currency', 'USD'),
+        }
+    if command == "get-pod-cost":
+        return {
+            "service": "control",
+            "op": "get_pod_cost",
+            "container_id": args.container_id,
+        }
+    if command == "chargeback-report":
+        return {
+            "service": "control",
+            "op": "chargeback_report",
+            "team": getattr(args, 'team', None),
+        }
+    if command == "fleet-cost-overview":
+        return {
+            "service": "control",
+            "op": "fleet_cost_overview",
+        }
+    if command == "simulate-network-policy":
+        return {
+            "service": "control",
+            "op": "simulate_network_policy",
+            "source_container_id": args.source_container_id,
+            "dest_container_id": args.dest_container_id,
+            "dest_port": getattr(args, 'dest_port', 80),
+            "protocol": getattr(args, 'protocol', 'tcp'),
+        }
+    if command == "what-if-policy-change":
+        return {
+            "service": "control",
+            "op": "what_if_policy_change",
+            "source_container_id": args.source_container_id,
+            "dest_container_id": args.dest_container_id,
+            "dest_port": getattr(args, 'dest_port', 80),
+            "protocol": getattr(args, 'protocol', 'tcp'),
+            "new_policy_effect": getattr(args, 'new_policy_effect', 'deny'),
+        }
+    if command == "register-lifecycle-hook":
+        return {
+            "service": "control",
+            "op": "register_lifecycle_hook",
+            "container_id": args.container_id,
+            "phase": args.phase,
+            "action": args.action,
+            "command": getattr(args, 'hook_command', None),
+            "timeout_s": getattr(args, 'timeout_s', 30.0),
+            "on_failure": getattr(args, 'on_failure', 'rollback'),
+        }
+    if command == "execute-lifecycle-hooks":
+        return {
+            "service": "control",
+            "op": "execute_lifecycle_hooks",
+            "container_id": args.container_id,
+            "phase": args.phase,
+        }
+    if command == "list-lifecycle-hooks":
+        return {
+            "service": "control",
+            "op": "list_lifecycle_hooks",
+            "container_id": args.container_id,
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7502,6 +7572,56 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return f"Audit streams: {resp.get('count', 0)}"
     if command == "audit-stream-summary":
         return f"Streams: {resp.get('streams', 0)}, events: {resp.get('total_events', 0)}, alerts: {resp.get('total_alerts', 0)}"
+    if command == "configure-cost-attribution":
+        return f"Cost attribution configured for container {resp.get('container_id', '?')[:12]}"
+    if command == "get-pod-cost":
+        lines = [
+            f"Container {resp.get('container_name', '?')} ({resp.get('container_id', '?')[:12]}):",
+            f"  team: {resp.get('team', '?')}, tag: {resp.get('billing_tag', '?')}",
+            f"  rate: {resp.get('currency', 'USD')} {resp.get('cost_per_hour', 0):.4f}/hr",
+            f"  uptime: {resp.get('uptime_hours', 0):.2f}h, cost: {resp.get('currency', 'USD')} {resp.get('total_cost', 0):.4f}",
+        ]
+        return "\n".join(lines)
+    if command == "chargeback-report":
+        lines = ["Chargeback Report:"]
+        for team, cost in resp.get("by_team", {}).items():
+            lines.append(f"  {team}: {cost:.4f}")
+        lines.append(f"  Total: {resp.get('total_cost', 0):.4f}")
+        return "\n".join(lines)
+    if command == "fleet-cost-overview":
+        lines = ["Fleet Cost Overview:"]
+        lines.append(f"  Containers: {resp.get('container_count', 0)}")
+        lines.append(f"  Total cost: {resp.get('total_cost', 0):.4f}")
+        return "\n".join(lines)
+    if command == "simulate-network-policy":
+        status = "ALLOWED" if resp.get("allowed") else "DENIED"
+        lines = [f"Simulation: {resp.get('source', '?')} -> {resp.get('dest', '?')}:{resp.get('dest_port', '?')} [{resp.get('protocol', '?')}] = {status}"]
+        if resp.get("allowed_by"):
+            lines.append(f"  Allowed by: {resp['allowed_by']}")
+        if resp.get("denied_by"):
+            lines.append(f"  Denied by: {resp['denied_by']}")
+        return "\n".join(lines)
+    if command == "what-if-policy-change":
+        lines = ["What-If Analysis:"]
+        lines.append(f"  Current: {'ALLOWED' if resp.get('current_allowed') else 'DENIED'}")
+        lines.append(f"  After change: {'ALLOWED' if resp.get('after_change_allowed') else 'DENIED'}")
+        lines.append(f"  Impact: {resp.get('impact', '?')}")
+        return "\n".join(lines)
+    if command == "register-lifecycle-hook":
+        return f"Hook registered for container {resp.get('container_id', '?')[:12]} phase={resp.get('phase', '?')} (total: {resp.get('hook_count', 0)})"
+    if command == "execute-lifecycle-hooks":
+        lines = [f"Phase {resp.get('phase', '?')}: executed {resp.get('executed', 0)} hooks"]
+        if resp.get("rolled_back"):
+            lines.append("  WARNING: Rollback triggered due to failure")
+        return "\n".join(lines)
+    if command == "list-lifecycle-hooks":
+        hooks = resp.get("hooks", {})
+        lines = ["Lifecycle Hooks:"]
+        for phase, hook_list in hooks.items():
+            lines.append(f"  {phase}: {len(hook_list)} hook(s)")
+        if not hooks:
+            lines.append("  (none)")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -11132,6 +11252,61 @@ def build_parser() -> argparse.ArgumentParser:
                         "nothing loaded, or the persisted design's "
                         "summary (re-imported through the gate)")
     nc.set_defaults(command="nui-current")
+
+    # Cost attribution
+    cat = sub.add_parser("configure-cost-attribution", help="Configure cost attribution for a container")
+    cat.add_argument("container_id")
+    cat.add_argument("--cost-per-hour", type=float, default=0.0)
+    cat.add_argument("--billing-tag", default="default")
+    cat.add_argument("--team", default="unassigned")
+    cat.add_argument("--currency", default="USD")
+    cat.set_defaults(command="configure-cost-attribution")
+
+    gpc = sub.add_parser("get-pod-cost", help="Get cost for a container")
+    gpc.add_argument("container_id")
+    gpc.set_defaults(command="get-pod-cost")
+
+    cbr = sub.add_parser("chargeback-report", help="Generate chargeback report")
+    cbr.add_argument("--team", default=None)
+    cbr.set_defaults(command="chargeback-report")
+
+    fco = sub.add_parser("fleet-cost-overview", help="Fleet-wide cost overview")
+    fco.set_defaults(command="fleet-cost-overview")
+
+    # Network simulation
+    snp = sub.add_parser("simulate-network-policy", help="Simulate network policy")
+    snp.add_argument("source_container_id")
+    snp.add_argument("dest_container_id")
+    snp.add_argument("--dest-port", type=int, default=80)
+    snp.add_argument("--protocol", default="tcp")
+    snp.set_defaults(command="simulate-network-policy")
+
+    wip = sub.add_parser("what-if-policy-change", help="What-if policy analysis")
+    wip.add_argument("source_container_id")
+    wip.add_argument("dest_container_id")
+    wip.add_argument("--dest-port", type=int, default=80)
+    wip.add_argument("--protocol", default="tcp")
+    wip.add_argument("--new-policy-effect", default="deny")
+    wip.set_defaults(command="what-if-policy-change")
+
+    # Lifecycle hooks
+    rlh = sub.add_parser("register-lifecycle-hook", help="Register a lifecycle hook")
+    rlh.add_argument("container_id")
+    rlh.add_argument("phase", choices=["pre-start", "post-start", "pre-stop", "post-stop", "pre-restart", "post-restart"])
+    rlh.add_argument("action")
+    rlh.add_argument("--hook-command", nargs="+")
+    rlh.add_argument("--timeout-s", type=float, default=30.0)
+    rlh.add_argument("--on-failure", default="rollback")
+    rlh.set_defaults(command="register-lifecycle-hook")
+
+    elh = sub.add_parser("execute-lifecycle-hooks", help="Execute lifecycle hooks")
+    elh.add_argument("container_id")
+    elh.add_argument("phase")
+    elh.set_defaults(command="execute-lifecycle-hooks")
+
+    llh = sub.add_parser("list-lifecycle-hooks", help="List lifecycle hooks")
+    llh.add_argument("container_id")
+    llh.set_defaults(command="list-lifecycle-hooks")
 
     return parser
 

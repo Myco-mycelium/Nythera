@@ -30988,6 +30988,171 @@ class TestClusterMode(unittest.TestCase):
         self.assertEqual(nodes[0]["status"], "stale")
 
 
+class TestCostAttribution(unittest.TestCase):
+    """Tests for cost attribution with per-pod billing and chargeback."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_configure_cost_attribution(self):
+        """configure_cost_attribution stores config."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca1")
+        r = mgr.configure_cost_attribution(c, cost_per_hour=0.5, billing_tag="prod", team="eng")
+        self.assertTrue(r["configured"])
+
+    def test_get_pod_cost(self):
+        """get_pod_cost returns cost info."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca2")
+        c.state.start_time = __import__("time").time() - 3600  # 1 hour ago
+        mgr.configure_cost_attribution(c, cost_per_hour=1.0)
+        r = mgr.get_pod_cost(c)
+        self.assertAlmostEqual(r["total_cost"], 1.0, places=1)
+
+    def test_chargeback_report(self):
+        """chargeback_report aggregates by team."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ca3")
+        c2 = self._make(mgr, "ca4")
+        c1.state.start_time = __import__("time").time() - 1800
+        c2.state.start_time = __import__("time").time() - 1800
+        mgr.configure_cost_attribution(c1, cost_per_hour=1.0, team="eng")
+        mgr.configure_cost_attribution(c2, cost_per_hour=2.0, team="ops")
+        r = mgr.chargeback_report()
+        self.assertIn("eng", r["by_team"])
+        self.assertIn("ops", r["by_team"])
+
+    def test_fleet_cost_overview(self):
+        """fleet_cost_overview returns summary."""
+        mgr = self._manager()
+        c = self._make(mgr, "ca5")
+        mgr.configure_cost_attribution(c, cost_per_hour=0.1)
+        r = mgr.fleet_cost_overview()
+        self.assertEqual(r["container_count"], 1)
+
+    def test_format_human_cost(self):
+        """format_human handles get-pod-cost."""
+        from nyrqisctl import format_human
+        text = format_human("get-pod-cost", {"container_name": "x", "container_id": "abc123", "team": "eng", "billing_tag": "prod", "currency": "USD", "cost_per_hour": 0.5, "uptime_hours": 2.0, "total_cost": 1.0})
+        self.assertIn("0.5", text)
+
+
+class TestNetworkSimulation(unittest.TestCase):
+    """Tests for network policy simulation and what-if analysis."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name, labels=None):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"], labels=labels or {}))
+        return c
+
+    def test_simulate_default_allowed(self):
+        """simulate_network_policy allows when no policies."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ns1", {"app": "web"})
+        c2 = self._make(mgr, "ns2", {"app": "db"})
+        r = mgr.simulate_network_policy(c1, c2, dest_port=80)
+        self.assertTrue(r["allowed"])
+
+    def test_simulate_deny_policy(self):
+        """simulate_network_policy denies with matching deny policy."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ns3", {"app": "web"})
+        c2 = self._make(mgr, "ns4", {"app": "db"})
+        mgr._network_policies = [{"name": "deny-web-db", "effect": "deny", "source_selector": {"app": "web"}, "dest_selector": {"app": "db"}, "ports": [{"port": 5432}]}]
+        r = mgr.simulate_network_policy(c1, c2, dest_port=5432)
+        self.assertFalse(r["allowed"])
+        self.assertEqual(r["denied_by"], "deny-web-db")
+
+    def test_what_if_change(self):
+        """what_if_policy_change shows impact."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "ns5", {"app": "web"})
+        c2 = self._make(mgr, "ns6", {"app": "db"})
+        r = mgr.what_if_policy_change(c1, c2, dest_port=5432, protocol="tcp", new_policy_effect="deny")
+        self.assertTrue(r["current_allowed"])
+        self.assertFalse(r["after_change_allowed"])
+        self.assertEqual(r["impact"], "blocked")
+
+    def test_format_human_sim(self):
+        """format_human handles simulate-network-policy."""
+        from nyrqisctl import format_human
+        text = format_human("simulate-network-policy", {"source": "a", "dest": "b", "dest_port": 80, "protocol": "tcp", "allowed": True, "allowed_by": "allow-all"})
+        self.assertIn("ALLOWED", text)
+
+
+class TestLifecycleHooks(unittest.TestCase):
+    """Tests for lifecycle hooks with pre/post actions and rollback."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_hook(self):
+        """register_lifecycle_hook stores hook."""
+        mgr = self._manager()
+        c = self._make(mgr, "lh1")
+        r = mgr.register_lifecycle_hook(c, "pre-start", "exec", command=["echo", "hello"])
+        self.assertEqual(r["hook_count"], 1)
+        self.assertEqual(r["phase"], "pre-start")
+
+    def test_register_invalid_phase(self):
+        """register_lifecycle_hook rejects invalid phase."""
+        mgr = self._manager()
+        c = self._make(mgr, "lh2")
+        r = mgr.register_lifecycle_hook(c, "invalid", "exec")
+        self.assertIn("error", r)
+
+    def test_execute_hooks_success(self):
+        """execute_lifecycle_hooks runs hooks."""
+        mgr = self._manager()
+        c = self._make(mgr, "lh3")
+        mgr.register_lifecycle_hook(c, "pre-start", "exec")
+        mgr.register_lifecycle_hook(c, "pre-start", "exec")
+        r = mgr.execute_lifecycle_hooks(c, "pre-start")
+        self.assertEqual(r["executed"], 2)
+        self.assertFalse(r["rolled_back"])
+
+    def test_execute_hooks_rollback(self):
+        """execute_lifecycle_hooks triggers rollback on failure."""
+        mgr = self._manager()
+        c = self._make(mgr, "lh4")
+        mgr.register_lifecycle_hook(c, "pre-start", "exec")
+        mgr.register_lifecycle_hook(c, "pre-start", "fail", on_failure="rollback")
+        r = mgr.execute_lifecycle_hooks(c, "pre-start")
+        self.assertTrue(r["rolled_back"])
+        self.assertEqual(r["executed"], 1)  # stopped before second
+
+    def test_list_hooks(self):
+        """list_lifecycle_hooks returns hooks."""
+        mgr = self._manager()
+        c = self._make(mgr, "lh5")
+        mgr.register_lifecycle_hook(c, "post-start", "exec")
+        r = mgr.list_lifecycle_hooks(c)
+        self.assertIn("post-start", r["hooks"])
+
+    def test_format_human_hook(self):
+        """format_human handles register-lifecycle-hook."""
+        from nyrqisctl import format_human
+        text = format_human("register-lifecycle-hook", {"container_id": "abc123", "phase": "pre-start", "hook_count": 1})
+        self.assertIn("pre-start", text)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -31200,6 +31365,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestConfigDrift))
     suite.addTests(loader.loadTestsFromTestCase(TestRBAC))
     suite.addTests(loader.loadTestsFromTestCase(TestAuditStreaming))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostAttribution))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkSimulation))
+    suite.addTests(loader.loadTestsFromTestCase(TestLifecycleHooks))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

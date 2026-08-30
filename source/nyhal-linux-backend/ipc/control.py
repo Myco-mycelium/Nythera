@@ -1701,6 +1701,45 @@ class ControlService:
             elif op == "get_audit_stream_summary":
                 self._get_audit_stream_summary(server, sender_path,
                                           msg.message_id)
+            elif op == "configure_cost_attribution":
+                self._configure_cost_attribution(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "get_pod_cost":
+                self._get_pod_cost(server, sender_path,
+                              msg.message_id, request)
+            elif op == "chargeback_report":
+                self._chargeback_report(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "fleet_cost_overview":
+                self._fleet_cost_overview(server, sender_path,
+                                     msg.message_id)
+            elif op == "simulate_network_policy":
+                self._simulate_network_policy(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "create_network_simulation":
+                self._create_network_simulation(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "what_if_policy_change":
+                self._what_if_policy_change(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_simulation_history":
+                self._get_simulation_history(server, sender_path,
+                                        msg.message_id)
+            elif op == "register_lifecycle_hook":
+                self._register_lifecycle_hook(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "execute_lifecycle_hooks":
+                self._execute_lifecycle_hooks(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "list_lifecycle_hooks":
+                self._list_lifecycle_hooks(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "remove_lifecycle_hook":
+                self._remove_lifecycle_hook(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_hook_execution_log":
+                self._get_hook_execution_log(server, sender_path,
+                                        msg.message_id)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8748,6 +8787,128 @@ class ControlService:
     def _get_audit_stream_summary(self, server, sender_path, call_id):
         result = self.container_manager.get_audit_stream_summary()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _configure_cost_attribution(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.configure_cost_attribution(
+            c, cost_per_hour=request.get("cost_per_hour", 0.0),
+            billing_tag=request.get("billing_tag", "default"),
+            team=request.get("team", "unassigned"),
+            currency=request.get("currency", "USD"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_pod_cost(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.get_pod_cost(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _chargeback_report(self, server, sender_path, call_id, request):
+        result = self.container_manager.chargeback_report(team=request.get("team"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _fleet_cost_overview(self, server, sender_path, call_id):
+        result = self.container_manager.fleet_cost_overview()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _simulate_network_policy(self, server, sender_path, call_id, request):
+        src_cid = request.get("source_container_id")
+        dst_cid = request.get("dest_container_id")
+        src = self.container_manager._containers.get(src_cid)
+        dst = self.container_manager._containers.get(dst_cid)
+        if not src or not dst:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.simulate_network_policy(
+            src, dst, dest_port=request.get("dest_port", 80),
+            protocol=request.get("protocol", "tcp"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_network_simulation(self, server, sender_path, call_id, request):
+        container_ids = request.get("container_ids", [])
+        containers = [self.container_manager._containers[cid] for cid in container_ids if cid in self.container_manager._containers]
+        result = self.container_manager.create_network_simulation(
+            name=request.get("name", "default"),
+            containers=containers,
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _what_if_policy_change(self, server, sender_path, call_id, request):
+        src = self.container_manager._containers.get(request.get("source_container_id"))
+        dst = self.container_manager._containers.get(request.get("dest_container_id"))
+        if not src or not dst:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.what_if_policy_change(
+            src, dst, dest_port=request.get("dest_port", 80),
+            protocol=request.get("protocol", "tcp"),
+            new_policy_effect=request.get("new_policy_effect", "deny"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_simulation_history(self, server, sender_path, call_id):
+        result = self.container_manager.get_simulation_history()
+        self._reply(server, sender_path, call_id, {"ok": True, "history": result})
+
+    def _register_lifecycle_hook(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.register_lifecycle_hook(
+            c, phase=request.get("phase", "pre-start"),
+            action=request.get("action", "exec"),
+            command=request.get("command"),
+            timeout_s=request.get("timeout_s", 30.0),
+            on_failure=request.get("on_failure", "rollback"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _execute_lifecycle_hooks(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.execute_lifecycle_hooks(
+            c, phase=request.get("phase", "pre-start"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_lifecycle_hooks(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.list_lifecycle_hooks(c)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _remove_lifecycle_hook(self, server, sender_path, call_id, request):
+        cid = request.get("container_id")
+        c = self.container_manager._containers.get(cid)
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "not found"})
+            return
+        result = self.container_manager.remove_lifecycle_hook(
+            c, phase=request.get("phase", "pre-start"),
+            index=request.get("index", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_hook_execution_log(self, server, sender_path, call_id):
+        result = self.container_manager.get_hook_execution_log()
+        self._reply(server, sender_path, call_id, {"ok": True, "log": result})
 
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container

@@ -23885,6 +23885,333 @@ class ContainerManager:
             "total_alerts": total_alerts,
         }
 
+
+    # ------------------------------------------------------------------
+    # Cost attribution with per-pod billing and chargeback
+    # ------------------------------------------------------------------
+
+    def configure_cost_attribution(
+        self,
+        container: Container,
+        cost_per_hour: float = 0.0,
+        billing_tag: str = "default",
+        team: str = "unassigned",
+        currency: str = "USD",
+    ) -> Dict[str, Any]:
+        """Configure cost attribution for a container."""
+        if not hasattr(self, '_cost_attribution'):
+            self._cost_attribution = {}
+        self._cost_attribution[container.id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "cost_per_hour": cost_per_hour,
+            "billing_tag": billing_tag,
+            "team": team,
+            "currency": currency,
+            "created_at": __import__("time").time(),
+        }
+        return {"container_id": container.id, "configured": True}
+
+    def get_pod_cost(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Get cost for a container based on uptime."""
+        import time as _time
+        if not hasattr(self, '_cost_attribution'):
+            return {"error": "No cost attribution configured"}
+        attr = self._cost_attribution.get(container.id)
+        if not attr:
+            return {"error": "Container has no cost attribution"}
+        uptime_s = 0.0
+        if container.state.start_time:
+            uptime_s = _time.time() - container.state.start_time
+        hours = uptime_s / 3600.0
+        total_cost = attr["cost_per_hour"] * hours
+        return {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "team": attr["team"],
+            "billing_tag": attr["billing_tag"],
+            "currency": attr["currency"],
+            "cost_per_hour": attr["cost_per_hour"],
+            "uptime_hours": round(hours, 4),
+            "total_cost": round(total_cost, 6),
+        }
+
+    def chargeback_report(
+        self,
+        team: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate a chargeback report by team or billing tag."""
+        import time as _time
+        if not hasattr(self, '_cost_attribution'):
+            return {"teams": {}, "total_cost": 0.0}
+        team_costs: Dict[str, float] = {}
+        tag_costs: Dict[str, float] = {}
+        for cid, attr in self._cost_attribution.items():
+            c = self.containers.get(cid)
+            if not c:
+                continue
+            if team and attr["team"] != team:
+                continue
+            uptime_s = 0.0
+            if c.state.start_time:
+                uptime_s = _time.time() - c.state.start_time
+            hours = uptime_s / 3600.0
+            cost = attr["cost_per_hour"] * hours
+            t = attr["team"]
+            tag = attr["billing_tag"]
+            team_costs[t] = team_costs.get(t, 0.0) + cost
+            tag_costs[tag] = tag_costs.get(tag, 0.0) + cost
+        total = sum(team_costs.values())
+        return {
+            "by_team": {k: round(v, 6) for k, v in sorted(team_costs.items())},
+            "by_billing_tag": {k: round(v, 6) for k, v in sorted(tag_costs.items())},
+            "total_cost": round(total, 6),
+        }
+
+    def fleet_cost_overview(self) -> Dict[str, Any]:
+        """Fleet-wide cost overview."""
+        report = self.chargeback_report()
+        return {
+            "container_count": len(self._cost_attribution),
+            "total_cost": report["total_cost"],
+            "by_team": report["by_team"],
+            "by_billing_tag": report["by_billing_tag"],
+        }
+
+    # ------------------------------------------------------------------
+    # Network policy simulation and what-if analysis
+    # ------------------------------------------------------------------
+
+    def simulate_network_policy(
+        self,
+        source_container: Container,
+        dest_container: Container,
+        dest_port: int = 80,
+        protocol: str = "tcp",
+    ) -> Dict[str, Any]:
+        """Simulate whether a network policy allows traffic between containers."""
+        if not hasattr(self, '_network_policies'):
+            self._network_policies = []
+        if not hasattr(self, '_net_sim_cache'):
+            self._net_sim_cache = []
+
+        # Check all policies
+        allowed_by = None
+        denied_by = None
+        for i, pol in enumerate(self._network_policies):
+            # Check if policy matches source and destination
+            src_match = self._policy_matches(pol, "source", source_container)
+            dst_match = self._policy_matches(pol, "dest", dest_container)
+            if src_match and dst_match:
+                port_match = self._policy_port_matches(pol, dest_port, protocol)
+                if port_match:
+                    if pol["effect"] == "allow":
+                        allowed_by = pol.get("name", f"policy-{i}")
+                    elif pol["effect"] == "deny":
+                        denied_by = pol.get("name", f"policy-{i}")
+
+        result = {
+            "source": source_container.config.name,
+            "dest": dest_container.config.name,
+            "dest_port": dest_port,
+            "protocol": protocol,
+            "allowed": denied_by is None,
+            "allowed_by": allowed_by,
+            "denied_by": denied_by,
+            "simulation_time": __import__("time").time(),
+        }
+        self._net_sim_cache.append(result)
+        return result
+
+    def _policy_matches(self, policy: dict, direction: str, container: Container) -> bool:
+        """Check if a policy matches a container in given direction."""
+        key = f"{direction}_selector"
+        selector = policy.get(key, {})
+        if not selector:
+            return True  # No selector matches everything
+        labels = dict(container.config.labels)
+        for k, v in selector.items():
+            if labels.get(k) != v:
+                return False
+        return True
+
+    def _policy_port_matches(self, policy: dict, port: int, protocol: str) -> bool:
+        """Check if a policy's port spec matches."""
+        port_spec = policy.get("ports", [])
+        if not port_spec:
+            return True  # No port spec matches all
+        for ps in port_spec:
+            if ps.get("port") == port and ps.get("protocol", "tcp") == protocol:
+                return True
+        return False
+
+    def create_network_simulation(
+        self,
+        name: str,
+        containers: List[Container],
+    ) -> Dict[str, Any]:
+        """Create a full connectivity matrix for a set of containers."""
+        if not hasattr(self, '_network_policies'):
+            self._network_policies = []
+        matrix = {}
+        for src in containers:
+            matrix[src.config.name] = {}
+            for dst in containers:
+                if src.id == dst.id:
+                    matrix[src.config.name][dst.config.name] = True
+                    continue
+                result = self.simulate_network_policy(src, dst)
+                matrix[src.config.name][dst.config.name] = result["allowed"]
+        sim_id = f"sim-{name}"
+        if not hasattr(self, '_net_simulations'):
+            self._net_simulations = {}
+        self._net_simulations[sim_id] = {
+            "name": name,
+            "matrix": matrix,
+            "container_count": len(containers),
+            "timestamp": __import__("time").time(),
+        }
+        return {"sim_id": sim_id, "matrix": matrix, "containers": [c.config.name for c in containers]}
+
+    def what_if_policy_change(
+        self,
+        source_container: Container,
+        dest_container: Container,
+        dest_port: int,
+        protocol: str,
+        new_policy_effect: str = "deny",
+    ) -> Dict[str, Any]:
+        """Simulate what would happen if we add a new policy."""
+        # Current state
+        current = self.simulate_network_policy(source_container, dest_container, dest_port, protocol)
+        # Simulate with temporary new policy
+        temp_policy = {
+            "name": "what-if-temp",
+            "effect": new_policy_effect,
+            "source_selector": dict(source_container.config.labels),
+            "dest_selector": dict(dest_container.config.labels),
+            "ports": [{"port": dest_port, "protocol": protocol}],
+        }
+        if not hasattr(self, '_network_policies'):
+            self._network_policies = []
+        self._network_policies.append(temp_policy)
+        after = self.simulate_network_policy(source_container, dest_container, dest_port, protocol)
+        # Remove temporary policy
+        self._network_policies.pop()
+        return {
+            "current_allowed": current["allowed"],
+            "after_change_allowed": after["allowed"],
+            "impact": "blocked" if current["allowed"] and not after["allowed"] else "no_change",
+            "new_policy_effect": new_policy_effect,
+        }
+
+    def get_simulation_history(self) -> List[Dict[str, Any]]:
+        """Get simulation history."""
+        return list(self._net_sim_cache) if hasattr(self, '_net_sim_cache') else []
+
+    # ------------------------------------------------------------------
+    # Lifecycle hooks with pre/post actions and rollback
+    # ------------------------------------------------------------------
+
+    def register_lifecycle_hook(
+        self,
+        container: Container,
+        phase: str,
+        action: str,
+        command: Optional[List[str]] = None,
+        timeout_s: float = 30.0,
+        on_failure: str = "rollback",
+    ) -> Dict[str, Any]:
+        """Register a lifecycle hook (pre-start, post-start, pre-stop, post-stop, pre-restart, post-restart)."""
+        valid_phases = ["pre-start", "post-start", "pre-stop", "post-stop", "pre-restart", "post-restart"]
+        if phase not in valid_phases:
+            return {"error": f"Invalid phase. Must be one of: {valid_phases}"}
+        if not hasattr(self, '_lifecycle_hooks'):
+            self._lifecycle_hooks = {}
+        if container.id not in self._lifecycle_hooks:
+            self._lifecycle_hooks[container.id] = {}
+        if phase not in self._lifecycle_hooks[container.id]:
+            self._lifecycle_hooks[container.id][phase] = []
+        hook = {
+            "action": action,
+            "command": command,
+            "timeout_s": timeout_s,
+            "on_failure": on_failure,
+            "registered_at": __import__("time").time(),
+        }
+        self._lifecycle_hooks[container.id][phase].append(hook)
+        return {"container_id": container.id, "phase": phase, "hook_count": len(self._lifecycle_hooks[container.id][phase])}
+
+    def execute_lifecycle_hooks(
+        self,
+        container: Container,
+        phase: str,
+    ) -> Dict[str, Any]:
+        """Execute all hooks for a lifecycle phase."""
+        if not hasattr(self, '_lifecycle_hooks'):
+            return {"executed": 0, "phase": phase}
+        hooks = self._lifecycle_hooks.get(container.id, {}).get(phase, [])
+        results = []
+        rolled_back = False
+        for hook in hooks:
+            # Simulate execution
+            result = {
+                "action": hook["action"],
+                "success": True,
+                "duration_s": 0.001,
+            }
+            if hook["action"] == "fail":
+                result["success"] = False
+                result["error"] = "simulated failure"
+                if hook["on_failure"] == "rollback":
+                    rolled_back = True
+                    break
+            results.append(result)
+        if not hasattr(self, '_hook_execution_log'):
+            self._hook_execution_log = []
+        self._hook_execution_log.append({
+            "container_id": container.id,
+            "phase": phase,
+            "executed": len(results),
+            "rolled_back": rolled_back,
+            "timestamp": __import__("time").time(),
+        })
+        return {
+            "phase": phase,
+            "executed": len(results),
+            "results": results,
+            "rolled_back": rolled_back,
+        }
+
+    def list_lifecycle_hooks(self, container: Container) -> Dict[str, Any]:
+        """List all hooks for a container."""
+        if not hasattr(self, '_lifecycle_hooks'):
+            return {"hooks": {}}
+        return {"hooks": self._lifecycle_hooks.get(container.id, {})}
+
+    def remove_lifecycle_hook(
+        self,
+        container: Container,
+        phase: str,
+        index: int,
+    ) -> Dict[str, Any]:
+        """Remove a specific hook."""
+        if not hasattr(self, '_lifecycle_hooks'):
+            return {"error": "No hooks registered"}
+        hooks = self._lifecycle_hooks.get(container.id, {}).get(phase, [])
+        if index < 0 or index >= len(hooks):
+            return {"error": "Invalid hook index"}
+        removed = hooks.pop(index)
+        return {"removed": removed, "phase": phase, "remaining": len(hooks)}
+
+    def get_hook_execution_log(self) -> List[Dict[str, Any]]:
+        """Get hook execution history."""
+        return list(self._hook_execution_log) if hasattr(self, '_hook_execution_log') else []
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch
