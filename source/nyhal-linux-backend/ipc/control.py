@@ -930,6 +930,24 @@ class ControlService:
             elif op == "alert_history":
                 self._alert_history(server, sender_path,
                                     msg.message_id, request)
+            elif op == "detect_anomalies":
+                self._detect_anomalies(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "detect_fleet_anomalies":
+                self._detect_fleet_anomalies(server, sender_path,
+                                            msg.message_id, request)
+            elif op == "diff_snapshots":
+                self._diff_snapshots(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "rollback_snapshot":
+                self._rollback_snapshot(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "optimize_placement":
+                self._optimize_placement(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "placement_score":
+                self._placement_score(server, sender_path,
+                                     msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -6112,6 +6130,69 @@ class ControlService:
             container_id=request.get('container_id'),
             alert_type=request.get('alert_type'),
             tail=request.get('tail', 50),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- anomaly detection handlers --
+
+    def _detect_anomalies(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.detect_anomalies(
+            c,
+            window_size=request.get('window_size', 30),
+            z_threshold=request.get('z_threshold', 2.5),
+            iqr_multiplier=request.get('iqr_multiplier', 1.5),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detect_fleet_anomalies(self, server, sender_path, call_id, request):
+        result = self.container_manager.detect_fleet_anomalies(
+            window_size=request.get('window_size', 30),
+            z_threshold=request.get('z_threshold', 2.5),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- snapshot diff/rollback handlers --
+
+    def _diff_snapshots(self, server, sender_path, call_id, request):
+        result = self.container_manager.diff_snapshots(
+            request.get('snapshot_a', {}),
+            request.get('snapshot_b', {}),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _rollback_snapshot(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.rollback_to_snapshot(
+            c,
+            request.get('snapshot', {}),
+            dry_run=request.get('dry_run', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- placement optimization handlers --
+
+    def _optimize_placement(self, server, sender_path, call_id, request):
+        result = self.container_manager.optimize_placement(
+            containers=request.get('containers'),
+            strategy=request.get('strategy', 'balanced'),
+            respect_affinity=request.get('respect_affinity', True),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _placement_score(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if c is None:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.placement_score(
+            request['node_id'], c,
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 

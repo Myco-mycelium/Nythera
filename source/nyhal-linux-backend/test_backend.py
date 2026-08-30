@@ -2424,6 +2424,232 @@ class TestAnomalyAlerting(unittest.TestCase):
         self.assertIn("warning", text)
 
 
+class TestStatisticalAnomalyDetection(unittest.TestCase):
+    """Tests for statistical anomaly detection (Z-score, IQR)."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_insufficient_data(self):
+        """Returns insufficient_data when not enough history."""
+        mgr = self._manager()
+        c = self._make(mgr, "ad1")
+        r = mgr.detect_anomalies(c, window_size=30)
+        self.assertTrue(r["insufficient_data"])
+        self.assertEqual(r["anomaly_count"], 0)
+
+    def test_detect_with_history(self):
+        """Detects anomalies in historical data."""
+        mgr = self._manager()
+        c = self._make(mgr, "ad2")
+        mgr._resource_history = {}
+        mgr._resource_history[c.id] = [
+            {"mem_ratio": 0.5} for _ in range(29)
+        ]
+        mgr._resource_history[c.id].append({"mem_ratio": 5.0})  # outlier
+        r = mgr.detect_anomalies(c, window_size=30, z_threshold=2.0)
+        self.assertFalse(r["insufficient_data"])
+        self.assertGreater(r["anomaly_count"], 0)
+
+    def test_fleet_anomalies(self):
+        """Fleet anomaly detection scans all running containers."""
+        mgr = self._manager()
+        c = self._make(mgr, "ad3")
+        r = mgr.detect_fleet_anomalies()
+        self.assertIn("containers_with_anomalies", r)
+        self.assertIn("total_anomalies", r)
+
+    def test_format_human_detect(self):
+        """format_human handles detect-anomalies."""
+        from nyrqisctl import format_human
+        resp = {
+            "container_id": "abc123", "anomaly_count": 2,
+            "data_points": 30, "window_size": 30,
+            "insufficient_data": False,
+            "anomalies": [{"method": "z_score", "metric": "mem_ratio", "value": 0.9}],
+        }
+        text = format_human("detect-anomalies", resp)
+        self.assertIn("2", text)
+
+    def test_format_human_fleet(self):
+        """format_human handles detect-fleet-anomalies."""
+        from nyrqisctl import format_human
+        resp = {"containers_with_anomalies": 3, "total_anomalies": 7, "details": []}
+        text = format_human("detect-fleet-anomalies", resp)
+        self.assertIn("3", text)
+        self.assertIn("7", text)
+
+
+class TestSnapshotRollback(unittest.TestCase):
+    """Tests for snapshot diffing and rollback."""
+
+    def test_diff_identical(self):
+        """Identical snapshots show no changes."""
+        from backend.container import ContainerManager
+        mgr = ContainerManager(use_cgroups_v2=False)
+        snap = {"rootfs": {"a.txt": "hello"}, "resources": {}}
+        r = mgr.diff_snapshots(snap, snap)
+        self.assertFalse(r["has_changes"])
+        self.assertEqual(len(r["added"]), 0)
+        self.assertEqual(len(r["removed"]), 0)
+
+    def test_diff_with_changes(self):
+        """Diff detects added, removed, modified files."""
+        from backend.container import ContainerManager
+        mgr = ContainerManager(use_cgroups_v2=False)
+        a = {"rootfs": {"a.txt": "hello", "b.txt": "world"}, "resources": {}}
+        b = {"rootfs": {"a.txt": "hello", "c.txt": "new"}, "resources": {"memory_mb": 256}}
+        r = mgr.diff_snapshots(a, b)
+        self.assertTrue(r["has_changes"])
+        self.assertIn("c.txt", r["added"])
+        self.assertIn("b.txt", r["removed"])
+        self.assertIn("memory_mb", r["resource_changes"])
+
+    def test_rollback_dry_run(self):
+        """Dry-run rollback reports plan without changes."""
+        import tempfile, os
+        from backend.container import ContainerManager, ContainerConfig, ContainerState
+        mgr = ContainerManager(use_cgroups_v2=False)
+        rootfs = tempfile.mkdtemp()
+        with open(os.path.join(rootfs, "existing.txt"), "w") as f:
+            f.write("old")
+        c = mgr.create(ContainerConfig(name="rb1", command=["echo"], rootfs=rootfs))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        snapshot = {
+            "rootfs": {"new.txt": {"content": "restored"}},
+            "resources": {"memory_mb": 64},
+            "metadata": {"timestamp": 12345},
+        }
+        r = mgr.rollback_to_snapshot(c, snapshot, dry_run=True)
+        self.assertTrue(r["dry_run"])
+        self.assertEqual(r["status"], "planned")
+        self.assertTrue(os.path.exists(os.path.join(rootfs, "existing.txt")))
+
+    def test_diff_summary(self):
+        """snapshot_diff_summary returns human-readable text."""
+        from backend.container import ContainerManager
+        mgr = ContainerManager(use_cgroups_v2=False)
+        a = {"rootfs": {"x.txt": "a"}, "resources": {}}
+        b = {"rootfs": {"x.txt": "b", "y.txt": "c"}, "resources": {}}
+        text = mgr.snapshot_diff_summary(a, b)
+        self.assertIn("Added", text)
+        self.assertIn("Modified", text)
+
+    def test_format_human_diff(self):
+        """format_human handles diff-snapshots."""
+        from nyrqisctl import format_human
+        resp = {"added": ["a"], "removed": [], "modified": ["b"],
+                "has_changes": True, "resource_changes": {}}
+        text = format_human("diff-snapshots", resp)
+        self.assertIn("1", text)
+
+    def test_format_human_rollback(self):
+        """format_human handles rollback-snapshot."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "dry_run": True, "status": "planned",
+                "files_to_create": ["a"], "files_to_update": [], "files_to_delete": []}
+        text = format_human("rollback-snapshot", resp)
+        self.assertIn("DRY RUN", text)
+        self.assertIn("planned", text)
+
+
+class TestPlacementOptimization(unittest.TestCase):
+    """Tests for container placement optimization."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager(use_cgroups_v2=False)
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig, ContainerState
+        c = mgr.create(ContainerConfig(name=name, command=["echo"],
+                                       limits=ResourceLimits(memory_mb=128)))
+        c.state = ContainerState.RUNNING
+        mgr.containers[c.id] = c
+        return c
+
+    def test_optimize_no_nodes(self):
+        """Optimization with no cluster nodes uses local."""
+        mgr = self._manager()
+        c = self._make(mgr, "po1")
+        r = mgr.optimize_placement()
+        self.assertEqual(r["containers_optimized"], 1)
+        self.assertGreater(r["average_score"], 0)
+
+    def test_optimize_with_nodes(self):
+        """Optimization with cluster nodes selects best placement."""
+        mgr = self._manager()
+        mgr.register_node("n1", node_url="unix:///tmp/n1.sock",
+                          capacity={"memory_mb": 512, "cpu_cores": 2})
+        mgr.register_node("n2", node_url="unix:///tmp/n2.sock",
+                          capacity={"memory_mb": 1024, "cpu_cores": 4})
+        c = self._make(mgr, "po2")
+        r = mgr.optimize_placement(strategy="balanced")
+        self.assertEqual(r["containers_optimized"], 1)
+        self.assertEqual(r["nodes_evaluated"], 2)
+
+    def test_placement_score(self):
+        """placement_score returns feasibility and score."""
+        mgr = self._manager()
+        mgr.register_node("n1", node_url="unix:///tmp/n1.sock",
+                          capacity={"memory_mb": 512})
+        c = self._make(mgr, "po3")
+        r = mgr.placement_score("n1", c)
+        self.assertTrue(r["feasible"])
+        self.assertGreater(r["score"], 0)
+
+    def test_placement_score_infeasible(self):
+        """placement_score rejects when memory exceeds capacity."""
+        mgr = self._manager()
+        mgr.register_node("small", node_url="unix:///tmp/s.sock",
+                          capacity={"memory_mb": 64})
+        c = self._make(mgr, "po4")  # 128MB > 64MB
+        r = mgr.placement_score("small", c)
+        self.assertFalse(r["feasible"])
+        self.assertEqual(r["score"], 0.0)
+
+    def test_placement_score_unknown_node(self):
+        """placement_score rejects unknown nodes."""
+        mgr = self._manager()
+        c = self._make(mgr, "po5")
+        r = mgr.placement_score("no-such-node", c)
+        self.assertFalse(r["feasible"])
+
+    def test_format_human_optimize(self):
+        """format_human handles optimize-placement."""
+        from nyrqisctl import format_human
+        resp = {
+            "strategy": "balanced", "containers_optimized": 2,
+            "nodes_evaluated": 3, "average_score": 0.85,
+            "recommendations": [
+                {"container_name": "web", "current_node": "n1",
+                 "recommended_node": "n2", "score": 0.9},
+            ],
+        }
+        text = format_human("optimize-placement", resp)
+        self.assertIn("balanced", text)
+        self.assertIn("web", text)
+
+    def test_format_human_score(self):
+        """format_human handles placement-score."""
+        from nyrqisctl import format_human
+        resp = {"container_id": "abc123", "node_id": "n1",
+                "feasible": True, "score": 0.8}
+        text = format_human("placement-score", resp)
+        self.assertIn("True", text)
+        self.assertIn("0.80", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -27357,6 +27583,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerNetworking))
     suite.addTests(loader.loadTestsFromTestCase(TestMigrationPlanning))
     suite.addTests(loader.loadTestsFromTestCase(TestAnomalyAlerting))
+    suite.addTests(loader.loadTestsFromTestCase(TestStatisticalAnomalyDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestSnapshotRollback))
+    suite.addTests(loader.loadTestsFromTestCase(TestPlacementOptimization))
     suite.addTests(loader.loadTestsFromTestCase(TestSnapshotDiff))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerEvents))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerHealthCheck))

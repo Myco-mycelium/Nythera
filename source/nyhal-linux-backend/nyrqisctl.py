@@ -2174,6 +2174,52 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "alert_type": getattr(args, 'alert_type', None),
             "tail": getattr(args, 'tail', 50),
         }
+    if command == "detect-anomalies":
+        return {
+            "service": "control",
+            "op": "detect_anomalies",
+            "container_id": args.container_id,
+            "window_size": getattr(args, 'window_size', 30),
+            "z_threshold": getattr(args, 'z_threshold', 2.5),
+            "iqr_multiplier": getattr(args, 'iqr_multiplier', 1.5),
+        }
+    if command == "detect-fleet-anomalies":
+        return {
+            "service": "control",
+            "op": "detect_fleet_anomalies",
+            "window_size": getattr(args, 'window_size', 30),
+            "z_threshold": getattr(args, 'z_threshold', 2.5),
+        }
+    if command == "diff-snapshots":
+        return {
+            "service": "control",
+            "op": "diff_snapshots",
+            "snapshot_a": getattr(args, 'snapshot_a', {}),
+            "snapshot_b": getattr(args, 'snapshot_b', {}),
+        }
+    if command == "rollback-snapshot":
+        return {
+            "service": "control",
+            "op": "rollback_snapshot",
+            "container_id": args.container_id,
+            "snapshot": getattr(args, 'snapshot', {}),
+            "dry_run": getattr(args, 'dry_run', True),
+        }
+    if command == "optimize-placement":
+        return {
+            "service": "control",
+            "op": "optimize_placement",
+            "containers": getattr(args, 'containers', None),
+            "strategy": getattr(args, 'strategy', 'balanced'),
+            "respect_affinity": getattr(args, 'respect_affinity', True),
+        }
+    if command == "placement-score":
+        return {
+            "service": "control",
+            "op": "placement_score",
+            "container_id": args.container_id,
+            "node_id": args.node_id,
+        }
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -5148,6 +5194,62 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         for h in hist:
             lines.append(f"  {h.get('alert_type', '?')} [{h.get('severity', '?')}] {h.get('message', '?')[:60]}")
         return "\n".join(lines)
+    if command == "detect-anomalies":
+        anomalies = resp.get('anomalies', [])
+        if resp.get('insufficient_data'):
+            return f"Insufficient data ({resp.get('data_points', 0)} points, need {resp.get('window_size', 30)})"
+        lines = [
+            f"Anomalies for {resp.get('container_id', '?')[:12]}:",
+            f"  Data points: {resp.get('data_points', 0)}, Window: {resp.get('window_size', 0)}",
+            f"  Anomalies found: {resp.get('anomaly_count', 0)}",
+        ]
+        for a in anomalies[:10]:
+            lines.append(f"  [{a.get('method', '?')}] {a.get('metric', '?')}: {a.get('value', 0):.4f}")
+        return "\n".join(lines)
+    if command == "detect-fleet-anomalies":
+        lines = [
+            f"Fleet anomaly detection:",
+            f"  Containers with anomalies: {resp.get('containers_with_anomalies', 0)}",
+            f"  Total anomalies: {resp.get('total_anomalies', 0)}",
+        ]
+        return "\n".join(lines)
+    if command == "diff-snapshots":
+        lines = ["Snapshot diff:"]
+        if resp.get('added'): lines.append(f"  Added: {len(resp['added'])} files")
+        if resp.get('removed'): lines.append(f"  Removed: {len(resp['removed'])} files")
+        if resp.get('modified'): lines.append(f"  Modified: {len(resp['modified'])} files")
+        if resp.get('resource_changes'): lines.append(f"  Resource changes: {len(resp['resource_changes'])}")
+        if not resp.get('has_changes'): lines.append("  No differences")
+        return "\n".join(lines)
+    if command == "rollback-snapshot":
+        mode = "DRY RUN" if resp.get('dry_run') else "EXECUTED"
+        lines = [
+            f"Rollback {mode}: {resp.get('container_id', '?')[:12]}",
+            f"  Status: {resp.get('status', '?')}",
+            f"  Files to create: {len(resp.get('files_to_create', []))}",
+            f"  Files to update: {len(resp.get('files_to_update', []))}",
+            f"  Files to delete: {len(resp.get('files_to_delete', []))}",
+        ]
+        return "\n".join(lines)
+    if command == "optimize-placement":
+        lines = [
+            f"Placement optimization ({resp.get('strategy', '?')}):",
+            f"  Containers: {resp.get('containers_optimized', 0)}",
+            f"  Nodes evaluated: {resp.get('nodes_evaluated', 0)}",
+            f"  Average score: {resp.get('average_score', 0):.2f}",
+        ]
+        for r in resp.get('recommendations', []):
+            lines.append(f"  {r.get('container_name', '?')}: {r.get('current_node', '?')} -> {r.get('recommended_node', '?')} (score: {r.get('score', 0):.2f})")
+        return "\n".join(lines)
+    if command == "placement-score":
+        lines = [
+            f"Placement score for {resp.get('container_id', '?')[:12]} on {resp.get('node_id', '?')}:",
+            f"  Feasible: {resp.get('feasible', False)}",
+            f"  Score: {resp.get('score', 0):.2f}",
+        ]
+        if not resp.get('feasible'):
+            lines.append(f"  Reason: {resp.get('reason', '?')}")
+        return "\n".join(lines)
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -6770,6 +6872,44 @@ def build_parser() -> argparse.ArgumentParser:
     ah.add_argument("--alert-type", default=None)
     ah.add_argument("--tail", type=int, default=50)
     ah.set_defaults(command="alert-history")
+
+    # -- anomaly detection commands --
+    da = sub.add_parser("detect-anomalies", help="Detect anomalies in container resource usage")
+    da.add_argument("container_id")
+    da.add_argument("--window-size", type=int, default=30)
+    da.add_argument("--z-threshold", type=float, default=2.5)
+    da.add_argument("--iqr-multiplier", type=float, default=1.5)
+    da.set_defaults(command="detect-anomalies")
+
+    dfa = sub.add_parser("detect-fleet-anomalies", help="Detect anomalies across all containers")
+    dfa.add_argument("--window-size", type=int, default=30)
+    dfa.add_argument("--z-threshold", type=float, default=2.5)
+    dfa.set_defaults(command="detect-fleet-anomalies")
+
+    # -- snapshot diff/rollback commands --
+    ds = sub.add_parser("diff-snapshots", help="Compare two snapshots")
+    ds.add_argument("--snapshot-a", type=eval, default={})
+    ds.add_argument("--snapshot-b", type=eval, default={})
+    ds.set_defaults(command="diff-snapshots")
+
+    rs = sub.add_parser("rollback-snapshot", help="Rollback container to a snapshot")
+    rs.add_argument("container_id")
+    rs.add_argument("--snapshot", type=eval, default={})
+    rs.add_argument("--dry-run", action="store_true", default=True)
+    rs.add_argument("--no-dry-run", dest="dry_run", action="store_false")
+    rs.set_defaults(command="rollback-snapshot")
+
+    # -- placement optimization commands --
+    op_ = sub.add_parser("optimize-placement", help="Optimize container placement across nodes")
+    op_.add_argument("--containers", nargs="+", default=None)
+    op_.add_argument("--strategy", choices=["balanced", "packed", "spread"], default="balanced")
+    op_.add_argument("--respect-affinity", action="store_true", default=True)
+    op_.set_defaults(command="optimize-placement")
+
+    ps = sub.add_parser("placement-score", help="Score a specific container placement")
+    ps.add_argument("container_id")
+    ps.add_argument("node_id")
+    ps.set_defaults(command="placement-score")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

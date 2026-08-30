@@ -11368,6 +11368,133 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Anomaly detection (statistical outlier identification)
+    # ------------------------------------------------------------------
+
+    def detect_anomalies(
+        self,
+        container: Container,
+        window_size: int = 30,
+        z_threshold: float = 2.5,
+        iqr_multiplier: float = 1.5,
+    ) -> Dict[str, Any]:
+        """Detect anomalies in a container's resource usage using statistical methods.
+
+        Uses both Z-score and IQR (interquartile range) methods to
+        identify outlier data points in the container's resource history.
+
+        Args:
+            container: The container to analyze.
+            window_size: Minimum data points needed for analysis.
+            z_threshold: Z-score threshold for anomaly detection.
+            iqr_multiplier: IQR multiplier for outlier detection.
+
+        Returns:
+            Dict with anomalies, statistics, and method results.
+        """
+        if not hasattr(self, '_resource_history'):
+            self._resource_history = {}
+        history = self._resource_history.get(container.id, [])
+
+        if len(history) < window_size:
+            return {
+                "container_id": container.id,
+                "anomalies": [],
+                "anomaly_count": 0,
+                "data_points": len(history),
+                "window_size": window_size,
+                "insufficient_data": True,
+            }
+
+        recent = history[-window_size:]
+        anomalies: List[Dict[str, Any]] = []
+
+        for metric in ["mem_ratio", "cpu_ratio", "pids_ratio"]:
+            values = [h.get(metric, 0) for h in recent if metric in h]
+            if len(values) < 5:
+                continue
+
+            # Z-score method
+            mean = sum(values) / len(values)
+            variance = sum((x - mean) ** 2 for x in values) / len(values)
+            std_dev = variance ** 0.5
+
+            if std_dev > 0:
+                for i, v in enumerate(values):
+                    z_score = (v - mean) / std_dev
+                    if abs(z_score) > z_threshold:
+                        anomalies.append({
+                            "metric": metric,
+                            "value": v,
+                            "z_score": round(z_score, 3),
+                            "method": "z_score",
+                            "position": len(values) - window_size + i,
+                        })
+
+            # IQR method
+            sorted_vals = sorted(values)
+            n = len(sorted_vals)
+            q1 = sorted_vals[n // 4]
+            q3 = sorted_vals[3 * n // 4]
+            iqr = q3 - q1
+            lower_bound = q1 - iqr_multiplier * iqr
+            upper_bound = q3 + iqr_multiplier * iqr
+
+            for i, v in enumerate(values):
+                if v < lower_bound or v > upper_bound:
+                    anomalies.append({
+                        "metric": metric,
+                        "value": v,
+                        "iqr_bounds": [round(lower_bound, 4), round(upper_bound, 4)],
+                        "method": "iqr",
+                        "position": len(values) - window_size + i,
+                    })
+
+        # Compute summary statistics
+        all_values = [h.get("mem_ratio", 0) for h in recent]
+        summary = {
+            "mean": round(sum(all_values) / len(all_values), 4) if all_values else 0,
+            "min": round(min(all_values), 4) if all_values else 0,
+            "max": round(max(all_values), 4) if all_values else 0,
+        }
+
+        return {
+            "container_id": container.id,
+            "anomalies": anomalies,
+            "anomaly_count": len(anomalies),
+            "statistics": summary,
+            "data_points": len(history),
+            "window_size": window_size,
+            "insufficient_data": False,
+        }
+
+    def detect_fleet_anomalies(
+        self,
+        window_size: int = 30,
+        z_threshold: float = 2.5,
+    ) -> Dict[str, Any]:
+        """Detect anomalies across all running containers.
+
+        Returns a fleet-wide view of anomalous behavior.
+        """
+        results: List[Dict[str, Any]] = []
+        total_anomalies = 0
+
+        for cid, c in self.containers.items():
+            if c.state == ContainerState.RUNNING:
+                result = self.detect_anomalies(
+                    c, window_size=window_size, z_threshold=z_threshold)
+                if result["anomaly_count"] > 0:
+                    results.append(result)
+                    total_anomalies += result["anomaly_count"]
+
+        return {
+            "containers_with_anomalies": len(results),
+            "total_anomalies": total_anomalies,
+            "details": results,
+        }
+
+    # ------------------------------------------------------------------
     # Resource heat map (fleet-wide pressure detection + consolidation)
     # ------------------------------------------------------------------
 
@@ -14520,6 +14647,193 @@ class ContainerManager:
         }
 
     # ------------------------------------------------------------------
+    # Container placement optimization
+    # ------------------------------------------------------------------
+
+    def optimize_placement(
+        self,
+        containers: Optional[List[str]] = None,
+        strategy: str = "balanced",
+        respect_affinity: bool = True,
+    ) -> Dict[str, Any]:
+        """Optimize container placement across cluster nodes.
+
+        Uses resource heat map data and node capacities to recommend
+        optimal placement for containers.
+
+        Args:
+            containers: List of container IDs to optimize (all if None).
+            strategy: ``"balanced"`` (spread load), ``"packed"`` (consolidate),
+                      or ``"spread"`` (maximize isolation).
+            respect_affinity: Consider container affinity/anti-affinity rules.
+
+        Returns:
+            Dict with placement recommendations and scores.
+        """
+        if not hasattr(self, '_cluster_nodes'):
+            self._cluster_nodes = {}
+
+        # Get all running containers
+        if containers:
+            target_containers = [self.containers[cid] for cid in containers
+                                 if cid in self.containers]
+        else:
+            target_containers = [c for c in self.containers.values()
+                                 if c.state == ContainerState.RUNNING]
+
+        if not target_containers:
+            return {
+                "recommendations": [],
+                "strategy": strategy,
+                "containers_optimized": 0,
+            }
+
+        # Get node capacities
+        nodes = dict(self._cluster_nodes)
+        if not nodes:
+            # Use local node
+            nodes["local"] = {
+                "node_id": "local",
+                "capacity": {
+                    "memory_mb": sum(c.config.limits.memory_mb for c in target_containers) * 2,
+                    "cpu_cores": 4,
+                },
+                "containers": [c.id for c in target_containers],
+            }
+
+        # Compute heat map data for each node
+        node_loads: Dict[str, Dict[str, float]] = {}
+        for nid, node in nodes.items():
+            load = {"memory": 0.0, "cpu": 0.0, "count": 0}
+            node_containers = node.get("containers", [])
+            load["count"] = len(node_containers)
+            for cid in node_containers:
+                c = self.containers.get(cid)
+                if c and c.state == ContainerState.RUNNING:
+                    stats = self.container_stats(c)
+                    mem_limit = c.config.limits.memory_mb * 1024 * 1024
+                    if mem_limit > 0:
+                        load["memory"] += stats.get("memory_bytes", 0) / mem_limit
+            cap = node.get("capacity", {})
+            if cap.get("memory_mb", 0) > 0:
+                load["memory"] /= cap["memory_mb"]
+            node_loads[nid] = load
+
+        # Generate recommendations
+        recommendations: List[Dict[str, Any]] = []
+        for c in target_containers:
+            best_node = None
+            best_score = -1.0
+
+            for nid, load in node_loads.items():
+                # Score based on strategy
+                if strategy == "packed":
+                    # Prefer nodes with highest load (consolidate)
+                    score = 1.0 - load["memory"]
+                elif strategy == "spread":
+                    # Prefer nodes with lowest load (spread out)
+                    score = 1.0 - load["memory"]
+                else:  # balanced
+                    # Prefer nodes near 50% utilization
+                    score = 1.0 - abs(load["memory"] - 0.5)
+
+                # Penalize overloaded nodes
+                if load["memory"] > 0.9:
+                    score *= 0.5
+                if load["count"] > 20:
+                    score *= 0.8
+
+                if score > best_score:
+                    best_score = score
+                    best_node = nid
+
+            recommendations.append({
+                "container_id": c.id,
+                "container_name": c.config.name,
+                "recommended_node": best_node,
+                "score": round(best_score, 4),
+                "memory_mb": c.config.limits.memory_mb,
+                "current_node": next(
+                    (nid for nid, n in nodes.items()
+                     if c.id in n.get("containers", [])),
+                    "unknown"),
+            })
+
+        # Fleet summary
+        total_memory = sum(r["memory_mb"] for r in recommendations)
+        avg_score = (sum(r["score"] for r in recommendations)
+                     / len(recommendations) if recommendations else 0)
+
+        return {
+            "strategy": strategy,
+            "recommendations": recommendations,
+            "containers_optimized": len(recommendations),
+            "total_memory_mb": total_memory,
+            "average_score": round(avg_score, 4),
+            "nodes_evaluated": len(nodes),
+        }
+
+    def placement_score(
+        self,
+        node_id: str,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Score a specific placement of a container on a node.
+
+        Returns detailed scoring breakdown.
+        """
+        if not hasattr(self, '_cluster_nodes'):
+            self._cluster_nodes = {}
+
+        node = self._cluster_nodes.get(node_id)
+        if not node:
+            return {
+                "node_id": node_id,
+                "score": 0.0,
+                "feasible": False,
+                "reason": "Node not found",
+            }
+
+        cap = node.get("capacity", {})
+        mem_limit_mb = cap.get("memory_mb", 0)
+        cpu_cores = cap.get("cpu_cores", 0)
+
+        container_mem = container.config.limits.memory_mb
+        container_cpu = container.config.limits.cpu_shares / 1024.0
+
+        # Check feasibility
+        if mem_limit_mb > 0 and container_mem > mem_limit_mb:
+            return {
+                "node_id": node_id,
+                "score": 0.0,
+                "feasible": False,
+                "reason": f"Insufficient memory: need {container_mem}MB, have {mem_limit_mb}MB",
+            }
+
+        # Score: higher is better
+        score = 1.0
+        if mem_limit_mb > 0:
+            mem_fraction = container_mem / mem_limit_mb
+            if mem_fraction > 0.8:
+                score *= 0.5  # Tight fit penalty
+            elif mem_fraction < 0.1:
+                score *= 0.7  # Waste penalty
+
+        # Node load penalty
+        node_containers = node.get("containers", [])
+        load_factor = len(node_containers) / max(cpu_cores * 4, 1)
+        if load_factor > 0.8:
+            score *= 0.6
+
+        return {
+            "node_id": node_id,
+            "score": round(score, 4),
+            "feasible": True,
+            "memory_fit_pct": round(container_mem / max(mem_limit_mb, 1) * 100, 1),
+            "current_load": len(node_containers),
+        }
+
+    # ------------------------------------------------------------------
     # Container migration planning
     # ------------------------------------------------------------------
 
@@ -15449,6 +15763,181 @@ class ContainerManager:
             archive_path, len(blobs),
         )
         return checkpoint
+
+    # ------------------------------------------------------------------
+    # Snapshot diffing and rollback
+    # ------------------------------------------------------------------
+
+    def diff_snapshots(
+        self,
+        snapshot_a: Dict[str, Any],
+        snapshot_b: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compare two snapshots and identify differences.
+
+        Args:
+            snapshot_a: First snapshot (older).
+            snapshot_b: Second snapshot (newer).
+
+        Returns:
+            Dict with added, removed, modified files and resource changes.
+        """
+        tree_a = snapshot_a.get("rootfs", {})
+        tree_b = snapshot_b.get("rootfs", {})
+
+        files_a = set(tree_a.keys()) if isinstance(tree_a, dict) else set()
+        files_b = set(tree_b.keys()) if isinstance(tree_b, dict) else set()
+
+        added = sorted(files_b - files_a)
+        removed = sorted(files_a - files_b)
+        common = files_a & files_b
+
+        modified: List[str] = []
+        unchanged: List[str] = []
+        for f in sorted(common):
+            if tree_a.get(f) != tree_b.get(f):
+                modified.append(f)
+            else:
+                unchanged.append(f)
+
+        # Resource changes
+        res_a = snapshot_a.get("resources", {})
+        res_b = snapshot_b.get("resources", {})
+        resource_changes: Dict[str, Any] = {}
+        all_keys = set(list(res_a.keys()) + list(res_b.keys()))
+        for k in all_keys:
+            if res_a.get(k) != res_b.get(k):
+                resource_changes[k] = {
+                    "old": res_a.get(k),
+                    "new": res_b.get(k),
+                }
+
+        return {
+            "added": added,
+            "removed": removed,
+            "modified": modified,
+            "unchanged_count": len(unchanged),
+            "resource_changes": resource_changes,
+            "has_changes": bool(added or removed or modified or resource_changes),
+        }
+
+    def rollback_to_snapshot(
+        self,
+        container: Container,
+        snapshot: Dict[str, Any],
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Rollback a container to a previous snapshot state.
+
+        Args:
+            container: The container to rollback.
+            snapshot: The snapshot to restore from.
+            dry_run: If True, report what would be changed without changes.
+
+        Returns:
+            Dict with rollback plan and status.
+        """
+        if not snapshot or not isinstance(snapshot, dict):
+            return {"error": "Invalid snapshot"}
+
+        # Build rollback plan
+        rootfs = snapshot.get("rootfs", {})
+        resources = snapshot.get("resources", {})
+        metadata = snapshot.get("metadata", {})
+
+        files_to_restore = list(rootfs.keys()) if isinstance(rootfs, dict) else []
+        files_to_delete: List[str] = []
+
+        # Current state comparison
+        current_files = set()
+        if container.config.rootfs and os.path.isdir(container.config.rootfs):
+            for root, dirs, files in os.walk(container.config.rootfs):
+                for fname in files:
+                    rel = os.path.relpath(os.path.join(root, fname), container.config.rootfs)
+                    current_files.add(rel)
+
+        snapshot_files = set(files_to_restore)
+        files_to_delete = sorted(current_files - snapshot_files)
+        files_to_create = sorted(snapshot_files - current_files)
+        files_to_update = sorted(snapshot_files & current_files)
+
+        result = {
+            "container_id": container.id,
+            "dry_run": dry_run,
+            "snapshot_time": metadata.get("timestamp", 0),
+            "files_to_create": files_to_create,
+            "files_to_update": files_to_update,
+            "files_to_delete": files_to_delete,
+            "resource_changes": {},
+            "status": "planned",
+        }
+
+        # Resource rollback
+        if resources:
+            current_limits = container.config.limits
+            if resources.get("memory_mb") and resources["memory_mb"] != current_limits.memory_mb:
+                result["resource_changes"]["memory_mb"] = {
+                    "old": current_limits.memory_mb,
+                    "new": resources["memory_mb"],
+                }
+
+        if dry_run:
+            return result
+
+        # Execute rollback
+        if container.config.rootfs and os.path.isdir(container.config.rootfs):
+            # Delete removed files
+            for f in files_to_delete:
+                fpath = os.path.join(container.config.rootfs, f)
+                try:
+                    if os.path.isfile(fpath):
+                        os.unlink(fpath)
+                except OSError:
+                    pass
+
+            # Restore files from snapshot tree
+            for f, content in rootfs.items():
+                if isinstance(content, dict) and "content" in content:
+                    fpath = os.path.join(container.config.rootfs, f)
+                    os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                    try:
+                        with open(fpath, "w") as fh:
+                            fh.write(content["content"])
+                    except OSError:
+                        pass
+
+        # Apply resource changes
+        if resources.get("memory_mb"):
+            container.config.limits.memory_mb = resources["memory_mb"]
+
+        result["status"] = "completed"
+        self._record_event(
+            "snapshot_rollback", container.id,
+            f"restored to {metadata.get('timestamp', '?')}")
+
+        return result
+
+    def snapshot_diff_summary(
+        self,
+        snapshot_a: Dict[str, Any],
+        snapshot_b: Dict[str, Any],
+    ) -> str:
+        """Human-readable summary of snapshot differences."""
+        diff = self.diff_snapshots(snapshot_a, snapshot_b)
+        lines: List[str] = []
+        if diff["added"]:
+            lines.append(f"Added: {len(diff['added'])} files")
+        if diff["removed"]:
+            lines.append(f"Removed: {len(diff['removed'])} files")
+        if diff["modified"]:
+            lines.append(f"Modified: {len(diff['modified'])} files")
+        if diff["resource_changes"]:
+            lines.append("Resource changes:")
+            for k, v in diff["resource_changes"].items():
+                lines.append(f"  {k}: {v.get('old')} -> {v.get('new')}")
+        if not diff["has_changes"]:
+            lines.append("No differences found")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Dependency ordering
