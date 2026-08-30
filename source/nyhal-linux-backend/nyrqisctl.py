@@ -3609,6 +3609,161 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_profile",
             "profile_id": args.profile_id,
         }
+    if command == "register-config-schema":
+        return {
+            "service": "control",
+            "op": "register_config_schema",
+            "name": args.name,
+            "required_fields": getattr(args, 'required_fields', None),
+        }
+    if command == "validate-config":
+        return {
+            "service": "control",
+            "op": "validate_config",
+            "schema_name": args.schema_name,
+            "config": json.loads(args.config) if hasattr(args, 'config') and args.config else {},
+        }
+    if command == "snapshot-config":
+        return {
+            "service": "control",
+            "op": "snapshot_config",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'baseline'),
+        }
+    if command == "detect-config-drift":
+        return {
+            "service": "control",
+            "op": "detect_config_drift",
+            "container_id": args.container_id,
+            "name": getattr(args, 'name', 'baseline'),
+        }
+    if command == "list-config-snapshots":
+        return {
+            "service": "control",
+            "op": "list_config_snapshots",
+            "container_id": args.container_id,
+        }
+    if command == "enforce-config-policy":
+        return {
+            "service": "control",
+            "op": "enforce_config_policy",
+            "container_id": args.container_id,
+            "policy": json.loads(args.policy) if hasattr(args, 'policy') and args.policy else {},
+        }
+    if command == "create-role":
+        return {
+            "service": "control",
+            "op": "create_role",
+            "name": args.name,
+            "permissions": args.permissions,
+        }
+    if command == "create-rbac-user":
+        return {
+            "service": "control",
+            "op": "create_rbac_user",
+            "name": args.name,
+            "roles": getattr(args, 'roles', None),
+        }
+    if command == "assign-role":
+        return {
+            "service": "control",
+            "op": "assign_role",
+            "user_name": args.user_name,
+            "role_name": args.role_name,
+        }
+    if command == "revoke-role":
+        return {
+            "service": "control",
+            "op": "revoke_role",
+            "user_name": args.user_name,
+            "role_name": args.role_name,
+        }
+    if command == "check-permission":
+        return {
+            "service": "control",
+            "op": "check_permission",
+            "user_name": args.user_name,
+            "permission": args.permission,
+        }
+    if command == "get-user-permissions":
+        return {
+            "service": "control",
+            "op": "get_user_permissions",
+            "user_name": args.user_name,
+        }
+    if command == "list-rbac-users":
+        return {
+            "service": "control",
+            "op": "list_rbac_users",
+        }
+    if command == "list-rbac-roles":
+        return {
+            "service": "control",
+            "op": "list_rbac_roles",
+        }
+    if command == "delete-rbac-user":
+        return {
+            "service": "control",
+            "op": "delete_rbac_user",
+            "name": args.name,
+        }
+    if command == "delete-rbac-role":
+        return {
+            "service": "control",
+            "op": "delete_rbac_role",
+            "name": args.name,
+        }
+    if command == "configure-audit-stream":
+        return {
+            "service": "control",
+            "op": "configure_audit_stream",
+            "name": args.name,
+            "severity_threshold": getattr(args, 'severity_threshold', 'warning'),
+            "alert_channels": getattr(args, 'alert_channels', None),
+        }
+    if command == "emit-audit-event":
+        return {
+            "service": "control",
+            "op": "emit_audit_event",
+            "stream_name": args.stream_name,
+            "event_type": args.event_type,
+            "message": getattr(args, 'message', ''),
+            "severity": getattr(args, 'severity', 'info'),
+        }
+    if command == "get-stream-status":
+        return {
+            "service": "control",
+            "op": "get_stream_status",
+            "name": args.name,
+        }
+    if command == "list-audit-streams":
+        return {
+            "service": "control",
+            "op": "list_audit_streams",
+        }
+    if command == "disable-audit-stream":
+        return {
+            "service": "control",
+            "op": "disable_audit_stream",
+            "name": args.name,
+        }
+    if command == "enable-audit-stream":
+        return {
+            "service": "control",
+            "op": "enable_audit_stream",
+            "name": args.name,
+        }
+    if command == "delete-audit-stream":
+        return {
+            "service": "control",
+            "op": "delete_audit_stream",
+            "name": args.name,
+        }
+    if command == "audit-stream-summary":
+        return {
+            "service": "control",
+            "op": "get_audit_stream_summary",
+        }
 
 
 # -- human formatting (pure, unit-testable) ----------------------------
@@ -7323,6 +7478,30 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join(lines)
     if command == "list-profiles":
         return f"Profiles: {resp.get('count', 0)}"
+    if command == "validate-config":
+        status = "VALID" if resp.get('valid') else f"{resp.get('error_count', 0)} ERRORS"
+        return f"Config validation: {status}"
+    if command == "detect-config-drift":
+        status = "DRIFT DETECTED" if resp.get('has_drift') else "No drift"
+        return f"Config drift: {status} ({resp.get('change_count', 0)} changes)"
+    if command == "enforce-config-policy":
+        status = "COMPLIANT" if resp.get('compliant') else f"{resp.get('violation_count', 0)} VIOLATIONS"
+        return f"Config policy: {status}"
+    if command == "check-permission":
+        status = "ALLOWED" if resp.get('allowed') else "DENIED"
+        return f"Permission: {status} for {resp.get('user', '?')} on {resp.get('permission', '?')}"
+    if command == "get-user-permissions":
+        return f"User {resp.get('user', '?')}: {resp.get('permission_count', 0)} permissions across {len(resp.get('roles', []))} roles"
+    if command == "list-rbac-users":
+        return f"Users: {resp.get('count', 0)}"
+    if command == "list-rbac-roles":
+        return f"Roles: {resp.get('count', 0)}"
+    if command == "get-stream-status":
+        return f"Stream '{resp.get('name', '?')}': events={resp.get('events_matched', 0)}, alerts={resp.get('alerts_sent', 0)}"
+    if command == "list-audit-streams":
+        return f"Audit streams: {resp.get('count', 0)}"
+    if command == "audit-stream-summary":
+        return f"Streams: {resp.get('streams', 0)}, events: {resp.get('total_events', 0)}, alerts: {resp.get('total_alerts', 0)}"
     return json.dumps(resp, indent=2, sort_keys=True)
 
 
@@ -10082,6 +10261,116 @@ def build_parser() -> argparse.ArgumentParser:
     dp = sub.add_parser("delete-profile", help="Delete profile")
     dp.add_argument("profile_id")
     dp.set_defaults(command="delete-profile")
+
+    # Config validation/drift subcommands
+    rcs = sub.add_parser("register-config-schema", help="Register config schema")
+    rcs.add_argument("name")
+    rcs.add_argument("--required-fields", nargs="+")
+    rcs.set_defaults(command="register-config-schema")
+
+    vc = sub.add_parser("validate-config", help="Validate config")
+    vc.add_argument("schema_name")
+    vc.add_argument("--config", help='JSON config')
+    vc.set_defaults(command="validate-config")
+
+    sc = sub.add_parser("snapshot-config", help="Snapshot config")
+    sc.add_argument("container_id")
+    sc.add_argument("--name", default="baseline")
+    sc.set_defaults(command="snapshot-config")
+
+    dcd = sub.add_parser("detect-config-drift", help="Detect config drift")
+    dcd.add_argument("container_id")
+    dcd.add_argument("--name", default="baseline")
+    dcd.set_defaults(command="detect-config-drift")
+
+    lcs = sub.add_parser("list-config-snapshots", help="List config snapshots")
+    lcs.add_argument("container_id")
+    lcs.set_defaults(command="list-config-snapshots")
+
+    ecp = sub.add_parser("enforce-config-policy", help="Enforce config policy")
+    ecp.add_argument("container_id")
+    ecp.add_argument("--policy", help='JSON policy')
+    ecp.set_defaults(command="enforce-config-policy")
+
+    # RBAC subcommands
+    cr = sub.add_parser("create-role", help="Create role")
+    cr.add_argument("name")
+    cr.add_argument("permissions", nargs="+")
+    cr.set_defaults(command="create-role")
+
+    cu = sub.add_parser("create-rbac-user", help="Create user")
+    cu.add_argument("name")
+    cu.add_argument("--roles", nargs="+")
+    cu.set_defaults(command="create-rbac-user")
+
+    ar = sub.add_parser("assign-role", help="Assign role")
+    ar.add_argument("user_name")
+    ar.add_argument("role_name")
+    ar.set_defaults(command="assign-role")
+
+    rr = sub.add_parser("revoke-role", help="Revoke role")
+    rr.add_argument("user_name")
+    rr.add_argument("role_name")
+    rr.set_defaults(command="revoke-role")
+
+    cp = sub.add_parser("check-permission", help="Check permission")
+    cp.add_argument("user_name")
+    cp.add_argument("permission")
+    cp.set_defaults(command="check-permission")
+
+    gup = sub.add_parser("get-user-permissions", help="Get user permissions")
+    gup.add_argument("user_name")
+    gup.set_defaults(command="get-user-permissions")
+
+    lru = sub.add_parser("list-rbac-users", help="List users")
+    lru.set_defaults(command="list-rbac-users")
+
+    lrr = sub.add_parser("list-rbac-roles", help="List roles")
+    lrr.set_defaults(command="list-rbac-roles")
+
+    dru = sub.add_parser("delete-rbac-user", help="Delete user")
+    dru.add_argument("name")
+    dru.set_defaults(command="delete-rbac-user")
+
+    drr = sub.add_parser("delete-rbac-role", help="Delete role")
+    drr.add_argument("name")
+    drr.set_defaults(command="delete-rbac-role")
+
+    # Audit stream subcommands
+    cas = sub.add_parser("configure-audit-stream", help="Configure audit stream")
+    cas.add_argument("name")
+    cas.add_argument("--severity-threshold", default="warning", choices=["debug", "info", "warning", "error", "critical"])
+    cas.add_argument("--alert-channels", nargs="+")
+    cas.set_defaults(command="configure-audit-stream")
+
+    eae = sub.add_parser("emit-audit-event", help="Emit audit event")
+    eae.add_argument("stream_name")
+    eae.add_argument("event_type")
+    eae.add_argument("--message", default="")
+    eae.add_argument("--severity", default="info")
+    eae.set_defaults(command="emit-audit-event")
+
+    gss = sub.add_parser("get-stream-status", help="Get stream status")
+    gss.add_argument("name")
+    gss.set_defaults(command="get-stream-status")
+
+    las = sub.add_parser("list-audit-streams", help="List audit streams")
+    las.set_defaults(command="list-audit-streams")
+
+    das = sub.add_parser("disable-audit-stream", help="Disable audit stream")
+    das.add_argument("name")
+    das.set_defaults(command="disable-audit-stream")
+
+    eas = sub.add_parser("enable-audit-stream", help="Enable audit stream")
+    eas.add_argument("name")
+    eas.set_defaults(command="enable-audit-stream")
+
+    daas = sub.add_parser("delete-audit-stream", help="Delete audit stream")
+    daas.add_argument("name")
+    daas.set_defaults(command="delete-audit-stream")
+
+    ass = sub.add_parser("audit-stream-summary", help="Audit stream summary")
+    ass.set_defaults(command="audit-stream-summary")
 
     wh = sub.add_parser("webhooks", help="Manage webhooks")
     whsub = wh.add_subparsers(dest="webhook_cmd", required=True)

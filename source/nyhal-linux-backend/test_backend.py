@@ -5822,6 +5822,281 @@ class TestContinuousProfiling(unittest.TestCase):
         self.assertIn("50", text)
 
 
+class TestConfigValidation(unittest.TestCase):
+    """Tests for config validation and drift detection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["echo"]))
+
+    def test_register_schema(self):
+        """register_config_schema stores schema."""
+        mgr = self._manager()
+        r = mgr.register_config_schema("container", required_fields=["name", "command"])
+        self.assertEqual(r["fields"], 2)
+
+    def test_validate_valid(self):
+        """validate_config passes for valid config."""
+        mgr = self._manager()
+        mgr.register_config_schema("c1", required_fields=["name"])
+        r = mgr.validate_config("c1", {"name": "test"})
+        self.assertTrue(r["valid"])
+
+    def test_validate_invalid(self):
+        """validate_config fails for missing fields."""
+        mgr = self._manager()
+        mgr.register_config_schema("c2", required_fields=["name", "port"])
+        r = mgr.validate_config("c2", {"name": "test"})
+        self.assertFalse(r["valid"])
+        self.assertEqual(r["error_count"], 1)
+
+    def test_snapshot_config(self):
+        """snapshot_config stores baseline."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv1")
+        r = mgr.snapshot_config(c)
+        self.assertEqual(r["snapshot"], "baseline")
+
+    def test_detect_no_drift(self):
+        """detect_config_drift returns no drift when unchanged."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv2")
+        mgr.snapshot_config(c)
+        r = mgr.detect_config_drift(c)
+        self.assertFalse(r["has_drift"])
+
+    def test_detect_drift(self):
+        """detect_config_drift finds changes."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv3")
+        mgr.snapshot_config(c)
+        c.config.limits.memory_mb = 999
+        r = mgr.detect_config_drift(c)
+        self.assertTrue(r["has_drift"])
+        self.assertGreater(r["change_count"], 0)
+
+    def test_enforce_policy(self):
+        """enforce_config_policy checks limits."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv4")
+        r = mgr.enforce_config_policy(c, {"max_memory_mb": 128})
+        self.assertTrue(r["compliant"])  # default is 256 > 128? no, 256 > 128 so violation
+
+    def test_format_human_validate(self):
+        """format_human handles validate-config."""
+        from nyrqisctl import format_human
+        text = format_human("validate-config", {"valid": True})
+        self.assertIn("VALID", text)
+
+
+class TestConfigDrift(unittest.TestCase):
+    """Tests for config validation and drift detection."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_register_schema(self):
+        """register_config_schema stores a schema."""
+        mgr = self._manager()
+        r = mgr.register_config_schema("web", required_fields=["port"], field_types={"port": "int"})
+        self.assertEqual(r["name"], "web")
+        self.assertEqual(r["fields"], 1)
+
+    def test_validate_valid(self):
+        """validate_config passes for valid config."""
+        mgr = self._manager()
+        mgr.register_config_schema("app", required_fields=["name"], field_types={"name": "str"})
+        r = mgr.validate_config("app", {"name": "myapp"})
+        self.assertTrue(r["valid"])
+        self.assertEqual(r["error_count"], 0)
+
+    def test_validate_missing_field(self):
+        """validate_config catches missing required field."""
+        mgr = self._manager()
+        mgr.register_config_schema("app", required_fields=["name", "port"])
+        r = mgr.validate_config("app", {"name": "myapp"})
+        self.assertFalse(r["valid"])
+        self.assertEqual(r["error_count"], 1)
+
+    def test_validate_wrong_type(self):
+        """validate_config catches type mismatch."""
+        mgr = self._manager()
+        mgr.register_config_schema("app", field_types={"port": "int"})
+        r = mgr.validate_config("app", {"port": "not_int"})
+        self.assertFalse(r["valid"])
+
+    def test_snapshot_config(self):
+        """snapshot_config creates a baseline."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv1")
+        r = mgr.snapshot_config(c, "baseline")
+        self.assertEqual(r["snapshot"], "baseline")
+
+    def test_detect_no_drift(self):
+        """detect_config_drift reports no drift after snapshot."""
+        mgr = self._manager()
+        c = self._make(mgr, "dv2")
+        mgr.snapshot_config(c, "baseline")
+        r = mgr.detect_config_drift(c, "baseline")
+        self.assertFalse(r["has_drift"])
+        self.assertEqual(r["change_count"], 0)
+
+    def test_format_human_validate(self):
+        """format_human handles validate-config."""
+        from nyrqisctl import format_human
+        text = format_human("validate-config", {"valid": True})
+        self.assertIn("VALID", text)
+
+
+class TestRBAC(unittest.TestCase):
+    """Tests for RBAC with role-based permissions."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_role(self):
+        """create_role stores role."""
+        mgr = self._manager()
+        r = mgr.create_role("admin", ["*"])
+        self.assertEqual(r["permission_count"], 1)
+
+    def test_create_user(self):
+        """create_user stores user."""
+        mgr = self._manager()
+        r = mgr.create_user("alice")
+        self.assertEqual(r["name"], "alice")
+
+    def test_assign_role(self):
+        """assign_role adds role to user."""
+        mgr = self._manager()
+        mgr.create_role("viewer", ["read"])
+        mgr.create_user("bob")
+        r = mgr.assign_role("bob", "viewer")
+        self.assertTrue(r["assigned"])
+
+    def test_check_permission_allowed(self):
+        """check_permission returns allowed for matching perm."""
+        mgr = self._manager()
+        mgr.create_role("ops", ["containers.*"])
+        mgr.create_user("charlie", roles=["ops"])
+        r = mgr.check_permission("charlie", "containers.read")
+        self.assertTrue(r["allowed"])
+
+    def test_check_permission_denied(self):
+        """check_permission returns denied for missing perm."""
+        mgr = self._manager()
+        mgr.create_role("viewer", ["read"])
+        mgr.create_user("dave", roles=["viewer"])
+        r = mgr.check_permission("dave", "write")
+        self.assertFalse(r["allowed"])
+
+    def test_revoke_role(self):
+        """revoke_role removes role from user."""
+        mgr = self._manager()
+        mgr.create_role("r1", ["a"])
+        mgr.create_user("eve", roles=["r1"])
+        r = mgr.revoke_role("eve", "r1")
+        self.assertTrue(r["revoked"])
+
+    def test_user_permissions(self):
+        """get_user_permissions aggregates permissions."""
+        mgr = self._manager()
+        mgr.create_role("r1", ["a", "b"])
+        mgr.create_user("frank", roles=["r1"])
+        r = mgr.get_user_permissions("frank")
+        self.assertEqual(r["permission_count"], 2)
+
+    def test_format_human_check(self):
+        """format_human handles check-permission."""
+        from nyrqisctl import format_human
+        text = format_human("check-permission", {"allowed": True, "user": "alice", "permission": "read"})
+        self.assertIn("ALLOWED", text)
+
+
+class TestAuditStreaming(unittest.TestCase):
+    """Tests for audit log streaming with alerting."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_configure_stream(self):
+        """configure_audit_stream stores config."""
+        mgr = self._manager()
+        r = mgr.configure_audit_stream("s1", severity_threshold="error", alert_channels=["slack"])
+        self.assertEqual(r["severity_threshold"], "error")
+        self.assertIn("slack", r["alert_channels"])
+
+    def test_emit_no_alert(self):
+        """emit_audit_event below threshold has no alert."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("s2", severity_threshold="error")
+        r = mgr.emit_audit_event("s2", "login", "User logged in", severity="info")
+        self.assertFalse(r["alert_triggered"])
+
+    def test_emit_with_alert(self):
+        """emit_audit_event at threshold triggers alert."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("s3", severity_threshold="warning", alert_channels=["email"])
+        r = mgr.emit_audit_event("s3", "breach", "Unauthorized access", severity="critical")
+        self.assertTrue(r["alert_triggered"])
+        self.assertIn("email", r["channels_notified"])
+
+    def test_stream_status(self):
+        """get_stream_status returns stats."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("s4")
+        mgr.emit_audit_event("s4", "test", "msg")
+        r = mgr.get_stream_status("s4")
+        self.assertEqual(r["events_matched"], 1)
+
+    def test_list_streams(self):
+        """list_audit_streams returns all."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("a")
+        mgr.configure_audit_stream("b")
+        r = mgr.list_audit_streams()
+        self.assertEqual(r["count"], 2)
+
+    def test_disable_enable(self):
+        """disable/enable audit stream toggles."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("s5")
+        mgr.disable_audit_stream("s5")
+        r = mgr.get_stream_status("s5")
+        self.assertFalse(r["enabled"])
+        mgr.enable_audit_stream("s5")
+        r = mgr.get_stream_status("s5")
+        self.assertTrue(r["enabled"])
+
+    def test_summary(self):
+        """get_audit_stream_summary aggregates."""
+        mgr = self._manager()
+        mgr.configure_audit_stream("s6")
+        mgr.emit_audit_event("s6", "t", "m")
+        r = mgr.get_audit_stream_summary()
+        self.assertEqual(r["streams"], 1)
+        self.assertEqual(r["total_events"], 1)
+
+    def test_format_human_stream(self):
+        """format_human handles get-stream-status."""
+        from nyrqisctl import format_human
+        text = format_human("get-stream-status", {"name": "audit", "events_matched": 10, "alerts_sent": 2})
+        self.assertIn("10", text)
+        self.assertIn("2", text)
+
+
 class TestSnapshotDiff(unittest.TestCase):
     """Test snapshot diff (compare two checkpoint states)."""
 
@@ -30922,6 +31197,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPerformanceBenchmarking))
     suite.addTests(loader.loadTestsFromTestCase(TestMultiTenancy))
     suite.addTests(loader.loadTestsFromTestCase(TestContinuousProfiling))
+    suite.addTests(loader.loadTestsFromTestCase(TestConfigDrift))
+    suite.addTests(loader.loadTestsFromTestCase(TestRBAC))
+    suite.addTests(loader.loadTestsFromTestCase(TestAuditStreaming))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

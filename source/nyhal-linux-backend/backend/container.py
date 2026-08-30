@@ -23428,6 +23428,463 @@ class ContainerManager:
             return {"error": f"Profile '{profile_id}' not found"}
         return {"deleted": profile_id}
 
+    # ------------------------------------------------------------------
+    # Configuration validation and drift detection
+    # ------------------------------------------------------------------
+
+    def register_config_schema(
+        self,
+        name: str,
+        required_fields: Optional[List[str]] = None,
+        field_types: Optional[Dict[str, str]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register a configuration schema for validation."""
+        if not hasattr(self, '_config_schemas'):
+            self._config_schemas = {}
+        self._config_schemas[name] = {
+            "name": name,
+            "required_fields": required_fields or [],
+            "field_types": field_types or {},
+            "constraints": constraints or {},
+        }
+        return {"name": name, "fields": len(required_fields or [])}
+
+    def validate_config(
+        self, schema_name: str, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate a configuration against a schema."""
+        if not hasattr(self, '_config_schemas'):
+            return {"error": "No schemas registered"}
+        schema = self._config_schemas.get(schema_name)
+        if not schema:
+            return {"error": f"Schema '{schema_name}' not found"}
+        errors = []
+        # Check required fields
+        for field in schema["required_fields"]:
+            if field not in config:
+                errors.append({"field": field, "error": "missing_required"})
+        # Check field types
+        for field, expected_type in schema["field_types"].items():
+            if field in config:
+                val = config[field]
+                type_map = {"str": str, "int": int, "float": (int, float), "bool": bool, "list": list, "dict": dict}
+                expected = type_map.get(expected_type)
+                if expected and not isinstance(val, expected):
+                    errors.append({"field": field, "error": f"expected_{expected_type}", "actual": type(val).__name__})
+        # Check constraints
+        for field, constraint in schema["constraints"].items():
+            if field in config:
+                val = config[field]
+                if "min" in constraint and val < constraint["min"]:
+                    errors.append({"field": field, "error": "below_minimum", "min": constraint["min"]})
+                if "max" in constraint and val > constraint["max"]:
+                    errors.append({"field": field, "error": "above_maximum", "max": constraint["max"]})
+                if "choices" in constraint and val not in constraint["choices"]:
+                    errors.append({"field": field, "error": "invalid_choice", "choices": constraint["choices"]})
+        return {"valid": len(errors) == 0, "errors": errors, "error_count": len(errors)}
+
+    def snapshot_config(
+        self, container: Container, name: str = "baseline"
+    ) -> Dict[str, Any]:
+        """Snapshot a container's current configuration for drift detection."""
+        import time as _time
+        if not hasattr(self, '_config_snapshots'):
+            self._config_snapshots = {}
+        snapshot = {
+            "container_id": container.id,
+            "name": name,
+            "config": {
+                "command": container.config.command,
+                "memory_mb": container.config.limits.memory_mb,
+                "pid_limit": container.config.limits.pid_limit,
+                "cpu_shares": container.config.limits.cpu_shares,
+                "labels": dict(container.config.labels),
+            },
+            "timestamp": _time.time(),
+        }
+        if container.id not in self._config_snapshots:
+            self._config_snapshots[container.id] = {}
+        self._config_snapshots[container.id][name] = snapshot
+        return {"container_id": container.id, "snapshot": name, "timestamp": snapshot["timestamp"]}
+
+    def detect_config_drift(
+        self, container: Container, snapshot_name: str = "baseline"
+    ) -> Dict[str, Any]:
+        """Detect configuration drift from a snapshot."""
+        if not hasattr(self, '_config_snapshots'):
+            return {"error": "No snapshots"}
+        snapshots = self._config_snapshots.get(container.id, {})
+        snapshot = snapshots.get(snapshot_name)
+        if not snapshot:
+            return {"error": f"Snapshot '{snapshot_name}' not found"}
+        current = {
+            "command": container.config.command,
+            "memory_mb": container.config.limits.memory_mb,
+            "pid_limit": container.config.limits.pid_limit,
+            "cpu_shares": container.config.limits.cpu_shares,
+            "labels": dict(container.config.labels),
+        }
+        changes = []
+        for key in snapshot["config"]:
+            old_val = snapshot["config"][key]
+            new_val = current.get(key)
+            if old_val != new_val:
+                changes.append({
+                    "field": key,
+                    "old": old_val,
+                    "new": new_val,
+                })
+        return {
+            "container_id": container.id,
+            "snapshot": snapshot_name,
+            "has_drift": len(changes) > 0,
+            "changes": changes,
+            "change_count": len(changes),
+            "snapshot_time": snapshot["timestamp"],
+        }
+
+    def list_config_snapshots(self, container_id: str) -> Dict[str, Any]:
+        """List all config snapshots for a container."""
+        if not hasattr(self, '_config_snapshots'):
+            return {"snapshots": [], "count": 0}
+        snapshots = self._config_snapshots.get(container_id, {})
+        result = []
+        for name, snap in snapshots.items():
+            result.append({"name": name, "timestamp": snap["timestamp"]})
+        return {"container_id": container_id, "snapshots": result, "count": len(result)}
+
+    def enforce_config_policy(
+        self, container: Container, policy: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Enforce a configuration policy on a container."""
+        violations = []
+        if "max_memory_mb" in policy:
+            if container.config.limits.memory_mb > policy["max_memory_mb"]:
+                violations.append({
+                    "field": "memory_mb",
+                    "value": container.config.limits.memory_mb,
+                    "max": policy["max_memory_mb"],
+                })
+        if "min_memory_mb" in policy:
+            if container.config.limits.memory_mb < policy["min_memory_mb"]:
+                violations.append({
+                    "field": "memory_mb",
+                    "value": container.config.limits.memory_mb,
+                    "min": policy["min_memory_mb"],
+                })
+        if "max_pid_limit" in policy:
+            if container.config.limits.pid_limit > policy["max_pid_limit"]:
+                violations.append({
+                    "field": "pid_limit",
+                    "value": container.config.limits.pid_limit,
+                    "max": policy["max_pid_limit"],
+                })
+        if "required_labels" in policy:
+            for label in policy["required_labels"]:
+                if label not in container.config.labels:
+                    violations.append({
+                        "field": "labels",
+                        "missing": label,
+                    })
+        return {
+            "container_id": container.id,
+            "compliant": len(violations) == 0,
+            "violations": violations,
+            "violation_count": len(violations),
+        }
+
+    # ------------------------------------------------------------------
+    # Access control lists with role-based permissions
+    # ------------------------------------------------------------------
+
+    def create_role(
+        self,
+        name: str,
+        permissions: List[str],
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """Create a role with permissions."""
+        if not hasattr(self, '_roles'):
+            self._roles = {}
+        if name in self._roles:
+            return {"error": f"Role '{name}' already exists"}
+        self._roles[name] = {
+            "name": name,
+            "permissions": permissions,
+            "description": description,
+        }
+        return {"name": name, "permission_count": len(permissions)}
+
+    def create_user(
+        self,
+        name: str,
+        roles: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a user with assigned roles."""
+        import time as _time
+        if not hasattr(self, '_users'):
+            self._users = {}
+        if name in self._users:
+            return {"error": f"User '{name}' already exists"}
+        self._users[name] = {
+            "name": name,
+            "roles": roles or [],
+            "created_at": _time.time(),
+            "last_login": None,
+        }
+        return {"name": name, "roles": roles or []}
+
+    def assign_role(self, user_name: str, role_name: str) -> Dict[str, Any]:
+        """Assign a role to a user."""
+        if not hasattr(self, '_users'):
+            return {"error": "No users"}
+        if not hasattr(self, '_roles'):
+            return {"error": "No roles"}
+        user = self._users.get(user_name)
+        if not user:
+            return {"error": f"User '{user_name}' not found"}
+        if role_name not in self._roles:
+            return {"error": f"Role '{role_name}' not found"}
+        if role_name in user["roles"]:
+            return {"error": "Role already assigned"}
+        user["roles"].append(role_name)
+        return {"user": user_name, "role": role_name, "assigned": True}
+
+    def revoke_role(self, user_name: str, role_name: str) -> Dict[str, Any]:
+        """Revoke a role from a user."""
+        if not hasattr(self, '_users'):
+            return {"error": "No users"}
+        user = self._users.get(user_name)
+        if not user:
+            return {"error": f"User '{user_name}' not found"}
+        if role_name not in user["roles"]:
+            return {"error": "Role not assigned"}
+        user["roles"].remove(role_name)
+        return {"user": user_name, "role": role_name, "revoked": True}
+
+    def check_permission(self, user_name: str, permission: str) -> Dict[str, Any]:
+        """Check if a user has a specific permission."""
+        if not hasattr(self, '_users') or not hasattr(self, '_roles'):
+            return {"allowed": False, "reason": "no_users_or_roles"}
+        user = self._users.get(user_name)
+        if not user:
+            return {"allowed": False, "reason": "user_not_found"}
+        # Check wildcard permissions
+        for role_name in user["roles"]:
+            role = self._roles.get(role_name, {})
+            for perm in role.get("permissions", []):
+                if perm == "*" or perm == permission:
+                    return {"allowed": True, "user": user_name, "permission": permission, "role": role_name}
+                # Check prefix match (e.g., "containers.*" matches "containers.read")
+                if perm.endswith(".*") and permission.startswith(perm[:-2]):
+                    return {"allowed": True, "user": user_name, "permission": permission, "role": role_name}
+        return {"allowed": False, "user": user_name, "permission": permission, "reason": "insufficient_permissions"}
+
+    def get_user_permissions(self, user_name: str) -> Dict[str, Any]:
+        """Get all permissions for a user."""
+        if not hasattr(self, '_users') or not hasattr(self, '_roles'):
+            return {"permissions": [], "roles": []}
+        user = self._users.get(user_name)
+        if not user:
+            return {"error": f"User '{user_name}' not found"}
+        all_permissions = set()
+        for role_name in user["roles"]:
+            role = self._roles.get(role_name, {})
+            all_permissions.update(role.get("permissions", []))
+        return {
+            "user": user_name,
+            "roles": user["roles"],
+            "permissions": sorted(all_permissions),
+            "permission_count": len(all_permissions),
+        }
+
+    def list_users(self) -> Dict[str, Any]:
+        """List all users."""
+        if not hasattr(self, '_users'):
+            return {"users": [], "count": 0}
+        result = []
+        for name, user in self._users.items():
+            result.append({
+                "name": name,
+                "roles": user["roles"],
+                "created_at": user["created_at"],
+            })
+        return {"users": result, "count": len(result)}
+
+    def list_roles(self) -> Dict[str, Any]:
+        """List all roles."""
+        if not hasattr(self, '_roles'):
+            return {"roles": [], "count": 0}
+        result = []
+        for name, role in self._roles.items():
+            result.append({
+                "name": name,
+                "permissions": role["permissions"],
+                "description": role["description"],
+            })
+        return {"roles": result, "count": len(result)}
+
+    def delete_user(self, name: str) -> Dict[str, Any]:
+        """Delete a user."""
+        if not hasattr(self, '_users'):
+            return {"error": "No users"}
+        user = self._users.pop(name, None)
+        if not user:
+            return {"error": f"User '{name}' not found"}
+        return {"deleted": name}
+
+    def delete_role(self, name: str) -> Dict[str, Any]:
+        """Delete a role."""
+        if not hasattr(self, '_roles'):
+            return {"error": "No roles"}
+        role = self._roles.pop(name, None)
+        if not role:
+            return {"error": f"Role '{name}' not found"}
+        return {"deleted": name}
+
+    # ------------------------------------------------------------------
+    # Audit log streaming with real-time alerting
+    # ------------------------------------------------------------------
+
+    def configure_audit_stream(
+        self,
+        name: str,
+        filters: Optional[Dict[str, Any]] = None,
+        alert_channels: Optional[List[str]] = None,
+        severity_threshold: str = "warning",
+    ) -> Dict[str, Any]:
+        """Configure an audit log stream with alerting."""
+        import time as _time
+        if not hasattr(self, '_audit_streams'):
+            self._audit_streams = {}
+        self._audit_streams[name] = {
+            "name": name,
+            "filters": filters or {},
+            "alert_channels": alert_channels or [],
+            "severity_threshold": severity_threshold,
+            "enabled": True,
+            "created_at": _time.time(),
+            "events_matched": 0,
+            "alerts_sent": 0,
+            "last_event_time": None,
+        }
+        return {
+            "name": name,
+            "severity_threshold": severity_threshold,
+            "alert_channels": alert_channels or [],
+        }
+
+    def emit_audit_event(
+        self,
+        stream_name: str,
+        event_type: str,
+        message: str,
+        severity: str = "info",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Emit an event to an audit stream, potentially triggering alerts."""
+        import time as _time
+        if not hasattr(self, '_audit_streams'):
+            return {"error": "No audit streams"}
+        stream = self._audit_streams.get(stream_name)
+        if not stream:
+            return {"error": f"Stream '{stream_name}' not found"}
+        if not stream["enabled"]:
+            return {"error": "Stream disabled"}
+
+        # Check severity threshold
+        severity_order = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
+        threshold = severity_order.get(stream["severity_threshold"], 0)
+        event_severity = severity_order.get(severity, 0)
+
+        stream["events_matched"] += 1
+        stream["last_event_time"] = _time.time()
+
+        alert_triggered = False
+        if event_severity >= threshold:
+            stream["alerts_sent"] += 1
+            alert_triggered = True
+
+        return {
+            "stream": stream_name,
+            "event_type": event_type,
+            "severity": severity,
+            "alert_triggered": alert_triggered,
+            "channels_notified": stream["alert_channels"] if alert_triggered else [],
+        }
+
+    def get_stream_status(self, name: str) -> Dict[str, Any]:
+        """Get audit stream status."""
+        if not hasattr(self, '_audit_streams'):
+            return {"error": "No audit streams"}
+        stream = self._audit_streams.get(name)
+        if not stream:
+            return {"error": f"Stream '{name}' not found"}
+        return {
+            "name": stream["name"],
+            "enabled": stream["enabled"],
+            "severity_threshold": stream["severity_threshold"],
+            "events_matched": stream["events_matched"],
+            "alerts_sent": stream["alerts_sent"],
+            "last_event_time": stream["last_event_time"],
+        }
+
+    def list_audit_streams(self) -> Dict[str, Any]:
+        """List all audit streams."""
+        if not hasattr(self, '_audit_streams'):
+            return {"streams": [], "count": 0}
+        result = []
+        for name, stream in self._audit_streams.items():
+            result.append({
+                "name": name,
+                "enabled": stream["enabled"],
+                "events_matched": stream["events_matched"],
+                "alerts_sent": stream["alerts_sent"],
+            })
+        return {"streams": result, "count": len(result)}
+
+    def disable_audit_stream(self, name: str) -> Dict[str, Any]:
+        """Disable an audit stream."""
+        if not hasattr(self, '_audit_streams'):
+            return {"error": "No audit streams"}
+        stream = self._audit_streams.get(name)
+        if not stream:
+            return {"error": f"Stream '{name}' not found"}
+        stream["enabled"] = False
+        return {"name": name, "enabled": False}
+
+    def enable_audit_stream(self, name: str) -> Dict[str, Any]:
+        """Enable an audit stream."""
+        if not hasattr(self, '_audit_streams'):
+            return {"error": "No audit streams"}
+        stream = self._audit_streams.get(name)
+        if not stream:
+            return {"error": f"Stream '{name}' not found"}
+        stream["enabled"] = True
+        return {"name": name, "enabled": True}
+
+    def delete_audit_stream(self, name: str) -> Dict[str, Any]:
+        """Delete an audit stream."""
+        if not hasattr(self, '_audit_streams'):
+            return {"error": "No audit streams"}
+        stream = self._audit_streams.pop(name, None)
+        if not stream:
+            return {"error": f"Stream '{name}' not found"}
+        return {"deleted": name}
+
+    def get_audit_stream_summary(self) -> Dict[str, Any]:
+        """Get summary of all audit streams."""
+        if not hasattr(self, '_audit_streams'):
+            return {"streams": 0, "total_events": 0, "total_alerts": 0}
+        total_events = sum(s["events_matched"] for s in self._audit_streams.values())
+        total_alerts = sum(s["alerts_sent"] for s in self._audit_streams.values())
+        return {
+            "streams": len(self._audit_streams),
+            "total_events": total_events,
+            "total_alerts": total_alerts,
+        }
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

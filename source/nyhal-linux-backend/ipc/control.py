@@ -1629,6 +1629,78 @@ class ControlService:
             elif op == "delete_profile":
                 self._delete_profile(server, sender_path,
                                 msg.message_id, request)
+            elif op == "register_config_schema":
+                self._register_config_schema(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "validate_config":
+                self._validate_config(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "snapshot_config":
+                self._snapshot_config(server, sender_path,
+                                msg.message_id, request)
+            elif op == "detect_config_drift":
+                self._detect_config_drift(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "list_config_snapshots":
+                self._list_config_snapshots(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "enforce_config_policy":
+                self._enforce_config_policy(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "create_role":
+                self._create_role(server, sender_path,
+                             msg.message_id, request)
+            elif op == "create_rbac_user":
+                self._create_rbac_user(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "assign_role":
+                self._assign_role(server, sender_path,
+                            msg.message_id, request)
+            elif op == "revoke_role":
+                self._revoke_role(server, sender_path,
+                           msg.message_id, request)
+            elif op == "check_permission":
+                self._check_permission(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_user_permissions":
+                self._get_user_permissions(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "list_rbac_users":
+                self._list_rbac_users(server, sender_path,
+                                 msg.message_id)
+            elif op == "list_rbac_roles":
+                self._list_rbac_roles(server, sender_path,
+                                msg.message_id)
+            elif op == "delete_rbac_user":
+                self._delete_rbac_user(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "delete_rbac_role":
+                self._delete_rbac_role(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "configure_audit_stream":
+                self._configure_audit_stream(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "emit_audit_event":
+                self._emit_audit_event(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_stream_status":
+                self._get_stream_status(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "list_audit_streams":
+                self._list_audit_streams(server, sender_path,
+                                    msg.message_id)
+            elif op == "disable_audit_stream":
+                self._disable_audit_stream(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "enable_audit_stream":
+                self._enable_audit_stream(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "delete_audit_stream":
+                self._delete_audit_stream(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "get_audit_stream_summary":
+                self._get_audit_stream_summary(server, sender_path,
+                                          msg.message_id)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -8530,6 +8602,151 @@ class ControlService:
 
     def _delete_profile(self, server, sender_path, call_id, request):
         result = self.container_manager.delete_profile(request['profile_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Config validation/drift handlers
+    # ------------------------------------------------------------------
+
+    def _register_config_schema(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_config_schema(
+            name=request['name'],
+            required_fields=request.get('required_fields'),
+            field_types=request.get('field_types'),
+            constraints=request.get('constraints'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _validate_config(self, server, sender_path, call_id, request):
+        result = self.container_manager.validate_config(
+            schema_name=request['schema_name'],
+            config=request.get('config', {}))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _snapshot_config(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.snapshot_config(c, request.get('name', 'baseline'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detect_config_drift(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.detect_config_drift(c, request.get('name', 'baseline'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_config_snapshots(self, server, sender_path, call_id, request):
+        result = self.container_manager.list_config_snapshots(request['container_id'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _enforce_config_policy(self, server, sender_path, call_id, request):
+        c = self.container_manager.get_container(request['container_id'])
+        if not c:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.enforce_config_policy(c, request.get('policy', {}))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # RBAC handlers
+    # ------------------------------------------------------------------
+
+    def _create_role(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_role(
+            name=request['name'],
+            permissions=request.get('permissions', []),
+            description=request.get('description', ''))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _create_rbac_user(self, server, sender_path, call_id, request):
+        result = self.container_manager.create_user(
+            name=request['name'],
+            roles=request.get('roles'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _assign_role(self, server, sender_path, call_id, request):
+        result = self.container_manager.assign_role(
+            user_name=request['user_name'],
+            role_name=request['role_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _revoke_role(self, server, sender_path, call_id, request):
+        result = self.container_manager.revoke_role(
+            user_name=request['user_name'],
+            role_name=request['role_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_permission(self, server, sender_path, call_id, request):
+        result = self.container_manager.check_permission(
+            user_name=request['user_name'],
+            permission=request['permission'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_user_permissions(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_user_permissions(request['user_name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_rbac_users(self, server, sender_path, call_id):
+        result = self.container_manager.list_users()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_rbac_roles(self, server, sender_path, call_id):
+        result = self.container_manager.list_roles()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_rbac_user(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_user(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_rbac_role(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_role(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # ------------------------------------------------------------------
+    # Audit stream handlers
+    # ------------------------------------------------------------------
+
+    def _configure_audit_stream(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_audit_stream(
+            name=request['name'],
+            filters=request.get('filters'),
+            alert_channels=request.get('alert_channels'),
+            severity_threshold=request.get('severity_threshold', 'warning'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _emit_audit_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.emit_audit_event(
+            stream_name=request['stream_name'],
+            event_type=request['event_type'],
+            message=request.get('message', ''),
+            severity=request.get('severity', 'info'))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_stream_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_stream_status(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_audit_streams(self, server, sender_path, call_id):
+        result = self.container_manager.list_audit_streams()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _disable_audit_stream(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_audit_stream(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _enable_audit_stream(self, server, sender_path, call_id, request):
+        result = self.container_manager.enable_audit_stream(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_audit_stream(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_audit_stream(request['name'])
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_audit_stream_summary(self, server, sender_path, call_id):
+        result = self.container_manager.get_audit_stream_summary()
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
     def _save_state(self) -> None:
