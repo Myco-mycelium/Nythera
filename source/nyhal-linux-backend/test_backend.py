@@ -36626,6 +36626,11 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCgroupV2))
     suite.addTests(loader.loadTestsFromTestCase(TestHugepages))
     suite.addTests(loader.loadTestsFromTestCase(TestImageAudit))
+    suite.addTests(loader.loadTestsFromTestCase(TestUserNamespaces))
+    suite.addTests(loader.loadTestsFromTestCase(TestMountNamespaces))
+    suite.addTests(loader.loadTestsFromTestCase(TestSELinux))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventStreaming))
+    suite.addTests(loader.loadTestsFromTestCase(TestCVEPatching))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
@@ -36864,6 +36869,441 @@ class TestImageAudit(unittest.TestCase):
         m = self._mgr()
         summary = m.get_image_audit_summary("never-audited")
         self.assertEqual(summary['audits'], 0)
+
+
+
+class TestUserNamespaces(unittest.TestCase):
+    """Tests for user namespace isolation."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_user_namespace(self):
+        m = self._mgr()
+        r = m.create_user_namespace("uns1", size=10000)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['size'], 10000)
+
+    def test_create_duplicate(self):
+        m = self._mgr()
+        m.create_user_namespace("uns-dup")
+        r = m.create_user_namespace("uns-dup")
+        self.assertIn('error', r)
+
+    def test_attach_to_namespace(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ns-attach", command=["sleep", "10"]))
+        m.create_user_namespace("uns-att")
+        r = m.attach_to_user_namespace("uns-att", c.id, uid=1000, gid=1000)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['mapped_uid'], 1000)
+
+    def test_get_namespace(self):
+        m = self._mgr()
+        m.create_user_namespace("uns-get")
+        r = m.get_user_namespace("uns-get")
+        self.assertTrue(r['ok'])
+        self.assertIn('container_count', r)
+
+    def test_list_namespaces(self):
+        m = self._mgr()
+        m.create_user_namespace("uns-ls1")
+        m.create_user_namespace("uns-ls2")
+        r = m.list_user_namespaces()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_delete_namespace(self):
+        m = self._mgr()
+        m.create_user_namespace("uns-del")
+        r = m.delete_user_namespace("uns-del")
+        self.assertTrue(r['ok'])
+
+    def test_delete_with_containers(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ns-del", command=["sleep", "10"]))
+        m.create_user_namespace("uns-del2")
+        m.attach_to_user_namespace("uns-del2", c.id)
+        r = m.delete_user_namespace("uns-del2")
+        self.assertIn('error', r)
+
+    def test_get_nonexistent(self):
+        m = self._mgr()
+        r = m.get_user_namespace("nonexistent")
+        self.assertIn('error', r)
+
+
+class TestMountNamespaces(unittest.TestCase):
+    """Tests for mount namespace management."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_mount_namespace(self):
+        m = self._mgr()
+        r = m.create_mount_namespace("mnt1", propagation="shared")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['propagation'], "shared")
+
+    def test_add_mount(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-add")
+        r = m.add_mount("mnt-add", "/host/data", "/container/data")
+        self.assertTrue(r['ok'])
+
+    def test_add_volume_mount(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-vol")
+        r = m.add_mount("mnt-vol", "/dev/sdb1", "/data", mount_type="ext4", options=["rw", "noatime"])
+        self.assertTrue(r['ok'])
+
+    def test_remove_mount(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-rm")
+        m.add_mount("mnt-rm", "/src", "/dst")
+        r = m.remove_mount("mnt-rm", "/dst")
+        self.assertTrue(r['ok'])
+
+    def test_remove_nonexistent_mount(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-rm2")
+        r = m.remove_mount("mnt-rm2", "/nonexistent")
+        self.assertIn('error', r)
+
+    def test_get_mount_namespace(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-get")
+        m.add_mount("mnt-get", "/a", "/b")
+        r = m.get_mount_namespace("mnt-get")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['mount_count'], 1)
+
+    def test_attach_to_mount_ns(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="mnt-att", command=["sleep", "10"]))
+        m.create_mount_namespace("mnt-att")
+        r = m.attach_to_mount_namespace("mnt-att", c.id)
+        self.assertTrue(r['ok'])
+
+    def test_list_mount_namespaces(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-ls1")
+        m.create_mount_namespace("mnt-ls2")
+        r = m.list_mount_namespaces()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_delete_mount_namespace(self):
+        m = self._mgr()
+        m.create_mount_namespace("mnt-del")
+        r = m.delete_mount_namespace("mnt-del")
+        self.assertTrue(r['ok'])
+
+
+class TestSELinux(unittest.TestCase):
+    """Tests for SELinux policy enforcement."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_policy(self):
+        m = self._mgr()
+        r = m.create_selinux_policy("pol1")
+        self.assertTrue(r['ok'])
+        self.assertIn('label', r)
+
+    def test_create_duplicate(self):
+        m = self._mgr()
+        m.create_selinux_policy("pol-dup")
+        r = m.create_selinux_policy("pol-dup")
+        self.assertIn('error', r)
+
+    def test_add_rule(self):
+        m = self._mgr()
+        m.create_selinux_policy("pol-rule")
+        r = m.add_selinux_rule("pol-rule", "container_t", "file_t", "file", ["read", "write"])
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['rule_count'], 1)
+
+    def test_enforce(self):
+        m = self._mgr()
+        m.create_selinux_policy("pol-enf")
+        r = m.enforce_selinux_policy("pol-enf")
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['enforced'])
+
+    def test_apply_context(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="se-ctx", command=["sleep", "10"]))
+        m.create_selinux_policy("pol-ctx")
+        r = m.apply_selinux_context("pol-ctx", c.id)
+        self.assertTrue(r['ok'])
+        self.assertIn('context', r)
+
+    def test_get_context(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="se-gctx", command=["sleep", "10"]))
+        m.create_selinux_policy("pol-gctx")
+        m.apply_selinux_context("pol-gctx", c.id)
+        r = m.get_selinux_context(c.id)
+        self.assertTrue(r['ok'])
+
+    def test_check_compliance(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="se-comp", command=["sleep", "10"]))
+        m.create_selinux_policy("pol-comp")
+        m.enforce_selinux_policy("pol-comp")
+        m.apply_selinux_context("pol-comp", c.id)
+        r = m.check_selinux_compliance(c.id)
+        self.assertTrue(r['compliant'])
+
+    def test_check_noncompliant(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="se-nonc", command=["sleep", "10"]))
+        r = m.check_selinux_compliance(c.id)
+        self.assertFalse(r['compliant'])
+
+    def test_list_policies(self):
+        m = self._mgr()
+        m.create_selinux_policy("pol-ls1")
+        m.create_selinux_policy("pol-ls2")
+        r = m.list_selinux_policies()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_delete_policy(self):
+        m = self._mgr()
+        m.create_selinux_policy("pol-del")
+        r = m.delete_selinux_policy("pol-del")
+        self.assertTrue(r['ok'])
+
+
+class TestEventStreaming(unittest.TestCase):
+    """Tests for container event streaming and history."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_emit_event(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-emit", command=["sleep", "10"]))
+        r = m.emit_container_event(c.id, "started", "Container started")
+        self.assertTrue(r['ok'])
+        self.assertIn('event_id', r)
+
+    def test_subscribe_and_receive(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-sub", command=["sleep", "10"]))
+        sub = m.subscribe_to_events()
+        m.emit_container_event(c.id, "log", "hello world")
+        buf = m.get_event_buffer(sub['subscription_id'])
+        self.assertEqual(buf['count'], 1)
+        self.assertEqual(buf['events'][0]['event_type'], 'log')
+
+    def test_subscribe_filtered_by_type(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-flt", command=["sleep", "10"]))
+        sub = m.subscribe_to_events(event_types=["error"])
+        m.emit_container_event(c.id, "info", "ignored")
+        m.emit_container_event(c.id, "error", "captured")
+        buf = m.get_event_buffer(sub['subscription_id'])
+        self.assertEqual(buf['count'], 1)
+        self.assertEqual(buf['events'][0]['event_type'], 'error')
+
+    def test_subscribe_filtered_by_severity(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-sev", command=["sleep", "10"]))
+        sub = m.subscribe_to_events(min_severity="warning")
+        m.emit_container_event(c.id, "info", "low", severity="info")
+        m.emit_container_event(c.id, "alert", "high", severity="critical")
+        buf = m.get_event_buffer(sub['subscription_id'])
+        self.assertEqual(buf['count'], 1)
+        self.assertEqual(buf['events'][0]['message'], 'high')
+
+    def test_unsubscribe(self):
+        m = self._mgr()
+        sub = m.subscribe_to_events(label="temp")
+        r = m.unsubscribe_from_events(sub['subscription_id'])
+        self.assertTrue(r['ok'])
+
+    def test_list_subscriptions(self):
+        m = self._mgr()
+        m.subscribe_to_events(label="s1")
+        m.subscribe_to_events(label="s2")
+        r = m.list_event_subscriptions()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_query_history(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-hist", command=["sleep", "10"]))
+        m.emit_container_event(c.id, "started", "started")
+        m.emit_container_event(c.id, "stopped", "stopped")
+        r = m.query_event_history(container_id=c.id)
+        self.assertEqual(r['count'], 2)
+
+    def test_query_history_filtered(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-hf", command=["sleep", "10"]))
+        m.emit_container_event(c.id, "started", "started")
+        m.emit_container_event(c.id, "error", "failed")
+        r = m.query_event_history(event_type="error")
+        self.assertEqual(r['count'], 1)
+
+    def test_event_stats(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-stat", command=["sleep", "10"]))
+        m.emit_container_event(c.id, "started", "s", severity="info")
+        m.emit_container_event(c.id, "error", "e", severity="critical")
+        r = m.get_event_stats()
+        self.assertEqual(r['total_events'], 2)
+        self.assertIn('info', r['by_severity'])
+
+    def test_set_retention(self):
+        m = self._mgr()
+        r = m.set_event_retention(max_events=50)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['max_events'], 50)
+
+    def test_prune_history(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="ev-prune", command=["sleep", "10"]))
+        m.emit_container_event(c.id, "test", "test")
+        r = m.prune_event_history(max_age_seconds=0.0)
+        self.assertEqual(r['pruned'], 1)
+        self.assertEqual(r['remaining'], 0)
+
+
+
+class TestCVEPatching(unittest.TestCase):
+    """Tests for image CVE scanning and automated patching."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_scan_cves(self):
+        m = self._mgr()
+        r = m.scan_image_cves("nginx:latest")
+        self.assertTrue(r['ok'])
+        self.assertIn('vulnerabilities_found', r)
+        self.assertIn('scan_id', r)
+
+    def test_scan_with_severity_filter(self):
+        m = self._mgr()
+        r = m.scan_image_cves("nginx:latest", severity_filter="critical")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['low'], 0)
+        self.assertEqual(r['medium'], 0)
+        self.assertEqual(r['high'], 0)
+
+    def test_get_scan_results(self):
+        m = self._mgr()
+        r = m.scan_image_cves("node:18")
+        results = m.get_cve_scan_results(r['scan_id'])
+        self.assertTrue(results['ok'])
+        self.assertIn('vulnerabilities', results)
+
+    def test_get_scan_nonexistent(self):
+        m = self._mgr()
+        r = m.get_cve_scan_results("nonexistent")
+        self.assertIn('error', r)
+
+    def test_check_base_image_updates(self):
+        m = self._mgr()
+        r = m.check_base_image_updates("python:3.11")
+        self.assertTrue(r['ok'])
+        self.assertIn('has_update', r)
+        self.assertIn('current_version', r)
+
+    def test_create_patch_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("nginx:latest", auto_apply=False)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['status'], 'pending')
+
+    def test_auto_apply_patch_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("nginx:latest", auto_apply=True)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['status'], 'applying')
+
+    def test_apply_pending_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("node:18")
+        a = m.apply_patch_plan(r['plan_id'])
+        self.assertTrue(a['ok'])
+        self.assertEqual(a['status'], 'completed')
+
+    def test_apply_already_applied(self):
+        m = self._mgr()
+        r = m.create_patch_plan("node:18")
+        m.apply_patch_plan(r['plan_id'])
+        r2 = m.apply_patch_plan(r['plan_id'])
+        self.assertIn('error', r2)
+
+    def test_rollback_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("node:18")
+        m.apply_patch_plan(r['plan_id'])
+        rb = m.rollback_patch_plan(r['plan_id'])
+        self.assertTrue(rb['ok'])
+        self.assertEqual(rb['status'], 'rolled_back')
+
+    def test_rollback_pending_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("node:18")
+        rb = m.rollback_patch_plan(r['plan_id'])
+        self.assertIn('error', rb)
+
+    def test_list_patch_plans(self):
+        m = self._mgr()
+        m.create_patch_plan("img-a")
+        m.create_patch_plan("img-b")
+        r = m.list_patch_plans()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_list_patch_plans_filtered(self):
+        m = self._mgr()
+        m.create_patch_plan("filt-a")
+        m.create_patch_plan("filt-b")
+        r = m.list_patch_plans(image_name="filt-a")
+        self.assertGreaterEqual(r['count'], 1)
+        for p in r['plans']:
+            self.assertEqual(p['image_name'], 'filt-a')
+
+    def test_delete_patch_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("nginx:latest")
+        d = m.delete_patch_plan(r['plan_id'])
+        self.assertTrue(d['ok'])
+
+    def test_get_patch_plan(self):
+        m = self._mgr()
+        r = m.create_patch_plan("nginx:latest")
+        p = m.get_patch_plan(r['plan_id'])
+        self.assertTrue(p['ok'])
+        self.assertIn('patches', p)
+
+    def test_apply_nonexistent_plan(self):
+        m = self._mgr()
+        r = m.apply_patch_plan("nonexistent")
+        self.assertIn('error', r)
 
 
 if __name__ == "__main__":
