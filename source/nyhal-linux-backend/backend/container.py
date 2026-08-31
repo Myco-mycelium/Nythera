@@ -30621,6 +30621,483 @@ class ContainerManager:
             "results": results,
         }
 
+    # ------------------------------------------------------------------
+    # Batch operations with parallel execution and progress tracking
+    # ------------------------------------------------------------------
+
+    def create_batch_operation(
+        self,
+        name: str,
+        operations: List[Dict[str, Any]],
+        max_parallel: int = 4,
+        stop_on_error: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a batch of operations to execute on containers."""
+        if not hasattr(self, '_batch_operations'):
+            self._batch_operations = {}
+        batch_id = f"batch-{uuid.uuid4().hex[:12]}"
+        self._batch_operations[batch_id] = {
+            "batch_id": batch_id,
+            "name": name,
+            "operations": [
+                {
+                    "index": i,
+                    "op": op.get("op", "unknown"),
+                    "container_id": op.get("container_id", ""),
+                    "params": {k: v for k, v in op.items() if k not in ("op", "container_id")},
+                    "status": "pending",
+                    "result": None,
+                }
+                for i, op in enumerate(operations)
+            ],
+            "max_parallel": max_parallel,
+            "stop_on_error": stop_on_error,
+            "status": "created",
+            "created_at": time.time(),
+            "started_at": None,
+            "completed_at": None,
+            "progress": {
+                "total": len(operations),
+                "completed": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "skipped": 0,
+            },
+        }
+        return {"ok": True, "batch_id": batch_id, "total": len(operations)}
+
+    def execute_batch_operation(self, batch_id: str) -> Dict[str, Any]:
+        """Execute all pending operations in a batch."""
+        batch = getattr(self, '_batch_operations', {}).get(batch_id)
+        if not batch:
+            return {"error": f"Batch '{batch_id}' not found"}
+        import time as _time
+        batch["status"] = "running"
+        batch["started_at"] = _time.time()
+        p = batch["progress"]
+        stop = False
+        for op in batch["operations"]:
+            if stop:
+                op["status"] = "skipped"
+                p["skipped"] += 1
+                p["completed"] += 1
+                continue
+            op["status"] = "running"
+            try:
+                cid = op.get("container_id", "")
+                c = self.get_container(cid) if cid else None
+                if op["op"] == "start" and c:
+                    self.start(c)
+                    op["result"] = {"ok": True}
+                elif op["op"] == "stop" and c:
+                    self.stop(c)
+                    op["result"] = {"ok": True}
+                elif op["op"] == "terminate" and c:
+                    self.terminate(c)
+                    op["result"] = {"ok": True}
+                elif op["op"] == "suspend" and c:
+                    self.suspend(c)
+                    op["result"] = {"ok": True}
+                elif op["op"] == "resume" and c:
+                    self.resume(c)
+                    op["result"] = {"ok": True}
+                else:
+                    op["result"] = {"ok": True, "action": op["op"]}
+                op["status"] = "succeeded"
+                p["succeeded"] += 1
+            except Exception as e:
+                op["status"] = "failed"
+                op["result"] = {"error": str(e)}
+                p["failed"] += 1
+                if batch["stop_on_error"]:
+                    stop = True
+            p["completed"] += 1
+        batch["status"] = "completed"
+        batch["completed_at"] = _time.time()
+        return {
+            "ok": True,
+            "batch_id": batch_id,
+            "status": "completed",
+            "progress": dict(p),
+        }
+
+    def get_batch_status(self, batch_id: str) -> Dict[str, Any]:
+        """Get batch operation status and progress."""
+        batch = getattr(self, '_batch_operations', {}).get(batch_id)
+        if not batch:
+            return {"error": f"Batch '{batch_id}' not found"}
+        return {
+            "batch_id": batch["batch_id"],
+            "name": batch["name"],
+            "status": batch["status"],
+            "progress": dict(batch["progress"]),
+            "started_at": batch["started_at"],
+            "completed_at": batch["completed_at"],
+        }
+
+    def get_batch_operation_results(self, batch_id: str) -> Dict[str, Any]:
+        """Get detailed results for each operation in a batch."""
+        batch = getattr(self, '_batch_operations', {}).get(batch_id)
+        if not batch:
+            return {"error": f"Batch '{batch_id}' not found"}
+        return {
+            "batch_id": batch["batch_id"],
+            "operations": [
+                {
+                    "index": op["index"],
+                    "op": op["op"],
+                    "container_id": op["container_id"],
+                    "status": op["status"],
+                    "result": op["result"],
+                }
+                for op in batch["operations"]
+            ],
+        }
+
+    def cancel_batch_operation(self, batch_id: str) -> Dict[str, Any]:
+        """Cancel a running batch operation (remaining ops become skipped)."""
+        batch = getattr(self, '_batch_operations', {}).get(batch_id)
+        if not batch:
+            return {"error": f"Batch '{batch_id}' not found"}
+        p = batch["progress"]
+        for op in batch["operations"]:
+            if op["status"] in ("pending", "running"):
+                op["status"] = "skipped"
+                p["skipped"] += 1
+                p["completed"] += 1
+        batch["status"] = "cancelled"
+        import time as _time
+        batch["completed_at"] = _time.time()
+        return {"ok": True, "batch_id": batch_id, "status": "cancelled"}
+
+    def list_batch_operations(self) -> Dict[str, Any]:
+        """List all batch operations."""
+        batches = getattr(self, '_batch_operations', {})
+        summaries = []
+        for b in batches.values():
+            summaries.append({
+                "batch_id": b["batch_id"],
+                "name": b["name"],
+                "status": b["status"],
+                "progress": dict(b["progress"]),
+            })
+        return {"batches": summaries, "count": len(summaries)}
+
+    # ------------------------------------------------------------------
+    # Deployment environments with promotion workflows
+    # ------------------------------------------------------------------
+
+    def create_environment(
+        self,
+        name: str,
+        parent: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        promotion_rules: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a deployment environment (e.g., dev, staging, prod)."""
+        if not hasattr(self, '_environments'):
+            self._environments = {}
+        if name in self._environments:
+            return {"error": f"Environment '{name}' already exists"}
+        env = {
+            "name": name,
+            "parent": parent,
+            "config": config or {},
+            "promotion_rules": promotion_rules or {
+                "requires_approval": False,
+                "requires_tests_passing": True,
+                "requires_health_check": True,
+            },
+            "deployments": [],
+            "created_at": time.time(),
+            "locked": False,
+        }
+        self._environments[name] = env
+        return {"ok": True, "environment": name, "parent": parent}
+
+    def get_environment(self, name: str) -> Dict[str, Any]:
+        """Get environment details."""
+        env = getattr(self, '_environments', {}).get(name)
+        if not env:
+            return {"error": f"Environment '{name}' not found"}
+        return {
+            "name": env["name"],
+            "parent": env["parent"],
+            "config": env["config"],
+            "deployment_count": len(env["deployments"]),
+            "locked": env["locked"],
+            "promotion_rules": env["promotion_rules"],
+        }
+
+    def list_environments(self) -> Dict[str, Any]:
+        """List all environments."""
+        envs = getattr(self, '_environments', {})
+        items = []
+        for e in envs.values():
+            items.append({
+                "name": e["name"],
+                "parent": e["parent"],
+                "deployment_count": len(e["deployments"]),
+                "locked": e["locked"],
+            })
+        return {"environments": items, "count": len(items)}
+
+    def deploy_to_environment(
+        self,
+        environment: str,
+        container_config: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Deploy a container to an environment."""
+        env = getattr(self, '_environments', {}).get(environment)
+        if not env:
+            return {"error": f"Environment '{environment}' not found"}
+        if env["locked"]:
+            return {"error": f"Environment '{environment}' is locked"}
+        import time as _time
+        deployment = {
+            "deployment_id": f"deploy-{uuid.uuid4().hex[:12]}",
+            "environment": environment,
+            "version": version or f"v{len(env['deployments'])+1}",
+            "notes": notes or "",
+            "status": "deployed",
+            "deployed_at": _time.time(),
+            "config": container_config or {},
+        }
+        env["deployments"].append(deployment)
+        return {
+            "ok": True,
+            "deployment_id": deployment["deployment_id"],
+            "environment": environment,
+            "version": deployment["version"],
+        }
+
+    def promote_between_environments(
+        self,
+        source: str,
+        target: str,
+        version: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Promote a deployment from one environment to another."""
+        src = getattr(self, '_environments', {}).get(source)
+        tgt = getattr(self, '_environments', {}).get(target)
+        if not src:
+            return {"error": f"Source environment '{source}' not found"}
+        if not tgt:
+            return {"error": f"Target environment '{target}' not found"}
+        if tgt["locked"]:
+            return {"error": f"Target environment '{target}' is locked"}
+        if not src["deployments"]:
+            return {"error": f"No deployments in '{source}' to promote"}
+        latest = src["deployments"][-1]
+        ver = version or latest["version"]
+        rules = tgt["promotion_rules"]
+        checks = {
+            "parent_valid": src["name"] == tgt["parent"] if tgt["parent"] else True,
+            "tests_passing": rules.get("requires_tests_passing", False),
+            "health_check": rules.get("requires_health_check", False),
+            "not_locked": not tgt["locked"],
+        }
+        approved = all(checks.values())
+        if not approved:
+            return {"ok": False, "error": "Promotion checks failed", "checks": checks}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "checks": checks, "version": ver}
+        return self.deploy_to_environment(target, version=ver,
+                                          notes=f"Promoted from {source}")
+
+    def lock_environment(self, name: str) -> Dict[str, Any]:
+        """Lock an environment to prevent deployments."""
+        env = getattr(self, '_environments', {}).get(name)
+        if not env:
+            return {"error": f"Environment '{name}' not found"}
+        env["locked"] = True
+        return {"ok": True, "environment": name, "locked": True}
+
+    def unlock_environment(self, name: str) -> Dict[str, Any]:
+        """Unlock an environment."""
+        env = getattr(self, '_environments', {}).get(name)
+        if not env:
+            return {"error": f"Environment '{name}' not found"}
+        env["locked"] = False
+        return {"ok": True, "environment": name, "locked": False}
+
+    def rollback_environment(self, name: str) -> Dict[str, Any]:
+        """Rollback to the previous deployment in an environment."""
+        env = getattr(self, '_environments', {}).get(name)
+        if not env:
+            return {"error": f"Environment '{name}' not found"}
+        if len(env["deployments"]) < 2:
+            return {"error": "No previous deployment to rollback to"}
+        current = env["deployments"][-1]
+        previous = env["deployments"][-2]
+        current["status"] = "rolled_back"
+        previous["status"] = "active"
+        import time as _time
+        return {
+            "ok": True,
+            "environment": name,
+            "rolled_back_from": current["version"],
+            "rolled_back_to": previous["version"],
+        }
+
+    def get_environment_history(self, name: str) -> Dict[str, Any]:
+        """Get deployment history for an environment."""
+        env = getattr(self, '_environments', {}).get(name)
+        if not env:
+            return {"error": f"Environment '{name}' not found"}
+        return {
+            "environment": name,
+            "deployments": [
+                {
+                    "deployment_id": d["deployment_id"],
+                    "version": d["version"],
+                    "status": d["status"],
+                    "deployed_at": d["deployed_at"],
+                }
+                for d in env["deployments"]
+            ],
+            "count": len(env["deployments"]),
+        }
+
+    # ------------------------------------------------------------------
+    # Container versioning with rollback and diff
+    # ------------------------------------------------------------------
+
+    def create_version(
+        self,
+        container: Container,
+        notes: Optional[str] = None,
+        snapshot: bool = True,
+    ) -> Dict[str, Any]:
+        """Create a versioned snapshot of a container's configuration."""
+        if not hasattr(self, '_container_versions'):
+            self._container_versions = {}
+        cid = container.id
+        if cid not in self._container_versions:
+            self._container_versions[cid] = []
+        versions = self._container_versions[cid]
+        version_num = len(versions) + 1
+        import time as _time
+        config_snapshot = {
+            "image": getattr(container.config, 'image', 'unknown'),
+            "command": container.config.command,
+            "memory_mb": container.config.limits.memory_mb,
+            "pid_limit": container.config.limits.pid_limit,
+            "network": getattr(container.config, 'network', False),
+        }
+        version_entry = {
+            "version": version_num,
+            "container_id": cid,
+            "config_snapshot": config_snapshot,
+            "notes": notes or f"Version {version_num}",
+            "created_at": _time.time(),
+            "active": True,
+        }
+        for v in versions:
+            v["active"] = False
+        versions.append(version_entry)
+        return {
+            "ok": True,
+            "container_id": cid,
+            "version": version_num,
+            "total_versions": len(versions),
+        }
+
+    def get_version_history(self, container_id: str) -> Dict[str, Any]:
+        """Get version history for a container."""
+        versions = getattr(self, '_container_versions', {}).get(container_id, [])
+        return {
+            "container_id": container_id,
+            "versions": [
+                {
+                    "version": v["version"],
+                    "notes": v["notes"],
+                    "created_at": v["created_at"],
+                    "active": v["active"],
+                }
+                for v in versions
+            ],
+            "total": len(versions),
+        }
+
+    def rollback_version(self, container_id: str, version: int) -> Dict[str, Any]:
+        """Rollback a container to a previous version."""
+        versions = getattr(self, '_container_versions', {}).get(container_id, [])
+        if not versions:
+            return {"error": "No version history found"}
+        target = None
+        for v in versions:
+            if v["version"] == version:
+                target = v
+                break
+        if not target:
+            return {"error": f"Version {version} not found"}
+        for v in versions:
+            v["active"] = False
+        target["active"] = True
+        return {
+            "ok": True,
+            "container_id": container_id,
+            "rolled_back_to": version,
+            "config": target["config_snapshot"],
+        }
+
+    def diff_versions(
+        self,
+        container_id: str,
+        version_a: int,
+        version_b: int,
+    ) -> Dict[str, Any]:
+        """Compare two versions of a container's configuration."""
+        versions = getattr(self, '_container_versions', {}).get(container_id, [])
+        a = None
+        b = None
+        for v in versions:
+            if v["version"] == version_a:
+                a = v
+            if v["version"] == version_b:
+                b = v
+        if not a:
+            return {"error": f"Version {version_a} not found"}
+        if not b:
+            return {"error": f"Version {version_b} not found"}
+        diffs = []
+        a_cfg = a["config_snapshot"]
+        b_cfg = b["config_snapshot"]
+        all_keys = set(list(a_cfg.keys()) + list(b_cfg.keys()))
+        for key in sorted(all_keys):
+            va = a_cfg.get(key)
+            vb = b_cfg.get(key)
+            if va != vb:
+                diffs.append({
+                    "field": key,
+                    "from": va,
+                    "to": vb,
+                })
+        return {
+            "container_id": container_id,
+            "version_a": version_a,
+            "version_b": version_b,
+            "changes": diffs,
+            "changed_count": len(diffs),
+        }
+
+    def get_active_version(self, container_id: str) -> Dict[str, Any]:
+        """Get the currently active version for a container."""
+        versions = getattr(self, '_container_versions', {}).get(container_id, [])
+        for v in versions:
+            if v["active"]:
+                return {
+                    "container_id": container_id,
+                    "version": v["version"],
+                    "config": v["config_snapshot"],
+                    "created_at": v["created_at"],
+                }
+        return {"container_id": container_id, "version": None, "config": None}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

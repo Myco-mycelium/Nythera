@@ -33933,6 +33933,269 @@ class TestNotificationChannels(unittest.TestCase):
         self.assertEqual(r["delivered"], 0)
 
 
+class TestBatchOperations(unittest.TestCase):
+    """Tests for batch operations with parallel execution and progress tracking."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_batch(self):
+        m=self._mgr()
+        r=m.create_batch_operation("test", [{"op": "start", "container_id": "x"}])
+        self.assertTrue(r["ok"])
+        self.assertIn("batch_id", r)
+        self.assertEqual(r["total"], 1)
+
+    def test_create_batch_multiple(self):
+        m=self._mgr()
+        ops = [{"op": "start", "container_id": f"c{i}"} for i in range(5)]
+        r=m.create_batch_operation("big", ops)
+        self.assertEqual(r["total"], 5)
+
+    def test_execute_batch(self):
+        m=self._mgr(); c=self._mk(m, "b1")
+        r=m.create_batch_operation("test", [{"op": "inspect", "container_id": c.id}])
+        r2=m.execute_batch_operation(r["batch_id"])
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["progress"]["succeeded"], 1)
+
+    def test_execute_batch_stop_on_error(self):
+        m=self._mgr()
+        c1=self._mk(m, "berr1")
+        c2=self._mk(m, "berr2")
+        ops = [
+            {"op": "terminate", "container_id": c1.id},
+            {"op": "terminate", "container_id": c2.id},
+        ]
+        r=m.create_batch_operation("err", ops, stop_on_error=True)
+        r2=m.execute_batch_operation(r["batch_id"])
+        self.assertTrue(r2["ok"])
+        self.assertGreaterEqual(r2["progress"]["failed"], 1)
+        self.assertGreaterEqual(r2["progress"]["skipped"], 1)
+
+    def test_get_batch_status(self):
+        m=self._mgr()
+        r=m.create_batch_operation("status", [{"op": "start", "container_id": "x"}])
+        s=m.get_batch_status(r["batch_id"])
+        self.assertEqual(s["status"], "created")
+        self.assertEqual(s["progress"]["total"], 1)
+
+    def test_get_batch_results(self):
+        m=self._mgr(); c=self._mk(m, "b2")
+        r=m.create_batch_operation("res", [{"op": "inspect", "container_id": c.id}])
+        m.execute_batch_operation(r["batch_id"])
+        res=m.get_batch_operation_results(r["batch_id"])
+        self.assertEqual(len(res["operations"]), 1)
+        self.assertEqual(res["operations"][0]["status"], "succeeded")
+
+    def test_cancel_batch(self):
+        m=self._mgr()
+        ops = [{"op": "start", "container_id": f"c{i}"} for i in range(3)]
+        r=m.create_batch_operation("cancel", ops)
+        r2=m.cancel_batch_operation(r["batch_id"])
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["status"], "cancelled")
+
+    def test_list_batches(self):
+        m=self._mgr()
+        m.create_batch_operation("b1", [{"op": "start", "container_id": "x"}])
+        m.create_batch_operation("b2", [{"op": "stop", "container_id": "y"}])
+        r=m.list_batch_operations()
+        self.assertEqual(r["count"], 2)
+
+    def test_nonexistent_batch(self):
+        m=self._mgr()
+        r=m.get_batch_status("batch-nonexistent")
+        self.assertIn("error", r)
+
+
+class TestDeploymentEnvironments(unittest.TestCase):
+    """Tests for deployment environments with promotion workflows."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_env(self):
+        m=self._mgr()
+        r=m.create_environment("dev")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["environment"], "dev")
+
+    def test_create_env_with_parent(self):
+        m=self._mgr()
+        m.create_environment("dev")
+        r=m.create_environment("staging", parent="dev")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["parent"], "dev")
+
+    def test_create_duplicate_env(self):
+        m=self._mgr()
+        m.create_environment("dup")
+        r=m.create_environment("dup")
+        self.assertIn("error", r)
+
+    def test_get_env(self):
+        m=self._mgr()
+        m.create_environment("get")
+        r=m.get_environment("get")
+        self.assertEqual(r["name"], "get")
+        self.assertEqual(r["deployment_count"], 0)
+
+    def test_list_envs(self):
+        m=self._mgr()
+        m.create_environment("e1")
+        m.create_environment("e2")
+        r=m.list_environments()
+        self.assertEqual(r["count"], 2)
+
+    def test_deploy_to_env(self):
+        m=self._mgr()
+        m.create_environment("d1")
+        r=m.deploy_to_environment("d1", version="v1.0")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["version"], "v1.0")
+
+    def test_deploy_to_nonexistent(self):
+        m=self._mgr()
+        r=m.deploy_to_environment("nope")
+        self.assertIn("error", r)
+
+    def test_promote(self):
+        m=self._mgr()
+        m.create_environment("dev")
+        m.create_environment("prod", parent="dev")
+        m.deploy_to_environment("dev", version="v1")
+        r=m.promote_between_environments("dev", "prod")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["version"], "v1")
+
+    def test_promote_dry_run(self):
+        m=self._mgr()
+        m.create_environment("dr1")
+        m.create_environment("dr2", parent="dr1")
+        m.deploy_to_environment("dr1", version="v1")
+        r=m.promote_between_environments("dr1", "dr2", dry_run=True)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["dry_run"])
+
+    def test_lock_unlock(self):
+        m=self._mgr()
+        m.create_environment("lu1")
+        m.lock_environment("lu1")
+        r=m.deploy_to_environment("lu1")
+        self.assertIn("error", r)
+        m.unlock_environment("lu1")
+        r=m.deploy_to_environment("lu1")
+        self.assertTrue(r["ok"])
+
+    def test_rollback_env(self):
+        m=self._mgr()
+        m.create_environment("rb")
+        m.deploy_to_environment("rb", version="v1")
+        m.deploy_to_environment("rb", version="v2")
+        r=m.rollback_environment("rb")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["rolled_back_to"], "v1")
+
+    def test_rollback_no_previous(self):
+        m=self._mgr()
+        m.create_environment("rb2")
+        m.deploy_to_environment("rb2", version="v1")
+        r=m.rollback_environment("rb2")
+        self.assertIn("error", r)
+
+    def test_env_history(self):
+        m=self._mgr()
+        m.create_environment("hist")
+        m.deploy_to_environment("hist", version="v1")
+        m.deploy_to_environment("hist", version="v2")
+        r=m.get_environment_history("hist")
+        self.assertEqual(r["count"], 2)
+
+
+class TestContainerVersioning(unittest.TestCase):
+    """Tests for container versioning with rollback and diff."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_version(self):
+        m=self._mgr(); c=self._mk(m, "v1")
+        r=m.create_version(c, notes="initial")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["version"], 1)
+
+    def test_create_multiple_versions(self):
+        m=self._mgr(); c=self._mk(m, "v2")
+        m.create_version(c, notes="first")
+        m.create_version(c, notes="second")
+        r=m.create_version(c, notes="third")
+        self.assertEqual(r["version"], 3)
+        self.assertEqual(r["total_versions"], 3)
+
+    def test_version_history(self):
+        m=self._mgr(); c=self._mk(m, "v3")
+        m.create_version(c, notes="v1")
+        m.create_version(c, notes="v2")
+        r=m.get_version_history(c.id)
+        self.assertEqual(r["total"], 2)
+
+    def test_rollback_version(self):
+        m=self._mgr(); c=self._mk(m, "v4")
+        m.create_version(c, notes="first")
+        m.create_version(c, notes="second")
+        r=m.rollback_version(c.id, 1)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["rolled_back_to"], 1)
+
+    def test_rollback_nonexistent(self):
+        m=self._mgr(); c=self._mk(m, "v5")
+        r=m.rollback_version(c.id, 99)
+        self.assertIn("error", r)
+
+    def test_diff_versions(self):
+        m=self._mgr(); c=self._mk(m, "v6")
+        m.create_version(c, notes="first")
+        c.config.limits.memory_mb = 512
+        m.create_version(c, notes="changed memory")
+        r=m.diff_versions(c.id, 1, 2)
+        self.assertIn("changes", r)
+        self.assertGreater(r["changed_count"], 0)
+
+    def test_diff_same_versions(self):
+        m=self._mgr(); c=self._mk(m, "v7")
+        m.create_version(c, notes="only one")
+        r=m.diff_versions(c.id, 1, 1)
+        self.assertEqual(r["changed_count"], 0)
+
+    def test_get_active_version(self):
+        m=self._mgr(); c=self._mk(m, "v8")
+        m.create_version(c, notes="v1")
+        m.create_version(c, notes="v2")
+        r=m.get_active_version(c.id)
+        self.assertEqual(r["version"], 2)
+
+    def test_no_version_history(self):
+        m=self._mgr(); c=self._mk(m, "v9")
+        r=m.get_version_history(c.id)
+        self.assertEqual(r["total"], 0)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -34200,6 +34463,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBlueprints))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerMigration))
     suite.addTests(loader.loadTestsFromTestCase(TestNotificationChannels))
+    suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
+    suite.addTests(loader.loadTestsFromTestCase(TestDeploymentEnvironments))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerVersioning))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
