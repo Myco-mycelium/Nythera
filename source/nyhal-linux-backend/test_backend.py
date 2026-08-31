@@ -34771,6 +34771,244 @@ class TestDebugDumps(unittest.TestCase):
         self.assertTrue(r["ok"])
 
 
+class TestScheduledTasks(unittest.TestCase):
+    """Tests for container cron scheduler."""
+
+    def setUp(self):
+        from backend.container import ContainerManager
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
+
+    def test_create_task(self):
+        m=self._mgr(); c=self._mk(m, "st1")
+        r=m.create_scheduled_task("backup", c.id, ["backup.sh"], cron_expr="0 2 * * *")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["cron_expr"], "0 2 * * *")
+
+    def test_create_duplicate(self):
+        m=self._mgr(); c=self._mk(m, "st2")
+        m.create_scheduled_task("dup", c.id, ["echo"])
+        r=m.create_scheduled_task("dup", c.id, ["echo"])
+        self.assertIn("error", r)
+
+    def test_list_tasks(self):
+        m=self._mgr(); c=self._mk(m, "st3")
+        m.create_scheduled_task("t1", c.id, ["a"])
+        m.create_scheduled_task("t2", c.id, ["b"])
+        r=m.list_scheduled_tasks()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_enabled_only(self):
+        m=self._mgr(); c=self._mk(m, "st4")
+        m.create_scheduled_task("en1", c.id, ["a"], enabled=True)
+        m.create_scheduled_task("en2", c.id, ["b"], enabled=False)
+        r=m.list_scheduled_tasks(enabled_only=True)
+        self.assertEqual(r["count"], 1)
+
+    def test_execute_task(self):
+        m=self._mgr(); c=self._mk(m, "st5")
+        m.create_scheduled_task("run1", c.id, ["hello"])
+        r=m.execute_scheduled_task("run1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["run_count"], 1)
+
+    def test_execute_disabled(self):
+        m=self._mgr(); c=self._mk(m, "st6")
+        m.create_scheduled_task("dis1", c.id, ["x"], enabled=False)
+        r=m.execute_scheduled_task("dis1")
+        self.assertIn("error", r)
+
+    def test_task_history(self):
+        m=self._mgr(); c=self._mk(m, "st7")
+        m.create_scheduled_task("hist", c.id, ["y"])
+        m.execute_scheduled_task("hist")
+        m.execute_scheduled_task("hist")
+        r=m.get_scheduled_task_history("hist")
+        self.assertEqual(r["total_runs"], 2)
+        self.assertEqual(len(r["history"]), 2)
+
+    def test_update_task(self):
+        m=self._mgr(); c=self._mk(m, "st8")
+        m.create_scheduled_task("upd", c.id, ["old"])
+        r=m.update_scheduled_task("upd", command=["new"])
+        self.assertTrue(r["ok"])
+
+    def test_delete_task(self):
+        m=self._mgr(); c=self._mk(m, "st9")
+        m.create_scheduled_task("del", c.id, ["z"])
+        r=m.delete_scheduled_task("del")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_runs"], 0)
+
+
+class TestBandwidthLimits(unittest.TestCase):
+    """Tests for network bandwidth limiting and traffic shaping."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_set_bandwidth(self):
+        m=self._mgr()
+        r=m.set_bandwidth_limit("c1", rate_bytes_per_sec=10_000_000)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["rate_mbps"], 80.0)
+
+    def test_get_bandwidth(self):
+        m=self._mgr()
+        m.set_bandwidth_limit("c2", rate_bytes_per_sec=5_000_000)
+        r=m.get_bandwidth_limit("c2")
+        self.assertEqual(r["rate_bytes_per_sec"], 5_000_000)
+
+    def test_get_nonexistent(self):
+        m=self._mgr()
+        r=m.get_bandwidth_limit("nope")
+        self.assertIn("error", r)
+
+    def test_remove_bandwidth(self):
+        m=self._mgr()
+        m.set_bandwidth_limit("c3", rate_bytes_per_sec=1_000_000)
+        r=m.remove_bandwidth_limit("c3")
+        self.assertTrue(r["ok"])
+
+    def test_list_limits(self):
+        m=self._mgr()
+        m.set_bandwidth_limit("c4", rate_bytes_per_sec=1_000_000, direction="egress")
+        m.set_bandwidth_limit("c4", rate_bytes_per_sec=2_000_000, direction="ingress")
+        r=m.list_bandwidth_limits(container_id="c4")
+        self.assertEqual(r["count"], 2)
+
+    def test_traffic_rule(self):
+        m=self._mgr()
+        r=m.create_traffic_shaping_rule("http-rule", "c5", protocol="tcp", port=80,
+                                        rate_bytes_per_sec=5_000_000, priority=10)
+        self.assertTrue(r["ok"])
+
+    def test_list_traffic_rules(self):
+        m=self._mgr()
+        m.create_traffic_shaping_rule("r1", "c6", port=80)
+        m.create_traffic_shaping_rule("r2", "c6", port=443)
+        r=m.get_traffic_shaping_rules(container_id="c6")
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_traffic_rule(self):
+        m=self._mgr()
+        m.create_traffic_shaping_rule("rd1", "c7")
+        r=m.delete_traffic_shaping_rule("rd1")
+        self.assertTrue(r["ok"])
+
+    def test_traffic_stats(self):
+        m=self._mgr()
+        m.create_traffic_shaping_rule("rs1", "c8")
+        r=m.get_traffic_shaping_stats()
+        self.assertEqual(r["total_rules"], 1)
+        self.assertEqual(r["enabled_rules"], 1)
+
+
+class TestLayerCache(unittest.TestCase):
+    """Tests for image layer cache and deduplication."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_cache(self):
+        m=self._mgr()
+        r=m.create_layer_cache("my-cache", max_size_mb=4096)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["max_size_mb"], 4096)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_layer_cache("dup")
+        r=m.create_layer_cache("dup")
+        self.assertIn("error", r)
+
+    def test_add_layer(self):
+        m=self._mgr()
+        m.create_layer_cache("lc1")
+        r=m.add_layer_to_cache("lc1", "layer-abc", size_bytes=50_000_000, digest="sha256:abc")
+        self.assertTrue(r["ok"])
+
+    def test_get_hit(self):
+        m=self._mgr()
+        m.create_layer_cache("lc2")
+        m.add_layer_to_cache("lc2", "layer-1", size_bytes=10_000_000)
+        r=m.get_cached_layer("lc2", "layer-1")
+        self.assertTrue(r["hit"])
+        self.assertEqual(r["size_bytes"], 10_000_000)
+
+    def test_get_miss(self):
+        m=self._mgr()
+        m.create_layer_cache("lc3")
+        r=m.get_cached_layer("lc3", "nonexistent")
+        self.assertFalse(r["hit"])
+
+    def test_deduplicate(self):
+        m=self._mgr()
+        m.create_layer_cache("lc4")
+        m.add_layer_to_cache("lc4", "l1", size_bytes=100, digest="sha256:same")
+        m.add_layer_to_cache("lc4", "l2", size_bytes=100, digest="sha256:same")
+        m.add_layer_to_cache("lc4", "l3", size_bytes=200, digest="sha256:diff")
+        r=m.deduplicate_layers("lc4")
+        self.assertEqual(r["total_layers"], 3)
+        self.assertEqual(r["duplicate_groups"], 1)
+        self.assertGreater(r["saved_bytes"], 0)
+
+    def test_cache_stats(self):
+        m=self._mgr()
+        m.create_layer_cache("lc5", max_size_mb=100)
+        m.add_layer_to_cache("lc5", "l1", size_bytes=10_000_000)
+        m.get_cached_layer("lc5", "l1")
+        m.get_cached_layer("lc5", "miss")
+        r=m.get_layer_cache_stats("lc5")
+        self.assertEqual(r["total_layers"], 1)
+        self.assertEqual(r["hit_count"], 1)
+        self.assertEqual(r["miss_count"], 1)
+        self.assertEqual(r["hit_rate_pct"], 50.0)
+
+    def test_evict_expired(self):
+        m=self._mgr()
+        m.create_layer_cache("lc6", ttl_hours=0)
+        m.add_layer_to_cache("lc6", "old", size_bytes=500)
+        import time as _time
+        _time.sleep(0.01)
+        r=m.evict_expired_layers("lc6")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["evicted_count"], 1)
+
+    def test_list_caches(self):
+        m=self._mgr()
+        m.create_layer_cache("a")
+        m.create_layer_cache("b")
+        r=m.list_layer_caches()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_cache(self):
+        m=self._mgr()
+        m.create_layer_cache("dc")
+        m.add_layer_to_cache("dc", "x", size_bytes=100)
+        r=m.delete_layer_cache("dc")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["layers_lost"], 1)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -35047,6 +35285,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestImageRegistry))
     suite.addTests(loader.loadTestsFromTestCase(TestCostForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestDebugDumps))
+    suite.addTests(loader.loadTestsFromTestCase(TestScheduledTasks))
+    suite.addTests(loader.loadTestsFromTestCase(TestBandwidthLimits))
+    suite.addTests(loader.loadTestsFromTestCase(TestLayerCache))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

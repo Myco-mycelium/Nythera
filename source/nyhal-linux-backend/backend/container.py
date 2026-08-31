@@ -31871,6 +31871,361 @@ class ContainerManager:
         """Quick process info dump for a container."""
         return self.create_debug_dump(container, dump_type="process")
 
+    # ------------------------------------------------------------------
+    # Container cron scheduler for periodic tasks
+    # ------------------------------------------------------------------
+
+    def create_scheduled_task(
+        self,
+        name: str,
+        container_id: str,
+        command: List[str],
+        cron_expr: str = "0 * * * *",
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        """Create a scheduled task for a container (cron-like)."""
+        if not hasattr(self, '_scheduled_tasks'):
+            self._scheduled_tasks = {}
+        if name in self._scheduled_tasks:
+            return {"error": f"Task '{name}' already exists"}
+        import time as _time
+        self._scheduled_tasks[name] = {
+            "name": name,
+            "container_id": container_id,
+            "command": command,
+            "cron_expr": cron_expr,
+            "enabled": enabled,
+            "created_at": _time.time(),
+            "last_run": None,
+            "next_run": None,
+            "run_count": 0,
+            "last_status": None,
+            "history": [],
+        }
+        return {"ok": True, "task": name, "cron_expr": cron_expr}
+
+    def update_scheduled_task(self, name: str, **kwargs) -> Dict[str, Any]:
+        """Update a scheduled task."""
+        task = getattr(self, '_scheduled_tasks', {}).get(name)
+        if not task:
+            return {"error": f"Task '{name}' not found"}
+        for key in ["command", "cron_expr", "enabled", "container_id"]:
+            if key in kwargs:
+                task[key] = kwargs[key]
+        return {"ok": True, "task": name, "updated": list(kwargs.keys())}
+
+    def list_scheduled_tasks(self, enabled_only: bool = False) -> Dict[str, Any]:
+        """List all scheduled tasks."""
+        tasks = list(getattr(self, '_scheduled_tasks', {}).values())
+        if enabled_only:
+            tasks = [t for t in tasks if t["enabled"]]
+        return {
+            "tasks": [
+                {
+                    "name": t["name"],
+                    "container_id": t["container_id"],
+                    "cron_expr": t["cron_expr"],
+                    "enabled": t["enabled"],
+                    "run_count": t["run_count"],
+                    "last_status": t["last_status"],
+                }
+                for t in tasks
+            ],
+            "count": len(tasks),
+        }
+
+    def execute_scheduled_task(self, name: str) -> Dict[str, Any]:
+        """Execute a scheduled task now (simulated)."""
+        task = getattr(self, '_scheduled_tasks', {}).get(name)
+        if not task:
+            return {"error": f"Task '{name}' not found"}
+        if not task["enabled"]:
+            return {"error": f"Task '{name}' is disabled"}
+        import time as _time
+        now = _time.time()
+        task["run_count"] += 1
+        task["last_run"] = now
+        task["last_status"] = "success"
+        entry = {"ts": now, "status": "success", "command": task["command"]}
+        task["history"].append(entry)
+        if len(task["history"]) > 100:
+            task["history"] = task["history"][-100:]
+        return {
+            "ok": True,
+            "task": name,
+            "run_count": task["run_count"],
+            "status": "success",
+        }
+
+    def get_scheduled_task_history(self, name: str, limit: int = 10) -> Dict[str, Any]:
+        """Get execution history for a scheduled task."""
+        task = getattr(self, '_scheduled_tasks', {}).get(name)
+        if not task:
+            return {"error": f"Task '{name}' not found"}
+        history = list(reversed(task["history"]))[:limit]
+        return {
+            "task": name,
+            "history": history,
+            "total_runs": task["run_count"],
+        }
+
+    def delete_scheduled_task(self, name: str) -> Dict[str, Any]:
+        """Delete a scheduled task."""
+        task = getattr(self, '_scheduled_tasks', {}).pop(name, None)
+        if not task:
+            return {"error": f"Task '{name}' not found"}
+        return {"ok": True, "deleted": name, "total_runs": task["run_count"]}
+
+    # ------------------------------------------------------------------
+    # Network bandwidth limiting and traffic shaping
+    # ------------------------------------------------------------------
+
+    def set_bandwidth_limit(
+        self,
+        container_id: str,
+        interface: str = "eth0",
+        rate_bytes_per_sec: int = 0,
+        burst_bytes: int = 0,
+        direction: str = "egress",
+    ) -> Dict[str, Any]:
+        """Set bandwidth limit on a container's network interface."""
+        if not hasattr(self, '_bandwidth_limits'):
+            self._bandwidth_limits = {}
+        key = f"{container_id}:{interface}:{direction}"
+        self._bandwidth_limits[key] = {
+            "container_id": container_id,
+            "interface": interface,
+            "rate_bytes_per_sec": rate_bytes_per_sec,
+            "burst_bytes": burst_bytes,
+            "direction": direction,
+            "enabled": rate_bytes_per_sec > 0,
+            "created_at": time.time(),
+        }
+        return {
+            "ok": True, "container_id": container_id,
+            "interface": interface, "direction": direction,
+            "rate_mbps": round(rate_bytes_per_sec * 8 / 1_000_000, 2),
+        }
+
+    def get_bandwidth_limit(self, container_id: str,
+                            interface: str = "eth0",
+                            direction: str = "egress") -> Dict[str, Any]:
+        """Get bandwidth limit for a container interface."""
+        limits = getattr(self, '_bandwidth_limits', {})
+        key = f"{container_id}:{interface}:{direction}"
+        lim = limits.get(key)
+        if not lim:
+            return {"error": "No bandwidth limit configured"}
+        return lim
+
+    def remove_bandwidth_limit(self, container_id: str,
+                               interface: str = "eth0",
+                               direction: str = "egress") -> Dict[str, Any]:
+        """Remove a bandwidth limit."""
+        limits = getattr(self, '_bandwidth_limits', {})
+        key = f"{container_id}:{interface}:{direction}"
+        removed = limits.pop(key, None)
+        if not removed:
+            return {"error": "No bandwidth limit found"}
+        return {"ok": True, "removed": True}
+
+    def list_bandwidth_limits(self, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """List all bandwidth limits, optionally filtered by container."""
+        limits = getattr(self, '_bandwidth_limits', {})
+        items = list(limits.values())
+        if container_id:
+            items = [i for i in items if i["container_id"] == container_id]
+        return {"limits": items, "count": len(items)}
+
+    def create_traffic_shaping_rule(
+        self,
+        name: str,
+        container_id: str,
+        protocol: str = "tcp",
+        port: int = 0,
+        rate_bytes_per_sec: int = 0,
+        priority: int = 0,
+    ) -> Dict[str, Any]:
+        """Create a traffic shaping rule for specific traffic."""
+        if not hasattr(self, '_traffic_rules'):
+            self._traffic_rules = {}
+        if name in self._traffic_rules:
+            return {"error": f"Rule '{name}' already exists"}
+        self._traffic_rules[name] = {
+            "name": name,
+            "container_id": container_id,
+            "protocol": protocol,
+            "port": port,
+            "rate_bytes_per_sec": rate_bytes_per_sec,
+            "priority": priority,
+            "enabled": True,
+            "created_at": time.time(),
+            "matched_packets": 0,
+        }
+        return {"ok": True, "rule": name}
+
+    def get_traffic_shaping_rules(self, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """List traffic shaping rules."""
+        rules = list(getattr(self, '_traffic_rules', {}).values())
+        if container_id:
+            rules = [r for r in rules if r["container_id"] == container_id]
+        return {"rules": rules, "count": len(rules)}
+
+    def delete_traffic_shaping_rule(self, name: str) -> Dict[str, Any]:
+        """Delete a traffic shaping rule."""
+        rule = getattr(self, '_traffic_rules', {}).pop(name, None)
+        if not rule:
+            return {"error": f"Rule '{name}' not found"}
+        return {"ok": True, "deleted": name}
+
+    def get_traffic_shaping_stats(self) -> Dict[str, Any]:
+        """Get aggregate traffic shaping statistics."""
+        rules = getattr(self, '_traffic_rules', {})
+        total_matched = sum(r["matched_packets"] for r in rules.values())
+        return {
+            "total_rules": len(rules),
+            "enabled_rules": sum(1 for r in rules.values() if r["enabled"]),
+            "total_matched_packets": total_matched,
+        }
+
+    # ------------------------------------------------------------------
+    # Image layer cache and deduplication
+    # ------------------------------------------------------------------
+
+    def create_layer_cache(self, name: str = "default",
+                           max_size_mb: int = 2048,
+                           ttl_hours: int = 72) -> Dict[str, Any]:
+        """Create an image layer cache configuration."""
+        if not hasattr(self, '_layer_caches'):
+            self._layer_caches = {}
+        if name in self._layer_caches:
+            return {"error": f"Layer cache '{name}' already exists"}
+        self._layer_caches[name] = {
+            "name": name,
+            "max_size_mb": max_size_mb,
+            "ttl_hours": ttl_hours,
+            "layers": {},
+            "created_at": time.time(),
+            "total_size_bytes": 0,
+            "hit_count": 0,
+            "miss_count": 0,
+        }
+        return {"ok": True, "cache": name, "max_size_mb": max_size_mb}
+
+    def add_layer_to_cache(self, cache_name: str, layer_id: str,
+                           size_bytes: int, digest: str = "") -> Dict[str, Any]:
+        """Add a layer to the cache."""
+        cache = getattr(self, '_layer_caches', {}).get(cache_name)
+        if not cache:
+            return {"error": f"Layer cache '{cache_name}' not found"}
+        import time as _time
+        cache["layers"][layer_id] = {
+            "layer_id": layer_id,
+            "size_bytes": size_bytes,
+            "digest": digest or layer_id,
+            "added_at": _time.time(),
+            "access_count": 0,
+        }
+        cache["total_size_bytes"] += size_bytes
+        return {"ok": True, "layer_id": layer_id, "cache": cache_name}
+
+    def get_cached_layer(self, cache_name: str, layer_id: str) -> Dict[str, Any]:
+        """Get a layer from cache (increments hit count)."""
+        cache = getattr(self, '_layer_caches', {}).get(cache_name)
+        if not cache:
+            return {"error": f"Layer cache '{cache_name}' not found"}
+        layer = cache["layers"].get(layer_id)
+        if not layer:
+            cache["miss_count"] += 1
+            return {"hit": False, "layer_id": layer_id}
+        layer["access_count"] += 1
+        cache["hit_count"] += 1
+        return {"hit": True, "layer_id": layer_id, "size_bytes": layer["size_bytes"]}
+
+    def deduplicate_layers(self, cache_name: str) -> Dict[str, Any]:
+        """Find and report duplicate layers by digest in a cache."""
+        cache = getattr(self, '_layer_caches', {}).get(cache_name)
+        if not cache:
+            return {"error": f"Layer cache '{cache_name}' not found"}
+        digest_map = {}
+        for lid, layer in cache["layers"].items():
+            d = layer["digest"]
+            if d not in digest_map:
+                digest_map[d] = []
+            digest_map[d].append(lid)
+        duplicates = {d: ids for d, ids in digest_map.items() if len(ids) > 1}
+        saved_bytes = sum(
+            cache["layers"][ids[0]]["size_bytes"] * (len(ids) - 1)
+            for ids in duplicates.values()
+        )
+        return {
+            "total_layers": len(cache["layers"]),
+            "unique_digests": len(digest_map),
+            "duplicate_groups": len(duplicates),
+            "saved_bytes": saved_bytes,
+            "duplicates": duplicates,
+        }
+
+    def get_layer_cache_stats(self, cache_name: str) -> Dict[str, Any]:
+        """Get cache statistics."""
+        cache = getattr(self, '_layer_caches', {}).get(cache_name)
+        if not cache:
+            return {"error": f"Layer cache '{cache_name}' not found"}
+        total = cache["hit_count"] + cache["miss_count"]
+        hit_rate = (cache["hit_count"] / total * 100) if total > 0 else 0
+        max_bytes = cache["max_size_mb"] * 1024 * 1024
+        return {
+            "cache": cache_name,
+            "total_layers": len(cache["layers"]),
+            "total_size_bytes": cache["total_size_bytes"],
+            "total_size_mb": round(cache["total_size_bytes"] / 1024 / 1024, 2),
+            "utilization_pct": round(cache["total_size_bytes"] / max_bytes * 100, 1) if max_bytes > 0 else 0,
+            "hit_count": cache["hit_count"],
+            "miss_count": cache["miss_count"],
+            "hit_rate_pct": round(hit_rate, 1),
+        }
+
+    def evict_expired_layers(self, cache_name: str) -> Dict[str, Any]:
+        """Evict layers that exceed TTL from cache."""
+        cache = getattr(self, '_layer_caches', {}).get(cache_name)
+        if not cache:
+            return {"error": f"Layer cache '{cache_name}' not found"}
+        import time as _time
+        now = _time.time()
+        ttl_s = cache["ttl_hours"] * 3600
+        evicted = []
+        for lid in list(cache["layers"].keys()):
+            layer = cache["layers"][lid]
+            if (now - layer["added_at"]) > ttl_s:
+                cache["total_size_bytes"] -= layer["size_bytes"]
+                del cache["layers"][lid]
+                evicted.append(lid)
+        return {
+            "ok": True, "cache": cache_name,
+            "evicted_count": len(evicted),
+            "remaining_layers": len(cache["layers"]),
+        }
+
+    def list_layer_caches(self) -> Dict[str, Any]:
+        """List all layer caches."""
+        caches = getattr(self, '_layer_caches', {})
+        items = []
+        for c in caches.values():
+            items.append({
+                "name": c["name"],
+                "total_layers": len(c["layers"]),
+                "total_size_mb": round(c["total_size_bytes"] / 1024 / 1024, 2),
+                "max_size_mb": c["max_size_mb"],
+            })
+        return {"caches": items, "count": len(items)}
+
+    def delete_layer_cache(self, name: str) -> Dict[str, Any]:
+        """Delete a layer cache."""
+        cache = getattr(self, '_layer_caches', {}).pop(name, None)
+        if not cache:
+            return {"error": f"Layer cache '{name}' not found"}
+        return {"ok": True, "deleted": name, "layers_lost": len(cache["layers"])}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
