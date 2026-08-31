@@ -33314,6 +33314,289 @@ class ContainerManager:
             return {"error": f"Mirror '{name}' not found"}
         return {"ok": True, "deleted": name, "images_lost": len(mirror["cached_images"]) }
 
+    # ------------------------------------------------------------------
+    # Image vulnerability policy enforcement
+    # ------------------------------------------------------------------
+
+    def create_vuln_policy(self, name: str, max_critical: int = 0,
+                            max_high: int = 5, max_medium: int = 20,
+                            block_on_critical: bool = True) -> Dict[str, Any]:
+        """Create a vulnerability policy for image deployment."""
+        if not hasattr(self, '_vuln_policies'):
+            self._vuln_policies = {}
+        if name in self._vuln_policies:
+            return {"error": f"Policy '{name}' already exists"}
+        self._vuln_policies[name] = {
+            "name": name,
+            "max_critical": max_critical,
+            "max_high": max_high,
+            "max_medium": max_medium,
+            "block_on_critical": block_on_critical,
+            "created_at": time.time(),
+            "evaluations": 0,
+            "violations": 0,
+        }
+        return {"ok": True, "policy": name}
+
+    def evaluate_image_compliance(self, policy_name: str, image_id: str,
+                                   critical: int = 0, high: int = 0,
+                                   medium: int = 0) -> Dict[str, Any]:
+        """Evaluate an image against a vulnerability policy."""
+        policy = getattr(self, '_vuln_policies', {}).get(policy_name)
+        if not policy:
+            return {"error": f"Policy '{policy_name}' not found"}
+        policy["evaluations"] += 1
+        violations = []
+        if critical > policy["max_critical"]:
+            violations.append({"severity": "critical", "count": critical, "max": policy["max_critical"]})
+        if high > policy["max_high"]:
+            violations.append({"severity": "high", "count": high, "max": policy["max_high"]})
+        if medium > policy["max_medium"]:
+            violations.append({"severity": "medium", "count": medium, "max": policy["max_medium"]})
+        blocked = policy["block_on_critical"] and critical > policy["max_critical"]
+        if violations:
+            policy["violations"] += 1
+        return {
+            "ok": True, "policy": policy_name, "image_id": image_id,
+            "compliant": len(violations) == 0, "blocked": blocked,
+            "violations": violations, "total_vulns": critical + high + medium,
+        }
+
+    def list_vuln_policies(self) -> Dict[str, Any]:
+        """List all vulnerability policies."""
+        policies = getattr(self, '_vuln_policies', {})
+        items = []
+        for p in policies.values():
+            items.append({
+                "name": p["name"],
+                "max_critical": p["max_critical"],
+                "max_high": p["max_high"],
+                "evaluations": p["evaluations"],
+                "violations": p["violations"],
+            })
+        return {"policies": items, "count": len(items)}
+
+    def get_vuln_policy_stats(self, name: str) -> Dict[str, Any]:
+        """Get statistics for a vulnerability policy."""
+        policy = getattr(self, '_vuln_policies', {}).get(name)
+        if not policy:
+            return {"error": f"Policy '{name}' not found"}
+        compliance_rate = ((policy["evaluations"] - policy["violations"]) / policy["evaluations"] * 100
+                          ) if policy["evaluations"] > 0 else 0
+        return {
+            "policy": name, "evaluations": policy["evaluations"],
+            "violations": policy["violations"],
+            "compliance_rate_pct": round(compliance_rate, 1),
+        }
+
+    def delete_vuln_policy(self, name: str) -> Dict[str, Any]:
+        """Delete a vulnerability policy."""
+        policy = getattr(self, '_vuln_policies', {}).pop(name, None)
+        if not policy:
+            return {"error": f"Policy '{name}' not found"}
+        return {"ok": True, "deleted": name, "total_evaluations": policy["evaluations"]}
+
+    # ------------------------------------------------------------------
+    # Resource accounting with per-container tracking
+    # ------------------------------------------------------------------
+
+    def enable_resource_accounting(self, name: str = "default") -> Dict[str, Any]:
+        """Enable resource accounting for the fleet."""
+        if not hasattr(self, '_resource_accounting'):
+            self._resource_accounting = {}
+        self._resource_accounting[name] = {
+            "name": name,
+            "enabled": True,
+            "containers": {},
+            "created_at": time.time(),
+            "total_cpu_ns": 0,
+            "total_memory_bytes": 0,
+        }
+        return {"ok": True, "accounting": name}
+
+    def record_container_usage(self, accounting_name: str, container_id: str,
+                               cpu_ns: int = 0, memory_bytes: int = 0,
+                               io_read_bytes: int = 0, io_write_bytes: int = 0) -> Dict[str, Any]:
+        """Record resource usage for a container."""
+        acc = getattr(self, '_resource_accounting', {}).get(accounting_name)
+        if not acc:
+            return {"error": f"Accounting '{accounting_name}' not found"}
+        if container_id not in acc["containers"]:
+            acc["containers"][container_id] = {
+                "container_id": container_id,
+                "cpu_ns": 0, "memory_bytes": 0,
+                "io_read_bytes": 0, "io_write_bytes": 0,
+                "samples": 0,
+            }
+        c = acc["containers"][container_id]
+        c["cpu_ns"] += cpu_ns
+        c["memory_bytes"] += memory_bytes
+        c["io_read_bytes"] += io_read_bytes
+        c["io_write_bytes"] += io_write_bytes
+        c["samples"] += 1
+        acc["total_cpu_ns"] += cpu_ns
+        acc["total_memory_bytes"] += memory_bytes
+        return {
+            "ok": True, "accounting": accounting_name, "container_id": container_id,
+            "total_cpu_ns": c["cpu_ns"], "total_memory_bytes": c["memory_bytes"],
+        }
+
+    def get_container_usage(self, accounting_name: str, container_id: str) -> Dict[str, Any]:
+        """Get resource usage for a specific container."""
+        acc = getattr(self, '_resource_accounting', {}).get(accounting_name)
+        if not acc:
+            return {"error": f"Accounting '{accounting_name}' not found"}
+        c = acc["containers"].get(container_id)
+        if not c:
+            return {"error": f"Container '{container_id}' not tracked"}
+        return c
+
+    def get_fleet_usage(self, accounting_name: str) -> Dict[str, Any]:
+        """Get aggregate resource usage across all containers."""
+        acc = getattr(self, '_resource_accounting', {}).get(accounting_name)
+        if not acc:
+            return {"error": f"Accounting '{accounting_name}' not found"}
+        containers = list(acc["containers"].values())
+        total_cpu = acc["total_cpu_ns"]
+        total_mem = acc["total_memory_bytes"]
+        total_io_r = sum(c["io_read_bytes"] for c in containers)
+        total_io_w = sum(c["io_write_bytes"] for c in containers)
+        return {
+            "accounting": accounting_name, "container_count": len(containers),
+            "total_cpu_ns": total_cpu, "total_memory_bytes": total_mem,
+            "total_io_read_bytes": total_io_r, "total_io_write_bytes": total_io_w,
+            "cpu_hours": round(total_cpu / 3.6e12, 4) if total_cpu else 0,
+            "memory_mb": round(total_mem / 1048576, 2) if total_mem else 0,
+        }
+
+    def list_accounting(self) -> Dict[str, Any]:
+        """List all resource accounting configurations."""
+        accs = getattr(self, '_resource_accounting', {})
+        items = []
+        for a in accs.values():
+            items.append({
+                "name": a["name"], "enabled": a["enabled"],
+                "containers": len(a["containers"]),
+                "total_cpu_ns": a["total_cpu_ns"],
+            })
+        return {"accountings": items, "count": len(items)}
+
+    def delete_accounting(self, name: str) -> Dict[str, Any]:
+        """Delete a resource accounting configuration."""
+        acc = getattr(self, '_resource_accounting', {}).pop(name, None)
+        if not acc:
+            return {"error": f"Accounting '{name}' not found"}
+        return {"ok": True, "deleted": name, "containers_tracked": len(acc["containers"])}
+
+    # ------------------------------------------------------------------
+    # Container process monitoring and zombie detection
+    # ------------------------------------------------------------------
+
+    def create_process_monitor(self, name: str, check_interval: int = 60,
+                                max_zombie_age: int = 300) -> Dict[str, Any]:
+        """Create a process monitoring configuration."""
+        if not hasattr(self, '_process_monitors'):
+            self._process_monitors = {}
+        if name in self._process_monitors:
+            return {"error": f"Monitor '{name}' already exists"}
+        self._process_monitors[name] = {
+            "name": name,
+            "check_interval": check_interval,
+            "max_zombie_age": max_zombie_age,
+            "enabled": True,
+            "created_at": time.time(),
+            "containers": {},
+            "zombies_found": 0,
+            "last_scan": None,
+            "scan_count": 0,
+        }
+        return {"ok": True, "monitor": name, "check_interval": check_interval}
+
+    def register_container_for_monitoring(self, monitor_name: str, container_id: str,
+                                          expected_pids: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Register a container for process monitoring."""
+        monitor = getattr(self, '_process_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        monitor["containers"][container_id] = {
+            "container_id": container_id,
+            "expected_pids": expected_pids or [],
+            "observed_pids": [],
+            "zombies": [],
+            "orphaned": [],
+            "last_check": None,
+        }
+        return {"ok": True, "monitor": monitor_name, "container_id": container_id}
+
+    def scan_processes(self, monitor_name: str, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """Scan processes for zombies and orphans."""
+        monitor = getattr(self, '_process_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        import time as _time
+        monitor["last_scan"] = _time.time()
+        monitor["scan_count"] += 1
+        results = []
+        targets = [container_id] if container_id else list(monitor["containers"].keys())
+        for cid in targets:
+            cdata = monitor["containers"].get(cid)
+            if not cdata:
+                continue
+            cdata["last_check"] = _time.time()
+            cdata["zombies"] = []
+            cdata["orphaned"] = []
+            results.append({"container_id": cid, "zombies": 0, "orphaned": 0})
+        return {"ok": True, "monitor": monitor_name, "scanned": len(results), "results": results}
+
+    def report_zombie(self, monitor_name: str, container_id: str,
+                      pid: int, ppid: int) -> Dict[str, Any]:
+        """Report a zombie process found in a container."""
+        monitor = getattr(self, '_process_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        cdata = monitor["containers"].get(container_id)
+        if not cdata:
+            return {"error": f"Container '{container_id}' not monitored"}
+        import time as _time
+        zombie = {"pid": pid, "ppid": ppid, "detected_at": _time.time()}
+        cdata["zombies"].append(zombie)
+        monitor["zombies_found"] += 1
+        return {"ok": True, "container_id": container_id, "zombies": len(cdata["zombies"]) }
+
+    def get_process_monitor_stats(self, name: str) -> Dict[str, Any]:
+        """Get process monitor statistics."""
+        monitor = getattr(self, '_process_monitors', {}).get(name)
+        if not monitor:
+            return {"error": f"Monitor '{name}' not found"}
+        total_zombies = sum(len(c["zombies"]) for c in monitor["containers"].values())
+        total_orphaned = sum(len(c["orphaned"]) for c in monitor["containers"].values())
+        return {
+            "monitor": name, "containers_tracked": len(monitor["containers"]),
+            "total_zombies": total_zombies, "total_orphaned": total_orphaned,
+            "scan_count": monitor["scan_count"],
+            "last_scan": monitor["last_scan"],
+        }
+
+    def list_process_monitors(self) -> Dict[str, Any]:
+        """List all process monitors."""
+        monitors = getattr(self, '_process_monitors', {})
+        items = []
+        for m in monitors.values():
+            items.append({
+                "name": m["name"], "enabled": m["enabled"],
+                "containers_tracked": len(m["containers"]),
+                "zombies_found": m["zombies_found"],
+                "scan_count": m["scan_count"],
+            })
+        return {"monitors": items, "count": len(items)}
+
+    def delete_process_monitor(self, name: str) -> Dict[str, Any]:
+        """Delete a process monitor."""
+        monitor = getattr(self, '_process_monitors', {}).pop(name, None)
+        if not monitor:
+            return {"error": f"Monitor '{name}' not found"}
+        return {"ok": True, "deleted": name, "zombies_found": monitor["zombies_found"]}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

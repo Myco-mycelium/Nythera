@@ -35860,6 +35860,224 @@ class TestRegistryMirror(unittest.TestCase):
         self.assertIn("error", r)
 
 
+class TestVulnPolicy(unittest.TestCase):
+    """Tests for image vulnerability policy enforcement."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_policy(self):
+        m=self._mgr()
+        r=m.create_vuln_policy("strict", max_critical=0, max_high=2)
+        self.assertTrue(r["ok"])
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_vuln_policy("dup")
+        r=m.create_vuln_policy("dup")
+        self.assertIn("error", r)
+
+    def test_evaluate_compliant(self):
+        m=self._mgr()
+        m.create_vuln_policy("vp1", max_critical=0, max_high=5, max_medium=20)
+        r=m.evaluate_image_compliance("vp1", "img-1", critical=0, high=2, medium=10)
+        self.assertTrue(r["compliant"])
+        self.assertFalse(r["blocked"])
+
+    def test_evaluate_violation(self):
+        m=self._mgr()
+        m.create_vuln_policy("vp2", max_critical=0, max_high=5)
+        r=m.evaluate_image_compliance("vp2", "img-2", critical=1, high=0)
+        self.assertFalse(r["compliant"])
+        self.assertTrue(r["blocked"])
+        self.assertGreater(len(r["violations"]), 0)
+
+    def test_evaluate_high_violation(self):
+        m=self._mgr()
+        m.create_vuln_policy("vp3", max_high=3)
+        r=m.evaluate_image_compliance("vp3", "img-3", high=5)
+        self.assertFalse(r["compliant"])
+
+    def test_list_policies(self):
+        m=self._mgr()
+        m.create_vuln_policy("a")
+        m.create_vuln_policy("b")
+        r=m.list_vuln_policies()
+        self.assertEqual(r["count"], 2)
+
+    def test_policy_stats(self):
+        m=self._mgr()
+        m.create_vuln_policy("vs1")
+        m.evaluate_image_compliance("vs1", "img1", critical=0, high=0)
+        m.evaluate_image_compliance("vs1", "img2", critical=1, high=0)
+        r=m.get_vuln_policy_stats("vs1")
+        self.assertEqual(r["evaluations"], 2)
+        self.assertEqual(r["violations"], 1)
+        self.assertEqual(r["compliance_rate_pct"], 50.0)
+
+    def test_delete_policy(self):
+        m=self._mgr()
+        m.create_vuln_policy("dp1")
+        r=m.delete_vuln_policy("dp1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_vuln_policy("nope")
+        self.assertIn("error", r)
+
+
+class TestResourceAccounting(unittest.TestCase):
+    """Tests for resource accounting with per-container tracking."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_enable(self):
+        m=self._mgr()
+        r=m.enable_resource_accounting("ra1")
+        self.assertTrue(r["ok"])
+
+    def test_record_usage(self):
+        m=self._mgr()
+        m.enable_resource_accounting("ra2")
+        r=m.record_container_usage("ra2", "c1", cpu_ns=1000000, memory_bytes=50*1024*1024)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_cpu_ns"], 1000000)
+
+    def test_record_nonexistent(self):
+        m=self._mgr()
+        r=m.record_container_usage("nope", "c1", cpu_ns=1000)
+        self.assertIn("error", r)
+
+    def test_record_multiple(self):
+        m=self._mgr()
+        m.enable_resource_accounting("ra3")
+        m.record_container_usage("ra3", "c1", cpu_ns=500)
+        m.record_container_usage("ra3", "c1", cpu_ns=500)
+        r=m.get_container_usage("ra3", "c1")
+        self.assertEqual(r["cpu_ns"], 1000)
+        self.assertEqual(r["samples"], 2)
+
+    def test_get_fleet_usage(self):
+        m=self._mgr()
+        m.enable_resource_accounting("ra4")
+        m.record_container_usage("ra4", "c1", cpu_ns=1000000000, memory_bytes=1024*1024)
+        m.record_container_usage("ra4", "c2", cpu_ns=2000000000, memory_bytes=2048*1024)
+        r=m.get_fleet_usage("ra4")
+        self.assertEqual(r["container_count"], 2)
+        self.assertGreater(r["total_cpu_ns"], 0)
+        self.assertGreater(r["memory_mb"], 0)
+
+    def test_list_accounting(self):
+        m=self._mgr()
+        m.enable_resource_accounting("a")
+        m.enable_resource_accounting("b")
+        r=m.list_accounting()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_accounting(self):
+        m=self._mgr()
+        m.enable_resource_accounting("da1")
+        r=m.delete_accounting("da1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_accounting("nope")
+        self.assertIn("error", r)
+
+
+class TestProcessMonitoring(unittest.TestCase):
+    """Tests for container process monitoring and zombie detection."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_monitor(self):
+        m=self._mgr()
+        r=m.create_process_monitor("pm1", check_interval=30)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["check_interval"], 30)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_process_monitor("dup")
+        r=m.create_process_monitor("dup")
+        self.assertIn("error", r)
+
+    def test_register_container(self):
+        m=self._mgr()
+        m.create_process_monitor("pm2")
+        r=m.register_container_for_monitoring("pm2", "c1", expected_pids=[1, 2])
+        self.assertTrue(r["ok"])
+
+    def test_register_nonexistent(self):
+        m=self._mgr()
+        r=m.register_container_for_monitoring("nope", "c1")
+        self.assertIn("error", r)
+
+    def test_scan_processes(self):
+        m=self._mgr()
+        m.create_process_monitor("pm3")
+        m.register_container_for_monitoring("pm3", "c1")
+        r=m.scan_processes("pm3")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["scanned"], 1)
+
+    def test_scan_single_container(self):
+        m=self._mgr()
+        m.create_process_monitor("pm4")
+        m.register_container_for_monitoring("pm4", "c1")
+        m.register_container_for_monitoring("pm4", "c2")
+        r=m.scan_processes("pm4", container_id="c1")
+        self.assertEqual(r["scanned"], 1)
+
+    def test_report_zombie(self):
+        m=self._mgr()
+        m.create_process_monitor("pm5")
+        m.register_container_for_monitoring("pm5", "c1")
+        r=m.report_zombie("pm5", "c1", pid=123, ppid=1)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["zombies"], 1)
+
+    def test_report_zombie_nonexistent(self):
+        m=self._mgr()
+        m.create_process_monitor("pm6")
+        r=m.report_zombie("pm6", "c1", pid=1, ppid=0)
+        self.assertIn("error", r)
+
+    def test_get_stats(self):
+        m=self._mgr()
+        m.create_process_monitor("pm7")
+        m.register_container_for_monitoring("pm7", "c1")
+        m.scan_processes("pm7")
+        r=m.get_process_monitor_stats("pm7")
+        self.assertEqual(r["containers_tracked"], 1)
+        self.assertEqual(r["scan_count"], 1)
+
+    def test_list_monitors(self):
+        m=self._mgr()
+        m.create_process_monitor("a")
+        m.create_process_monitor("b")
+        r=m.list_process_monitors()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_monitor(self):
+        m=self._mgr()
+        m.create_process_monitor("dm1")
+        r=m.delete_process_monitor("dm1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_process_monitor("nope")
+        self.assertIn("error", r)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -36148,6 +36366,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestLoadBalancers))
     suite.addTests(loader.loadTestsFromTestCase(TestConntrack))
     suite.addTests(loader.loadTestsFromTestCase(TestRegistryMirror))
+    suite.addTests(loader.loadTestsFromTestCase(TestVulnPolicy))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceAccounting))
+    suite.addTests(loader.loadTestsFromTestCase(TestProcessMonitoring))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
