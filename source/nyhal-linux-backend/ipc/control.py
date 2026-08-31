@@ -10599,6 +10599,114 @@ class ControlService:
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
+
+    # -- event scaler handlers --
+    def _create_event_scaler(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"}); return
+        result = self.container_manager.create_event_scaler(
+            container, min_replicas=request.get("min_replicas", 1),
+            max_replicas=request.get("max_replicas", 20),
+            scale_up_threshold=request.get("scale_up_threshold", 0.8),
+            scale_down_threshold=request.get("scale_down_threshold", 0.3),
+            cooldown_s=request.get("cooldown_s", 60.0))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _register_webhook(self, server, sender_path, call_id, request):
+        result = self.container_manager.register_webhook(
+            request.get("scaler_id", ""), request.get("url", ""),
+            event_type=request.get("event_type", "metric"), secret=request.get("secret"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _configure_slo_trigger(self, server, sender_path, call_id, request):
+        result = self.container_manager.configure_slo_trigger(
+            request.get("scaler_id", ""), request.get("slo_name", ""),
+            breach_threshold=request.get("breach_threshold", 0.9),
+            breach_duration_s=request.get("breach_duration_s", 300.0),
+            action=request.get("action", "scale_up"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _evaluate_event_scaler(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_event_scaler(
+            request.get("scaler_id", ""), request.get("metric_value", 0.0))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _process_webhook_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.process_webhook_event(
+            request.get("scaler_id", ""), request.get("webhook_id", ""),
+            request.get("payload", {}))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_event_scaler_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_event_scaler_status(request.get("scaler_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_event_scaler_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_event_scaler_history(
+            request.get("scaler_id", ""), tail=request.get("tail", 20))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _delete_event_scaler(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_event_scaler(request.get("scaler_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    # -- security assessment handlers --
+    def _create_security_assessment(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"}); return
+        result = self.container_manager.create_security_assessment(container)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _add_finding(self, server, sender_path, call_id, request):
+        result = self.container_manager.add_finding(
+            request.get("assessment_id", ""), request.get("check_id", ""),
+            request.get("severity", "medium"), request.get("description", ""),
+            remediation=request.get("remediation", ""),
+            cis_benchmark=request.get("cis_benchmark"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _evaluate_cis_benchmark(self, server, sender_path, call_id, request):
+        result = self.container_manager.evaluate_cis_benchmark(
+            request.get("assessment_id", ""), request.get("check_id", ""),
+            request.get("passed", False))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_security_report(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_security_report(request.get("assessment_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_findings_by_severity(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_findings_by_severity(
+            request.get("assessment_id", ""), severity=request.get("severity"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _delete_assessment(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_assessment(request.get("assessment_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    # -- healing policy handlers --
+    def _create_healing_policy(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"}); return
+        result = self.container_manager.create_healing_policy(
+            container, triggers=request.get("triggers"),
+            max_remediations_per_hour=request.get("max_remediations_per_hour", 3),
+            cooldown_s=request.get("cooldown_s", 300.0))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _record_failure_event(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_failure_event(
+            request.get("policy_id", ""), request.get("trigger", ""),
+            details=request.get("details"))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_healing_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_healing_status(request.get("policy_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _get_healing_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_healing_history(
+            request.get("policy_id", ""), tail=request.get("tail", 20))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _disable_healing_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.disable_healing_policy(request.get("policy_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _enable_healing_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.enable_healing_policy(request.get("policy_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+    def _delete_healing_policy(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_healing_policy(request.get("policy_id", ""))
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

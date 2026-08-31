@@ -28016,6 +28016,485 @@ class ContainerManager:
         return {"ok": True, "circuit_breaker_id": cb_id}
 
 
+
+    # ------------------------------------------------------------------
+    # Event-driven autoscaling with webhooks and SLO triggers
+    # ------------------------------------------------------------------
+
+    def create_event_scaler(
+        self,
+        container: Container,
+        min_replicas: int = 1,
+        max_replicas: int = 20,
+        scale_up_threshold: float = 0.8,
+        scale_down_threshold: float = 0.3,
+        cooldown_s: float = 60.0,
+    ) -> Dict[str, Any]:
+        """Create an event-driven autoscaler with webhook support."""
+        if not hasattr(self, '_event_scalers'):
+            self._event_scalers = {}
+        scaler_id = f"esc-{container.id[:12]}"
+        self._event_scalers[scaler_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+            "scale_up_threshold": scale_up_threshold,
+            "scale_down_threshold": scale_down_threshold,
+            "cooldown_s": cooldown_s,
+            "created_at": time.time(),
+            "active": True,
+            "current_replicas": 1,
+            "webhooks": [],
+            "slo_triggers": [],
+            "scaling_events": [],
+            "last_scale_time": 0,
+        }
+        return {
+            "scaler_id": scaler_id,
+            "container_id": container.id,
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+        }
+
+    def register_webhook(
+        self,
+        scaler_id: str,
+        url: str,
+        event_type: str = "metric",
+        secret: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Register a webhook for event-driven scaling."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        webhook = {
+            "id": f"wh-{len(scaler['webhooks'])}",
+            "url": url,
+            "event_type": event_type,
+            "secret": secret,
+            "created_at": time.time(),
+            "active": True,
+        }
+        scaler["webhooks"].append(webhook)
+        return {"ok": True, "webhook_id": webhook["id"], "scaler_id": scaler_id}
+
+    def configure_slo_trigger(
+        self,
+        scaler_id: str,
+        slo_name: str,
+        breach_threshold: float = 0.9,
+        breach_duration_s: float = 300.0,
+        action: str = "scale_up",
+    ) -> Dict[str, Any]:
+        """Configure an SLO trigger for autoscaling."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        trigger = {
+            "slo_name": slo_name,
+            "breach_threshold": breach_threshold,
+            "breach_duration_s": breach_duration_s,
+            "action": action,
+            "active": True,
+            "breach_start_time": None,
+        }
+        scaler["slo_triggers"].append(trigger)
+        return {"ok": True, "scaler_id": scaler_id, "slo_name": slo_name}
+
+    def evaluate_event_scaler(
+        self,
+        scaler_id: str,
+        metric_value: float,
+    ) -> Dict[str, Any]:
+        """Evaluate the event scaler and determine scaling action."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        now = time.time()
+        if now - scaler["last_scale_time"] < scaler["cooldown_s"]:
+            return {
+                "scaler_id": scaler_id,
+                "action": "none",
+                "reason": "cooldown",
+                "current_replicas": scaler["current_replicas"],
+            }
+        current = scaler["current_replicas"]
+        if metric_value >= scaler["scale_up_threshold"]:
+            new_replicas = min(current * 2, scaler["max_replicas"])
+            if new_replicas > current:
+                old = current
+                scaler["current_replicas"] = new_replicas
+                scaler["last_scale_time"] = now
+                scaler["scaling_events"].append({
+                    "ts": now, "action": "scale_up",
+                    "from": old, "to": new_replicas, "trigger": f"metric={metric_value}",
+                })
+                return {"scaler_id": scaler_id, "action": "scale_up",
+                        "from": old, "to": new_replicas, "metric_value": metric_value}
+        elif metric_value <= scaler["scale_down_threshold"]:
+            new_replicas = max(current // 2, scaler["min_replicas"])
+            if new_replicas < current:
+                old = current
+                scaler["current_replicas"] = new_replicas
+                scaler["last_scale_time"] = now
+                scaler["scaling_events"].append({
+                    "ts": now, "action": "scale_down",
+                    "from": old, "to": new_replicas, "trigger": f"metric={metric_value}",
+                })
+                return {"scaler_id": scaler_id, "action": "scale_down",
+                        "from": old, "to": new_replicas, "metric_value": metric_value}
+        return {"scaler_id": scaler_id, "action": "none",
+                "current_replicas": current, "metric_value": metric_value}
+
+    def process_webhook_event(
+        self,
+        scaler_id: str,
+        webhook_id: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Process an incoming webhook event for scaling."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        wh = None
+        for w in scaler["webhooks"]:
+            if w["id"] == webhook_id:
+                wh = w
+                break
+        if not wh:
+            return {"error": "Webhook not found"}
+        event_type = wh["event_type"]
+        metric_value = payload.get("metric_value", payload.get("value", 0))
+        if event_type == "metric":
+            return self.evaluate_event_scaler(scaler_id, metric_value)
+        elif event_type == "custom":
+            action = payload.get("action", "none")
+            return {"scaler_id": scaler_id, "action": action, "payload": payload}
+        return {"scaler_id": scaler_id, "action": "none", "reason": "unknown event type"}
+
+    def get_event_scaler_status(self, scaler_id: str) -> Dict[str, Any]:
+        """Get full status of an event-driven scaler."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        return {
+            "scaler_id": scaler_id,
+            "container_name": scaler["container_name"],
+            "current_replicas": scaler["current_replicas"],
+            "min_replicas": scaler["min_replicas"],
+            "max_replicas": scaler["max_replicas"],
+            "scale_up_threshold": scaler["scale_up_threshold"],
+            "scale_down_threshold": scaler["scale_down_threshold"],
+            "cooldown_s": scaler["cooldown_s"],
+            "active": scaler["active"],
+            "webhook_count": len(scaler["webhooks"]),
+            "slo_trigger_count": len(scaler["slo_triggers"]),
+            "scaling_event_count": len(scaler["scaling_events"]),
+        }
+
+    def get_event_scaler_history(self, scaler_id: str, tail: int = 20) -> Dict[str, Any]:
+        """Get recent scaling events."""
+        scaler = getattr(self, '_event_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        events = list(reversed(scaler["scaling_events"]))[:tail]
+        return {"scaler_id": scaler_id, "events": events, "total": len(scaler["scaling_events"])}
+
+    def delete_event_scaler(self, scaler_id: str) -> Dict[str, Any]:
+        """Delete an event-driven scaler."""
+        scaler = getattr(self, '_event_scalers', {}).pop(scaler_id, None)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        return {"ok": True, "scaler_id": scaler_id, "total_events": len(scaler["scaling_events"])}
+
+    # ------------------------------------------------------------------
+    # Security posture management with CIS benchmarks
+    # ------------------------------------------------------------------
+
+    def create_security_assessment(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Create a security posture assessment for a container."""
+        if not hasattr(self, '_security_assessments'):
+            self._security_assessments = {}
+        assess_id = f"sec-{container.id[:12]}"
+        self._security_assessments[assess_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "created_at": time.time(),
+            "findings": [],
+            "score": 100,
+            "grade": "A",
+            "cis_benchmarks": {},
+        }
+        return {"assessment_id": assess_id, "container_id": container.id}
+
+    def add_finding(
+        self,
+        assessment_id: str,
+        check_id: str,
+        severity: str,
+        description: str,
+        remediation: str = "",
+        cis_benchmark: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add a security finding to an assessment."""
+        assess = getattr(self, '_security_assessments', {}).get(assessment_id)
+        if not assess:
+            return {"error": "Assessment not found"}
+        finding = {
+            "check_id": check_id,
+            "severity": severity,
+            "description": description,
+            "remediation": remediation,
+            "cis_benchmark": cis_benchmark,
+            "found_at": time.time(),
+        }
+        assess["findings"].append(finding)
+        if cis_benchmark:
+            assess["cis_benchmarks"][check_id] = {
+                "benchmark": cis_benchmark,
+                "passed": False,
+                "severity": severity,
+            }
+        # Recalculate score
+        self._recalculate_security_score(assessment_id)
+        return {"ok": True, "assessment_id": assessment_id, "check_id": check_id}
+
+    def _recalculate_security_score(self, assessment_id: str) -> None:
+        """Recalculate security score based on findings."""
+        assess = self._security_assessments.get(assessment_id)
+        if not assess:
+            return
+        severity_weights = {"critical": 10, "high": 7, "medium": 4, "low": 1, "info": 0}
+        total_penalty = sum(
+            severity_weights.get(f["severity"], 0) for f in assess["findings"]
+        )
+        max_score = 100
+        assess["score"] = max(0, max_score - total_penalty)
+        if assess["score"] >= 90:
+            assess["grade"] = "A"
+        elif assess["score"] >= 75:
+            assess["grade"] = "B"
+        elif assess["score"] >= 60:
+            assess["grade"] = "C"
+        elif assess["score"] >= 40:
+            assess["grade"] = "D"
+        else:
+            assess["grade"] = "F"
+
+    def evaluate_cis_benchmark(
+        self,
+        assessment_id: str,
+        check_id: str,
+        passed: bool,
+    ) -> Dict[str, Any]:
+        """Evaluate a CIS benchmark check."""
+        assess = getattr(self, '_security_assessments', {}).get(assessment_id)
+        if not assess:
+            return {"error": "Assessment not found"}
+        if check_id in assess["cis_benchmarks"]:
+            assess["cis_benchmarks"][check_id]["passed"] = passed
+        return {"ok": True, "check_id": check_id, "passed": passed}
+
+    def get_security_report(self, assessment_id: str) -> Dict[str, Any]:
+        """Get the full security report."""
+        assess = getattr(self, '_security_assessments', {}).get(assessment_id)
+        if not assess:
+            return {"error": "Assessment not found"}
+        severity_counts = {}
+        for f in assess["findings"]:
+            s = f["severity"]
+            severity_counts[s] = severity_counts.get(s, 0) + 1
+        cis_passed = sum(1 for v in assess["cis_benchmarks"].values() if v["passed"])
+        cis_total = len(assess["cis_benchmarks"])
+        return {
+            "assessment_id": assessment_id,
+            "container_id": assess["container_id"],
+            "container_name": assess["container_name"],
+            "score": assess["score"],
+            "grade": assess["grade"],
+            "total_findings": len(assess["findings"]),
+            "severity_counts": severity_counts,
+            "cis_benchmark_passed": cis_passed,
+            "cis_benchmark_total": cis_total,
+            "cis_benchmark_score": round(cis_passed / cis_total * 100, 1) if cis_total > 0 else None,
+        }
+
+    def get_findings_by_severity(
+        self,
+        assessment_id: str,
+        severity: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get findings optionally filtered by severity."""
+        assess = getattr(self, '_security_assessments', {}).get(assessment_id)
+        if not assess:
+            return {"error": "Assessment not found"}
+        if severity:
+            findings = [f for f in assess["findings"] if f["severity"] == severity]
+        else:
+            findings = list(assess["findings"])
+        return {"assessment_id": assessment_id, "findings": findings, "count": len(findings)}
+
+    def delete_assessment(self, assessment_id: str) -> Dict[str, Any]:
+        """Delete a security assessment."""
+        assess = getattr(self, '_security_assessments', {}).pop(assessment_id, None)
+        if not assess:
+            return {"error": "Assessment not found"}
+        return {"ok": True, "assessment_id": assessment_id}
+
+    # ------------------------------------------------------------------
+    # Self-healing with automated remediation patterns
+    # ------------------------------------------------------------------
+
+    def create_healing_policy(
+        self,
+        container: Container,
+        triggers: Optional[List[str]] = None,
+        max_remediations_per_hour: int = 3,
+        cooldown_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Create a self-healing policy for a container."""
+        if not hasattr(self, '_healing_policies'):
+            self._healing_policies = {}
+        policy_id = f"heal-{container.id[:12]}"
+        self._healing_policies[policy_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "triggers": triggers or ["crash", "oom", "health_check_failure", "high_latency"],
+            "max_remediations_per_hour": max_remediations_per_hour,
+            "cooldown_s": cooldown_s,
+            "created_at": time.time(),
+            "active": True,
+            "remediation_history": [],
+            "last_remediation_time": 0,
+            "total_remediations": 0,
+            "remediation_counts": {},
+        }
+        return {
+            "policy_id": policy_id,
+            "container_id": container.id,
+            "triggers": triggers or ["crash", "oom", "health_check_failure", "high_latency"],
+            "max_remediations_per_hour": max_remediations_per_hour,
+        }
+
+    def record_failure_event(
+        self,
+        policy_id: str,
+        trigger: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a failure event and attempt self-healing."""
+        policy = getattr(self, '_healing_policies', {}).get(policy_id)
+        if not policy:
+            return {"error": "Policy not found"}
+        if trigger not in policy["triggers"]:
+            return {"ok": True, "action": "none", "reason": f"trigger '{trigger}' not configured"}
+        now = time.time()
+        if now - policy["last_remediation_time"] < policy["cooldown_s"]:
+            return {"ok": True, "action": "cooldown", "trigger": trigger}
+        # Check hourly limit
+        hour_ago = now - 3600
+        recent = [r for r in policy["remediation_history"] if r["ts"] > hour_ago]
+        if len(recent) >= policy["max_remediations_per_hour"]:
+            return {"ok": True, "action": "rate_limited", "trigger": trigger,
+                    "recent_count": len(recent)}
+        # Determine remediation
+        remediation = self._determine_remediation(trigger, details or {})
+        policy["remediation_history"].append({
+            "ts": now,
+            "trigger": trigger,
+            "remediation": remediation,
+            "details": details or {},
+        })
+        policy["last_remediation_time"] = now
+        policy["total_remediations"] += 1
+        policy["remediation_counts"][trigger] = policy["remediation_counts"].get(trigger, 0) + 1
+        return {
+            "ok": True,
+            "action": "remediated",
+            "trigger": trigger,
+            "remediation": remediation,
+        }
+
+    def _determine_remediation(self, trigger: str, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Determine the appropriate remediation for a trigger."""
+        if trigger == "crash":
+            return {"type": "restart", "strategy": "immediate", "backoff": "exponential"}
+        elif trigger == "oom":
+            return {"type": "restart", "strategy": "delayed", "backoff": "linear",
+                    "suggestion": "increase memory_limit"}
+        elif trigger == "health_check_failure":
+            count = details.get("failure_count", 1)
+            if count >= 3:
+                return {"type": "restart", "strategy": "immediate"}
+            return {"type": "drain", "strategy": "graceful", "timeout_s": 30}
+        elif trigger == "high_latency":
+            return {"type": "restart", "strategy": "rolling", "max_unavailable": 1}
+        elif trigger == "disk_pressure":
+            return {"type": "cleanup", "strategy": "log_rotation", "target_mb": 100}
+        elif trigger == "cpu_throttle":
+            return {"type": "scale", "strategy": "horizontal", "replicas": "+1"}
+        return {"type": "alert", "strategy": "notify"}
+
+    def get_healing_status(self, policy_id: str) -> Dict[str, Any]:
+        """Get self-healing policy status."""
+        policy = getattr(self, '_healing_policies', {}).get(policy_id)
+        if not policy:
+            return {"error": "Policy not found"}
+        now = time.time()
+        hour_ago = now - 3600
+        recent = [r for r in policy["remediation_history"] if r["ts"] > hour_ago]
+        return {
+            "policy_id": policy_id,
+            "container_name": policy["container_name"],
+            "active": policy["active"],
+            "triggers": policy["triggers"],
+            "total_remediations": policy["total_remediations"],
+            "recent_remediations_1h": len(recent),
+            "max_per_hour": policy["max_remediations_per_hour"],
+            "remediation_counts": policy["remediation_counts"],
+            "cooldown_s": policy["cooldown_s"],
+        }
+
+    def get_healing_history(
+        self,
+        policy_id: str,
+        tail: int = 20,
+    ) -> Dict[str, Any]:
+        """Get recent healing events."""
+        policy = getattr(self, '_healing_policies', {}).get(policy_id)
+        if not policy:
+            return {"error": "Policy not found"}
+        events = list(reversed(policy["remediation_history"]))[:tail]
+        return {"policy_id": policy_id, "events": events, "total": len(policy["remediation_history"])}
+
+    def disable_healing_policy(self, policy_id: str) -> Dict[str, Any]:
+        """Disable a healing policy."""
+        policy = getattr(self, '_healing_policies', {}).get(policy_id)
+        if not policy:
+            return {"error": "Policy not found"}
+        policy["active"] = False
+        return {"ok": True, "policy_id": policy_id, "active": False}
+
+    def enable_healing_policy(self, policy_id: str) -> Dict[str, Any]:
+        """Enable a healing policy."""
+        policy = getattr(self, '_healing_policies', {}).get(policy_id)
+        if not policy:
+            return {"error": "Policy not found"}
+        policy["active"] = True
+        return {"ok": True, "policy_id": policy_id, "active": True}
+
+    def delete_healing_policy(self, policy_id: str) -> Dict[str, Any]:
+        """Delete a healing policy."""
+        policy = getattr(self, '_healing_policies', {}).pop(policy_id, None)
+        if not policy:
+            return {"error": "Policy not found"}
+        return {"ok": True, "policy_id": policy_id, "total_remediations": policy["total_remediations"]}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

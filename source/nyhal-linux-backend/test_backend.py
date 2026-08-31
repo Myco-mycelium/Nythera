@@ -33099,6 +33099,183 @@ class TestAuditIntegrityChain(unittest.TestCase):
 
 
 
+class TestEventDrivenAutoscaling(unittest.TestCase):
+    """Tests for event-driven autoscaling with webhooks and SLO triggers."""
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+    def test_create_scaler(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev1")
+        r = mgr.create_event_scaler(c, min_replicas=1, max_replicas=5)
+        self.assertIn("scaler_id", r)
+        self.assertEqual(r["max_replicas"], 5)
+    def test_register_webhook(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev2")
+        r = mgr.create_event_scaler(c)
+        r2 = mgr.register_webhook(r["scaler_id"], "https://example.com/hook")
+        self.assertTrue(r2["ok"])
+        self.assertIn("webhook_id", r2)
+    def test_configure_slo_trigger(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev3")
+        r = mgr.create_event_scaler(c)
+        r2 = mgr.configure_slo_trigger(r["scaler_id"], "availability")
+        self.assertTrue(r2["ok"])
+    def test_evaluate_scale_up(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev4")
+        r = mgr.create_event_scaler(c, scale_up_threshold=0.8)
+        r2 = mgr.evaluate_event_scaler(r["scaler_id"], 0.95)
+        self.assertEqual(r2["action"], "scale_up")
+    def test_evaluate_scale_down(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev5")
+        r = mgr.create_event_scaler(c, scale_down_threshold=0.3, cooldown_s=0.0)
+        mgr.evaluate_event_scaler(r["scaler_id"], 0.95)  # scale up first
+        r2 = mgr.evaluate_event_scaler(r["scaler_id"], 0.1)
+        self.assertEqual(r2["action"], "scale_down")
+    def test_scaler_status(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev6")
+        r = mgr.create_event_scaler(c)
+        r2 = mgr.get_event_scaler_status(r["scaler_id"])
+        self.assertTrue(r2["active"])
+    def test_delete_scaler(self):
+        mgr = self._manager()
+        c = self._make(mgr, "ev7")
+        r = mgr.create_event_scaler(c)
+        r2 = mgr.delete_event_scaler(r["scaler_id"])
+        self.assertTrue(r2["ok"])
+
+
+class TestSecurityPosture(unittest.TestCase):
+    """Tests for security posture management with CIS benchmarks."""
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+    def test_create_assessment(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp1")
+        r = mgr.create_security_assessment(c)
+        self.assertIn("assessment_id", r)
+    def test_add_finding(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp2")
+        r = mgr.create_security_assessment(c)
+        r2 = mgr.add_finding(r["assessment_id"], "CIS-5.1", "high", "Root login enabled")
+        self.assertTrue(r2["ok"])
+    def test_score_calculation(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp3")
+        r = mgr.create_security_assessment(c)
+        aid = r["assessment_id"]
+        mgr.add_finding(aid, "C1", "critical", "Critical issue")
+        mgr.add_finding(aid, "H1", "high", "High issue")
+        r2 = mgr.get_security_report(aid)
+        self.assertLess(r2["score"], 100)
+        self.assertEqual(r2["total_findings"], 2)
+    def test_grade_calculation(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp4")
+        r = mgr.create_security_assessment(c)
+        mgr.add_finding(r["assessment_id"], "C1", "info", "info finding")
+        r2 = mgr.get_security_report(r["assessment_id"])
+        self.assertEqual(r2["grade"], "A")  # only info findings = high score
+    def test_cis_benchmark(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp5")
+        r = mgr.create_security_assessment(c)
+        aid = r["assessment_id"]
+        mgr.add_finding(aid, "CIS-5.1", "high", "test", cis_benchmark="CIS Docker 5.1")
+        mgr.evaluate_cis_benchmark(aid, "CIS-5.1", True)
+        r2 = mgr.get_security_report(aid)
+        self.assertEqual(r2["cis_benchmark_passed"], 1)
+    def test_findings_by_severity(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp6")
+        r = mgr.create_security_assessment(c)
+        aid = r["assessment_id"]
+        mgr.add_finding(aid, "C1", "critical", "c")
+        mgr.add_finding(aid, "L1", "low", "l")
+        r2 = mgr.get_findings_by_severity(aid, severity="critical")
+        self.assertEqual(r2["count"], 1)
+    def test_delete_assessment(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sp7")
+        r = mgr.create_security_assessment(c)
+        r2 = mgr.delete_assessment(r["assessment_id"])
+        self.assertTrue(r2["ok"])
+
+
+class TestSelfHealing(unittest.TestCase):
+    """Tests for self-healing with automated remediation patterns."""
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+    def test_create_policy(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh1")
+        r = mgr.create_healing_policy(c, triggers=["crash", "oom"])
+        self.assertIn("policy_id", r)
+        self.assertIn("crash", r["triggers"])
+    def test_record_crash(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh2")
+        r = mgr.create_healing_policy(c, cooldown_s=0.0)
+        r2 = mgr.record_failure_event(r["policy_id"], "crash")
+        self.assertEqual(r2["action"], "remediated")
+        self.assertEqual(r2["remediation"]["type"], "restart")
+    def test_unconfigured_trigger(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh3")
+        r = mgr.create_healing_policy(c, triggers=["crash"])
+        r2 = mgr.record_failure_event(r["policy_id"], "disk_pressure")
+        self.assertEqual(r2["action"], "none")
+    def test_cooldown(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh4")
+        r = mgr.create_healing_policy(c, cooldown_s=9999)
+        mgr.record_failure_event(r["policy_id"], "crash")
+        r2 = mgr.record_failure_event(r["policy_id"], "crash")
+        self.assertEqual(r2["action"], "cooldown")
+    def test_healing_status(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh5")
+        r = mgr.create_healing_policy(c)
+        r2 = mgr.get_healing_status(r["policy_id"])
+        self.assertTrue(r2["active"])
+        self.assertEqual(r2["total_remediations"], 0)
+    def test_disable_enable(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh6")
+        r = mgr.create_healing_policy(c)
+        pid = r["policy_id"]
+        mgr.disable_healing_policy(pid)
+        r2 = mgr.get_healing_status(pid)
+        self.assertFalse(r2["active"])
+        mgr.enable_healing_policy(pid)
+        r3 = mgr.get_healing_status(pid)
+        self.assertTrue(r3["active"])
+    def test_delete_policy(self):
+        mgr = self._manager()
+        c = self._make(mgr, "sh7")
+        r = mgr.create_healing_policy(c)
+        r2 = mgr.delete_healing_policy(r["policy_id"])
+        self.assertTrue(r2["ok"])
+
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33345,6 +33522,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
     suite.addTests(loader.loadTestsFromTestCase(TestChaosInjection))
     suite.addTests(loader.loadTestsFromTestCase(TestCircuitBreaker))
+    suite.addTests(loader.loadTestsFromTestCase(TestEventDrivenAutoscaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestSecurityPosture))
+    suite.addTests(loader.loadTestsFromTestCase(TestSelfHealing))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

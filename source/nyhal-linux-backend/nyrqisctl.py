@@ -4859,6 +4859,69 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "op": "delete_circuit_breaker",
             "circuit_breaker_id": args.circuit_breaker_id,
         }
+    if command == "create-event-scaler":
+        return {"service": "control", "op": "create_event_scaler",
+                "container_id": args.container_id,
+                "min_replicas": getattr(args, "min_replicas", 1),
+                "max_replicas": getattr(args, "max_replicas", 20),
+                "scale_up_threshold": getattr(args, "scale_up_threshold", 0.8),
+                "scale_down_threshold": getattr(args, "scale_down_threshold", 0.3),
+                "cooldown_s": getattr(args, "cooldown_s", 60.0)}
+    if command == "register-webhook":
+        return {"service": "control", "op": "register_webhook",
+                "scaler_id": args.scaler_id, "url": args.url,
+                "event_type": getattr(args, "event_type", "metric")}
+    if command == "configure-slo-trigger":
+        return {"service": "control", "op": "configure_slo_trigger",
+                "scaler_id": args.scaler_id, "slo_name": args.slo_name,
+                "breach_threshold": getattr(args, "breach_threshold", 0.9),
+                "action": getattr(args, "action", "scale_up")}
+    if command == "evaluate-event-scaler":
+        return {"service": "control", "op": "evaluate_event_scaler",
+                "scaler_id": args.scaler_id, "metric_value": args.metric_value}
+    if command == "event-scaler-status":
+        return {"service": "control", "op": "get_event_scaler_status", "scaler_id": args.scaler_id}
+    if command == "event-scaler-history":
+        return {"service": "control", "op": "get_event_scaler_history",
+                "scaler_id": args.scaler_id, "tail": getattr(args, "tail", 20)}
+    if command == "delete-event-scaler":
+        return {"service": "control", "op": "delete_event_scaler", "scaler_id": args.scaler_id}
+    if command == "create-security-assessment":
+        return {"service": "control", "op": "create_security_assessment", "container_id": args.container_id}
+    if command == "add-finding":
+        return {"service": "control", "op": "add_finding",
+                "assessment_id": args.assessment_id, "check_id": args.check_id,
+                "severity": args.severity, "description": args.description,
+                "remediation": getattr(args, "remediation", ""),
+                "cis_benchmark": getattr(args, "cis_benchmark", None)}
+    if command == "security-report":
+        return {"service": "control", "op": "get_security_report", "assessment_id": args.assessment_id}
+    if command == "findings-by-severity":
+        return {"service": "control", "op": "get_findings_by_severity",
+                "assessment_id": args.assessment_id, "severity": getattr(args, "severity", None)}
+    if command == "delete-assessment":
+        return {"service": "control", "op": "delete_assessment", "assessment_id": args.assessment_id}
+    if command == "create-healing-policy":
+        return {"service": "control", "op": "create_healing_policy",
+                "container_id": args.container_id,
+                "triggers": getattr(args, "triggers", None),
+                "max_remediations_per_hour": getattr(args, "max_remediations_per_hour", 3),
+                "cooldown_s": getattr(args, "cooldown_s", 300.0)}
+    if command == "record-failure-event":
+        return {"service": "control", "op": "record_failure_event",
+                "policy_id": args.policy_id, "trigger": args.trigger}
+    if command == "healing-status":
+        return {"service": "control", "op": "get_healing_status", "policy_id": args.policy_id}
+    if command == "healing-history":
+        return {"service": "control", "op": "get_healing_history",
+                "policy_id": args.policy_id, "tail": getattr(args, "tail", 20)}
+    if command == "disable-healing":
+        return {"service": "control", "op": "disable_healing_policy", "policy_id": args.policy_id}
+    if command == "enable-healing":
+        return {"service": "control", "op": "enable_healing_policy", "policy_id": args.policy_id}
+    if command == "delete-healing":
+        return {"service": "control", "op": "delete_healing_policy", "policy_id": args.policy_id}
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13459,6 +13522,91 @@ def build_parser() -> argparse.ArgumentParser:
     cbd = sub.add_parser("cb-delete", help="Delete circuit breaker")
     cbd.add_argument("--circuit-breaker-id", required=True)
     cbd.set_defaults(command="cb-delete")
+
+
+    # -- event-driven autoscaling --
+    ces = sub.add_parser("create-event-scaler", help="Create event-driven autoscaler")
+    ces.add_argument("--container-id", required=True)
+    ces.add_argument("--min-replicas", type=int, default=1)
+    ces.add_argument("--max-replicas", type=int, default=20)
+    ces.add_argument("--scale-up-threshold", type=float, default=0.8)
+    ces.add_argument("--scale-down-threshold", type=float, default=0.3)
+    ces.add_argument("--cooldown-s", type=float, default=60.0)
+    ces.set_defaults(command="create-event-scaler")
+    rwh = sub.add_parser("register-webhook", help="Register webhook")
+    rwh.add_argument("--scaler-id", required=True)
+    rwh.add_argument("--url", required=True)
+    rwh.add_argument("--event-type", default="metric")
+    rwh.set_defaults(command="register-webhook")
+    cst = sub.add_parser("configure-slo-trigger", help="Configure SLO trigger")
+    cst.add_argument("--scaler-id", required=True)
+    cst.add_argument("--slo-name", required=True)
+    cst.add_argument("--breach-threshold", type=float, default=0.9)
+    cst.add_argument("--action", default="scale_up")
+    cst.set_defaults(command="configure-slo-trigger")
+    evs = sub.add_parser("evaluate-event-scaler", help="Evaluate event scaler")
+    evs.add_argument("--scaler-id", required=True)
+    evs.add_argument("--metric-value", type=float, required=True)
+    evs.set_defaults(command="evaluate-event-scaler")
+    ess = sub.add_parser("event-scaler-status", help="Get event scaler status")
+    ess.add_argument("--scaler-id", required=True)
+    ess.set_defaults(command="event-scaler-status")
+    esh = sub.add_parser("event-scaler-history", help="Get event scaler history")
+    esh.add_argument("--scaler-id", required=True)
+    esh.add_argument("--tail", type=int, default=20)
+    esh.set_defaults(command="event-scaler-history")
+    des = sub.add_parser("delete-event-scaler", help="Delete event scaler")
+    des.add_argument("--scaler-id", required=True)
+    des.set_defaults(command="delete-event-scaler")
+    # -- security posture --
+    csa = sub.add_parser("create-security-assessment", help="Create security assessment")
+    csa.add_argument("--container-id", required=True)
+    csa.set_defaults(command="create-security-assessment")
+    af = sub.add_parser("add-finding", help="Add security finding")
+    af.add_argument("--assessment-id", required=True)
+    af.add_argument("--check-id", required=True)
+    af.add_argument("--severity", required=True, choices=["critical", "high", "medium", "low", "info"])
+    af.add_argument("--description", required=True)
+    af.add_argument("--remediation", default="")
+    af.add_argument("--cis-benchmark", default=None)
+    af.set_defaults(command="add-finding")
+    sr = sub.add_parser("security-report", help="Get security report")
+    sr.add_argument("--assessment-id", required=True)
+    sr.set_defaults(command="security-report")
+    fbs = sub.add_parser("findings-by-severity", help="Get findings by severity")
+    fbs.add_argument("--assessment-id", required=True)
+    fbs.add_argument("--severity", default=None)
+    fbs.set_defaults(command="findings-by-severity")
+    da = sub.add_parser("delete-assessment", help="Delete assessment")
+    da.add_argument("--assessment-id", required=True)
+    da.set_defaults(command="delete-assessment")
+    # -- self-healing --
+    chp = sub.add_parser("create-healing-policy", help="Create healing policy")
+    chp.add_argument("--container-id", required=True)
+    chp.add_argument("--triggers", nargs="*", default=None)
+    chp.add_argument("--max-remediations-per-hour", type=int, default=3)
+    chp.add_argument("--cooldown-s", type=float, default=300.0)
+    chp.set_defaults(command="create-healing-policy")
+    rfe = sub.add_parser("record-failure-event", help="Record failure event")
+    rfe.add_argument("--policy-id", required=True)
+    rfe.add_argument("--trigger", required=True)
+    rfe.set_defaults(command="record-failure-event")
+    hst = sub.add_parser("healing-status", help="Get healing status")
+    hst.add_argument("--policy-id", required=True)
+    hst.set_defaults(command="healing-status")
+    hht = sub.add_parser("healing-history", help="Get healing history")
+    hht.add_argument("--policy-id", required=True)
+    hht.add_argument("--tail", type=int, default=20)
+    hht.set_defaults(command="healing-history")
+    dhp = sub.add_parser("disable-healing", help="Disable healing policy")
+    dhp.add_argument("--policy-id", required=True)
+    dhp.set_defaults(command="disable-healing")
+    ehp = sub.add_parser("enable-healing", help="Enable healing policy")
+    ehp.add_argument("--policy-id", required=True)
+    ehp.set_defaults(command="enable-healing")
+    dlh = sub.add_parser("delete-healing", help="Delete healing policy")
+    dlh.add_argument("--policy-id", required=True)
+    dlh.set_defaults(command="delete-healing")
 
     return parser
 
