@@ -12581,7 +12581,7 @@ class ContainerManager:
             "notifications_sent": notifications_sent,
         }
 
-    def get_alert_history(
+    def get_alert_history_extended(
         self,
         container_id=None,
         alert_type: Optional[str] = None,
@@ -12630,7 +12630,7 @@ class ContainerManager:
     # Anomaly detection (statistical outlier identification)
     # ------------------------------------------------------------------
 
-    def detect_anomalies(
+    def detect_resource_anomalies(
         self,
         container: Container,
         resource: str = "memory",
@@ -12747,7 +12747,7 @@ class ContainerManager:
 
         for cid, c in self.containers.items():
             if c.state == ContainerState.RUNNING:
-                result = self.detect_anomalies(
+                result = self.detect_resource_anomalies(
                     c, window_size=window_size, z_threshold=z_threshold)
                 if result["anomaly_count"] > 0:
                     results.append(result)
@@ -20777,7 +20777,7 @@ class ContainerManager:
         self._event_store.append(event)
         return {"event_id": event["id"], "recorded": True}
 
-    def correlate_events(
+    def correlate_events_cross_container(
         self,
         time_window: float = 300.0,
         min_containers: int = 2,
@@ -20867,7 +20867,7 @@ class ContainerManager:
         time_window: float = 300.0,
     ) -> Dict[str, Any]:
         """Suggest potential root causes from correlated events."""
-        correlated = self.correlate_events(time_window=time_window, min_containers=2)
+        correlated = self.correlate_events_cross_container(time_window=time_window, min_containers=2)
         suggestions = []
         for cluster in correlated["clusters"]:
             etype = cluster["event_type"]
@@ -20905,7 +20905,7 @@ class ContainerManager:
             "correlated_clusters": correlated["cluster_count"],
         }
 
-    def get_event_timeline(
+    def get_event_timeline_extended(
         self,
         container_ids: Optional[List[str]] = None,
         time_window: float = 3600.0,
@@ -22479,7 +22479,7 @@ class ContainerManager:
     # Config hot-reload with file watching
     # ------------------------------------------------------------------
 
-    def register_config_watcher(
+    def register_config_watcher_v2(
         self, container_id: str, config_path: str,
         callback_type: str = "restart",
     ) -> Dict[str, Any]:
@@ -22546,7 +22546,7 @@ class ContainerManager:
                 "change_count": watcher["change_count"],
                 "callback_type": watcher["callback_type"]}
 
-    def get_reload_history(
+    def get_reload_history_v2(
         self, container_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get config reload history."""
@@ -23200,7 +23200,7 @@ class ContainerManager:
     # Multi-cluster service mesh with traffic policies
     # ------------------------------------------------------------------
 
-    def create_mesh_cluster(
+    def create_mesh_cluster_v2(
         self, name: str, endpoint: str, region: str = "default"
     ) -> Dict[str, Any]:
         """Register a cluster in the service mesh."""
@@ -23217,7 +23217,7 @@ class ContainerManager:
         }
         return {"name": name, "endpoint": endpoint, "region": region}
 
-    def add_mesh_service(
+    def add_mesh_service_v2(
         self, cluster_name: str, service_name: str, port: int = 80
     ) -> Dict[str, Any]:
         """Add a service to a mesh cluster."""
@@ -23229,7 +23229,7 @@ class ContainerManager:
         cluster["services"].append({"name": service_name, "port": port})
         return {"cluster": cluster_name, "service": service_name, "port": port}
 
-    def create_traffic_policy(
+    def create_traffic_policy_v2(
         self,
         name: str,
         source_service: str,
@@ -23258,7 +23258,7 @@ class ContainerManager:
             "rule_count": len(rules),
         }
 
-    def evaluate_traffic_policy(
+    def evaluate_traffic_policy_v2(
         self, source: str, destination: str, headers: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """Evaluate traffic policies for a source-destination pair."""
@@ -23276,7 +23276,7 @@ class ContainerManager:
                     }
         return {"action": "allow", "reason": "default"}
 
-    def get_mesh_topology(self) -> Dict[str, Any]:
+    def get_mesh_topology_v2(self) -> Dict[str, Any]:
         """Get the service mesh topology."""
         clusters = getattr(self, '_mesh_clusters', {})
         policies = getattr(self, '_mesh_policies', {})
@@ -25453,7 +25453,7 @@ class ContainerManager:
     # Workload identity and SPIFFE-based authentication
     # ------------------------------------------------------------------
 
-    def create_workload_identity(
+    def create_workload_identity_v2(
         self,
         name: str,
         spiffe_id: str,
@@ -25478,7 +25478,7 @@ class ContainerManager:
         }
         return {"name": name, "spiffe_id": spiffe_id, "created": True}
 
-    def validate_workload_identity(
+    def validate_workload_identity_v2(
         self,
         name: str,
     ) -> Dict[str, Any]:
@@ -25503,7 +25503,7 @@ class ContainerManager:
             "remaining_seconds": round(remaining, 1),
         }
 
-    def rotate_workload_identity(
+    def rotate_workload_identity_v2(
         self,
         name: str,
         new_ttl_seconds: Optional[float] = None,
@@ -25520,7 +25520,7 @@ class ContainerManager:
         identity["rotations"] += 1
         return {"name": name, "rotations": identity["rotations"], "new_ttl": ttl}
 
-    def revoke_workload_identity(self, name: str) -> Dict[str, Any]:
+    def revoke_workload_identity_v2(self, name: str) -> Dict[str, Any]:
         """Revoke a workload identity."""
         if not hasattr(self, '_workload_identities'):
             return {"error": "No identities"}
@@ -25530,7 +25530,7 @@ class ContainerManager:
         identity["revoked"] = True
         return {"name": name, "revoked": True}
 
-    def list_workload_identities(self) -> List[Dict[str, Any]]:
+    def list_workload_identities_v2(self) -> List[Dict[str, Any]]:
         """List all workload identities."""
         if not hasattr(self, '_workload_identities'):
             return []
@@ -25549,7 +25549,7 @@ class ContainerManager:
     # Container image vulnerability scanning with policy blocking
     # ------------------------------------------------------------------
 
-    def scan_image_vulnerabilities(
+    def scan_image_vulnerabilities_extended(
         self,
         image_ref: str,
         severity_filter: Optional[List[str]] = None,
@@ -27565,7 +27565,7 @@ class ContainerManager:
         mon["bandwidth_history"][target] = mon["bandwidth_history"][target][-1000:]
         return {"ok": True, "target": target}
 
-    def get_network_latency_stats(self, monitor_id: str) -> Dict[str, Any]:
+    def get_network_latency_stats_extended(self, monitor_id: str) -> Dict[str, Any]:
         """Get aggregated latency statistics per target."""
         mon = getattr(self, '_net_monitors', {}).get(monitor_id)
         if not mon:
@@ -27589,7 +27589,7 @@ class ContainerManager:
             }
         return {"monitor_id": monitor_id, "targets": stats}
 
-    def get_bandwidth_stats(self, monitor_id: str) -> Dict[str, Any]:
+    def get_bandwidth_stats_extended(self, monitor_id: str) -> Dict[str, Any]:
         """Get aggregated bandwidth statistics per target."""
         mon = getattr(self, '_net_monitors', {}).get(monitor_id)
         if not mon:
@@ -29901,7 +29901,7 @@ class ContainerManager:
     # ------------------------------------------------------------------
     # Distributed tracing with span aggregation
     # ------------------------------------------------------------------
-    def create_trace(self, container: Container, operation: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    def create_trace_span(self, container: Container, operation: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
         if not hasattr(self, '_traces'): self._traces = {}
         tid = trace_id or f"trace-{container.id[:8]}-{int(time.time()*1000)}"
         self._traces[tid] = {
@@ -29921,7 +29921,7 @@ class ContainerManager:
         trace["duration_ms"] = sum(s["duration_ms"] for s in trace["spans"])
         return {"ok": True, "trace_id": trace_id, "span_id": span["span_id"]}
 
-    def finish_trace(self, trace_id: str, status: str = "ok") -> Dict[str, Any]:
+    def finish_trace_span(self, trace_id: str, status: str = "ok") -> Dict[str, Any]:
         trace = getattr(self, '_traces', {}).get(trace_id)
         if not trace: return {"error": "Trace not found"}
         trace["status"] = status
@@ -30008,7 +30008,7 @@ class ContainerManager:
         agg["alert_rules"].append(rule)
         return {"ok": True, "aggregator_id": aggregator_id, "rule_name": name}
 
-    def get_log_stats(self, aggregator_id: str) -> Dict[str, Any]:
+    def get_log_stats_extended(self, aggregator_id: str) -> Dict[str, Any]:
         agg = getattr(self, '_log_aggregators', {}).get(aggregator_id)
         if not agg: return {"error": "Aggregator not found"}
         level_counts = {}
@@ -30077,7 +30077,7 @@ class ContainerManager:
     # ------------------------------------------------------------------
     # DNS service discovery with health-aware routing
     # ------------------------------------------------------------------
-    def register_service(self, container: Container, service_name: str, port: int, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    def register_discovery_service(self, container: Container, service_name: str, port: int, tags: Optional[List[str]] = None) -> Dict[str, Any]:
         if not hasattr(self, '_service_registry'): self._service_registry = {}
         svc_id = f"svc-{container.id[:12]}-{service_name}"
         self._service_registry[svc_id] = {
@@ -30112,12 +30112,12 @@ class ContainerManager:
         return {"service_name": service_name, "port": chosen["port"], "container_name": chosen["container_name"],
                 "service_id": chosen["container_id"], "total_healthy": len(healthy)}
 
-    def deregister_service(self, service_id: str) -> Dict[str, Any]:
+    def deregister_discovery_service(self, service_id: str) -> Dict[str, Any]:
         svc = getattr(self, '_service_registry', {}).pop(service_id, None)
         if not svc: return {"error": "Service not found"}
         return {"ok": True, "service_id": service_id, "service_name": svc["service_name"]}
 
-    def list_services(self) -> Dict[str, Any]:
+    def list_discovery_services(self) -> Dict[str, Any]:
         registry = getattr(self, '_service_registry', {})
         by_name = {}
         for svc in registry.values():
@@ -30274,7 +30274,7 @@ class ContainerManager:
         }
         return {"schema_name": schema_name, "fields": fields or {}}
 
-    def validate_config(self, schema_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_config_extended(self, schema_name: str, config: Dict[str, Any]) -> Dict[str, Any]:
         schema = self._config_schemas.get(schema_name)
         if not schema: return {"error": f"Schema '{schema_name}' not found"}
         errors = []

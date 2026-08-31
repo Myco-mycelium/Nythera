@@ -2411,7 +2411,7 @@ class TestAnomalyAlerting(unittest.TestCase):
             rules={"memory_pct_threshold": 0, "cooldown_seconds": 0, "channels": ["ch4"]},
         )
         mgr.evaluate_alerts(c)
-        hist = mgr.get_alert_history()
+        hist = mgr.get_alert_history_extended()
         self.assertGreater(hist["count"], 0)
 
     def test_format_human_alert_history(self):
@@ -2443,7 +2443,7 @@ class TestStatisticalAnomalyDetection(unittest.TestCase):
         """Returns insufficient_data when not enough history."""
         mgr = self._manager()
         c = self._make(mgr, "ad1")
-        r = mgr.detect_anomalies(c, window_size=30)
+        r = mgr.detect_resource_anomalies(c, window_size=30)
         self.assertTrue(r["insufficient_data"])
         self.assertEqual(r["anomaly_count"], 0)
 
@@ -2456,7 +2456,7 @@ class TestStatisticalAnomalyDetection(unittest.TestCase):
             {"mem_ratio": 0.5} for _ in range(29)
         ]
         mgr._resource_history[c.id].append({"mem_ratio": 5.0})  # outlier
-        r = mgr.detect_anomalies(c, window_size=30, z_threshold=2.0)
+        r = mgr.detect_resource_anomalies(c, window_size=30, z_threshold=2.0)
         self.assertFalse(r["insufficient_data"])
         self.assertGreater(r["anomaly_count"], 0)
 
@@ -3268,7 +3268,7 @@ class TestLogAggregation(unittest.TestCase):
         """Log stats aggregate correctly."""
         mgr = self._manager()
         self._make(mgr, "log3")
-        stats = mgr.get_log_stats()
+        stats = mgr.get_log_stats_extended()
         self.assertIn("total_containers", stats)
         self.assertIn("total_lines", stats)
 
@@ -3367,7 +3367,7 @@ class TestVulnerabilityScanning(unittest.TestCase):
     def test_scan_image_nonexistent(self):
         """Scan nonexistent image returns error."""
         mgr = self._manager()
-        r = mgr.scan_image_vulnerabilities("/nonexistent")
+        r = mgr.scan_image_vulnerabilities_extended("/nonexistent")
         self.assertIn("error", r)
 
     def test_scan_fleet(self):
@@ -4345,7 +4345,7 @@ class TestConfigHotReload(unittest.TestCase):
         """register_config_watcher stores watcher."""
         mgr = self._manager()
         c = self._make(mgr, "hr1")
-        r = mgr.register_config_watcher(c, "/etc/app.conf")
+        r = mgr.register_config_watcher_v2(c, "/etc/app.conf")
         self.assertIn("watcher_id", r)
         self.assertEqual(r["path"], "/etc/app.conf")
 
@@ -4353,7 +4353,7 @@ class TestConfigHotReload(unittest.TestCase):
         """trigger_config_reload executes."""
         mgr = self._manager()
         c = self._make(mgr, "hr2")
-        r = mgr.register_config_watcher(c, "/etc/app.conf", reload_action="signal")
+        r = mgr.register_config_watcher_v2(c, "/etc/app.conf", reload_action="signal")
         result = mgr.trigger_config_reload(c, r["watcher_id"])
         self.assertEqual(result["status"], "success")
 
@@ -4361,8 +4361,8 @@ class TestConfigHotReload(unittest.TestCase):
         """get_config_watchers returns all."""
         mgr = self._manager()
         c = self._make(mgr, "hr3")
-        mgr.register_config_watcher(c, "/a.conf")
-        mgr.register_config_watcher(c, "/b.conf")
+        mgr.register_config_watcher_v2(c, "/a.conf")
+        mgr.register_config_watcher_v2(c, "/b.conf")
         r = mgr.get_config_watchers(c)
         self.assertEqual(r["count"], 2)
 
@@ -4370,7 +4370,7 @@ class TestConfigHotReload(unittest.TestCase):
         """remove_config_watcher deletes."""
         mgr = self._manager()
         c = self._make(mgr, "hr4")
-        r = mgr.register_config_watcher(c, "/c.conf")
+        r = mgr.register_config_watcher_v2(c, "/c.conf")
         d = mgr.remove_config_watcher(c, r["watcher_id"])
         self.assertIn("removed", d)
 
@@ -4386,10 +4386,10 @@ class TestConfigHotReload(unittest.TestCase):
         """get_reload_history tracks reloads."""
         mgr = self._manager()
         c = self._make(mgr, "hr6")
-        r = mgr.register_config_watcher(c, "/d.conf")
+        r = mgr.register_config_watcher_v2(c, "/d.conf")
         mgr.trigger_config_reload(c, r["watcher_id"])
         mgr.trigger_config_reload(c, r["watcher_id"])
-        h = mgr.get_reload_history(c)
+        h = mgr.get_reload_history_v2(c)
         self.assertEqual(h["total_reloads"], 2)
 
     def test_format_human_reload(self):
@@ -4418,7 +4418,7 @@ class TestEventCorrelationAnalysis(unittest.TestCase):
         mgr.record_event("c1", "oom_killed", "Out of memory")
         mgr.record_event("c2", "oom_killed", "Out of memory")
         mgr.record_event("c3", "oom_killed", "Out of memory")
-        r = mgr.correlate_events(min_containers=2)
+        r = mgr.correlate_events_cross_container(min_containers=2)
         self.assertGreaterEqual(r["cluster_count"], 1)
 
     def test_analyze_patterns(self):
@@ -4444,7 +4444,7 @@ class TestEventCorrelationAnalysis(unittest.TestCase):
         mgr = self._manager()
         mgr.record_event("c1", "a", "msg1")
         mgr.record_event("c2", "b", "msg2")
-        r = mgr.get_event_timeline()
+        r = mgr.get_event_timeline_extended()
         self.assertEqual(r["count"], 2)
 
     def test_format_human_correlate(self):
@@ -4498,7 +4498,7 @@ class TestNetworkLatencyBandwidth(unittest.TestCase):
         target = "1.2.3.4:80"
         for i in range(10):
             mgr.record_network_latency(mid, target, float(i))
-        r2 = mgr.get_network_latency_stats(mid)
+        r2 = mgr.get_network_latency_stats_extended(mid)
         self.assertIn("targets", r2)
         self.assertIn(target, r2["targets"])
         self.assertGreater(r2["targets"][target]["avg_ms"], 0)
@@ -4512,7 +4512,7 @@ class TestNetworkLatencyBandwidth(unittest.TestCase):
         target = "1.2.3.4:80"
         mgr.record_bandwidth(mid, target, 1000, 500)
         mgr.record_bandwidth(mid, target, 2000, 1000)
-        r2 = mgr.get_bandwidth_stats(mid)
+        r2 = mgr.get_bandwidth_stats_extended(mid)
         self.assertIn(target, r2["targets"])
         self.assertEqual(r2["targets"][target]["total_sent_bytes"], 3000)
         self.assertEqual(r2["targets"][target]["total_received_bytes"], 1500)
@@ -5030,14 +5030,14 @@ class TestServiceDiscovery(unittest.TestCase):
         """register_service adds instance."""
         mgr = self._manager()
         c = self._make(mgr, "sd1")
-        r = mgr.register_service("api", c.id, port=8080)
+        r = mgr.register_discovery_service("api", c.id, port=8080)
         self.assertEqual(r["port"], 8080)
 
     def test_discover_service(self):
         """discover_service returns healthy instances."""
         mgr = self._manager()
         c = self._make(mgr, "sd2")
-        mgr.register_service("web", c.id, tags=["v1"])
+        mgr.register_discovery_service("web", c.id, tags=["v1"])
         r = mgr.discover_service("web")
         self.assertEqual(r["count"], 1)
 
@@ -5046,8 +5046,8 @@ class TestServiceDiscovery(unittest.TestCase):
         mgr = self._manager()
         c1 = self._make(mgr, "sd3")
         c2 = self._make(mgr, "sd4")
-        mgr.register_service("svc", c1.id, tags=["v1"])
-        mgr.register_service("svc", c2.id, tags=["v2"])
+        mgr.register_discovery_service("svc", c1.id, tags=["v1"])
+        mgr.register_discovery_service("svc", c2.id, tags=["v2"])
         r = mgr.discover_service("svc", tag="v1")
         self.assertEqual(r["count"], 1)
 
@@ -5055,15 +5055,15 @@ class TestServiceDiscovery(unittest.TestCase):
         """deregister_service removes instance."""
         mgr = self._manager()
         c = self._make(mgr, "sd5")
-        mgr.register_service("rm", c.id)
-        r = mgr.deregister_service("rm", c.id)
+        mgr.register_discovery_service("rm", c.id)
+        r = mgr.deregister_discovery_service("rm", c.id)
         self.assertEqual(r["removed"], 1)
 
     def test_heartbeat(self):
         """service_heartbeat updates timestamp."""
         mgr = self._manager()
         c = self._make(mgr, "sd6")
-        mgr.register_service("hb", c.id)
+        mgr.register_discovery_service("hb", c.id)
         r = mgr.service_heartbeat("hb", c.id)
         self.assertTrue(r["heartbeat"])
 
@@ -5071,7 +5071,7 @@ class TestServiceDiscovery(unittest.TestCase):
         """inject_dependency sets env var."""
         mgr = self._manager()
         c = self._make(mgr, "sd7")
-        mgr.register_service("db", c.id, port=5432)
+        mgr.register_discovery_service("db", c.id, port=5432)
         r = mgr.inject_dependency(c, "db", "DATABASE_URL")
         self.assertTrue(r["injected"])
         self.assertIn("5432", r["value"])
@@ -5080,9 +5080,9 @@ class TestServiceDiscovery(unittest.TestCase):
         """list_services returns all."""
         mgr = self._manager()
         c = self._make(mgr, "sd8")
-        mgr.register_service("a", c.id)
-        mgr.register_service("b", c.id)
-        r = mgr.list_services()
+        mgr.register_discovery_service("a", c.id)
+        mgr.register_discovery_service("b", c.id)
+        r = mgr.list_discovery_services()
         self.assertEqual(r["count"], 2)
 
     def test_format_human_list(self):
@@ -5104,13 +5104,13 @@ class TestDistributedTracing(unittest.TestCase):
     def test_create_trace(self):
         """create_trace returns trace_id."""
         mgr = self._manager()
-        r = mgr.create_trace("request")
+        r = mgr.create_trace_span("request")
         self.assertIn("trace_id", r)
 
     def test_start_and_finish_span(self):
         """start_span and finish_span track duration."""
         mgr = self._manager()
-        t = mgr.create_trace("test")
+        t = mgr.create_trace_span("test")
         s = mgr.start_span(t["trace_id"], "http-get")
         r = mgr.finish_span(t["trace_id"], s["span_id"])
         self.assertIn("duration_ms", r)
@@ -5118,7 +5118,7 @@ class TestDistributedTracing(unittest.TestCase):
     def test_span_attributes(self):
         """add_span_attribute stores attributes."""
         mgr = self._manager()
-        t = mgr.create_trace("attr")
+        t = mgr.create_trace_span("attr")
         s = mgr.start_span(t["trace_id"], "db-query")
         mgr.add_span_attribute(t["trace_id"], s["span_id"], "sql", "SELECT 1")
         trace = mgr.get_trace(t["trace_id"])
@@ -5127,7 +5127,7 @@ class TestDistributedTracing(unittest.TestCase):
     def test_parent_child(self):
         """Spans can have parents."""
         mgr = self._manager()
-        t = mgr.create_trace("tree")
+        t = mgr.create_trace_span("tree")
         parent = mgr.start_span(t["trace_id"], "root")
         child = mgr.start_span(t["trace_id"], "child", parent_span_id=parent["span_id"])
         mgr.finish_span(t["trace_id"], child["span_id"])
@@ -5138,18 +5138,18 @@ class TestDistributedTracing(unittest.TestCase):
     def test_finish_trace(self):
         """finish_trace records total duration."""
         mgr = self._manager()
-        t = mgr.create_trace("done")
+        t = mgr.create_trace_span("done")
         mgr.start_span(t["trace_id"], "op1")
-        r = mgr.finish_trace(t["trace_id"])
+        r = mgr.finish_trace_span(t["trace_id"])
         self.assertIn("duration_ms", r)
         self.assertEqual(r["span_count"], 1)
 
     def test_trace_summary(self):
         """get_trace_summary returns overview."""
         mgr = self._manager()
-        t = mgr.create_trace("sum")
+        t = mgr.create_trace_span("sum")
         mgr.start_span(t["trace_id"], "op1")
-        mgr.finish_trace(t["trace_id"])
+        mgr.finish_trace_span(t["trace_id"])
         r = mgr.get_trace_summary(t["trace_id"])
         self.assertEqual(r["span_count"], 1)
         self.assertEqual(r["error_spans"], 0)
@@ -5157,8 +5157,8 @@ class TestDistributedTracing(unittest.TestCase):
     def test_list_traces(self):
         """list_traces returns recent."""
         mgr = self._manager()
-        mgr.create_trace("t1")
-        mgr.create_trace("t2")
+        mgr.create_trace_span("t1")
+        mgr.create_trace_span("t2")
         r = mgr.list_traces()
         self.assertEqual(r["count"], 2)
 
@@ -5467,45 +5467,45 @@ class TestServiceMesh(unittest.TestCase):
     def test_create_cluster(self):
         """create_mesh_cluster stores cluster."""
         mgr = self._manager()
-        r = mgr.create_mesh_cluster("us-east", "https://us-east.mesh", region="us-east-1")
+        r = mgr.create_mesh_cluster_v2("us-east", "https://us-east.mesh", region="us-east-1")
         self.assertEqual(r["region"], "us-east-1")
 
     def test_add_service(self):
         """add_mesh_service adds to cluster."""
         mgr = self._manager()
-        mgr.create_mesh_cluster("c1", "https://c1.mesh")
-        r = mgr.add_mesh_service("c1", "api", port=8080)
+        mgr.create_mesh_cluster_v2("c1", "https://c1.mesh")
+        r = mgr.add_mesh_service_v2("c1", "api", port=8080)
         self.assertEqual(r["port"], 8080)
 
     def test_create_policy(self):
         """create_traffic_policy stores policy."""
         mgr = self._manager()
-        r = mgr.create_traffic_policy("tp1", "frontend", "backend")
+        r = mgr.create_traffic_policy_v2("tp1", "frontend", "backend")
         self.assertEqual(r["source"], "frontend")
         self.assertEqual(r["destination"], "backend")
 
     def test_evaluate_policy(self):
         """evaluate_traffic_policy returns action."""
         mgr = self._manager()
-        mgr.create_traffic_policy("tp2", "a", "b")
-        r = mgr.evaluate_traffic_policy("a", "b")
+        mgr.create_traffic_policy_v2("tp2", "a", "b")
+        r = mgr.evaluate_traffic_policy_v2("a", "b")
         self.assertIn("action", r)
         self.assertEqual(r["policy"], "tp2")
 
     def test_topology(self):
         """get_mesh_topology returns overview."""
         mgr = self._manager()
-        mgr.create_mesh_cluster("cl1", "https://cl1")
-        mgr.add_mesh_service("cl1", "svc1")
-        r = mgr.get_mesh_topology()
+        mgr.create_mesh_cluster_v2("cl1", "https://cl1")
+        mgr.add_mesh_service_v2("cl1", "svc1")
+        r = mgr.get_mesh_topology_v2()
         self.assertEqual(r["clusters"], 1)
         self.assertEqual(len(r["services"]), 1)
 
     def test_list_policies(self):
         """list_mesh_policies returns all."""
         mgr = self._manager()
-        mgr.create_traffic_policy("p1", "a", "b")
-        mgr.create_traffic_policy("p2", "c", "d")
+        mgr.create_traffic_policy_v2("p1", "a", "b")
+        mgr.create_traffic_policy_v2("p2", "c", "d")
         r = mgr.list_mesh_policies()
         self.assertEqual(r["count"], 2)
 
@@ -8098,7 +8098,7 @@ class TestResourceAlerts(unittest.TestCase):
         c = mgr.create(ContainerConfig(name="a"))
         mgr._fire_alert(c, "memory", "critical", "95%")
         mgr._fire_alert(c, "pid", "warning", "80%")
-        history = mgr.get_alert_history(c)
+        history = mgr.get_alert_history_extended(c)
         self.assertEqual(len(history), 2)
 
     def test_get_alert_history_filter(self):
@@ -8108,7 +8108,7 @@ class TestResourceAlerts(unittest.TestCase):
         c = mgr.create(ContainerConfig(name="a"))
         mgr._fire_alert(c, "memory", "critical", "95%")
         mgr._fire_alert(c, "pid", "warning", "80%")
-        history = mgr.get_alert_history(c, resource="memory")
+        history = mgr.get_alert_history_extended(c, resource="memory")
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["resource"], "memory")
 
@@ -8122,7 +8122,7 @@ class TestResourceAlerts(unittest.TestCase):
         # Force different level to avoid dedup
         c._alert_history[-1]["level"] = "ok"
         mgr._fire_alert(c, "pid", "critical", "95%")
-        history = mgr.get_alert_history(c, tail=1)
+        history = mgr.get_alert_history_extended(c, tail=1)
         self.assertEqual(len(history), 1)
 
     def test_clear_alert_history(self):
@@ -9101,7 +9101,7 @@ class TestAnomalyDetection(unittest.TestCase):
         from backend.container import ContainerConfig
         mgr = self._manager()
         c = mgr.create(ContainerConfig(name="anom-test"))
-        result = mgr.detect_anomalies(c, "memory", window_size=5)
+        result = mgr.detect_resource_anomalies(c, "memory", window_size=5)
         self.assertTrue(result["insufficient_data"])
         self.assertEqual(result["anomalies"], [])
 
@@ -9121,7 +9121,7 @@ class TestAnomalyDetection(unittest.TestCase):
                 "cpu_usage_usec": 5000,
                 "pids_current": 3,
             })
-        result = mgr.detect_anomalies(c, "memory", sensitivity=1.5)
+        result = mgr.detect_resource_anomalies(c, "memory", sensitivity=1.5)
         self.assertFalse(result["insufficient_data"])
         self.assertGreater(len(result["anomalies"]), 0)
         self.assertEqual(result["anomalies"][0]["type"], "spike")
@@ -25986,14 +25986,14 @@ class TestEventCorrelation(unittest.TestCase):
     def test_correlate_empty(self):
         """correlate_events returns empty when no events."""
         mgr = self._manager()
-        result = mgr.correlate_events()
+        result = mgr.correlate_events_cross_container()
         self.assertEqual(result["clusters"], [])
         self.assertEqual(result["total_events"], 0)
 
     def test_get_event_timeline_empty(self):
         """get_event_timeline returns empty when no events."""
         mgr = self._manager()
-        result = mgr.get_event_timeline()
+        result = mgr.get_event_timeline_extended()
         self.assertEqual(result["events"], [])
         self.assertIn("summary", result)
 
@@ -31764,38 +31764,38 @@ class TestWorkloadIdentity(unittest.TestCase):
     def test_create_identity(self):
         """create_workload_identity stores identity."""
         mgr = self._manager()
-        r = mgr.create_workload_identity("svc1", spiffe_id="spiffe://nyrqis.local/svc1")
+        r = mgr.create_workload_identity_v2("svc1", spiffe_id="spiffe://nyrqis.local/svc1")
         self.assertTrue(r["created"])
 
     def test_validate_valid(self):
         """validate_workload_identity passes for valid identity."""
         mgr = self._manager()
-        mgr.create_workload_identity("svc2", spiffe_id="spiffe://nyrqis.local/svc2", ttl_seconds=3600)
-        r = mgr.validate_workload_identity("svc2")
+        mgr.create_workload_identity_v2("svc2", spiffe_id="spiffe://nyrqis.local/svc2", ttl_seconds=3600)
+        r = mgr.validate_workload_identity_v2("svc2")
         self.assertTrue(r["valid"])
 
     def test_validate_revoked(self):
         """validate_workload_identity fails for revoked identity."""
         mgr = self._manager()
-        mgr.create_workload_identity("svc3", spiffe_id="spiffe://nyrqis.local/svc3")
-        mgr.revoke_workload_identity("svc3")
-        r = mgr.validate_workload_identity("svc3")
+        mgr.create_workload_identity_v2("svc3", spiffe_id="spiffe://nyrqis.local/svc3")
+        mgr.revoke_workload_identity_v2("svc3")
+        r = mgr.validate_workload_identity_v2("svc3")
         self.assertFalse(r["valid"])
         self.assertEqual(r["error"], "identity_revoked")
 
     def test_rotate_identity(self):
         """rotate_workload_identity extends expiry."""
         mgr = self._manager()
-        mgr.create_workload_identity("svc4", spiffe_id="spiffe://nyrqis.local/svc4")
-        r = mgr.rotate_workload_identity("svc4", new_ttl_seconds=7200)
+        mgr.create_workload_identity_v2("svc4", spiffe_id="spiffe://nyrqis.local/svc4")
+        r = mgr.rotate_workload_identity_v2("svc4", new_ttl_seconds=7200)
         self.assertEqual(r["rotations"], 1)
 
     def test_list_identities(self):
         """list_workload_identities returns all."""
         mgr = self._manager()
-        mgr.create_workload_identity("svc5", spiffe_id="spiffe://nyrqis.local/svc5")
-        mgr.create_workload_identity("svc6", spiffe_id="spiffe://nyrqis.local/svc6")
-        r = mgr.list_workload_identities()
+        mgr.create_workload_identity_v2("svc5", spiffe_id="spiffe://nyrqis.local/svc5")
+        mgr.create_workload_identity_v2("svc6", spiffe_id="spiffe://nyrqis.local/svc6")
+        r = mgr.list_workload_identities_v2()
         self.assertEqual(len(r), 2)
 
     def test_format_human_identity(self):
@@ -31815,7 +31815,7 @@ class TestVulnScanning(unittest.TestCase):
     def test_scan_image(self):
         """scan_image_vulnerabilities returns results."""
         mgr = self._manager()
-        r = mgr.scan_image_vulnerabilities("nginx:latest")
+        r = mgr.scan_image_vulnerabilities_extended("nginx:latest")
         self.assertIn("total_vulns", r)
         self.assertIn("vulnerabilities", r)
 
@@ -31828,7 +31828,7 @@ class TestVulnScanning(unittest.TestCase):
     def test_evaluate_vuln_policy_block(self):
         """evaluate_vuln_policy blocks on critical."""
         mgr = self._manager()
-        mgr.scan_image_vulnerabilities("nginx:latest")
+        mgr.scan_image_vulnerabilities_extended("nginx:latest")
         mgr.set_vuln_scan_policy("block-crit", block_on_critical=True, max_vulns=0)
         r = mgr.evaluate_vuln_policy("block-crit", "nginx:latest")
         # Should block if there are critical vulns (deterministic from hash)
@@ -31838,8 +31838,8 @@ class TestVulnScanning(unittest.TestCase):
     def test_scan_history(self):
         """get_scan_history returns scans."""
         mgr = self._manager()
-        mgr.scan_image_vulnerabilities("img1:latest")
-        mgr.scan_image_vulnerabilities("img2:latest")
+        mgr.scan_image_vulnerabilities_extended("img1:latest")
+        mgr.scan_image_vulnerabilities_extended("img2:latest")
         r = mgr.get_scan_history()
         self.assertEqual(len(r), 2)
 
@@ -32815,7 +32815,7 @@ class TestNetworkMonitoring(unittest.TestCase):
         target = "1.2.3.4:443"
         for lat in [10, 20, 30, 100]:
             mgr.record_network_latency(mid, target, lat)
-        r2 = mgr.get_network_latency_stats(mid)
+        r2 = mgr.get_network_latency_stats_extended(mid)
         self.assertIn("targets", r2)
         self.assertIn(target, r2["targets"])
         self.assertEqual(r2["targets"][target]["count"], 4)
@@ -32829,7 +32829,7 @@ class TestNetworkMonitoring(unittest.TestCase):
         target = "1.2.3.4:80"
         for i in range(50):
             mgr.record_network_latency(mid, target, float(i))
-        r2 = mgr.get_network_latency_stats(mid)
+        r2 = mgr.get_network_latency_stats_extended(mid)
         self.assertIn("p50_ms", r2["targets"][target])
         self.assertIn("p95_ms", r2["targets"][target])
 
@@ -32842,7 +32842,7 @@ class TestNetworkMonitoring(unittest.TestCase):
         target = "1.2.3.4:80"
         mgr.record_bandwidth(mid, target, 1000, 2000)
         mgr.record_bandwidth(mid, target, 500, 800)
-        r2 = mgr.get_bandwidth_stats(mid)
+        r2 = mgr.get_bandwidth_stats_extended(mid)
         self.assertIn(target, r2["targets"])
         self.assertEqual(r2["targets"][target]["total_sent_bytes"], 1500)
         self.assertEqual(r2["targets"][target]["total_received_bytes"], 2800)
@@ -32868,7 +32868,7 @@ class TestNetworkMonitoring(unittest.TestCase):
         mid = r["monitor_id"]
         r2 = mgr.stop_network_monitor(mid)
         self.assertTrue(r2["ok"])
-        r3 = mgr.get_network_latency_stats(mid)
+        r3 = mgr.get_network_latency_stats_extended(mid)
         self.assertIn("error", r3)
 
 
@@ -33498,24 +33498,24 @@ class TestDistributedTracing(unittest.TestCase):
     def _mk(self, m, n):
         from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
     def test_create_trace(self):
-        m=self._mgr(); c=self._mk(m,"dt1"); r=m.create_trace(c,"GET /api"); self.assertIn("trace_id",r)
+        m=self._mgr(); c=self._mk(m,"dt1"); r=m.create_trace_span(c,"GET /api"); self.assertIn("trace_id",r)
     def test_add_spans(self):
-        m=self._mgr(); c=self._mk(m,"dt2"); r=m.create_trace(c,"req"); tid=r["trace_id"]
+        m=self._mgr(); c=self._mk(m,"dt2"); r=m.create_trace_span(c,"req"); tid=r["trace_id"]
         m.add_span(tid,"db",50.0); m.add_span(tid,"cache",10.0)
         r2=m.get_trace_detail(tid); self.assertEqual(r2["span_count"],2)
         self.assertGreater(r2["duration_ms"],0)
     def test_finish_trace(self):
-        m=self._mgr(); c=self._mk(m,"dt3"); r=m.create_trace(c,"req"); tid=r["trace_id"]
+        m=self._mgr(); c=self._mk(m,"dt3"); r=m.create_trace_span(c,"req"); tid=r["trace_id"]
         m.add_span(tid,"s1",25.0)
-        r2=m.finish_trace(tid); self.assertIn("trace_id",r2)
+        r2=m.finish_trace_span(tid); self.assertIn("trace_id",r2)
     def test_aggregate(self):
         m=self._mgr(); c=self._mk(m,"dt4"); cid=c.id
         for i in range(5):
-            r=m.create_trace(c,"GET /api",trace_id=f"trace-{cid[:8]}-{i}"); m.add_span(r["trace_id"],"s",10.0); m.finish_trace(r["trace_id"])
+            r=m.create_trace_span(c,"GET /api",trace_id=f"trace-{cid[:8]}-{i}"); m.add_span(r["trace_id"],"s",10.0); m.finish_trace_span(r["trace_id"])
         r2=m.aggregate_traces(cid); self.assertGreater(r2["count"],0)
         self.assertIn("avg_duration_ms",r2)
     def test_delete_trace(self):
-        m=self._mgr(); c=self._mk(m,"dt5"); r=m.create_trace(c,"op"); self.assertTrue(m.delete_trace(r["trace_id"])["ok"])
+        m=self._mgr(); c=self._mk(m,"dt5"); r=m.create_trace_span(c,"op"); self.assertTrue(m.delete_trace(r["trace_id"])["ok"])
 
 class TestLogAggregation(unittest.TestCase):
     def _mgr(self):
@@ -33534,11 +33534,11 @@ class TestLogAggregation(unittest.TestCase):
         m=self._mgr(); c=self._mk(m,"la4"); r=m.create_log_aggregator(c); aid=r["aggregator_id"]
         m.add_log_alert_rule(aid,"errors",level="error")
         m.ingest_log(aid,"something failed",level="error")
-        r2=m.get_log_stats(aid); self.assertEqual(r2["alert_count"],1)
+        r2=m.get_log_stats_extended(aid); self.assertEqual(r2["alert_count"],1)
     def test_stats(self):
         m=self._mgr(); c=self._mk(m,"la5"); r=m.create_log_aggregator(c); aid=r["aggregator_id"]
         m.ingest_log(aid,"a",level="info"); m.ingest_log(aid,"b",level="error")
-        r2=m.get_log_stats(aid); self.assertEqual(r2["level_counts"]["info"],1)
+        r2=m.get_log_stats_extended(aid); self.assertEqual(r2["level_counts"]["info"],1)
     def test_delete(self):
         m=self._mgr(); c=self._mk(m,"la6"); r=m.create_log_aggregator(c); self.assertTrue(m.delete_log_aggregator(r["aggregator_id"])["ok"])
 
@@ -33572,24 +33572,24 @@ class TestServiceDiscovery(unittest.TestCase):
     def _mk(self, m, n):
         from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
     def test_register(self):
-        m=self._mgr(); c=self._mk(m,"sd1"); r=m.register_service(c,"web",8080); self.assertTrue(r["healthy"])
+        m=self._mgr(); c=self._mk(m,"sd1"); r=m.register_discovery_service(c,"web",8080); self.assertTrue(r["healthy"])
     def test_discover(self):
-        m=self._mgr(); c1=self._mk(m,"sd2a"); c2=self._mk(m,"sd2b"); m.register_service(c1,"web",8080); m.register_service(c2,"web",8081)
+        m=self._mgr(); c1=self._mk(m,"sd2a"); c2=self._mk(m,"sd2b"); m.register_discovery_service(c1,"web",8080); m.register_discovery_service(c2,"web",8081)
         r2=m.discover_services("web"); self.assertEqual(r2["count"],2)
     def test_health_filter(self):
         m=self._mgr(); c1=self._mk(m,"sd3a"); c2=self._mk(m,"sd3b")
-        r1=m.register_service(c1,"api",3000); r2=m.register_service(c2,"api",3001)
+        r1=m.register_discovery_service(c1,"api",3000); r2=m.register_discovery_service(c2,"api",3001)
         m.update_service_health(r1["service_id"],False)
         r3=m.discover_services("api",healthy_only=True); self.assertEqual(r3["count"],1)
     def test_resolve(self):
-        m=self._mgr(); c=self._mk(m,"sd4"); m.register_service(c,"db",5432)
+        m=self._mgr(); c=self._mk(m,"sd4"); m.register_discovery_service(c,"db",5432)
         r2=m.resolve_service("db"); self.assertEqual(r2["port"],5432)
     def test_list_services(self):
-        m=self._mgr(); c=self._mk(m,"sd5"); m.register_service(c,"web",80); m.register_service(c,"api",3000)
-        r2=m.list_services(); self.assertEqual(r2["total_instances"],2)
+        m=self._mgr(); c=self._mk(m,"sd5"); m.register_discovery_service(c,"web",80); m.register_discovery_service(c,"api",3000)
+        r2=m.list_discovery_services(); self.assertEqual(r2["total_instances"],2)
     def test_deregister(self):
-        m=self._mgr(); c=self._mk(m,"sd6"); r=m.register_service(c,"web",80)
-        m.deregister_service(r["service_id"]); r2=m.discover_services("web"); self.assertEqual(r2["count"],0)
+        m=self._mgr(); c=self._mk(m,"sd6"); r=m.register_discovery_service(c,"web",80)
+        m.deregister_discovery_service(r["service_id"]); r2=m.discover_services("web"); self.assertEqual(r2["count"],0)
 
 class TestServiceMesh(unittest.TestCase):
     """Tests for service mesh with mTLS and traffic policies."""
@@ -33600,22 +33600,22 @@ class TestServiceMesh(unittest.TestCase):
 
     def test_create_cluster(self):
         m=self._mgr()
-        r=m.create_mesh_cluster("main", "http://mesh.local", region="us-east")
+        r=m.create_mesh_cluster_v2("main", "http://mesh.local", region="us-east")
         self.assertIn("name", r)
         self.assertEqual(r["region"], "us-east")
 
     def test_add_service(self):
         m=self._mgr()
-        m.create_mesh_cluster("main", "http://mesh.local")
-        r2=m.add_mesh_service("main", "api", port=8080)
+        m.create_mesh_cluster_v2("main", "http://mesh.local")
+        r2=m.add_mesh_service_v2("main", "api", port=8080)
         self.assertEqual(r2["service"], "api")
 
     def test_topology(self):
         m=self._mgr()
-        m.create_mesh_cluster("main", "http://mesh.local")
-        m.add_mesh_service("main", "api")
-        m.add_mesh_service("main", "db")
-        topo=m.get_mesh_topology()
+        m.create_mesh_cluster_v2("main", "http://mesh.local")
+        m.add_mesh_service_v2("main", "api")
+        m.add_mesh_service_v2("main", "db")
+        topo=m.get_mesh_topology_v2()
         self.assertIn("clusters", topo)
 
 
@@ -33628,35 +33628,35 @@ class TestWorkloadIdentity(unittest.TestCase):
 
     def test_create_identity(self):
         m=self._mgr()
-        r=m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        r=m.create_workload_identity_v2("svc1", "spiffe://nyrqis.dev/sa/web")
         self.assertIn("name", r)
         self.assertTrue(r["created"])
 
     def test_validate_identity(self):
         m=self._mgr()
-        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
-        r2=m.validate_workload_identity("svc1")
+        m.create_workload_identity_v2("svc1", "spiffe://nyrqis.dev/sa/web")
+        r2=m.validate_workload_identity_v2("svc1")
         self.assertTrue(r2["valid"])
 
     def test_revoke_identity(self):
         m=self._mgr()
-        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
-        m.revoke_workload_identity("svc1")
-        r2=m.validate_workload_identity("svc1")
+        m.create_workload_identity_v2("svc1", "spiffe://nyrqis.dev/sa/web")
+        m.revoke_workload_identity_v2("svc1")
+        r2=m.validate_workload_identity_v2("svc1")
         self.assertFalse(r2["valid"])
 
     def test_rotate_identity(self):
         m=self._mgr()
-        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
-        r2=m.rotate_workload_identity("svc1")
+        m.create_workload_identity_v2("svc1", "spiffe://nyrqis.dev/sa/web")
+        r2=m.rotate_workload_identity_v2("svc1")
         self.assertIn("name", r2)
-        r3=m.validate_workload_identity("svc1")
+        r3=m.validate_workload_identity_v2("svc1")
         self.assertTrue(r3["valid"])
 
     def test_list_identities(self):
         m=self._mgr()
-        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
-        r=m.list_workload_identities()
+        m.create_workload_identity_v2("svc1", "spiffe://nyrqis.dev/sa/web")
+        r=m.list_workload_identities_v2()
         self.assertTrue(len(r) > 0)
 
 
@@ -33673,34 +33673,34 @@ class TestConfigHotReload(unittest.TestCase):
 
     def test_register_watcher(self):
         m=self._mgr(); c=self._mk(m,"cr1")
-        r=m.register_config_watcher(c.id, "/etc/app/config.yaml")
+        r=m.register_config_watcher_v2(c.id, "/etc/app/config.yaml")
         self.assertIn("watcher_id", r)
         self.assertEqual(r["callback_type"], "restart")
 
     def test_apply_change_restart(self):
         m=self._mgr(); c=self._mk(m,"cr2")
-        r=m.register_config_watcher(c.id, "/etc/app/config.yaml", callback_type="restart")
+        r=m.register_config_watcher_v2(c.id, "/etc/app/config.yaml", callback_type="restart")
         r2=m.apply_config_change(r["watcher_id"])
         self.assertTrue(r2["ok"])
         self.assertEqual(r2["action"], "restarted")
 
     def test_apply_change_reload(self):
         m=self._mgr(); c=self._mk(m,"cr3")
-        r=m.register_config_watcher(c.id, "/etc/app/config.yaml", callback_type="reload")
+        r=m.register_config_watcher_v2(c.id, "/etc/app/config.yaml", callback_type="reload")
         r2=m.apply_config_change(r["watcher_id"])
         self.assertTrue(r2["ok"])
         self.assertEqual(r2["action"], "reloaded")
 
     def test_watcher_status(self):
         m=self._mgr(); c=self._mk(m,"cr4")
-        r=m.register_config_watcher(c.id, "/etc/app/config.yaml")
+        r=m.register_config_watcher_v2(c.id, "/etc/app/config.yaml")
         r2=m.get_config_watcher_status(r["watcher_id"])
         self.assertEqual(r2["config_path"], "/etc/app/config.yaml")
         self.assertTrue(r2["enabled"])
 
     def test_reload_history(self):
         m=self._mgr(); c=self._mk(m,"cr5")
-        r=m.get_reload_history()
+        r=m.get_reload_history_v2()
         self.assertIn("history", r)
         self.assertEqual(r["count"], 0)
 
