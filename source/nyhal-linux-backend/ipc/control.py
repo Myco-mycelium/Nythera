@@ -10771,6 +10771,64 @@ class ControlService:
     def _delete_deploy_health(self, s, sp, cid, r):
         res = self.container_manager.delete_deploy_health(r.get("health_id",""))
         self._reply(sp,s,cid,{"ok":True,**res})
+
+    def _h_create_capacity_planner(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_capacity_planner(co, r.get("resource","cpu"), r.get("lookback_days",30), r.get("forecast_days",14))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_record_daily_usage(self, s, sp, cid, r):
+        res = self.container_manager.record_daily_usage(r.get("planner_id",""), r.get("usage_pct",0), r.get("day"))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_forecast_demand(self, s, sp, cid, r):
+        res = self.container_manager.forecast_demand(r.get("planner_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_get_capacity_report(self, s, sp, cid, r):
+        res = self.container_manager.get_capacity_report(r.get("planner_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_delete_capacity_planner(self, s, sp, cid, r):
+        res = self.container_manager.delete_capacity_planner(r.get("planner_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_create_slo_budget(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_slo_budget(co, r.get("slo_name",""), r.get("target_pct",99.9), r.get("window_days",30), r.get("budget_pct",0.1))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_record_slo_request(self, s, sp, cid, r):
+        res = self.container_manager.record_slo_request(r.get("budget_id",""), r.get("success",True), r.get("day"))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_check_budget_burn_rate(self, s, sp, cid, r):
+        res = self.container_manager.check_budget_burn_rate(r.get("budget_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_get_slo_budget_status(self, s, sp, cid, r):
+        res = self.container_manager.get_slo_budget_status(r.get("budget_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_delete_slo_budget(self, s, sp, cid, r):
+        res = self.container_manager.delete_slo_budget(r.get("budget_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_create_dependency_map(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_dependency_map(co)
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_add_dependency(self, s, sp, cid, r):
+        res = self.container_manager.add_dependency(r.get("map_id",""), r.get("target_name",""), r.get("dep_type","service"), r.get("critical",False))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_add_dependent(self, s, sp, cid, r):
+        res = self.container_manager.add_dependent(r.get("map_id",""), r.get("source_name",""), r.get("dep_type","service"), r.get("critical",False))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_analyze_blast_radius(self, s, sp, cid, r):
+        res = self.container_manager.analyze_blast_radius(r.get("map_id",""), r.get("failure_scope","direct"))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_get_dependency_graph(self, s, sp, cid, r):
+        res = self.container_manager.get_dependency_graph(r.get("map_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_remove_dependency(self, s, sp, cid, r):
+        res = self.container_manager.remove_dependency(r.get("map_id",""), r.get("target_name",""), r.get("direction","upstream"))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _h_delete_dependency_map(self, s, sp, cid, r):
+        res = self.container_manager.delete_dependency_map(r.get("map_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

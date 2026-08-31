@@ -28951,6 +28951,379 @@ class ContainerManager:
         return {"ok": True, "health_id": health_id, "final_score": health["score"]}
 
 
+
+    # ------------------------------------------------------------------
+    # Demand forecasting with capacity planning
+    # ------------------------------------------------------------------
+
+    def create_capacity_planner(
+        self,
+        container: Container,
+        resource: str = "cpu",
+        lookback_days: int = 30,
+        forecast_days: int = 14,
+    ) -> Dict[str, Any]:
+        """Create a capacity planner with demand forecasting."""
+        if not hasattr(self, '_capacity_planners'):
+            self._capacity_planners = {}
+        planner_id = f"cap-{container.id[:12]}"
+        self._capacity_planners[planner_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "resource": resource,
+            "lookback_days": lookback_days,
+            "forecast_days": forecast_days,
+            "created_at": time.time(),
+            "daily_usage": {},
+            "capacity_limit": 0,
+        }
+        return {
+            "planner_id": planner_id, "container_id": container.id,
+            "resource": resource, "lookback_days": lookback_days,
+            "forecast_days": forecast_days,
+        }
+
+    def record_daily_usage(
+        self,
+        planner_id: str,
+        usage_pct: float,
+        day: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record daily resource usage."""
+        planner = getattr(self, '_capacity_planners', {}).get(planner_id)
+        if not planner:
+            return {"error": "Planner not found"}
+        d = day or time.strftime("%Y-%m-%d")
+        planner["daily_usage"][d] = usage_pct
+        return {"ok": True, "planner_id": planner_id, "day": d, "usage_pct": usage_pct}
+
+    def forecast_demand(
+        self,
+        planner_id: str,
+    ) -> Dict[str, Any]:
+        """Forecast future demand using weighted moving average."""
+        planner = getattr(self, '_capacity_planners', {}).get(planner_id)
+        if not planner:
+            return {"error": "Planner not found"}
+        days = sorted(planner["daily_usage"].keys())
+        values = [planner["daily_usage"][d] for d in days]
+        if len(values) < 3:
+            return {"planner_id": planner_id, "forecast": [], "reason": "insufficient data"}
+        # Weighted moving average (recent days weighted more)
+        n = len(values)
+        forecasts = []
+        for step in range(1, planner["forecast_days"] + 1):
+            weights = list(range(1, n + 1))
+            weighted_sum = sum(w * v for w, v in zip(weights, values))
+            total_weight = sum(weights)
+            wma = weighted_sum / total_weight
+            # Add slight trend
+            if n >= 2:
+                trend = (values[-1] - values[0]) / (n - 1)
+            else:
+                trend = 0
+            forecast_val = wma + trend * step
+            forecast_val = max(0, min(100, forecast_val))
+            forecasts.append({
+                "day_offset": step,
+                "forecast_pct": round(forecast_val, 2),
+            })
+        # Capacity warning
+        max_forecast = max(f["forecast_pct"] for f in forecasts)
+        capacity_needed = max_forecast > 80
+        return {
+            "planner_id": planner_id,
+            "resource": planner["resource"],
+            "historical_avg": round(sum(values) / len(values), 2),
+            "forecasts": forecasts,
+            "max_forecast_pct": round(max_forecast, 2),
+            "capacity_warning": capacity_needed,
+            "recommendation": "scale_up" if max_forecast > 90 else "monitor" if max_forecast > 70 else "ok",
+        }
+
+    def get_capacity_report(self, planner_id: str) -> Dict[str, Any]:
+        """Get capacity planning report."""
+        planner = getattr(self, '_capacity_planners', {}).get(planner_id)
+        if not planner:
+            return {"error": "Planner not found"}
+        days = sorted(planner["daily_usage"].keys())
+        values = [planner["daily_usage"][d] for d in days]
+        return {
+            "planner_id": planner_id,
+            "container_name": planner["container_name"],
+            "resource": planner["resource"],
+            "data_days": len(days),
+            "avg_usage": round(sum(values) / len(values), 2) if values else 0,
+            "max_usage": round(max(values), 2) if values else 0,
+            "min_usage": round(min(values), 2) if values else 0,
+            "lookback_days": planner["lookback_days"],
+            "forecast_days": planner["forecast_days"],
+        }
+
+    def delete_capacity_planner(self, planner_id: str) -> Dict[str, Any]:
+        """Delete a capacity planner."""
+        planner = getattr(self, '_capacity_planners', {}).pop(planner_id, None)
+        if not planner:
+            return {"error": "Planner not found"}
+        return {"ok": True, "planner_id": planner_id}
+
+    # ------------------------------------------------------------------
+    # SLI/SLO error budget with burn rate alerts
+    # ------------------------------------------------------------------
+
+    def create_slo_budget(
+        self,
+        container: Container,
+        slo_name: str,
+        target_pct: float = 99.9,
+        window_days: int = 30,
+        budget_pct: float = 0.1,
+    ) -> Dict[str, Any]:
+        """Create an SLO error budget tracker."""
+        if not hasattr(self, '_slo_budgets'):
+            self._slo_budgets = {}
+        budget_id = f"slo-{container.id[:12]}-{slo_name}"
+        total_budget = budget_pct / 100.0
+        self._slo_budgets[budget_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "slo_name": slo_name,
+            "target_pct": target_pct,
+            "window_days": window_days,
+            "budget_pct": budget_pct,
+            "total_budget": total_budget,
+            "consumed": 0.0,
+            "daily_errors": {},
+            "alerts": [],
+            "created_at": time.time(),
+        }
+        return {
+            "budget_id": budget_id, "container_id": container.id,
+            "slo_name": slo_name, "target_pct": target_pct,
+            "window_days": window_days, "budget_pct": budget_pct,
+        }
+
+    def record_slo_request(
+        self,
+        budget_id: str,
+        success: bool,
+        day: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record a request outcome for SLO tracking."""
+        budget = getattr(self, '_slo_budgets', {}).get(budget_id)
+        if not budget:
+            return {"error": "Budget not found"}
+        d = day or time.strftime("%Y-%m-%d")
+        if d not in budget["daily_errors"]:
+            budget["daily_errors"][d] = {"total": 0, "errors": 0}
+        budget["daily_errors"][d]["total"] += 1
+        if not success:
+            budget["daily_errors"][d]["errors"] += 1
+            budget["consumed"] += 1
+        return {"ok": True, "budget_id": budget_id, "day": d, "success": success}
+
+    def check_budget_burn_rate(
+        self,
+        budget_id: str,
+    ) -> Dict[str, Any]:
+        """Check current error budget burn rate."""
+        budget = getattr(self, '_slo_budgets', {}).get(budget_id)
+        if not budget:
+            return {"error": "Budget not found"}
+        days = sorted(budget["daily_errors"].keys())[-budget["window_days"]:]
+        if not days:
+            return {"budget_id": budget_id, "burn_rate": 0, "budget_remaining_pct": 100}
+        total_requests = sum(budget["daily_errors"][d]["total"] for d in days)
+        total_errors = sum(budget["daily_errors"][d]["errors"] for d in days)
+        error_rate = total_errors / total_requests if total_requests > 0 else 0
+        # Burn rate: how fast we're consuming budget relative to expected
+        expected_error_rate = budget["budget_pct"] / 100.0
+        burn_rate = error_rate / expected_error_rate if expected_error_rate > 0 else 0
+        # Remaining budget
+        remaining = budget["total_budget"] - (total_errors / total_requests if total_requests > 0 else 0)
+        remaining_pct = max(0, remaining / budget["total_budget"] * 100) if budget["total_budget"] > 0 else 100
+        # Alert thresholds
+        alert = None
+        if burn_rate > 14.4:
+            alert = {"severity": "critical", "message": f"Burn rate {burn_rate:.1f}x exceeds 14.4x (budget exhausted in <1h)"}
+        elif burn_rate > 6:
+            alert = {"severity": "warning", "message": f"Burn rate {burn_rate:.1f}x exceeds 6x (budget exhausted in <6h)"}
+        elif burn_rate > 3:
+            alert = {"severity": "info", "message": f"Burn rate {burn_rate:.1f}x exceeds 3x (budget exhausted in <24h)"}
+        if alert:
+            alert["ts"] = time.time()
+            budget["alerts"].append(alert)
+        return {
+            "budget_id": budget_id, "slo_name": budget["slo_name"],
+            "burn_rate": round(burn_rate, 2),
+            "error_rate": round(error_rate, 6),
+            "budget_remaining_pct": round(remaining_pct, 2),
+            "total_requests": total_requests, "total_errors": total_errors,
+            "alert": alert,
+        }
+
+    def get_slo_budget_status(self, budget_id: str) -> Dict[str, Any]:
+        """Get SLO budget status."""
+        budget = getattr(self, '_slo_budgets', {}).get(budget_id)
+        if not budget:
+            return {"error": "Budget not found"}
+        days = sorted(budget["daily_errors"].keys())
+        total_req = sum(budget["daily_errors"][d]["total"] for d in days)
+        total_err = sum(budget["daily_errors"][d]["errors"] for d in days)
+        return {
+            "budget_id": budget_id, "slo_name": budget["slo_name"],
+            "container_name": budget["container_name"],
+            "target_pct": budget["target_pct"],
+            "window_days": budget["window_days"],
+            "budget_pct": budget["budget_pct"],
+            "total_requests": total_req, "total_errors": total_err,
+            "alert_count": len(budget["alerts"]),
+        }
+
+    def delete_slo_budget(self, budget_id: str) -> Dict[str, Any]:
+        """Delete an SLO budget."""
+        budget = getattr(self, '_slo_budgets', {}).pop(budget_id, None)
+        if not budget:
+            return {"error": "Budget not found"}
+        return {"ok": True, "budget_id": budget_id}
+
+    # ------------------------------------------------------------------
+    # Dependency mapping with blast radius analysis
+    # ------------------------------------------------------------------
+
+    def create_dependency_map(
+        self,
+        container: Container,
+    ) -> Dict[str, Any]:
+        """Create a dependency map for a container."""
+        if not hasattr(self, '_dependency_maps'):
+            self._dependency_maps = {}
+        map_id = f"deps-{container.id[:12]}"
+        self._dependency_maps[map_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "created_at": time.time(),
+            "upstream": {},    # what this container depends on
+            "downstream": {},  # what depends on this container
+        }
+        return {"map_id": map_id, "container_id": container.id}
+
+    def add_dependency(
+        self,
+        map_id: str,
+        target_name: str,
+        dep_type: str = "service",
+        critical: bool = False,
+    ) -> Dict[str, Any]:
+        """Add an upstream dependency (this container depends on target)."""
+        dep_map = getattr(self, '_dependency_maps', {}).get(map_id)
+        if not dep_map:
+            return {"error": "Map not found"}
+        dep_map["upstream"][target_name] = {
+            "type": dep_type, "critical": critical, "added_at": time.time(),
+        }
+        return {"ok": True, "map_id": map_id, "target": target_name, "direction": "upstream"}
+
+    def add_dependent(
+        self,
+        map_id: str,
+        source_name: str,
+        dep_type: str = "service",
+        critical: bool = False,
+    ) -> Dict[str, Any]:
+        """Add a downstream dependent (source depends on this container)."""
+        dep_map = getattr(self, '_dependency_maps', {}).get(map_id)
+        if not dep_map:
+            return {"error": "Map not found"}
+        dep_map["downstream"][source_name] = {
+            "type": dep_type, "critical": critical, "added_at": time.time(),
+        }
+        return {"ok": True, "map_id": map_id, "source": source_name, "direction": "downstream"}
+
+    def analyze_blast_radius(
+        self,
+        map_id: str,
+        failure_scope: str = "direct",
+    ) -> Dict[str, Any]:
+        """Analyze blast radius if this container fails."""
+        dep_map = getattr(self, '_dependency_maps', {}).get(map_id)
+        if not dep_map:
+            return {"error": "Map not found"}
+        affected = set()
+        critical_affected = set()
+        # Direct downstream (what depends on us)
+        for name, info in dep_map["downstream"].items():
+            affected.add(name)
+            if info["critical"]:
+                critical_affected.add(name)
+        if failure_scope == "transitive":
+            # Walk downstream dependencies transitively
+            for name in list(affected):
+                sub_map = self._find_map_by_name(name)
+                if sub_map:
+                    for n2, i2 in sub_map.get("downstream", {}).items():
+                        if n2 != dep_map["container_name"]:
+                            affected.add(n2)
+                            if i2["critical"]:
+                                critical_affected.add(n2)
+        risk_score = len(critical_affected) * 30 + len(affected) * 10
+        risk_score = min(100, risk_score)
+        return {
+            "map_id": map_id,
+            "container_name": dep_map["container_name"],
+            "failure_scope": failure_scope,
+            "affected_services": sorted(affected),
+            "affected_count": len(affected),
+            "critical_affected": sorted(critical_affected),
+            "critical_count": len(critical_affected),
+            "risk_score": risk_score,
+            "risk_level": "critical" if risk_score >= 70 else "high" if risk_score >= 40 else "medium" if risk_score >= 20 else "low",
+        }
+
+    def _find_map_by_name(self, container_name: str) -> Optional[Dict[str, Any]]:
+        """Find a dependency map by container name."""
+        for m in getattr(self, '_dependency_maps', {}).values():
+            if m["container_name"] == container_name:
+                return m
+        return None
+
+    def get_dependency_graph(self, map_id: str) -> Dict[str, Any]:
+        """Get full dependency graph."""
+        dep_map = getattr(self, '_dependency_maps', {}).get(map_id)
+        if not dep_map:
+            return {"error": "Map not found"}
+        return {
+            "map_id": map_id,
+            "container_id": dep_map["container_id"],
+            "container_name": dep_map["container_name"],
+            "upstream": dep_map["upstream"],
+            "downstream": dep_map["downstream"],
+            "upstream_count": len(dep_map["upstream"]),
+            "downstream_count": len(dep_map["downstream"]),
+        }
+
+    def remove_dependency(
+        self,
+        map_id: str,
+        target_name: str,
+        direction: str = "upstream",
+    ) -> Dict[str, Any]:
+        """Remove a dependency."""
+        dep_map = getattr(self, '_dependency_maps', {}).get(map_id)
+        if not dep_map:
+            return {"error": "Map not found"}
+        key = "upstream" if direction == "upstream" else "downstream"
+        removed = dep_map[key].pop(target_name, None)
+        return {"ok": True, "removed": removed is not None, "map_id": map_id}
+
+    def delete_dependency_map(self, map_id: str) -> Dict[str, Any]:
+        """Delete a dependency map."""
+        dep_map = getattr(self, '_dependency_maps', {}).pop(map_id, None)
+        if not dep_map:
+            return {"error": "Map not found"}
+        return {"ok": True, "map_id": map_id}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

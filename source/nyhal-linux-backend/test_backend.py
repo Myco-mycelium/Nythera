@@ -33362,6 +33362,84 @@ class TestDeployHealth(unittest.TestCase):
         m=self._mgr(); c=self._mk(m,"dh6"); r=m.create_deploy_health(c); self.assertTrue(m.delete_deploy_health(r["health_id"])["ok"])
 
 
+class TestDemandForecasting(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_planner(self):
+        m=self._mgr(); c=self._mk(m,"df1"); r=m.create_capacity_planner(c); self.assertIn("planner_id",r)
+    def test_record_usage(self):
+        m=self._mgr(); c=self._mk(m,"df2"); r=m.create_capacity_planner(c); self.assertTrue(m.record_daily_usage(r["planner_id"],50.0)["ok"])
+    def test_forecast(self):
+        m=self._mgr(); c=self._mk(m,"df3"); r=m.create_capacity_planner(c,forecast_days=7); pid=r["planner_id"]
+        for i in range(5): m.record_daily_usage(pid, float(30+i*10), day=f"2025-01-{i+1:02d}")
+        r2=m.forecast_demand(pid); self.assertGreater(len(r2["forecasts"]),0)
+    def test_forecast_insufficient(self):
+        m=self._mgr(); c=self._mk(m,"df4"); r=m.create_capacity_planner(c); r2=m.forecast_demand(r["planner_id"]); self.assertEqual(r2["reason"],"insufficient data")
+    def test_capacity_report(self):
+        m=self._mgr(); c=self._mk(m,"df5"); r=m.create_capacity_planner(c); pid=r["planner_id"]
+        m.record_daily_usage(pid,60.0,day="2025-01-01"); m.record_daily_usage(pid,80.0,day="2025-01-02")
+        r2=m.get_capacity_report(pid); self.assertEqual(r2["data_days"],2)
+    def test_delete_planner(self):
+        m=self._mgr(); c=self._mk(m,"df6"); r=m.create_capacity_planner(c); self.assertTrue(m.delete_capacity_planner(r["planner_id"])["ok"])
+
+
+class TestErrorBudgets(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_budget(self):
+        m=self._mgr(); c=self._mk(m,"eb1"); r=m.create_slo_budget(c,"availability"); self.assertIn("budget_id",r)
+    def test_record_requests(self):
+        m=self._mgr(); c=self._mk(m,"eb2"); r=m.create_slo_budget(c,"avail"); bid=r["budget_id"]
+        for _ in range(99): m.record_slo_request(bid,True)
+        m.record_slo_request(bid,False)
+        r2=m.get_slo_budget_status(bid); self.assertEqual(r2["total_requests"],100)
+    def test_burn_rate(self):
+        m=self._mgr(); c=self._mk(m,"eb3"); r=m.create_slo_budget(c,"avail",budget_pct=1.0); bid=r["budget_id"]
+        for _ in range(100): m.record_slo_request(bid,True)
+        for _ in range(50): m.record_slo_request(bid,False)
+        r2=m.check_budget_burn_rate(bid); self.assertGreater(r2["burn_rate"],0)
+    def test_burn_rate_critical(self):
+        m=self._mgr(); c=self._mk(m,"eb4"); r=m.create_slo_budget(c,"avail",budget_pct=0.1); bid=r["budget_id"]
+        for _ in range(10): m.record_slo_request(bid,True)
+        for _ in range(90): m.record_slo_request(bid,False)
+        r2=m.check_budget_burn_rate(bid); self.assertIsNotNone(r2["alert"])
+    def test_budget_status(self):
+        m=self._mgr(); c=self._mk(m,"eb5"); r=m.create_slo_budget(c,"avail"); r2=m.get_slo_budget_status(r["budget_id"]); self.assertEqual(r2["slo_name"],"avail")
+    def test_delete_budget(self):
+        m=self._mgr(); c=self._mk(m,"eb6"); r=m.create_slo_budget(c,"a"); self.assertTrue(m.delete_slo_budget(r["budget_id"])["ok"])
+
+
+class TestDependencyMapping(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_map(self):
+        m=self._mgr(); c=self._mk(m,"dm1"); r=m.create_dependency_map(c); self.assertIn("map_id",r)
+    def test_add_dependency(self):
+        m=self._mgr(); c=self._mk(m,"dm2"); r=m.create_dependency_map(c); mid=r["map_id"]
+        m.add_dependency(mid,"database",critical=True)
+        r2=m.get_dependency_graph(mid); self.assertIn("database",r2["upstream"])
+    def test_add_dependent(self):
+        m=self._mgr(); c=self._mk(m,"dm3"); r=m.create_dependency_map(c); mid=r["map_id"]
+        m.add_dependent(mid,"frontend")
+        r2=m.get_dependency_graph(mid); self.assertIn("frontend",r2["downstream"])
+    def test_blast_radius_direct(self):
+        m=self._mgr(); c=self._mk(m,"dm4"); r=m.create_dependency_map(c); mid=r["map_id"]
+        m.add_dependent(mid,"svc-a",critical=True); m.add_dependent(mid,"svc-b")
+        r2=m.analyze_blast_radius(mid,"direct"); self.assertEqual(r2["affected_count"],2)
+        self.assertEqual(r2["critical_count"],1)
+    def test_remove_dependency(self):
+        m=self._mgr(); c=self._mk(m,"dm5"); r=m.create_dependency_map(c); mid=r["map_id"]
+        m.add_dependency(mid,"db"); m.remove_dependency(mid,"db")
+        r2=m.get_dependency_graph(mid); self.assertEqual(len(r2["upstream"]),0)
+    def test_delete_map(self):
+        m=self._mgr(); c=self._mk(m,"dm6"); r=m.create_dependency_map(c); self.assertTrue(m.delete_dependency_map(r["map_id"])["ok"])
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33614,6 +33692,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCostAnomalyDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceLeakDetection))
     suite.addTests(loader.loadTestsFromTestCase(TestDeployHealth))
+    suite.addTests(loader.loadTestsFromTestCase(TestDemandForecasting))
+    suite.addTests(loader.loadTestsFromTestCase(TestErrorBudgets))
+    suite.addTests(loader.loadTestsFromTestCase(TestDependencyMapping))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

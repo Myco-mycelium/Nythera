@@ -4942,6 +4942,24 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "mark-deploy-resolved": return {"service":"control","op":"mark_deploy_resolved","health_id":args.health_id}
     if command == "delete-deploy-health": return {"service":"control","op":"delete_deploy_health","health_id":args.health_id}
 
+    if command == "create-capacity-planner": return {"service":"control","op":"create_capacity_planner","container_id":args.container_id,"resource":getattr(args,"resource","cpu"),"lookback_days":getattr(args,"lookback_days",30),"forecast_days":getattr(args,"forecast_days",14)}
+    if command == "record-daily-usage": return {"service":"control","op":"record_daily_usage","planner_id":args.planner_id,"usage_pct":args.usage_pct}
+    if command == "forecast-demand": return {"service":"control","op":"forecast_demand","planner_id":args.planner_id}
+    if command == "capacity-report": return {"service":"control","op":"get_capacity_report","planner_id":args.planner_id}
+    if command == "delete-capacity-planner": return {"service":"control","op":"delete_capacity_planner","planner_id":args.planner_id}
+    if command == "create-slo-budget": return {"service":"control","op":"create_slo_budget","container_id":args.container_id,"slo_name":args.slo_name,"target_pct":getattr(args,"target_pct",99.9),"window_days":getattr(args,"window_days",30),"budget_pct":getattr(args,"budget_pct",0.1)}
+    if command == "record-slo-request": return {"service":"control","op":"record_slo_request","budget_id":args.budget_id,"success":args.success}
+    if command == "check-budget-burn-rate": return {"service":"control","op":"check_budget_burn_rate","budget_id":args.budget_id}
+    if command == "slo-budget-status": return {"service":"control","op":"get_slo_budget_status","budget_id":args.budget_id}
+    if command == "delete-slo-budget": return {"service":"control","op":"delete_slo_budget","budget_id":args.budget_id}
+    if command == "create-dependency-map": return {"service":"control","op":"create_dependency_map","container_id":args.container_id}
+    if command == "add-dependency": return {"service":"control","op":"add_dependency","map_id":args.map_id,"target_name":args.target_name,"dep_type":getattr(args,"dep_type","service"),"critical":getattr(args,"critical",False)}
+    if command == "add-dependent": return {"service":"control","op":"add_dependent","map_id":args.map_id,"source_name":args.source_name,"dep_type":getattr(args,"dep_type","service"),"critical":getattr(args,"critical",False)}
+    if command == "blast-radius": return {"service":"control","op":"analyze_blast_radius","map_id":args.map_id,"failure_scope":getattr(args,"failure_scope","direct")}
+    if command == "dependency-graph": return {"service":"control","op":"get_dependency_graph","map_id":args.map_id}
+    if command == "remove-dependency": return {"service":"control","op":"remove_dependency","map_id":args.map_id,"target_name":args.target_name,"direction":getattr(args,"direction","upstream")}
+    if command == "delete-dependency-map": return {"service":"control","op":"delete_dependency_map","map_id":args.map_id}
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13670,6 +13688,24 @@ def build_parser() -> argparse.ArgumentParser:
     p18.add_argument("--health-id", required=True); p18.set_defaults(command="mark-deploy-resolved")
     p19 = sub.add_parser("delete-deploy-health", help="Delete deploy health")
     p19.add_argument("--health-id", required=True); p19.set_defaults(command="delete-deploy-health")
+
+    p1 = sub.add_parser("create-capacity-planner"); p1.add_argument("--container-id",required=True); p1.add_argument("--resource",default="cpu"); p1.add_argument("--forecast-days",type=int,default=14); p1.set_defaults(command="create-capacity-planner")
+    p2 = sub.add_parser("record-daily-usage"); p2.add_argument("--planner-id",required=True); p2.add_argument("--usage-pct",type=float,required=True); p2.set_defaults(command="record-daily-usage")
+    p3 = sub.add_parser("forecast-demand"); p3.add_argument("--planner-id",required=True); p3.set_defaults(command="forecast-demand")
+    p4 = sub.add_parser("capacity-report"); p4.add_argument("--planner-id",required=True); p4.set_defaults(command="capacity-report")
+    p5 = sub.add_parser("delete-capacity-planner"); p5.add_argument("--planner-id",required=True); p5.set_defaults(command="delete-capacity-planner")
+    p6 = sub.add_parser("create-slo-budget"); p6.add_argument("--container-id",required=True); p6.add_argument("--slo-name",required=True); p6.add_argument("--target-pct",type=float,default=99.9); p6.add_argument("--budget-pct",type=float,default=0.1); p6.set_defaults(command="create-slo-budget")
+    p7 = sub.add_parser("record-slo-request"); p7.add_argument("--budget-id",required=True); p7.add_argument("--success",action="store_true"); p7.set_defaults(command="record-slo-request")
+    p8 = sub.add_parser("check-budget-burn-rate"); p8.add_argument("--budget-id",required=True); p8.set_defaults(command="check-budget-burn-rate")
+    p9 = sub.add_parser("slo-budget-status"); p9.add_argument("--budget-id",required=True); p9.set_defaults(command="slo-budget-status")
+    p10 = sub.add_parser("delete-slo-budget"); p10.add_argument("--budget-id",required=True); p10.set_defaults(command="delete-slo-budget")
+    p11 = sub.add_parser("create-dependency-map"); p11.add_argument("--container-id",required=True); p11.set_defaults(command="create-dependency-map")
+    p12 = sub.add_parser("add-dependency"); p12.add_argument("--map-id",required=True); p12.add_argument("--target-name",required=True); p12.add_argument("--critical",action="store_true"); p12.set_defaults(command="add-dependency")
+    p13 = sub.add_parser("add-dependent"); p13.add_argument("--map-id",required=True); p13.add_argument("--source-name",required=True); p13.add_argument("--critical",action="store_true"); p13.set_defaults(command="add-dependent")
+    p14 = sub.add_parser("blast-radius"); p14.add_argument("--map-id",required=True); p14.add_argument("--failure-scope",default="direct",choices=["direct","transitive"]); p14.set_defaults(command="blast-radius")
+    p15 = sub.add_parser("dependency-graph"); p15.add_argument("--map-id",required=True); p15.set_defaults(command="dependency-graph")
+    p16 = sub.add_parser("remove-dependency"); p16.add_argument("--map-id",required=True); p16.add_argument("--target-name",required=True); p16.add_argument("--direction",default="upstream"); p16.set_defaults(command="remove-dependency")
+    p17 = sub.add_parser("delete-dependency-map"); p17.add_argument("--map-id",required=True); p17.set_defaults(command="delete-dependency-map")
     return parser
 
 
