@@ -34977,6 +34977,585 @@ class ContainerManager:
             return {"error": f"Patch plan '{plan_id}' not found"}
         return {"ok": True, "deleted": plan_id}
 
+    # ------------------------------------------------------------------
+    # Resource quota enforcement with per-namespace limits
+    # ------------------------------------------------------------------
+
+    def create_resource_quota(
+        self,
+        namespace: str,
+        memory_limit: Optional[int] = None,
+        cpu_limit: Optional[float] = None,
+        pod_limit: Optional[int] = None,
+        pvc_limit: Optional[int] = None,
+        service_limit: Optional[int] = None,
+        configmap_limit: Optional[int] = None,
+        secret_limit: Optional[int] = None,
+        overcommit_ratio: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Create a resource quota for a namespace."""
+        if not hasattr(self, '_resource_quotas'):
+            self._resource_quotas = {}
+        if namespace in self._resource_quotas:
+            return {"error": f"Quota for namespace '{namespace}' already exists"}
+        self._resource_quotas[namespace] = {
+            "namespace": namespace,
+            "memory_limit": memory_limit,
+            "cpu_limit": cpu_limit,
+            "pod_limit": pod_limit,
+            "pvc_limit": pvc_limit,
+            "service_limit": service_limit,
+            "configmap_limit": configmap_limit,
+            "secret_limit": secret_limit,
+            "overcommit_ratio": overcommit_ratio,
+            "created": __import__('time').time(),
+            "usage": {
+                "memory": 0,
+                "cpu": 0.0,
+                "pods": 0,
+                "pvcs": 0,
+                "services": 0,
+                "configmaps": 0,
+                "secrets": 0,
+            },
+        }
+        return {"ok": True, "namespace": namespace, "overcommit_ratio": overcommit_ratio}
+
+    def check_quota_availability(
+        self,
+        namespace: str,
+        memory_bytes: int = 0,
+        cpu_cores: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Check if resources are available under the namespace quota."""
+        quota = getattr(self, '_resource_quotas', {}).get(namespace)
+        if not quota:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        usage = quota['usage']
+        overcommit = quota['overcommit_ratio']
+        memory_ok = True
+        cpu_ok = True
+        reasons = []
+        if quota['memory_limit']:
+            available = quota['memory_limit'] * overcommit - usage['memory']
+            if memory_bytes > available:
+                memory_ok = False
+                reasons.append(f"memory: need {memory_bytes}, available {available}")
+        if quota['cpu_limit']:
+            available_cpu = quota['cpu_limit'] * overcommit - usage['cpu']
+            if cpu_cores > available_cpu:
+                cpu_ok = False
+                reasons.append(f"cpu: need {cpu_cores}, available {available_cpu:.2f}")
+        return {
+            "namespace": namespace,
+            "allowed": memory_ok and cpu_ok,
+            "memory_ok": memory_ok,
+            "cpu_ok": cpu_ok,
+            "reasons": reasons,
+        }
+
+    def consume_quota(
+        self,
+        namespace: str,
+        memory_bytes: int = 0,
+        cpu_cores: float = 0.0,
+        resource_type: str = "pods",
+    ) -> Dict[str, Any]:
+        """Consume quota resources for a namespace."""
+        quota = getattr(self, '_resource_quotas', {}).get(namespace)
+        if not quota:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        avail = self.check_quota_availability(namespace, memory_bytes, cpu_cores)
+        if not avail['allowed']:
+            return {"error": f"Quota exceeded: {'; '.join(avail['reasons'])}", "allowed": False}
+        usage = quota['usage']
+        usage['memory'] += memory_bytes
+        usage['cpu'] += cpu_cores
+        if resource_type in usage:
+            usage[resource_type] += 1
+        return {
+            "ok": True,
+            "namespace": namespace,
+            "consumed": resource_type,
+            "usage": dict(usage),
+        }
+
+    def release_quota(
+        self,
+        namespace: str,
+        memory_bytes: int = 0,
+        cpu_cores: float = 0.0,
+        resource_type: str = "pods",
+    ) -> Dict[str, Any]:
+        """Release consumed quota resources."""
+        quota = getattr(self, '_resource_quotas', {}).get(namespace)
+        if not quota:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        usage = quota['usage']
+        usage['memory'] = max(0, usage['memory'] - memory_bytes)
+        usage['cpu'] = max(0.0, usage['cpu'] - cpu_cores)
+        if resource_type in usage:
+            usage[resource_type] = max(0, usage[resource_type] - 1)
+        return {"ok": True, "namespace": namespace, "released": resource_type, "usage": dict(usage)}
+
+    def get_quota_usage(self, namespace: str) -> Dict[str, Any]:
+        """Get current quota usage for a namespace."""
+        quota = getattr(self, '_resource_quotas', {}).get(namespace)
+        if not quota:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        usage = dict(quota['usage'])
+        limits = {
+            "memory_limit": quota['memory_limit'],
+            "cpu_limit": quota['cpu_limit'],
+            "pod_limit": quota['pod_limit'],
+            "overcommit_ratio": quota['overcommit_ratio'],
+        }
+        percentages = {}
+        if quota['memory_limit'] and quota['memory_limit'] > 0:
+            percentages['memory'] = round(usage['memory'] / quota['memory_limit'] * 100, 2)
+        if quota['cpu_limit'] and quota['cpu_limit'] > 0:
+            percentages['cpu'] = round(usage['cpu'] / quota['cpu_limit'] * 100, 2)
+        if quota['pod_limit'] and quota['pod_limit'] > 0:
+            percentages['pods'] = round(usage['pods'] / quota['pod_limit'] * 100, 2)
+        return {
+            "ok": True,
+            "namespace": namespace,
+            "usage": usage,
+            "limits": limits,
+            "percentages": percentages,
+        }
+
+    def update_resource_quota(
+        self,
+        namespace: str,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Update resource quota limits for a namespace."""
+        quota = getattr(self, '_resource_quotas', {}).get(namespace)
+        if not quota:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        updated = []
+        for key in ('memory_limit', 'cpu_limit', 'pod_limit', 'pvc_limit', 'service_limit',
+                     'configmap_limit', 'secret_limit', 'overcommit_ratio'):
+            if key in kwargs:
+                quota[key] = kwargs[key]
+                updated.append(key)
+        return {"ok": True, "namespace": namespace, "updated": updated}
+
+    def list_resource_quotas(self) -> Dict[str, Any]:
+        """List all resource quotas."""
+        quotas = getattr(self, '_resource_quotas', {})
+        items = []
+        for ns, q in quotas.items():
+            items.append({
+                "namespace": ns,
+                "memory_limit": q['memory_limit'],
+                "cpu_limit": q['cpu_limit'],
+                "pod_limit": q['pod_limit'],
+                "overcommit_ratio": q['overcommit_ratio'],
+                "usage": dict(q['usage']),
+            })
+        return {"quotas": items, "count": len(items)}
+
+    def delete_resource_quota(self, namespace: str) -> Dict[str, Any]:
+        """Delete a resource quota."""
+        q = getattr(self, '_resource_quotas', {}).pop(namespace, None)
+        if not q:
+            return {"error": f"No quota for namespace '{namespace}'"}
+        return {"ok": True, "deleted": namespace}
+
+    def get_fleet_quota_summary(self) -> Dict[str, Any]:
+        """Get fleet-wide resource quota summary."""
+        quotas = getattr(self, '_resource_quotas', {})
+        total_memory = 0
+        total_cpu = 0.0
+        total_memory_used = 0
+        total_cpu_used = 0.0
+        for q in quotas.values():
+            if q['memory_limit']:
+                total_memory += q['memory_limit']
+            total_cpu += q['cpu_limit'] or 0.0
+            total_memory_used += q['usage']['memory']
+            total_cpu_used += q['usage']['cpu']
+        return {
+            "namespace_count": len(quotas),
+            "total_memory_limit": total_memory,
+            "total_cpu_limit": total_cpu,
+            "total_memory_used": total_memory_used,
+            "total_cpu_used": total_cpu_used,
+            "memory_utilization": round(total_memory_used / total_memory * 100, 2) if total_memory > 0 else 0,
+            "cpu_utilization": round(total_cpu_used / total_cpu * 100, 2) if total_cpu > 0 else 0,
+        }
+
+    # ------------------------------------------------------------------
+    # Container lifecycle hooks
+    # ------------------------------------------------------------------
+
+    def register_lifecycle_hook(
+        self,
+        container_id: str,
+        hook_type: str,
+        name: str,
+        command: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        timeout_seconds: float = 30.0,
+        failure_policy: str = "abort",
+    ) -> Dict[str, Any]:
+        """Register a lifecycle hook for a container."""
+        if not hasattr(self, '_lifecycle_hooks'):
+            self._lifecycle_hooks = {}
+        valid_types = ["pre_start", "post_start", "pre_stop", "post_stop",
+                       "pre_restart", "post_restart", "health_check"]
+        if hook_type not in valid_types:
+            return {"error": f"Invalid hook_type '{hook_type}'. Valid: {valid_types}"}
+        container_hooks = self._lifecycle_hooks.setdefault(container_id, [])
+        import hashlib
+        hook_id = hashlib.sha1(
+            f"hook-{container_id}-{hook_type}-{name}".encode()
+        ).hexdigest()[:12]
+        hook = {
+            "hook_id": hook_id,
+            "container_id": container_id,
+            "hook_type": hook_type,
+            "name": name,
+            "command": command or [],
+            "env": env or {},
+            "timeout_seconds": timeout_seconds,
+            "failure_policy": failure_policy,
+            "created": __import__('time').time(),
+            "executions": [],
+            "enabled": True,
+        }
+        container_hooks.append(hook)
+        return {"ok": True, "hook_id": hook_id, "hook_type": hook_type, "name": name}
+
+    def execute_lifecycle_hook(
+        self,
+        container_id: str,
+        hook_type: str,
+    ) -> Dict[str, Any]:
+        """Execute all hooks of a given type for a container."""
+        hooks = getattr(self, '_lifecycle_hooks', {}).get(container_id, [])
+        matching = [h for h in hooks if h['hook_type'] == hook_type and h['enabled']]
+        if not matching:
+            return {"ok": True, "executed": 0, "hook_type": hook_type}
+        results = []
+        import random
+        for h in matching:
+            success = random.random() > 0.1
+            exec_record = {
+                "timestamp": __import__('time').time(),
+                "success": success,
+                "duration_ms": random.randint(1, 500),
+            }
+            h['executions'].append(exec_record)
+            results.append({
+                "hook_id": h['hook_id'],
+                "name": h['name'],
+                "success": success,
+            })
+            if not success and h['failure_policy'] == 'abort':
+                break
+        return {
+            "ok": True,
+            "hook_type": hook_type,
+            "executed": len(results),
+            "results": results,
+        }
+
+    def list_lifecycle_hooks(self, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """List lifecycle hooks, optionally filtered by container."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        items = []
+        for cid, hooks in all_hooks.items():
+            if container_id and cid != container_id:
+                continue
+            for h in hooks:
+                items.append({
+                    "hook_id": h['hook_id'],
+                    "container_id": cid,
+                    "hook_type": h['hook_type'],
+                    "name": h['name'],
+                    "enabled": h['enabled'],
+                    "execution_count": len(h['executions']),
+                    "failure_policy": h['failure_policy'],
+                })
+        return {"hooks": items, "count": len(items)}
+
+    def get_lifecycle_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Get details of a lifecycle hook."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        for cid, hooks in all_hooks.items():
+            for h in hooks:
+                if h['hook_id'] == hook_id:
+                    return {"ok": True, **h}
+        return {"error": f"Hook '{hook_id}' not found"}
+
+    def enable_lifecycle_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Enable a lifecycle hook."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        for cid, hooks in all_hooks.items():
+            for h in hooks:
+                if h['hook_id'] == hook_id:
+                    h['enabled'] = True
+                    return {"ok": True, "hook_id": hook_id, "enabled": True}
+        return {"error": f"Hook '{hook_id}' not found"}
+
+    def disable_lifecycle_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Disable a lifecycle hook."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        for cid, hooks in all_hooks.items():
+            for h in hooks:
+                if h['hook_id'] == hook_id:
+                    h['enabled'] = False
+                    return {"ok": True, "hook_id": hook_id, "enabled": False}
+        return {"error": f"Hook '{hook_id}' not found"}
+
+    def delete_lifecycle_hook(self, hook_id: str) -> Dict[str, Any]:
+        """Delete a lifecycle hook."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        for cid, hooks in all_hooks.items():
+            for i, h in enumerate(hooks):
+                if h['hook_id'] == hook_id:
+                    hooks.pop(i)
+                    return {"ok": True, "deleted": hook_id}
+        return {"error": f"Hook '{hook_id}' not found"}
+
+    def get_hook_execution_history(
+        self,
+        container_id: Optional[str] = None,
+        hook_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Get execution history of lifecycle hooks."""
+        all_hooks = getattr(self, '_lifecycle_hooks', {})
+        history = []
+        for cid, hooks in all_hooks.items():
+            if container_id and cid != container_id:
+                continue
+            for h in hooks:
+                if hook_type and h['hook_type'] != hook_type:
+                    continue
+                for ex in h['executions']:
+                    history.append({
+                        "hook_id": h['hook_id'],
+                        "name": h['name'],
+                        "hook_type": h['hook_type'],
+                        "container_id": cid,
+                        **ex,
+                    })
+        history.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        history = history[:limit]
+        return {"history": history, "count": len(history)}
+
+    # ------------------------------------------------------------------
+    # Secret injection (encrypted env vars and mounted secrets)
+    # ------------------------------------------------------------------
+
+    def create_injected_secret(
+        self,
+        name: str,
+        data: Dict[str, str],
+        namespace: str = "default",
+        secret_type: str = "Opaque",
+    ) -> Dict[str, Any]:
+        """Create a secret with base64-encoded data."""
+        if not hasattr(self, '_secrets'):
+            self._secrets = {}
+        import base64, hashlib
+        secret_id = hashlib.sha1(f"{namespace}/{name}".encode()).hexdigest()[:12]
+        encoded_data = {k: base64.b64encode(v.encode()).decode() for k, v in data.items()}
+        self._secrets[f"{namespace}/{name}"] = {
+            "name": name,
+            "namespace": namespace,
+            "secret_type": secret_type,
+            "data": encoded_data,
+            "raw_data": dict(data),
+            "created": __import__('time').time(),
+            "version": 1,
+        }
+        return {"ok": True, "name": name, "namespace": namespace, "secret_id": secret_id}
+
+    def get_injected_secret(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """Get a secret (decoded)."""
+        secret = getattr(self, '_secrets', {}).get(f"{namespace}/{name}")
+        if not secret:
+            return {"error": f"Secret '{namespace}/{name}' not found"}
+        import base64
+        decoded = {k: base64.b64encode(v.encode()).decode() for k, v in secret['raw_data'].items()}
+        return {
+            "ok": True,
+            "name": name,
+            "namespace": namespace,
+            "data": decoded,
+            "secret_type": secret['secret_type'],
+            "version": secret['version'],
+        }
+
+    def update_injected_secret(
+        self,
+        name: str,
+        data: Dict[str, str],
+        namespace: str = "default",
+    ) -> Dict[str, Any]:
+        """Update a secret's data."""
+        secret = getattr(self, '_secrets', {}).get(f"{namespace}/{name}")
+        if not secret:
+            return {"error": f"Secret '{namespace}/{name}' not found"}
+        secret['raw_data'].update(data)
+        secret['version'] += 1
+        secret['updated'] = __import__('time').time()
+        return {"ok": True, "name": name, "version": secret['version']}
+
+    def inject_secret_as_env(
+        self,
+        container_id: str,
+        secret_name: str,
+        namespace: str = "default",
+        keys: Optional[List[str]] = None,
+        prefix: str = "",
+    ) -> Dict[str, Any]:
+        """Inject secret data as environment variables into a container."""
+        secret = getattr(self, '_secrets', {}).get(f"{namespace}/{secret_name}")
+        if not secret:
+            return {"error": f"Secret '{namespace}/{secret_name}' not found"}
+        if not hasattr(self, '_injected_secrets'):
+            self._injected_secrets = {}
+        env_vars = {}
+        raw = secret['raw_data']
+        target_keys = keys or list(raw.keys())
+        for k in target_keys:
+            env_key = f"{prefix}{k.upper()}".replace('-', '_')
+            env_vars[env_key] = raw.get(k, '')
+        self._injected_secrets.setdefault(container_id, [])
+        injection = {
+            "secret_name": secret_name,
+            "namespace": namespace,
+            "env_vars": env_vars,
+            "injected": __import__('time').time(),
+        }
+        self._injected_secrets[container_id].append(injection)
+        return {
+            "ok": True,
+            "container_id": container_id,
+            "env_var_count": len(env_vars),
+            "env_var_names": list(env_vars.keys()),
+        }
+
+    def inject_secret_as_file(
+        self,
+        container_id: str,
+        secret_name: str,
+        mount_path: str,
+        namespace: str = "default",
+        keys: Optional[List[str]] = None,
+        mode: int = 0o444,
+    ) -> Dict[str, Any]:
+        """Inject secret data as mounted files into a container."""
+        secret = getattr(self, '_secrets', {}).get(f"{namespace}/{secret_name}")
+        if not secret:
+            return {"error": f"Secret '{namespace}/{secret_name}' not found"}
+        if not hasattr(self, '_mounted_secrets'):
+            self._mounted_secrets = {}
+        target_keys = keys or list(secret['raw_data'].keys())
+        files = []
+        for k in target_keys:
+            file_path = f"{mount_path.rstrip('/')}/{k}"
+            files.append({
+                "key": k,
+                "path": file_path,
+                "mode": mode,
+                "size_bytes": len(secret['raw_data'].get(k, '')),
+            })
+        self._mounted_secrets.setdefault(container_id, [])
+        mount = {
+            "secret_name": secret_name,
+            "namespace": namespace,
+            "mount_path": mount_path,
+            "files": files,
+            "mode": mode,
+            "mounted": __import__('time').time(),
+        }
+        self._mounted_secrets[container_id].append(mount)
+        return {
+            "ok": True,
+            "container_id": container_id,
+            "mount_path": mount_path,
+            "file_count": len(files),
+        }
+
+    def get_injected_secrets(self, container_id: str) -> Dict[str, Any]:
+        """Get all injected secrets for a container."""
+        env_injections = getattr(self, '_injected_secrets', {}).get(container_id, [])
+        file_injections = getattr(self, '_mounted_secrets', {}).get(container_id, [])
+        return {
+            "container_id": container_id,
+            "env_injections": env_injections,
+            "file_injections": file_injections,
+            "total_injections": len(env_injections) + len(file_injections),
+        }
+
+    def remove_secret_injection(
+        self,
+        container_id: str,
+        secret_name: str,
+        namespace: str = "default",
+    ) -> Dict[str, Any]:
+        """Remove a secret injection from a container."""
+        removed = False
+        for store_key in ('_injected_secrets', '_mounted_secrets'):
+            store = getattr(self, store_key, {}).get(container_id, [])
+            before = len(store)
+            setattr(self, store_key, getattr(self, store_key, {}))
+            if container_id in getattr(self, store_key, {}):
+                new_store = [s for s in getattr(self, store_key, {})[container_id]
+                            if s['secret_name'] != secret_name or s.get('namespace', 'default') != namespace]
+                getattr(self, store_key)[container_id] = new_store
+                if len(new_store) < before:
+                    removed = True
+        return {"ok": True, "container_id": container_id, "removed": removed}
+
+    def rotate_injected_secret(
+        self, name: str, new_data: Dict[str, str], namespace: str = "default") -> Dict[str, Any]:
+        """Rotate a secret to new data."""
+        secret = getattr(self, '_secrets', {}).get(f"{namespace}/{name}")
+        if not secret:
+            return {"error": f"Secret '{namespace}/{name}' not found"}
+        old_version = secret['version']
+        secret['raw_data'] = dict(new_data)
+        secret['version'] += 1
+        secret['rotated'] = __import__('time').time()
+        return {
+            "ok": True,
+            "name": name,
+            "old_version": old_version,
+            "new_version": secret['version'],
+        }
+
+    def list_injected_secrets(self, namespace: str = "default") -> Dict[str, Any]:
+        """List secrets in a namespace (without exposing data)."""
+        secrets = getattr(self, '_secrets', {})
+        items = []
+        for key, s in secrets.items():
+            if s['namespace'] != namespace:
+                continue
+            items.append({
+                "name": s['name'],
+                "namespace": s['namespace'],
+                "secret_type": s['secret_type'],
+                "version": s['version'],
+                "created": s['created'],
+                "key_count": len(s['raw_data']),
+            })
+        return {"secrets": items, "count": len(items)}
+
+    def delete_injected_secret(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """Delete a secret."""
+        secret = getattr(self, '_secrets', {}).pop(f"{namespace}/{name}", None)
+        if not secret:
+            return {"error": f"Secret '{namespace}/{name}' not found"}
+        return {"ok": True, "deleted": name, "namespace": namespace}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

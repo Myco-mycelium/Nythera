@@ -36631,6 +36631,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSELinux))
     suite.addTests(loader.loadTestsFromTestCase(TestEventStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestCVEPatching))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceQuotas))
+    suite.addTests(loader.loadTestsFromTestCase(TestLifecycleHooks))
+    suite.addTests(loader.loadTestsFromTestCase(TestSecretInjection))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
@@ -37304,6 +37307,307 @@ class TestCVEPatching(unittest.TestCase):
         m = self._mgr()
         r = m.apply_patch_plan("nonexistent")
         self.assertIn('error', r)
+
+
+
+class TestResourceQuotas(unittest.TestCase):
+    """Tests for resource quota enforcement."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_quota(self):
+        m = self._mgr()
+        r = m.create_resource_quota("ns1", memory_limit=1073741824, cpu_limit=4.0)
+        self.assertTrue(r['ok'])
+
+    def test_create_duplicate(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-dup")
+        r = m.create_resource_quota("ns-dup")
+        self.assertIn('error', r)
+
+    def test_check_availability(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-chk", memory_limit=1073741824)
+        r = m.check_quota_availability("ns-chk", memory_bytes=500000000)
+        self.assertTrue(r['allowed'])
+        self.assertTrue(r['memory_ok'])
+
+    def test_check_exceeded(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-exc", memory_limit=100)
+        r = m.check_quota_availability("ns-exc", memory_bytes=200)
+        self.assertFalse(r['allowed'])
+        self.assertFalse(r['memory_ok'])
+
+    def test_consume_quota(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-con", memory_limit=1073741824)
+        r = m.consume_quota("ns-con", memory_bytes=500000000)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['usage']['memory'], 500000000)
+
+    def test_consume_exceeded(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-ce", memory_limit=100)
+        m.consume_quota("ns-ce", memory_bytes=80)
+        r = m.consume_quota("ns-ce", memory_bytes=30)
+        self.assertIn('error', r)
+        self.assertFalse(r.get('allowed', True))
+
+    def test_release_quota(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-rel", memory_limit=1073741824)
+        m.consume_quota("ns-rel", memory_bytes=500000000)
+        r = m.release_quota("ns-rel", memory_bytes=200000000)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['usage']['memory'], 300000000)
+
+    def test_get_usage(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-ug", memory_limit=1073741824, cpu_limit=4.0)
+        m.consume_quota("ns-ug", memory_bytes=500000000, cpu_cores=2.0)
+        r = m.get_quota_usage("ns-ug")
+        self.assertTrue(r['ok'])
+        self.assertIn('percentages', r)
+
+    def test_update_quota(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-upd", memory_limit=100)
+        r = m.update_resource_quota("ns-upd", memory_limit=200)
+        self.assertTrue(r['ok'])
+        self.assertIn('memory_limit', r['updated'])
+
+    def test_list_quotas(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-ls1")
+        m.create_resource_quota("ns-ls2")
+        r = m.list_resource_quotas()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_delete_quota(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-del")
+        r = m.delete_resource_quota("ns-del")
+        self.assertTrue(r['ok'])
+
+    def test_fleet_summary(self):
+        m = self._mgr()
+        m.create_resource_quota("ns-f1", memory_limit=1073741824, cpu_limit=2.0)
+        m.create_resource_quota("ns-f2", memory_limit=2147483648, cpu_limit=4.0)
+        r = m.get_fleet_quota_summary()
+        self.assertGreaterEqual(r['namespace_count'], 2)
+        self.assertGreater(r['total_memory_limit'], 0)
+
+
+class TestLifecycleHooks(unittest.TestCase):
+    """Tests for container lifecycle hooks."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_register_hook(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-reg")
+        r = m.register_lifecycle_hook(c.id, "pre_start", "init-env", command=["echo", "hi"])
+        self.assertTrue(r['ok'])
+        self.assertIn('hook_id', r)
+
+    def test_register_invalid_type(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-inv")
+        r = m.register_lifecycle_hook(c.id, "invalid_type", "bad")
+        self.assertIn('error', r)
+
+    def test_execute_hook(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-exec")
+        m.register_lifecycle_hook(c.id, "post_start", "notify")
+        r = m.execute_lifecycle_hook(c.id, "post_start")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['executed'], 1)
+
+    def test_execute_no_hooks(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-none")
+        r = m.execute_lifecycle_hook(c.id, "pre_start")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['executed'], 0)
+
+    def test_list_hooks(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-list")
+        m.register_lifecycle_hook(c.id, "pre_start", "h1")
+        m.register_lifecycle_hook(c.id, "post_stop", "h2")
+        r = m.list_lifecycle_hooks(container_id=c.id)
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_get_hook(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-get")
+        reg = m.register_lifecycle_hook(c.id, "pre_start", "gh")
+        r = m.get_lifecycle_hook(reg['hook_id'])
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['name'], 'gh')
+
+    def test_disable_enable(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-de")
+        reg = m.register_lifecycle_hook(c.id, "pre_start", "toggle")
+        m.disable_lifecycle_hook(reg['hook_id'])
+        r = m.execute_lifecycle_hook(c.id, "pre_start")
+        self.assertEqual(r['executed'], 0)
+        m.enable_lifecycle_hook(reg['hook_id'])
+        r = m.execute_lifecycle_hook(c.id, "pre_start")
+        self.assertEqual(r['executed'], 1)
+
+    def test_delete_hook(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-del")
+        reg = m.register_lifecycle_hook(c.id, "pre_start", "del-me")
+        r = m.delete_lifecycle_hook(reg['hook_id'])
+        self.assertTrue(r['ok'])
+
+    def test_execution_history(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-hist")
+        m.register_lifecycle_hook(c.id, "pre_start", "hist")
+        m.execute_lifecycle_hook(c.id, "pre_start")
+        m.execute_lifecycle_hook(c.id, "pre_start")
+        r = m.get_hook_execution_history(container_id=c.id)
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_health_check_hook(self):
+        m = self._mgr()
+        c = self._mk(m, "lh-hc")
+        m.register_lifecycle_hook(c.id, "health_check", "alive", command=["true"])
+        r = m.execute_lifecycle_hook(c.id, "health_check")
+        self.assertTrue(r['ok'])
+
+
+class TestSecretInjection(unittest.TestCase):
+    """Tests for secret creation, injection, and rotation."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_secret(self):
+        m = self._mgr()
+        r = m.create_injected_secret("db-pass", {"password": "s3cret"})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['name'], 'db-pass')
+
+    def test_get_secret(self):
+        m = self._mgr()
+        m.create_injected_secret("api-key", {"key": "abc123"})
+        r = m.get_injected_secret("api-key")
+        self.assertTrue(r['ok'])
+        self.assertIn('data', r)
+
+    def test_update_secret(self):
+        m = self._mgr()
+        m.create_injected_secret("upd-sec", {"key": "old"})
+        r = m.update_injected_secret("upd-sec", {"key": "new"})
+        self.assertTrue(r['ok'])
+        self.assertIn('version', r)
+        self.assertGreater(r['version'], 1)
+
+    def test_inject_as_env(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-env")
+        m.create_injected_secret("env-sec", {"user": "admin", "pass": "secret"})
+        r = m.inject_secret_as_env(c.id, "env-sec", prefix="APP_")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['env_var_count'], 2)
+
+    def test_inject_filtered_keys(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-fk")
+        m.create_injected_secret("fk-sec", {"a": "1", "b": "2", "c": "3"})
+        r = m.inject_secret_as_env(c.id, "fk-sec", keys=["a", "c"])
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['env_var_count'], 2)
+
+    def test_inject_as_file(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-file")
+        m.create_injected_secret("file-sec", {"cert.pem": "cert-data"})
+        r = m.inject_secret_as_file(c.id, "file-sec", "/etc/secrets")
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['file_count'], 1)
+
+    def test_get_injected(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-get")
+        m.create_injected_secret("get-sec", {"k": "v"})
+        m.inject_secret_as_env(c.id, "get-sec")
+        r = m.get_injected_secrets(c.id)
+        self.assertEqual(r['total_injections'], 1)
+
+    def test_remove_injection(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-rm")
+        m.create_injected_secret("rm-sec", {"k": "v"})
+        m.inject_secret_as_env(c.id, "rm-sec")
+        r = m.remove_secret_injection(c.id, "rm-sec")
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['removed'])
+
+    def test_rotate_secret(self):
+        m = self._mgr()
+        m.create_injected_secret("rot-sec", {"key": "old"})
+        r = m.rotate_injected_secret("rot-sec", {"key": "new"})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['old_version'], 1)
+        self.assertEqual(r['new_version'], 2)
+
+    def test_list_secrets(self):
+        m = self._mgr()
+        m.create_injected_secret("ls-a", {"k": "v"})
+        m.create_injected_secret("ls-b", {"k": "v"})
+        r = m.list_injected_secrets()
+        self.assertGreaterEqual(r['count'], 2)
+        # Should not contain raw data
+        for s in r['secrets']:
+            self.assertNotIn('data', s)
+
+    def test_delete_secret(self):
+        m = self._mgr()
+        m.create_injected_secret("del-sec", {"k": "v"})
+        r = m.delete_injected_secret("del-sec")
+        self.assertTrue(r['ok'])
+
+    def test_get_nonexistent(self):
+        m = self._mgr()
+        r = m.get_injected_secret("nonexistent")
+        self.assertIn('error', r)
+
+    def test_inject_nonexistent(self):
+        m = self._mgr()
+        c = self._mk(m, "sec-ne")
+        r = m.inject_secret_as_env(c.id, "nonexistent")
+        self.assertIn('error', r)
+
+    def test_namespace_isolation(self):
+        m = self._mgr()
+        m.create_injected_secret("same-name", {"k": "v1"}, namespace="ns-a")
+        m.create_injected_secret("same-name", {"k": "v2"}, namespace="ns-b")
+        r1 = m.get_injected_secret("same-name", namespace="ns-a")
+        r2 = m.get_injected_secret("same-name", namespace="ns-b")
+        self.assertTrue(r1['ok'])
+        self.assertTrue(r2['ok'])
 
 
 if __name__ == "__main__":
