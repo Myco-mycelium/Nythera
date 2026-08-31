@@ -4960,6 +4960,25 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "remove-dependency": return {"service":"control","op":"remove_dependency","map_id":args.map_id,"target_name":args.target_name,"direction":getattr(args,"direction","upstream")}
     if command == "delete-dependency-map": return {"service":"control","op":"delete_dependency_map","map_id":args.map_id}
 
+    if command == "create-compliance-scan": return {"service":"control","op":"create_compliance_scan","container_id":args.container_id,"profile":getattr(args,"profile","cis-docker")}
+    if command == "add-compliance-rule": return {"service":"control","op":"add_compliance_rule","scan_id":args.scan_id,"rule_id":args.rule_id,"description":args.description,"severity":getattr(args,"severity","high")}
+    if command == "execute-compliance-scan": return {"service":"control","op":"execute_compliance_scan","scan_id":args.scan_id}
+    if command == "evaluate-compliance-rule": return {"service":"control","op":"evaluate_compliance_rule","scan_id":args.scan_id,"rule_id":args.rule_id,"passed":args.passed}
+    if command == "compliance-report": return {"service":"control","op":"get_compliance_report","scan_id":args.scan_id}
+    if command == "enforce-compliance": return {"service":"control","op":"enforce_compliance","scan_id":args.scan_id}
+    if command == "delete-compliance-scan": return {"service":"control","op":"delete_compliance_scan","scan_id":args.scan_id}
+    if command == "create-traffic-split": return {"service":"control","op":"create_traffic_split","container_id":args.container_id,"split_name":args.split_name}
+    if command == "update-traffic-weights": return {"service":"control","op":"update_traffic_weights","split_id":args.split_id,"routes":{k:float(v) for k,v in zip(args.route_names,args.route_weights)} if args.route_names else {}}
+    if command == "route-traffic": return {"service":"control","op":"route_traffic","split_id":args.split_id}
+    if command == "traffic-metrics": return {"service":"control","op":"get_traffic_metrics","split_id":args.split_id}
+    if command == "delete-traffic-split": return {"service":"control","op":"delete_traffic_split","split_id":args.split_id}
+    if command == "create-trace": return {"service":"control","op":"create_trace","container_id":args.container_id,"operation":args.operation}
+    if command == "add-span": return {"service":"control","op":"add_span","trace_id":args.trace_id,"span_name":args.span_name,"duration_ms":args.duration_ms}
+    if command == "finish-trace": return {"service":"control","op":"finish_trace","trace_id":args.trace_id,"status":getattr(args,"status","ok")}
+    if command == "trace-detail": return {"service":"control","op":"get_trace_detail","trace_id":args.trace_id}
+    if command == "aggregate-traces": return {"service":"control","op":"aggregate_traces","container_id":args.container_id}
+    if command == "delete-trace": return {"service":"control","op":"delete_trace","trace_id":args.trace_id}
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13706,6 +13725,25 @@ def build_parser() -> argparse.ArgumentParser:
     p15 = sub.add_parser("dependency-graph"); p15.add_argument("--map-id",required=True); p15.set_defaults(command="dependency-graph")
     p16 = sub.add_parser("remove-dependency"); p16.add_argument("--map-id",required=True); p16.add_argument("--target-name",required=True); p16.add_argument("--direction",default="upstream"); p16.set_defaults(command="remove-dependency")
     p17 = sub.add_parser("delete-dependency-map"); p17.add_argument("--map-id",required=True); p17.set_defaults(command="delete-dependency-map")
+
+    p1 = sub.add_parser("create-compliance-scan"); p1.add_argument("--container-id",required=True); p1.add_argument("--profile",default="cis-docker"); p1.set_defaults(command="create-compliance-scan")
+    p2 = sub.add_parser("add-compliance-rule"); p2.add_argument("--scan-id",required=True); p2.add_argument("--rule-id",required=True); p2.add_argument("--description",required=True); p2.add_argument("--severity",default="high"); p2.set_defaults(command="add-compliance-rule")
+    p3 = sub.add_parser("execute-compliance-scan"); p3.add_argument("--scan-id",required=True); p3.set_defaults(command="execute-compliance-scan")
+    p4 = sub.add_parser("evaluate-compliance-rule"); p4.add_argument("--scan-id",required=True); p4.add_argument("--rule-id",required=True); p4.add_argument("--passed",action="store_true"); p4.set_defaults(command="evaluate-compliance-rule")
+    p5 = sub.add_parser("compliance-report"); p5.add_argument("--scan-id",required=True); p5.set_defaults(command="compliance-report")
+    p6 = sub.add_parser("enforce-compliance"); p6.add_argument("--scan-id",required=True); p6.set_defaults(command="enforce-compliance")
+    p7 = sub.add_parser("delete-compliance-scan"); p7.add_argument("--scan-id",required=True); p7.set_defaults(command="delete-compliance-scan")
+    p8 = sub.add_parser("create-traffic-split"); p8.add_argument("--container-id",required=True); p8.add_argument("--split-name",required=True); p8.set_defaults(command="create-traffic-split")
+    p9 = sub.add_parser("update-traffic-weights"); p9.add_argument("--split-id",required=True); p9.add_argument("--route-names",nargs="+"); p9.add_argument("--route-weights",nargs="+",type=float); p9.set_defaults(command="update-traffic-weights")
+    p10 = sub.add_parser("route-traffic"); p10.add_argument("--split-id",required=True); p10.set_defaults(command="route-traffic")
+    p11 = sub.add_parser("traffic-metrics"); p11.add_argument("--split-id",required=True); p11.set_defaults(command="traffic-metrics")
+    p12 = sub.add_parser("delete-traffic-split"); p12.add_argument("--split-id",required=True); p12.set_defaults(command="delete-traffic-split")
+    p13 = sub.add_parser("create-trace"); p13.add_argument("--container-id",required=True); p13.add_argument("--operation",required=True); p13.set_defaults(command="create-trace")
+    p14 = sub.add_parser("add-span"); p14.add_argument("--trace-id",required=True); p14.add_argument("--span-name",required=True); p14.add_argument("--duration-ms",type=float,required=True); p14.set_defaults(command="add-span")
+    p15 = sub.add_parser("finish-trace"); p15.add_argument("--trace-id",required=True); p15.add_argument("--status",default="ok"); p15.set_defaults(command="finish-trace")
+    p16 = sub.add_parser("trace-detail"); p16.add_argument("--trace-id",required=True); p16.set_defaults(command="trace-detail")
+    p17 = sub.add_parser("aggregate-traces"); p17.add_argument("--container-id",required=True); p17.set_defaults(command="aggregate-traces")
+    p18 = sub.add_parser("delete-trace"); p18.add_argument("--trace-id",required=True); p18.set_defaults(command="delete-trace")
     return parser
 
 

@@ -10829,6 +10829,51 @@ class ControlService:
     def _h_delete_dependency_map(self, s, sp, cid, r):
         res = self.container_manager.delete_dependency_map(r.get("map_id",""))
         self._reply(sp,s,cid,{"ok":True,**res})
+
+    def _h_create_compliance_scan(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_compliance_scan(co, r.get("profile","cis-docker"))})
+    def _h_add_compliance_rule(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.add_compliance_rule(r.get("scan_id",""), r.get("rule_id",""), r.get("description",""), r.get("severity","high"))})
+    def _h_execute_compliance_scan(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.execute_compliance_scan(r.get("scan_id",""))})
+    def _h_evaluate_compliance_rule(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.evaluate_compliance_rule(r.get("scan_id",""), r.get("rule_id",""), r.get("passed",True))})
+    def _h_get_compliance_report(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_compliance_report(r.get("scan_id",""))})
+    def _h_enforce_compliance(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.enforce_compliance(r.get("scan_id",""))})
+    def _h_delete_compliance_scan(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_compliance_scan(r.get("scan_id",""))})
+    def _h_create_traffic_split(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_traffic_split(co, r.get("split_name",""), r.get("routes"))})
+    def _h_update_traffic_weights(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.update_traffic_weights(r.get("split_id",""), r.get("routes",{}))})
+    def _h_route_traffic(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.route_traffic(r.get("split_id",""))})
+    def _h_get_traffic_metrics(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_traffic_metrics(r.get("split_id",""))})
+    def _h_set_traffic_split_active(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.set_traffic_split_active(r.get("split_id",""), r.get("active",True))})
+    def _h_delete_traffic_split(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_traffic_split(r.get("split_id",""))})
+    def _h_create_trace(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_trace(co, r.get("operation",""), r.get("trace_id"))})
+    def _h_add_span(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.add_span(r.get("trace_id",""), r.get("span_name",""), r.get("duration_ms",0), r.get("parent_span_id"), r.get("status","ok"), r.get("attributes"))})
+    def _h_finish_trace(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.finish_trace(r.get("trace_id",""), r.get("status","ok"))})
+    def _h_get_trace_detail(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_trace_detail(r.get("trace_id",""))})
+    def _h_aggregate_traces(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.aggregate_traces(r.get("container_id",""), r.get("operation"), r.get("limit",100))})
+    def _h_delete_trace(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_trace(r.get("trace_id",""))})
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

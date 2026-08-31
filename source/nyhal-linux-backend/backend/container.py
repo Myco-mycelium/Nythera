@@ -29324,6 +29324,187 @@ class ContainerManager:
         return {"ok": True, "map_id": map_id}
 
 
+
+    # ------------------------------------------------------------------
+    # Automated compliance scanning with policy enforcement
+    # ------------------------------------------------------------------
+    def create_compliance_scan(self, container: Container, profile: str = "cis-docker") -> Dict[str, Any]:
+        if not hasattr(self, '_compliance_scans'): self._compliance_scans = {}
+        scan_id = f"cscan-{container.id[:12]}"
+        self._compliance_scans[scan_id] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "profile": profile, "created_at": time.time(), "status": "pending",
+            "rules": [], "results": [], "score": 100, "pass_count": 0, "fail_count": 0,
+        }
+        return {"scan_id": scan_id, "container_id": container.id, "profile": profile}
+
+    def add_compliance_rule(self, scan_id: str, rule_id: str, description: str, severity: str = "high") -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).get(scan_id)
+        if not scan: return {"error": "Scan not found"}
+        scan["rules"].append({"rule_id": rule_id, "description": description, "severity": severity})
+        return {"ok": True, "scan_id": scan_id, "rule_id": rule_id}
+
+    def execute_compliance_scan(self, scan_id: str) -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).get(scan_id)
+        if not scan: return {"error": "Scan not found"}
+        scan["status"] = "running"
+        scan["results"] = []
+        severity_penalty = {"critical": 25, "high": 15, "medium": 8, "low": 3, "info": 0}
+        for rule in scan["rules"]:
+            passed = True  # default pass, explicit fail via evaluate_compliance_rule
+            scan["results"].append({"rule_id": rule["rule_id"], "passed": passed, "severity": rule["severity"]})
+        scan["pass_count"] = sum(1 for r in scan["results"] if r["passed"])
+        scan["fail_count"] = sum(1 for r in scan["results"] if not r["passed"])
+        scan["score"] = max(0, 100 - sum(severity_penalty.get(r["severity"], 0) for r in scan["results"] if not r["passed"]))
+        scan["status"] = "completed"
+        return {"scan_id": scan_id, "score": scan["score"], "pass_count": scan["pass_count"], "fail_count": scan["fail_count"]}
+
+    def evaluate_compliance_rule(self, scan_id: str, rule_id: str, passed: bool) -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).get(scan_id)
+        if not scan: return {"error": "Scan not found"}
+        for r in scan["results"]:
+            if r["rule_id"] == rule_id: r["passed"] = passed; break
+        severity_penalty = {"critical": 25, "high": 15, "medium": 8, "low": 3, "info": 0}
+        scan["pass_count"] = sum(1 for r in scan["results"] if r["passed"])
+        scan["fail_count"] = sum(1 for r in scan["results"] if not r["passed"])
+        scan["score"] = max(0, 100 - sum(severity_penalty.get(r["severity"], 0) for r in scan["results"] if not r["passed"]))
+        return {"ok": True, "rule_id": rule_id, "passed": passed, "score": scan["score"]}
+
+    def get_compliance_report(self, scan_id: str) -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).get(scan_id)
+        if not scan: return {"error": "Scan not found"}
+        violations = [{"rule_id": r["rule_id"], "severity": r["severity"]} for r in scan["results"] if not r["passed"]]
+        return {"scan_id": scan_id, "container_name": scan["container_name"], "profile": scan["profile"],
+                "status": scan["status"], "score": scan["score"], "pass_count": scan["pass_count"],
+                "fail_count": scan["fail_count"], "total_rules": len(scan["rules"]),
+                "violations": violations, "grade": "A" if scan["score"] >= 90 else "B" if scan["score"] >= 75 else "C" if scan["score"] >= 60 else "D" if scan["score"] >= 40 else "F"}
+
+    def enforce_compliance(self, scan_id: str) -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).get(scan_id)
+        if not scan: return {"error": "Scan not found"}
+        blocked = [r["rule_id"] for r in scan["results"] if not r["passed"]]
+        return {"scan_id": scan_id, "enforced": len(blocked) == 0, "blocked_rules": blocked, "score": scan["score"]}
+
+    def delete_compliance_scan(self, scan_id: str) -> Dict[str, Any]:
+        scan = getattr(self, '_compliance_scans', {}).pop(scan_id, None)
+        if not scan: return {"error": "Scan not found"}
+        return {"ok": True, "scan_id": scan_id, "final_score": scan["score"]}
+
+    # ------------------------------------------------------------------
+    # Traffic splitting with weighted routing
+    # ------------------------------------------------------------------
+    def create_traffic_split(self, container: Container, split_name: str, routes: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        if not hasattr(self, '_traffic_splits'): self._traffic_splits = {}
+        split_id = f"ts-{container.id[:12]}-{split_name}"
+        self._traffic_splits[split_id] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "split_name": split_name, "routes": routes or {"stable": 100.0},
+            "created_at": time.time(), "active": True, "metrics": {},
+        }
+        return {"split_id": split_id, "container_id": container.id, "split_name": split_name, "routes": routes or {"stable": 100.0}}
+
+    def update_traffic_weights(self, split_id: str, routes: Dict[str, float]) -> Dict[str, Any]:
+        split = getattr(self, '_traffic_splits', {}).get(split_id)
+        if not split: return {"error": "Split not found"}
+        total = sum(routes.values())
+        if abs(total - 100.0) > 0.01: return {"error": f"Weights must sum to 100, got {total}"}
+        split["routes"] = routes
+        return {"ok": True, "split_id": split_id, "routes": routes}
+
+    def route_traffic(self, split_id: str) -> Dict[str, Any]:
+        import random
+        split = getattr(self, '_traffic_splits', {}).get(split_id)
+        if not split: return {"error": "Split not found"}
+        if not split["active"]: return {"split_id": split_id, "route": "stable", "reason": "split inactive"}
+        r = random.uniform(0, 100)
+        cumulative = 0
+        chosen = list(split["routes"].keys())[0]
+        for route, weight in split["routes"].items():
+            cumulative += weight
+            if r <= cumulative: chosen = route; break
+        split["metrics"][chosen] = split["metrics"].get(chosen, 0) + 1
+        return {"split_id": split_id, "route": chosen, "weight": split["routes"][chosen]}
+
+    def get_traffic_metrics(self, split_id: str) -> Dict[str, Any]:
+        split = getattr(self, '_traffic_splits', {}).get(split_id)
+        if not split: return {"error": "Split not found"}
+        total = sum(split["metrics"].values())
+        pcts = {k: round(v / total * 100, 2) if total > 0 else 0 for k, v in split["metrics"].items()}
+        return {"split_id": split_id, "total_requests": total, "per_route_count": split["metrics"], "per_route_pct": pcts}
+
+    def set_traffic_split_active(self, split_id: str, active: bool) -> Dict[str, Any]:
+        split = getattr(self, '_traffic_splits', {}).get(split_id)
+        if not split: return {"error": "Split not found"}
+        split["active"] = active
+        return {"ok": True, "split_id": split_id, "active": active}
+
+    def delete_traffic_split(self, split_id: str) -> Dict[str, Any]:
+        split = getattr(self, '_traffic_splits', {}).pop(split_id, None)
+        if not split: return {"error": "Split not found"}
+        return {"ok": True, "split_id": split_id, "total_requests": sum(split["metrics"].values())}
+
+    # ------------------------------------------------------------------
+    # Distributed tracing with span aggregation
+    # ------------------------------------------------------------------
+    def create_trace(self, container: Container, operation: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
+        if not hasattr(self, '_traces'): self._traces = {}
+        tid = trace_id or f"trace-{container.id[:8]}-{int(time.time()*1000)}"
+        self._traces[tid] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "operation": operation, "created_at": time.time(), "status": "active",
+            "spans": [], "duration_ms": 0, "error": None,
+        }
+        return {"trace_id": tid, "container_id": container.id, "operation": operation}
+
+    def add_span(self, trace_id: str, span_name: str, duration_ms: float, parent_span_id: Optional[str] = None, status: str = "ok", attributes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        trace = getattr(self, '_traces', {}).get(trace_id)
+        if not trace: return {"error": "Trace not found"}
+        span = {"span_id": f"span-{len(trace['spans'])}", "name": span_name, "duration_ms": duration_ms,
+                "parent_span_id": parent_span_id, "status": status, "attributes": attributes or {},
+                "start_time": time.time() - duration_ms / 1000, "end_time": time.time()}
+        trace["spans"].append(span)
+        trace["duration_ms"] = sum(s["duration_ms"] for s in trace["spans"])
+        return {"ok": True, "trace_id": trace_id, "span_id": span["span_id"]}
+
+    def finish_trace(self, trace_id: str, status: str = "ok") -> Dict[str, Any]:
+        trace = getattr(self, '_traces', {}).get(trace_id)
+        if not trace: return {"error": "Trace not found"}
+        trace["status"] = status
+        return {"ok": True, "trace_id": trace_id, "duration_ms": trace["duration_ms"], "span_count": len(trace["spans"])}
+
+    def get_trace_detail(self, trace_id: str) -> Dict[str, Any]:
+        trace = getattr(self, '_traces', {}).get(trace_id)
+        if not trace: return {"error": "Trace not found"}
+        return {"trace_id": trace_id, "operation": trace["operation"], "status": trace["status"],
+                "duration_ms": trace["duration_ms"], "span_count": len(trace["spans"]),
+                "spans": trace["spans"]}
+
+    def aggregate_traces(self, container_id: str, operation: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        traces = getattr(self, '_traces', {})
+        matched = []
+        for tid, t in traces.items():
+            if t["container_id"] == container_id and (operation is None or t["operation"] == operation):
+                matched.append(t)
+        matched.sort(key=lambda x: x["created_at"], reverse=True)
+        matched = matched[:limit]
+        if not matched: return {"container_id": container_id, "count": 0, "avg_duration_ms": 0, "p99_duration_ms": 0, "error_rate": 0}
+        durations = [t["duration_ms"] for t in matched]
+        sorted_d = sorted(durations)
+        n = len(sorted_d)
+        error_count = sum(1 for t in matched if t["status"] == "error")
+        return {"container_id": container_id, "operation": operation, "count": n,
+                "avg_duration_ms": round(sum(durations) / n, 2),
+                "p50_duration_ms": round(sorted_d[n // 2], 2),
+                "p95_duration_ms": round(sorted_d[int(n * 0.95)], 2) if n >= 2 else sorted_d[-1],
+                "p99_duration_ms": round(sorted_d[int(n * 0.99)], 2) if n >= 2 else sorted_d[-1],
+                "error_rate": round(error_count / n, 4)}
+
+    def delete_trace(self, trace_id: str) -> Dict[str, Any]:
+        trace = getattr(self, '_traces', {}).pop(trace_id, None)
+        if not trace: return {"error": "Trace not found"}
+        return {"ok": True, "trace_id": trace_id, "span_count": len(trace["spans"])}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

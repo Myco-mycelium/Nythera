@@ -33440,6 +33440,83 @@ class TestDependencyMapping(unittest.TestCase):
     def test_delete_map(self):
         m=self._mgr(); c=self._mk(m,"dm6"); r=m.create_dependency_map(c); self.assertTrue(m.delete_dependency_map(r["map_id"])["ok"])
 
+class TestComplianceScanning(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_scan(self):
+        m=self._mgr(); c=self._mk(m,"cs1"); r=m.create_compliance_scan(c); self.assertIn("scan_id",r)
+    def test_add_and_execute(self):
+        m=self._mgr(); c=self._mk(m,"cs2"); r=m.create_compliance_scan(c); sid=r["scan_id"]
+        m.add_compliance_rule(sid,"R1","test rule","critical")
+        r2=m.execute_compliance_scan(sid); self.assertEqual(r2["score"],100)
+    def test_evaluate_fail(self):
+        m=self._mgr(); c=self._mk(m,"cs3"); r=m.create_compliance_scan(c); sid=r["scan_id"]
+        m.add_compliance_rule(sid,"R1","test","critical")
+        m.execute_compliance_scan(sid)
+        r2=m.evaluate_compliance_rule(sid,"R1",False); self.assertLess(r2["score"],100)
+    def test_report_grade(self):
+        m=self._mgr(); c=self._mk(m,"cs4"); r=m.create_compliance_scan(c); sid=r["scan_id"]
+        m.add_compliance_rule(sid,"R1","test","low"); m.execute_compliance_scan(sid)
+        r2=m.get_compliance_report(sid); self.assertEqual(r2["grade"],"A")
+    def test_enforce(self):
+        m=self._mgr(); c=self._mk(m,"cs5"); r=m.create_compliance_scan(c); sid=r["scan_id"]
+        m.add_compliance_rule(sid,"R1","test","high"); m.execute_compliance_scan(sid)
+        r2=m.enforce_compliance(sid); self.assertTrue(r2["enforced"])
+    def test_delete(self):
+        m=self._mgr(); c=self._mk(m,"cs6"); r=m.create_compliance_scan(c); self.assertTrue(m.delete_compliance_scan(r["scan_id"])["ok"])
+
+
+class TestTrafficSplitting(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_split(self):
+        m=self._mgr(); c=self._mk(m,"ts1"); r=m.create_traffic_split(c,"canary",{"stable":90.0,"canary":10.0}); self.assertIn("split_id",r)
+    def test_update_weights(self):
+        m=self._mgr(); c=self._mk(m,"ts2"); r=m.create_traffic_split(c,"r"); sid=r["split_id"]
+        r2=m.update_traffic_weights(sid,{"a":50.0,"b":50.0}); self.assertTrue(r2["ok"])
+    def test_invalid_weights(self):
+        m=self._mgr(); c=self._mk(m,"ts3"); r=m.create_traffic_split(c,"r"); sid=r["split_id"]
+        r2=m.update_traffic_weights(sid,{"a":30.0,"b":30.0}); self.assertIn("error",r2)
+    def test_route_traffic(self):
+        m=self._mgr(); c=self._mk(m,"ts4"); r=m.create_traffic_split(c,"r",{"a":50.0,"b":50.0}); sid=r["split_id"]
+        r2=m.route_traffic(sid); self.assertIn(r2["route"],["a","b"])
+    def test_metrics(self):
+        m=self._mgr(); c=self._mk(m,"ts5"); r=m.create_traffic_split(c,"r",{"a":50.0,"b":50.0}); sid=r["split_id"]
+        for _ in range(10): m.route_traffic(sid)
+        r2=m.get_traffic_metrics(sid); self.assertEqual(r2["total_requests"],10)
+    def test_delete(self):
+        m=self._mgr(); c=self._mk(m,"ts6"); r=m.create_traffic_split(c,"r"); self.assertTrue(m.delete_traffic_split(r["split_id"])["ok"])
+
+
+class TestDistributedTracing(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_trace(self):
+        m=self._mgr(); c=self._mk(m,"dt1"); r=m.create_trace(c,"GET /api"); self.assertIn("trace_id",r)
+    def test_add_spans(self):
+        m=self._mgr(); c=self._mk(m,"dt2"); r=m.create_trace(c,"req"); tid=r["trace_id"]
+        m.add_span(tid,"db",50.0); m.add_span(tid,"cache",10.0)
+        r2=m.get_trace_detail(tid); self.assertEqual(r2["span_count"],2)
+        self.assertGreater(r2["duration_ms"],0)
+    def test_finish_trace(self):
+        m=self._mgr(); c=self._mk(m,"dt3"); r=m.create_trace(c,"req"); tid=r["trace_id"]
+        m.add_span(tid,"s1",25.0)
+        r2=m.finish_trace(tid); self.assertIn("trace_id",r2)
+    def test_aggregate(self):
+        m=self._mgr(); c=self._mk(m,"dt4"); cid=c.id
+        for i in range(5):
+            r=m.create_trace(c,"GET /api",trace_id=f"trace-{cid[:8]}-{i}"); m.add_span(r["trace_id"],"s",10.0); m.finish_trace(r["trace_id"])
+        r2=m.aggregate_traces(cid); self.assertGreater(r2["count"],0)
+        self.assertIn("avg_duration_ms",r2)
+    def test_delete_trace(self):
+        m=self._mgr(); c=self._mk(m,"dt5"); r=m.create_trace(c,"op"); self.assertTrue(m.delete_trace(r["trace_id"])["ok"])
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33695,6 +33772,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestDemandForecasting))
     suite.addTests(loader.loadTestsFromTestCase(TestErrorBudgets))
     suite.addTests(loader.loadTestsFromTestCase(TestDependencyMapping))
+    suite.addTests(loader.loadTestsFromTestCase(TestComplianceScanning))
+    suite.addTests(loader.loadTestsFromTestCase(TestTrafficSplitting))
+    suite.addTests(loader.loadTestsFromTestCase(TestDistributedTracing))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
