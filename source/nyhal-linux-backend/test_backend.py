@@ -34261,6 +34261,237 @@ class TestContainerVersioning(unittest.TestCase):
         self.assertEqual(r["total"], 0)
 
 
+class TestContainerGroups(unittest.TestCase):
+    """Tests for container group management with bulk resource limits."""
+
+    def setUp(self):
+        from backend.container import ContainerManager
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
+
+    def test_create_group(self):
+        m=self._mgr()
+        r=m.create_container_group("web-servers", description="Frontend containers")
+        self.assertTrue(r["ok"])
+
+    def test_create_duplicate_group(self):
+        m=self._mgr()
+        m.create_container_group("dup")
+        r=m.create_container_group("dup")
+        self.assertIn("error", r)
+
+    def test_add_to_group(self):
+        m=self._mgr(); c=self._mk(m, "g1")
+        m.create_container_group("grp")
+        r=m.add_to_group("grp", c.id)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["member_count"], 1)
+
+    def test_add_duplicate_to_group(self):
+        m=self._mgr(); c=self._mk(m, "g2")
+        m.create_container_group("grp2")
+        m.add_to_group("grp2", c.id)
+        r=m.add_to_group("grp2", c.id)
+        self.assertIn("error", r)
+
+    def test_remove_from_group(self):
+        m=self._mgr(); c=self._mk(m, "g3")
+        m.create_container_group("grp3")
+        m.add_to_group("grp3", c.id)
+        r=m.remove_from_group("grp3", c.id)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["member_count"], 0)
+
+    def test_list_groups(self):
+        m=self._mgr()
+        m.create_container_group("lg1")
+        m.create_container_group("lg2")
+        r=m.list_container_groups()
+        self.assertEqual(r["count"], 2)
+
+    def test_get_group(self):
+        m=self._mgr(); c=self._mk(m, "g4")
+        m.create_container_group("gg", resource_limits={"memory_mb": 512})
+        m.add_to_group("gg", c.id)
+        r=m.get_container_group("gg")
+        self.assertEqual(r["member_count"], 1)
+        self.assertEqual(r["resource_limits"]["memory_mb"], 512)
+
+    def test_apply_resource_limits(self):
+        m=self._mgr(); c=self._mk(m, "g5")
+        m.create_container_group("rl", resource_limits={"memory_mb": 1024})
+        m.add_to_group("rl", c.id)
+        r=m.apply_group_resource_limits("rl")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["applied_to"], 1)
+
+    def test_apply_labels(self):
+        m=self._mgr(); c=self._mk(m, "g6")
+        m.create_container_group("lb", default_labels={"env": "prod"})
+        m.add_to_group("lb", c.id)
+        r=m.apply_group_labels("lb")
+        self.assertTrue(r["ok"])
+
+    def test_group_stats(self):
+        m=self._mgr(); c=self._mk(m, "g7")
+        m.create_container_group("stats")
+        m.add_to_group("stats", c.id)
+        r=m.get_group_stats("stats")
+        self.assertEqual(r["member_count"], 1)
+        self.assertGreater(r["total_memory_mb"], 0)
+
+    def test_delete_group(self):
+        m=self._mgr()
+        m.create_container_group("dg")
+        r=m.delete_container_group("dg")
+        self.assertTrue(r["ok"])
+
+    def test_group_nonexistent(self):
+        m=self._mgr()
+        r=m.get_container_group("nope")
+        self.assertIn("error", r)
+
+
+class TestBlueprintInheritance(unittest.TestCase):
+    """Tests for blueprint template inheritance."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_inherited(self):
+        m=self._mgr()
+        m.create_blueprint("base", image="nginx", memory_mb=512)
+        r=m.create_inherited_blueprint("child", "base", overrides={"memory_mb": 1024})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["parent"], "base")
+
+    def test_inherit_nonexistent_parent(self):
+        m=self._mgr()
+        r=m.create_inherited_blueprint("orphan", "nope")
+        self.assertIn("error", r)
+
+    def test_inherit_duplicate_name(self):
+        m=self._mgr()
+        m.create_blueprint("existing")
+        r=m.create_inherited_blueprint("existing", "existing")
+        self.assertIn("error", r)
+
+    def test_get_chain(self):
+        m=self._mgr()
+        m.create_blueprint("grandparent")
+        m.create_inherited_blueprint("parent", "grandparent")
+        m.create_inherited_blueprint("child", "parent")
+        r=m.get_blueprint_chain("child")
+        self.assertEqual(r["depth"], 3)
+        self.assertEqual(r["chain"], ["child", "parent", "grandparent"])
+
+    def test_resolve_single(self):
+        m=self._mgr()
+        m.create_blueprint("solo", image="alpine", memory_mb=256)
+        r=m.resolve_blueprint("solo")
+        self.assertEqual(r["image"], "alpine")
+        self.assertEqual(r["memory_mb"], 256)
+        self.assertEqual(r["chain"], ["solo"])
+
+    def test_resolve_inherited(self):
+        m=self._mgr()
+        m.create_blueprint("p", image="redis", memory_mb=128, labels={"tier": "cache"})
+        m.create_inherited_blueprint("c", "p", overrides={"memory_mb": 512})
+        r=m.resolve_blueprint("c")
+        self.assertEqual(r["image"], "redis")
+        self.assertEqual(r["memory_mb"], 512)  # child wins
+        self.assertEqual(r["labels"]["tier"], "cache")  # inherited
+        self.assertEqual(r["chain"], ["p", "c"])
+
+    def test_resolve_deep_chain(self):
+        m=self._mgr()
+        m.create_blueprint("a", image="img-a", memory_mb=64)
+        m.create_inherited_blueprint("b", "a", overrides={"memory_mb": 128})
+        m.create_inherited_blueprint("c", "b", overrides={"memory_mb": 256})
+        m.create_inherited_blueprint("d", "c", overrides={"image": "img-d"})
+        r=m.resolve_blueprint("d")
+        self.assertEqual(r["image"], "img-d")  # d overrides
+        self.assertEqual(r["memory_mb"], 256)  # c's value, d didn't override
+        self.assertEqual(r["chain"], ["a", "b", "c", "d"])
+
+    def test_inherit_merges_labels(self):
+        m=self._mgr()
+        m.create_blueprint("lb1", labels={"a": "1", "b": "2"})
+        m.create_inherited_blueprint("lb2", "lb1", overrides={"labels": {"c": "3"}})
+        r=m.resolve_blueprint("lb2")
+        self.assertEqual(r["labels"]["a"], "1")
+        self.assertEqual(r["labels"]["c"], "3")
+
+    def test_inherit_merges_env(self):
+        m=self._mgr()
+        m.create_blueprint("ev1", env={"A": "1"})
+        m.create_inherited_blueprint("ev2", "ev1", overrides={"env": {"B": "2"}})
+        r=m.resolve_blueprint("ev2")
+        self.assertEqual(r["env"]["A"], "1")
+        self.assertEqual(r["env"]["B"], "2")
+
+
+class TestPerformanceBenchmarks(unittest.TestCase):
+    """Performance benchmarks for batch, promotion, and versioning."""
+
+    def setUp(self):
+        from backend.container import ContainerManager
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
+
+    def test_batch_benchmark(self):
+        m=self._mgr()
+        r=m.benchmark_batch_operations(num_operations=20, operation_type="inspect")
+        self.assertIn("throughput_ops_per_sec", r)
+        self.assertGreater(r["throughput_ops_per_sec"], 0)
+        self.assertIn("create_time_ms", r)
+        self.assertIn("execute_time_ms", r)
+
+    def test_promotion_benchmark(self):
+        m=self._mgr()
+        r=m.benchmark_promotion_workflow(num_promotions=5)
+        self.assertIn("avg_deploy_ms", r)
+        self.assertIn("avg_promote_ms", r)
+        self.assertGreater(r["throughput_per_sec"], 0)
+
+    def test_version_benchmark(self):
+        m=self._mgr()
+        from backend.container import ContainerConfig
+        c=m.create(ContainerConfig(name="bench-ver", command=["sleep", "10"]))
+        self._containers.append(c)
+        r=m.benchmark_version_operations(c.id, num_versions=10)
+        self.assertIn("avg_create_ms", r)
+        self.assertIn("rollback_ms", r)
+        self.assertGreaterEqual(r["avg_create_ms"], 0)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -34531,6 +34762,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBatchOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestDeploymentEnvironments))
     suite.addTests(loader.loadTestsFromTestCase(TestContainerVersioning))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerGroups))
+    suite.addTests(loader.loadTestsFromTestCase(TestBlueprintInheritance))
+    suite.addTests(loader.loadTestsFromTestCase(TestPerformanceBenchmarks))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

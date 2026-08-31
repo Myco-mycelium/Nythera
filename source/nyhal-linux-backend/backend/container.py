@@ -31098,6 +31098,412 @@ class ContainerManager:
                 }
         return {"container_id": container_id, "version": None, "config": None}
 
+    # ------------------------------------------------------------------
+    # Container group management with bulk resource limits
+    # ------------------------------------------------------------------
+
+    def create_container_group(
+        self,
+        name: str,
+        description: str = "",
+        default_labels: Optional[Dict[str, str]] = None,
+        resource_limits: Optional[Dict[str, Any]] = None,
+        auto_add_rules: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Create a container group for bulk management."""
+        if not hasattr(self, '_container_groups'):
+            self._container_groups = {}
+        if name in self._container_groups:
+            return {"error": f"Group '{name}' already exists"}
+        self._container_groups[name] = {
+            "name": name,
+            "description": description,
+            "default_labels": default_labels or {},
+            "resource_limits": resource_limits or {},
+            "auto_add_rules": auto_add_rules or [],
+            "containers": [],
+            "created_at": time.time(),
+        }
+        return {"ok": True, "group": name}
+
+    def add_to_group(self, group_name: str, container_id: str) -> Dict[str, Any]:
+        """Add a container to a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        if container_id in group["containers"]:
+            return {"error": f"Container already in group '{group_name}'"}
+        group["containers"].append(container_id)
+        return {"ok": True, "group": group_name, "container_id": container_id,
+                "member_count": len(group["containers"])}
+
+    def remove_from_group(self, group_name: str, container_id: str) -> Dict[str, Any]:
+        """Remove a container from a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        if container_id not in group["containers"]:
+            return {"error": f"Container not in group '{group_name}'"}
+        group["containers"].remove(container_id)
+        return {"ok": True, "group": group_name, "member_count": len(group["containers"])}
+
+    def list_container_groups(self) -> Dict[str, Any]:
+        """List all container groups."""
+        groups = getattr(self, '_container_groups', {})
+        items = []
+        for g in groups.values():
+            items.append({
+                "name": g["name"],
+                "description": g["description"],
+                "member_count": len(g["containers"]),
+            })
+        return {"groups": items, "count": len(items)}
+
+    def get_container_group(self, name: str) -> Dict[str, Any]:
+        """Get group details including member list."""
+        group = getattr(self, '_container_groups', {}).get(name)
+        if not group:
+            return {"error": f"Group '{name}' not found"}
+        return {
+            "name": group["name"],
+            "description": group["description"],
+            "containers": list(group["containers"]),
+            "member_count": len(group["containers"]),
+            "resource_limits": group["resource_limits"],
+            "default_labels": group["default_labels"],
+        }
+
+    def apply_group_resource_limits(self, group_name: str) -> Dict[str, Any]:
+        """Apply resource limits to all containers in a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        limits = group["resource_limits"]
+        applied = 0
+        for cid in group["containers"]:
+            c = self.get_container(cid)
+            if not c:
+                continue
+            if "memory_mb" in limits:
+                c.config.limits.memory_mb = limits["memory_mb"]
+            if "pid_limit" in limits:
+                c.config.limits.pid_limit = limits["pid_limit"]
+            applied += 1
+        return {
+            "ok": True, "group": group_name, "applied_to": applied,
+            "limits": limits,
+        }
+
+    def apply_group_labels(self, group_name: str) -> Dict[str, Any]:
+        """Apply default labels to all containers in a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        labels = group["default_labels"]
+        applied = 0
+        for cid in group["containers"]:
+            c = self.get_container(cid)
+            if not c:
+                continue
+            for k, v in labels.items():
+                c.config.labels[k] = v
+            applied += 1
+        return {
+            "ok": True, "group": group_name, "applied_to": applied,
+            "labels": labels,
+        }
+
+    def bulk_start_group(self, group_name: str) -> Dict[str, Any]:
+        """Start all containers in a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        started = 0
+        errors = 0
+        for cid in group["containers"]:
+            c = self.get_container(cid)
+            if not c:
+                errors += 1
+                continue
+            try:
+                self.start(c)
+                started += 1
+            except Exception:
+                errors += 1
+        return {"ok": True, "group": group_name, "started": started, "errors": errors}
+
+    def bulk_stop_group(self, group_name: str) -> Dict[str, Any]:
+        """Stop all containers in a group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        stopped = 0
+        errors = 0
+        for cid in group["containers"]:
+            c = self.get_container(cid)
+            if not c:
+                errors += 1
+                continue
+            try:
+                self.stop(c)
+                stopped += 1
+            except Exception:
+                errors += 1
+        return {"ok": True, "group": group_name, "stopped": stopped, "errors": errors}
+
+    def get_group_stats(self, group_name: str) -> Dict[str, Any]:
+        """Get aggregate stats for a container group."""
+        group = getattr(self, '_container_groups', {}).get(group_name)
+        if not group:
+            return {"error": f"Group '{group_name}' not found"}
+        total_memory = 0
+        total_pids = 0
+        running = 0
+        for cid in group["containers"]:
+            c = self.get_container(cid)
+            if not c:
+                continue
+            total_memory += c.config.limits.memory_mb
+            total_pids += c.config.limits.pid_limit
+            from backend.container import ContainerState
+            if c.state == ContainerState.RUNNING:
+                running += 1
+        return {
+            "group": group_name,
+            "member_count": len(group["containers"]),
+            "running": running,
+            "total_memory_mb": total_memory,
+            "total_pid_limit": total_pids,
+        }
+
+    def delete_container_group(self, name: str) -> Dict[str, Any]:
+        """Delete a container group (does not delete containers)."""
+        group = getattr(self, '_container_groups', {}).pop(name, None)
+        if not group:
+            return {"error": f"Group '{name}' not found"}
+        return {"ok": True, "deleted": name, "member_count": len(group["containers"])}
+
+    # ------------------------------------------------------------------
+    # Blueprint template inheritance
+    # ------------------------------------------------------------------
+
+    def create_inherited_blueprint(
+        self,
+        name: str,
+        parent_blueprint: str,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a blueprint that inherits from another blueprint."""
+        bps = getattr(self, '_blueprints', {})
+        parent = bps.get(parent_blueprint)
+        if not parent:
+            return {"error": f"Parent blueprint '{parent_blueprint}' not found"}
+        if name in bps:
+            return {"error": f"Blueprint '{name}' already exists"}
+        # Deep copy parent config
+        child = {
+            "name": name,
+            "parent": parent_blueprint,
+            "image": parent["image"],
+            "command": list(parent["command"]),
+            "memory_mb": parent["memory_mb"],
+            "cpu_quota": parent["cpu_quota"],
+            "cpu_period": parent["cpu_period"],
+            "pid_limit": parent["pid_limit"],
+            "labels": {**parent["labels"], "inherited_from": parent_blueprint},
+            "env": {**parent["env"]},
+            "network": parent["network"],
+            "tags": list(parent["tags"]),
+            "created_at": time.time(),
+            "instance_count": 0,
+        }
+        # Apply overrides
+        if overrides:
+            for k, v in overrides.items():
+                if k == "labels":
+                    child["labels"].update(v)
+                elif k == "env":
+                    child["env"].update(v)
+                elif k == "tags":
+                    child["tags"] = list(v)
+                else:
+                    child[k] = v
+        bps[name] = child
+        return {"ok": True, "blueprint": name, "parent": parent_blueprint}
+
+    def get_blueprint_chain(self, name: str) -> Dict[str, Any]:
+        """Get the full inheritance chain for a blueprint."""
+        bps = getattr(self, '_blueprints', {})
+        chain = []
+        current = name
+        while current:
+            bp = bps.get(current)
+            if not bp:
+                break
+            chain.append(bp["name"])
+            current = bp.get("parent")
+        return {
+            "blueprint": name,
+            "chain": chain,
+            "depth": len(chain),
+        }
+
+    def resolve_blueprint(self, name: str) -> Dict[str, Any]:
+        """Resolve a blueprint to its final config, merging all ancestors."""
+        bps = getattr(self, '_blueprints', {})
+        chain = []
+        current = name
+        while current:
+            bp = bps.get(current)
+            if not bp:
+                break
+            chain.append(bp)
+            current = bp.get("parent")
+        # Merge from oldest ancestor to newest (child wins)
+        resolved = {
+            "name": name,
+            "image": "",
+            "command": ["sleep", "3600"],
+            "memory_mb": 256,
+            "cpu_quota": None,
+            "cpu_period": None,
+            "pid_limit": 128,
+            "labels": {},
+            "env": {},
+            "network": False,
+            "tags": [],
+        }
+        for bp in reversed(chain):
+            resolved["image"] = bp.get("image") or resolved["image"]
+            resolved["command"] = bp.get("command") or resolved["command"]
+            resolved["memory_mb"] = bp.get("memory_mb", resolved["memory_mb"])
+            resolved["cpu_quota"] = bp.get("cpu_quota") if bp.get("cpu_quota") is not None else resolved["cpu_quota"]
+            resolved["cpu_period"] = bp.get("cpu_period") if bp.get("cpu_period") is not None else resolved["cpu_period"]
+            resolved["pid_limit"] = bp.get("pid_limit", resolved["pid_limit"])
+            resolved["labels"].update(bp.get("labels", {}))
+            resolved["env"].update(bp.get("env", {}))
+            resolved["network"] = bp.get("network", resolved["network"])
+            for t in bp.get("tags", []):
+                if t not in resolved["tags"]:
+                    resolved["tags"].append(t)
+        resolved["chain"] = [bp["name"] for bp in reversed(chain)]
+        return resolved
+
+    # ------------------------------------------------------------------
+    # Performance benchmarks for batch and promotion
+    # ------------------------------------------------------------------
+
+    def benchmark_batch_operations(
+        self,
+        num_operations: int = 100,
+        operation_type: str = "inspect",
+    ) -> Dict[str, Any]:
+        """Benchmark batch operation throughput."""
+        import time as _time
+        # Create test containers
+        container_ids = []
+        for i in range(min(num_operations, 50)):
+            from backend.container import ContainerConfig
+            c = self.create(ContainerConfig(
+                name=f"bench-batch-{i}",
+                command=["sleep", "3600"],
+            ))
+            container_ids.append(c.id)
+
+        # Benchmark batch creation
+        ops = [
+            {"op": operation_type, "container_id": container_ids[i % len(container_ids)]}
+            for i in range(num_operations)
+        ]
+        t0 = _time.monotonic()
+        batch = self.create_batch_operation("benchmark", ops)
+        create_time = _time.monotonic() - t0
+
+        # Benchmark batch execution
+        t0 = _time.monotonic()
+        result = self.execute_batch_operation(batch["batch_id"])
+        exec_time = _time.monotonic() - t0
+
+        throughput = num_operations / exec_time if exec_time > 0 else float('inf')
+
+        return {
+            "num_operations": num_operations,
+            "operation_type": operation_type,
+            "create_time_ms": round(create_time * 1000, 2),
+            "execute_time_ms": round(exec_time * 1000, 2),
+            "throughput_ops_per_sec": round(throughput, 1),
+            "progress": result.get("progress", {}),
+        }
+
+    def benchmark_promotion_workflow(
+        self,
+        num_promotions: int = 20,
+    ) -> Dict[str, Any]:
+        """Benchmark environment promotion throughput."""
+        import time as _time
+        env_name = f"bench-promo-{int(time.time())}"
+        self.create_environment(env_name)
+        self.create_environment(f"{env_name}-target", parent=env_name)
+
+        # Benchmark deploy + promote cycle
+        deploy_times = []
+        promote_times = []
+        for i in range(num_promotions):
+            t0 = _time.monotonic()
+            self.deploy_to_environment(env_name, version=f"v{i}")
+            deploy_times.append(_time.monotonic() - t0)
+
+            t0 = _time.monotonic()
+            self.promote_between_environments(env_name, f"{env_name}-target")
+            promote_times.append(_time.monotonic() - t0)
+
+        avg_deploy = sum(deploy_times) / len(deploy_times) * 1000
+        avg_promote = sum(promote_times) / len(promote_times) * 1000
+
+        return {
+            "num_promotions": num_promotions,
+            "avg_deploy_ms": round(avg_deploy, 2),
+            "avg_promote_ms": round(avg_promote, 2),
+            "total_cycle_ms": round(avg_deploy + avg_promote, 2),
+            "throughput_per_sec": round(1000 / (avg_deploy + avg_promote), 1) if (avg_deploy + avg_promote) > 0 else float('inf'),
+        }
+
+    def benchmark_version_operations(
+        self,
+        container_id: str,
+        num_versions: int = 50,
+    ) -> Dict[str, Any]:
+        """Benchmark version creation, diff, and rollback."""
+        import time as _time
+        c = self.get_container(container_id)
+        if not c:
+            return {"error": "Container not found"}
+
+        # Benchmark version creation
+        create_times = []
+        for i in range(num_versions):
+            t0 = _time.monotonic()
+            self.create_version(c, notes=f"bench-v{i}")
+            create_times.append(_time.monotonic() - t0)
+
+        # Benchmark diff
+        t0 = _time.monotonic()
+        for i in range(min(num_versions - 1, 50)):
+            self.diff_versions(container_id, i + 1, i + 2)
+        diff_time = _time.monotonic() - t0
+
+        # Benchmark rollback
+        t0 = _time.monotonic()
+        self.rollback_version(container_id, 1)
+        rollback_time = _time.monotonic() - t0
+
+        return {
+            "num_versions": num_versions,
+            "avg_create_ms": round(sum(create_times) / len(create_times) * 1000, 2),
+            "avg_diff_ms": round(diff_time / min(num_versions - 1, 50) * 1000, 2) if num_versions > 1 else 0,
+            "rollback_ms": round(rollback_time * 1000, 2),
+        }
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
