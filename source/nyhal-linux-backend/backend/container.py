@@ -32583,6 +32583,373 @@ class ContainerManager:
             "revoked": revoked,
         }
 
+    # ------------------------------------------------------------------
+    # File integrity monitoring (AIDE-like)
+    # ------------------------------------------------------------------
+
+    def create_integrity_monitor(self, name: str, paths: Optional[List[str]] = None,
+                                  hash_algo: str = "sha256") -> Dict[str, Any]:
+        """Create a file integrity monitoring configuration."""
+        if not hasattr(self, '_integrity_monitors'):
+            self._integrity_monitors = {}
+        if name in self._integrity_monitors:
+            return {"error": f"Monitor '{name}' already exists"}
+        valid_algos = ["sha256", "sha512", "md5"]
+        if hash_algo not in valid_algos:
+            return {"error": f"Invalid algo '{hash_algo}'. Valid: {valid_algos}"}
+        self._integrity_monitors[name] = {
+            "name": name,
+            "paths": paths or ["/etc", "/usr/bin", "/usr/sbin"],
+            "hash_algo": hash_algo,
+            "enabled": True,
+            "created_at": time.time(),
+            "baseline_count": 0,
+            "violations": [],
+            "last_scan": None,
+            "scan_count": 0,
+        }
+        return {"ok": True, "monitor": name, "paths": paths or ["/etc", "/usr/bin", "/usr/sbin"]}
+
+    def create_integrity_baseline(self, monitor_name: str) -> Dict[str, Any]:
+        """Create a baseline snapshot of monitored files."""
+        monitor = getattr(self, '_integrity_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        import hashlib as _hash
+        import time as _time
+        import os as _os
+        baseline = {}
+        count = 0
+        for path in monitor["paths"]:
+            if _os.path.exists(path):
+                if _os.path.isfile(path):
+                    try:
+                        with open(path, 'rb') as f:
+                            digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
+                        baseline[path] = {"hash": digest, "size": _os.path.getsize(path)}
+                        count += 1
+                    except (PermissionError, OSError):
+                        baseline[path] = {"hash": "inaccessible", "size": 0}
+                else:
+                    for root, dirs, files in _os.walk(path):
+                        # Limit depth to 3 levels and total to 200 files
+                        depth = root.replace(path, '').count(_os.sep)
+                        if depth > 3:
+                            dirs.clear()
+                            continue
+                        for fname in files[:20]:
+                            fpath = _os.path.join(root, fname)
+                            try:
+                                with open(fpath, 'rb') as f:
+                                    digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
+                                baseline[fpath] = {"hash": digest, "size": _os.path.getsize(fpath)}
+                                count += 1
+                            except (PermissionError, OSError, ValueError):
+                                baseline[fpath] = {"hash": "inaccessible", "size": 0}
+                        if count > 200:
+                            break
+        monitor["baseline"] = baseline
+        monitor["baseline_count"] = count
+        monitor["baseline_at"] = _time.time()
+        return {"ok": True, "monitor": monitor_name, "files_indexed": count}
+
+    def scan_integrity(self, monitor_name: str) -> Dict[str, Any]:
+        """Scan for file integrity violations against baseline."""
+        monitor = getattr(self, '_integrity_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        if "baseline" not in monitor:
+            return {"error": "No baseline created. Run create_integrity_baseline first."}
+        import hashlib as _hash
+        import time as _time
+        import os as _os
+        baseline = monitor["baseline"]
+        violations = []
+        scanned = 0
+        for fpath, expected in baseline.items():
+            scanned += 1
+            if not _os.path.exists(fpath):
+                violations.append({"path": fpath, "type": "deleted", "expected_hash": expected["hash"]})
+                continue
+            try:
+                with open(fpath, 'rb') as f:
+                    digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
+                if digest != expected["hash"]:
+                    violations.append({"path": fpath, "type": "modified",
+                                       "expected_hash": expected["hash"], "actual_hash": digest})
+            except (PermissionError, OSError, ValueError):
+                violations.append({"path": fpath, "type": "inaccessible"})
+        monitor["violations"] = violations
+        monitor["last_scan"] = _time.time()
+        monitor["scan_count"] += 1
+        return {
+            "ok": True, "monitor": monitor_name,
+            "files_scanned": scanned,
+            "violations": len(violations),
+            "violation_details": violations[:20],
+        }
+
+    def list_integrity_violations(self, monitor_name: str) -> Dict[str, Any]:
+        """List all integrity violations for a monitor."""
+        monitor = getattr(self, '_integrity_monitors', {}).get(monitor_name)
+        if not monitor:
+            return {"error": f"Monitor '{monitor_name}' not found"}
+        return {
+            "monitor": monitor_name,
+            "violations": monitor["violations"],
+            "count": len(monitor["violations"]),
+            "last_scan": monitor["last_scan"],
+        }
+
+    def list_integrity_monitors(self) -> Dict[str, Any]:
+        """List all file integrity monitors."""
+        monitors = getattr(self, '_integrity_monitors', {})
+        items = []
+        for m in monitors.values():
+            items.append({
+                "name": m["name"],
+                "paths": m["paths"],
+                "enabled": m["enabled"],
+                "baseline_count": m["baseline_count"],
+                "violations": len(m["violations"]),
+                "scan_count": m["scan_count"],
+            })
+        return {"monitors": items, "count": len(items)}
+
+    def delete_integrity_monitor(self, name: str) -> Dict[str, Any]:
+        """Delete an integrity monitor."""
+        monitor = getattr(self, '_integrity_monitors', {}).pop(name, None)
+        if not monitor:
+            return {"error": f"Monitor '{name}' not found"}
+        return {"ok": True, "deleted": name, "violations_lost": len(monitor["violations"])}
+
+    # ------------------------------------------------------------------
+    # Process accounting and resource attribution
+    # ------------------------------------------------------------------
+
+    def create_resource_tracker(self, name: str, hourly_rate: float = 0.1,
+                            description: str = "") -> Dict[str, Any]:
+        """Create a cost tracker for resource accounting."""
+        if not hasattr(self, '_cost_trackers'):
+            self._cost_trackers = {}
+        if name in self._cost_trackers:
+            return {"error": f"Tracker '{name}' already exists"}
+        self._cost_trackers[name] = {
+            "name": name,
+            "hourly_rate": hourly_rate,
+            "description": description,
+            "entries": [],
+            "total_cost": 0.0,
+            "total_hours": 0.0,
+            "created_at": time.time(),
+        }
+        return {"ok": True, "tracker": name, "hourly_rate": hourly_rate}
+
+    def record_usage(self, tracker_name: str, container_id: str,
+                     hours: float, resource_type: str = "compute",
+                     notes: str = "") -> Dict[str, Any]:
+        """Record resource usage for accounting."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_name)
+        if not tracker:
+            return {"error": f"Tracker '{tracker_name}' not found"}
+        import time as _time
+        cost = hours * tracker["hourly_rate"]
+        entry = {
+            "ts": _time.time(),
+            "container_id": container_id,
+            "hours": hours,
+            "resource_type": resource_type,
+            "cost": cost,
+            "notes": notes,
+        }
+        tracker["entries"].append(entry)
+        tracker["total_cost"] += cost
+        tracker["total_hours"] += hours
+        return {
+            "ok": True, "tracker": tracker_name,
+            "cost": round(cost, 4),
+            "total_cost": round(tracker["total_cost"], 4),
+        }
+
+    def get_tracker_summary(self, tracker_name: str) -> Dict[str, Any]:
+        """Get summary for a cost tracker."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_name)
+        if not tracker:
+            return {"error": f"Tracker '{tracker_name}' not found"}
+        # Aggregate by container
+        by_container = {}
+        for e in tracker["entries"]:
+            cid = e["container_id"]
+            if cid not in by_container:
+                by_container[cid] = {"hours": 0.0, "cost": 0.0, "entries": 0}
+            by_container[cid]["hours"] += e["hours"]
+            by_container[cid]["cost"] += e["cost"]
+            by_container[cid]["entries"] += 1
+        return {
+            "tracker": tracker_name,
+            "total_cost": round(tracker["total_cost"], 4),
+            "total_hours": round(tracker["total_hours"], 4),
+            "total_entries": len(tracker["entries"]),
+            "by_container": {
+                k: {"hours": round(v["hours"], 2), "cost": round(v["cost"], 4), "entries": v["entries"]}
+                for k, v in by_container.items()
+            },
+        }
+
+    def list_cost_trackers(self) -> Dict[str, Any]:
+        """List all cost trackers."""
+        trackers = getattr(self, '_cost_trackers', {})
+        items = []
+        for t in trackers.values():
+            items.append({
+                "name": t["name"],
+                "hourly_rate": t["hourly_rate"],
+                "total_cost": round(t["total_cost"], 4),
+                "total_hours": round(t["total_hours"], 4),
+                "entries": len(t["entries"]),
+            })
+        return {"trackers": items, "count": len(items)}
+
+    def delete_resource_tracker(self, name: str) -> Dict[str, Any]:
+        """Delete a cost tracker."""
+        tracker = getattr(self, '_cost_trackers', {}).pop(name, None)
+        if not tracker:
+            return {"error": f"Tracker '{name}' not found"}
+        return {"ok": True, "deleted": name, "total_cost": round(tracker["total_cost"], 4)}
+
+    def get_fleet_cost_attribution(self) -> Dict[str, Any]:
+        """Get cost attribution across all trackers."""
+        trackers = getattr(self, '_cost_trackers', {})
+        total = sum(t["total_cost"] for t in trackers.values())
+        by_container = {}
+        for t in trackers.values():
+            for e in t["entries"]:
+                cid = e["container_id"]
+                if cid not in by_container:
+                    by_container[cid] = 0.0
+                by_container[cid] += e["cost"]
+        return {
+            "total_cost": round(total, 4),
+            "total_trackers": len(trackers),
+            "by_container": {k: round(v, 4) for k, v in sorted(by_container.items(), key=lambda x: -x[1])},
+        }
+
+    # ------------------------------------------------------------------
+    # Network namespace management
+    # ------------------------------------------------------------------
+
+    def create_network_namespace(self, name: str, description: str = "") -> Dict[str, Any]:
+        """Create a custom network namespace."""
+        if not hasattr(self, '_network_namespaces'):
+            self._network_namespaces = {}
+        if name in self._network_namespaces:
+            return {"error": f"Namespace '{name}' already exists"}
+        self._network_namespaces[name] = {
+            "name": name,
+            "description": description,
+            "interfaces": [],
+            "routes": [],
+            "dns_servers": [],
+            "containers": [],
+            "created_at": time.time(),
+            "status": "active",
+        }
+        return {"ok": True, "namespace": name}
+
+    def add_interface_to_namespace(self, namespace: str, name: str,
+                                   ip_address: str, subnet_mask: str = "24") -> Dict[str, Any]:
+        """Add a network interface to a namespace."""
+        ns = getattr(self, '_network_namespaces', {}).get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        for iface in ns["interfaces"]:
+            if iface["name"] == name:
+                return {"error": f"Interface '{name}' already exists"}
+        ns["interfaces"].append({
+            "name": name,
+            "ip_address": ip_address,
+            "subnet_mask": subnet_mask,
+            "status": "up",
+        })
+        return {"ok": True, "namespace": namespace, "interface": name, "ip": f"{ip_address}/{subnet_mask}"}
+
+    def add_route_to_namespace(self, namespace: str, destination: str,
+                               gateway: str, metric: int = 100) -> Dict[str, Any]:
+        """Add a route to a namespace."""
+        ns = getattr(self, '_network_namespaces', {}).get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        ns["routes"].append({
+            "destination": destination,
+            "gateway": gateway,
+            "metric": metric,
+        })
+        return {"ok": True, "namespace": namespace, "destination": destination, "gateway": gateway}
+
+    def set_namespace_dns(self, namespace: str, servers: List[str]) -> Dict[str, Any]:
+        """Set DNS servers for a namespace."""
+        ns = getattr(self, '_network_namespaces', {}).get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        ns["dns_servers"] = list(servers)
+        return {"ok": True, "namespace": namespace, "dns_servers": servers}
+
+    def attach_container_to_namespace(self, namespace: str, container_id: str) -> Dict[str, Any]:
+        """Attach a container to a network namespace."""
+        ns = getattr(self, '_network_namespaces', {}).get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        if container_id not in ns["containers"]:
+            ns["containers"].append(container_id)
+        return {"ok": True, "namespace": namespace, "container_id": container_id}
+
+    def detach_container_from_namespace(self, namespace: str, container_id: str) -> Dict[str, Any]:
+        """Detach a container from a network namespace."""
+        ns = getattr(self, '_network_namespaces', {}).get(namespace)
+        if not ns:
+            return {"error": f"Namespace '{namespace}' not found"}
+        if container_id not in ns["containers"]:
+            return {"error": f"Container '{container_id}' not in namespace '{namespace}'"}
+        ns["containers"].remove(container_id)
+        return {"ok": True, "namespace": namespace, "container_id": container_id}
+
+    def get_network_namespace(self, name: str) -> Dict[str, Any]:
+        """Get namespace details."""
+        ns = getattr(self, '_network_namespaces', {}).get(name)
+        if not ns:
+            return {"error": f"Namespace '{name}' not found"}
+        return {
+            "name": ns["name"],
+            "description": ns["description"],
+            "status": ns["status"],
+            "interfaces": ns["interfaces"],
+            "routes": ns["routes"],
+            "dns_servers": ns["dns_servers"],
+            "container_count": len(ns["containers"]),
+            "containers": ns["containers"],
+        }
+
+    def list_network_namespaces(self) -> Dict[str, Any]:
+        """List all network namespaces."""
+        nss = getattr(self, '_network_namespaces', {})
+        items = []
+        for ns in nss.values():
+            items.append({
+                "name": ns["name"],
+                "description": ns["description"],
+                "interfaces": len(ns["interfaces"]),
+                "containers": len(ns["containers"]),
+                "status": ns["status"],
+            })
+        return {"namespaces": items, "count": len(items)}
+
+    def delete_network_namespace(self, name: str) -> Dict[str, Any]:
+        """Delete a network namespace."""
+        ns = getattr(self, '_network_namespaces', {}).pop(name, None)
+        if not ns:
+            return {"error": f"Namespace '{name}' not found"}
+        return {"ok": True, "deleted": name, "had_containers": len(ns["containers"])}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

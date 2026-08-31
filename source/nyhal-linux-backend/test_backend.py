@@ -33282,7 +33282,7 @@ class TestCostAnomalyDetection(unittest.TestCase):
         from backend.container import ContainerManager; return ContainerManager()
     def _mk(self, m, n):
         from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
-    def test_create_tracker(self):
+    def test_create_cost_tracker(self):
         m=self._mgr(); c=self._mk(m,"ca1"); r=m.create_cost_tracker(c,0.10); self.assertIn("tracker_id",r)
     def test_record_sample(self):
         m=self._mgr(); c=self._mk(m,"ca2"); r=m.create_cost_tracker(c); self.assertTrue(m.record_cost_sample(r["tracker_id"],1.5)["ok"])
@@ -35342,6 +35342,251 @@ class TestWorkloadSVID(unittest.TestCase):
         self.assertEqual(r["count"], 2)
 
 
+class TestFileIntegrity(unittest.TestCase):
+    """Tests for file integrity monitoring."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_monitor(self):
+        m=self._mgr()
+        r=m.create_integrity_monitor("aide1", paths=["/tmp"])
+        self.assertTrue(r["ok"])
+        self.assertIn("/tmp", r["paths"])
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_integrity_monitor("dup")
+        r=m.create_integrity_monitor("dup")
+        self.assertIn("error", r)
+
+    def test_create_invalid_algo(self):
+        m=self._mgr()
+        r=m.create_integrity_monitor("bad", hash_algo="invalid")
+        self.assertIn("error", r)
+
+    def test_create_baseline(self):
+        m=self._mgr()
+        m.create_integrity_monitor("bl1", paths=["/tmp"])
+        r=m.create_integrity_baseline("bl1")
+        self.assertTrue(r["ok"])
+        self.assertGreaterEqual(r["files_indexed"], 0)
+
+    def test_create_baseline_nonexistent(self):
+        m=self._mgr()
+        r=m.create_integrity_baseline("nope")
+        self.assertIn("error", r)
+
+    def test_scan_without_baseline(self):
+        m=self._mgr()
+        m.create_integrity_monitor("nb1", paths=["/tmp"])
+        r=m.scan_integrity("nb1")
+        self.assertIn("error", r)
+
+    def test_scan_clean(self):
+        m=self._mgr()
+        m.create_integrity_monitor("sc1", paths=["/tmp"])
+        m.create_integrity_baseline("sc1")
+        r=m.scan_integrity("sc1")
+        self.assertTrue(r["ok"])
+        self.assertGreaterEqual(r["files_scanned"], 0)
+
+    def test_list_violations(self):
+        m=self._mgr()
+        m.create_integrity_monitor("lv1", paths=["/tmp"])
+        m.create_integrity_baseline("lv1")
+        m.scan_integrity("lv1")
+        r=m.list_integrity_violations("lv1")
+        self.assertIn("count", r)
+
+    def test_list_monitors(self):
+        m=self._mgr()
+        m.create_integrity_monitor("lm1")
+        m.create_integrity_monitor("lm2")
+        r=m.list_integrity_monitors()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_monitor(self):
+        m=self._mgr()
+        m.create_integrity_monitor("dm1")
+        r=m.delete_integrity_monitor("dm1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_integrity_monitor("nope")
+        self.assertIn("error", r)
+
+
+class TestCostAccounting(unittest.TestCase):
+    """Tests for process accounting and resource attribution."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_resource_tracker(self):
+        m=self._mgr()
+        r=m.create_resource_tracker("compute", hourly_rate=0.5)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["hourly_rate"], 0.5)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_resource_tracker("dup")
+        r=m.create_resource_tracker("dup")
+        self.assertIn("error", r)
+
+    def test_record_usage(self):
+        m=self._mgr()
+        m.create_resource_tracker("tr1", hourly_rate=1.0)
+        r=m.record_usage("tr1", "c1", hours=2.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["cost"], 2.0)
+        self.assertEqual(r["total_cost"], 2.0)
+
+    def test_record_usage_nonexistent(self):
+        m=self._mgr()
+        r=m.record_usage("nope", "c1", hours=1.0)
+        self.assertIn("error", r)
+
+    def test_record_multiple(self):
+        m=self._mgr()
+        m.create_resource_tracker("tr2", hourly_rate=0.5)
+        m.record_usage("tr2", "c1", hours=2.0)
+        r=m.record_usage("tr2", "c1", hours=3.0)
+        self.assertEqual(r["total_cost"], 2.5)
+
+    def test_tracker_summary(self):
+        m=self._mgr()
+        m.create_resource_tracker("ts1", hourly_rate=1.0)
+        m.record_usage("ts1", "c1", hours=1.0)
+        m.record_usage("ts1", "c2", hours=2.0)
+        r=m.get_tracker_summary("ts1")
+        self.assertEqual(r["total_cost"], 3.0)
+        self.assertIn("c1", r["by_container"])
+        self.assertIn("c2", r["by_container"])
+
+    def test_list_trackers(self):
+        m=self._mgr()
+        m.create_resource_tracker("lt1")
+        m.create_resource_tracker("lt2")
+        r=m.list_cost_trackers()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_tracker(self):
+        m=self._mgr()
+        m.create_resource_tracker("dt1")
+        r=m.delete_resource_tracker("dt1")
+        self.assertTrue(r["ok"])
+
+    def test_fleet_attribution(self):
+        m=self._mgr()
+        m.create_resource_tracker("fa1", hourly_rate=1.0)
+        m.record_usage("fa1", "c1", hours=5.0)
+        m.record_usage("fa1", "c2", hours=3.0)
+        r=m.get_fleet_cost_attribution()
+        self.assertEqual(r["total_cost"], 8.0)
+        self.assertIn("c1", r["by_container"])
+
+
+class TestNetworkNamespaces(unittest.TestCase):
+    """Tests for network namespace management."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_namespace(self):
+        m=self._mgr()
+        r=m.create_network_namespace("ns1", description="Production")
+        self.assertTrue(r["ok"])
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_network_namespace("dup")
+        r=m.create_network_namespace("dup")
+        self.assertIn("error", r)
+
+    def test_add_interface(self):
+        m=self._mgr()
+        m.create_network_namespace("ns2")
+        r=m.add_interface_to_namespace("ns2", "eth0", "10.0.0.1", "24")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["ip"], "10.0.0.1/24")
+
+    def test_add_interface_duplicate(self):
+        m=self._mgr()
+        m.create_network_namespace("ns3")
+        m.add_interface_to_namespace("ns3", "eth0", "10.0.0.1")
+        r=m.add_interface_to_namespace("ns3", "eth0", "10.0.0.2")
+        self.assertIn("error", r)
+
+    def test_add_route(self):
+        m=self._mgr()
+        m.create_network_namespace("ns4")
+        r=m.add_route_to_namespace("ns4", "0.0.0.0/0", "10.0.0.254")
+        self.assertTrue(r["ok"])
+
+    def test_set_dns(self):
+        m=self._mgr()
+        m.create_network_namespace("ns5")
+        r=m.set_namespace_dns("ns5", ["8.8.8.8", "8.8.4.4"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(r["dns_servers"]), 2)
+
+    def test_attach_container(self):
+        m=self._mgr()
+        m.create_network_namespace("ns6")
+        r=m.attach_container_to_namespace("ns6", "c1")
+        self.assertTrue(r["ok"])
+
+    def test_detach_container(self):
+        m=self._mgr()
+        m.create_network_namespace("ns7")
+        m.attach_container_to_namespace("ns7", "c1")
+        r=m.detach_container_from_namespace("ns7", "c1")
+        self.assertTrue(r["ok"])
+
+    def test_detach_not_attached(self):
+        m=self._mgr()
+        m.create_network_namespace("ns8")
+        r=m.detach_container_from_namespace("ns8", "c1")
+        self.assertIn("error", r)
+
+    def test_get_namespace(self):
+        m=self._mgr()
+        m.create_network_namespace("ns9")
+        m.add_interface_to_namespace("ns9", "eth0", "10.0.0.1")
+        m.attach_container_to_namespace("ns9", "c1")
+        r=m.get_network_namespace("ns9")
+        self.assertEqual(r["interfaces"][0]["name"], "eth0")
+        self.assertEqual(r["container_count"], 1)
+
+    def test_list_namespaces(self):
+        m=self._mgr()
+        m.create_network_namespace("ls1")
+        m.create_network_namespace("ls2")
+        r=m.list_network_namespaces()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_namespace(self):
+        m=self._mgr()
+        m.create_network_namespace("dn1")
+        r=m.delete_network_namespace("dn1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_with_containers(self):
+        m=self._mgr()
+        m.create_network_namespace("dw1")
+        m.attach_container_to_namespace("dw1", "c1")
+        r=m.delete_network_namespace("dw1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["had_containers"], 1)
+
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -35624,6 +35869,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSecurityProfiles))
     suite.addTests(loader.loadTestsFromTestCase(TestVolumeManagement))
     suite.addTests(loader.loadTestsFromTestCase(TestWorkloadSVID))
+    suite.addTests(loader.loadTestsFromTestCase(TestFileIntegrity))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostAccounting))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkNamespaces))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
