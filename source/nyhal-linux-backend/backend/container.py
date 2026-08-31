@@ -32226,6 +32226,363 @@ class ContainerManager:
             return {"error": f"Layer cache '{name}' not found"}
         return {"ok": True, "deleted": name, "layers_lost": len(cache["layers"])}
 
+    # ------------------------------------------------------------------
+    # Security profile management (seccomp, apparmor, capabilities)
+    # ------------------------------------------------------------------
+
+    def create_security_profile(self, name: str, profile_type: str = "seccomp",
+                                description: str = "") -> Dict[str, Any]:
+        """Create a security profile (seccomp or apparmor)."""
+        if not hasattr(self, '_security_profiles'):
+            self._security_profiles = {}
+        if name in self._security_profiles:
+            return {"error": f"Profile '{name}' already exists"}
+        valid_types = ["seccomp", "apparmor", "selinux"]
+        if profile_type not in valid_types:
+            return {"error": f"Invalid type '{profile_type}'. Valid: {valid_types}"}
+        self._security_profiles[name] = {
+            "name": name,
+            "type": profile_type,
+            "description": description,
+            "rules": [],
+            "default_action": "allow" if profile_type == "seccomp" else "complain",
+            "created_at": time.time(),
+            "applied_to": [],
+            "violations": 0,
+        }
+        return {"ok": True, "profile": name, "type": profile_type}
+
+    def add_seccomp_rule(self, profile_name: str, syscall: str,
+                         action: str = "allow") -> Dict[str, Any]:
+        """Add a seccomp syscall rule to a profile."""
+        profile = getattr(self, '_security_profiles', {}).get(profile_name)
+        if not profile:
+            return {"error": f"Profile '{profile_name}' not found"}
+        if profile["type"] != "seccomp":
+            return {"error": "Profile is not a seccomp profile"}
+        profile["rules"].append({
+            "syscall": syscall,
+            "action": action,
+            "args": {},
+        })
+        return {"ok": True, "profile": profile_name, "syscall": syscall, "action": action}
+
+    def add_apparmor_rule(self, profile_name: str, capability: str,
+                          access: str = "deny") -> Dict[str, Any]:
+        """Add an apparmor capability rule to a profile."""
+        profile = getattr(self, '_security_profiles', {}).get(profile_name)
+        if not profile:
+            return {"error": f"Profile '{profile_name}' not found"}
+        if profile["type"] != "apparmor":
+            return {"error": "Profile is not an apparmor profile"}
+        profile["rules"].append({
+            "capability": capability,
+            "access": access,
+        })
+        return {"ok": True, "profile": profile_name, "capability": capability, "access": access}
+
+    def apply_security_profile(self, profile_name: str, container_id: str) -> Dict[str, Any]:
+        """Apply a security profile to a container."""
+        profile = getattr(self, '_security_profiles', {}).get(profile_name)
+        if not profile:
+            return {"error": f"Profile '{profile_name}' not found"}
+        if container_id not in profile["applied_to"]:
+            profile["applied_to"].append(container_id)
+        return {"ok": True, "profile": profile_name, "container_id": container_id}
+
+    def get_security_profile(self, name: str) -> Dict[str, Any]:
+        """Get security profile details."""
+        profile = getattr(self, '_security_profiles', {}).get(name)
+        if not profile:
+            return {"error": f"Profile '{name}' not found"}
+        return profile
+
+    def list_security_profiles(self, profile_type: Optional[str] = None) -> Dict[str, Any]:
+        """List security profiles, optionally filtered by type."""
+        profiles = list(getattr(self, '_security_profiles', {}).values())
+        if profile_type:
+            profiles = [p for p in profiles if p["type"] == profile_type]
+        return {"profiles": profiles, "count": len(profiles)}
+
+    def evaluate_security_posture(self, container_id: str) -> Dict[str, Any]:
+        """Evaluate the security posture of a container."""
+        profiles = getattr(self, '_security_profiles', {})
+        applied = []
+        for p in profiles.values():
+            if container_id in p["applied_to"]:
+                applied.append({"name": p["name"], "type": p["type"], "rules": len(p["rules"])})
+        score = min(100, len(applied) * 25 + sum(len(p["rules"]) for p in [
+            profiles[n] for n in profiles if container_id in profiles[n]["applied_to"]
+        ]) * 5)
+        return {
+            "container_id": container_id,
+            "profiles_applied": len(applied),
+            "profiles": applied,
+            "security_score": score,
+            "rating": "excellent" if score >= 80 else "good" if score >= 50 else "fair" if score >= 25 else "poor",
+        }
+
+    def delete_security_profile(self, name: str) -> Dict[str, Any]:
+        """Delete a security profile."""
+        profile = getattr(self, '_security_profiles', {}).pop(name, None)
+        if not profile:
+            return {"error": f"Profile '{name}' not found"}
+        return {"ok": True, "deleted": name, "was_applied_to": len(profile["applied_to"])}
+
+    def grant_container_capability(self, container_id: str, capability: str,
+                                   justification: str = "") -> Dict[str, Any]:
+        """Grant a specific capability to a container."""
+        if not hasattr(self, '_container_capabilities'):
+            self._container_capabilities = {}
+        caps = self._container_capabilities.setdefault(container_id, [])
+        if capability in caps:
+            return {"error": f"Capability '{capability}' already granted"}
+        caps.append(capability)
+        return {"ok": True, "container_id": container_id, "capability": capability,
+                "total_capabilities": len(caps)}
+
+    def revoke_container_capability(self, container_id: str, capability: str) -> Dict[str, Any]:
+        """Revoke a capability from a container."""
+        caps = getattr(self, '_container_capabilities', {}).get(container_id, [])
+        if capability not in caps:
+            return {"error": f"Capability '{capability}' not found"}
+        caps.remove(capability)
+        return {"ok": True, "container_id": container_id, "revoked": capability,
+                "remaining": len(caps)}
+
+    def list_container_capabilities(self, container_id: str) -> Dict[str, Any]:
+        """List capabilities for a container."""
+        caps = getattr(self, '_container_capabilities', {}).get(container_id, [])
+        return {"container_id": container_id, "capabilities": list(caps), "count": len(caps)}
+
+    # ------------------------------------------------------------------
+    # Storage / volume management
+    # ------------------------------------------------------------------
+
+    def create_volume(self, name: str, size_mb: int = 100,
+                      volume_type: str = "block",
+                      encrypted: bool = False) -> Dict[str, Any]:
+        """Create a storage volume."""
+        if not hasattr(self, '_volumes'):
+            self._volumes = {}
+        if name in self._volumes:
+            return {"error": f"Volume '{name}' already exists"}
+        valid_types = ["block", "file", "tmpfs", "overlay"]
+        if volume_type not in valid_types:
+            return {"error": f"Invalid type '{volume_type}'. Valid: {valid_types}"}
+        self._volumes[name] = {
+            "name": name,
+            "size_mb": size_mb,
+            "type": volume_type,
+            "encrypted": encrypted,
+            "mounted_by": [],
+            "snapshots": [],
+            "created_at": time.time(),
+            "used_mb": 0,
+        }
+        return {"ok": True, "volume": name, "size_mb": size_mb, "type": volume_type}
+
+    def delete_volume(self, name: str, force: bool = False) -> Dict[str, Any]:
+        """Delete a volume."""
+        vol = getattr(self, '_volumes', {}).get(name)
+        if not vol:
+            return {"error": f"Volume '{name}' not found"}
+        if vol["mounted_by"] and not force:
+            return {"error": f"Volume '{name}' is mounted by {len(vol['mounted_by'])} containers"}
+        del self._volumes[name]
+        return {"ok": True, "deleted": name, "had_mounts": len(vol["mounted_by"])}
+
+    def mount_volume(self, volume_name: str, container_id: str,
+                     mount_path: str = "/data", read_only: bool = False) -> Dict[str, Any]:
+        """Mount a volume to a container."""
+        vol = getattr(self, '_volumes', {}).get(volume_name)
+        if not vol:
+            return {"error": f"Volume '{volume_name}' not found"}
+        mount_entry = {
+            "container_id": container_id,
+            "mount_path": mount_path,
+            "read_only": read_only,
+        }
+        vol["mounted_by"].append(mount_entry)
+        return {"ok": True, "volume": volume_name, "container_id": container_id,
+                "mount_path": mount_path, "read_only": read_only}
+
+    def unmount_volume(self, volume_name: str, container_id: str) -> Dict[str, Any]:
+        """Unmount a volume from a container."""
+        vol = getattr(self, '_volumes', {}).get(volume_name)
+        if not vol:
+            return {"error": f"Volume '{volume_name}' not found"}
+        original_len = len(vol["mounted_by"])
+        vol["mounted_by"] = [m for m in vol["mounted_by"] if m["container_id"] != container_id]
+        if len(vol["mounted_by"]) == original_len:
+            return {"error": f"Container '{container_id}' not mounted on '{volume_name}'"}
+        return {"ok": True, "volume": volume_name, "container_id": container_id}
+
+    def list_volumes(self, volume_type: Optional[str] = None) -> Dict[str, Any]:
+        """List all volumes."""
+        volumes = list(getattr(self, '_volumes', {}).values())
+        if volume_type:
+            volumes = [v for v in volumes if v["type"] == volume_type]
+        return {"volumes": volumes, "count": len(volumes)}
+
+    def get_volume(self, name: str) -> Dict[str, Any]:
+        """Get volume details."""
+        vol = getattr(self, '_volumes', {}).get(name)
+        if not vol:
+            return {"error": f"Volume '{name}' not found"}
+        return {
+            **vol,
+            "mount_count": len(vol["mounted_by"]),
+            "snapshot_count": len(vol["snapshots"]),
+            "utilization_pct": round(vol["used_mb"] / vol["size_mb"] * 100, 1) if vol["size_mb"] > 0 else 0,
+        }
+
+    def create_volume_snapshot(self, volume_name: str, snapshot_name: Optional[str] = None) -> Dict[str, Any]:
+        """Create a snapshot of a volume."""
+        vol = getattr(self, '_volumes', {}).get(volume_name)
+        if not vol:
+            return {"error": f"Volume '{volume_name}' not found"}
+        import time as _time
+        snap_name = snapshot_name or f"{volume_name}-snap-{len(vol['snapshots'])+1}"
+        snapshot = {
+            "name": snap_name,
+            "volume": volume_name,
+            "size_mb": vol["used_mb"],
+            "created_at": _time.time(),
+        }
+        vol["snapshots"].append(snapshot)
+        return {"ok": True, "snapshot": snap_name, "volume": volume_name, "size_mb": snapshot["size_mb"]}
+
+    def restore_volume_snapshot(self, volume_name: str, snapshot_name: str) -> Dict[str, Any]:
+        """Restore a volume from a snapshot."""
+        vol = getattr(self, '_volumes', {}).get(volume_name)
+        if not vol:
+            return {"error": f"Volume '{volume_name}' not found"}
+        for snap in vol["snapshots"]:
+            if snap["name"] == snapshot_name:
+                vol["used_mb"] = snap["size_mb"]
+                return {"ok": True, "volume": volume_name, "restored_from": snapshot_name}
+        return {"error": f"Snapshot '{snapshot_name}' not found"}
+
+    def get_volume_stats(self) -> Dict[str, Any]:
+        """Get aggregate volume statistics."""
+        volumes = getattr(self, '_volumes', {})
+        total_size = sum(v["size_mb"] for v in volumes.values())
+        total_used = sum(v["used_mb"] for v in volumes.values())
+        total_mounts = sum(len(v["mounted_by"]) for v in volumes.values())
+        return {
+            "total_volumes": len(volumes),
+            "total_size_mb": total_size,
+            "total_used_mb": total_used,
+            "total_mounts": total_mounts,
+            "utilization_pct": round(total_used / total_size * 100, 1) if total_size > 0 else 0,
+        }
+
+    # ------------------------------------------------------------------
+    # Workload identity SVID issuance and rotation
+    # ------------------------------------------------------------------
+
+    def issue_workload_svid_v2(self, identity_id: str,
+                               workload: str, audience: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Issue a SPIFFE Verifiable Identity Document for a workload."""
+        if not hasattr(self, '_svids'):
+            self._svids = {}
+        if not hasattr(self, "_workload_identities"):
+            self._workload_identities = {}
+        identity = self._workload_identities.get(identity_id)
+        if not identity:
+            return {"error": f"Identity '{identity_id}' not found"}
+        import time as _time
+        import hashlib as _hash
+        svid_id = f"svid-{_hash.sha256(f'{identity_id}-{workload}-{_time.time()}'.encode()).hexdigest()[:16]}"
+        svid = {
+            "svid_id": svid_id,
+            "identity_id": identity_id,
+            "spiffe_id": identity.get("spiffe_id", f"spiffe://nyrqis.dev/sa/{workload}"),
+            "workload": workload,
+            "audience": audience or [],
+            "issued_at": _time.time(),
+            "expires_at": _time.time() + 3600,
+            "serial_number": len(self._svids) + 1,
+            "status": "valid",
+        }
+        self._svids[svid_id] = svid
+        return {
+            "ok": True, "svid_id": svid_id, "spiffe_id": svid["spiffe_id"],
+            "expires_at": svid["expires_at"],
+        }
+
+    def validate_svid_v2(self, svid_id: str, audience: Optional[str] = None) -> Dict[str, Any]:
+        """Validate a SVID."""
+        svid = getattr(self, '_svids', {}).get(svid_id)
+        if not svid:
+            return {"valid": False, "error": "SVID not found"}
+        import time as _time
+        now = _time.time()
+        if now > svid["expires_at"]:
+            return {"valid": False, "error": "SVID expired", "expired_at": svid["expires_at"]}
+        if audience and audience not in svid.get("audience", []):
+            return {"valid": False, "error": f"Audience '{audience}' not in allowed list"}
+        return {
+            "valid": True,
+            "svid_id": svid_id,
+            "spiffe_id": svid["spiffe_id"],
+            "workload": svid["workload"],
+            "expires_at": svid["expires_at"],
+            "remaining_seconds": round(svid["expires_at"] - now, 1),
+        }
+
+    def rotate_svid_v2(self, svid_id: str) -> Dict[str, Any]:
+        """Rotate a SVID by issuing a new one."""
+        old = getattr(self, '_svids', {}).get(svid_id)
+        if not old:
+            return {"error": f"SVID '{svid_id}' not found"}
+        old["status"] = "rotated"
+        return self.issue_workload_svid_v2(
+            old["identity_id"], old["workload"], old.get("audience"))
+
+    def list_svids(self, identity_id: Optional[str] = None) -> Dict[str, Any]:
+        """List all SVIDs, optionally filtered by identity."""
+        svids = list(getattr(self, '_svids', {}).values())
+        if identity_id:
+            svids = [s for s in svids if s["identity_id"] == identity_id]
+        return {
+            "svids": [
+                {
+                    "svid_id": s["svid_id"],
+                    "spiffe_id": s["spiffe_id"],
+                    "workload": s["workload"],
+                    "status": s["status"],
+                    "expires_at": s["expires_at"],
+                }
+                for s in svids
+            ],
+            "count": len(svids),
+        }
+
+    def revoke_svid(self, svid_id: str) -> Dict[str, Any]:
+        """Revoke a SVID."""
+        svid = getattr(self, '_svids', {}).get(svid_id)
+        if not svid:
+            return {"error": f"SVID '{svid_id}' not found"}
+        svid["status"] = "revoked"
+        return {"ok": True, "svid_id": svid_id, "status": "revoked"}
+
+    def get_svid_stats(self) -> Dict[str, Any]:
+        """Get aggregate SVID statistics."""
+        svids = getattr(self, '_svids', {})
+        import time as _time
+        now = _time.time()
+        valid = sum(1 for s in svids.values() if s["status"] == "valid" and now < s["expires_at"])
+        expired = sum(1 for s in svids.values() if now >= s["expires_at"])
+        revoked = sum(1 for s in svids.values() if s["status"] == "revoked")
+        return {
+            "total": len(svids),
+            "valid": valid,
+            "expired": expired,
+            "revoked": revoked,
+        }
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

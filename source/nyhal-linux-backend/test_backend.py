@@ -35009,6 +35009,339 @@ class TestLayerCache(unittest.TestCase):
         self.assertEqual(r["layers_lost"], 1)
 
 
+class TestSecurityProfiles(unittest.TestCase):
+    """Tests for security profile management (seccomp, apparmor, capabilities)."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_seccomp(self):
+        m=self._mgr()
+        r=m.create_security_profile("seccomp-prod", profile_type="seccomp")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["type"], "seccomp")
+
+    def test_create_apparmor(self):
+        m=self._mgr()
+        r=m.create_security_profile("apparmor-prod", profile_type="apparmor")
+        self.assertTrue(r["ok"])
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_security_profile("dup")
+        r=m.create_security_profile("dup")
+        self.assertIn("error", r)
+
+    def test_create_invalid_type(self):
+        m=self._mgr()
+        r=m.create_security_profile("bad", profile_type="invalid")
+        self.assertIn("error", r)
+
+    def test_add_seccomp_rule(self):
+        m=self._mgr()
+        m.create_security_profile("sc1", profile_type="seccomp")
+        r=m.add_seccomp_rule("sc1", "read", action="allow")
+        self.assertTrue(r["ok"])
+
+    def test_add_seccomp_wrong_type(self):
+        m=self._mgr()
+        m.create_security_profile("aa1", profile_type="apparmor")
+        r=m.add_seccomp_rule("aa1", "read")
+        self.assertIn("error", r)
+
+    def test_add_apparmor_rule(self):
+        m=self._mgr()
+        m.create_security_profile("aa2", profile_type="apparmor")
+        r=m.add_apparmor_rule("aa2", "CAP_NET_RAW", access="deny")
+        self.assertTrue(r["ok"])
+
+    def test_apply_profile(self):
+        m=self._mgr()
+        m.create_security_profile("ap1")
+        r=m.apply_security_profile("ap1", "container-123")
+        self.assertTrue(r["ok"])
+
+    def test_apply_nonexistent(self):
+        m=self._mgr()
+        r=m.apply_security_profile("nope", "c1")
+        self.assertIn("error", r)
+
+    def test_list_profiles(self):
+        m=self._mgr()
+        m.create_security_profile("l1", profile_type="seccomp")
+        m.create_security_profile("l2", profile_type="apparmor")
+        r=m.list_security_profiles()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_by_type(self):
+        m=self._mgr()
+        m.create_security_profile("t1", profile_type="seccomp")
+        m.create_security_profile("t2", profile_type="apparmor")
+        r=m.list_security_profiles(profile_type="seccomp")
+        self.assertEqual(r["count"], 1)
+
+    def test_evaluate_posture(self):
+        m=self._mgr()
+        m.create_security_profile("ep1", profile_type="seccomp")
+        m.add_seccomp_rule("ep1", "read")
+        m.add_seccomp_rule("ep1", "write")
+        m.apply_security_profile("ep1", "c1")
+        r=m.evaluate_security_posture("c1")
+        self.assertGreater(r["security_score"], 0)
+        self.assertIn("rating", r)
+
+    def test_grant_capability(self):
+        m=self._mgr()
+        r=m.grant_container_capability("c1", "CAP_NET_BIND_SERVICE", justification="bind port 80")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_capabilities"], 1)
+
+    def test_grant_duplicate(self):
+        m=self._mgr()
+        m.grant_container_capability("c2", "CAP_NET_RAW")
+        r=m.grant_container_capability("c2", "CAP_NET_RAW")
+        self.assertIn("error", r)
+
+    def test_revoke_capability(self):
+        m=self._mgr()
+        m.grant_container_capability("c3", "CAP_SYS_ADMIN")
+        r=m.revoke_container_capability("c3", "CAP_SYS_ADMIN")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["remaining"], 0)
+
+    def test_list_capabilities(self):
+        m=self._mgr()
+        m.grant_container_capability("c4", "CAP_NET_RAW")
+        m.grant_container_capability("c4", "CAP_SYS_PTRACE")
+        r=m.list_container_capabilities("c4")
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_profile(self):
+        m=self._mgr()
+        m.create_security_profile("dp1")
+        r=m.delete_security_profile("dp1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_security_profile("nope")
+        self.assertIn("error", r)
+
+
+class TestVolumeManagement(unittest.TestCase):
+    """Tests for storage/volume management."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_volume(self):
+        m=self._mgr()
+        r=m.create_volume("vol1", size_mb=500)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["size_mb"], 500)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_volume("dup")
+        r=m.create_volume("dup")
+        self.assertIn("error", r)
+
+    def test_create_invalid_type(self):
+        m=self._mgr()
+        r=m.create_volume("bad", volume_type="invalid")
+        self.assertIn("error", r)
+
+    def test_delete_volume(self):
+        m=self._mgr()
+        m.create_volume("dv1")
+        r=m.delete_volume("dv1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_volume("nope")
+        self.assertIn("error", r)
+
+    def test_mount_volume(self):
+        m=self._mgr()
+        m.create_volume("mv1", size_mb=100)
+        r=m.mount_volume("mv1", "c1", mount_path="/data")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["mount_path"], "/data")
+
+    def test_mount_nonexistent(self):
+        m=self._mgr()
+        r=m.mount_volume("nope", "c1")
+        self.assertIn("error", r)
+
+    def test_unmount_volume(self):
+        m=self._mgr()
+        m.create_volume("uv1")
+        m.mount_volume("uv1", "c1")
+        r=m.unmount_volume("uv1", "c1")
+        self.assertTrue(r["ok"])
+
+    def test_unmount_wrong_container(self):
+        m=self._mgr()
+        m.create_volume("uw1")
+        m.mount_volume("uw1", "c1")
+        r=m.unmount_volume("uw1", "c2")
+        self.assertIn("error", r)
+
+    def test_delete_mounted_forced(self):
+        m=self._mgr()
+        m.create_volume("dm1")
+        m.mount_volume("dm1", "c1")
+        r=m.delete_volume("dm1", force=True)
+        self.assertTrue(r["ok"])
+
+    def test_delete_mounted_not_forced(self):
+        m=self._mgr()
+        m.create_volume("dm2")
+        m.mount_volume("dm2", "c1")
+        r=m.delete_volume("dm2", force=False)
+        self.assertIn("error", r)
+
+    def test_list_volumes(self):
+        m=self._mgr()
+        m.create_volume("lv1", volume_type="block")
+        m.create_volume("lv2", volume_type="file")
+        r=m.list_volumes()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_by_type(self):
+        m=self._mgr()
+        m.create_volume("lt1", volume_type="block")
+        m.create_volume("lt2", volume_type="file")
+        r=m.list_volumes(volume_type="block")
+        self.assertEqual(r["count"], 1)
+
+    def test_get_volume(self):
+        m=self._mgr()
+        m.create_volume("gv1", size_mb=200)
+        r=m.get_volume("gv1")
+        self.assertEqual(r["size_mb"], 200)
+        self.assertIn("utilization_pct", r)
+
+    def test_create_snapshot(self):
+        m=self._mgr()
+        m.create_volume("cs1")
+        r=m.create_volume_snapshot("cs1", "snap-v1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["snapshot"], "snap-v1")
+
+    def test_create_snapshot_auto_name(self):
+        m=self._mgr()
+        m.create_volume("cs2")
+        r=m.create_volume_snapshot("cs2")
+        self.assertTrue(r["ok"])
+        self.assertIn("snap", r["snapshot"])
+
+    def test_restore_snapshot(self):
+        m=self._mgr()
+        m.create_volume("rs1")
+        m.create_volume_snapshot("rs1", "snap-a")
+        r=m.restore_volume_snapshot("rs1", "snap-a")
+        self.assertTrue(r["ok"])
+
+    def test_restore_nonexistent(self):
+        m=self._mgr()
+        m.create_volume("rn1")
+        r=m.restore_volume_snapshot("rn1", "nope")
+        self.assertIn("error", r)
+
+    def test_volume_stats(self):
+        m=self._mgr()
+        m.create_volume("vs1", size_mb=100)
+        m.create_volume("vs2", size_mb=200)
+        r=m.get_volume_stats()
+        self.assertEqual(r["total_volumes"], 2)
+        self.assertEqual(r["total_size_mb"], 300)
+
+
+class TestWorkloadSVID(unittest.TestCase):
+    """Tests for workload identity SVID issuance and rotation."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_identity(self):
+        m=self._mgr()
+        r=m.create_workload_identity_v2("svc-web", spiffe_id="spiffe://nyrqis.dev/sa/web")
+        self.assertTrue(r["created"])
+        svid=m.issue_workload_svid_v2("svc-web", workload="web")
+        self.assertTrue(svid["ok"])
+        self.assertIn("svid_id", svid)
+        self.assertIn("spiffe_id", svid)
+
+    def test_issue_nonexistent(self):
+        m=self._mgr()
+        r=m.issue_workload_svid_v2("nope", workload="x")
+        self.assertIn("error", r)
+
+    def test_validate_valid(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id1", spiffe_id="spiffe://nyrqis.dev/sa/api")
+        svid=m.issue_workload_svid_v2("id1", workload="api")
+        r=m.validate_svid_v2(svid["svid_id"])
+        self.assertTrue(r["valid"])
+        self.assertGreater(r["remaining_seconds"], 0)
+
+    def test_validate_nonexistent(self):
+        m=self._mgr()
+        r=m.validate_svid_v2("nope")
+        self.assertFalse(r["valid"])
+
+    def test_rotate_svid(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id2", spiffe_id="spiffe://nyrqis.dev/sa/api")
+        svid=m.issue_workload_svid_v2("id2", workload="api")
+        r=m.rotate_svid_v2(svid["svid_id"])
+        self.assertTrue(r["ok"])
+        self.assertNotEqual(r["svid_id"], svid["svid_id"])
+
+    def test_revoke_svid(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id3", spiffe_id="spiffe://nyrqis.dev/sa/api")
+        svid=m.issue_workload_svid_v2("id3", workload="api")
+        r=m.revoke_svid(svid["svid_id"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["status"], "revoked")
+
+    def test_list_svids(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id4", spiffe_id="spiffe://nyrqis.dev/sa/web")
+        m.issue_workload_svid_v2("id4", workload="web")
+        m.issue_workload_svid_v2("id4", workload="web")
+        r=m.list_svids("id4")
+        self.assertEqual(r["count"], 2)
+
+    def test_svid_stats(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id5", spiffe_id="spiffe://nyrqis.dev/sa/api")
+        m.issue_workload_svid_v2("id5", workload="api")
+        r=m.get_svid_stats()
+        self.assertEqual(r["total"], 1)
+        self.assertEqual(r["valid"], 1)
+
+    def test_revoke_nonexistent(self):
+        m=self._mgr()
+        r=m.revoke_svid("nope")
+        self.assertIn("error", r)
+
+    def test_list_all_svids(self):
+        m=self._mgr()
+        m.create_workload_identity_v2("id6", spiffe_id="spiffe://nyrqis.dev/sa/a")
+        m.create_workload_identity_v2("id7", spiffe_id="spiffe://nyrqis.dev/sa/b")
+        m.issue_workload_svid_v2("id6", workload="a")
+        m.issue_workload_svid_v2("id7", workload="b")
+        r=m.list_svids()
+        self.assertEqual(r["count"], 2)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -35288,6 +35621,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestScheduledTasks))
     suite.addTests(loader.loadTestsFromTestCase(TestBandwidthLimits))
     suite.addTests(loader.loadTestsFromTestCase(TestLayerCache))
+    suite.addTests(loader.loadTestsFromTestCase(TestSecurityProfiles))
+    suite.addTests(loader.loadTestsFromTestCase(TestVolumeManagement))
+    suite.addTests(loader.loadTestsFromTestCase(TestWorkloadSVID))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
