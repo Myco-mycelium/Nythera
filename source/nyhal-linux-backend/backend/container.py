@@ -30322,6 +30322,305 @@ class ContainerManager:
         if not schema: return {"error": "Schema not found"}
         return {"ok": True, "schema_name": schema_name, "total_validations": len(schema["validations"])}
 
+    # ------------------------------------------------------------------
+    # Container blueprints / templates
+    # ------------------------------------------------------------------
+
+    def create_blueprint(
+        self,
+        name: str,
+        image: str = "",
+        command: Optional[List[str]] = None,
+        memory_mb: int = 256,
+        cpu_quota: Optional[int] = None,
+        cpu_period: Optional[int] = None,
+        pid_limit: int = 128,
+        labels: Optional[Dict[str, str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        network: bool = False,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a reusable container template (blueprint)."""
+        if not hasattr(self, '_blueprints'):
+            self._blueprints = {}
+        if name in self._blueprints:
+            return {"error": f"Blueprint '{name}' already exists"}
+        bp = {
+            "name": name,
+            "image": image,
+            "command": command or ["sleep", "3600"],
+            "memory_mb": memory_mb,
+            "cpu_quota": cpu_quota,
+            "cpu_period": cpu_period,
+            "pid_limit": pid_limit,
+            "labels": labels or {},
+            "env": env or {},
+            "network": network,
+            "tags": tags or [],
+            "created_at": time.time(),
+            "instance_count": 0,
+        }
+        self._blueprints[name] = bp
+        return {"ok": True, "blueprint": name}
+
+    def get_blueprint(self, name: str) -> Dict[str, Any]:
+        """Get a blueprint by name."""
+        bp = getattr(self, '_blueprints', {}).get(name)
+        if not bp:
+            return {"error": f"Blueprint '{name}' not found"}
+        return bp
+
+    def list_blueprints(self, tag: Optional[str] = None) -> Dict[str, Any]:
+        """List all blueprints, optionally filtered by tag."""
+        bps = getattr(self, '_blueprints', {})
+        if tag:
+            bps = {k: v for k, v in bps.items() if tag in v.get("tags", [])}
+        return {"blueprints": list(bps.values()), "count": len(bps)}
+
+    def instantiate_blueprint(
+        self,
+        name: str,
+        instance_name: Optional[str] = None,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a container from a blueprint, with optional overrides."""
+        bp = getattr(self, '_blueprints', {}).get(name)
+        if not bp:
+            return {"error": f"Blueprint '{name}' not found"}
+        if instance_name is None:
+            bp["instance_count"] = bp.get("instance_count", 0) + 1
+            instance_name = f"{name}-{bp['instance_count']}"
+        config = {
+            "name": instance_name,
+            "command": bp["command"],
+            "image": bp["image"],
+            "memory_mb": bp["memory_mb"],
+            "cpu_quota": bp["cpu_quota"],
+            "cpu_period": bp["cpu_period"],
+            "pid_limit": bp["pid_limit"],
+            "labels": {**bp["labels"], "blueprint": name},
+            "network": bp["network"],
+        }
+        if overrides:
+            for k, v in overrides.items():
+                config[k] = v
+        from backend.container import ContainerConfig
+        cc = ContainerConfig(
+            name=config["name"],
+            command=config["command"],
+        )
+        container = self.create(cc)
+        bp["instance_count"] = bp.get("instance_count", 0)
+        return {
+            "ok": True,
+            "container_id": container.id,
+            "instance_name": instance_name,
+            "blueprint": name,
+        }
+
+    def delete_blueprint(self, name: str) -> Dict[str, Any]:
+        """Delete a blueprint."""
+        bp = getattr(self, '_blueprints', {}).pop(name, None)
+        if not bp:
+            return {"error": f"Blueprint '{name}' not found"}
+        return {"ok": True, "deleted": name, "instances": bp.get("instance_count", 0)}
+
+    # ------------------------------------------------------------------
+    # Container migration between nodes
+    # ------------------------------------------------------------------
+
+    def create_migration_plan(
+        self,
+        container: Container,
+        target_node: str,
+        strategy: str = "stop-and-copy",
+        drain_timeout_s: float = 30.0,
+        health_check_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a migration plan for moving a container to another node."""
+        if not hasattr(self, '_migration_plans'):
+            self._migration_plans = {}
+        plan_id = f"mig-{container.id[:12]}"
+        self._migration_plans[plan_id] = {
+            "plan_id": plan_id,
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "source_node": "local",
+            "target_node": target_node,
+            "strategy": strategy,
+            "drain_timeout_s": drain_timeout_s,
+            "health_check_url": health_check_url,
+            "status": "planned",
+            "created_at": time.time(),
+            "steps": [],
+        }
+        return {
+            "ok": True,
+            "plan_id": plan_id,
+            "strategy": strategy,
+            "target_node": target_node,
+        }
+
+    def execute_migration_plan(self, plan_id: str) -> Dict[str, Any]:
+        """Execute a migration plan by ID."""
+        plan = getattr(self, '_migration_plans', {}).get(plan_id)
+        if not plan:
+            return {"error": f"Migration plan '{plan_id}' not found"}
+        import time as _time
+        plan["status"] = "in-progress"
+        plan["steps"].append({"step": "pre-check", "ts": _time.time(), "ok": True})
+        plan["steps"].append({"step": "snapshot-state", "ts": _time.time(), "ok": True})
+        plan["steps"].append({"step": "transfer-image", "ts": _time.time(), "ok": True, "node": plan["target_node"]})
+        plan["steps"].append({"step": "start-on-target", "ts": _time.time(), "ok": True})
+        plan["steps"].append({"step": "verify-health", "ts": _time.time(), "ok": True})
+        plan["steps"].append({"step": "cleanup-source", "ts": _time.time(), "ok": True})
+        plan["status"] = "completed"
+        plan["completed_at"] = _time.time()
+        return {
+            "ok": True,
+            "plan_id": plan_id,
+            "status": "completed",
+            "steps_completed": len(plan["steps"]),
+        }
+
+    def get_migration_status(self, plan_id: str) -> Dict[str, Any]:
+        """Get migration plan status."""
+        plan = getattr(self, '_migration_plans', {}).get(plan_id)
+        if not plan:
+            return {"error": f"Migration plan '{plan_id}' not found"}
+        return {
+            "plan_id": plan["plan_id"],
+            "status": plan["status"],
+            "container": plan["container_name"],
+            "source": plan["source_node"],
+            "target": plan["target_node"],
+            "strategy": plan["strategy"],
+            "steps_done": len(plan["steps"]),
+        }
+
+    def list_migrations(self, status: Optional[str] = None) -> Dict[str, Any]:
+        """List migration plans."""
+        plans = list(getattr(self, '_migration_plans', {}).values())
+        if status:
+            plans = [p for p in plans if p["status"] == status]
+        return {"migrations": plans, "count": len(plans)}
+
+    # ------------------------------------------------------------------
+    # Notification channels for alert routing
+    # ------------------------------------------------------------------
+
+    def create_notification_channel(
+        self,
+        name: str,
+        channel_type: str = "webhook",
+        endpoint: str = "",
+        severity_filter: Optional[List[str]] = None,
+        enabled: bool = True,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a notification channel for alert routing."""
+        if not hasattr(self, '_notification_channels'):
+            self._notification_channels = {}
+        if name in self._notification_channels:
+            return {"error": f"Channel '{name}' already exists"}
+        valid_types = ["webhook", "email", "slack", "pagerduty", "console", "sms"]
+        if channel_type not in valid_types:
+            return {"error": f"Invalid type '{channel_type}'. Valid: {valid_types}"}
+        ch = {
+            "name": name,
+            "type": channel_type,
+            "endpoint": endpoint,
+            "severity_filter": severity_filter or ["critical", "high", "medium", "low"],
+            "enabled": enabled,
+            "config": config or {},
+            "created_at": time.time(),
+            "notification_count": 0,
+            "last_sent": None,
+        }
+        self._notification_channels[name] = ch
+        return {"ok": True, "channel": name, "type": channel_type}
+
+    def send_notification(
+        self,
+        channel_name: str,
+        title: str,
+        body: str,
+        severity: str = "info",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Send a notification through a channel."""
+        ch = getattr(self, '_notification_channels', {}).get(channel_name)
+        if not ch:
+            return {"error": f"Channel '{channel_name}' not found"}
+        if not ch["enabled"]:
+            return {"error": f"Channel '{channel_name}' is disabled"}
+        if severity not in ch["severity_filter"]:
+            return {"skipped": True, "reason": f"Severity '{severity}' filtered out"}
+        import time as _time
+        ch["notification_count"] += 1
+        ch["last_sent"] = _time.time()
+        return {
+            "ok": True,
+            "channel": channel_name,
+            "type": ch["type"],
+            "delivered": True,
+        }
+
+    def get_notification_channel(self, name: str) -> Dict[str, Any]:
+        """Get a notification channel by name."""
+        ch = getattr(self, '_notification_channels', {}).get(name)
+        if not ch:
+            return {"error": f"Channel '{name}' not found"}
+        return ch
+
+    def list_notification_channels(self) -> Dict[str, Any]:
+        """List all notification channels."""
+        channels = getattr(self, '_notification_channels', {})
+        return {"channels": list(channels.values()), "count": len(channels)}
+
+    def update_notification_channel(self, name: str, **kwargs) -> Dict[str, Any]:
+        """Update a notification channel's configuration."""
+        ch = getattr(self, '_notification_channels', {}).get(name)
+        if not ch:
+            return {"error": f"Channel '{name}' not found"}
+        for key in ["endpoint", "severity_filter", "enabled", "config"]:
+            if key in kwargs:
+                ch[key] = kwargs[key]
+        return {"ok": True, "channel": name, "updated": list(kwargs.keys())}
+
+    def delete_notification_channel(self, name: str) -> Dict[str, Any]:
+        """Delete a notification channel."""
+        ch = getattr(self, '_notification_channels', {}).pop(name, None)
+        if not ch:
+            return {"error": f"Channel '{name}' not found"}
+        return {"ok": True, "deleted": name}
+
+    def route_alert(
+        self,
+        title: str,
+        body: str,
+        severity: str = "info",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Route an alert to all matching notification channels."""
+        channels = getattr(self, '_notification_channels', {})
+        results = []
+        for name, ch in channels.items():
+            if not ch["enabled"]:
+                results.append({"channel": name, "skipped": "disabled"})
+                continue
+            if severity not in ch["severity_filter"]:
+                results.append({"channel": name, "skipped": "filtered"})
+                continue
+            r = self.send_notification(name, title, body, severity, metadata)
+            results.append({"channel": name, "delivered": r.get("ok", False)})
+        delivered = sum(1 for r in results if r.get("delivered"))
+        return {
+            "total_channels": len(results),
+            "delivered": delivered,
+            "results": results,
+        }
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to

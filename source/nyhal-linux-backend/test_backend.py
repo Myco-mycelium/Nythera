@@ -33705,6 +33705,234 @@ class TestConfigHotReload(unittest.TestCase):
         self.assertEqual(r["count"], 0)
 
 
+class TestBlueprints(unittest.TestCase):
+    """Tests for container blueprints / templates."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_blueprint(self):
+        m=self._mgr()
+        r=m.create_blueprint("web", image="nginx", memory_mb=512)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["blueprint"], "web")
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_blueprint("dup")
+        r=m.create_blueprint("dup")
+        self.assertIn("error", r)
+
+    def test_get_blueprint(self):
+        m=self._mgr()
+        m.create_blueprint("gbp", image="redis", memory_mb=256)
+        r=m.get_blueprint("gbp")
+        self.assertEqual(r["image"], "redis")
+        self.assertEqual(r["memory_mb"], 256)
+
+    def test_get_nonexistent(self):
+        m=self._mgr()
+        r=m.get_blueprint("nope")
+        self.assertIn("error", r)
+
+    def test_list_blueprints(self):
+        m=self._mgr()
+        m.create_blueprint("l1", tags=["web"])
+        m.create_blueprint("l2", tags=["db"])
+        r=m.list_blueprints()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_by_tag(self):
+        m=self._mgr()
+        m.create_blueprint("t1", tags=["web"])
+        m.create_blueprint("t2", tags=["db"])
+        r=m.list_blueprints(tag="web")
+        self.assertEqual(r["count"], 1)
+
+    def test_instantiate_blueprint(self):
+        m=self._mgr()
+        m.create_blueprint("inst", image="alpine")
+        r=m.instantiate_blueprint("inst")
+        self.assertTrue(r["ok"])
+        self.assertIn("container_id", r)
+
+    def test_instantiate_with_overrides(self):
+        m=self._mgr()
+        m.create_blueprint("ovr", memory_mb=256)
+        r=m.instantiate_blueprint("ovr", overrides={"memory_mb": 1024})
+        self.assertTrue(r["ok"])
+
+    def test_delete_blueprint(self):
+        m=self._mgr()
+        m.create_blueprint("del")
+        r=m.delete_blueprint("del")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["deleted"], "del")
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_blueprint("nope")
+        self.assertIn("error", r)
+
+
+class TestContainerMigration(unittest.TestCase):
+    """Tests for container migration between nodes."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_plan(self):
+        m=self._mgr(); c=self._mk(m,"mg1")
+        r=m.create_migration_plan(c, "node-b")
+        self.assertTrue(r["ok"])
+        self.assertIn("plan_id", r)
+        self.assertEqual(r["target_node"], "node-b")
+
+    def test_create_plan_stop_and_copy(self):
+        m=self._mgr(); c=self._mk(m,"mg2")
+        r=m.create_migration_plan(c, "node-c", strategy="stop-and-copy", drain_timeout_s=60.0)
+        self.assertEqual(r["strategy"], "stop-and-copy")
+
+    def test_execute_migration(self):
+        m=self._mgr(); c=self._mk(m,"mg3")
+        p=m.create_migration_plan(c, "node-d")
+        r=m.execute_migration_plan(p["plan_id"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["status"], "completed")
+        self.assertEqual(r["steps_completed"], 6)
+
+    def test_get_status(self):
+        m=self._mgr(); c=self._mk(m,"mg4")
+        p=m.create_migration_plan(c, "node-e")
+        r=m.get_migration_status(p["plan_id"])
+        self.assertEqual(r["status"], "planned")
+        self.assertEqual(r["target"], "node-e")
+
+    def test_get_status_nonexistent(self):
+        m=self._mgr()
+        r=m.get_migration_status("mig-nonexistent")
+        self.assertIn("error", r)
+
+    def test_list_migrations(self):
+        m=self._mgr(); c=self._mk(m,"mg5")
+        m.create_migration_plan(c, "node-f")
+        r=m.list_migrations()
+        self.assertEqual(r["count"], 1)
+
+    def test_list_by_status(self):
+        m=self._mgr(); c1=self._mk(m,"mg6")
+        c2=self._mk(m,"mg7")
+        p1=m.create_migration_plan(c1, "node-g")
+        p2=m.create_migration_plan(c2, "node-h")
+        m.execute_migration_plan(p1["plan_id"])
+        r=m.list_migrations(status="completed")
+        self.assertEqual(r["count"], 1)
+
+    def test_migration_recorded(self):
+        m=self._mgr(); c=self._mk(m,"mg8")
+        p=m.create_migration_plan(c, "node-i")
+        m.execute_migration_plan(p["plan_id"])
+        r=m.get_migration_status(p["plan_id"])
+        self.assertEqual(r["status"], "completed")
+
+
+class TestNotificationChannels(unittest.TestCase):
+    """Tests for notification channels and alert routing."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_webhook(self):
+        m=self._mgr()
+        r=m.create_notification_channel("wh1", channel_type="webhook", endpoint="https://hooks.example.com")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["type"], "webhook")
+
+    def test_create_invalid_type(self):
+        m=self._mgr()
+        r=m.create_notification_channel("bad", channel_type="invalid")
+        self.assertIn("error", r)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_notification_channel("dup")
+        r=m.create_notification_channel("dup")
+        self.assertIn("error", r)
+
+    def test_send_notification(self):
+        m=self._mgr()
+        m.create_notification_channel("s1", channel_type="email", endpoint="ops@example.com")
+        r=m.send_notification("s1", "Alert", "CPU high", severity="critical")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["delivered"])
+
+    def test_send_filtered_severity(self):
+        m=self._mgr()
+        m.create_notification_channel("s2", severity_filter=["critical"])
+        r=m.send_notification("s2", "Alert", "Low priority", severity="low")
+        self.assertTrue(r["skipped"])
+
+    def test_send_disabled_channel(self):
+        m=self._mgr()
+        m.create_notification_channel("s3", enabled=False)
+        r=m.send_notification("s3", "Alert", "Test")
+        self.assertIn("error", r)
+
+    def test_send_nonexistent(self):
+        m=self._mgr()
+        r=m.send_notification("nope", "Alert", "Test")
+        self.assertIn("error", r)
+
+    def test_get_channel(self):
+        m=self._mgr()
+        m.create_notification_channel("g1", channel_type="slack")
+        r=m.get_notification_channel("g1")
+        self.assertEqual(r["type"], "slack")
+
+    def test_list_channels(self):
+        m=self._mgr()
+        m.create_notification_channel("l1")
+        m.create_notification_channel("l2")
+        r=m.list_notification_channels()
+        self.assertEqual(r["count"], 2)
+
+    def test_update_channel(self):
+        m=self._mgr()
+        m.create_notification_channel("u1")
+        r=m.update_notification_channel("u1", enabled=False)
+        self.assertTrue(r["ok"])
+        ch=m.get_notification_channel("u1")
+        self.assertFalse(ch["enabled"])
+
+    def test_delete_channel(self):
+        m=self._mgr()
+        m.create_notification_channel("d1")
+        r=m.delete_notification_channel("d1")
+        self.assertTrue(r["ok"])
+
+    def test_route_alert(self):
+        m=self._mgr()
+        m.create_notification_channel("r1", channel_type="webhook")
+        m.create_notification_channel("r2", channel_type="slack")
+        r=m.route_alert("Test Alert", "Something happened", severity="critical")
+        self.assertEqual(r["total_channels"], 2)
+        self.assertEqual(r["delivered"], 2)
+
+    def test_route_alert_filtered(self):
+        m=self._mgr()
+        m.create_notification_channel("rf1", severity_filter=["critical"])
+        m.create_notification_channel("rf2", severity_filter=["critical"])
+        r=m.route_alert("Test", "Body", severity="low")
+        self.assertEqual(r["delivered"], 0)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33969,6 +34197,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestServiceMesh))
     suite.addTests(loader.loadTestsFromTestCase(TestWorkloadIdentity))
     suite.addTests(loader.loadTestsFromTestCase(TestConfigHotReload))
+    suite.addTests(loader.loadTestsFromTestCase(TestBlueprints))
+    suite.addTests(loader.loadTestsFromTestCase(TestContainerMigration))
+    suite.addTests(loader.loadTestsFromTestCase(TestNotificationChannels))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
