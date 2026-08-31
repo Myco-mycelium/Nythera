@@ -36078,6 +36078,257 @@ class TestProcessMonitoring(unittest.TestCase):
         self.assertIn("error", r)
 
 
+class TestTrafficShaping(unittest.TestCase):
+    """Tests for network traffic shaping with tc rules."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_root(self):
+        m=self._mgr()
+        r=m.create_tc_root("tc1", interface="eth0", rate_mbit=1000)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["rate_mbit"], 1000)
+
+    def test_add_class(self):
+        m=self._mgr()
+        m.create_tc_root("tc2")
+        r=m.add_tc_class("tc2", "1:1", rate_mbit=500, priority=10)
+        self.assertTrue(r["ok"])
+
+    def test_add_class_duplicate(self):
+        m=self._mgr()
+        m.create_tc_root("tc3")
+        m.add_tc_class("tc3", "1:1", rate_mbit=500)
+        r=m.add_tc_class("tc3", "1:1", rate_mbit=250)
+        self.assertIn("error", r)
+
+    def test_add_filter(self):
+        m=self._mgr()
+        m.create_tc_root("tc4")
+        r=m.add_tc_filter("tc4", dst_port=80, class_id="1:10")
+        self.assertTrue(r["ok"])
+
+    def test_get_stats(self):
+        m=self._mgr()
+        m.create_tc_root("tc5", rate_mbit=500)
+        m.add_tc_class("tc5", "1:1", rate_mbit=200)
+        m.add_tc_class("tc5", "1:2", rate_mbit=300)
+        r=m.get_tc_stats("tc5")
+        self.assertEqual(r["classes"], 2)
+        self.assertEqual(r["rate_mbit"], 500)
+
+    def test_list_rules(self):
+        m=self._mgr()
+        m.create_tc_root("a")
+        m.create_tc_root("b")
+        r=m.list_tc_rules()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_root(self):
+        m=self._mgr()
+        m.create_tc_root("dr1")
+        m.add_tc_class("dr1", "1:1", rate_mbit=100)
+        r=m.delete_tc_root("dr1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["classes_lost"], 1)
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_tc_root("nope")
+        self.assertIn("error", r)
+
+
+class TestImageBuild(unittest.TestCase):
+    """Tests for container image build from Dockerfile."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_build(self):
+        m=self._mgr()
+        r=m.create_image_build("build1", base_image="alpine:3.18")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["base_image"], "alpine:3.18")
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_image_build("dup", base_image="alpine")
+        r=m.create_image_build("dup", base_image="alpine")
+        self.assertIn("error", r)
+
+    def test_execute_build(self):
+        m=self._mgr()
+        m.create_image_build("b1", base_image="alpine",
+                             dockerfile_content="FROM alpine\nRUN apk add nginx\nEXPOSE 80")
+        r=m.execute_image_build("b1")
+        self.assertTrue(r["ok"])
+        self.assertIn("image_id", r)
+        self.assertGreater(r["layers"], 0)
+
+    def test_execute_build_no_dockerfile(self):
+        m=self._mgr()
+        m.create_image_build("b2", base_image="alpine")
+        r=m.execute_image_build("b2")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["layers"], 1)
+
+    def test_execute_nonexistent(self):
+        m=self._mgr()
+        r=m.execute_image_build("nope")
+        self.assertIn("error", r)
+
+    def test_execute_twice(self):
+        m=self._mgr()
+        m.create_image_build("b3", base_image="alpine")
+        m.execute_image_build("b3")
+        r=m.execute_image_build("b3")
+        self.assertIn("error", r)
+
+    def test_get_build(self):
+        m=self._mgr()
+        m.create_image_build("b4", base_image="redis")
+        r=m.get_image_build("b4")
+        self.assertEqual(r["status"], "created")
+        self.assertEqual(r["base_image"], "redis")
+
+    def test_get_build_logs(self):
+        m=self._mgr()
+        m.create_image_build("b5", base_image="alpine",
+                             dockerfile_content="FROM alpine\nRUN echo hi")
+        m.execute_image_build("b5")
+        r=m.get_build_logs("b5")
+        self.assertGreater(r["total_logs"], 0)
+
+    def test_list_builds(self):
+        m=self._mgr()
+        m.create_image_build("l1", base_image="alpine")
+        m.create_image_build("l2", base_image="redis")
+        r=m.list_image_builds()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_by_status(self):
+        m=self._mgr()
+        m.create_image_build("s1", base_image="alpine")
+        m.execute_image_build("s1")
+        m.create_image_build("s2", base_image="alpine")
+        r=m.list_image_builds(status="completed")
+        self.assertEqual(r["count"], 1)
+
+    def test_delete_build(self):
+        m=self._mgr()
+        m.create_image_build("db1", base_image="alpine")
+        r=m.delete_image_build("db1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_image_build("nope")
+        self.assertIn("error", r)
+
+
+class TestProcessIsolation(unittest.TestCase):
+    """Tests for container process limits and resource isolation."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_set_limits(self):
+        m=self._mgr()
+        r=m.set_process_limits("c1", max_pids=128, oom_score_adj=500)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["max_pids"], 128)
+
+    def test_get_limits(self):
+        m=self._mgr()
+        m.set_process_limits("c2", max_pids=64)
+        r=m.get_process_limits("c2")
+        self.assertEqual(r["max_pids"], 64)
+
+    def test_get_limits_nonexistent(self):
+        m=self._mgr()
+        r=m.get_process_limits("nope")
+        self.assertIn("error", r)
+
+    def test_check_pressure_low(self):
+        m=self._mgr()
+        m.set_process_limits("c3", max_pids=100)
+        r=m.check_pid_pressure("c3", current_pids=10)
+        self.assertEqual(r["pressure"], "none")
+        self.assertEqual(r["usage_pct"], 10.0)
+
+    def test_check_pressure_moderate(self):
+        m=self._mgr()
+        m.set_process_limits("c4", max_pids=100)
+        r=m.check_pid_pressure("c4", current_pids=60)
+        self.assertEqual(r["pressure"], "moderate")
+
+    def test_check_pressure_high(self):
+        m=self._mgr()
+        m.set_process_limits("c5", max_pids=100)
+        r=m.check_pid_pressure("c5", current_pids=80)
+        self.assertEqual(r["pressure"], "high")
+
+    def test_check_pressure_critical(self):
+        m=self._mgr()
+        m.set_process_limits("c6", max_pids=100)
+        r=m.check_pid_pressure("c6", current_pids=95)
+        self.assertEqual(r["pressure"], "critical")
+
+    def test_configure_isolation(self):
+        m=self._mgr()
+        r=m.configure_resource_isolation("c7", cpu_isolated=True, memory_isolated=True)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_isolated"], 2)
+
+    def test_get_isolation(self):
+        m=self._mgr()
+        m.configure_resource_isolation("c8", io_isolated=True)
+        r=m.get_resource_isolation("c8")
+        self.assertTrue(r["io_isolated"])
+
+    def test_get_isolation_nonexistent(self):
+        m=self._mgr()
+        r=m.get_resource_isolation("nope")
+        self.assertIn("error", r)
+
+    def test_isolation_summary(self):
+        m=self._mgr()
+        m.configure_resource_isolation("a", cpu_isolated=True)
+        m.configure_resource_isolation("b", memory_isolated=True, io_isolated=True)
+        r=m.get_isolation_summary()
+        self.assertEqual(r["total_containers"], 2)
+        self.assertEqual(r["cpu_isolated"], 1)
+        self.assertEqual(r["memory_isolated"], 1)
+
+    def test_remove_isolation(self):
+        m=self._mgr()
+        m.configure_resource_isolation("c9", cpu_isolated=True)
+        r=m.remove_resource_isolation("c9")
+        self.assertTrue(r["ok"])
+
+    def test_list_limits(self):
+        m=self._mgr()
+        m.set_process_limits("l1", max_pids=32)
+        m.set_process_limits("l2", max_pids=64)
+        r=m.list_process_limits()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_limits(self):
+        m=self._mgr()
+        m.set_process_limits("dl1", max_pids=32)
+        r=m.delete_process_limits("dl1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_limits_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_process_limits("nope")
+        self.assertIn("error", r)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -36369,6 +36620,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestVulnPolicy))
     suite.addTests(loader.loadTestsFromTestCase(TestResourceAccounting))
     suite.addTests(loader.loadTestsFromTestCase(TestProcessMonitoring))
+    suite.addTests(loader.loadTestsFromTestCase(TestTrafficShaping))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageBuild))
+    suite.addTests(loader.loadTestsFromTestCase(TestProcessIsolation))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

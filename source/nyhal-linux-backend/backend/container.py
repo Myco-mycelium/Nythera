@@ -33597,6 +33597,294 @@ class ContainerManager:
             return {"error": f"Monitor '{name}' not found"}
         return {"ok": True, "deleted": name, "zombies_found": monitor["zombies_found"]}
 
+    # ------------------------------------------------------------------
+    # Network traffic shaping with tc rules
+    # ------------------------------------------------------------------
+
+    def create_tc_root(self, name: str, interface: str = "eth0",
+                       rate_mbit: int = 1000) -> Dict[str, Any]:
+        """Create a tc root qdisc for an interface."""
+        if not hasattr(self, '_tc_rules'):
+            self._tc_rules = {}
+        self._tc_rules[name] = {
+            "name": name, "interface": interface, "rate_mbit": rate_mbit,
+            "filters": [], "classes": [],
+            "created_at": time.time(), "packets_shaped": 0,
+        }
+        return {"ok": True, "tc_root": name, "interface": interface, "rate_mbit": rate_mbit}
+
+    def add_tc_class(self, tc_name: str, class_id: str, rate_mbit: int,
+                     priority: int = 0, burst_kb: int = 128) -> Dict[str, Any]:
+        """Add a traffic class to a tc root."""
+        tc = getattr(self, '_tc_rules', {}).get(tc_name)
+        if not tc:
+            return {"error": f"TC root '{tc_name}' not found"}
+        for c in tc["classes"]:
+            if c["class_id"] == class_id:
+                return {"error": f"Class '{class_id}' already exists"}
+        tc["classes"].append({
+            "class_id": class_id, "rate_mbit": rate_mbit,
+            "priority": priority, "burst_kb": burst_kb,
+            "packets": 0, "bytes": 0,
+        })
+        return {"ok": True, "tc_root": tc_name, "class_id": class_id, "rate_mbit": rate_mbit}
+
+    def add_tc_filter(self, tc_name: str, src_ip: Optional[str] = None,
+                      dst_ip: Optional[str] = None, dst_port: Optional[int] = None,
+                      class_id: str = "1:1") -> Dict[str, Any]:
+        """Add a traffic filter to a tc root."""
+        tc = getattr(self, '_tc_rules', {}).get(tc_name)
+        if not tc:
+            return {"error": f"TC root '{tc_name}' not found"}
+        filt = {
+            "src_ip": src_ip, "dst_ip": dst_ip, "dst_port": dst_port,
+            "class_id": class_id, "matches": 0, "created_at": time.time(),
+        }
+        tc["filters"].append(filt)
+        return {"ok": True, "tc_root": tc_name, "class_id": class_id}
+
+    def get_tc_stats(self, tc_name: str) -> Dict[str, Any]:
+        """Get tc rule statistics."""
+        tc = getattr(self, '_tc_rules', {}).get(tc_name)
+        if not tc:
+            return {"error": f"TC root '{tc_name}' not found"}
+        total_packets = sum(c["packets"] for c in tc["classes"])
+        total_bytes = sum(c["bytes"] for c in tc["classes"])
+        return {
+            "tc_root": tc_name, "interface": tc["interface"],
+            "rate_mbit": tc["rate_mbit"],
+            "classes": len(tc["classes"]), "filters": len(tc["filters"]),
+            "total_packets": total_packets, "total_bytes": total_bytes,
+        }
+
+    def list_tc_rules(self) -> Dict[str, Any]:
+        """List all tc configurations."""
+        tcs = getattr(self, '_tc_rules', {})
+        items = []
+        for tc in tcs.values():
+            items.append({
+                "name": tc["name"], "interface": tc["interface"],
+                "rate_mbit": tc["rate_mbit"], "classes": len(tc["classes"]),
+            })
+        return {"tc_rules": items, "count": len(items)}
+
+    def delete_tc_root(self, name: str) -> Dict[str, Any]:
+        """Delete a tc root configuration."""
+        tc = getattr(self, '_tc_rules', {}).pop(name, None)
+        if not tc:
+            return {"error": f"TC root '{name}' not found"}
+        return {"ok": True, "deleted": name, "classes_lost": len(tc["classes"])}
+
+    # ------------------------------------------------------------------
+    # Container image build from Dockerfile
+    # ------------------------------------------------------------------
+
+    def create_image_build(self, name: str, base_image: str,
+                           dockerfile_content: str = "",
+                           build_args: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Create an image build from a Dockerfile."""
+        if not hasattr(self, '_image_builds'):
+            self._image_builds = {}
+        if name in self._image_builds:
+            return {"error": f"Build '{name}' already exists"}
+        self._image_builds[name] = {
+            "name": name, "base_image": base_image,
+            "dockerfile": dockerfile_content, "build_args": build_args or {},
+            "status": "created", "created_at": time.time(),
+            "layers": [], "logs": [],
+            "image_id": None, "size_bytes": 0,
+        }
+        return {"ok": True, "build": name, "base_image": base_image}
+
+    def execute_image_build(self, build_name: str) -> Dict[str, Any]:
+        """Execute an image build (simulated)."""
+        build = getattr(self, '_image_builds', {}).get(build_name)
+        if not build:
+            return {"error": f"Build '{build_name}' not found"}
+        if build["status"] == "completed":
+            return {"error": f"Build '{build_name}' already completed"}
+        import time as _time
+        import hashlib as _hash
+        build["status"] = "building"
+        build["logs"].append({"ts": _time.time(), "msg": f"Pulling base image {build['base_image']}"})
+        # Simulate layers
+        if build["dockerfile"]:
+            for i, line in enumerate(build["dockerfile"].strip().split("\n")):
+                if line.strip() and not line.strip().startswith("#"):
+                    build["layers"].append({
+                        "index": i, "instruction": line.strip()[:80],
+                        "size_bytes": 1024 * (i + 1),
+                    })
+                    build["logs"].append({"ts": _time.time(), "msg": f"Step {i+1}: {line.strip()[:60]}"})
+        else:
+            build["layers"].append({"index": 0, "instruction": "FROM base", "size_bytes": 1024})
+        total_size = sum(l["size_bytes"] for l in build["layers"])
+        build["size_bytes"] = total_size
+        build["image_id"] = _hash.sha256(build_name.encode()).hexdigest()[:16]
+        build["status"] = "completed"
+        build["logs"].append({"ts": _time.time(), "msg": f"Build completed. Image ID: {build['image_id']}"})
+        return {
+            "ok": True, "build": build_name, "image_id": build["image_id"],
+            "layers": len(build["layers"]), "size_bytes": total_size,
+        }
+
+    def get_image_build(self, build_name: str) -> Dict[str, Any]:
+        """Get image build details."""
+        build = getattr(self, '_image_builds', {}).get(build_name)
+        if not build:
+            return {"error": f"Build '{build_name}' not found"}
+        return {
+            "name": build["name"], "base_image": build["base_image"],
+            "status": build["status"], "layers": len(build["layers"]),
+            "image_id": build["image_id"], "size_bytes": build["size_bytes"],
+        }
+
+    def get_build_logs(self, build_name: str, tail: int = 20) -> Dict[str, Any]:
+        """Get build logs."""
+        build = getattr(self, '_image_builds', {}).get(build_name)
+        if not build:
+            return {"error": f"Build '{build_name}' not found"}
+        logs = build["logs"][-tail:]
+        return {"build": build_name, "logs": logs, "total_logs": len(build["logs"])}
+
+    def list_image_builds(self, status: Optional[str] = None) -> Dict[str, Any]:
+        """List all image builds."""
+        builds = list(getattr(self, '_image_builds', {}).values())
+        if status:
+            builds = [b for b in builds if b["status"] == status]
+        return {
+            "builds": [{
+                "name": b["name"], "base_image": b["base_image"],
+                "status": b["status"], "layers": len(b["layers"]),
+            } for b in builds], "count": len(builds),
+        }
+
+    def delete_image_build(self, build_name: str) -> Dict[str, Any]:
+        """Delete an image build."""
+        build = getattr(self, '_image_builds', {}).pop(build_name, None)
+        if not build:
+            return {"error": f"Build '{build_name}' not found"}
+        return {"ok": True, "deleted": build_name, "status": build["status"]}
+
+    # ------------------------------------------------------------------
+    # Container process limits and resource isolation
+    # ------------------------------------------------------------------
+
+    def set_process_limits(self, container_id: str, max_pids: int = 64,
+                           oom_score_adj: int = 0) -> Dict[str, Any]:
+        """Set process limits for a container."""
+        if not hasattr(self, '_process_limits'):
+            self._process_limits = {}
+        self._process_limits[container_id] = {
+            "container_id": container_id,
+            "max_pids": max_pids,
+            "oom_score_adj": oom_score_adj,
+            "current_pids": 0,
+            "oom_kills": 0,
+            "created_at": time.time(),
+        }
+        return {"ok": True, "container_id": container_id, "max_pids": max_pids}
+
+    def get_process_limits(self, container_id: str) -> Dict[str, Any]:
+        """Get process limits for a container."""
+        lim = getattr(self, '_process_limits', {}).get(container_id)
+        if not lim:
+            return {"error": f"No process limits for '{container_id}'"}
+        return lim
+
+    def check_pid_pressure(self, container_id: str, current_pids: int) -> Dict[str, Any]:
+        """Check if a container is under PID pressure."""
+        lim = getattr(self, '_process_limits', {}).get(container_id)
+        if not lim:
+            return {"error": f"No process limits for '{container_id}'"}
+        lim["current_pids"] = current_pids
+        usage_pct = (current_pids / lim["max_pids"] * 100) if lim["max_pids"] > 0 else 0
+        pressure = "none"
+        if usage_pct >= 90:
+            pressure = "critical"
+        elif usage_pct >= 75:
+            pressure = "high"
+        elif usage_pct >= 50:
+            pressure = "moderate"
+        return {
+            "container_id": container_id, "current_pids": current_pids,
+            "max_pids": lim["max_pids"], "usage_pct": round(usage_pct, 1),
+            "pressure": pressure, "oom_score_adj": lim["oom_score_adj"],
+        }
+
+    def configure_resource_isolation(self, container_id: str,
+                                     cpu_isolated: bool = False,
+                                     memory_isolated: bool = False,
+                                     io_isolated: bool = False,
+                                     network_isolated: bool = False) -> Dict[str, Any]:
+        """Configure resource isolation for a container."""
+        if not hasattr(self, '_resource_isolation'):
+            self._resource_isolation = {}
+        self._resource_isolation[container_id] = {
+            "container_id": container_id,
+            "cpu_isolated": cpu_isolated,
+            "memory_isolated": memory_isolated,
+            "io_isolated": io_isolated,
+            "network_isolated": network_isolated,
+            "created_at": time.time(),
+        }
+        isolation_flags = []
+        if cpu_isolated: isolation_flags.append("cpu")
+        if memory_isolated: isolation_flags.append("memory")
+        if io_isolated: isolation_flags.append("io")
+        if network_isolated: isolation_flags.append("network")
+        return {
+            "ok": True, "container_id": container_id,
+            "isolation_flags": isolation_flags, "total_isolated": len(isolation_flags),
+        }
+
+    def get_resource_isolation(self, container_id: str) -> Dict[str, Any]:
+        """Get resource isolation status for a container."""
+        iso = getattr(self, '_resource_isolation', {}).get(container_id)
+        if not iso:
+            return {"error": f"No isolation for '{container_id}'"}
+        return iso
+
+    def get_isolation_summary(self) -> Dict[str, Any]:
+        """Get aggregate isolation statistics."""
+        isolations = getattr(self, '_resource_isolation', {})
+        cpu = sum(1 for i in isolations.values() if i["cpu_isolated"])
+        mem = sum(1 for i in isolations.values() if i["memory_isolated"])
+        io = sum(1 for i in isolations.values() if i["io_isolated"])
+        net = sum(1 for i in isolations.values() if i["network_isolated"])
+        return {
+            "total_containers": len(isolations),
+            "cpu_isolated": cpu, "memory_isolated": mem,
+            "io_isolated": io, "network_isolated": net,
+        }
+
+    def remove_resource_isolation(self, container_id: str) -> Dict[str, Any]:
+        """Remove resource isolation for a container."""
+        iso = getattr(self, '_resource_isolation', {}).pop(container_id, None)
+        if not iso:
+            return {"error": f"No isolation for '{container_id}'"}
+        return {"ok": True, "removed": container_id}
+
+    def list_process_limits(self) -> Dict[str, Any]:
+        """List all process limits."""
+        limits = getattr(self, '_process_limits', {})
+        items = []
+        for l in limits.values():
+            items.append({
+                "container_id": l["container_id"],
+                "max_pids": l["max_pids"],
+                "current_pids": l["current_pids"],
+                "oom_score_adj": l["oom_score_adj"],
+            })
+        return {"limits": items, "count": len(items)}
+
+    def delete_process_limits(self, container_id: str) -> Dict[str, Any]:
+        """Delete process limits for a container."""
+        lim = getattr(self, '_process_limits', {}).pop(container_id, None)
+        if not lim:
+            return {"error": f"No limits for '{container_id}'"}
+        return {"ok": True, "removed": container_id}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
