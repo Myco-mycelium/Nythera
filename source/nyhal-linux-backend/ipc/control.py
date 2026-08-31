@@ -10707,6 +10707,70 @@ class ControlService:
         result = self.container_manager.delete_healing_policy(request.get("policy_id", ""))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 
+
+    def _create_cost_tracker(self, s, sp, cid, r):
+        c = self.container_manager.containers.get(r.get("container_id",""))
+        if not c: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_cost_tracker(c, r.get("cost_per_hour",0.05), r.get("currency","USD"))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _record_cost_sample(self, s, sp, cid, r):
+        res = self.container_manager.record_cost_sample(r.get("tracker_id",""), r.get("cost",0.0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _detect_cost_anomalies(self, s, sp, cid, r):
+        res = self.container_manager.detect_cost_anomalies(r.get("tracker_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _get_cost_trend(self, s, sp, cid, r):
+        res = self.container_manager.get_cost_trend(r.get("tracker_id",""), r.get("window",7))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _get_cost_summary(self, s, sp, cid, r):
+        res = self.container_manager.get_cost_summary(r.get("tracker_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _delete_cost_tracker(self, s, sp, cid, r):
+        res = self.container_manager.delete_cost_tracker(r.get("tracker_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _create_leak_detector(self, s, sp, cid, r):
+        c = self.container_manager.containers.get(r.get("container_id",""))
+        if not c: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_leak_detector(c, r.get("check_interval_s",60.0), r.get("threshold_pct",5.0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _record_resource_sample(self, s, sp, cid, r):
+        res = self.container_manager.record_resource_sample(r.get("detector_id",""), r.get("memory_bytes",0), r.get("open_fds",0), r.get("thread_count",0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _detect_memory_leak(self, s, sp, cid, r):
+        res = self.container_manager.detect_memory_leak(r.get("detector_id",""), r.get("window",20))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _detect_fd_leak(self, s, sp, cid, r):
+        res = self.container_manager.detect_fd_leak(r.get("detector_id",""), r.get("window",20))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _get_leak_status(self, s, sp, cid, r):
+        res = self.container_manager.get_leak_status(r.get("detector_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _confirm_leak(self, s, sp, cid, r):
+        res = self.container_manager.confirm_leak(r.get("detector_id",""), r.get("leak_index",0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _delete_leak_detector(self, s, sp, cid, r):
+        res = self.container_manager.delete_leak_detector(r.get("detector_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _create_deploy_health(self, s, sp, cid, r):
+        c = self.container_manager.containers.get(r.get("container_id",""))
+        if not c: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        res = self.container_manager.create_deploy_health(c, r.get("success_criteria"), r.get("validation_window_s",300.0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _record_health_check(self, s, sp, cid, r):
+        res = self.container_manager.record_health_check(r.get("health_id",""), r.get("check_type",""), r.get("passed",False), r.get("latency_ms",0.0))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _get_deploy_health_score(self, s, sp, cid, r):
+        res = self.container_manager.get_deploy_health_score(r.get("health_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _evaluate_deploy_health(self, s, sp, cid, r):
+        res = self.container_manager.evaluate_deploy_health(r.get("health_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _mark_deploy_resolved(self, s, sp, cid, r):
+        res = self.container_manager.mark_deploy_resolved(r.get("health_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
+    def _delete_deploy_health(self, s, sp, cid, r):
+        res = self.container_manager.delete_deploy_health(r.get("health_id",""))
+        self._reply(sp,s,cid,{"ok":True,**res})
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

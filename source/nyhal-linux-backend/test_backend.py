@@ -33276,6 +33276,92 @@ class TestSelfHealing(unittest.TestCase):
 
 
 
+class TestCostAnomalyDetection(unittest.TestCase):
+    """Tests for cost anomaly detection with trend analysis."""
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_tracker(self):
+        m=self._mgr(); c=self._mk(m,"ca1"); r=m.create_cost_tracker(c,0.10); self.assertIn("tracker_id",r)
+    def test_record_sample(self):
+        m=self._mgr(); c=self._mk(m,"ca2"); r=m.create_cost_tracker(c); self.assertTrue(m.record_cost_sample(r["tracker_id"],1.5)["ok"])
+    def test_detect_anomalies(self):
+        m=self._mgr(); c=self._mk(m,"ca3"); r=m.create_cost_tracker(c); tid=r["tracker_id"]
+        for i in range(5): m.record_cost_sample(tid, 10.0, timestamp=time.time()-86400*(5-i))
+        m.record_cost_sample(tid, 100.0, timestamp=time.time())
+        r2=m.detect_cost_anomalies(tid); self.assertEqual(len(r2["anomalies"]),1)
+    def test_cost_trend(self):
+        m=self._mgr(); c=self._mk(m,"ca4"); r=m.create_cost_tracker(c); tid=r["tracker_id"]
+        for i in range(5): m.record_cost_sample(tid, float(i+1), timestamp=time.time()-86400*(4-i))
+        r2=m.get_cost_trend(tid); self.assertEqual(r2["trend"],"up")
+    def test_cost_summary(self):
+        m=self._mgr(); c=self._mk(m,"ca5"); r=m.create_cost_tracker(c); tid=r["tracker_id"]
+        m.record_cost_sample(tid, 5.0); r2=m.get_cost_summary(tid); self.assertEqual(r2["total_cost"],5.0)
+    def test_delete_tracker(self):
+        m=self._mgr(); c=self._mk(m,"ca6"); r=m.create_cost_tracker(c); self.assertTrue(m.delete_cost_tracker(r["tracker_id"])["ok"])
+
+
+class TestResourceLeakDetection(unittest.TestCase):
+    """Tests for resource leak detection with automatic identification."""
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_detector(self):
+        m=self._mgr(); c=self._mk(m,"ld1"); r=m.create_leak_detector(c); self.assertIn("detector_id",r)
+    def test_memory_leak_detected(self):
+        m=self._mgr(); c=self._mk(m,"ld2"); r=m.create_leak_detector(c,threshold_pct=5.0); did=r["detector_id"]
+        for i in range(10): m.record_resource_sample(did, 1000*(i+1), timestamp=time.time()-60*(9-i))
+        r2=m.detect_memory_leak(did); self.assertTrue(r2["is_leak"])
+    def test_no_leak_stable(self):
+        m=self._mgr(); c=self._mk(m,"ld3"); r=m.create_leak_detector(c); did=r["detector_id"]
+        for i in range(10): m.record_resource_sample(did, 1000, timestamp=time.time()-60*(9-i))
+        r2=m.detect_memory_leak(did); self.assertFalse(r2["is_leak"])
+    def test_fd_leak(self):
+        m=self._mgr(); c=self._mk(m,"ld4"); r=m.create_leak_detector(c,threshold_pct=5.0); did=r["detector_id"]
+        for i in range(10): m.record_resource_sample(did, 1000, open_fds=10*(i+1), timestamp=time.time()-60*(9-i))
+        r2=m.detect_fd_leak(did); self.assertTrue(r2["is_leak"])
+    def test_leak_status(self):
+        m=self._mgr(); c=self._mk(m,"ld5"); r=m.create_leak_detector(c); did=r["detector_id"]
+        m.record_resource_sample(did, 1000); r2=m.get_leak_status(did); self.assertEqual(r2["sample_count"],1)
+    def test_confirm_leak(self):
+        m=self._mgr(); c=self._mk(m,"ld6"); r=m.create_leak_detector(c,threshold_pct=5.0); did=r["detector_id"]
+        for i in range(10): m.record_resource_sample(did, 1000*(i+1), timestamp=time.time()-60*(9-i))
+        m.detect_memory_leak(did)
+        r2=m.confirm_leak(did, 0); self.assertTrue(r2["ok"])
+    def test_delete_detector(self):
+        m=self._mgr(); c=self._mk(m,"ld7"); r=m.create_leak_detector(c); self.assertTrue(m.delete_leak_detector(r["detector_id"])["ok"])
+
+
+class TestDeployHealth(unittest.TestCase):
+    """Tests for deployment health scoring with post-deploy validation."""
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create_health(self):
+        m=self._mgr(); c=self._mk(m,"dh1"); r=m.create_deploy_health(c); self.assertIn("health_id",r)
+    def test_record_checks(self):
+        m=self._mgr(); c=self._mk(m,"dh2"); r=m.create_deploy_health(c); hid=r["health_id"]
+        for _ in range(5): m.record_health_check(hid,"ping",True,10.0)
+        r2=m.get_deploy_health_score(hid); self.assertEqual(r2["score"],100.0)
+    def test_rollback_on_failures(self):
+        m=self._mgr(); c=self._mk(m,"dh3"); r=m.create_deploy_health(c); hid=r["health_id"]
+        for _ in range(5): m.record_health_check(hid,"ping",False,100.0)
+        r2=m.get_deploy_health_score(hid); self.assertTrue(r2["rollback_recommended"])
+    def test_evaluate_success(self):
+        m=self._mgr(); c=self._mk(m,"dh4"); r=m.create_deploy_health(c); hid=r["health_id"]
+        for _ in range(5): m.record_health_check(hid,"ping",True,10.0)
+        r2=m.evaluate_deploy_health(hid); self.assertEqual(r2["verdict"],"success")
+    def test_mark_resolved(self):
+        m=self._mgr(); c=self._mk(m,"dh5"); r=m.create_deploy_health(c); hid=r["health_id"]
+        for _ in range(5): m.record_health_check(hid,"ping",False,100.0)
+        m.mark_deploy_resolved(hid); r2=m.get_deploy_health_score(hid); self.assertFalse(r2["rollback_recommended"])
+    def test_delete_health(self):
+        m=self._mgr(); c=self._mk(m,"dh6"); r=m.create_deploy_health(c); self.assertTrue(m.delete_deploy_health(r["health_id"])["ok"])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33525,6 +33611,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestEventDrivenAutoscaling))
     suite.addTests(loader.loadTestsFromTestCase(TestSecurityPosture))
     suite.addTests(loader.loadTestsFromTestCase(TestSelfHealing))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostAnomalyDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestResourceLeakDetection))
+    suite.addTests(loader.loadTestsFromTestCase(TestDeployHealth))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

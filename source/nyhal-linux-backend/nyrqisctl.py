@@ -4922,6 +4922,26 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "delete-healing":
         return {"service": "control", "op": "delete_healing_policy", "policy_id": args.policy_id}
 
+    if command == "create-cost-tracker": return {"service":"control","op":"create_cost_tracker","container_id":args.container_id,"cost_per_hour":getattr(args,"cost_per_hour",0.05),"currency":getattr(args,"currency","USD")}
+    if command == "record-cost-sample": return {"service":"control","op":"record_cost_sample","tracker_id":args.tracker_id,"cost":args.cost}
+    if command == "detect-cost-anomalies": return {"service":"control","op":"detect_cost_anomalies","tracker_id":args.tracker_id}
+    if command == "cost-trend": return {"service":"control","op":"get_cost_trend","tracker_id":args.tracker_id,"window":getattr(args,"window",7)}
+    if command == "cost-summary": return {"service":"control","op":"get_cost_summary","tracker_id":args.tracker_id}
+    if command == "delete-cost-tracker": return {"service":"control","op":"delete_cost_tracker","tracker_id":args.tracker_id}
+    if command == "create-leak-detector": return {"service":"control","op":"create_leak_detector","container_id":args.container_id,"check_interval_s":getattr(args,"check_interval_s",60.0),"threshold_pct":getattr(args,"threshold_pct",5.0)}
+    if command == "record-resource-sample": return {"service":"control","op":"record_resource_sample","detector_id":args.detector_id,"memory_bytes":args.memory_bytes,"open_fds":getattr(args,"open_fds",0),"thread_count":getattr(args,"thread_count",0)}
+    if command == "detect-memory-leak": return {"service":"control","op":"detect_memory_leak","detector_id":args.detector_id,"window":getattr(args,"window",20)}
+    if command == "detect-fd-leak": return {"service":"control","op":"detect_fd_leak","detector_id":args.detector_id,"window":getattr(args,"window",20)}
+    if command == "leak-status": return {"service":"control","op":"get_leak_status","detector_id":args.detector_id}
+    if command == "confirm-leak": return {"service":"control","op":"confirm_leak","detector_id":args.detector_id,"leak_index":args.leak_index}
+    if command == "delete-leak-detector": return {"service":"control","op":"delete_leak_detector","detector_id":args.detector_id}
+    if command == "create-deploy-health": return {"service":"control","op":"create_deploy_health","container_id":args.container_id,"validation_window_s":getattr(args,"validation_window_s",300.0)}
+    if command == "record-health-check": return {"service":"control","op":"record_health_check","health_id":args.health_id,"check_type":args.check_type,"passed":args.passed,"latency_ms":getattr(args,"latency_ms",0.0)}
+    if command == "deploy-health-score": return {"service":"control","op":"get_deploy_health_score","health_id":args.health_id}
+    if command == "evaluate-deploy-health": return {"service":"control","op":"evaluate_deploy_health","health_id":args.health_id}
+    if command == "mark-deploy-resolved": return {"service":"control","op":"mark_deploy_resolved","health_id":args.health_id}
+    if command == "delete-deploy-health": return {"service":"control","op":"delete_deploy_health","health_id":args.health_id}
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13608,6 +13628,48 @@ def build_parser() -> argparse.ArgumentParser:
     dlh.add_argument("--policy-id", required=True)
     dlh.set_defaults(command="delete-healing")
 
+
+    # -- cost tracking --
+    p1 = sub.add_parser("create-cost-tracker", help="Create cost tracker")
+    p1.add_argument("--container-id", required=True); p1.add_argument("--cost-per-hour", type=float, default=0.05); p1.add_argument("--currency", default="USD"); p1.set_defaults(command="create-cost-tracker")
+    p2 = sub.add_parser("record-cost-sample", help="Record cost sample")
+    p2.add_argument("--tracker-id", required=True); p2.add_argument("--cost", type=float, required=True); p2.set_defaults(command="record-cost-sample")
+    p3 = sub.add_parser("detect-cost-anomalies", help="Detect cost anomalies")
+    p3.add_argument("--tracker-id", required=True); p3.set_defaults(command="detect-cost-anomalies")
+    p4 = sub.add_parser("cost-trend", help="Get cost trend")
+    p4.add_argument("--tracker-id", required=True); p4.add_argument("--window", type=int, default=7); p4.set_defaults(command="cost-trend")
+    p5 = sub.add_parser("cost-summary", help="Get cost summary")
+    p5.add_argument("--tracker-id", required=True); p5.set_defaults(command="cost-summary")
+    p6 = sub.add_parser("delete-cost-tracker", help="Delete cost tracker")
+    p6.add_argument("--tracker-id", required=True); p6.set_defaults(command="delete-cost-tracker")
+    # -- leak detection --
+    p7 = sub.add_parser("create-leak-detector", help="Create leak detector")
+    p7.add_argument("--container-id", required=True); p7.add_argument("--threshold-pct", type=float, default=5.0); p7.set_defaults(command="create-leak-detector")
+    p8 = sub.add_parser("record-resource-sample", help="Record resource sample")
+    p8.add_argument("--detector-id", required=True); p8.add_argument("--memory-bytes", type=int, required=True); p8.add_argument("--open-fds", type=int, default=0); p8.add_argument("--thread-count", type=int, default=0); p8.set_defaults(command="record-resource-sample")
+    p9 = sub.add_parser("detect-memory-leak", help="Detect memory leak")
+    p9.add_argument("--detector-id", required=True); p9.add_argument("--window", type=int, default=20); p9.set_defaults(command="detect-memory-leak")
+    p10 = sub.add_parser("detect-fd-leak", help="Detect FD leak")
+    p10.add_argument("--detector-id", required=True); p10.add_argument("--window", type=int, default=20); p10.set_defaults(command="detect-fd-leak")
+    p11 = sub.add_parser("leak-status", help="Get leak status")
+    p11.add_argument("--detector-id", required=True); p11.set_defaults(command="leak-status")
+    p12 = sub.add_parser("confirm-leak", help="Confirm leak")
+    p12.add_argument("--detector-id", required=True); p12.add_argument("--leak-index", type=int, required=True); p12.set_defaults(command="confirm-leak")
+    p13 = sub.add_parser("delete-leak-detector", help="Delete leak detector")
+    p13.add_argument("--detector-id", required=True); p13.set_defaults(command="delete-leak-detector")
+    # -- deploy health --
+    p14 = sub.add_parser("create-deploy-health", help="Create deploy health")
+    p14.add_argument("--container-id", required=True); p14.add_argument("--validation-window-s", type=float, default=300.0); p14.set_defaults(command="create-deploy-health")
+    p15 = sub.add_parser("record-health-check", help="Record health check")
+    p15.add_argument("--health-id", required=True); p15.add_argument("--check-type", required=True); p15.add_argument("--passed", action="store_true"); p15.add_argument("--latency-ms", type=float, default=0.0); p15.set_defaults(command="record-health-check")
+    p16 = sub.add_parser("deploy-health-score", help="Get deploy health score")
+    p16.add_argument("--health-id", required=True); p16.set_defaults(command="deploy-health-score")
+    p17 = sub.add_parser("evaluate-deploy-health", help="Evaluate deploy health")
+    p17.add_argument("--health-id", required=True); p17.set_defaults(command="evaluate-deploy-health")
+    p18 = sub.add_parser("mark-deploy-resolved", help="Mark deploy resolved")
+    p18.add_argument("--health-id", required=True); p18.set_defaults(command="mark-deploy-resolved")
+    p19 = sub.add_parser("delete-deploy-health", help="Delete deploy health")
+    p19.add_argument("--health-id", required=True); p19.set_defaults(command="delete-deploy-health")
     return parser
 
 

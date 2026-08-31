@@ -28495,6 +28495,462 @@ class ContainerManager:
         return {"ok": True, "policy_id": policy_id, "total_remediations": policy["total_remediations"]}
 
 
+
+    # ------------------------------------------------------------------
+    # Cost anomaly detection with trend analysis
+    # ------------------------------------------------------------------
+
+    def create_cost_tracker(
+        self,
+        container: Container,
+        cost_per_hour: float = 0.05,
+        currency: str = "USD",
+    ) -> Dict[str, Any]:
+        """Create a cost tracker for a container."""
+        if not hasattr(self, '_cost_trackers'):
+            self._cost_trackers = {}
+        tracker_id = f"cost-{container.id[:12]}"
+        self._cost_trackers[tracker_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "cost_per_hour": cost_per_hour,
+            "currency": currency,
+            "created_at": time.time(),
+            "daily_costs": {},
+            "anomaly_threshold": 2.0,
+            "alerts": [],
+        }
+        return {
+            "tracker_id": tracker_id,
+            "container_id": container.id,
+            "cost_per_hour": cost_per_hour,
+            "currency": currency,
+        }
+
+    def record_cost_sample(
+        self,
+        tracker_id: str,
+        cost: float,
+        timestamp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Record a cost sample."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_id)
+        if not tracker:
+            return {"error": "Tracker not found"}
+        ts = timestamp or time.time()
+        day = time.strftime("%Y-%m-%d", time.localtime(ts))
+        if day not in tracker["daily_costs"]:
+            tracker["daily_costs"][day] = {"total": 0.0, "samples": []}
+        tracker["daily_costs"][day]["total"] += cost
+        tracker["daily_costs"][day]["samples"].append({"ts": ts, "cost": cost})
+        return {"ok": True, "tracker_id": tracker_id, "day": day, "daily_total": tracker["daily_costs"][day]["total"]}
+
+    def detect_cost_anomalies(
+        self,
+        tracker_id: str,
+    ) -> Dict[str, Any]:
+        """Detect cost anomalies using moving average and Z-score."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_id)
+        if not tracker:
+            return {"error": "Tracker not found"}
+        days = sorted(tracker["daily_costs"].keys())
+        if len(days) < 3:
+            return {"tracker_id": tracker_id, "anomalies": [], "reason": "insufficient data"}
+        totals = [tracker["daily_costs"][d]["total"] for d in days]
+        mean = sum(totals) / len(totals)
+        variance = sum((t - mean) ** 2 for t in totals) / len(totals)
+        std = variance ** 0.5
+        if std < 0.001:
+            return {"tracker_id": tracker_id, "anomalies": [], "reason": "no variance"}
+        threshold = tracker["anomaly_threshold"]
+        anomalies = []
+        for i, day in enumerate(days):
+            z = (totals[i] - mean) / std
+            if abs(z) > threshold:
+                anomalies.append({
+                    "day": day,
+                    "cost": totals[i],
+                    "z_score": round(z, 2),
+                    "mean": round(mean, 2),
+                    "type": "spike" if z > 0 else "drop",
+                })
+                tracker["alerts"].append({"ts": time.time(), "day": day, "z_score": round(z, 2)})
+        return {
+            "tracker_id": tracker_id,
+            "anomalies": anomalies,
+            "total_days": len(days),
+            "mean_daily_cost": round(mean, 4),
+            "std_daily_cost": round(std, 4),
+        }
+
+    def get_cost_trend(
+        self,
+        tracker_id: str,
+        window: int = 7,
+    ) -> Dict[str, Any]:
+        """Get cost trend with moving average."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_id)
+        if not tracker:
+            return {"error": "Tracker not found"}
+        days = sorted(tracker["daily_costs"].keys())
+        totals = [tracker["daily_costs"][d]["total"] for d in days]
+        ma = []
+        for i in range(len(totals)):
+            start = max(0, i - window + 1)
+            ma.append(round(sum(totals[start:i+1]) / (i - start + 1), 4))
+        # Trend direction
+        if len(ma) >= 2:
+            trend = "up" if ma[-1] > ma[-2] else "down" if ma[-1] < ma[-2] else "flat"
+        else:
+            trend = "unknown"
+        return {
+            "tracker_id": tracker_id,
+            "daily_costs": totals[-window:],
+            "moving_average": ma[-window:],
+            "trend": trend,
+            "total_cost": round(sum(totals), 4),
+        }
+
+    def get_cost_summary(self, tracker_id: str) -> Dict[str, Any]:
+        """Get cost tracker summary."""
+        tracker = getattr(self, '_cost_trackers', {}).get(tracker_id)
+        if not tracker:
+            return {"error": "Tracker not found"}
+        days = sorted(tracker["daily_costs"].keys())
+        totals = [tracker["daily_costs"][d]["total"] for d in days]
+        return {
+            "tracker_id": tracker_id,
+            "container_name": tracker["container_name"],
+            "cost_per_hour": tracker["cost_per_hour"],
+            "currency": tracker["currency"],
+            "total_days": len(days),
+            "total_cost": round(sum(totals), 4) if totals else 0,
+            "avg_daily_cost": round(sum(totals) / len(totals), 4) if totals else 0,
+            "alert_count": len(tracker["alerts"]),
+        }
+
+    def delete_cost_tracker(self, tracker_id: str) -> Dict[str, Any]:
+        """Delete a cost tracker."""
+        tracker = getattr(self, '_cost_trackers', {}).pop(tracker_id, None)
+        if not tracker:
+            return {"error": "Tracker not found"}
+        return {"ok": True, "tracker_id": tracker_id}
+
+    # ------------------------------------------------------------------
+    # Resource leak detection with automatic identification
+    # ------------------------------------------------------------------
+
+    def create_leak_detector(
+        self,
+        container: Container,
+        check_interval_s: float = 60.0,
+        threshold_pct: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Create a resource leak detector for a container."""
+        if not hasattr(self, '_leak_detectors'):
+            self._leak_detectors = {}
+        detector_id = f"leak-{container.id[:12]}"
+        self._leak_detectors[detector_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "check_interval_s": check_interval_s,
+            "threshold_pct": threshold_pct,
+            "created_at": time.time(),
+            "samples": [],
+            "suspected_leaks": [],
+            "confirmed_leaks": [],
+        }
+        return {
+            "detector_id": detector_id,
+            "container_id": container.id,
+            "check_interval_s": check_interval_s,
+            "threshold_pct": threshold_pct,
+        }
+
+    def record_resource_sample(
+        self,
+        detector_id: str,
+        memory_bytes: int,
+        open_fds: int = 0,
+        thread_count: int = 0,
+        timestamp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Record a resource usage sample."""
+        detector = getattr(self, '_leak_detectors', {}).get(detector_id)
+        if not detector:
+            return {"error": "Detector not found"}
+        sample = {
+            "ts": timestamp or time.time(),
+            "memory_bytes": memory_bytes,
+            "open_fds": open_fds,
+            "thread_count": thread_count,
+        }
+        detector["samples"].append(sample)
+        detector["samples"] = detector["samples"][-2000:]
+        return {"ok": True, "detector_id": detector_id, "sample_count": len(detector["samples"])}
+
+    def detect_memory_leak(
+        self,
+        detector_id: str,
+        window: int = 20,
+    ) -> Dict[str, Any]:
+        """Detect memory leaks using linear regression."""
+        detector = getattr(self, '_leak_detectors', {}).get(detector_id)
+        if not detector:
+            return {"error": "Detector not found"}
+        samples = detector["samples"][-window:]
+        if len(samples) < 5:
+            return {"detector_id": detector_id, "is_leak": False, "reason": "insufficient data"}
+        memory = [s["memory_bytes"] for s in samples]
+        n = len(memory)
+        x_mean = (n - 1) / 2
+        y_mean = sum(memory) / n
+        numerator = sum((i - x_mean) * (memory[i] - y_mean) for i in range(n))
+        denominator = sum((i - x_mean) ** 2 for i in range(n))
+        slope = numerator / denominator if denominator > 0 else 0
+        # Check if growth exceeds threshold
+        if memory[0] > 0:
+            growth_pct = (slope * n / memory[0]) * 100
+        else:
+            growth_pct = 0
+        is_leak = growth_pct > detector["threshold_pct"]
+        result = {
+            "detector_id": detector_id,
+            "is_leak": is_leak,
+            "slope_bytes_per_sample": round(slope, 2),
+            "growth_pct": round(growth_pct, 2),
+            "threshold_pct": detector["threshold_pct"],
+            "first_memory": memory[0],
+            "last_memory": memory[-1],
+            "samples_used": n,
+        }
+        if is_leak:
+            leak = {
+                "ts": time.time(),
+                "type": "memory",
+                "growth_pct": round(growth_pct, 2),
+                "slope": round(slope, 2),
+            }
+            detector["suspected_leaks"].append(leak)
+        return result
+
+    def detect_fd_leak(
+        self,
+        detector_id: str,
+        window: int = 20,
+    ) -> Dict[str, Any]:
+        """Detect file descriptor leaks."""
+        detector = getattr(self, '_leak_detectors', {}).get(detector_id)
+        if not detector:
+            return {"error": "Detector not found"}
+        samples = detector["samples"][-window:]
+        if len(samples) < 5:
+            return {"detector_id": detector_id, "is_leak": False, "reason": "insufficient data"}
+        fds = [s.get("open_fds", 0) for s in samples]
+        n = len(fds)
+        if n < 2 or fds[0] == 0:
+            return {"detector_id": detector_id, "is_leak": False, "reason": "no baseline"}
+        growth = fds[-1] - fds[0]
+        growth_pct = (growth / fds[0]) * 100 if fds[0] > 0 else 0
+        is_leak = growth_pct > detector["threshold_pct"] and growth > 0
+        if is_leak:
+            detector["suspected_leaks"].append({
+                "ts": time.time(), "type": "fd", "growth_pct": round(growth_pct, 2),
+            })
+        return {
+            "detector_id": detector_id, "is_leak": is_leak,
+            "growth_count": growth, "growth_pct": round(growth_pct, 2),
+            "first_fds": fds[0], "last_fds": fds[-1],
+        }
+
+    def get_leak_status(self, detector_id: str) -> Dict[str, Any]:
+        """Get leak detector status."""
+        detector = getattr(self, '_leak_detectors', {}).get(detector_id)
+        if not detector:
+            return {"error": "Detector not found"}
+        return {
+            "detector_id": detector_id,
+            "container_name": detector["container_name"],
+            "sample_count": len(detector["samples"]),
+            "suspected_leaks": len(detector["suspected_leaks"]),
+            "confirmed_leaks": len(detector["confirmed_leaks"]),
+            "threshold_pct": detector["threshold_pct"],
+        }
+
+    def confirm_leak(self, detector_id: str, leak_index: int) -> Dict[str, Any]:
+        """Confirm a suspected leak."""
+        detector = getattr(self, '_leak_detectors', {}).get(detector_id)
+        if not detector:
+            return {"error": "Detector not found"}
+        if leak_index < 0 or leak_index >= len(detector["suspected_leaks"]):
+            return {"error": "Invalid index"}
+        leak = detector["suspected_leaks"].pop(leak_index)
+        leak["confirmed_at"] = time.time()
+        detector["confirmed_leaks"].append(leak)
+        return {"ok": True, "detector_id": detector_id, "leak": leak}
+
+    def delete_leak_detector(self, detector_id: str) -> Dict[str, Any]:
+        """Delete a leak detector."""
+        detector = getattr(self, '_leak_detectors', {}).pop(detector_id, None)
+        if not detector:
+            return {"error": "Detector not found"}
+        return {"ok": True, "detector_id": detector_id}
+
+    # ------------------------------------------------------------------
+    # Deployment health scoring with post-deploy validation
+    # ------------------------------------------------------------------
+
+    def create_deploy_health(
+        self,
+        container: Container,
+        success_criteria: Optional[Dict[str, Any]] = None,
+        validation_window_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Create deployment health scoring for a container."""
+        if not hasattr(self, '_deploy_health'):
+            self._deploy_health = {}
+        health_id = f"dh-{container.id[:12]}"
+        self._deploy_health[health_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "success_criteria": success_criteria or {
+                "min_uptime_s": 60,
+                "max_error_rate": 0.05,
+                "min_healthy_checks": 3,
+            },
+            "validation_window_s": validation_window_s,
+            "created_at": time.time(),
+            "status": "pending",
+            "checks": [],
+            "score": 0,
+            "rollback_recommended": False,
+        }
+        return {
+            "health_id": health_id,
+            "container_id": container.id,
+            "validation_window_s": validation_window_s,
+            "success_criteria": success_criteria or {
+                "min_uptime_s": 60, "max_error_rate": 0.05, "min_healthy_checks": 3,
+            },
+        }
+
+    def record_health_check(
+        self,
+        health_id: str,
+        check_type: str,
+        passed: bool,
+        latency_ms: float = 0.0,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a health check result."""
+        health = getattr(self, '_deploy_health', {}).get(health_id)
+        if not health:
+            return {"error": "Health check not found"}
+        check = {
+            "ts": time.time(),
+            "type": check_type,
+            "passed": passed,
+            "latency_ms": latency_ms,
+            "details": details or {},
+        }
+        health["checks"].append(check)
+        health["checks"] = health["checks"][-500:]
+        # Update score
+        total = len(health["checks"])
+        passed_count = sum(1 for c in health["checks"] if c["passed"])
+        health["score"] = round((passed_count / total) * 100, 1) if total > 0 else 0
+        # Check rollback criteria
+        criteria = health["success_criteria"]
+        healthy_count = sum(1 for c in health["checks"][-criteria.get("min_healthy_checks", 3):] if c["passed"])
+        if healthy_count < criteria.get("min_healthy_checks", 3) and total >= criteria.get("min_healthy_checks", 3):
+            health["rollback_recommended"] = True
+            health["status"] = "unhealthy"
+        elif health["score"] >= 95:
+            health["status"] = "healthy"
+        elif health["score"] >= 70:
+            health["status"] = "degraded"
+        else:
+            health["status"] = "unhealthy"
+        return {
+            "ok": True, "health_id": health_id, "check_type": check_type,
+            "passed": passed, "score": health["score"], "status": health["status"],
+        }
+
+    def get_deploy_health_score(self, health_id: str) -> Dict[str, Any]:
+        """Get deployment health score and status."""
+        health = getattr(self, '_deploy_health', {}).get(health_id)
+        if not health:
+            return {"error": "Health check not found"}
+        total = len(health["checks"])
+        passed_count = sum(1 for c in health["checks"] if c["passed"])
+        failed_count = total - passed_count
+        avg_latency = 0
+        latencies = [c["latency_ms"] for c in health["checks"] if c["latency_ms"] > 0]
+        if latencies:
+            avg_latency = round(sum(latencies) / len(latencies), 2)
+        return {
+            "health_id": health_id,
+            "container_name": health["container_name"],
+            "status": health["status"],
+            "score": health["score"],
+            "total_checks": total,
+            "passed": passed_count,
+            "failed": failed_count,
+            "avg_latency_ms": avg_latency,
+            "rollback_recommended": health["rollback_recommended"],
+            "validation_window_s": health["validation_window_s"],
+        }
+
+    def evaluate_deploy_health(self, health_id: str) -> Dict[str, Any]:
+        """Evaluate overall deployment health."""
+        health = getattr(self, '_deploy_health', {}).get(health_id)
+        if not health:
+            return {"error": "Health check not found"}
+        now = time.time()
+        window_start = now - health["validation_window_s"]
+        recent = [c for c in health["checks"] if c["ts"] >= window_start]
+        if not recent:
+            return {"health_id": health_id, "verdict": "pending", "reason": "no data in window"}
+        passed = sum(1 for c in recent if c["passed"])
+        rate = passed / len(recent)
+        criteria = health["success_criteria"]
+        error_rate = 1.0 - rate
+        verdict = "success"
+        reasons = []
+        if error_rate > criteria.get("max_error_rate", 0.05):
+            verdict = "failure"
+            reasons.append(f"error_rate={error_rate:.2%} > {criteria.get('max_error_rate', 0.05):.2%}")
+        if passed < criteria.get("min_healthy_checks", 3):
+            verdict = "failure"
+            reasons.append(f"healthy_checks={passed} < {criteria.get('min_healthy_checks', 3)}")
+        return {
+            "health_id": health_id,
+            "verdict": verdict,
+            "score": health["score"],
+            "checks_in_window": len(recent),
+            "pass_rate": round(rate, 4),
+            "error_rate": round(error_rate, 4),
+            "rollback_recommended": health["rollback_recommended"],
+            "reasons": reasons,
+        }
+
+    def mark_deploy_resolved(self, health_id: str) -> Dict[str, Any]:
+        """Mark deployment as resolved (override rollback recommendation)."""
+        health = getattr(self, '_deploy_health', {}).get(health_id)
+        if not health:
+            return {"error": "Health check not found"}
+        health["rollback_recommended"] = False
+        health["status"] = "resolved"
+        return {"ok": True, "health_id": health_id, "status": "resolved"}
+
+    def delete_deploy_health(self, health_id: str) -> Dict[str, Any]:
+        """Delete a deploy health tracker."""
+        health = getattr(self, '_deploy_health', {}).pop(health_id, None)
+        if not health:
+            return {"error": "Health check not found"}
+        return {"ok": True, "health_id": health_id, "final_score": health["score"]}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch
