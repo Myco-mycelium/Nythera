@@ -33708,9 +33708,20 @@ class TestConfigHotReload(unittest.TestCase):
 class TestBlueprints(unittest.TestCase):
     """Tests for container blueprints / templates."""
 
-    def _mgr(self):
+    def setUp(self):
         from backend.container import ContainerManager
-        return ContainerManager()
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
 
     def test_create_blueprint(self):
         m=self._mgr()
@@ -33779,13 +33790,26 @@ class TestBlueprints(unittest.TestCase):
 class TestContainerMigration(unittest.TestCase):
     """Tests for container migration between nodes."""
 
-    def _mgr(self):
+    def setUp(self):
         from backend.container import ContainerManager
-        return ContainerManager()
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
 
     def _mk(self, mgr, name):
         from backend.container import ContainerConfig
-        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
 
     def test_create_plan(self):
         m=self._mgr(); c=self._mk(m,"mg1")
@@ -33848,6 +33872,8 @@ class TestNotificationChannels(unittest.TestCase):
     def _mgr(self):
         from backend.container import ContainerManager
         return ContainerManager()
+
+    # No containers created — pure data management tests
 
     def test_create_webhook(self):
         m=self._mgr()
@@ -33936,13 +33962,26 @@ class TestNotificationChannels(unittest.TestCase):
 class TestBatchOperations(unittest.TestCase):
     """Tests for batch operations with parallel execution and progress tracking."""
 
-    def _mgr(self):
+    def setUp(self):
         from backend.container import ContainerManager
-        return ContainerManager()
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
 
     def _mk(self, mgr, name):
         from backend.container import ContainerConfig
-        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
 
     def test_create_batch(self):
         m=self._mgr()
@@ -34017,13 +34056,26 @@ class TestBatchOperations(unittest.TestCase):
 class TestDeploymentEnvironments(unittest.TestCase):
     """Tests for deployment environments with promotion workflows."""
 
-    def _mgr(self):
+    def setUp(self):
         from backend.container import ContainerManager
-        return ContainerManager()
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
 
     def _mk(self, mgr, name):
         from backend.container import ContainerConfig
-        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
 
     def test_create_env(self):
         m=self._mgr()
@@ -34126,13 +34178,26 @@ class TestDeploymentEnvironments(unittest.TestCase):
 class TestContainerVersioning(unittest.TestCase):
     """Tests for container versioning with rollback and diff."""
 
-    def _mgr(self):
+    def setUp(self):
         from backend.container import ContainerManager
-        return ContainerManager()
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
 
     def _mk(self, mgr, name):
         from backend.container import ContainerConfig
-        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
 
     def test_create_version(self):
         m=self._mgr(); c=self._mk(m, "v1")
