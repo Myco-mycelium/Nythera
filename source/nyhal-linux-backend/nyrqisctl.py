@@ -4736,6 +4736,129 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "chain_id": args.chain_id,
             "format": getattr(args, 'format', 'json'),
         }
+    if command == "create-predictive-scaler":
+        return {
+            "service": "control",
+            "op": "create_predictive_scaler",
+            "container_id": args.container_id,
+            "metric": getattr(args, 'metric', 'cpu_percent'),
+            "min_replicas": getattr(args, 'min_replicas', 1),
+            "max_replicas": getattr(args, 'max_replicas', 10),
+            "forecast_window_s": getattr(args, 'forecast_window_s', 300.0),
+            "target_utilization": getattr(args, 'target_utilization', 0.7),
+        }
+    if command == "record-scaler-metric":
+        return {
+            "service": "control",
+            "op": "record_scaler_metric",
+            "scaler_id": args.scaler_id,
+            "value": args.value,
+        }
+    if command == "forecast-and-scale":
+        return {
+            "service": "control",
+            "op": "forecast_and_scale",
+            "scaler_id": args.scaler_id,
+        }
+    if command == "scaler-status":
+        return {
+            "service": "control",
+            "op": "get_scaler_status",
+            "scaler_id": args.scaler_id,
+        }
+    if command == "scaler-history":
+        return {
+            "service": "control",
+            "op": "get_scaler_history",
+            "scaler_id": args.scaler_id,
+            "tail": getattr(args, 'tail', 20),
+        }
+    if command == "stop-predictive-scaler":
+        return {
+            "service": "control",
+            "op": "stop_predictive_scaler",
+            "scaler_id": args.scaler_id,
+        }
+    if command == "create-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "create_chaos_experiment",
+            "container_id": args.container_id,
+            "fault_type": getattr(args, 'fault_type', 'latency'),
+            "intensity": getattr(args, 'intensity', 0.5),
+            "duration_s": getattr(args, 'duration_s', 60.0),
+            "schedule": getattr(args, 'schedule', None),
+        }
+    if command == "start-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "start_chaos_experiment",
+            "experiment_id": args.experiment_id,
+        }
+    if command == "inject-fault":
+        return {
+            "service": "control",
+            "op": "inject_fault",
+            "experiment_id": args.experiment_id,
+            "fault_details": getattr(args, 'fault_details', None),
+        }
+    if command == "stop-chaos-experiment":
+        return {
+            "service": "control",
+            "op": "stop_chaos_experiment",
+            "experiment_id": args.experiment_id,
+        }
+    if command == "chaos-experiment-status":
+        return {
+            "service": "control",
+            "op": "get_chaos_experiment",
+            "experiment_id": args.experiment_id,
+        }
+    if command == "list-chaos-experiments":
+        return {
+            "service": "control",
+            "op": "list_chaos_experiments",
+        }
+    if command == "create-circuit-breaker":
+        return {
+            "service": "control",
+            "op": "create_circuit_breaker",
+            "container_id": args.container_id,
+            "dependency": args.dependency,
+            "failure_threshold": getattr(args, 'failure_threshold', 5),
+            "recovery_timeout_s": getattr(args, 'recovery_timeout_s', 30.0),
+            "half_open_max": getattr(args, 'half_open_max', 3),
+        }
+    if command == "cb-failure":
+        return {
+            "service": "control",
+            "op": "record_circuit_breaker_failure",
+            "circuit_breaker_id": args.circuit_breaker_id,
+        }
+    if command == "cb-success":
+        return {
+            "service": "control",
+            "op": "record_circuit_breaker_success",
+            "circuit_breaker_id": args.circuit_breaker_id,
+        }
+    if command == "cb-check":
+        return {
+            "service": "control",
+            "op": "check_circuit_breaker",
+            "circuit_breaker_id": args.circuit_breaker_id,
+        }
+    if command == "cb-history":
+        return {
+            "service": "control",
+            "op": "get_circuit_breaker_history",
+            "circuit_breaker_id": args.circuit_breaker_id,
+        }
+    if command == "cb-delete":
+        return {
+            "service": "control",
+            "op": "delete_circuit_breaker",
+            "circuit_breaker_id": args.circuit_breaker_id,
+        }
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13247,6 +13370,95 @@ def build_parser() -> argparse.ArgumentParser:
     eac.add_argument("--chain-id", required=True)
     eac.add_argument("--format", default="json", choices=["json", "csv"])
     eac.set_defaults(command="export-audit-chain")
+
+
+    # -- predictive scaling --
+    cps = sub.add_parser("create-predictive-scaler", help="Create predictive auto-scaler")
+    cps.add_argument("--container-id", required=True)
+    cps.add_argument("--metric", default="cpu_percent")
+    cps.add_argument("--min-replicas", type=int, default=1)
+    cps.add_argument("--max-replicas", type=int, default=10)
+    cps.add_argument("--forecast-window-s", type=float, default=300.0)
+    cps.add_argument("--target-utilization", type=float, default=0.7)
+    cps.set_defaults(command="create-predictive-scaler")
+
+    rsm = sub.add_parser("record-scaler-metric", help="Record scaler metric")
+    rsm.add_argument("--scaler-id", required=True)
+    rsm.add_argument("--value", type=float, required=True)
+    rsm.set_defaults(command="record-scaler-metric")
+
+    fas = sub.add_parser("forecast-and-scale", help="Forecast and scale")
+    fas.add_argument("--scaler-id", required=True)
+    fas.set_defaults(command="forecast-and-scale")
+
+    ss = sub.add_parser("scaler-status", help="Get scaler status")
+    ss.add_argument("--scaler-id", required=True)
+    ss.set_defaults(command="scaler-status")
+
+    sh = sub.add_parser("scaler-history", help="Get scaler history")
+    sh.add_argument("--scaler-id", required=True)
+    sh.add_argument("--tail", type=int, default=20)
+    sh.set_defaults(command="scaler-history")
+
+    sps = sub.add_parser("stop-predictive-scaler", help="Stop predictive scaler")
+    sps.add_argument("--scaler-id", required=True)
+    sps.set_defaults(command="stop-predictive-scaler")
+
+    # -- chaos experiments --
+    cce = sub.add_parser("create-chaos-experiment", help="Create chaos experiment")
+    cce.add_argument("--container-id", required=True)
+    cce.add_argument("--fault-type", default="latency", choices=["latency", "cpu", "memory", "disk", "network", "kill"])
+    cce.add_argument("--intensity", type=float, default=0.5)
+    cce.add_argument("--duration-s", type=float, default=60.0)
+    cce.set_defaults(command="create-chaos-experiment")
+
+    sce = sub.add_parser("start-chaos-experiment", help="Start chaos experiment")
+    sce.add_argument("--experiment-id", required=True)
+    sce.set_defaults(command="start-chaos-experiment")
+
+    inf = sub.add_parser("inject-fault", help="Inject fault")
+    inf.add_argument("--experiment-id", required=True)
+    inf.set_defaults(command="inject-fault")
+
+    ste = sub.add_parser("stop-chaos-experiment", help="Stop chaos experiment")
+    ste.add_argument("--experiment-id", required=True)
+    ste.set_defaults(command="stop-chaos-experiment")
+
+    ces = sub.add_parser("chaos-experiment-status", help="Get chaos experiment status")
+    ces.add_argument("--experiment-id", required=True)
+    ces.set_defaults(command="chaos-experiment-status")
+
+    lce = sub.add_parser("list-chaos-experiments", help="List chaos experiments")
+    lce.set_defaults(command="list-chaos-experiments")
+
+    # -- circuit breakers --
+    ccb = sub.add_parser("create-circuit-breaker", help="Create circuit breaker")
+    ccb.add_argument("--container-id", required=True)
+    ccb.add_argument("--dependency", required=True)
+    ccb.add_argument("--failure-threshold", type=int, default=5)
+    ccb.add_argument("--recovery-timeout-s", type=float, default=30.0)
+    ccb.add_argument("--half-open-max", type=int, default=3)
+    ccb.set_defaults(command="create-circuit-breaker")
+
+    cbf = sub.add_parser("cb-failure", help="Record CB failure")
+    cbf.add_argument("--circuit-breaker-id", required=True)
+    cbf.set_defaults(command="cb-failure")
+
+    cbs = sub.add_parser("cb-success", help="Record CB success")
+    cbs.add_argument("--circuit-breaker-id", required=True)
+    cbs.set_defaults(command="cb-success")
+
+    cbck = sub.add_parser("cb-check", help="Check circuit breaker")
+    cbck.add_argument("--circuit-breaker-id", required=True)
+    cbck.set_defaults(command="cb-check")
+
+    cbh = sub.add_parser("cb-history", help="Get CB history")
+    cbh.add_argument("--circuit-breaker-id", required=True)
+    cbh.set_defaults(command="cb-history")
+
+    cbd = sub.add_parser("cb-delete", help="Delete circuit breaker")
+    cbd.add_argument("--circuit-breaker-id", required=True)
+    cbd.set_defaults(command="cb-delete")
 
     return parser
 

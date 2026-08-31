@@ -2178,6 +2178,60 @@ class ControlService:
             elif op == "export_audit_chain":
                 self._export_audit_chain(server, sender_path,
                                     msg.message_id, request)
+            elif op == "create_predictive_scaler":
+                self._create_predictive_scaler(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "record_scaler_metric":
+                self._record_scaler_metric(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "forecast_and_scale":
+                self._forecast_and_scale(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_scaler_status":
+                self._get_scaler_status(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_scaler_history":
+                self._get_scaler_history(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "stop_predictive_scaler":
+                self._stop_predictive_scaler(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "create_chaos_experiment":
+                self._create_chaos_experiment(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "start_chaos_experiment":
+                self._start_chaos_experiment(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "inject_fault":
+                self._inject_fault(server, sender_path,
+                              msg.message_id, request)
+            elif op == "stop_chaos_experiment":
+                self._stop_chaos_experiment(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_chaos_experiment":
+                self._get_chaos_experiment(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "list_chaos_experiments":
+                self._list_chaos_experiments(server, sender_path,
+                                        msg.message_id)
+            elif op == "create_circuit_breaker":
+                self._create_circuit_breaker(server, sender_path,
+                                        msg.message_id, request)
+            elif op == "record_circuit_breaker_failure":
+                self._record_cb_failure(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "record_circuit_breaker_success":
+                self._record_cb_success(server, sender_path,
+                                   msg.message_id, request)
+            elif op == "check_circuit_breaker":
+                self._check_circuit_breaker(server, sender_path,
+                                       msg.message_id, request)
+            elif op == "get_circuit_breaker_history":
+                self._get_cb_history(server, sender_path,
+                                msg.message_id, request)
+            elif op == "delete_circuit_breaker":
+                self._delete_circuit_breaker(server, sender_path,
+                                        msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -10402,6 +10456,146 @@ class ControlService:
         result = self.container_manager.export_audit_chain(
             request.get("chain_id", ""),
             format=request.get("format", "json"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+
+    # -- predictive scaler handlers ---
+
+    def _create_predictive_scaler(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_predictive_scaler(
+            container, metric=request.get("metric", "cpu_percent"),
+            min_replicas=request.get("min_replicas", 1),
+            max_replicas=request.get("max_replicas", 10),
+            forecast_window_s=request.get("forecast_window_s", 300.0),
+            target_utilization=request.get("target_utilization", 0.7),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_scaler_metric(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_scaler_metric(
+            request.get("scaler_id", ""), request.get("value", 0.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _forecast_and_scale(self, server, sender_path, call_id, request):
+        result = self.container_manager.forecast_and_scale(
+            request.get("scaler_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_scaler_status(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_scaler_status(
+            request.get("scaler_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_scaler_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_scaler_history(
+            request.get("scaler_id", ""),
+            tail=request.get("tail", 20),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_predictive_scaler(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_predictive_scaler(
+            request.get("scaler_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- chaos experiment handlers ---
+
+    def _create_chaos_experiment(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_chaos_experiment(
+            container, fault_type=request.get("fault_type", "latency"),
+            intensity=request.get("intensity", 0.5),
+            duration_s=request.get("duration_s", 60.0),
+            schedule=request.get("schedule"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _start_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.start_chaos_experiment(
+            request.get("experiment_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _inject_fault(self, server, sender_path, call_id, request):
+        result = self.container_manager.inject_fault(
+            request.get("experiment_id", ""),
+            fault_details=request.get("fault_details"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_chaos_experiment(
+            request.get("experiment_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_chaos_experiment(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_chaos_experiment(
+            request.get("experiment_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _list_chaos_experiments(self, server, sender_path, call_id):
+        result = self.container_manager.list_chaos_experiments()
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- circuit breaker handlers ---
+
+    def _create_circuit_breaker(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_circuit_breaker(
+            container, dependency=request.get("dependency", ""),
+            failure_threshold=request.get("failure_threshold", 5),
+            recovery_timeout_s=request.get("recovery_timeout_s", 30.0),
+            half_open_max=request.get("half_open_max", 3),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_cb_failure(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_circuit_breaker_failure(
+            request.get("circuit_breaker_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_cb_success(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_circuit_breaker_success(
+            request.get("circuit_breaker_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _check_circuit_breaker(self, server, sender_path, call_id, request):
+        result = self.container_manager.check_circuit_breaker(
+            request.get("circuit_breaker_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_cb_history(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_circuit_breaker_history(
+            request.get("circuit_breaker_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _delete_circuit_breaker(self, server, sender_path, call_id, request):
+        result = self.container_manager.delete_circuit_breaker(
+            request.get("circuit_breaker_id", ""),
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 

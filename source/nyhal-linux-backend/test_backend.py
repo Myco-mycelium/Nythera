@@ -30345,6 +30345,180 @@ class TestPredictiveScaling(unittest.TestCase):
         self.assertIn('action', replies[0])
 
 
+
+class TestChaosInjection(unittest.TestCase):
+    """Tests for chaos injection with scheduled fault patterns."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_experiment(self):
+        """create_chaos_experiment creates an experiment."""
+        mgr = self._manager()
+        c = self._make(mgr, "cx1")
+        r = mgr.create_chaos_experiment(c, fault_type="latency", intensity=0.5)
+        self.assertIn("experiment_id", r)
+        self.assertEqual(r["fault_type"], "latency")
+
+    def test_start_experiment(self):
+        """start_chaos_experiment starts the experiment."""
+        mgr = self._manager()
+        c = self._make(mgr, "cx2")
+        r = mgr.create_chaos_experiment(c)
+        eid = r["experiment_id"]
+        r2 = mgr.start_chaos_experiment(eid)
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["status"], "running")
+
+    def test_inject_fault(self):
+        """inject_fault records injection events."""
+        mgr = self._manager()
+        c = self._make(mgr, "cx3")
+        r = mgr.create_chaos_experiment(c)
+        eid = r["experiment_id"]
+        mgr.start_chaos_experiment(eid)
+        mgr.inject_fault(eid)
+        mgr.inject_fault(eid)
+        r2 = mgr.get_chaos_experiment(eid)
+        self.assertEqual(r2["total_injections"], 2)
+
+    def test_stop_experiment(self):
+        """stop_chaos_experiment completes the experiment."""
+        mgr = self._manager()
+        c = self._make(mgr, "cx4")
+        r = mgr.create_chaos_experiment(c)
+        eid = r["experiment_id"]
+        mgr.start_chaos_experiment(eid)
+        mgr.inject_fault(eid)
+        r2 = mgr.stop_chaos_experiment(eid)
+        self.assertTrue(r2["ok"])
+        self.assertGreater(r2["total_injections"], 0)
+
+    def test_list_experiments(self):
+        """list_chaos_experiments returns all experiments."""
+        mgr = self._manager()
+        c1 = self._make(mgr, "cx5a")
+        c2 = self._make(mgr, "cx5b")
+        mgr.create_chaos_experiment(c1)
+        mgr.create_chaos_experiment(c2)
+        r = mgr.list_chaos_experiments()
+        self.assertEqual(r["count"], 2)
+
+    def test_experiment_status(self):
+        """get_chaos_experiment returns status."""
+        mgr = self._manager()
+        c = self._make(mgr, "cx6")
+        r = mgr.create_chaos_experiment(c, fault_type="kill")
+        eid = r["experiment_id"]
+        r2 = mgr.get_chaos_experiment(eid)
+        self.assertEqual(r2["fault_type"], "kill")
+        self.assertEqual(r2["status"], "created")
+
+
+class TestCircuitBreaker(unittest.TestCase):
+    """Tests for circuit breaker with dependency health checks."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_breaker(self):
+        """create_circuit_breaker creates a breaker."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb1")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=3)
+        self.assertIn("circuit_breaker_id", r)
+        self.assertEqual(r["state"], "closed")
+
+    def test_record_failure_opens(self):
+        """Failures above threshold open the breaker."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb2")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=3)
+        cbid = r["circuit_breaker_id"]
+        for _ in range(3):
+            mgr.record_circuit_breaker_failure(cbid)
+        r2 = mgr.check_circuit_breaker(cbid)
+        self.assertEqual(r2["state"], "open")
+        self.assertFalse(r2["allow_requests"])
+
+    def test_success_reduces_failures(self):
+        """Success in closed state reduces failure count."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb3")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=5)
+        cbid = r["circuit_breaker_id"]
+        mgr.record_circuit_breaker_failure(cbid)
+        mgr.record_circuit_breaker_failure(cbid)
+        mgr.record_circuit_breaker_success(cbid)
+        r2 = mgr.check_circuit_breaker(cbid)
+        self.assertEqual(r2["failure_count"], 1)
+        self.assertEqual(r2["state"], "closed")
+
+    def test_half_open_recovery(self):
+        """Circuit breaker recovers from open to half_open after timeout."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb4")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=2, recovery_timeout_s=0.01)
+        cbid = r["circuit_breaker_id"]
+        mgr.record_circuit_breaker_failure(cbid)
+        mgr.record_circuit_breaker_failure(cbid)
+        import time
+        time.sleep(0.02)
+        r2 = mgr.check_circuit_breaker(cbid)
+        self.assertEqual(r2["state"], "half_open")
+        self.assertTrue(r2["allow_requests"])
+
+    def test_half_open_failure_trips(self):
+        """Failure in half_open trips back to open."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb5")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=2, recovery_timeout_s=0.01)
+        cbid = r["circuit_breaker_id"]
+        mgr.record_circuit_breaker_failure(cbid)
+        mgr.record_circuit_breaker_failure(cbid)
+        import time
+        time.sleep(0.02)
+        mgr.check_circuit_breaker(cbid)
+        mgr.record_circuit_breaker_failure(cbid)
+        r2 = mgr.check_circuit_breaker(cbid)
+        self.assertEqual(r2["state"], "open")
+
+    def test_cb_history(self):
+        """get_circuit_breaker_history returns transitions."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb6")
+        r = mgr.create_circuit_breaker(c, dependency="db", failure_threshold=2, recovery_timeout_s=0.01)
+        cbid = r["circuit_breaker_id"]
+        mgr.record_circuit_breaker_failure(cbid)
+        mgr.record_circuit_breaker_failure(cbid)
+        import time
+        time.sleep(0.02)
+        mgr.check_circuit_breaker(cbid)
+        r2 = mgr.get_circuit_breaker_history(cbid)
+        self.assertGreater(r2["total_transitions"], 0)
+
+    def test_delete_breaker(self):
+        """delete_circuit_breaker removes it."""
+        mgr = self._manager()
+        c = self._make(mgr, "cb7")
+        r = mgr.create_circuit_breaker(c, dependency="db")
+        cbid = r["circuit_breaker_id"]
+        r2 = mgr.delete_circuit_breaker(cbid)
+        self.assertTrue(r2["ok"])
+        r3 = mgr.check_circuit_breaker(cbid)
+        self.assertIn("error", r3)
+
+
 class TestAnomalyCorrelation(unittest.TestCase):
     """Tests for anomaly correlation engine."""
 
@@ -33168,6 +33342,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestIOProfilingCache))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageCacheLayer))
     suite.addTests(loader.loadTestsFromTestCase(TestAuditIntegrityChain))
+    suite.addTests(loader.loadTestsFromTestCase(TestPredictiveScaling))
+    suite.addTests(loader.loadTestsFromTestCase(TestChaosInjection))
+    suite.addTests(loader.loadTestsFromTestCase(TestCircuitBreaker))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

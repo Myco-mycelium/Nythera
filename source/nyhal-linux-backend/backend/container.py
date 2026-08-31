@@ -27571,6 +27571,451 @@ class ContainerManager:
         }
 
 
+
+    # ------------------------------------------------------------------
+    # Predictive auto-scaling with time-series forecasting
+    # ------------------------------------------------------------------
+
+    def create_predictive_scaler(
+        self,
+        container: Container,
+        metric: str = "cpu_percent",
+        min_replicas: int = 1,
+        max_replicas: int = 10,
+        forecast_window_s: float = 300.0,
+        target_utilization: float = 0.7,
+    ) -> Dict[str, Any]:
+        """Create a predictive auto-scaler with time-series forecasting."""
+        if not hasattr(self, '_predictive_scalers'):
+            self._predictive_scalers = {}
+        scaler_id = f"pscale-{container.id[:12]}"
+        self._predictive_scalers[scaler_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "metric": metric,
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+            "forecast_window_s": forecast_window_s,
+            "target_utilization": target_utilization,
+            "created_at": time.time(),
+            "active": True,
+            "metric_history": [],
+            "current_replicas": 1,
+            "scaling_events": [],
+        }
+        return {
+            "scaler_id": scaler_id,
+            "container_id": container.id,
+            "metric": metric,
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+            "target_utilization": target_utilization,
+        }
+
+    def record_scaler_metric(
+        self,
+        scaler_id: str,
+        value: float,
+    ) -> Dict[str, Any]:
+        """Record a metric sample for the predictive scaler."""
+        scaler = getattr(self, '_predictive_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        scaler["metric_history"].append({
+            "ts": time.time(),
+            "value": value,
+        })
+        scaler["metric_history"] = scaler["metric_history"][-2000:]
+        return {"ok": True, "scaler_id": scaler_id, "value": value}
+
+    def forecast_and_scale(
+        self,
+        scaler_id: str,
+    ) -> Dict[str, Any]:
+        """Forecast future load and determine scaling action."""
+        scaler = getattr(self, '_predictive_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        history = scaler["metric_history"]
+        if len(history) < 10:
+            return {
+                "scaler_id": scaler_id,
+                "action": "none",
+                "reason": "insufficient data",
+                "current_replicas": scaler["current_replicas"],
+                "forecast": None,
+            }
+        # Simple moving average + trend extrapolation
+        values = [h["value"] for h in history]
+        window = min(30, len(values))
+        recent = values[-window:]
+        avg = sum(recent) / len(recent)
+        # Linear trend
+        if len(recent) >= 2:
+            trend = (recent[-1] - recent[0]) / (len(recent) - 1)
+        else:
+            trend = 0
+        # Forecast
+        forecast_steps = int(scaler["forecast_window_s"] / max(1, window))
+        forecast_value = avg + trend * forecast_steps
+        forecast_value = max(0, min(100, forecast_value))
+        # Determine action
+        target = scaler["target_utilization"] * 100  # convert to 0-100 scale
+        current = scaler["current_replicas"]
+        if forecast_value > target:
+            # Scale up
+            needed = max(1, int((forecast_value / target) * current))
+            new_replicas = min(needed, scaler["max_replicas"])
+            action = "scale_up" if new_replicas > current else "none"
+        elif forecast_value < target * 0.5:
+            # Scale down
+            needed = max(1, int((forecast_value / target) * current))
+            new_replicas = max(needed, scaler["min_replicas"])
+            action = "scale_down" if new_replicas < current else "none"
+        else:
+            new_replicas = current
+            action = "none"
+        result = {
+            "scaler_id": scaler_id,
+            "action": action,
+            "current_replicas": current,
+            "forecast_value": round(forecast_value, 2),
+            "current_avg": round(avg, 2),
+            "trend": round(trend, 4),
+            "target_utilization": scaler["target_utilization"] * 100,
+            "data_points": len(history),
+        }
+        if action != "none":
+            old_replicas = current
+            scaler["current_replicas"] = new_replicas
+            scaler["scaling_events"].append({
+                "ts": time.time(),
+                "action": action,
+                "from": old_replicas,
+                "to": new_replicas,
+                "forecast": round(forecast_value, 2),
+            })
+            result["new_replicas"] = new_replicas
+        return result
+
+    def get_scaler_status(self, scaler_id: str) -> Dict[str, Any]:
+        """Get current status of a predictive scaler."""
+        scaler = getattr(self, '_predictive_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        return {
+            "scaler_id": scaler_id,
+            "container_id": scaler["container_id"],
+            "container_name": scaler["container_name"],
+            "metric": scaler["metric"],
+            "current_replicas": scaler["current_replicas"],
+            "min_replicas": scaler["min_replicas"],
+            "max_replicas": scaler["max_replicas"],
+            "target_utilization": scaler["target_utilization"],
+            "active": scaler["active"],
+            "data_points": len(scaler["metric_history"]),
+            "scaling_events": len(scaler["scaling_events"]),
+            "last_event": scaler["scaling_events"][-1] if scaler["scaling_events"] else None,
+        }
+
+    def get_scaler_history(self, scaler_id: str, tail: int = 20) -> Dict[str, Any]:
+        """Get recent scaling events for a scaler."""
+        scaler = getattr(self, '_predictive_scalers', {}).get(scaler_id)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        events = list(reversed(scaler["scaling_events"]))[:tail]
+        return {"scaler_id": scaler_id, "events": events, "total": len(scaler["scaling_events"])}
+
+    def stop_predictive_scaler(self, scaler_id: str) -> Dict[str, Any]:
+        """Stop a predictive scaler."""
+        scaler = getattr(self, '_predictive_scalers', {}).pop(scaler_id, None)
+        if not scaler:
+            return {"error": "Scaler not found"}
+        return {
+            "ok": True,
+            "scaler_id": scaler_id,
+            "final_replicas": scaler["current_replicas"],
+            "total_scaling_events": len(scaler["scaling_events"]),
+        }
+
+    # ------------------------------------------------------------------
+    # Chaos injection with scheduled fault patterns
+    # ------------------------------------------------------------------
+
+    def create_chaos_experiment(
+        self,
+        container: Container,
+        fault_type: str = "latency",
+        intensity: float = 0.5,
+        duration_s: float = 60.0,
+        schedule: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a chaos experiment with scheduled fault injection."""
+        if not hasattr(self, '_chaos_experiments'):
+            self._chaos_experiments = {}
+        exp_id = f"chaos-{container.id[:12]}"
+        self._chaos_experiments[exp_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "fault_type": fault_type,
+            "intensity": intensity,
+            "duration_s": duration_s,
+            "schedule": schedule or {"type": "once"},
+            "created_at": time.time(),
+            "status": "created",
+            "injections": [],
+            "start_time": None,
+            "end_time": None,
+        }
+        return {
+            "experiment_id": exp_id,
+            "container_id": container.id,
+            "fault_type": fault_type,
+            "intensity": intensity,
+            "duration_s": duration_s,
+            "schedule": schedule or {"type": "once"},
+        }
+
+    def start_chaos_experiment(self, experiment_id: str) -> Dict[str, Any]:
+        """Start a chaos experiment."""
+        exp = getattr(self, '_chaos_experiments', {}).get(experiment_id)
+        if not exp:
+            return {"error": "Experiment not found"}
+        if exp["status"] == "running":
+            return {"error": "Already running"}
+        exp["status"] = "running"
+        exp["start_time"] = time.time()
+        exp["end_time"] = exp["start_time"] + exp["duration_s"]
+        return {
+            "ok": True,
+            "experiment_id": experiment_id,
+            "status": "running",
+            "ends_at": exp["end_time"],
+        }
+
+    def inject_fault(
+        self,
+        experiment_id: str,
+        fault_details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record a fault injection event."""
+        exp = getattr(self, '_chaos_experiments', {}).get(experiment_id)
+        if not exp:
+            return {"error": "Experiment not found"}
+        injection = {
+            "ts": time.time(),
+            "fault_type": exp["fault_type"],
+            "intensity": exp["intensity"],
+            "details": fault_details or {},
+        }
+        exp["injections"].append(injection)
+        return {
+            "ok": True,
+            "experiment_id": experiment_id,
+            "injection_count": len(exp["injections"]),
+        }
+
+    def stop_chaos_experiment(self, experiment_id: str) -> Dict[str, Any]:
+        """Stop a chaos experiment."""
+        exp = getattr(self, '_chaos_experiments', {}).get(experiment_id)
+        if not exp:
+            return {"error": "Experiment not found"}
+        exp["status"] = "completed"
+        exp["end_time"] = time.time()
+        return {
+            "ok": True,
+            "experiment_id": experiment_id,
+            "duration_actual_s": exp["end_time"] - (exp["start_time"] or exp["created_at"]),
+            "total_injections": len(exp["injections"]),
+        }
+
+    def get_chaos_experiment(self, experiment_id: str) -> Dict[str, Any]:
+        """Get chaos experiment status."""
+        exp = getattr(self, '_chaos_experiments', {}).get(experiment_id)
+        if not exp:
+            return {"error": "Experiment not found"}
+        return {
+            "experiment_id": experiment_id,
+            "container_id": exp["container_id"],
+            "container_name": exp["container_name"],
+            "fault_type": exp["fault_type"],
+            "intensity": exp["intensity"],
+            "status": exp["status"],
+            "total_injections": len(exp["injections"]),
+            "schedule": exp["schedule"],
+        }
+
+    def list_chaos_experiments(self) -> Dict[str, Any]:
+        """List all chaos experiments."""
+        exps = getattr(self, '_chaos_experiments', {})
+        return {
+            "experiments": [
+                {
+                    "experiment_id": eid,
+                    "container_name": e["container_name"],
+                    "fault_type": e["fault_type"],
+                    "status": e["status"],
+                    "injections": len(e["injections"]),
+                }
+                for eid, e in exps.items()
+            ],
+            "count": len(exps),
+        }
+
+    # ------------------------------------------------------------------
+    # Circuit breaker for container dependencies
+    # ------------------------------------------------------------------
+
+    def create_circuit_breaker(
+        self,
+        container: Container,
+        dependency: str,
+        failure_threshold: int = 5,
+        recovery_timeout_s: float = 30.0,
+        half_open_max: int = 3,
+    ) -> Dict[str, Any]:
+        """Create a circuit breaker for a container dependency."""
+        if not hasattr(self, '_circuit_breakers'):
+            self._circuit_breakers = {}
+        cb_id = f"cb-{container.id[:12]}-{dependency}"
+        self._circuit_breakers[cb_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "dependency": dependency,
+            "failure_threshold": failure_threshold,
+            "recovery_timeout_s": recovery_timeout_s,
+            "half_open_max": half_open_max,
+            "state": "closed",  # closed, open, half_open
+            "failure_count": 0,
+            "success_count": 0,
+            "last_failure_time": None,
+            "last_state_change": time.time(),
+            "state_history": [],
+        }
+        return {
+            "circuit_breaker_id": cb_id,
+            "container_id": container.id,
+            "dependency": dependency,
+            "state": "closed",
+            "failure_threshold": failure_threshold,
+            "recovery_timeout_s": recovery_timeout_s,
+        }
+
+    def record_circuit_breaker_failure(self, cb_id: str) -> Dict[str, Any]:
+        """Record a failure for a circuit breaker."""
+        cb = getattr(self, '_circuit_breakers', {}).get(cb_id)
+        if not cb:
+            return {"error": "Circuit breaker not found"}
+        cb["failure_count"] += 1
+        cb["last_failure_time"] = time.time()
+        # Check if we should trip
+        if cb["state"] == "closed" and cb["failure_count"] >= cb["failure_threshold"]:
+            old_state = cb["state"]
+            cb["state"] = "open"
+            cb["last_state_change"] = time.time()
+            cb["state_history"].append({
+                "ts": time.time(),
+                "from": old_state,
+                "to": "open",
+                "reason": f"failure_count={cb['failure_count']} >= threshold={cb['failure_threshold']}",
+            })
+        elif cb["state"] == "half_open":
+            # Failure in half-open trips back to open
+            old_state = cb["state"]
+            cb["state"] = "open"
+            cb["last_state_change"] = time.time()
+            cb["state_history"].append({
+                "ts": time.time(),
+                "from": old_state,
+                "to": "open",
+                "reason": "failure in half-open",
+            })
+        return {
+            "ok": True,
+            "circuit_breaker_id": cb_id,
+            "state": cb["state"],
+            "failure_count": cb["failure_count"],
+        }
+
+    def record_circuit_breaker_success(self, cb_id: str) -> Dict[str, Any]:
+        """Record a success for a circuit breaker."""
+        cb = getattr(self, '_circuit_breakers', {}).get(cb_id)
+        if not cb:
+            return {"error": "Circuit breaker not found"}
+        cb["success_count"] += 1
+        if cb["state"] == "half_open":
+            cb["success_count"] += 1
+            if cb["success_count"] >= cb["half_open_max"]:
+                old_state = cb["state"]
+                cb["state"] = "closed"
+                cb["failure_count"] = 0
+                cb["success_count"] = 0
+                cb["last_state_change"] = time.time()
+                cb["state_history"].append({
+                    "ts": time.time(),
+                    "from": old_state,
+                    "to": "closed",
+                    "reason": f"success_count={cb['success_count']} >= half_open_max={cb['half_open_max']}",
+                })
+        elif cb["state"] == "closed":
+            cb["failure_count"] = max(0, cb["failure_count"] - 1)
+        return {
+            "ok": True,
+            "circuit_breaker_id": cb_id,
+            "state": cb["state"],
+            "failure_count": cb["failure_count"],
+            "success_count": cb["success_count"],
+        }
+
+    def check_circuit_breaker(self, cb_id: str) -> Dict[str, Any]:
+        """Check circuit breaker state, transitioning open->half_open if timeout elapsed."""
+        cb = getattr(self, '_circuit_breakers', {}).get(cb_id)
+        if not cb:
+            return {"error": "Circuit breaker not found"}
+        now = time.time()
+        if cb["state"] == "open":
+            elapsed = now - cb["last_state_change"]
+            if elapsed >= cb["recovery_timeout_s"]:
+                old_state = cb["state"]
+                cb["state"] = "half_open"
+                cb["success_count"] = 0
+                cb["last_state_change"] = now
+                cb["state_history"].append({
+                    "ts": now,
+                    "from": old_state,
+                    "to": "half_open",
+                    "reason": f"recovery timeout {cb['recovery_timeout_s']}s elapsed",
+                })
+        return {
+            "circuit_breaker_id": cb_id,
+            "state": cb["state"],
+            "dependency": cb["dependency"],
+            "failure_count": cb["failure_count"],
+            "success_count": cb["success_count"],
+            "allow_requests": cb["state"] != "open",
+        }
+
+    def get_circuit_breaker_history(self, cb_id: str) -> Dict[str, Any]:
+        """Get state transition history for a circuit breaker."""
+        cb = getattr(self, '_circuit_breakers', {}).get(cb_id)
+        if not cb:
+            return {"error": "Circuit breaker not found"}
+        return {
+            "circuit_breaker_id": cb_id,
+            "dependency": cb["dependency"],
+            "current_state": cb["state"],
+            "transitions": cb["state_history"],
+            "total_transitions": len(cb["state_history"]),
+        }
+
+    def delete_circuit_breaker(self, cb_id: str) -> Dict[str, Any]:
+        """Delete a circuit breaker."""
+        cb = getattr(self, '_circuit_breakers', {}).pop(cb_id, None)
+        if not cb:
+            return {"error": "Circuit breaker not found"}
+        return {"ok": True, "circuit_breaker_id": cb_id}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch
