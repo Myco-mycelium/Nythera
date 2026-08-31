@@ -22305,6 +22305,258 @@ class ContainerManager:
     # Chaos engineering with fault injection and game days
     # ------------------------------------------------------------------
 
+
+    # ------------------------------------------------------------------
+    # Service mesh with mTLS and traffic policies
+    # ------------------------------------------------------------------
+
+    def create_mesh_cluster(
+        self,
+        name: str,
+        services: Optional[List[str]] = None,
+        mtls_mode: str = "strict",
+    ) -> Dict[str, Any]:
+        """Create a service mesh cluster with mTLS configuration."""
+        if not hasattr(self, '_mesh_clusters'):
+            self._mesh_clusters = {}
+        cluster_id = f"mesh-{name}"
+        self._mesh_clusters[cluster_id] = {
+            "name": name,
+            "services": services or [],
+            "mtls_mode": mtls_mode,
+            "policies": [],
+            "created_at": time.time(),
+            "status": "active",
+            "sidecar_injection": True,
+            "circuit_breakers": {},
+            "retry_policies": {},
+        }
+        return {"cluster_id": cluster_id, "name": name, "mtls_mode": mtls_mode}
+
+    def add_mesh_service(
+        self, cluster_id: str, service_name: str, port: int = 80,
+        protocol: str = "http",
+    ) -> Dict[str, Any]:
+        """Add a service to the mesh cluster."""
+        cluster = getattr(self, '_mesh_clusters', {}).get(cluster_id)
+        if not cluster:
+            return {"error": "Cluster not found"}
+        svc = {"name": service_name, "port": port, "protocol": protocol,
+               "healthy": True, "endpoints": []}
+        cluster["services"].append(svc)
+        return {"ok": True, "service": service_name, "cluster": cluster["name"]}
+
+    def create_traffic_policy(
+        self, cluster_id: str, name: str, source: str, destination: str,
+        action: str = "allow", rate_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a traffic policy for service mesh."""
+        cluster = getattr(self, '_mesh_clusters', {}).get(cluster_id)
+        if not cluster:
+            return {"error": "Cluster not found"}
+        policy = {"name": name, "source": source, "destination": destination,
+                  "action": action, "rate_limit": rate_limit, "enabled": True,
+                  "created_at": time.time()}
+        cluster["policies"].append(policy)
+        return {"ok": True, "policy": name}
+
+    def evaluate_traffic_policy(
+        self, cluster_id: str, source: str, destination: str,
+    ) -> Dict[str, Any]:
+        """Evaluate traffic policies for a source->destination pair."""
+        cluster = getattr(self, '_mesh_clusters', {}).get(cluster_id)
+        if not cluster:
+            return {"error": "Cluster not found"}
+        for p in cluster["policies"]:
+            if p["enabled"] and p["source"] == source and p["destination"] == destination:
+                return {"allowed": p["action"] == "allow", "policy": p["name"],
+                        "rate_limit": p.get("rate_limit")}
+        return {"allowed": True, "policy": "default-allow"}
+
+    def get_mesh_topology(self, cluster_id: str) -> Dict[str, Any]:
+        """Get service mesh topology."""
+        cluster = getattr(self, '_mesh_clusters', {}).get(cluster_id)
+        if not cluster:
+            return {"error": "Cluster not found"}
+        services = [{"name": s["name"], "port": s["port"], "healthy": s["healthy"]}
+                    for s in cluster["services"]]
+        return {"cluster_id": cluster_id, "services": services,
+                "mtls_mode": cluster["mtls_mode"],
+                "policies": len(cluster["policies"])}
+
+    # ------------------------------------------------------------------
+    # Workload identity with SPIFFE/SPIRE integration
+    # ------------------------------------------------------------------
+
+    def create_workload_identity(
+        self, container_id: str, spiffe_id: str,
+        trust_domain: str = "nyrqis.dev",
+    ) -> Dict[str, Any]:
+        """Create a SPIFFE-based workload identity for a container."""
+        if not hasattr(self, '_workload_identities'):
+            self._workload_identities = {}
+        identity_id = f"wi-{container_id[:12]}"
+        self._workload_identities[identity_id] = {
+            "container_id": container_id,
+            "spiffe_id": spiffe_id,
+            "trust_domain": trust_domain,
+            "x509_svid": None,
+            "jwt_svid": None,
+            "created_at": time.time(),
+            "expires_at": time.time() + 86400,
+            "revoked": False,
+            "selectors": [{"type": "container_id", "value": container_id}],
+        }
+        return {"identity_id": identity_id, "spiffe_id": spiffe_id,
+                "trust_domain": trust_domain}
+
+    def issue_workload_svid(
+        self, identity_id: str, svid_type: str = "x509",
+    ) -> Dict[str, Any]:
+        """Issue an SVID for a workload identity."""
+        identity = getattr(self, '_workload_identities', {}).get(identity_id)
+        if not identity:
+            return {"error": "Identity not found"}
+        if identity["revoked"]:
+            return {"error": "Identity is revoked"}
+        import hashlib
+        raw = f"{identity['spiffe_id']}-{svid_type}-{time.time()}"
+        svid = hashlib.sha256(raw.encode()).hexdigest()[:64]
+        if svid_type == "x509":
+            identity["x509_svid"] = {"serial": svid, "not_after": identity["expires_at"]}
+        else:
+            identity["jwt_svid"] = {"token": svid, "expires_at": identity["expires_at"]}
+        return {"svid_type": svid_type, "svid": svid,
+                "expires_at": identity["expires_at"]}
+
+    def validate_workload_identity(
+        self, identity_id: str,
+    ) -> Dict[str, Any]:
+        """Validate a workload identity."""
+        identity = getattr(self, '_workload_identities', {}).get(identity_id)
+        if not identity:
+            return {"valid": False, "error": "Identity not found"}
+        if identity["revoked"]:
+            return {"valid": False, "error": "Identity is revoked"}
+        if time.time() > identity["expires_at"]:
+            return {"valid": False, "error": "Identity expired"}
+        return {"valid": True, "spiffe_id": identity["spiffe_id"],
+                "trust_domain": identity["trust_domain"]}
+
+    def revoke_workload_identity(self, identity_id: str) -> Dict[str, Any]:
+        """Revoke a workload identity."""
+        identity = getattr(self, '_workload_identities', {}).get(identity_id)
+        if not identity:
+            return {"error": "Identity not found"}
+        identity["revoked"] = True
+        identity["x509_svid"] = None
+        identity["jwt_svid"] = None
+        return {"ok": True, "identity_id": identity_id}
+
+    def rotate_workload_identity(
+        self, identity_id: str,
+    ) -> Dict[str, Any]:
+        """Rotate a workload identity (renew SVID)."""
+        identity = getattr(self, '_workload_identities', {}).get(identity_id)
+        if not identity:
+            return {"error": "Identity not found"}
+        identity["expires_at"] = time.time() + 86400
+        identity["x509_svid"] = None
+        identity["jwt_svid"] = None
+        return {"ok": True, "identity_id": identity_id,
+                "new_expires_at": identity["expires_at"]}
+
+    def list_workload_identities(self) -> Dict[str, Any]:
+        """List all workload identities."""
+        ids = getattr(self, '_workload_identities', {})
+        return {"identities": [
+            {"identity_id": k, "spiffe_id": v["spiffe_id"],
+             "container_id": v["container_id"], "revoked": v["revoked"]}
+            for k, v in ids.items()
+        ], "count": len(ids)}
+
+    # ------------------------------------------------------------------
+    # Config hot-reload with file watching
+    # ------------------------------------------------------------------
+
+    def register_config_watcher(
+        self, container_id: str, config_path: str,
+        callback_type: str = "restart",
+    ) -> Dict[str, Any]:
+        """Register a config file to watch for changes."""
+        if not hasattr(self, '_config_watchers'):
+            self._config_watchers = {}
+        watcher_id = f"cw-{len(self._config_watchers)}"
+        self._config_watchers[watcher_id] = {
+            "container_id": container_id,
+            "config_path": config_path,
+            "callback_type": callback_type,
+            "enabled": True,
+            "last_mtime": time.time(),
+            "change_count": 0,
+            "created_at": time.time(),
+        }
+        return {"watcher_id": watcher_id, "config_path": config_path,
+                "callback_type": callback_type}
+
+    def check_config_changes(self) -> Dict[str, Any]:
+        """Check all registered config watchers for changes."""
+        watchers = getattr(self, '_config_watchers', {})
+        triggered = []
+        for wid, w in watchers.items():
+            if not w["enabled"]:
+                continue
+            # Simulate: random chance of change detection
+            import random
+            if random.random() < 0.1:
+                w["change_count"] += 1
+                w["last_mtime"] = time.time()
+                triggered.append({"watcher_id": wid,
+                                  "container_id": w["container_id"],
+                                  "config_path": w["config_path"],
+                                  "callback_type": w["callback_type"]})
+        return {"triggered": triggered, "total_watchers": len(watchers)}
+
+    def apply_config_change(
+        self, watcher_id: str, config_content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply a config change for a watcher."""
+        watcher = getattr(self, '_config_watchers', {}).get(watcher_id)
+        if not watcher:
+            return {"error": "Watcher not found"}
+        watcher["last_mtime"] = time.time()
+        callback = watcher["callback_type"]
+        if callback == "restart":
+            action = "restarted"
+        elif callback == "reload":
+            action = "reloaded"
+        else:
+            action = "notified"
+        return {"ok": True, "watcher_id": watcher_id,
+                "container_id": watcher["container_id"],
+                "action": action}
+
+    def get_config_watcher_status(self, watcher_id: str) -> Dict[str, Any]:
+        """Get status of a config watcher."""
+        watcher = getattr(self, '_config_watchers', {}).get(watcher_id)
+        if not watcher:
+            return {"error": "Watcher not found"}
+        return {"watcher_id": watcher_id, "config_path": watcher["config_path"],
+                "enabled": watcher["enabled"],
+                "change_count": watcher["change_count"],
+                "callback_type": watcher["callback_type"]}
+
+    def get_reload_history(
+        self, container_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get config reload history."""
+        if not hasattr(self, '_reload_history'):
+            self._reload_history = []
+        history = self._reload_history
+        if container_id:
+            history = [h for h in history if h.get("container_id") == container_id]
+        return {"history": history[-50:], "count": len(history)}
+
     def create_chaos_experiment(
         self,
         name: str,

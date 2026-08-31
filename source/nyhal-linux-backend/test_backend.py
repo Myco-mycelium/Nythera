@@ -5892,7 +5892,7 @@ class TestConfigValidation(unittest.TestCase):
         mgr = self._manager()
         c = self._make(mgr, "dv4")
         r = mgr.enforce_config_policy(c, {"max_memory_mb": 128})
-        self.assertTrue(r["compliant"])  # default is 256 > 128? no, 256 > 128 so violation
+        self.assertFalse(r["compliant"])  # default 256 > 128 → violation
 
     def test_format_human_validate(self):
         """format_human handles validate-config."""
@@ -33591,6 +33591,120 @@ class TestServiceDiscovery(unittest.TestCase):
         m=self._mgr(); c=self._mk(m,"sd6"); r=m.register_service(c,"web",80)
         m.deregister_service(r["service_id"]); r2=m.discover_services("web"); self.assertEqual(r2["count"],0)
 
+class TestServiceMesh(unittest.TestCase):
+    """Tests for service mesh with mTLS and traffic policies."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_cluster(self):
+        m=self._mgr()
+        r=m.create_mesh_cluster("main", "http://mesh.local", region="us-east")
+        self.assertIn("name", r)
+        self.assertEqual(r["region"], "us-east")
+
+    def test_add_service(self):
+        m=self._mgr()
+        m.create_mesh_cluster("main", "http://mesh.local")
+        r2=m.add_mesh_service("main", "api", port=8080)
+        self.assertEqual(r2["service"], "api")
+
+    def test_topology(self):
+        m=self._mgr()
+        m.create_mesh_cluster("main", "http://mesh.local")
+        m.add_mesh_service("main", "api")
+        m.add_mesh_service("main", "db")
+        topo=m.get_mesh_topology()
+        self.assertIn("clusters", topo)
+
+
+class TestWorkloadIdentity(unittest.TestCase):
+    """Tests for SPIFFE-based workload identity."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_identity(self):
+        m=self._mgr()
+        r=m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        self.assertIn("name", r)
+        self.assertTrue(r["created"])
+
+    def test_validate_identity(self):
+        m=self._mgr()
+        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        r2=m.validate_workload_identity("svc1")
+        self.assertTrue(r2["valid"])
+
+    def test_revoke_identity(self):
+        m=self._mgr()
+        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        m.revoke_workload_identity("svc1")
+        r2=m.validate_workload_identity("svc1")
+        self.assertFalse(r2["valid"])
+
+    def test_rotate_identity(self):
+        m=self._mgr()
+        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        r2=m.rotate_workload_identity("svc1")
+        self.assertIn("name", r2)
+        r3=m.validate_workload_identity("svc1")
+        self.assertTrue(r3["valid"])
+
+    def test_list_identities(self):
+        m=self._mgr()
+        m.create_workload_identity("svc1", "spiffe://nyrqis.dev/sa/web")
+        r=m.list_workload_identities()
+        self.assertTrue(len(r) > 0)
+
+
+class TestConfigHotReload(unittest.TestCase):
+    """Tests for config hot-reload with file watching."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_register_watcher(self):
+        m=self._mgr(); c=self._mk(m,"cr1")
+        r=m.register_config_watcher(c.id, "/etc/app/config.yaml")
+        self.assertIn("watcher_id", r)
+        self.assertEqual(r["callback_type"], "restart")
+
+    def test_apply_change_restart(self):
+        m=self._mgr(); c=self._mk(m,"cr2")
+        r=m.register_config_watcher(c.id, "/etc/app/config.yaml", callback_type="restart")
+        r2=m.apply_config_change(r["watcher_id"])
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["action"], "restarted")
+
+    def test_apply_change_reload(self):
+        m=self._mgr(); c=self._mk(m,"cr3")
+        r=m.register_config_watcher(c.id, "/etc/app/config.yaml", callback_type="reload")
+        r2=m.apply_config_change(r["watcher_id"])
+        self.assertTrue(r2["ok"])
+        self.assertEqual(r2["action"], "reloaded")
+
+    def test_watcher_status(self):
+        m=self._mgr(); c=self._mk(m,"cr4")
+        r=m.register_config_watcher(c.id, "/etc/app/config.yaml")
+        r2=m.get_config_watcher_status(r["watcher_id"])
+        self.assertEqual(r2["config_path"], "/etc/app/config.yaml")
+        self.assertTrue(r2["enabled"])
+
+    def test_reload_history(self):
+        m=self._mgr(); c=self._mk(m,"cr5")
+        r=m.get_reload_history()
+        self.assertIn("history", r)
+        self.assertEqual(r["count"], 0)
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33852,6 +33966,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestComplianceScanning))
     suite.addTests(loader.loadTestsFromTestCase(TestTrafficSplitting))
     suite.addTests(loader.loadTestsFromTestCase(TestDistributedTracing))
+    suite.addTests(loader.loadTestsFromTestCase(TestServiceMesh))
+    suite.addTests(loader.loadTestsFromTestCase(TestWorkloadIdentity))
+    suite.addTests(loader.loadTestsFromTestCase(TestConfigHotReload))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
