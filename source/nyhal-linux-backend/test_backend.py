@@ -35586,6 +35586,279 @@ class TestNetworkNamespaces(unittest.TestCase):
         self.assertEqual(r["had_containers"], 1)
 
 
+class TestLoadBalancers(unittest.TestCase):
+    """Tests for load balancer with backend pools and health checks."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_lb(self):
+        m=self._mgr()
+        r=m.create_load_balancer("web-lb", algorithm="round-robin", port=80)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["algorithm"], "round-robin")
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_load_balancer("dup")
+        r=m.create_load_balancer("dup")
+        self.assertIn("error", r)
+
+    def test_create_invalid_algo(self):
+        m=self._mgr()
+        r=m.create_load_balancer("bad", algorithm="invalid")
+        self.assertIn("error", r)
+
+    def test_add_backend(self):
+        m=self._mgr()
+        m.create_load_balancer("lb1")
+        r=m.add_backend("lb1", "10.0.0.1", port=8080)
+        self.assertTrue(r["ok"])
+
+    def test_add_backend_duplicate(self):
+        m=self._mgr()
+        m.create_load_balancer("lb2")
+        m.add_backend("lb2", "10.0.0.1", port=8080)
+        r=m.add_backend("lb2", "10.0.0.1", port=8080)
+        self.assertIn("error", r)
+
+    def test_add_nonexistent(self):
+        m=self._mgr()
+        r=m.add_backend("nope", "10.0.0.1")
+        self.assertIn("error", r)
+
+    def test_remove_backend(self):
+        m=self._mgr()
+        m.create_load_balancer("lb3")
+        m.add_backend("lb3", "10.0.0.1")
+        r=m.remove_backend("lb3", "10.0.0.1")
+        self.assertTrue(r["ok"])
+
+    def test_remove_nonexistent(self):
+        m=self._mgr()
+        m.create_load_balancer("lb4")
+        r=m.remove_backend("lb4", "10.0.0.1")
+        self.assertIn("error", r)
+
+    def test_configure_health_check(self):
+        m=self._mgr()
+        m.create_load_balancer("lb5")
+        r=m.configure_lb_health_check("lb5", path="/ready", interval=10)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["path"], "/ready")
+
+    def test_run_health_checks(self):
+        m=self._mgr()
+        m.create_load_balancer("lb6")
+        m.add_backend("lb6", "10.0.0.1")
+        m.add_backend("lb6", "10.0.0.2")
+        r=m.run_health_checks("lb6")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["healthy_count"], 2)
+
+    def test_get_lb(self):
+        m=self._mgr()
+        m.create_load_balancer("lb7", port=443)
+        m.add_backend("lb7", "10.0.0.1")
+        r=m.get_load_balancer("lb7")
+        self.assertEqual(r["port"], 443)
+        self.assertEqual(r["backends"], 1)
+
+    def test_list_lbs(self):
+        m=self._mgr()
+        m.create_load_balancer("a")
+        m.create_load_balancer("b")
+        r=m.list_load_balancers()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_lb(self):
+        m=self._mgr()
+        m.create_load_balancer("dlb1")
+        r=m.delete_load_balancer("dlb1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_load_balancer("nope")
+        self.assertIn("error", r)
+
+
+class TestConntrack(unittest.TestCase):
+    """Tests for connection tracking (conntrack)."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_conntrack(self):
+        m=self._mgr()
+        r=m.create_conntrack("ct1", max_entries=5000)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["max_entries"], 5000)
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_conntrack("dup")
+        r=m.create_conntrack("dup")
+        self.assertIn("error", r)
+
+    def test_track_connection(self):
+        m=self._mgr()
+        m.create_conntrack("ct2")
+        r=m.track_connection("ct2", "10.0.0.1", "10.0.0.2", 8080, 80)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total"], 1)
+
+    def test_track_nonexistent(self):
+        m=self._mgr()
+        r=m.track_connection("nope", "10.0.0.1", "10.0.0.2", 8080, 80)
+        self.assertIn("error", r)
+
+    def test_track_full(self):
+        m=self._mgr()
+        m.create_conntrack("ct3", max_entries=2)
+        m.track_connection("ct3", "10.0.0.1", "10.0.0.2", 8080, 80)
+        m.track_connection("ct3", "10.0.0.1", "10.0.0.2", 8081, 80)
+        r=m.track_connection("ct3", "10.0.0.1", "10.0.0.2", 8082, 80)
+        self.assertIn("error", r)
+        self.assertGreater(r["drops"], 0)
+
+    def test_get_stats(self):
+        m=self._mgr()
+        m.create_conntrack("ct4")
+        m.track_connection("ct4", "10.0.0.1", "10.0.0.2", 8080, 80, "tcp")
+        m.track_connection("ct4", "10.0.0.1", "10.0.0.2", 9000, 53, "udp")
+        r=m.get_conntrack_stats("ct4")
+        self.assertEqual(r["total_tracked"], 2)
+        self.assertEqual(r["tcp_established"], 1)
+        self.assertEqual(r["udp"], 1)
+
+    def test_list_connections(self):
+        m=self._mgr()
+        m.create_conntrack("ct5")
+        m.track_connection("ct5", "10.0.0.1", "10.0.0.2", 8080, 80, "tcp")
+        m.track_connection("ct5", "10.0.0.1", "10.0.0.2", 9000, 53, "udp")
+        r=m.list_conntrack_connections("ct5", protocol="tcp")
+        self.assertEqual(r["total"], 1)
+
+    def test_flush_all(self):
+        m=self._mgr()
+        m.create_conntrack("ct6")
+        m.track_connection("ct6", "10.0.0.1", "10.0.0.2", 8080, 80)
+        r=m.flush_conntrack("ct6")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["removed"], 1)
+        self.assertEqual(r["remaining"], 0)
+
+    def test_flush_by_protocol(self):
+        m=self._mgr()
+        m.create_conntrack("ct7")
+        m.track_connection("ct7", "10.0.0.1", "10.0.0.2", 8080, 80, "tcp")
+        m.track_connection("ct7", "10.0.0.1", "10.0.0.2", 9000, 53, "udp")
+        r=m.flush_conntrack("ct7", protocol="tcp")
+        self.assertEqual(r["removed"], 1)
+        self.assertEqual(r["remaining"], 1)
+
+    def test_list_all(self):
+        m=self._mgr()
+        m.create_conntrack("la1")
+        m.create_conntrack("la2")
+        r=m.list_conntrack()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_conntrack(self):
+        m=self._mgr()
+        m.create_conntrack("dc1")
+        r=m.delete_conntrack("dc1")
+        self.assertTrue(r["ok"])
+
+
+class TestRegistryMirror(unittest.TestCase):
+    """Tests for image registry mirroring and pull-through cache."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_mirror(self):
+        m=self._mgr()
+        r=m.create_registry_mirror("m1", source_registry="docker.io")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["source"], "docker.io")
+
+    def test_create_duplicate(self):
+        m=self._mgr()
+        m.create_registry_mirror("dup", source_registry="docker.io")
+        r=m.create_registry_mirror("dup", source_registry="docker.io")
+        self.assertIn("error", r)
+
+    def test_pull_through_cache_miss(self):
+        m=self._mgr()
+        m.create_registry_mirror("m2", source_registry="docker.io")
+        r=m.pull_through("m2", "nginx", tag="1.25")
+        self.assertTrue(r["ok"])
+        self.assertFalse(r["cached"])
+
+    def test_pull_through_cache_hit(self):
+        m=self._mgr()
+        m.create_registry_mirror("m3", source_registry="docker.io")
+        m.pull_through("m3", "nginx")
+        r=m.pull_through("m3", "nginx")
+        self.assertTrue(r["cached"])
+
+    def test_pull_through_nonexistent(self):
+        m=self._mgr()
+        r=m.pull_through("nope", "nginx")
+        self.assertIn("error", r)
+
+    def test_get_stats(self):
+        m=self._mgr()
+        m.create_registry_mirror("m4", source_registry="docker.io")
+        m.pull_through("m4", "nginx")  # miss
+        m.pull_through("m4", "nginx")  # hit
+        r=m.get_mirror_stats("m4")
+        self.assertEqual(r["total_pulls"], 2)
+        self.assertEqual(r["cache_hits"], 1)
+        self.assertEqual(r["cache_misses"], 1)
+        self.assertEqual(r["hit_rate_pct"], 50.0)
+
+    def test_list_cached_images(self):
+        m=self._mgr()
+        m.create_registry_mirror("m5", source_registry="docker.io")
+        m.pull_through("m5", "nginx")
+        m.pull_through("m5", "redis")
+        r=m.list_cached_images("m5")
+        self.assertEqual(r["count"], 2)
+
+    def test_purge_cache(self):
+        m=self._mgr()
+        m.create_registry_mirror("m6", source_registry="docker.io", ttl_hours=0)
+        m.pull_through("m6", "nginx")
+        import time as _time
+        _time.sleep(0.01)
+        r=m.purge_mirror_cache("m6")
+        self.assertTrue(r["ok"])
+        self.assertGreater(r["purged"], 0)
+
+    def test_list_mirrors(self):
+        m=self._mgr()
+        m.create_registry_mirror("a", source_registry="docker.io")
+        m.create_registry_mirror("b", source_registry="ghcr.io")
+        r=m.list_registry_mirrors()
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_mirror(self):
+        m=self._mgr()
+        m.create_registry_mirror("dm1", source_registry="docker.io")
+        r=m.delete_registry_mirror("dm1")
+        self.assertTrue(r["ok"])
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_registry_mirror("nope")
+        self.assertIn("error", r)
+
 
 def run_tests():
     """Run all tests."""
@@ -35872,6 +36145,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestFileIntegrity))
     suite.addTests(loader.loadTestsFromTestCase(TestCostAccounting))
     suite.addTests(loader.loadTestsFromTestCase(TestNetworkNamespaces))
+    suite.addTests(loader.loadTestsFromTestCase(TestLoadBalancers))
+    suite.addTests(loader.loadTestsFromTestCase(TestConntrack))
+    suite.addTests(loader.loadTestsFromTestCase(TestRegistryMirror))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

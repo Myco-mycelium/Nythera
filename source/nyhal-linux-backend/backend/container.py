@@ -32950,6 +32950,370 @@ class ContainerManager:
             return {"error": f"Namespace '{name}' not found"}
         return {"ok": True, "deleted": name, "had_containers": len(ns["containers"])}
 
+    # ------------------------------------------------------------------
+    # Load balancer with backend pools and health checks
+    # ------------------------------------------------------------------
+
+    def create_load_balancer(self, name: str, algorithm: str = "round-robin",
+                              port: int = 80, protocol: str = "http") -> Dict[str, Any]:
+        """Create a load balancer."""
+        if not hasattr(self, '_load_balancers'):
+            self._load_balancers = {}
+        if name in self._load_balancers:
+            return {"error": f"Load balancer '{name}' already exists"}
+        valid_algos = ["round-robin", "least-connections", "ip-hash", "random"]
+        if algorithm not in valid_algos:
+            return {"error": f"Invalid algorithm '{algorithm}'. Valid: {valid_algos}"}
+        self._load_balancers[name] = {
+            "name": name,
+            "algorithm": algorithm,
+            "port": port,
+            "protocol": protocol,
+            "backends": [],
+            "health_check_path": "/health",
+            "health_check_interval": 30,
+            "created_at": time.time(),
+            "total_requests": 0,
+            "active_connections": 0,
+            "status": "active",
+        }
+        return {"ok": True, "load_balancer": name, "algorithm": algorithm, "port": port}
+
+    def add_backend(self, lb_name: str, address: str, port: int = 80,
+                    weight: int = 1) -> Dict[str, Any]:
+        """Add a backend server to a load balancer."""
+        lb = getattr(self, '_load_balancers', {}).get(lb_name)
+        if not lb:
+            return {"error": f"Load balancer '{lb_name}' not found"}
+        for b in lb["backends"]:
+            if b["address"] == address and b["port"] == port:
+                return {"error": f"Backend {address}:{port} already exists"}
+        lb["backends"].append({
+            "address": address,
+            "port": port,
+            "weight": weight,
+            "healthy": True,
+            "current_connections": 0,
+            "total_requests": 0,
+            "added_at": time.time(),
+        })
+        return {"ok": True, "load_balancer": lb_name, "address": address, "port": port}
+
+    def remove_backend(self, lb_name: str, address: str, port: int = 80) -> Dict[str, Any]:
+        """Remove a backend server from a load balancer."""
+        lb = getattr(self, '_load_balancers', {}).get(lb_name)
+        if not lb:
+            return {"error": f"Load balancer '{lb_name}' not found"}
+        original = len(lb["backends"])
+        lb["backends"] = [b for b in lb["backends"] if not (b["address"] == address and b["port"] == port)]
+        if len(lb["backends"]) == original:
+            return {"error": f"Backend {address}:{port} not found"}
+        return {"ok": True, "removed": f"{address}:{port}"}
+
+    def configure_lb_health_check(self, lb_name: str, path: str = "/health",
+                               interval: int = 30) -> Dict[str, Any]:
+        """Configure health check for a load balancer."""
+        lb = getattr(self, '_load_balancers', {}).get(lb_name)
+        if not lb:
+            return {"error": f"Load balancer '{lb_name}' not found"}
+        lb["health_check_path"] = path
+        lb["health_check_interval"] = interval
+        return {"ok": True, "load_balancer": lb_name, "path": path, "interval": interval}
+
+    def run_health_checks(self, lb_name: str) -> Dict[str, Any]:
+        """Run health checks on all backends (simulated)."""
+        lb = getattr(self, '_load_balancers', {}).get(lb_name)
+        if not lb:
+            return {"error": f"Load balancer '{lb_name}' not found"}
+        import time as _time
+        results = []
+        for b in lb["backends"]:
+            b["healthy"] = True  # Simulate healthy
+            b["last_check"] = _time.time()
+            results.append({"address": b["address"], "port": b["port"], "healthy": True})
+        return {"ok": True, "load_balancer": lb_name, "results": results, "healthy_count": len(results)}
+
+    def get_load_balancer(self, name: str) -> Dict[str, Any]:
+        """Get load balancer details."""
+        lb = getattr(self, '_load_balancers', {}).get(name)
+        if not lb:
+            return {"error": f"Load balancer '{name}' not found"}
+        return {
+            "name": lb["name"],
+            "algorithm": lb["algorithm"],
+            "port": lb["port"],
+            "protocol": lb["protocol"],
+            "backends": len(lb["backends"]),
+            "healthy_backends": sum(1 for b in lb["backends"] if b["healthy"]),
+            "total_requests": lb["total_requests"],
+            "active_connections": lb["active_connections"],
+            "status": lb["status"],
+        }
+
+    def list_load_balancers(self) -> Dict[str, Any]:
+        """List all load balancers."""
+        lbs = getattr(self, '_load_balancers', {})
+        items = []
+        for lb in lbs.values():
+            items.append({
+                "name": lb["name"],
+                "algorithm": lb["algorithm"],
+                "backends": len(lb["backends"]),
+                "healthy_backends": sum(1 for b in lb["backends"] if b["healthy"]),
+                "status": lb["status"],
+            })
+        return {"load_balancers": items, "count": len(items)}
+
+    def delete_load_balancer(self, name: str) -> Dict[str, Any]:
+        """Delete a load balancer."""
+        lb = getattr(self, '_load_balancers', {}).pop(name, None)
+        if not lb:
+            return {"error": f"Load balancer '{name}' not found"}
+        return {"ok": True, "deleted": name, "backends_lost": len(lb["backends"])}
+
+    # ------------------------------------------------------------------
+    # Container connection tracking (conntrack)
+    # ------------------------------------------------------------------
+
+    def create_conntrack(self, name: str, max_entries: int = 10000,
+                         timeout_established: int = 3600) -> Dict[str, Any]:
+        """Create a connection tracking configuration."""
+        if not hasattr(self, '_conntrack'):
+            self._conntrack = {}
+        if name in self._conntrack:
+            return {"error": f"Conntrack '{name}' already exists"}
+        self._conntrack[name] = {
+            "name": name,
+            "max_entries": max_entries,
+            "timeout_established": timeout_established,
+            "connections": [],
+            "stats": {
+                "total_tracked": 0,
+                "total_drops": 0,
+                "total_errors": 0,
+                "tcp_established": 0,
+                "tcp_syn_recv": 0,
+                "udp": 0,
+            },
+            "created_at": time.time(),
+            "enabled": True,
+        }
+        return {"ok": True, "conntrack": name, "max_entries": max_entries}
+
+    def track_connection(self, conntrack_name: str, src_ip: str, dst_ip: str,
+                         src_port: int, dst_port: int, protocol: str = "tcp") -> Dict[str, Any]:
+        """Track a new connection."""
+        ct = getattr(self, '_conntrack', {}).get(conntrack_name)
+        if not ct:
+            return {"error": f"Conntrack '{conntrack_name}' not found"}
+        if len(ct["connections"]) >= ct["max_entries"]:
+            ct["stats"]["total_drops"] += 1
+            return {"error": "Connection table full", "drops": ct["stats"]["total_drops"]}
+        import time as _time
+        conn = {
+            "src_ip": src_ip, "dst_ip": dst_ip,
+            "src_port": src_port, "dst_port": dst_port,
+            "protocol": protocol, "state": "established",
+            "seen_at": _time.time(),
+            "packets": 0, "bytes": 0,
+        }
+        ct["connections"].append(conn)
+        ct["stats"]["total_tracked"] += 1
+        if protocol == "tcp":
+            ct["stats"]["tcp_established"] += 1
+        elif protocol == "udp":
+            ct["stats"]["udp"] += 1
+        return {"ok": True, "tracked": True, "total": ct["stats"]["total_tracked"]}
+
+    def get_conntrack_stats(self, name: str) -> Dict[str, Any]:
+        """Get connection tracking statistics."""
+        ct = getattr(self, '_conntrack', {}).get(name)
+        if not ct:
+            return {"error": f"Conntrack '{name}' not found"}
+        return {
+            "name": name,
+            "active_connections": len(ct["connections"]),
+            "max_entries": ct["max_entries"],
+            "utilization_pct": round(len(ct["connections"]) / ct["max_entries"] * 100, 1) if ct["max_entries"] > 0 else 0,
+            **ct["stats"],
+        }
+
+    def list_conntrack_connections(self, name: str, protocol: Optional[str] = None,
+                                   limit: int = 50) -> Dict[str, Any]:
+        """List tracked connections."""
+        ct = getattr(self, '_conntrack', {}).get(name)
+        if not ct:
+            return {"error": f"Conntrack '{name}' not found"}
+        conns = ct["connections"]
+        if protocol:
+            conns = [c for c in conns if c["protocol"] == protocol]
+        return {
+            "conntrack": name,
+            "connections": conns[:limit],
+            "total": len(conns),
+        }
+
+    def flush_conntrack(self, name: str, protocol: Optional[str] = None) -> Dict[str, Any]:
+        """Flush tracked connections."""
+        ct = getattr(self, '_conntrack', {}).get(name)
+        if not ct:
+            return {"error": f"Conntrack '{name}' not found"}
+        if protocol:
+            before = len(ct["connections"])
+            ct["connections"] = [c for c in ct["connections"] if c["protocol"] != protocol]
+            removed = before - len(ct["connections"])
+        else:
+            removed = len(ct["connections"])
+            ct["connections"] = []
+        return {"ok": True, "conntrack": name, "removed": removed, "remaining": len(ct["connections"])}
+
+    def list_conntrack(self) -> Dict[str, Any]:
+        """List all conntrack configurations."""
+        cts = getattr(self, '_conntrack', {})
+        items = []
+        for ct in cts.values():
+            items.append({
+                "name": ct["name"],
+                "active_connections": len(ct["connections"]),
+                "max_entries": ct["max_entries"],
+                "enabled": ct["enabled"],
+            })
+        return {"conntrack_configs": items, "count": len(items)}
+
+    def delete_conntrack(self, name: str) -> Dict[str, Any]:
+        """Delete a conntrack configuration."""
+        ct = getattr(self, '_conntrack', {}).pop(name, None)
+        if not ct:
+            return {"error": f"Conntrack '{name}' not found"}
+        return {"ok": True, "deleted": name, "connections_lost": len(ct["connections"])}
+
+    # ------------------------------------------------------------------
+    # Image registry mirroring and pull-through cache
+    # ------------------------------------------------------------------
+
+    def create_registry_mirror(self, name: str, source_registry: str,
+                               cache_dir: str = "/var/cache/registry-mirror",
+                               ttl_hours: int = 24) -> Dict[str, Any]:
+        """Create a registry mirror / pull-through cache."""
+        if not hasattr(self, '_registry_mirrors'):
+            self._registry_mirrors = {}
+        if name in self._registry_mirrors:
+            return {"error": f"Mirror '{name}' already exists"}
+        self._registry_mirrors[name] = {
+            "name": name,
+            "source_registry": source_registry,
+            "cache_dir": cache_dir,
+            "ttl_hours": ttl_hours,
+            "created_at": time.time(),
+            "cached_images": {},
+            "stats": {
+                "total_pulls": 0,
+                "cache_hits": 0,
+                "cache_misses": 0,
+                "total_size_bytes": 0,
+            },
+        }
+        return {"ok": True, "mirror": name, "source": source_registry}
+
+    def pull_through(self, mirror_name: str, image: str, tag: str = "latest") -> Dict[str, Any]:
+        """Pull an image through the mirror cache."""
+        mirror = getattr(self, '_registry_mirrors', {}).get(mirror_name)
+        if not mirror:
+            return {"error": f"Mirror '{mirror_name}' not found"}
+        cache_key = f"{image}:{tag}"
+        mirror["stats"]["total_pulls"] += 1
+        if cache_key in mirror["cached_images"]:
+            mirror["stats"]["cache_hits"] += 1
+            cached = mirror["cached_images"][cache_key]
+            cached["last_accessed"] = time.time()
+            cached["access_count"] += 1
+            return {"ok": True, "cached": True, "image": cache_key, "size_bytes": cached["size_bytes"]}
+        else:
+            mirror["stats"]["cache_misses"] += 1
+            import hashlib as _hash
+            size = len(_hash.sha256(cache_key.encode()).digest()) * 10000  # Simulated
+            mirror["cached_images"][cache_key] = {
+                "image": image, "tag": tag, "size_bytes": size,
+                "cached_at": time.time(), "last_accessed": time.time(),
+                "access_count": 1,
+            }
+            mirror["stats"]["total_size_bytes"] += size
+            return {"ok": True, "cached": False, "image": cache_key, "size_bytes": size}
+
+    def get_mirror_stats(self, mirror_name: str) -> Dict[str, Any]:
+        """Get registry mirror statistics."""
+        mirror = getattr(self, '_registry_mirrors', {}).get(mirror_name)
+        if not mirror:
+            return {"error": f"Mirror '{mirror_name}' not found"}
+        total = mirror["stats"]["total_pulls"]
+        hits = mirror["stats"]["cache_hits"]
+        return {
+            "mirror": mirror_name,
+            "source": mirror["source_registry"],
+            "cached_images": len(mirror["cached_images"]),
+            "total_size_mb": round(mirror["stats"]["total_size_bytes"] / 1024 / 1024, 2),
+            **mirror["stats"],
+            "hit_rate_pct": round(hits / total * 100, 1) if total > 0 else 0,
+        }
+
+    def list_cached_images(self, mirror_name: str) -> Dict[str, Any]:
+        """List images cached in a mirror."""
+        mirror = getattr(self, '_registry_mirrors', {}).get(mirror_name)
+        if not mirror:
+            return {"error": f"Mirror '{mirror_name}' not found"}
+        images = [
+            {
+                "image": c["image"], "tag": c["tag"],
+                "size_bytes": c["size_bytes"],
+                "access_count": c["access_count"],
+            }
+            for c in mirror["cached_images"].values()
+        ]
+        return {"mirror": mirror_name, "images": images, "count": len(images)}
+
+    def purge_mirror_cache(self, mirror_name: str, older_than_hours: Optional[int] = None) -> Dict[str, Any]:
+        """Purge old entries from a mirror cache."""
+        mirror = getattr(self, '_registry_mirrors', {}).get(mirror_name)
+        if not mirror:
+            return {"error": f"Mirror '{mirror_name}' not found"}
+        import time as _time
+        now = _time.time()
+        threshold = (older_than_hours or mirror["ttl_hours"]) * 3600
+        purged = 0
+        freed = 0
+        for key in list(mirror["cached_images"].keys()):
+            img = mirror["cached_images"][key]
+            if (now - img["last_accessed"]) > threshold:
+                freed += img["size_bytes"]
+                del mirror["cached_images"][key]
+                purged += 1
+        mirror["stats"]["total_size_bytes"] -= freed
+        return {
+            "ok": True, "mirror": mirror_name,
+            "purged": purged, "freed_bytes": freed,
+            "remaining": len(mirror["cached_images"]),
+        }
+
+    def list_registry_mirrors(self) -> Dict[str, Any]:
+        """List all registry mirrors."""
+        mirrors = getattr(self, '_registry_mirrors', {})
+        items = []
+        for m in mirrors.values():
+            items.append({
+                "name": m["name"],
+                "source": m["source_registry"],
+                "cached_images": len(m["cached_images"]),
+                "total_pulls": m["stats"]["total_pulls"],
+            })
+        return {"mirrors": items, "count": len(items)}
+
+    def delete_registry_mirror(self, name: str) -> Dict[str, Any]:
+        """Delete a registry mirror."""
+        mirror = getattr(self, '_registry_mirrors', {}).pop(name, None)
+        if not mirror:
+            return {"error": f"Mirror '{name}' not found"}
+        return {"ok": True, "deleted": name, "images_lost": len(mirror["cached_images"]) }
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
