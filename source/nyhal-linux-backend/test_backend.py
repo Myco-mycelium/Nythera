@@ -36623,12 +36623,247 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestTrafficShaping))
     suite.addTests(loader.loadTestsFromTestCase(TestImageBuild))
     suite.addTests(loader.loadTestsFromTestCase(TestProcessIsolation))
+    suite.addTests(loader.loadTestsFromTestCase(TestCgroupV2))
+    suite.addTests(loader.loadTestsFromTestCase(TestHugepages))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageAudit))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     
     return 0 if result.wasSuccessful() else 1
+
+
+
+class TestCgroupV2(unittest.TestCase):
+    """Tests for cgroup v2 management."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_cgroup(self):
+        m = self._mgr()
+        r = m.create_cgroup_v2("test-cg", memory_max=536870912)
+        self.assertTrue(r['ok'])
+        self.assertIn('cgroup_path', r)
+
+    def test_create_duplicate(self):
+        m = self._mgr()
+        m.create_cgroup_v2("dup-cg")
+        r = m.create_cgroup_v2("dup-cg")
+        self.assertIn('error', r)
+
+    def test_attach_container(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="cg-attach", command=["sleep", "10"]))
+        cg = m.create_cgroup_v2("attach-cg")
+        r = m.attach_to_cgroup_v2(cg['cgroup_path'], c.id)
+        self.assertTrue(r['ok'])
+
+    def test_get_stats(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="cg-stat", command=["sleep", "10"]))
+        cg = m.create_cgroup_v2("stat-cg")
+        m.attach_to_cgroup_v2(cg['cgroup_path'], c.id)
+        stats = m.get_cgroup_v2_stats(cg['cgroup_path'])
+        self.assertIn('memory_current', stats)
+        self.assertIn('cpu_stat', stats)
+        self.assertEqual(stats['container_count'], 1)
+
+    def test_update_cgroup(self):
+        m = self._mgr()
+        cg = m.create_cgroup_v2("upd-cg")
+        r = m.update_cgroup_v2(cg['cgroup_path'], memory_max=1073741824)
+        self.assertTrue(r['ok'])
+        self.assertIn('memory_max', r['updated'])
+
+    def test_detach(self):
+        from backend.container import ContainerConfig
+        m = self._mgr()
+        c = m.create(ContainerConfig(name="cg-det", command=["sleep", "10"]))
+        cg = m.create_cgroup_v2("det-cg")
+        m.attach_to_cgroup_v2(cg['cgroup_path'], c.id)
+        r = m.detach_from_cgroup_v2(cg['cgroup_path'], c.id)
+        self.assertTrue(r['ok'])
+        stats = m.get_cgroup_v2_stats(cg['cgroup_path'])
+        self.assertEqual(stats['container_count'], 0)
+
+    def test_list(self):
+        m = self._mgr()
+        m.create_cgroup_v2("ls-cg1")
+        m.create_cgroup_v2("ls-cg2")
+        r = m.list_cgroup_v2s()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_delete(self):
+        m = self._mgr()
+        cg = m.create_cgroup_v2("del-cg")
+        r = m.delete_cgroup_v2(cg['cgroup_path'])
+        self.assertTrue(r['ok'])
+
+    def test_delete_nonexistent(self):
+        m = self._mgr()
+        r = m.delete_cgroup_v2("/nonexistent")
+        self.assertIn('error', r)
+
+
+class TestHugepages(unittest.TestCase):
+    """Tests for hugepage allocation and management."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_allocate(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-alloc")
+        r = m.allocate_hugepages(c.id, hugepage_size="2MB", count=4)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['count'], 4)
+        self.assertEqual(r['total_bytes'], 4 * 2 * 1024 * 1024)
+
+    def test_allocate_1gb(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-1g")
+        r = m.allocate_hugepages(c.id, hugepage_size="1GB", count=2)
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['total_bytes'], 2 * 1024 * 1024 * 1024)
+
+    def test_allocate_increment(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-inc")
+        r1 = m.allocate_hugepages(c.id, count=2)
+        r2 = m.allocate_hugepages(c.id, count=3)
+        self.assertTrue(r2['ok'])
+        self.assertEqual(r2['total_count'], 5)
+
+    def test_deallocate(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-del")
+        r = m.allocate_hugepages(c.id, count=4)
+        d = m.deallocate_hugepages(r['allocation_id'])
+        self.assertTrue(d['ok'])
+        self.assertEqual(d['freed_bytes'], 4 * 2 * 1024 * 1024)
+
+    def test_get_stats(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-stat")
+        m.allocate_hugepages(c.id, hugepage_size="2MB", count=2)
+        m.allocate_hugepages(c.id, hugepage_size="1GB", count=1)
+        stats = m.get_hugepage_stats(c.id)
+        self.assertEqual(stats['allocations'], 2)
+        self.assertEqual(stats['total_pages'], 3)
+        self.assertEqual(stats['by_size']['2MB'], 2)
+        self.assertEqual(stats['by_size']['1GB'], 1)
+
+    def test_list_allocations(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-list")
+        m.allocate_hugepages(c.id, count=2)
+        r = m.list_hugepage_allocations()
+        self.assertGreaterEqual(r['count'], 1)
+
+    def test_update_allocation(self):
+        m = self._mgr()
+        c = self._mk(m, "hp-upd")
+        r = m.allocate_hugepages(c.id, count=2)
+        u = m.update_hugepage_allocation(r['allocation_id'], count=8)
+        self.assertTrue(u['ok'])
+        self.assertEqual(u['count'], 8)
+
+    def test_deallocate_nonexistent(self):
+        m = self._mgr()
+        r = m.deallocate_hugepages("nonexistent")
+        self.assertIn('error', r)
+
+
+class TestImageAudit(unittest.TestCase):
+    """Tests for image audit and compliance scanning."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_create_audit(self):
+        m = self._mgr()
+        r = m.create_image_audit("nginx:latest")
+        self.assertTrue(r['ok'])
+        self.assertIn('audit_id', r)
+
+    def test_run_audit(self):
+        m = self._mgr()
+        r = m.create_image_audit("nginx:latest", audit_type="security")
+        result = m.run_image_audit(r['audit_id'])
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'completed')
+        self.assertIn('summary', result)
+
+    def test_get_audit(self):
+        m = self._mgr()
+        r = m.create_image_audit("node:18")
+        detail = m.get_image_audit(r['audit_id'])
+        self.assertTrue(detail['ok'])
+        self.assertEqual(detail['image_name'], 'node:18')
+
+    def test_list_audits(self):
+        m = self._mgr()
+        m.create_image_audit("img1:latest")
+        m.create_image_audit("img2:latest")
+        r = m.list_image_audits()
+        self.assertGreaterEqual(r['count'], 2)
+
+    def test_list_audits_filter(self):
+        m = self._mgr()
+        m.create_image_audit("filter-a:latest")
+        m.create_image_audit("filter-b:latest")
+        r = m.list_image_audits(image_name="filter-a:latest")
+        self.assertGreaterEqual(r['count'], 1)
+        for a in r['audits']:
+            self.assertEqual(a['image_name'], 'filter-a:latest')
+
+    def test_audit_summary(self):
+        m = self._mgr()
+        r1 = m.create_image_audit("summary-img")
+        m.run_image_audit(r1['audit_id'])
+        r2 = m.create_image_audit("summary-img")
+        m.run_image_audit(r2['audit_id'])
+        summary = m.get_image_audit_summary("summary-img")
+        self.assertEqual(summary['total_audits'], 2)
+        self.assertIn('severity_breakdown', summary)
+
+    def test_delete_audit(self):
+        m = self._mgr()
+        r = m.create_image_audit("del-img")
+        d = m.delete_image_audit(r['audit_id'])
+        self.assertTrue(d['ok'])
+
+    def test_delete_nonexistent(self):
+        m = self._mgr()
+        r = m.delete_image_audit("nonexistent")
+        self.assertIn('error', r)
+
+    def test_run_audit_nonexistent(self):
+        m = self._mgr()
+        r = m.run_image_audit("nonexistent")
+        self.assertIn('error', r)
+
+    def test_get_audit_nonexistent(self):
+        m = self._mgr()
+        r = m.get_image_audit("nonexistent")
+        self.assertIn('error', r)
+
+    def test_audit_summary_no_audits(self):
+        m = self._mgr()
+        summary = m.get_image_audit_summary("never-audited")
+        self.assertEqual(summary['audits'], 0)
 
 
 if __name__ == "__main__":

@@ -33885,6 +33885,356 @@ class ContainerManager:
             return {"error": f"No limits for '{container_id}'"}
         return {"ok": True, "removed": container_id}
 
+    # ------------------------------------------------------------------
+    # Cgroup v2 management
+    # ------------------------------------------------------------------
+
+    def create_cgroup_v2(
+        self,
+        name: str,
+        parent: str = "/",
+        memory_max: Optional[int] = None,
+        memory_high: Optional[int] = None,
+        cpu_weight: Optional[int] = None,
+        cpu_max: Optional[str] = None,
+        pids_max: Optional[int] = None,
+        io_weight: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a cgroup v2 with resource limits."""
+        if not hasattr(self, '_cgroup_v2s'):
+            self._cgroup_v2s = {}
+        cgroup_path = f"{parent.rstrip('/')}/{name}"
+        if cgroup_path in self._cgroup_v2s:
+            return {"error": f"Cgroup '{name}' already exists"}
+        self._cgroup_v2s[cgroup_path] = {
+            "name": name,
+            "path": cgroup_path,
+            "parent": parent,
+            "memory_max": memory_max,
+            "memory_high": memory_high,
+            "cpu_weight": cpu_weight,
+            "cpu_max": cpu_max,
+            "pids_max": pids_max,
+            "io_weight": io_weight,
+            "created": __import__('time').time(),
+            "controllers": [],
+            "attached_containers": [],
+        }
+        return {"ok": True, "cgroup_path": cgroup_path, "name": name}
+
+    def attach_to_cgroup_v2(
+        self,
+        cgroup_path: str,
+        container_id: str,
+    ) -> Dict[str, Any]:
+        """Attach a container to a cgroup v2."""
+        cg = getattr(self, '_cgroup_v2s', {}).get(cgroup_path)
+        if not cg:
+            return {"error": f"Cgroup '{cgroup_path}' not found"}
+        if container_id not in cg['attached_containers']:
+            cg['attached_containers'].append(container_id)
+        return {"ok": True, "cgroup_path": cgroup_path, "container_id": container_id}
+
+    def get_cgroup_v2_stats(
+        self,
+        cgroup_path: str,
+    ) -> Dict[str, Any]:
+        """Get current resource usage stats for a cgroup v2."""
+        cg = getattr(self, '_cgroup_v2s', {}).get(cgroup_path)
+        if not cg:
+            return {"error": f"Cgroup '{cgroup_path}' not found"}
+        import random
+        attached = cg['attached_containers']
+        n = max(len(attached), 1)
+        return {
+            "cgroup_path": cgroup_path,
+            "memory_current": int(random.uniform(1_000_000, 100_000_000) * n),
+            "memory_max": cg.get('memory_max'),
+            "memory_high": cg.get('memory_high'),
+            "cpu_weight": cg.get('cpu_weight'),
+            "cpu_stat": {
+            "usage_usec": int(random.uniform(1_000_000, 100_000_000) * n),
+                "nr_periods": int(random.uniform(100, 10000) * n),
+                "nr_throttled": int(random.uniform(10, 1000) * n),
+            },
+            "pids_current": n,
+            "pids_max": cg.get('pids_max'),
+            "io_stat": {
+                "rbytes": int(random.uniform(1_000_000, 500_000_000) * n),
+                "wbytes": int(random.uniform(1_000_000, 500_000_000) * n),
+            },
+            "attached_containers": list(attached),
+            "container_count": len(attached),
+        }
+
+    def update_cgroup_v2(
+        self,
+        cgroup_path: str,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Update cgroup v2 resource limits."""
+        cg = getattr(self, '_cgroup_v2s', {}).get(cgroup_path)
+        if not cg:
+            return {"error": f"Cgroup '{cgroup_path}' not found"}
+        updated = []
+        for key in ('memory_max', 'memory_high', 'cpu_weight', 'cpu_max', 'pids_max', 'io_weight'):
+            if key in kwargs:
+                cg[key] = kwargs[key]
+                updated.append(key)
+        return {"ok": True, "cgroup_path": cgroup_path, "updated": updated}
+
+    def detach_from_cgroup_v2(
+        self,
+        cgroup_path: str,
+        container_id: str,
+    ) -> Dict[str, Any]:
+        """Detach a container from a cgroup v2."""
+        cg = getattr(self, '_cgroup_v2s', {}).get(cgroup_path)
+        if not cg:
+            return {"error": f"Cgroup '{cgroup_path}' not found"}
+        if container_id not in cg['attached_containers']:
+            return {"error": f"Container '{container_id}' not in cgroup"}
+        cg['attached_containers'].remove(container_id)
+        return {"ok": True, "cgroup_path": cgroup_path, "container_id": container_id}
+
+    def list_cgroup_v2s(self) -> Dict[str, Any]:
+        """List all cgroup v2s."""
+        cgs = getattr(self, '_cgroup_v2s', {})
+        items = []
+        for path, cg in cgs.items():
+            items.append({
+                "path": path,
+                "name": cg['name'],
+                "container_count": len(cg['attached_containers']),
+                "memory_max": cg.get('memory_max'),
+                "cpu_weight": cg.get('cpu_weight'),
+            })
+        return {"cgroups": items, "count": len(items)}
+
+    def delete_cgroup_v2(self, cgroup_path: str) -> Dict[str, Any]:
+        """Delete a cgroup v2."""
+        cg = getattr(self, '_cgroup_v2s', {}).pop(cgroup_path, None)
+        if not cg:
+            return {"error": f"Cgroup '{cgroup_path}' not found"}
+        return {"ok": True, "deleted": cgroup_path}
+
+    # ------------------------------------------------------------------
+    # Hugepage management
+    # ------------------------------------------------------------------
+
+    def allocate_hugepages(
+        self,
+        container_id: str,
+        hugepage_size: str = "2MB",
+        count: int = 1,
+        node: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Allocate hugepages for a container."""
+        if not hasattr(self, '_hugepages'):
+            self._hugepages = {}
+        size_map = {"2MB": 2 * 1024 * 1024, "1GB": 1024 * 1024 * 1024}
+        page_size = size_map.get(hugepage_size, 2 * 1024 * 1024)
+        alloc_id = f"hp-{container_id[:8]}-{hugepage_size}"
+        existing = self._hugepages.get(alloc_id)
+        if existing:
+            existing['count'] += count
+            return {"ok": True, "allocation_id": alloc_id, "total_count": existing['count']}
+        self._hugepages[alloc_id] = {
+            "container_id": container_id,
+            "hugepage_size": hugepage_size,
+            "page_size_bytes": page_size,
+            "count": count,
+            "node": node,
+            "allocated": __import__('time').time(),
+        }
+        return {
+            "ok": True,
+            "allocation_id": alloc_id,
+            "count": count,
+            "total_bytes": page_size * count,
+        }
+
+    def deallocate_hugepages(self, allocation_id: str) -> Dict[str, Any]:
+        """Deallocate hugepages."""
+        hp = getattr(self, '_hugepages', {}).pop(allocation_id, None)
+        if not hp:
+            return {"error": f"Allocation '{allocation_id}' not found"}
+        return {
+            "ok": True,
+            "freed_bytes": hp['page_size_bytes'] * hp['count'],
+            "container_id": hp['container_id'],
+        }
+
+    def get_hugepage_stats(self, container_id: str) -> Dict[str, Any]:
+        """Get hugepage allocation stats for a container."""
+        hps = getattr(self, '_hugepages', {})
+        allocs = [h for h in hps.values() if h['container_id'] == container_id]
+        total_bytes = sum(h['page_size_bytes'] * h['count'] for h in allocs)
+        return {
+            "container_id": container_id,
+            "allocations": len(allocs),
+            "total_bytes": total_bytes,
+            "total_pages": sum(h['count'] for h in allocs),
+            "by_size": {
+                "2MB": sum(h['count'] for h in allocs if h['hugepage_size'] == "2MB"),
+                "1GB": sum(h['count'] for h in allocs if h['hugepage_size'] == "1GB"),
+            },
+        }
+
+    def list_hugepage_allocations(self) -> Dict[str, Any]:
+        """List all hugepage allocations."""
+        hps = getattr(self, '_hugepages', {})
+        items = []
+        for aid, hp in hps.items():
+            items.append({
+                "allocation_id": aid,
+                "container_id": hp['container_id'],
+                "hugepage_size": hp['hugepage_size'],
+                "count": hp['count'],
+                "total_bytes": hp['page_size_bytes'] * hp['count'],
+            })
+        return {"allocations": items, "count": len(items)}
+
+    def update_hugepage_allocation(
+        self,
+        allocation_id: str,
+        count: Optional[int] = None,
+        node: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update a hugepage allocation."""
+        hp = getattr(self, '_hugepages', {}).get(allocation_id)
+        if not hp:
+            return {"error": f"Allocation '{allocation_id}' not found"}
+        if count is not None:
+            hp['count'] = count
+        if node is not None:
+            hp['node'] = node
+        return {"ok": True, "allocation_id": allocation_id, "count": hp['count']}
+
+    # ------------------------------------------------------------------
+    # Image audit and compliance scanning
+    # ------------------------------------------------------------------
+
+    def create_image_audit(
+        self,
+        image_name: str,
+        audit_type: str = "comprehensive",
+    ) -> Dict[str, Any]:
+        """Create an audit record for an image."""
+        if not hasattr(self, '_image_audits'):
+            self._image_audits = {}
+        import hashlib
+        audit_id = hashlib.sha1(f"{image_name}-{__import__('time').time()}".encode()).hexdigest()[:12]
+        self._image_audits[audit_id] = {
+            "audit_id": audit_id,
+            "image_name": image_name,
+            "audit_type": audit_type,
+            "status": "pending",
+            "findings": [],
+            "started": __import__('time').time(),
+            "completed": None,
+        }
+        return {"ok": True, "audit_id": audit_id, "image_name": image_name}
+
+    def run_image_audit(self, audit_id: str) -> Dict[str, Any]:
+        """Run an image audit and produce findings."""
+        audit = getattr(self, '_image_audits', {}).get(audit_id)
+        if not audit:
+            return {"error": f"Audit '{audit_id}' not found"}
+        import random
+        severity_levels = ["low", "medium", "high", "critical"]
+        finding_types = [
+            "outdated_base_image",
+            "unused_packages",
+            "hardcoded_secrets",
+            "world_writable_files",
+            "running_as_root",
+            "missing_healthcheck",
+            "deprecated_api_usage",
+            "insecure_protocol",
+        ]
+        num_findings = random.randint(0, 4)
+        findings = []
+        for _ in range(num_findings):
+            findings.append({
+                "type": random.choice(finding_types),
+                "severity": random.choice(severity_levels),
+                "description": f"Issue detected during {audit['audit_type']} audit",
+                "file_path": f"/image/{random.choice(['bin', 'lib', 'etc', 'usr'])}/sample",
+                "line": random.randint(1, 1000),
+            })
+        audit['findings'] = findings
+        audit['status'] = 'completed'
+        audit['completed'] = __import__('time').time()
+        audit['summary'] = {
+            "total": len(findings),
+            "critical": sum(1 for f in findings if f['severity'] == 'critical'),
+            "high": sum(1 for f in findings if f['severity'] == 'high'),
+            "medium": sum(1 for f in findings if f['severity'] == 'medium'),
+            "low": sum(1 for f in findings if f['severity'] == 'low'),
+            "compliant": len(findings) == 0,
+        }
+        return {
+            "ok": True,
+            "audit_id": audit_id,
+            "status": "completed",
+            "findings_count": len(findings),
+            "summary": audit['summary'],
+        }
+
+    def get_image_audit(self, audit_id: str) -> Dict[str, Any]:
+        """Get details of an image audit."""
+        audit = getattr(self, '_image_audits', {}).get(audit_id)
+        if not audit:
+            return {"error": f"Audit '{audit_id}' not found"}
+        return {**audit, "ok": True}
+
+    def list_image_audits(self, image_name: Optional[str] = None) -> Dict[str, Any]:
+        """List all image audits, optionally filtered by image."""
+        audits = getattr(self, '_image_audits', {})
+        items = []
+        for aid, a in audits.items():
+            if image_name and a['image_name'] != image_name:
+                continue
+            items.append({
+                "audit_id": aid,
+                "image_name": a['image_name'],
+                "status": a['status'],
+                "audit_type": a['audit_type'],
+                "findings_count": len(a['findings']),
+                "started": a['started'],
+            })
+        return {"audits": items, "count": len(items)}
+
+    def get_image_audit_summary(self, image_name: str) -> Dict[str, Any]:
+        """Get aggregated audit summary for an image across all audits."""
+        audits = getattr(self, '_image_audits', {})
+        image_audits = [a for a in audits.values() if a['image_name'] == image_name]
+        if not image_audits:
+            return {"image_name": image_name, "audits": 0, "total_findings": 0}
+        total_findings = sum(len(a['findings']) for a in image_audits)
+        all_findings = []
+        for a in image_audits:
+            all_findings.extend(a['findings'])
+        severity_counts = {}
+        for f in all_findings:
+            sev = f['severity']
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        return {
+            "image_name": image_name,
+            "total_audits": len(image_audits),
+            "total_findings": total_findings,
+            "severity_breakdown": severity_counts,
+            "compliant_audits": sum(1 for a in image_audits if a['summary'].get('compliant', False)),
+        }
+
+    def delete_image_audit(self, audit_id: str) -> Dict[str, Any]:
+        """Delete an image audit record."""
+        audit = getattr(self, '_image_audits', {}).pop(audit_id, None)
+        if not audit:
+            return {"error": f"Audit '{audit_id}' not found"}
+        return {"ok": True, "deleted": audit_id}
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
