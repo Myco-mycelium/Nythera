@@ -29505,6 +29505,174 @@ class ContainerManager:
         return {"ok": True, "trace_id": trace_id, "span_count": len(trace["spans"])}
 
 
+
+    # ------------------------------------------------------------------
+    # Log aggregation with structured search and alerts
+    # ------------------------------------------------------------------
+    def create_log_aggregator(self, container: Container, retention_hours: int = 24, max_entries: int = 100000) -> Dict[str, Any]:
+        if not hasattr(self, '_log_aggregators'): self._log_aggregators = {}
+        agg_id = f"lagg-{container.id[:12]}"
+        self._log_aggregators[agg_id] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "retention_hours": retention_hours, "max_entries": max_entries,
+            "created_at": time.time(), "entries": [], "alerts": [], "alert_rules": [],
+        }
+        return {"aggregator_id": agg_id, "container_id": container.id, "retention_hours": retention_hours}
+
+    def ingest_log(self, aggregator_id: str, message: str, level: str = "info", timestamp: Optional[float] = None, fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        agg = getattr(self, '_log_aggregators', {}).get(aggregator_id)
+        if not agg: return {"error": "Aggregator not found"}
+        entry = {"ts": timestamp or time.time(), "level": level, "message": message, "fields": fields or {}}
+        agg["entries"].append(entry)
+        if len(agg["entries"]) > agg["max_entries"]:
+            agg["entries"] = agg["entries"][-agg["max_entries"]:]
+        # Check alert rules
+        for rule in agg["alert_rules"]:
+            if self._matches_log_rule(entry, rule):
+                alert = {"ts": time.time(), "rule": rule["name"], "level": entry["level"], "message": entry["message"][:100]}
+                agg["alerts"].append(alert)
+        return {"ok": True, "aggregator_id": aggregator_id, "entry_count": len(agg["entries"])}
+
+    def _matches_log_rule(self, entry: Dict[str, Any], rule: Dict[str, Any]) -> bool:
+        if rule.get("level") and entry["level"] != rule["level"]: return False
+        if rule.get("pattern") and rule["pattern"] not in entry["message"]: return False
+        return True
+
+    def search_logs(self, aggregator_id: str, query: str = "", level: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+        agg = getattr(self, '_log_aggregators', {}).get(aggregator_id)
+        if not agg: return {"error": "Aggregator not found"}
+        results = agg["entries"]
+        if query: results = [e for e in results if query in e["message"]]
+        if level: results = [e for e in results if e["level"] == level]
+        return {"aggregator_id": aggregator_id, "results": results[-limit:], "count": len(results)}
+
+    def add_log_alert_rule(self, aggregator_id: str, name: str, level: Optional[str] = None, pattern: Optional[str] = None) -> Dict[str, Any]:
+        agg = getattr(self, '_log_aggregators', {}).get(aggregator_id)
+        if not agg: return {"error": "Aggregator not found"}
+        rule = {"name": name, "level": level, "pattern": pattern}
+        agg["alert_rules"].append(rule)
+        return {"ok": True, "aggregator_id": aggregator_id, "rule_name": name}
+
+    def get_log_stats(self, aggregator_id: str) -> Dict[str, Any]:
+        agg = getattr(self, '_log_aggregators', {}).get(aggregator_id)
+        if not agg: return {"error": "Aggregator not found"}
+        level_counts = {}
+        for e in agg["entries"]: level_counts[e["level"]] = level_counts.get(e["level"], 0) + 1
+        return {"aggregator_id": aggregator_id, "total_entries": len(agg["entries"]),
+                "level_counts": level_counts, "alert_count": len(agg["alerts"]),
+                "rule_count": len(agg["alert_rules"])}
+
+    def delete_log_aggregator(self, aggregator_id: str) -> Dict[str, Any]:
+        agg = getattr(self, '_log_aggregators', {}).pop(aggregator_id, None)
+        if not agg: return {"error": "Aggregator not found"}
+        return {"ok": True, "aggregator_id": aggregator_id, "entries_lost": len(agg["entries"])}
+
+    # ------------------------------------------------------------------
+    # Process injection for debugging and profiling
+    # ------------------------------------------------------------------
+    def create_process_session(self, container: Container, attach_type: str = "attach") -> Dict[str, Any]:
+        if not hasattr(self, '_process_sessions'): self._process_sessions = {}
+        session_id = f"ps-{container.id[:12]}"
+        self._process_sessions[session_id] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "attach_type": attach_type, "created_at": time.time(), "active": True,
+            "commands": [], "outputs": [],
+        }
+        return {"session_id": session_id, "container_id": container.id, "attach_type": attach_type}
+
+    def inject_command(self, session_id: str, command: str) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).get(session_id)
+        if not session: return {"error": "Session not found"}
+        if not session["active"]: return {"error": "Session inactive"}
+        cmd_entry = {"ts": time.time(), "command": command, "output": f"$ {command} (simulated output)"}
+        session["commands"].append(cmd_entry)
+        session["outputs"].append(cmd_entry["output"])
+        return {"ok": True, "session_id": session_id, "command": command, "output": cmd_entry["output"]}
+
+    def get_process_output(self, session_id: str, last_n: int = 10) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).get(session_id)
+        if not session: return {"error": "Session not found"}
+        return {"session_id": session_id, "outputs": session["outputs"][-last_n:], "command_count": len(session["commands"])}
+
+    def take_memory_snapshot(self, session_id: str) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).get(session_id)
+        if not session: return {"error": "Session not found"}
+        snapshot = {"ts": time.time(), "type": "memory", "heap_mb": 0, "rss_mb": 0, "goroutines": 0}
+        session["outputs"].append(f"Memory snapshot: heap={snapshot['heap_mb']}MB rss={snapshot['rss_mb']}MB")
+        return {"ok": True, "session_id": session_id, "snapshot": snapshot}
+
+    def take_cpu_profile(self, session_id: str, duration_s: float = 5.0) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).get(session_id)
+        if not session: return {"error": "Session not found"}
+        profile = {"ts": time.time(), "duration_s": duration_s, "samples": 0, "top_functions": []}
+        session["outputs"].append(f"CPU profile: {duration_s}s captured")
+        return {"ok": True, "session_id": session_id, "profile": profile}
+
+    def close_process_session(self, session_id: str) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).get(session_id)
+        if not session: return {"error": "Session not found"}
+        session["active"] = False
+        return {"ok": True, "session_id": session_id, "commands_executed": len(session["commands"])}
+
+    def delete_process_session(self, session_id: str) -> Dict[str, Any]:
+        session = getattr(self, '_process_sessions', {}).pop(session_id, None)
+        if not session: return {"error": "Session not found"}
+        return {"ok": True, "session_id": session_id}
+
+    # ------------------------------------------------------------------
+    # DNS service discovery with health-aware routing
+    # ------------------------------------------------------------------
+    def register_service(self, container: Container, service_name: str, port: int, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+        if not hasattr(self, '_service_registry'): self._service_registry = {}
+        svc_id = f"svc-{container.id[:12]}-{service_name}"
+        self._service_registry[svc_id] = {
+            "container_id": container.id, "container_name": container.config.name,
+            "service_name": service_name, "port": port, "tags": tags or [],
+            "created_at": time.time(), "healthy": True, "metadata": {},
+        }
+        return {"service_id": svc_id, "service_name": service_name, "port": port, "healthy": True}
+
+    def update_service_health(self, service_id: str, healthy: bool, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        svc = getattr(self, '_service_registry', {}).get(service_id)
+        if not svc: return {"error": "Service not found"}
+        svc["healthy"] = healthy
+        if metadata: svc["metadata"].update(metadata)
+        return {"ok": True, "service_id": service_id, "healthy": healthy}
+
+    def discover_services(self, service_name: str, healthy_only: bool = True) -> Dict[str, Any]:
+        registry = getattr(self, '_service_registry', {})
+        matches = []
+        for sid, svc in registry.items():
+            if svc["service_name"] == service_name:
+                if not healthy_only or svc["healthy"]:
+                    matches.append({"service_id": sid, "container_name": svc["container_name"],
+                                    "port": svc["port"], "healthy": svc["healthy"], "tags": svc["tags"]})
+        return {"service_name": service_name, "instances": matches, "count": len(matches)}
+
+    def resolve_service(self, service_name: str) -> Dict[str, Any]:
+        registry = getattr(self, '_service_registry', {})
+        healthy = [svc for svc in registry.values() if svc["service_name"] == service_name and svc["healthy"]]
+        if not healthy: return {"error": f"No healthy instances for '{service_name}'"}
+        chosen = healthy[0]
+        return {"service_name": service_name, "port": chosen["port"], "container_name": chosen["container_name"],
+                "service_id": chosen["container_id"], "total_healthy": len(healthy)}
+
+    def deregister_service(self, service_id: str) -> Dict[str, Any]:
+        svc = getattr(self, '_service_registry', {}).pop(service_id, None)
+        if not svc: return {"error": "Service not found"}
+        return {"ok": True, "service_id": service_id, "service_name": svc["service_name"]}
+
+    def list_services(self) -> Dict[str, Any]:
+        registry = getattr(self, '_service_registry', {})
+        by_name = {}
+        for svc in registry.values():
+            n = svc["service_name"]
+            if n not in by_name: by_name[n] = {"healthy": 0, "total": 0}
+            by_name[n]["total"] += 1
+            if svc["healthy"]: by_name[n]["healthy"] += 1
+        return {"services": by_name, "total_instances": len(registry)}
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

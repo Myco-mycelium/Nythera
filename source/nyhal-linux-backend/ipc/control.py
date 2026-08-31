@@ -10874,6 +10874,51 @@ class ControlService:
         self._reply(sp,s,cid,{"ok":True,**self.container_manager.aggregate_traces(r.get("container_id",""), r.get("operation"), r.get("limit",100))})
     def _h_delete_trace(self, s, sp, cid, r):
         self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_trace(r.get("trace_id",""))})
+
+    def _h_create_log_aggregator(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_log_aggregator(co, r.get("retention_hours",24), r.get("max_entries",100000))})
+    def _h_ingest_log(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.ingest_log(r.get("aggregator_id",""), r.get("message",""), r.get("level","info"))})
+    def _h_search_logs(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.search_logs(r.get("aggregator_id",""), r.get("query",""), r.get("level"), r.get("limit",100))})
+    def _h_add_log_alert_rule(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.add_log_alert_rule(r.get("aggregator_id",""), r.get("name",""), r.get("level"), r.get("pattern"))})
+    def _h_get_log_stats(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_log_stats(r.get("aggregator_id",""))})
+    def _h_delete_log_aggregator(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_log_aggregator(r.get("aggregator_id",""))})
+    def _h_create_process_session(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_process_session(co, r.get("attach_type","attach"))})
+    def _h_inject_command(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.inject_command(r.get("session_id",""), r.get("command",""))})
+    def _h_get_process_output(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_process_output(r.get("session_id",""), r.get("last_n",10))})
+    def _h_take_memory_snapshot(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.take_memory_snapshot(r.get("session_id",""))})
+    def _h_take_cpu_profile(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.take_cpu_profile(r.get("session_id",""), r.get("duration_s",5.0))})
+    def _h_close_process_session(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.close_process_session(r.get("session_id",""))})
+    def _h_delete_process_session(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_process_session(r.get("session_id",""))})
+    def _h_register_service(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.register_service(co, r.get("service_name",""), r.get("port",0), r.get("tags"))})
+    def _h_update_service_health(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.update_service_health(r.get("service_id",""), r.get("healthy",True), r.get("metadata"))})
+    def _h_discover_services(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.discover_services(r.get("service_name",""), r.get("healthy_only",True))})
+    def _h_resolve_service(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.resolve_service(r.get("service_name",""))})
+    def _h_deregister_service(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.deregister_service(r.get("service_id",""))})
+    def _h_list_services(self, s, sp, cid):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.list_services()})
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

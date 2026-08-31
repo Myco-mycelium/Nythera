@@ -4979,6 +4979,26 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
     if command == "aggregate-traces": return {"service":"control","op":"aggregate_traces","container_id":args.container_id}
     if command == "delete-trace": return {"service":"control","op":"delete_trace","trace_id":args.trace_id}
 
+    if command == "create-log-aggregator": return {"service":"control","op":"create_log_aggregator","container_id":args.container_id}
+    if command == "ingest-log": return {"service":"control","op":"ingest_log","aggregator_id":args.aggregator_id,"message":args.message,"level":getattr(args,"level","info")}
+    if command == "search-logs": return {"service":"control","op":"search_logs","aggregator_id":args.aggregator_id,"query":getattr(args,"query",""),"level":getattr(args,"level",None)}
+    if command == "add-log-alert-rule": return {"service":"control","op":"add_log_alert_rule","aggregator_id":args.aggregator_id,"name":args.name,"level":getattr(args,"level",None),"pattern":getattr(args,"pattern",None)}
+    if command == "log-stats": return {"service":"control","op":"get_log_stats","aggregator_id":args.aggregator_id}
+    if command == "delete-log-aggregator": return {"service":"control","op":"delete_log_aggregator","aggregator_id":args.aggregator_id}
+    if command == "create-process-session": return {"service":"control","op":"create_process_session","container_id":args.container_id}
+    if command == "inject-command": return {"service":"control","op":"inject_command","session_id":args.session_id,"command":args.command}
+    if command == "process-output": return {"service":"control","op":"get_process_output","session_id":args.session_id}
+    if command == "memory-snapshot": return {"service":"control","op":"take_memory_snapshot","session_id":args.session_id}
+    if command == "cpu-profile": return {"service":"control","op":"take_cpu_profile","session_id":args.session_id}
+    if command == "close-process-session": return {"service":"control","op":"close_process_session","session_id":args.session_id}
+    if command == "delete-process-session": return {"service":"control","op":"delete_process_session","session_id":args.session_id}
+    if command == "register-service": return {"service":"control","op":"register_service","container_id":args.container_id,"service_name":args.service_name,"port":args.port}
+    if command == "update-service-health": return {"service":"control","op":"update_service_health","service_id":args.service_id,"healthy":args.healthy}
+    if command == "discover-services": return {"service":"control","op":"discover_services","service_name":args.service_name}
+    if command == "resolve-service": return {"service":"control","op":"resolve_service","service_name":args.service_name}
+    if command == "deregister-service": return {"service":"control","op":"deregister_service","service_id":args.service_id}
+    if command == "list-services": return {"service":"control","op":"list_services"}
+
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -13744,6 +13764,26 @@ def build_parser() -> argparse.ArgumentParser:
     p16 = sub.add_parser("trace-detail"); p16.add_argument("--trace-id",required=True); p16.set_defaults(command="trace-detail")
     p17 = sub.add_parser("aggregate-traces"); p17.add_argument("--container-id",required=True); p17.set_defaults(command="aggregate-traces")
     p18 = sub.add_parser("delete-trace"); p18.add_argument("--trace-id",required=True); p18.set_defaults(command="delete-trace")
+
+    p=sub.add_parser("create-log-aggregator"); p.add_argument("--container-id",required=True); p.set_defaults(command="create-log-aggregator")
+    p=sub.add_parser("ingest-log"); p.add_argument("--aggregator-id",required=True); p.add_argument("--message",required=True); p.add_argument("--level",default="info"); p.set_defaults(command="ingest-log")
+    p=sub.add_parser("search-logs"); p.add_argument("--aggregator-id",required=True); p.add_argument("--query",default=""); p.set_defaults(command="search-logs")
+    p=sub.add_parser("add-log-alert-rule"); p.add_argument("--aggregator-id",required=True); p.add_argument("--name",required=True); p.set_defaults(command="add-log-alert-rule")
+    p=sub.add_parser("log-stats"); p.add_argument("--aggregator-id",required=True); p.set_defaults(command="log-stats")
+    p=sub.add_parser("delete-log-aggregator"); p.add_argument("--aggregator-id",required=True); p.set_defaults(command="delete-log-aggregator")
+    p=sub.add_parser("create-process-session"); p.add_argument("--container-id",required=True); p.set_defaults(command="create-process-session")
+    p=sub.add_parser("inject-command"); p.add_argument("--session-id",required=True); p.add_argument("--command",required=True); p.set_defaults(command="inject-command")
+    p=sub.add_parser("process-output"); p.add_argument("--session-id",required=True); p.set_defaults(command="process-output")
+    p=sub.add_parser("memory-snapshot"); p.add_argument("--session-id",required=True); p.set_defaults(command="memory-snapshot")
+    p=sub.add_parser("cpu-profile"); p.add_argument("--session-id",required=True); p.set_defaults(command="cpu-profile")
+    p=sub.add_parser("close-process-session"); p.add_argument("--session-id",required=True); p.set_defaults(command="close-process-session")
+    p=sub.add_parser("delete-process-session"); p.add_argument("--session-id",required=True); p.set_defaults(command="delete-process-session")
+    p=sub.add_parser("register-service"); p.add_argument("--container-id",required=True); p.add_argument("--service-name",required=True); p.add_argument("--port",type=int,required=True); p.set_defaults(command="register-service")
+    p=sub.add_parser("update-service-health"); p.add_argument("--service-id",required=True); p.add_argument("--healthy",action="store_true"); p.set_defaults(command="update-service-health")
+    p=sub.add_parser("discover-services"); p.add_argument("--service-name",required=True); p.set_defaults(command="discover-services")
+    p=sub.add_parser("resolve-service"); p.add_argument("--service-name",required=True); p.set_defaults(command="resolve-service")
+    p=sub.add_parser("deregister-service"); p.add_argument("--service-id",required=True); p.set_defaults(command="deregister-service")
+    sub.add_parser("list-services").set_defaults(command="list-services")
     return parser
 
 

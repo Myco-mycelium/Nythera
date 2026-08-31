@@ -33517,6 +33517,80 @@ class TestDistributedTracing(unittest.TestCase):
     def test_delete_trace(self):
         m=self._mgr(); c=self._mk(m,"dt5"); r=m.create_trace(c,"op"); self.assertTrue(m.delete_trace(r["trace_id"])["ok"])
 
+class TestLogAggregation(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create(self):
+        m=self._mgr(); c=self._mk(m,"la1"); r=m.create_log_aggregator(c); self.assertIn("aggregator_id",r)
+    def test_ingest(self):
+        m=self._mgr(); c=self._mk(m,"la2"); r=m.create_log_aggregator(c); self.assertTrue(m.ingest_log(r["aggregator_id"],"hello")["ok"])
+    def test_search(self):
+        m=self._mgr(); c=self._mk(m,"la3"); r=m.create_log_aggregator(c); aid=r["aggregator_id"]
+        m.ingest_log(aid,"request started"); m.ingest_log(aid,"request completed")
+        r2=m.search_logs(aid,"request"); self.assertEqual(r2["count"],2)
+    def test_alert_rule(self):
+        m=self._mgr(); c=self._mk(m,"la4"); r=m.create_log_aggregator(c); aid=r["aggregator_id"]
+        m.add_log_alert_rule(aid,"errors",level="error")
+        m.ingest_log(aid,"something failed",level="error")
+        r2=m.get_log_stats(aid); self.assertEqual(r2["alert_count"],1)
+    def test_stats(self):
+        m=self._mgr(); c=self._mk(m,"la5"); r=m.create_log_aggregator(c); aid=r["aggregator_id"]
+        m.ingest_log(aid,"a",level="info"); m.ingest_log(aid,"b",level="error")
+        r2=m.get_log_stats(aid); self.assertEqual(r2["level_counts"]["info"],1)
+    def test_delete(self):
+        m=self._mgr(); c=self._mk(m,"la6"); r=m.create_log_aggregator(c); self.assertTrue(m.delete_log_aggregator(r["aggregator_id"])["ok"])
+
+
+class TestProcessInjection(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_create(self):
+        m=self._mgr(); c=self._mk(m,"pi1"); r=m.create_process_session(c); self.assertIn("session_id",r)
+    def test_inject(self):
+        m=self._mgr(); c=self._mk(m,"pi2"); r=m.create_process_session(c); sid=r["session_id"]
+        r2=m.inject_command(sid,"ls -la"); self.assertTrue(r2["ok"])
+    def test_output(self):
+        m=self._mgr(); c=self._mk(m,"pi3"); r=m.create_process_session(c); sid=r["session_id"]
+        m.inject_command(sid,"echo hello"); r2=m.get_process_output(sid); self.assertEqual(r2["command_count"],1)
+    def test_memory_snapshot(self):
+        m=self._mgr(); c=self._mk(m,"pi4"); r=m.create_process_session(c); sid=r["session_id"]
+        r2=m.take_memory_snapshot(sid); self.assertIn("snapshot",r2)
+    def test_close(self):
+        m=self._mgr(); c=self._mk(m,"pi5"); r=m.create_process_session(c); sid=r["session_id"]
+        m.close_process_session(sid); r2=m.inject_command(sid,"echo"); self.assertIn("error",r2)
+    def test_delete(self):
+        m=self._mgr(); c=self._mk(m,"pi6"); r=m.create_process_session(c); self.assertTrue(m.delete_process_session(r["session_id"])["ok"])
+
+
+class TestServiceDiscovery(unittest.TestCase):
+    def _mgr(self):
+        from backend.container import ContainerManager; return ContainerManager()
+    def _mk(self, m, n):
+        from backend.container import ContainerConfig; return m.create(ContainerConfig(name=n,command=["sleep","10"]))
+    def test_register(self):
+        m=self._mgr(); c=self._mk(m,"sd1"); r=m.register_service(c,"web",8080); self.assertTrue(r["healthy"])
+    def test_discover(self):
+        m=self._mgr(); c1=self._mk(m,"sd2a"); c2=self._mk(m,"sd2b"); m.register_service(c1,"web",8080); m.register_service(c2,"web",8081)
+        r2=m.discover_services("web"); self.assertEqual(r2["count"],2)
+    def test_health_filter(self):
+        m=self._mgr(); c1=self._mk(m,"sd3a"); c2=self._mk(m,"sd3b")
+        r1=m.register_service(c1,"api",3000); r2=m.register_service(c2,"api",3001)
+        m.update_service_health(r1["service_id"],False)
+        r3=m.discover_services("api",healthy_only=True); self.assertEqual(r3["count"],1)
+    def test_resolve(self):
+        m=self._mgr(); c=self._mk(m,"sd4"); m.register_service(c,"db",5432)
+        r2=m.resolve_service("db"); self.assertEqual(r2["port"],5432)
+    def test_list_services(self):
+        m=self._mgr(); c=self._mk(m,"sd5"); m.register_service(c,"web",80); m.register_service(c,"api",3000)
+        r2=m.list_services(); self.assertEqual(r2["total_instances"],2)
+    def test_deregister(self):
+        m=self._mgr(); c=self._mk(m,"sd6"); r=m.register_service(c,"web",80)
+        m.deregister_service(r["service_id"]); r2=m.discover_services("web"); self.assertEqual(r2["count"],0)
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -33717,6 +33791,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestCanaryDeployment))
     suite.addTests(loader.loadTestsFromTestCase(TestServiceDiscovery))
     suite.addTests(loader.loadTestsFromTestCase(TestDistributedTracing))
+    suite.addTests(loader.loadTestsFromTestCase(TestLogAggregation))
+    suite.addTests(loader.loadTestsFromTestCase(TestProcessInjection))
+    suite.addTests(loader.loadTestsFromTestCase(TestServiceDiscovery))
     suite.addTests(loader.loadTestsFromTestCase(TestChaosEngineering))
     suite.addTests(loader.loadTestsFromTestCase(TestCostAllocation))
     suite.addTests(loader.loadTestsFromTestCase(TestSLOTracking))
