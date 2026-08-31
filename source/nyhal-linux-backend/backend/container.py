@@ -27031,6 +27031,546 @@ class ContainerManager:
         }
 
 
+
+    # ------------------------------------------------------------------
+    # Network latency monitoring and bandwidth tracking
+    # ------------------------------------------------------------------
+
+    def create_network_monitor(
+        self,
+        container: Container,
+        targets: Optional[List[Dict[str, Any]]] = None,
+        interval_s: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Create a network monitor for a container with target endpoints."""
+        if not hasattr(self, '_net_monitors'):
+            self._net_monitors = {}
+        monitor_id = f"mon-{container.id[:12]}"
+        self._net_monitors[monitor_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "targets": targets or [],
+            "interval_s": interval_s,
+            "created_at": time.time(),
+            "active": True,
+            "latency_history": {},
+            "bandwidth_history": {},
+        }
+        # Initialize per-target history
+        for t in (targets or []):
+            key = f"{t.get('host', '?')}:{t.get('port', 80)}"
+            self._net_monitors[monitor_id]["latency_history"][key] = []
+            self._net_monitors[monitor_id]["bandwidth_history"][key] = []
+        return {
+            "monitor_id": monitor_id,
+            "container_id": container.id,
+            "targets": targets or [],
+            "interval_s": interval_s,
+            "active": True,
+        }
+
+    def record_network_latency(
+        self,
+        monitor_id: str,
+        target: str,
+        latency_ms: float,
+    ) -> Dict[str, Any]:
+        """Record a latency measurement for a target."""
+        mon = getattr(self, '_net_monitors', {}).get(monitor_id)
+        if not mon:
+            return {"error": "Monitor not found"}
+        if target not in mon["latency_history"]:
+            mon["latency_history"][target] = []
+        mon["latency_history"][target].append({
+            "ts": time.time(),
+            "latency_ms": latency_ms,
+        })
+        # Keep last 1000 samples
+        mon["latency_history"][target] = mon["latency_history"][target][-1000:]
+        return {"ok": True, "target": target, "latency_ms": latency_ms}
+
+    def record_bandwidth(
+        self,
+        monitor_id: str,
+        target: str,
+        bytes_sent: int,
+        bytes_received: int,
+    ) -> Dict[str, Any]:
+        """Record bandwidth usage for a target."""
+        mon = getattr(self, '_net_monitors', {}).get(monitor_id)
+        if not mon:
+            return {"error": "Monitor not found"}
+        if target not in mon["bandwidth_history"]:
+            mon["bandwidth_history"][target] = []
+        mon["bandwidth_history"][target].append({
+            "ts": time.time(),
+            "bytes_sent": bytes_sent,
+            "bytes_received": bytes_received,
+        })
+        mon["bandwidth_history"][target] = mon["bandwidth_history"][target][-1000:]
+        return {"ok": True, "target": target}
+
+    def get_network_latency_stats(self, monitor_id: str) -> Dict[str, Any]:
+        """Get aggregated latency statistics per target."""
+        mon = getattr(self, '_net_monitors', {}).get(monitor_id)
+        if not mon:
+            return {"error": "Monitor not found"}
+        stats = {}
+        for target, samples in mon["latency_history"].items():
+            if not samples:
+                stats[target] = {"count": 0}
+                continue
+            latencies = [s["latency_ms"] for s in samples]
+            sorted_l = sorted(latencies)
+            n = len(sorted_l)
+            stats[target] = {
+                "count": n,
+                "avg_ms": round(sum(latencies) / n, 2),
+                "min_ms": round(sorted_l[0], 2),
+                "max_ms": round(sorted_l[-1], 2),
+                "p50_ms": round(sorted_l[n // 2], 2),
+                "p95_ms": round(sorted_l[int(n * 0.95)], 2) if n >= 2 else round(sorted_l[-1], 2),
+                "p99_ms": round(sorted_l[int(n * 0.99)], 2) if n >= 2 else round(sorted_l[-1], 2),
+            }
+        return {"monitor_id": monitor_id, "targets": stats}
+
+    def get_bandwidth_stats(self, monitor_id: str) -> Dict[str, Any]:
+        """Get aggregated bandwidth statistics per target."""
+        mon = getattr(self, '_net_monitors', {}).get(monitor_id)
+        if not mon:
+            return {"error": "Monitor not found"}
+        stats = {}
+        for target, samples in mon["bandwidth_history"].items():
+            if not samples:
+                stats[target] = {"count": 0}
+                continue
+            total_sent = sum(s["bytes_sent"] for s in samples)
+            total_recv = sum(s["bytes_received"] for s in samples)
+            elapsed = samples[-1]["ts"] - samples[0]["ts"] if len(samples) > 1 else 1.0
+            elapsed = max(elapsed, 0.001)
+            stats[target] = {
+                "count": len(samples),
+                "total_sent_bytes": total_sent,
+                "total_received_bytes": total_recv,
+                "avg_sent_bps": round(total_sent / elapsed, 1),
+                "avg_received_bps": round(total_recv / elapsed, 1),
+            }
+        return {"monitor_id": monitor_id, "targets": stats}
+
+    def detect_network_anomalies(
+        self,
+        monitor_id: str,
+        z_threshold: float = 3.0,
+    ) -> Dict[str, Any]:
+        """Detect network anomalies using Z-score on latency samples."""
+        mon = getattr(self, '_net_monitors', {}).get(monitor_id)
+        if not mon:
+            return {"error": "Monitor not found"}
+        anomalies = []
+        for target, samples in mon["latency_history"].items():
+            if len(samples) < 10:
+                continue
+            latencies = [s["latency_ms"] for s in samples]
+            mean = sum(latencies) / len(latencies)
+            variance = sum((l - mean) ** 2 for l in latencies) / len(latencies)
+            std = variance ** 0.5
+            if std < 0.001:
+                continue
+            for s in samples[-5:]:
+                z = (s["latency_ms"] - mean) / std
+                if abs(z) > z_threshold:
+                    anomalies.append({
+                        "target": target,
+                        "latency_ms": s["latency_ms"],
+                        "z_score": round(z, 2),
+                        "mean_ms": round(mean, 2),
+                        "std_ms": round(std, 2),
+                        "ts": s["ts"],
+                    })
+        return {"monitor_id": monitor_id, "anomalies": anomalies, "count": len(anomalies)}
+
+    def stop_network_monitor(self, monitor_id: str) -> Dict[str, Any]:
+        """Stop and remove a network monitor."""
+        mon = getattr(self, '_net_monitors', {}).pop(monitor_id, None)
+        if not mon:
+            return {"error": "Monitor not found"}
+        return {"ok": True, "monitor_id": monitor_id, "samples_collected": sum(
+            len(v) for v in mon["latency_history"].values()
+        )}
+
+    # ------------------------------------------------------------------
+    # Storage I/O profiling and caching layer
+    # ------------------------------------------------------------------
+
+    def create_io_profiler(
+        self,
+        container: Container,
+        sample_interval_s: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Create an I/O profiler for a container."""
+        if not hasattr(self, '_io_profilers'):
+            self._io_profilers = {}
+        profiler_id = f"io-{container.id[:12]}"
+        self._io_profilers[profiler_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "sample_interval_s": sample_interval_s,
+            "created_at": time.time(),
+            "active": True,
+            "samples": [],
+            "path_stats": {},
+        }
+        return {
+            "profiler_id": profiler_id,
+            "container_id": container.id,
+            "sample_interval_s": sample_interval_s,
+        }
+
+    def record_io_sample(
+        self,
+        profiler_id: str,
+        path: str,
+        op: str,
+        bytes_transferred: int,
+        latency_ms: float,
+    ) -> Dict[str, Any]:
+        """Record an I/O operation sample."""
+        prof = getattr(self, '_io_profilers', {}).get(profiler_id)
+        if not prof:
+            return {"error": "Profiler not found"}
+        prof["samples"].append({
+            "ts": time.time(),
+            "path": path,
+            "op": op,
+            "bytes": bytes_transferred,
+            "latency_ms": latency_ms,
+        })
+        prof["samples"] = prof["samples"][-5000:]
+        # Update path stats
+        if path not in prof["path_stats"]:
+            prof["path_stats"][path] = {
+                "read_count": 0, "write_count": 0,
+                "read_bytes": 0, "write_bytes": 0,
+                "read_latencies": [], "write_latencies": [],
+            }
+        ps = prof["path_stats"][path]
+        if op == "read":
+            ps["read_count"] += 1
+            ps["read_bytes"] += bytes_transferred
+            ps["read_latencies"].append(latency_ms)
+        else:
+            ps["write_count"] += 1
+            ps["write_bytes"] += bytes_transferred
+            ps["write_latencies"].append(latency_ms)
+        # Trim
+        ps["read_latencies"] = ps["read_latencies"][-500:]
+        ps["write_latencies"] = ps["write_latencies"][-500:]
+        return {"ok": True, "profiler_id": profiler_id, "path": path}
+
+    def get_io_profile(self, profiler_id: str) -> Dict[str, Any]:
+        """Get I/O profiling summary per path."""
+        prof = getattr(self, '_io_profilers', {}).get(profiler_id)
+        if not prof:
+            return {"error": "Profiler not found"}
+        summary = {}
+        for path, ps in prof["path_stats"].items():
+            entry = {
+                "read_count": ps["read_count"],
+                "write_count": ps["write_count"],
+                "total_bytes": ps["read_bytes"] + ps["write_bytes"],
+            }
+            for op, lats in [("read", ps["read_latencies"]), ("write", ps["write_latencies"])]:
+                if lats:
+                    sl = sorted(lats)
+                    n = len(sl)
+                    entry[f"{op}_avg_ms"] = round(sum(sl) / n, 2)
+                    entry[f"{op}_p95_ms"] = round(sl[int(n * 0.95)], 2) if n >= 2 else round(sl[-1], 2)
+            summary[path] = entry
+        return {
+            "profiler_id": profiler_id,
+            "total_samples": len(prof["samples"]),
+            "paths": summary,
+        }
+
+    def detect_io_hotspots(
+        self,
+        profiler_id: str,
+        top_n: int = 5,
+    ) -> Dict[str, Any]:
+        """Find the hottest I/O paths by total bytes."""
+        prof = getattr(self, '_io_profilers', {}).get(profiler_id)
+        if not prof:
+            return {"error": "Profiler not found"}
+        ranked = sorted(
+            prof["path_stats"].items(),
+            key=lambda kv: kv[1]["read_bytes"] + kv[1]["write_bytes"],
+            reverse=True,
+        )[:top_n]
+        return {
+            "profiler_id": profiler_id,
+            "hotspots": [
+                {
+                    "path": path,
+                    "total_bytes": ps["read_bytes"] + ps["write_bytes"],
+                    "read_bytes": ps["read_bytes"],
+                    "write_bytes": ps["write_bytes"],
+                    "ops": ps["read_count"] + ps["write_count"],
+                }
+                for path, ps in ranked
+            ],
+        }
+
+    # ------------------------------------------------------------------
+    # Storage cache layer
+    # ------------------------------------------------------------------
+
+    def create_storage_cache(
+        self,
+        container: Container,
+        max_size_mb: float = 256.0,
+        eviction_policy: str = "lru",
+    ) -> Dict[str, Any]:
+        """Create a storage cache for a container."""
+        if not hasattr(self, '_storage_caches'):
+            self._storage_caches = {}
+        cache_id = f"cache-{container.id[:12]}"
+        self._storage_caches[cache_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "max_size_mb": max_size_mb,
+            "eviction_policy": eviction_policy,
+            "created_at": time.time(),
+            "entries": {},
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "current_size_bytes": 0,
+        }
+        return {
+            "cache_id": cache_id,
+            "container_id": container.id,
+            "max_size_mb": max_size_mb,
+            "eviction_policy": eviction_policy,
+        }
+
+    def cache_put(
+        self,
+        cache_id: str,
+        key: str,
+        data: bytes,
+        ttl_s: float = 300.0,
+    ) -> Dict[str, Any]:
+        """Put an entry into the cache."""
+        cache = getattr(self, '_storage_caches', {}).get(cache_id)
+        if not cache:
+            return {"error": "Cache not found"}
+        # Evict if needed
+        max_bytes = int(cache["max_size_mb"] * 1024 * 1024)
+        entry_size = len(data)
+        while cache["current_size_bytes"] + entry_size > max_bytes and cache["entries"]:
+            # Evict oldest (LRU) or largest (LFU)
+            if cache["eviction_policy"] == "lru":
+                oldest_key = min(cache["entries"], key=lambda k: cache["entries"][k].get("last_access", 0))
+            else:
+                oldest_key = max(cache["entries"], key=lambda k: cache["entries"][k].get("access_count", 0))
+            evicted = cache["entries"].pop(oldest_key)
+            cache["current_size_bytes"] -= evicted.get("size", 0)
+            cache["evictions"] += 1
+        cache["entries"][key] = {
+            "data": data,
+            "size": entry_size,
+            "created_at": time.time(),
+            "last_access": time.time(),
+            "access_count": 0,
+            "ttl_s": ttl_s,
+        }
+        cache["current_size_bytes"] += entry_size
+        return {"ok": True, "cache_id": cache_id, "key": key, "size": entry_size}
+
+    def cache_get(self, cache_id: str, key: str) -> Dict[str, Any]:
+        """Get an entry from the cache."""
+        cache = getattr(self, '_storage_caches', {}).get(cache_id)
+        if not cache:
+            return {"error": "Cache not found"}
+        entry = cache["entries"].get(key)
+        if entry is None:
+            cache["misses"] += 1
+            return {"cache_id": cache_id, "key": key, "hit": False}
+        # Check TTL
+        if time.time() - entry["created_at"] > entry["ttl_s"]:
+            cache["entries"].pop(key)
+            cache["current_size_bytes"] -= entry["size"]
+            cache["misses"] += 1
+            return {"cache_id": cache_id, "key": key, "hit": False}
+        entry["last_access"] = time.time()
+        entry["access_count"] += 1
+        cache["hits"] += 1
+        return {
+            "cache_id": cache_id,
+            "key": key,
+            "hit": True,
+            "size": entry["size"],
+            "data_len": len(entry["data"]),
+        }
+
+    def cache_stats(self, cache_id: str) -> Dict[str, Any]:
+        """Get cache hit/miss statistics."""
+        cache = getattr(self, '_storage_caches', {}).get(cache_id)
+        if not cache:
+            return {"error": "Cache not found"}
+        total = cache["hits"] + cache["misses"]
+        return {
+            "cache_id": cache_id,
+            "container_id": cache["container_id"],
+            "entries": len(cache["entries"]),
+            "current_size_mb": round(cache["current_size_bytes"] / (1024 * 1024), 2),
+            "max_size_mb": cache["max_size_mb"],
+            "hits": cache["hits"],
+            "misses": cache["misses"],
+            "hit_rate": round(cache["hits"] / total, 4) if total > 0 else 0.0,
+            "evictions": cache["evictions"],
+            "eviction_policy": cache["eviction_policy"],
+        }
+
+    def cache_invalidate(self, cache_id: str, key: Optional[str] = None) -> Dict[str, Any]:
+        """Invalidate cache entries."""
+        cache = getattr(self, '_storage_caches', {}).get(cache_id)
+        if not cache:
+            return {"error": "Cache not found"}
+        if key:
+            entry = cache["entries"].pop(key, None)
+            if entry:
+                cache["current_size_bytes"] -= entry["size"]
+            return {"ok": True, "invalidated": 1 if entry else 0}
+        else:
+            count = len(cache["entries"])
+            cache["entries"] = {}
+            cache["current_size_bytes"] = 0
+            return {"ok": True, "invalidated": count}
+
+    # ------------------------------------------------------------------
+    # Audit log tamper detection and integrity checks
+    # ------------------------------------------------------------------
+
+    def _compute_audit_hash(self, entry: Dict[str, Any], prev_hash: str = "") -> str:
+        """Compute a SHA-256 hash of an audit entry with chaining."""
+        import hashlib
+        payload = json.dumps({
+            "ts": entry.get("ts", 0),
+            "op": entry.get("op", ""),
+            "container_id": entry.get("container_id", ""),
+            "result": entry.get("result", {}),
+            "prev_hash": prev_hash,
+        }, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def create_audit_chain(self, container: Container) -> Dict[str, Any]:
+        """Create an integrity-tracked audit chain for a container."""
+        if not hasattr(self, '_audit_chains'):
+            self._audit_chains = {}
+        chain_id = f"chain-{container.id[:12]}"
+        self._audit_chains[chain_id] = {
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "created_at": time.time(),
+            "entries": [],
+            "last_hash": "",
+            "verified": True,
+        }
+        return {"chain_id": chain_id, "container_id": container.id}
+
+    def append_audit_entry(
+        self,
+        chain_id: str,
+        op: str,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append an entry to the audit chain with hash chaining."""
+        chain = getattr(self, '_audit_chains', {}).get(chain_id)
+        if not chain:
+            return {"error": "Chain not found"}
+        entry = {
+            "ts": time.time(),
+            "op": op,
+            "container_id": chain["container_id"],
+            "result": result or {},
+            "prev_hash": chain["last_hash"],
+        }
+        entry["hash"] = self._compute_audit_hash(entry, chain["last_hash"])
+        chain["entries"].append(entry)
+        chain["last_hash"] = entry["hash"]
+        return {"ok": True, "chain_id": chain_id, "hash": entry["hash"]}
+
+    def verify_audit_chain(self, chain_id: str) -> Dict[str, Any]:
+        """Verify the integrity of an audit chain."""
+        chain = getattr(self, '_audit_chains', {}).get(chain_id)
+        if not chain:
+            return {"error": "Chain not found"}
+        prev_hash = ""
+        tampered = []
+        for i, entry in enumerate(chain["entries"]):
+            expected = self._compute_audit_hash(entry, prev_hash)
+            if entry.get("hash") != expected:
+                tampered.append({"index": i, "op": entry.get("op"), "expected": expected[:16]})
+            prev_hash = entry.get("hash", "")
+        chain["verified"] = len(tampered) == 0
+        return {
+            "chain_id": chain_id,
+            "total_entries": len(chain["entries"]),
+            "tampered_entries": tampered,
+            "tampered_count": len(tampered),
+            "verified": len(tampered) == 0,
+        }
+
+    def get_audit_entry(self, chain_id: str, index: int) -> Dict[str, Any]:
+        """Get a specific audit entry by index."""
+        chain = getattr(self, '_audit_chains', {}).get(chain_id)
+        if not chain:
+            return {"error": "Chain not found"}
+        if index < 0 or index >= len(chain["entries"]):
+            return {"error": "Index out of range"}
+        entry = chain["entries"][index]
+        return {k: v for k, v in entry.items() if k != "result" or True}
+
+    def get_audit_summary(self, chain_id: str) -> Dict[str, Any]:
+        """Get summary of an audit chain."""
+        chain = getattr(self, '_audit_chains', {}).get(chain_id)
+        if not chain:
+            return {"error": "Chain not found"}
+        ops = {}
+        for entry in chain["entries"]:
+            op = entry.get("op", "unknown")
+            ops[op] = ops.get(op, 0) + 1
+        return {
+            "chain_id": chain_id,
+            "container_id": chain["container_id"],
+            "total_entries": len(chain["entries"]),
+            "unique_ops": ops,
+            "verified": chain["verified"],
+            "created_at": chain["created_at"],
+        }
+
+    def export_audit_chain(self, chain_id: str, format: str = "json") -> Dict[str, Any]:
+        """Export audit chain entries."""
+        chain = getattr(self, '_audit_chains', {}).get(chain_id)
+        if not chain:
+            return {"error": "Chain not found"}
+        entries = []
+        for entry in chain["entries"]:
+            entries.append({
+                "ts": entry.get("ts"),
+                "op": entry.get("op"),
+                "hash": entry.get("hash"),
+                "prev_hash": entry.get("prev_hash"),
+            })
+        return {
+            "chain_id": chain_id,
+            "format": format,
+            "entry_count": len(entries),
+            "entries": entries,
+        }
+
+
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
         ``launcher.py`` inside the new namespaces (shared by both launch

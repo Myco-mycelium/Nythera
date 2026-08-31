@@ -2112,6 +2112,72 @@ class ControlService:
             elif op == "compare_snapshots":
                 self._compare_snapshots(server, sender_path,
                                   msg.message_id, request)
+            elif op == "create_network_monitor":
+                self._create_network_monitor(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "record_network_latency":
+                self._record_network_latency(server, sender_path,
+                                          msg.message_id, request)
+            elif op == "record_bandwidth":
+                self._record_bandwidth(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_network_latency_stats":
+                self._get_network_latency_stats(server, sender_path,
+                                           msg.message_id, request)
+            elif op == "get_bandwidth_stats":
+                self._get_bandwidth_stats(server, sender_path,
+                                     msg.message_id, request)
+            elif op == "detect_network_anomalies":
+                self._detect_network_anomalies(server, sender_path,
+                                         msg.message_id, request)
+            elif op == "stop_network_monitor":
+                self._stop_network_monitor(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "create_io_profiler":
+                self._create_io_profiler(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "record_io_sample":
+                self._record_io_sample(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_io_profile":
+                self._get_io_profile(server, sender_path,
+                                msg.message_id, request)
+            elif op == "detect_io_hotspots":
+                self._detect_io_hotspots(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "create_storage_cache":
+                self._create_storage_cache(server, sender_path,
+                                      msg.message_id, request)
+            elif op == "cache_put":
+                self._cache_put(server, sender_path,
+                           msg.message_id, request)
+            elif op == "cache_get":
+                self._cache_get(server, sender_path,
+                           msg.message_id, request)
+            elif op == "cache_stats":
+                self._cache_stats(server, sender_path,
+                             msg.message_id, request)
+            elif op == "cache_invalidate":
+                self._cache_invalidate(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "create_audit_chain":
+                self._create_audit_chain(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "append_audit_entry":
+                self._append_audit_entry(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "verify_audit_chain":
+                self._verify_audit_chain(server, sender_path,
+                                    msg.message_id, request)
+            elif op == "get_audit_entry":
+                self._get_audit_entry(server, sender_path,
+                                 msg.message_id, request)
+            elif op == "get_audit_summary":
+                self._get_audit_summary(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "export_audit_chain":
+                self._export_audit_chain(server, sender_path,
+                                    msg.message_id, request)
             else:
                 self._reply(server, sender_path, msg.message_id, {
                     "ok": False,
@@ -10162,6 +10228,180 @@ class ControlService:
         result = self.container_manager.compare_snapshots(
             request.get("snapshot_a", ""),
             request.get("snapshot_b", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+
+    # -- network monitor handlers ---
+
+    def _create_network_monitor(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_network_monitor(
+            container, targets=request.get("targets"),
+            interval_s=request.get("interval_s", 1.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_network_latency(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_network_latency(
+            request.get("monitor_id", ""), request.get("target", ""),
+            request.get("latency_ms", 0.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_bandwidth(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_bandwidth(
+            request.get("monitor_id", ""), request.get("target", ""),
+            request.get("bytes_sent", 0), request.get("bytes_received", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_network_latency_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_network_latency_stats(
+            request.get("monitor_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_bandwidth_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_bandwidth_stats(
+            request.get("monitor_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detect_network_anomalies(self, server, sender_path, call_id, request):
+        result = self.container_manager.detect_network_anomalies(
+            request.get("monitor_id", ""),
+            z_threshold=request.get("z_threshold", 3.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _stop_network_monitor(self, server, sender_path, call_id, request):
+        result = self.container_manager.stop_network_monitor(
+            request.get("monitor_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- IO profiler handlers ---
+
+    def _create_io_profiler(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_io_profiler(
+            container, sample_interval_s=request.get("sample_interval_s", 0.5),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _record_io_sample(self, server, sender_path, call_id, request):
+        result = self.container_manager.record_io_sample(
+            request.get("profiler_id", ""), request.get("path", "/"),
+            request.get("op", "read"), request.get("bytes", 0),
+            request.get("latency_ms", 0.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_io_profile(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_io_profile(
+            request.get("profiler_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _detect_io_hotspots(self, server, sender_path, call_id, request):
+        result = self.container_manager.detect_io_hotspots(
+            request.get("profiler_id", ""),
+            top_n=request.get("top_n", 5),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- storage cache handlers ---
+
+    def _create_storage_cache(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_storage_cache(
+            container, max_size_mb=request.get("max_size_mb", 256.0),
+            eviction_policy=request.get("eviction_policy", "lru"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cache_put(self, server, sender_path, call_id, request):
+        data = request.get("data", b"")
+        if isinstance(data, str):
+            data = data.encode()
+        result = self.container_manager.cache_put(
+            request.get("cache_id", ""), request.get("key", ""),
+            data, ttl_s=request.get("ttl_s", 300.0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cache_get(self, server, sender_path, call_id, request):
+        result = self.container_manager.cache_get(
+            request.get("cache_id", ""), request.get("key", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cache_stats(self, server, sender_path, call_id, request):
+        result = self.container_manager.cache_stats(
+            request.get("cache_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _cache_invalidate(self, server, sender_path, call_id, request):
+        result = self.container_manager.cache_invalidate(
+            request.get("cache_id", ""),
+            key=request.get("key"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- audit chain handlers ---
+
+    def _create_audit_chain(self, server, sender_path, call_id, request):
+        cid = request.get("container_id", "")
+        container = self.container_manager.containers.get(cid)
+        if not container:
+            self._reply(server, sender_path, call_id, {"ok": False, "error": "container not found"})
+            return
+        result = self.container_manager.create_audit_chain(container)
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _append_audit_entry(self, server, sender_path, call_id, request):
+        result = self.container_manager.append_audit_entry(
+            request.get("chain_id", ""), request.get("op", ""),
+            result=request.get("result"),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _verify_audit_chain(self, server, sender_path, call_id, request):
+        result = self.container_manager.verify_audit_chain(
+            request.get("chain_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_audit_entry(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_audit_entry(
+            request.get("chain_id", ""), request.get("index", 0),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _get_audit_summary(self, server, sender_path, call_id, request):
+        result = self.container_manager.get_audit_summary(
+            request.get("chain_id", ""),
+        )
+        self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    def _export_audit_chain(self, server, sender_path, call_id, request):
+        result = self.container_manager.export_audit_chain(
+            request.get("chain_id", ""),
+            format=request.get("format", "json"),
         )
         self._reply(server, sender_path, call_id, {"ok": True, **result})
 

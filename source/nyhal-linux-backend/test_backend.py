@@ -4462,7 +4462,7 @@ class TestEventCorrelationAnalysis(unittest.TestCase):
         self.assertIn("80%", text)
 
 
-class TestNetworkMonitoring(unittest.TestCase):
+class TestNetworkLatencyBandwidth(unittest.TestCase):
     """Tests for network latency monitoring and bandwidth tracking."""
 
     def _manager(self):
@@ -4490,24 +4490,32 @@ class TestNetworkMonitoring(unittest.TestCase):
         self.assertTrue(r["recorded"])
 
     def test_latency_stats(self):
-        """get_network_latency_stats computes stats."""
+        """get_network_latency_stats computes stats via monitor."""
         mgr = self._manager()
         c = self._make(mgr, "nm3")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 80}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:80"
         for i in range(10):
-            mgr.record_network_sample(c.id, latency_ms=float(i))
-        r = mgr.get_network_latency_stats(c.id)
-        self.assertGreater(r["avg_ms"], 0)
-        self.assertIn("p95_ms", r)
+            mgr.record_network_latency(mid, target, float(i))
+        r2 = mgr.get_network_latency_stats(mid)
+        self.assertIn("targets", r2)
+        self.assertIn(target, r2["targets"])
+        self.assertGreater(r2["targets"][target]["avg_ms"], 0)
 
     def test_bandwidth_stats(self):
-        """get_bandwidth_stats computes totals."""
+        """get_bandwidth_stats computes totals via monitor."""
         mgr = self._manager()
         c = self._make(mgr, "nm4")
-        mgr.record_network_sample(c.id, rx_bytes=1000, tx_bytes=500)
-        mgr.record_network_sample(c.id, rx_bytes=2000, tx_bytes=1000)
-        r = mgr.get_bandwidth_stats(c.id)
-        self.assertEqual(r["total_rx_bytes"], 3000)
-        self.assertEqual(r["total_tx_bytes"], 1500)
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 80}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:80"
+        mgr.record_bandwidth(mid, target, 1000, 500)
+        mgr.record_bandwidth(mid, target, 2000, 1000)
+        r2 = mgr.get_bandwidth_stats(mid)
+        self.assertIn(target, r2["targets"])
+        self.assertEqual(r2["targets"][target]["total_sent_bytes"], 3000)
+        self.assertEqual(r2["targets"][target]["total_received_bytes"], 1500)
 
     def test_network_health(self):
         """get_network_health returns status."""
@@ -32603,6 +32611,319 @@ class TestFilesystemSnapshot(unittest.TestCase):
         self.assertIn("snap1", text)
         self.assertIn("2", text)
 
+class TestNetworkMonitoring(unittest.TestCase):
+    """Tests for network latency monitoring and bandwidth tracking."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        return c
+
+    def test_create_monitor(self):
+        """create_network_monitor creates a monitor."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon1")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 443}])
+        self.assertIn("monitor_id", r)
+        self.assertTrue(r["active"])
+        self.assertEqual(len(r["targets"]), 1)
+
+    def test_record_latency(self):
+        """record_network_latency records samples."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon2")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 443}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:443"
+        for lat in [10, 20, 30, 100]:
+            mgr.record_network_latency(mid, target, lat)
+        r2 = mgr.get_network_latency_stats(mid)
+        self.assertIn("targets", r2)
+        self.assertIn(target, r2["targets"])
+        self.assertEqual(r2["targets"][target]["count"], 4)
+
+    def test_latency_stats(self):
+        """Latency stats have p50/p95/p99."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon3")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 80}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:80"
+        for i in range(50):
+            mgr.record_network_latency(mid, target, float(i))
+        r2 = mgr.get_network_latency_stats(mid)
+        self.assertIn("p50_ms", r2["targets"][target])
+        self.assertIn("p95_ms", r2["targets"][target])
+
+    def test_bandwidth(self):
+        """record_bandwidth tracks sent/received."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon4")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 80}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:80"
+        mgr.record_bandwidth(mid, target, 1000, 2000)
+        mgr.record_bandwidth(mid, target, 500, 800)
+        r2 = mgr.get_bandwidth_stats(mid)
+        self.assertIn(target, r2["targets"])
+        self.assertEqual(r2["targets"][target]["total_sent_bytes"], 1500)
+        self.assertEqual(r2["targets"][target]["total_received_bytes"], 2800)
+
+    def test_network_anomaly_detection(self):
+        """detect_network_anomalies finds outliers."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon5")
+        r = mgr.create_network_monitor(c, targets=[{"host": "1.2.3.4", "port": 80}])
+        mid = r["monitor_id"]
+        target = "1.2.3.4:80"
+        for _ in range(30):
+            mgr.record_network_latency(mid, target, 10.0)
+        mgr.record_network_latency(mid, target, 500.0)
+        r2 = mgr.detect_network_anomalies(mid, z_threshold=2.0)
+        self.assertGreater(r2["count"], 0)
+
+    def test_stop_monitor(self):
+        """stop_network_monitor removes it."""
+        mgr = self._manager()
+        c = self._make(mgr, "mon6")
+        r = mgr.create_network_monitor(c)
+        mid = r["monitor_id"]
+        r2 = mgr.stop_network_monitor(mid)
+        self.assertTrue(r2["ok"])
+        r3 = mgr.get_network_latency_stats(mid)
+        self.assertIn("error", r3)
+
+
+class TestIOProfilingCache(unittest.TestCase):
+    """Tests for storage I/O profiling."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_profiler(self):
+        """create_io_profiler creates a profiler."""
+        mgr = self._manager()
+        c = self._make(mgr, "io1")
+        r = mgr.create_io_profiler(c)
+        self.assertIn("profiler_id", r)
+
+    def test_record_sample(self):
+        """record_io_sample records I/O operations."""
+        mgr = self._manager()
+        c = self._make(mgr, "io2")
+        r = mgr.create_io_profiler(c)
+        pid = r["profiler_id"]
+        mgr.record_io_sample(pid, "/data/file1", "read", 4096, 1.5)
+        mgr.record_io_sample(pid, "/data/file1", "write", 2048, 0.8)
+        r2 = mgr.get_io_profile(pid)
+        self.assertEqual(r2["total_samples"], 2)
+        self.assertIn("/data/file1", r2["paths"])
+
+    def test_io_profile_stats(self):
+        """IO profile has read/write stats per path."""
+        mgr = self._manager()
+        c = self._make(mgr, "io3")
+        r = mgr.create_io_profiler(c)
+        pid = r["profiler_id"]
+        for _ in range(10):
+            mgr.record_io_sample(pid, "/data/file1", "read", 4096, 1.0)
+        r2 = mgr.get_io_profile(pid)
+        ps = r2["paths"]["/data/file1"]
+        self.assertEqual(ps["read_count"], 10)
+        self.assertEqual(ps["total_bytes"], 40960)
+
+    def test_io_hotspots(self):
+        """detect_io_hotspots finds top paths by bytes."""
+        mgr = self._manager()
+        c = self._make(mgr, "io4")
+        r = mgr.create_io_profiler(c)
+        pid = r["profiler_id"]
+        mgr.record_io_sample(pid, "/hot", "write", 1000000, 1.0)
+        mgr.record_io_sample(pid, "/cold", "read", 100, 0.5)
+        r2 = mgr.detect_io_hotspots(pid, top_n=1)
+        self.assertEqual(len(r2["hotspots"]), 1)
+        self.assertEqual(r2["hotspots"][0]["path"], "/hot")
+
+
+class TestStorageCacheLayer(unittest.TestCase):
+    """Tests for storage cache layer."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_cache(self):
+        """create_storage_cache creates a cache."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache1")
+        r = mgr.create_storage_cache(c, max_size_mb=1.0)
+        self.assertIn("cache_id", r)
+        self.assertEqual(r["max_size_mb"], 1.0)
+
+    def test_put_get_hit(self):
+        """cache_put and cache_get work."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache2")
+        r = mgr.create_storage_cache(c)
+        cid = r["cache_id"]
+        mgr.cache_put(cid, "k1", b"hello world", ttl_s=300.0)
+        r2 = mgr.cache_get(cid, "k1")
+        self.assertTrue(r2["hit"])
+        self.assertEqual(r2["size"], 11)
+
+    def test_cache_miss(self):
+        """cache_get returns miss for missing keys."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache3")
+        r = mgr.create_storage_cache(c)
+        cid = r["cache_id"]
+        r2 = mgr.cache_get(cid, "missing")
+        self.assertFalse(r2["hit"])
+
+    def test_cache_stats(self):
+        """cache_stats reports hits/misses."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache4")
+        r = mgr.create_storage_cache(c)
+        cid = r["cache_id"]
+        mgr.cache_put(cid, "k1", b"data")
+        mgr.cache_get(cid, "k1")
+        mgr.cache_get(cid, "missing")
+        r2 = mgr.cache_stats(cid)
+        self.assertEqual(r2["hits"], 1)
+        self.assertEqual(r2["misses"], 1)
+        self.assertGreater(r2["hit_rate"], 0)
+
+    def test_cache_invalidate(self):
+        """cache_invalidate removes entries."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache5")
+        r = mgr.create_storage_cache(c)
+        cid = r["cache_id"]
+        mgr.cache_put(cid, "k1", b"data")
+        mgr.cache_put(cid, "k2", b"data2")
+        r2 = mgr.cache_invalidate(cid, key="k1")
+        self.assertEqual(r2["invalidated"], 1)
+        r3 = mgr.cache_get(cid, "k1")
+        self.assertFalse(r3["hit"])
+
+    def test_cache_ttl_expiry(self):
+        """cache entries expire after TTL."""
+        mgr = self._manager()
+        c = self._make(mgr, "cache6")
+        r = mgr.create_storage_cache(c)
+        cid = r["cache_id"]
+        mgr.cache_put(cid, "k1", b"data", ttl_s=0.001)
+        import time
+        time.sleep(0.01)
+        r2 = mgr.cache_get(cid, "k1")
+        self.assertFalse(r2["hit"])
+
+
+class TestAuditIntegrityChain(unittest.TestCase):
+    """Tests for audit log tamper detection and integrity."""
+
+    def _manager(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _make(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_create_chain(self):
+        """create_audit_chain creates a chain."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit1")
+        r = mgr.create_audit_chain(c)
+        self.assertIn("chain_id", r)
+
+    def test_append_entry(self):
+        """append_audit_entry adds entries with hashes."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit2")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        r2 = mgr.append_audit_entry(cid, "container_run")
+        self.assertTrue(r2["ok"])
+        self.assertIn("hash", r2)
+
+    def test_chain_hash_chaining(self):
+        """Entries are hash-chained."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit3")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        h1 = mgr.append_audit_entry(cid, "op1")["hash"]
+        h2 = mgr.append_audit_entry(cid, "op2")["hash"]
+        self.assertNotEqual(h1, h2)
+
+    def test_verify_valid_chain(self):
+        """verify_audit_chain returns verified for valid chain."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit4")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        mgr.append_audit_entry(cid, "op1")
+        mgr.append_audit_entry(cid, "op2")
+        r2 = mgr.verify_audit_chain(cid)
+        self.assertTrue(r2["verified"])
+        self.assertEqual(r2["tampered_count"], 0)
+
+    def test_verify_tampered_chain(self):
+        """verify_audit_chain detects tampering."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit5")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        mgr.append_audit_entry(cid, "op1")
+        mgr.append_audit_entry(cid, "op2")
+        # Tamper with the hash
+        chain = mgr._audit_chains[cid]
+        chain["entries"][0]["hash"] = "tampered"
+        r2 = mgr.verify_audit_chain(cid)
+        self.assertFalse(r2["verified"])
+        self.assertGreater(r2["tampered_count"], 0)
+
+    def test_audit_summary(self):
+        """audit_summary reports operations."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit6")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        mgr.append_audit_entry(cid, "run")
+        mgr.append_audit_entry(cid, "run")
+        mgr.append_audit_entry(cid, "stop")
+        r2 = mgr.get_audit_summary(cid)
+        self.assertEqual(r2["total_entries"], 3)
+        self.assertEqual(r2["unique_ops"]["run"], 2)
+
+    def test_export_chain(self):
+        """export_audit_chain returns entries."""
+        mgr = self._manager()
+        c = self._make(mgr, "audit7")
+        r = mgr.create_audit_chain(c)
+        cid = r["chain_id"]
+        mgr.append_audit_entry(cid, "op1")
+        r2 = mgr.export_audit_chain(cid)
+        self.assertEqual(r2["entry_count"], 1)
+        self.assertIn("hash", r2["entries"][0])
+
+
+
 
 def run_tests():
     """Run all tests."""
@@ -32843,6 +33164,10 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestBatchJobs))
     suite.addTests(loader.loadTestsFromTestCase(TestMemoryCompaction))
     suite.addTests(loader.loadTestsFromTestCase(TestFilesystemSnapshot))
+    suite.addTests(loader.loadTestsFromTestCase(TestNetworkLatencyBandwidth))
+    suite.addTests(loader.loadTestsFromTestCase(TestIOProfilingCache))
+    suite.addTests(loader.loadTestsFromTestCase(TestStorageCacheLayer))
+    suite.addTests(loader.loadTestsFromTestCase(TestAuditIntegrityChain))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

@@ -4579,6 +4579,163 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             "snapshot_b": args.snapshot_b,
         }
 
+    if command == "create-network-monitor":
+        return {
+            "service": "control",
+            "op": "create_network_monitor",
+            "container_id": args.container_id,
+            "targets": getattr(args, 'targets', None),
+            "interval_s": getattr(args, 'interval_s', 1.0),
+        }
+    if command == "record-network-latency":
+        return {
+            "service": "control",
+            "op": "record_network_latency",
+            "monitor_id": args.monitor_id,
+            "target": args.target,
+            "latency_ms": args.latency_ms,
+        }
+    if command == "record-bandwidth":
+        return {
+            "service": "control",
+            "op": "record_bandwidth",
+            "monitor_id": args.monitor_id,
+            "target": args.target,
+            "bytes_sent": args.bytes_sent,
+            "bytes_received": args.bytes_received,
+        }
+    if command == "network-latency-stats":
+        return {
+            "service": "control",
+            "op": "get_network_latency_stats",
+            "monitor_id": args.monitor_id,
+        }
+    if command == "bandwidth-stats":
+        return {
+            "service": "control",
+            "op": "get_bandwidth_stats",
+            "monitor_id": args.monitor_id,
+        }
+    if command == "detect-network-anomalies":
+        return {
+            "service": "control",
+            "op": "detect_network_anomalies",
+            "monitor_id": args.monitor_id,
+            "z_threshold": getattr(args, 'z_threshold', 3.0),
+        }
+    if command == "stop-network-monitor":
+        return {
+            "service": "control",
+            "op": "stop_network_monitor",
+            "monitor_id": args.monitor_id,
+        }
+    if command == "create-io-profiler":
+        return {
+            "service": "control",
+            "op": "create_io_profiler",
+            "container_id": args.container_id,
+            "sample_interval_s": getattr(args, 'sample_interval_s', 0.5),
+        }
+    if command == "record-io-sample":
+        return {
+            "service": "control",
+            "op": "record_io_sample",
+            "profiler_id": args.profiler_id,
+            "path": args.path,
+            "op": args.io_op,
+            "bytes": args.bytes_transferred,
+            "latency_ms": args.latency_ms,
+        }
+    if command == "io-profile":
+        return {
+            "service": "control",
+            "op": "get_io_profile",
+            "profiler_id": args.profiler_id,
+        }
+    if command == "detect-io-hotspots":
+        return {
+            "service": "control",
+            "op": "detect_io_hotspots",
+            "profiler_id": args.profiler_id,
+            "top_n": getattr(args, 'top_n', 5),
+        }
+    if command == "create-storage-cache":
+        return {
+            "service": "control",
+            "op": "create_storage_cache",
+            "container_id": args.container_id,
+            "max_size_mb": getattr(args, 'max_size_mb', 256.0),
+            "eviction_policy": getattr(args, 'eviction_policy', 'lru'),
+        }
+    if command == "cache-put":
+        return {
+            "service": "control",
+            "op": "cache_put",
+            "cache_id": args.cache_id,
+            "key": args.key,
+            "data": args.data.encode() if hasattr(args.data, 'encode') else args.data,
+            "ttl_s": getattr(args, 'ttl_s', 300.0),
+        }
+    if command == "cache-get":
+        return {
+            "service": "control",
+            "op": "cache_get",
+            "cache_id": args.cache_id,
+            "key": args.key,
+        }
+    if command == "cache-stats":
+        return {
+            "service": "control",
+            "op": "cache_stats",
+            "cache_id": args.cache_id,
+        }
+    if command == "cache-invalidate":
+        return {
+            "service": "control",
+            "op": "cache_invalidate",
+            "cache_id": args.cache_id,
+            "key": getattr(args, 'key', None),
+        }
+    if command == "create-audit-chain":
+        return {
+            "service": "control",
+            "op": "create_audit_chain",
+            "container_id": args.container_id,
+        }
+    if command == "append-audit-entry":
+        return {
+            "service": "control",
+            "op": "append_audit_entry",
+            "chain_id": args.chain_id,
+            "op": args.audit_op,
+            "result": getattr(args, 'result', None),
+        }
+    if command == "verify-audit-chain":
+        return {
+            "service": "control",
+            "op": "verify_audit_chain",
+            "chain_id": args.chain_id,
+        }
+    if command == "audit-entry":
+        return {
+            "service": "control",
+            "op": "get_audit_entry",
+            "chain_id": args.chain_id,
+            "index": args.index,
+        }
+    if command == "audit-summary":
+        return {
+            "service": "control",
+            "op": "get_audit_summary",
+            "chain_id": args.chain_id,
+        }
+    if command == "export-audit-chain":
+        return {
+            "service": "control",
+            "op": "export_audit_chain",
+            "chain_id": args.chain_id,
+            "format": getattr(args, 'format', 'json'),
+        }
 
 # -- human formatting (pure, unit-testable) ----------------------------
 
@@ -12972,6 +13129,124 @@ def build_parser() -> argparse.ArgumentParser:
     cfs.add_argument("snapshot_a")
     cfs.add_argument("snapshot_b")
     cfs.set_defaults(command="compare-fs-snapshots")
+
+
+    # -- network monitoring --
+    cnm = sub.add_parser("create-network-monitor", help="Create network monitor")
+    cnm.add_argument("--container-id", required=True)
+    cnm.add_argument("--targets", nargs="*", help="Target host:port pairs")
+    cnm.add_argument("--interval-s", type=float, default=1.0)
+    cnm.set_defaults(command="create-network-monitor")
+
+    rnl = sub.add_parser("record-network-latency", help="Record network latency")
+    rnl.add_argument("--monitor-id", required=True)
+    rnl.add_argument("--target", required=True)
+    rnl.add_argument("--latency-ms", type=float, required=True)
+    rnl.set_defaults(command="record-network-latency")
+
+    rbw = sub.add_parser("record-bandwidth", help="Record bandwidth")
+    rbw.add_argument("--monitor-id", required=True)
+    rbw.add_argument("--target", required=True)
+    rbw.add_argument("--bytes-sent", type=int, required=True)
+    rbw.add_argument("--bytes-received", type=int, required=True)
+    rbw.set_defaults(command="record-bandwidth")
+
+    nls = sub.add_parser("network-latency-stats", help="Get latency stats")
+    nls.add_argument("--monitor-id", required=True)
+    nls.set_defaults(command="network-latency-stats")
+
+    bws = sub.add_parser("bandwidth-stats", help="Get bandwidth stats")
+    bws.add_argument("--monitor-id", required=True)
+    bws.set_defaults(command="bandwidth-stats")
+
+    dna = sub.add_parser("detect-network-anomalies", help="Detect network anomalies")
+    dna.add_argument("--monitor-id", required=True)
+    dna.add_argument("--z-threshold", type=float, default=3.0)
+    dna.set_defaults(command="detect-network-anomalies")
+
+    snm = sub.add_parser("stop-network-monitor", help="Stop network monitor")
+    snm.add_argument("--monitor-id", required=True)
+    snm.set_defaults(command="stop-network-monitor")
+
+    # -- IO profiling --
+    cip = sub.add_parser("create-io-profiler", help="Create IO profiler")
+    cip.add_argument("--container-id", required=True)
+    cip.add_argument("--sample-interval-s", type=float, default=0.5)
+    cip.set_defaults(command="create-io-profiler")
+
+    ris = sub.add_parser("record-io-sample", help="Record IO sample")
+    ris.add_argument("--profiler-id", required=True)
+    ris.add_argument("--path", required=True)
+    ris.add_argument("--io-op", required=True, choices=["read", "write"])
+    ris.add_argument("--bytes-transferred", type=int, required=True)
+    ris.add_argument("--latency-ms", type=float, required=True)
+    ris.set_defaults(command="record-io-sample")
+
+    iop = sub.add_parser("io-profile", help="Get IO profile")
+    iop.add_argument("--profiler-id", required=True)
+    iop.set_defaults(command="io-profile")
+
+    dih = sub.add_parser("detect-io-hotspots", help="Detect IO hotspots")
+    dih.add_argument("--profiler-id", required=True)
+    dih.add_argument("--top-n", type=int, default=5)
+    dih.set_defaults(command="detect-io-hotspots")
+
+    # -- storage cache --
+    csc = sub.add_parser("create-storage-cache", help="Create storage cache")
+    csc.add_argument("--container-id", required=True)
+    csc.add_argument("--max-size-mb", type=float, default=256.0)
+    csc.add_argument("--eviction-policy", default="lru", choices=["lru", "lfu"])
+    csc.set_defaults(command="create-storage-cache")
+
+    cp = sub.add_parser("cache-put", help="Put to cache")
+    cp.add_argument("--cache-id", required=True)
+    cp.add_argument("--key", required=True)
+    cp.add_argument("--data", required=True)
+    cp.add_argument("--ttl-s", type=float, default=300.0)
+    cp.set_defaults(command="cache-put")
+
+    cg = sub.add_parser("cache-get", help="Get from cache")
+    cg.add_argument("--cache-id", required=True)
+    cg.add_argument("--key", required=True)
+    cg.set_defaults(command="cache-get")
+
+    cs = sub.add_parser("cache-stats", help="Get cache stats")
+    cs.add_argument("--cache-id", required=True)
+    cs.set_defaults(command="cache-stats")
+
+    ci = sub.add_parser("cache-invalidate", help="Invalidate cache")
+    ci.add_argument("--cache-id", required=True)
+    ci.add_argument("--key", default=None)
+    ci.set_defaults(command="cache-invalidate")
+
+    # -- audit chain --
+    cac = sub.add_parser("create-audit-chain", help="Create audit chain")
+    cac.add_argument("--container-id", required=True)
+    cac.set_defaults(command="create-audit-chain")
+
+    aae = sub.add_parser("append-audit-entry", help="Append audit entry")
+    aae.add_argument("--chain-id", required=True)
+    aae.add_argument("--audit-op", required=True)
+    aae.add_argument("--result", default=None)
+    aae.set_defaults(command="append-audit-entry")
+
+    vac = sub.add_parser("verify-audit-chain", help="Verify audit chain")
+    vac.add_argument("--chain-id", required=True)
+    vac.set_defaults(command="verify-audit-chain")
+
+    ae = sub.add_parser("audit-entry", help="Get audit entry")
+    ae.add_argument("--chain-id", required=True)
+    ae.add_argument("--index", type=int, required=True)
+    ae.set_defaults(command="audit-entry")
+
+    asum = sub.add_parser("audit-summary", help="Get audit summary")
+    asum.add_argument("--chain-id", required=True)
+    asum.set_defaults(command="audit-summary")
+
+    eac = sub.add_parser("export-audit-chain", help="Export audit chain")
+    eac.add_argument("--chain-id", required=True)
+    eac.add_argument("--format", default="json", choices=["json", "csv"])
+    eac.set_defaults(command="export-audit-chain")
 
     return parser
 
