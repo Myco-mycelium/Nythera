@@ -34492,6 +34492,285 @@ class TestPerformanceBenchmarks(unittest.TestCase):
         self.assertGreaterEqual(r["avg_create_ms"], 0)
 
 
+class TestImageRegistry(unittest.TestCase):
+    """Tests for container image registry with pull, push, tag, retention."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def test_pull_image(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "nginx", tag="1.25")
+        self.assertTrue(r["ok"])
+        self.assertIn("image_id", r)
+        self.assertFalse(r["cached"])
+
+    def test_pull_cached(self):
+        m=self._mgr()
+        m.pull_image("docker.io", "nginx")
+        r=m.pull_image("docker.io", "nginx")
+        self.assertTrue(r["cached"])
+
+    def test_push_image(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "redis")
+        img_id=r["image_id"]
+        r2=m.push_image("docker.io", "redis")
+        self.assertTrue(r2["ok"])
+
+    def test_push_nonexistent(self):
+        m=self._mgr()
+        r=m.push_image("docker.io", "nope")
+        self.assertIn("error", r)
+
+    def test_tag_image(self):
+        m=self._mgr()
+        m.pull_image("docker.io", "app", tag="v1")
+        r=m.tag_image("docker.io", "app", "v1", "v2")
+        self.assertTrue(r["ok"])
+        self.assertIn("v2", r["new_ref"])
+
+    def test_list_images(self):
+        m=self._mgr()
+        m.pull_image("docker.io", "a")
+        m.pull_image("ghcr.io", "b")
+        r=m.list_registry_images()
+        self.assertEqual(r["count"], 2)
+
+    def test_list_by_registry(self):
+        m=self._mgr()
+        m.pull_image("docker.io", "a")
+        m.pull_image("ghcr.io", "b")
+        r=m.list_registry_images(registry="docker.io")
+        self.assertEqual(r["count"], 1)
+
+    def test_set_retention(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "ret")
+        m.set_image_retention(r["image_id"], retention_days=7)
+        details=m.get_image_details(r["image_id"])
+        self.assertEqual(details["retention_days"], 7)
+
+    def test_garbage_collect_dry_run(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "gc-test")
+        m.set_image_retention(r["image_id"], retention_days=0)
+        import time as _time
+        _time.sleep(0.01)
+        gc=m.gc_registry_images(dry_run=True)
+        self.assertTrue(gc["dry_run"])
+        self.assertGreaterEqual(gc["eligible_count"], 1)
+        self.assertEqual(gc["removed_count"], 0)
+
+    def test_garbage_collect_execute(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "gc-exec")
+        m.set_image_retention(r["image_id"], retention_days=0)
+        import time as _time
+        _time.sleep(0.01)
+        gc=m.gc_registry_images(dry_run=False)
+        self.assertGreaterEqual(gc["removed_count"], 1)
+
+    def test_get_image_details(self):
+        m=self._mgr()
+        r=m.pull_image("docker.io", "details")
+        d=m.get_image_details(r["image_id"])
+        self.assertEqual(d["name"], "details")
+        self.assertIn("age_days", d)
+        self.assertIn("expires_in_days", d)
+
+    def test_delete_nonexistent(self):
+        m=self._mgr()
+        r=m.delete_debug_dump("nope")
+        self.assertIn("error", r)
+
+
+class TestCostForecasting(unittest.TestCase):
+    """Tests for cost forecasting with trend analysis and budget alerts."""
+
+    def _mgr(self):
+        from backend.container import ContainerManager
+        return ContainerManager()
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        return mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+
+    def test_record_cost(self):
+        m=self._mgr(); c=self._mk(m, "cf1")
+        r=m.record_container_cost(c.id, 0.50)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["total_samples"], 1)
+
+    def test_forecast_insufficient_data(self):
+        m=self._mgr(); c=self._mk(m, "cf2")
+        m.record_container_cost(c.id, 0.50)
+        r=m.forecast_container_cost(c.id)
+        self.assertIn("error", r)
+
+    def test_forecast_with_data(self):
+        m=self._mgr(); c=self._mk(m, "cf3")
+        import time as _time
+        for i in range(5):
+            m.record_container_cost(c.id, 0.10 + i * 0.02)
+            _time.sleep(0.001)
+        r=m.forecast_container_cost(c.id, horizon_hours=24)
+        self.assertIn("forecast_cost", r)
+        self.assertIn("trend", r)
+        self.assertIn("trend_pct", r)
+
+    def test_forecast_increasing_trend(self):
+        m=self._mgr(); c=self._mk(m, "cf4")
+        import time as _time
+        for i in range(10):
+            m.record_container_cost(c.id, 0.1 + i * 0.1)
+            _time.sleep(0.001)
+        r=m.forecast_container_cost(c.id)
+        self.assertEqual(r["trend"], "increasing")
+
+    def test_set_budget(self):
+        m=self._mgr()
+        r=m.set_cost_budget("monthly", 1000.0, period="monthly")
+        self.assertTrue(r["ok"])
+
+    def test_set_duplicate_budget(self):
+        m=self._mgr()
+        m.set_cost_budget("dup", 100.0)
+        r=m.set_cost_budget("dup", 200.0)
+        self.assertIn("error", r)
+
+    def test_check_budget_ok(self):
+        m=self._mgr()
+        m.set_cost_budget("ok-budget", 1000.0)
+        r=m.check_cost_budget_alert("ok-budget")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["usage_pct"], 0)
+
+    def test_check_budget_warning(self):
+        m=self._mgr()
+        m.set_cost_budget("warn-budget", 100.0, alert_threshold=0.8)
+        m.record_budget_spend("warn-budget", 85.0)
+        r=m.check_cost_budget_alert("warn-budget")
+        self.assertEqual(r["status"], "warning")
+        self.assertGreater(r["alerts_sent"], 0)
+
+    def test_check_budget_exceeded(self):
+        m=self._mgr()
+        m.set_cost_budget("exc-budget", 100.0)
+        m.record_budget_spend("exc-budget", 110.0)
+        r=m.check_cost_budget_alert("exc-budget")
+        self.assertEqual(r["status"], "exceeded")
+
+    def test_list_budgets(self):
+        m=self._mgr()
+        m.set_cost_budget("b1", 100.0)
+        m.set_cost_budget("b2", 200.0)
+        r=m.list_cost_budgets()
+        self.assertEqual(r["count"], 2)
+
+    def test_fleet_forecast(self):
+        m=self._mgr()
+        c1=self._mk(m, "ff1")
+        c2=self._mk(m, "ff2")
+        import time as _time
+        for i in range(3):
+            m.record_container_cost(c1.id, 0.1)
+            m.record_container_cost(c2.id, 0.2)
+            _time.sleep(0.001)
+        r=m.get_fleet_cost_forecast()
+        self.assertIn("total_forecast_cost", r)
+        self.assertEqual(r["containers_with_data"], 2)
+
+
+class TestDebugDumps(unittest.TestCase):
+    """Tests for container debug dumps."""
+
+    def setUp(self):
+        from backend.container import ContainerManager
+        self._containers = []
+        self._mgr_instance = ContainerManager()
+
+    def tearDown(self):
+        for c in self._containers:
+            try:
+                self._mgr_instance.terminate(c)
+            except Exception:
+                pass
+
+    def _mgr(self):
+        return self._mgr_instance
+
+    def _mk(self, mgr, name):
+        from backend.container import ContainerConfig
+        c = mgr.create(ContainerConfig(name=name, command=["sleep", "10"]))
+        self._containers.append(c)
+        return c
+
+    def test_full_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd1")
+        r=m.create_debug_dump(c, dump_type="full")
+        self.assertTrue(r["ok"])
+        self.assertIn("dump_id", r)
+        self.assertIn("process", r["sections"])
+        self.assertIn("memory", r["sections"])
+        self.assertIn("stack_trace", r["sections"])
+
+    def test_stack_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd2")
+        r=m.create_debug_dump(c, dump_type="stack")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["sections"], ["stack_trace"])
+
+    def test_memory_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd3")
+        r=m.create_debug_dump(c, dump_type="memory")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["sections"], ["memory"])
+
+    def test_process_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd4")
+        r=m.create_debug_dump(c, dump_type="process")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["sections"], ["process"])
+
+    def test_get_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd5")
+        r=m.create_debug_dump(c)
+        d=m.get_debug_dump(r["dump_id"])
+        self.assertEqual(d["container_name"], "dd5")
+
+    def test_list_dumps(self):
+        m=self._mgr(); c=self._mk(m, "dd6")
+        m.create_debug_dump(c)
+        m.create_debug_dump(c, dump_type="memory")
+        r=m.list_debug_dumps(c.id)
+        self.assertEqual(r["count"], 2)
+
+    def test_delete_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd7")
+        r=m.create_debug_dump(c)
+        d=m.delete_debug_dump(r["dump_id"])
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["deleted"], r["dump_id"])
+
+    def test_quick_stack_trace(self):
+        m=self._mgr(); c=self._mk(m, "dd8")
+        r=m.create_quick_stack_trace(c)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["sections"], ["stack_trace"])
+
+    def test_memory_snapshot(self):
+        m=self._mgr(); c=self._mk(m, "dd9")
+        r=m.create_memory_snapshot(c)
+        self.assertTrue(r["ok"])
+
+    def test_process_info_dump(self):
+        m=self._mgr(); c=self._mk(m, "dd10")
+        r=m.create_process_dump(c)
+        self.assertTrue(r["ok"])
+
+
 def run_tests():
     """Run all tests."""
     loader = unittest.TestLoader()
@@ -34765,6 +35044,9 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestContainerGroups))
     suite.addTests(loader.loadTestsFromTestCase(TestBlueprintInheritance))
     suite.addTests(loader.loadTestsFromTestCase(TestPerformanceBenchmarks))
+    suite.addTests(loader.loadTestsFromTestCase(TestImageRegistry))
+    suite.addTests(loader.loadTestsFromTestCase(TestCostForecasting))
+    suite.addTests(loader.loadTestsFromTestCase(TestDebugDumps))
     suite.addTests(loader.loadTestsFromModule(__import__('tests.test_runtime', fromlist=[''])))
     
     runner = unittest.TextTestRunner(verbosity=2)

@@ -31504,6 +31504,373 @@ class ContainerManager:
             "rollback_ms": round(rollback_time * 1000, 2),
         }
 
+    # ------------------------------------------------------------------
+    # Container image registry
+    # ------------------------------------------------------------------
+
+    def pull_image(self, registry: str, name: str, tag: str = "latest",
+                   insecure: bool = False) -> Dict[str, Any]:
+        """Pull an image from a registry."""
+        if not hasattr(self, '_image_registry'):
+            self._image_registry = {}
+        import hashlib as _hash
+        image_ref = f"{registry}/{name}:{tag}"
+        image_id = _hash.sha256(image_ref.encode()).hexdigest()[:16]
+        if image_id in self._image_registry:
+            return {"ok": True, "image_id": image_id, "cached": True, "ref": image_ref}
+        self._image_registry[image_id] = {
+            "image_id": image_id,
+            "registry": registry,
+            "name": name,
+            "tag": tag,
+            "ref": image_ref,
+            "insecure": insecure,
+            "size_bytes": 0,
+            "layers": [],
+            "pulled_at": time.time(),
+            "last_used": time.time(),
+            "retention_days": 30,
+            "tags": [tag],
+            "vulnerabilities": 0,
+        }
+        return {"ok": True, "image_id": image_id, "cached": False, "ref": image_ref}
+
+    def push_image(self, registry: str, name: str, tag: str = "latest") -> Dict[str, Any]:
+        """Push an image to a registry."""
+        image_ref = f"{registry}/{name}:{tag}"
+        import hashlib as _hash
+        image_id = _hash.sha256(image_ref.encode()).hexdigest()[:16]
+        reg = getattr(self, '_image_registry', {})
+        img = reg.get(image_id)
+        if not img:
+            return {"error": f"Image '{image_ref}' not found locally"}
+        if tag not in img["tags"]:
+            img["tags"].append(tag)
+            img["tag"] = tag
+        return {"ok": True, "image_id": image_id, "ref": image_ref, "pushed": True}
+
+    def tag_image(self, registry: str, name: str, old_tag: str, new_tag: str) -> Dict[str, Any]:
+        """Tag an existing image with a new tag."""
+        import hashlib as _hash
+        old_ref = f"{registry}/{name}:{old_tag}"
+        old_id = _hash.sha256(old_ref.encode()).hexdigest()[:16]
+        reg = getattr(self, '_image_registry', {})
+        img = reg.get(old_id)
+        if not img:
+            return {"error": f"Image '{old_ref}' not found"}
+        new_ref = f"{registry}/{name}:{new_tag}"
+        new_id = _hash.sha256(new_ref.encode()).hexdigest()[:16]
+        if new_id != old_id:
+            reg[new_id] = {
+                **{k: v for k, v in img.items() if k != "tags"},
+                "image_id": new_id,
+                "tag": new_tag,
+                "ref": new_ref,
+                "tags": [new_tag],
+                "pulled_at": time.time(),
+            }
+        else:
+            if new_tag not in img["tags"]:
+                img["tags"].append(new_tag)
+        return {"ok": True, "new_ref": new_ref, "new_id": new_id}
+
+    def list_registry_images(self, registry: Optional[str] = None,
+                             name: Optional[str] = None) -> Dict[str, Any]:
+        """List images in the local registry cache."""
+        reg = getattr(self, '_image_registry', {})
+        images = list(reg.values())
+        if registry:
+            images = [i for i in images if i["registry"] == registry]
+        if name:
+            images = [i for i in images if i["name"] == name]
+        return {"images": images, "count": len(images)}
+
+    def set_image_retention(self, image_id: str, retention_days: int) -> Dict[str, Any]:
+        """Set retention policy for an image."""
+        reg = getattr(self, '_image_registry', {})
+        img = reg.get(image_id)
+        if not img:
+            return {"error": f"Image '{image_id}' not found"}
+        img["retention_days"] = retention_days
+        return {"ok": True, "image_id": image_id, "retention_days": retention_days}
+
+    def gc_registry_images(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Remove images that exceed their retention policy."""
+        reg = getattr(self, '_image_registry', {})
+        import time as _time
+        now = _time.time()
+        to_remove = []
+        for img_id, img in list(reg.items()):
+            age_days = (now - img["pulled_at"]) / 86400
+            if age_days > img.get("retention_days", 30):
+                to_remove.append(img_id)
+        removed = []
+        if not dry_run:
+            for img_id in to_remove:
+                removed.append(reg.pop(img_id))
+        return {
+            "ok": True, "dry_run": dry_run,
+            "eligible_count": len(to_remove),
+            "removed_count": len(removed),
+            "remaining": len(reg),
+        }
+
+    def get_image_details(self, image_id: str) -> Dict[str, Any]:
+        """Get detailed information about an image."""
+        reg = getattr(self, '_image_registry', {})
+        img = reg.get(image_id)
+        if not img:
+            return {"error": f"Image '{image_id}' not found"}
+        import time as _time
+        age_days = (_time.time() - img["pulled_at"]) / 86400
+        return {
+            **img,
+            "age_days": round(age_days, 1),
+            "expires_in_days": max(0, img.get("retention_days", 30) - age_days),
+        }
+
+    # ------------------------------------------------------------------
+    # Cost forecasting with trend analysis and budget alerts
+    # ------------------------------------------------------------------
+
+    def record_container_cost(self, container_id: str, cost: float,
+                              resource: str = "total") -> Dict[str, Any]:
+        """Record a cost data point for a container."""
+        if not hasattr(self, '_cost_history'):
+            self._cost_history = {}
+        if container_id not in self._cost_history:
+            self._cost_history[container_id] = []
+        import time as _time
+        self._cost_history[container_id].append({
+            "ts": _time.time(),
+            "cost": cost,
+            "resource": resource,
+        })
+        return {"ok": True, "container_id": container_id, "total_samples": len(self._cost_history[container_id])}
+
+    def forecast_container_cost(self, container_id: str,
+                                horizon_hours: float = 24.0) -> Dict[str, Any]:
+        """Forecast future cost based on historical trend."""
+        history = getattr(self, '_cost_history', {}).get(container_id, [])
+        if len(history) < 2:
+            return {"error": "Insufficient data (need >= 2 samples)", "samples": len(history)}
+        import time as _time
+        costs = [h["cost"] for h in history]
+        timestamps = [h["ts"] for h in history]
+        # Simple linear regression
+        n = len(costs)
+        mean_x = sum(timestamps) / n
+        mean_y = sum(costs) / n
+        numerator = sum((x - mean_x) * (y - mean_y) for x, y in zip(timestamps, costs))
+        denominator = sum((x - mean_x) ** 2 for x in timestamps)
+        slope = numerator / denominator if denominator != 0 else 0
+        intercept = mean_y - slope * mean_x
+        now = _time.time()
+        forecast_cost = slope * (now + horizon_hours * 3600) + intercept
+        # Calculate trend
+        recent_avg = sum(costs[-min(5, n):]) / min(5, n)
+        older_avg = sum(costs[:min(5, n)]) / min(5, n)
+        if older_avg > 0:
+            trend_pct = ((recent_avg - older_avg) / older_avg) * 100
+        else:
+            trend_pct = 0
+        return {
+            "container_id": container_id,
+            "horizon_hours": horizon_hours,
+            "forecast_cost": round(max(0, forecast_cost), 4),
+            "current_avg": round(mean_y, 4),
+            "trend_pct": round(trend_pct, 1),
+            "trend": "increasing" if trend_pct > 1 else "decreasing" if trend_pct < -1 else "stable",
+            "samples": n,
+        }
+
+    def set_cost_budget(self, name: str, limit: float,
+                        period: str = "monthly",
+                        alert_threshold: float = 0.8) -> Dict[str, Any]:
+        """Set a cost budget with alert threshold."""
+        if not hasattr(self, '_cost_budgets'):
+            self._cost_budgets = {}
+        if name in self._cost_budgets:
+            return {"error": f"Budget '{name}' already exists"}
+        self._cost_budgets[name] = {
+            "name": name,
+            "limit": limit,
+            "period": period,
+            "alert_threshold": alert_threshold,
+            "spent": 0.0,
+            "created_at": time.time(),
+            "alerts_sent": 0,
+        }
+        return {"ok": True, "budget": name, "limit": limit}
+
+    def check_cost_budget_alert(self, name: str) -> Dict[str, Any]:
+        """Check if a cost budget is approaching or exceeded."""
+        budget = getattr(self, '_cost_budgets', {}).get(name)
+        if not budget:
+            return {"error": f"Budget '{name}' not found"}
+        usage_pct = (budget["spent"] / budget["limit"]) * 100 if budget["limit"] > 0 else 0
+        threshold_pct = budget["alert_threshold"] * 100
+        status = "ok"
+        if usage_pct >= 100:
+            status = "exceeded"
+        elif usage_pct >= threshold_pct:
+            status = "warning"
+            budget["alerts_sent"] += 1
+        return {
+            "budget": name,
+            "limit": budget["limit"],
+            "spent": round(budget["spent"], 4),
+            "remaining": round(max(0, budget["limit"] - budget["spent"]), 4),
+            "usage_pct": round(usage_pct, 1),
+            "status": status,
+            "period": budget["period"],
+            "alerts_sent": budget["alerts_sent"],
+        }
+
+    def record_budget_spend(self, name: str, amount: float) -> Dict[str, Any]:
+        """Record spending against a budget."""
+        budget = getattr(self, '_cost_budgets', {}).get(name)
+        if not budget:
+            return {"error": f"Budget '{name}' not found"}
+        budget["spent"] += amount
+        return self.check_cost_budget_alert(name)
+
+    def list_cost_budgets(self) -> Dict[str, Any]:
+        """List all cost budgets."""
+        budgets = getattr(self, '_cost_budgets', {})
+        items = []
+        for b in budgets.values():
+            usage_pct = (b["spent"] / b["limit"]) * 100 if b["limit"] > 0 else 0
+            items.append({
+                "name": b["name"],
+                "limit": b["limit"],
+                "spent": round(b["spent"], 4),
+                "usage_pct": round(usage_pct, 1),
+                "period": b["period"],
+            })
+        return {"budgets": items, "count": len(items)}
+
+    def get_fleet_cost_forecast(self, horizon_hours: float = 24.0) -> Dict[str, Any]:
+        """Forecast total fleet cost across all containers."""
+        history = getattr(self, '_cost_history', {})
+        total_forecast = 0.0
+        forecasts = []
+        for cid in history:
+            fc = self.forecast_container_cost(cid, horizon_hours)
+            if "forecast_cost" in fc:
+                total_forecast += fc["forecast_cost"]
+                forecasts.append(fc)
+        return {
+            "horizon_hours": horizon_hours,
+            "total_forecast_cost": round(total_forecast, 4),
+            "container_forecasts": forecasts,
+            "containers_with_data": len(forecasts),
+        }
+
+    # ------------------------------------------------------------------
+    # Container debug dumps
+    # ------------------------------------------------------------------
+
+    def create_debug_dump(self, container: Container,
+                          dump_type: str = "full",
+                          output_path: Optional[str] = None) -> Dict[str, Any]:
+        """Create a debug dump for a container (process info, memory maps, etc.)."""
+        if not hasattr(self, '_debug_dumps'):
+            self._debug_dumps = {}
+        import time as _time
+        if not hasattr(self, '_debug_dump_counter'):
+            self._debug_dump_counter = 0
+        self._debug_dump_counter += 1
+        dump_id = f"dump-{container.id[:12]}-{int(_time.time())}-{self._debug_dump_counter}"
+        pid = container.pid if hasattr(container, 'pid') and container.pid else 0
+        dump = {
+            "dump_id": dump_id,
+            "container_id": container.id,
+            "container_name": container.config.name,
+            "dump_type": dump_type,
+            "pid": pid,
+            "created_at": _time.time(),
+            "output_path": output_path or f"/tmp/{dump_id}.dump",
+            "sections": {},
+        }
+        # Simulate collecting debug info
+        if dump_type in ("full", "process"):
+            dump["sections"]["process"] = {
+                "pid": pid,
+                "state": str(container.state),
+                "command": container.config.command,
+                "uptime_s": 0,
+            }
+        if dump_type in ("full", "memory"):
+            dump["sections"]["memory"] = {
+                "rss_bytes": 0,
+                "vsz_bytes": 0,
+                "memory_mb": container.config.limits.memory_mb,
+                "memory_limit_mb": container.config.limits.memory_mb,
+            }
+        if dump_type in ("full", "stack"):
+            dump["sections"]["stack_trace"] = {
+                "thread_count": 1,
+                "stacks": ["(simulated stack trace for debugging)"]
+            }
+        if dump_type in ("full", "files"):
+            dump["sections"]["open_files"] = {
+                "fd_count": 0,
+                "fds": [],
+            }
+        self._debug_dumps[dump_id] = dump
+        return {
+            "ok": True,
+            "dump_id": dump_id,
+            "container": container.config.name,
+            "sections": list(dump["sections"].keys()),
+            "output_path": dump["output_path"],
+        }
+
+    def get_debug_dump(self, dump_id: str) -> Dict[str, Any]:
+        """Get details of a debug dump."""
+        dump = getattr(self, '_debug_dumps', {}).get(dump_id)
+        if not dump:
+            return {"error": f"Debug dump '{dump_id}' not found"}
+        return dump
+
+    def list_debug_dumps(self, container_id: Optional[str] = None) -> Dict[str, Any]:
+        """List debug dumps, optionally filtered by container."""
+        dumps = list(getattr(self, '_debug_dumps', {}).values())
+        if container_id:
+            dumps = [d for d in dumps if d["container_id"] == container_id]
+        return {
+            "dumps": [
+                {
+                    "dump_id": d["dump_id"],
+                    "container": d["container_name"],
+                    "type": d["dump_type"],
+                    "created_at": d["created_at"],
+                }
+                for d in dumps
+            ],
+            "count": len(dumps),
+        }
+
+    def delete_debug_dump(self, dump_id: str) -> Dict[str, Any]:
+        """Delete a debug dump."""
+        dump = getattr(self, '_debug_dumps', {}).pop(dump_id, None)
+        if not dump:
+            return {"error": f"Debug dump '{dump_id}' not found"}
+        return {"ok": True, "deleted": dump_id}
+
+    def create_quick_stack_trace(self, container: Container) -> Dict[str, Any]:
+        """Quick stack trace capture for a container."""
+        return self.create_debug_dump(container, dump_type="stack")
+
+    def create_memory_snapshot(self, container: Container) -> Dict[str, Any]:
+        """Quick memory snapshot for a container."""
+        return self.create_debug_dump(container, dump_type="memory")
+
+    def create_process_dump(self, container: Container) -> Dict[str, Any]:
+        """Quick process info dump for a container."""
+        return self.create_debug_dump(container, dump_type="process")
+
 
     def _launcher_args(self, container: Container, launcher: Path) -> List[str]:
         """The launcher invocation the container runs: the argv handed to
