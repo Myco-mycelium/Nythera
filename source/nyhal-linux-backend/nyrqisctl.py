@@ -13502,7 +13502,6 @@ def build_parser() -> argparse.ArgumentParser:
     ae.add_argument("--index", type=int, required=True)
     ae.set_defaults(command="audit-entry")
 
-    asum = sub.add_parser("audit-summary", help="Get audit summary")
     asum.add_argument("--chain-id", required=True)
     asum.set_defaults(command="audit-summary")
 
@@ -13545,24 +13544,9 @@ def build_parser() -> argparse.ArgumentParser:
     sps.set_defaults(command="stop-predictive-scaler")
 
     # -- chaos experiments --
-    cce = sub.add_parser("create-chaos-experiment", help="Create chaos experiment")
-    cce.add_argument("--container-id", required=True)
-    cce.add_argument("--fault-type", default="latency", choices=["latency", "cpu", "memory", "disk", "network", "kill"])
-    cce.add_argument("--intensity", type=float, default=0.5)
-    cce.add_argument("--duration-s", type=float, default=60.0)
-    cce.set_defaults(command="create-chaos-experiment")
-
-    sce = sub.add_parser("start-chaos-experiment", help="Start chaos experiment")
-    sce.add_argument("--experiment-id", required=True)
-    sce.set_defaults(command="start-chaos-experiment")
-
     inf = sub.add_parser("inject-fault", help="Inject fault")
     inf.add_argument("--experiment-id", required=True)
     inf.set_defaults(command="inject-fault")
-
-    ste = sub.add_parser("stop-chaos-experiment", help="Stop chaos experiment")
-    ste.add_argument("--experiment-id", required=True)
-    ste.set_defaults(command="stop-chaos-experiment")
 
     ces = sub.add_parser("chaos-experiment-status", help="Get chaos experiment status")
     ces.add_argument("--experiment-id", required=True)
@@ -13610,11 +13594,6 @@ def build_parser() -> argparse.ArgumentParser:
     ces.add_argument("--scale-down-threshold", type=float, default=0.3)
     ces.add_argument("--cooldown-s", type=float, default=60.0)
     ces.set_defaults(command="create-event-scaler")
-    rwh = sub.add_parser("register-webhook", help="Register webhook")
-    rwh.add_argument("--scaler-id", required=True)
-    rwh.add_argument("--url", required=True)
-    rwh.add_argument("--event-type", default="metric")
-    rwh.set_defaults(command="register-webhook")
     cst = sub.add_parser("configure-slo-trigger", help="Configure SLO trigger")
     cst.add_argument("--scaler-id", required=True)
     cst.add_argument("--slo-name", required=True)
@@ -13758,9 +13737,7 @@ def build_parser() -> argparse.ArgumentParser:
     p10 = sub.add_parser("route-traffic"); p10.add_argument("--split-id",required=True); p10.set_defaults(command="route-traffic")
     p11 = sub.add_parser("traffic-metrics"); p11.add_argument("--split-id",required=True); p11.set_defaults(command="traffic-metrics")
     p12 = sub.add_parser("delete-traffic-split"); p12.add_argument("--split-id",required=True); p12.set_defaults(command="delete-traffic-split")
-    p13 = sub.add_parser("create-trace"); p13.add_argument("--container-id",required=True); p13.add_argument("--operation",required=True); p13.set_defaults(command="create-trace")
     p14 = sub.add_parser("add-span"); p14.add_argument("--trace-id",required=True); p14.add_argument("--span-name",required=True); p14.add_argument("--duration-ms",type=float,required=True); p14.set_defaults(command="add-span")
-    p15 = sub.add_parser("finish-trace"); p15.add_argument("--trace-id",required=True); p15.add_argument("--status",default="ok"); p15.set_defaults(command="finish-trace")
     p16 = sub.add_parser("trace-detail"); p16.add_argument("--trace-id",required=True); p16.set_defaults(command="trace-detail")
     p17 = sub.add_parser("aggregate-traces"); p17.add_argument("--container-id",required=True); p17.set_defaults(command="aggregate-traces")
     p18 = sub.add_parser("delete-trace"); p18.add_argument("--trace-id",required=True); p18.set_defaults(command="delete-trace")
@@ -13778,12 +13755,9 @@ def build_parser() -> argparse.ArgumentParser:
     p=sub.add_parser("cpu-profile"); p.add_argument("--session-id",required=True); p.set_defaults(command="cpu-profile")
     p=sub.add_parser("close-process-session"); p.add_argument("--session-id",required=True); p.set_defaults(command="close-process-session")
     p=sub.add_parser("delete-process-session"); p.add_argument("--session-id",required=True); p.set_defaults(command="delete-process-session")
-    p=sub.add_parser("register-service"); p.add_argument("--container-id",required=True); p.add_argument("--service-name",required=True); p.add_argument("--port",type=int,required=True); p.set_defaults(command="register-service")
     p=sub.add_parser("update-service-health"); p.add_argument("--service-id",required=True); p.add_argument("--healthy",action="store_true"); p.set_defaults(command="update-service-health")
     p=sub.add_parser("discover-services"); p.add_argument("--service-name",required=True); p.set_defaults(command="discover-services")
     p=sub.add_parser("resolve-service"); p.add_argument("--service-name",required=True); p.set_defaults(command="resolve-service")
-    p=sub.add_parser("deregister-service"); p.add_argument("--service-id",required=True); p.set_defaults(command="deregister-service")
-    sub.add_parser("list-services").set_defaults(command="list-services")
     return parser
 
 

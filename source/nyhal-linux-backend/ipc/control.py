@@ -10919,6 +10919,43 @@ class ControlService:
         self._reply(sp,s,cid,{"ok":True,**self.container_manager.deregister_service(r.get("service_id",""))})
     def _h_list_services(self, s, sp, cid):
         self._reply(sp,s,cid,{"ok":True,**self.container_manager.list_services()})
+
+    def _h_start_packet_capture(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.start_packet_capture(co, r.get("interface","eth0"), r.get("filter"), r.get("max_packets",1000))})
+    def _h_record_packet(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.record_packet(r.get("capture_id",""), r.get("src_ip",""), r.get("dst_ip",""), r.get("protocol","tcp"), r.get("size_bytes",0), r.get("direction","inbound"))})
+    def _h_get_capture_summary(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_capture_summary(r.get("capture_id",""))})
+    def _h_get_capture_protocol_breakdown(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_capture_protocol_breakdown(r.get("capture_id",""))})
+    def _h_detect_anomalous_traffic(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.detect_anomalous_traffic(r.get("capture_id",""), r.get("threshold_bytes",100000))})
+    def _h_stop_packet_capture(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.stop_packet_capture(r.get("capture_id",""))})
+    def _h_delete_packet_capture(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_packet_capture(r.get("capture_id",""))})
+    def _h_create_key_rotation_policy(self, s, sp, cid, r):
+        co = self.container_manager.containers.get(r.get("container_id",""))
+        if not co: self._reply(sp,s,cid,{"ok":False,"error":"not found"}); return
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_key_rotation_policy(co, r.get("key_type","aes-256"), r.get("rotation_interval_hours",24), r.get("max_rotations",0))})
+    def _h_rotate_key(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.rotate_key(r.get("policy_id",""))})
+    def _h_check_key_rotation_needed(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.check_key_rotation_needed(r.get("policy_id",""))})
+    def _h_get_key_policy_status(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_key_policy_status(r.get("policy_id",""))})
+    def _h_delete_key_policy(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_key_policy(r.get("policy_id",""))})
+    def _h_create_config_schema(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.create_config_schema(r.get("schema_name",""), r.get("fields"))})
+    def _h_validate_config(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.validate_config(r.get("schema_name",""), r.get("config",{}))})
+    def _h_get_schema_validation_history(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.get_schema_validation_history(r.get("schema_name",""), r.get("limit",10))})
+    def _h_delete_config_schema(self, s, sp, cid, r):
+        self._reply(sp,s,cid,{"ok":True,**self.container_manager.delete_config_schema(r.get("schema_name",""))})
     def _save_state(self) -> None:
         """Best-effort: tell the daemon to persist the container
         manifest after a mutation (plan §4.5). A state-save failure

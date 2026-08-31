@@ -30361,7 +30361,7 @@ class TestChaosInjection(unittest.TestCase):
         """create_chaos_experiment creates an experiment."""
         mgr = self._manager()
         c = self._make(mgr, "cx1")
-        r = mgr.create_chaos_experiment(c, fault_type="latency", intensity=0.5)
+        r = mgr.create_scheduled_chaos_experiment(c, fault_type="latency", intensity=0.5)
         self.assertIn("experiment_id", r)
         self.assertEqual(r["fault_type"], "latency")
 
@@ -30369,7 +30369,7 @@ class TestChaosInjection(unittest.TestCase):
         """start_chaos_experiment starts the experiment."""
         mgr = self._manager()
         c = self._make(mgr, "cx2")
-        r = mgr.create_chaos_experiment(c)
+        r = mgr.create_scheduled_chaos_experiment(c)
         eid = r["experiment_id"]
         r2 = mgr.start_chaos_experiment(eid)
         self.assertTrue(r2["ok"])
@@ -30379,7 +30379,7 @@ class TestChaosInjection(unittest.TestCase):
         """inject_fault records injection events."""
         mgr = self._manager()
         c = self._make(mgr, "cx3")
-        r = mgr.create_chaos_experiment(c)
+        r = mgr.create_scheduled_chaos_experiment(c)
         eid = r["experiment_id"]
         mgr.start_chaos_experiment(eid)
         mgr.inject_fault(eid)
@@ -30391,7 +30391,7 @@ class TestChaosInjection(unittest.TestCase):
         """stop_chaos_experiment completes the experiment."""
         mgr = self._manager()
         c = self._make(mgr, "cx4")
-        r = mgr.create_chaos_experiment(c)
+        r = mgr.create_scheduled_chaos_experiment(c)
         eid = r["experiment_id"]
         mgr.start_chaos_experiment(eid)
         mgr.inject_fault(eid)
@@ -30404,8 +30404,8 @@ class TestChaosInjection(unittest.TestCase):
         mgr = self._manager()
         c1 = self._make(mgr, "cx5a")
         c2 = self._make(mgr, "cx5b")
-        mgr.create_chaos_experiment(c1)
-        mgr.create_chaos_experiment(c2)
+        mgr.create_scheduled_chaos_experiment(c1)
+        mgr.create_scheduled_chaos_experiment(c2)
         r = mgr.list_chaos_experiments()
         self.assertEqual(r["count"], 2)
 
@@ -30413,7 +30413,7 @@ class TestChaosInjection(unittest.TestCase):
         """get_chaos_experiment returns status."""
         mgr = self._manager()
         c = self._make(mgr, "cx6")
-        r = mgr.create_chaos_experiment(c, fault_type="kill")
+        r = mgr.create_scheduled_chaos_experiment(c, fault_type="kill")
         eid = r["experiment_id"]
         r2 = mgr.get_chaos_experiment(eid)
         self.assertEqual(r2["fault_type"], "kill")
@@ -31193,7 +31193,7 @@ class TestCostAttribution(unittest.TestCase):
         """get_pod_cost returns cost info."""
         mgr = self._manager()
         c = self._make(mgr, "ca2")
-        c.state.start_time = __import__("time").time() - 3600  # 1 hour ago
+        c.started_at = __import__("time").time() - 3600  # 1 hour ago
         mgr.configure_cost_attribution(c, cost_per_hour=1.0)
         r = mgr.get_pod_cost(c)
         self.assertAlmostEqual(r["total_cost"], 1.0, places=1)
@@ -31203,8 +31203,8 @@ class TestCostAttribution(unittest.TestCase):
         mgr = self._manager()
         c1 = self._make(mgr, "ca3")
         c2 = self._make(mgr, "ca4")
-        c1.state.start_time = __import__("time").time() - 1800
-        c2.state.start_time = __import__("time").time() - 1800
+        c1.started_at = __import__("time").time() - 1800
+        c2.started_at = __import__("time").time() - 1800
         mgr.configure_cost_attribution(c1, cost_per_hour=1.0, team="eng")
         mgr.configure_cost_attribution(c2, cost_per_hour=2.0, team="ops")
         r = mgr.chargeback_report()
