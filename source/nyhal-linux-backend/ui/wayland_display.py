@@ -39,6 +39,11 @@ from typing import Callable, Optional
 
 from . import wayland_codec
 
+try:
+    from . import drm_codec
+except ImportError:
+    drm_codec = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,6 +272,67 @@ class WaylandDisplay:
             return False
         change = wayland_codec.check_output_changes()
         return change != wayland_codec.OUTPUT_CHANGE_NONE
+
+    # -- DRM integration ------------------------------------------------
+
+    def open_drm_device(self, device_path: Optional[str] = None) -> bool:
+        """Open a DRM device for direct scanout.
+
+        Parameters
+        ----------
+        device_path : str, optional
+            Path to the DRM device (e.g. ``/dev/dri/card0``).
+            If None, uses the default.
+
+        Returns
+        -------
+        bool
+            True if the device was opened successfully.
+        """
+        if drm_codec is None or not drm_codec.is_available():
+            logger.info("DRM crate not available — direct scanout disabled")
+            return False
+        device_id = drm_codec.open_device(device_path)
+        if device_id < 0:
+            logger.warning("Failed to open DRM device: %s", drm_codec.last_error())
+            return False
+        self._drm_device_id = device_id
+        logger.info("Opened DRM device %d", device_id)
+        return True
+
+    def drm_atomic_commit(self, connector_id: int, crtc_id: int, fb_id: int) -> bool:
+        """Perform an atomic modesetting commit.
+
+        Parameters
+        ----------
+        connector_id : int
+            The connector to drive.
+        crtc_id : int
+            The CRTC to use.
+        fb_id : int
+            The framebuffer ID to display.
+
+        Returns
+        -------
+        bool
+            True on success.
+        """
+        if drm_codec is None or not hasattr(self, '_drm_device_id'):
+            return False
+        return drm_codec.atomic_commit(self._drm_device_id, connector_id, crtc_id, fb_id)
+
+    def close_drm_device(self) -> bool:
+        """Close the DRM device."""
+        if drm_codec is None or not hasattr(self, '_drm_device_id'):
+            return False
+        result = drm_codec.close_device(self._drm_device_id)
+        del self._drm_device_id
+        return result
+
+    @property
+    def has_drm(self) -> bool:
+        """Whether a DRM device is open for direct scanout."""
+        return hasattr(self, '_drm_device_id')
 
     # -- Event callbacks ------------------------------------------------
 

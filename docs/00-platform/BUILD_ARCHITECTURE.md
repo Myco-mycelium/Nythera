@@ -98,7 +98,8 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 | nyui | 1.0.0 | cdylib | 3 |
 | wayland | 1.2.0 | cdylib | 19 |
 | gbm | 1.0.0 | cdylib | 14 |
-| **Total** | | | **86** |
+| drm | 1.0.0 | cdylib | 7 |
+| **Total** | | | **93** |
 
 ## Build Commands
 
@@ -126,7 +127,7 @@ for crate in */; do
 done
 
 # Verify cdylib artifacts
-for crate in seccomp syscalls keys container ipc transport nyfs nyruntime nyui wayland gbm; do
+for crate in seccomp syscalls keys container ipc transport nyfs nyruntime nyui wayland gbm drm; do
   test -s "$crate/target/release/libnyrqis_${crate//-/_}.so" && echo "✓ $crate"
 done
 ```
@@ -232,6 +233,7 @@ default feature set.
 |-------|-------|-------------|
 | wayland | 19 | Wayland protocol, FFI, output detection |
 | gbm | 14 | GBM buffer allocation |
+| drm | 7 | DRM atomic modesetting |
 | container | 10 | Container lifecycle |
 | syscalls | 8 | Clone/launch |
 | launcher | 6 | Process management |
@@ -243,7 +245,7 @@ default feature set.
 | transport | 3 | Network transport |
 | nyui | 3 | NUI document parsing |
 | nyruntime | 2 | Runtime loop |
-| **Total** | **86** | |
+| **Total** | **93** | |
 
 ### Conformance Testing
 
@@ -268,6 +270,7 @@ target/release/
 ├── libnyrqis_nyui.so
 ├── libnyrqis_wayland.so
 ├── libnyrqis_gbm.so
+├── libnyrqis_drm.so
 ├── nyrqis_launcher          (binary)
 └── nyrqis_ipcd              (binary)
 ```
