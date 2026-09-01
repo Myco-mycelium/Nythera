@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **2500/2500 passing** (`python3 test_backend.py` — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
+Test suite: **2548/2548 passing** (2500 backend + 31 package signing + 17 installer tests — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
 
 ### Rust crate migrations (ADR-0020, all Implemented and CI-verified)
 
@@ -536,6 +536,59 @@ ER-NUI-022. The Start menu fade in `desktop.nstudio` is now a
 Status: **implemented + gated** — the import gate is real and
 operator-drivable end to end; a graphical shell renderer (C++/declarative
 UI per the matrix) is the documented follow-on, not yet started.
+
+### 7. Wayland Display Server Integration (ADR-0026)
+
+**2026-09-01: Phases 1–2 complete.** The Nyrqis shell connects to a
+Wayland compositor and renders via SHM buffers.
+
+- ✓ **Rust crate** (`rust/wayland/`, ABI 1.2.0): real `wl_display`
+  connection via `wayland-sys` FFI; `wl_compositor` binding via
+  `wl_registry`; `wl_surface` creation; SHM buffer submission
+  (`memfd_create` → `mmap` → `wl_shm_pool` → `wl_buffer` →
+  `wl_surface.attach` + `damage_buffer` + `commit`); xdg-shell
+  integration (`xdg_wm_base` + `xdg_surface` + `xdg_toplevel`);
+  `wl_seat` binding with `get_keyboard`/`get_pointer`; `wl_output`
+  enumeration for multi-monitor; event handler callback; 17 unit tests
+- ✓ **Python FFI loader** (`ui/wayland_codec.py`): ctypes wrapper
+  with ABI check, graceful stub fallback when cdylib absent
+- ✓ **WaylandDisplay** (`ui/wayland_display.py`): high-level wrapper
+  with event callbacks (`on_configure`, `on_close`, `on_key`,
+  `on_pointer`); `poll_and_dispatch()` for select()-based fd polling;
+  `render_frame()` with PIL Image → ARGB8888 conversion; `outputs`
+  property for multi-monitor
+- ✓ **DesktopSession integration** (`ui/desktop_session.py`):
+  `connect_wayland()` / `render_to_wayland()` / `has_wayland`;
+  `run_event_loop()` polls Wayland fd, dispatches events, renders
+  frames; `_setup_wayland_events()` translates compositor events to
+  session actions; `_sync_wayland_outputs()` maps outputs to monitors
+- ✓ **SDL2 Wayland backend** (`ui/compositor_sdl.py`): `wayland=True`
+  parameter for GPU-accelerated rendering via SDL2's Wayland driver
+- ✓ **CI** (`.github/workflows/ci.yml`): `rust-wayland` job builds +
+  tests 17 unit tests; `arm64-conformance.yml` cross-compiles for aarch64
+
+Status: **implemented + CI-verified** — Phases 1–2 complete. GPU
+acceleration (GBM/DRM, Phase 3) and custom compositor (Phase 4) are
+follow-ons per ADR-0026.
+
+### 8. Package Signing (NPS-026 §6)
+
+**2026-09-01: Ed25519 signing + installer with verification.**
+
+- ✓ **Signing module** (`backend/package_signing.py`): Ed25519
+  signing/verification via PyNaCl; `SigningKeypair` with generate/
+  from_private_key/from_public_key; `PackageSignature` block (97 bytes);
+  `TrustStore` for trusted publisher keys; 31 unit tests
+- ✓ **Installer** (`backend/installer.py`): `PackageInstaller` with
+  mandatory signature verification (NPS-026 §6.1); trust store
+  integration (§6.3); integrity tree verification (§7); package
+  database; 17 unit tests
+- ✓ **CLI tools**: `nyrqisctl sign` (generate-key/sign/verify/trust)
+  and `nyrqisctl package` (create/inspect/verify/install)
+- ✓ **CI**: `test_package_signing` + `test_installer` in test suite
+
+Status: **implemented + tested** — NPS-026 §6 compliance achieved.
+Manifest serialization uses compact JSON to match signing.
 
 ## Conformance Assessment
 
