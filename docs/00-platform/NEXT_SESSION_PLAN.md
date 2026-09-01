@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 2.0.0
+version: 3.0.0
 date: 2026-09-01
 ---
 
@@ -10,14 +10,16 @@ date: 2026-09-01
 
 | Metric | Value |
 |--------|-------|
-| Total tests | **2,720** (2,500 Python + 31 signing + 17 installer + 11 integration + 21 SDL2 Wayland + 12 EGL + 10 DRM + 14 GPU integration + 14 GBM Rust + 19 Wayland Rust + 7 DRM Rust + 10 EGL Rust) |
+| Total tests | **2,768** (2,500 Python + 31 signing + 17 installer + 11 integration + 21 SDL2 Wayland + 12 EGL + 10 DRM + 19 GPU integration + 11 Vulkan + 14 GBM Rust + 19 Wayland Rust + 7 DRM Rust + 10 EGL Rust + 8 Compositor Rust + 10 Vulkan Rust) |
 | CI status | 26/27 jobs passing (1 pre-existing container FFI flaky) |
-| Rust crates | **16** (nycore, seccomp, syscalls, keys, container, launcher, ipc, ipcd, transport, nyfs, nyruntime, nyui, wayland, gbm, drm, egl) |
-| Python codecs | **5** (wayland_codec, gbm_codec, drm_codec, egl_codec, nstudio_codec) |
+| Rust crates | **18** (nycore, seccomp, syscalls, keys, container, launcher, ipc, ipcd, transport, nyfs, nyruntime, nyui, wayland, gbm, drm, egl, compositor, vulkan) |
+| Python codecs | **6** (wayland_codec, gbm_codec, drm_codec, egl_codec, vulkan_codec, nstudio_codec) |
 | Wayland | Full integration (Rust crate + Python FFI + DesktopSession + multi-monitor + hot-plug + wl_output listener) |
 | GBM | Real FFI bindings (dlopen) + 14 tests |
 | DRM | Real ioctl wrappers + 7 tests |
 | EGL | Integration crate + 10 tests |
+| Vulkan | Native graphics API (ADR-0010) + 10 tests |
+| Compositor | Minimal Wayland compositor for testing + 8 tests |
 | SDL2 Wayland | 21 tests (headless, X11, Wayland fallback) |
 | Package signing | Ed25519 + TrustStore + CLI + 59 tests |
 | Build architecture | Documented (NPC-007 gap 9 satisfied) |
@@ -34,7 +36,9 @@ date: 2026-09-01
 | Real GBM FFI bindings | ✅ dlopen of libgbm.so with 9 function pointers |
 | Real DRM ioctl wrappers | ✅ MODE_GETRESOURCES, MODE_GETCONNECTOR |
 | EGL integration crate | ✅ Display/surface/context lifecycle |
-| GPU integration tests | ✅ 14 tests for full pipeline |
+| Vulkan rendering crate | ✅ Instance/device/swapchain lifecycle (ADR-0010) |
+| Wayland compositor | ✅ Minimal compositor for CI testing |
+| GPU integration tests | ✅ 19 tests for full pipeline |
 
 ## What's Left
 
@@ -43,17 +47,29 @@ date: 2026-09-01
 **Goal**: Verify the full GPU rendering pipeline on a machine with a GPU.
 
 **Tasks**:
-1. Install `libgbm-dev` and `libegl1-mesa-dev`
+1. Install `libgbm-dev`, `libegl1-mesa-dev`, `libvulkan-dev`
 2. Run the GPU integration test suite with real hardware
 3. Verify GBM buffer allocation works end-to-end
 4. Verify EGL context creation and OpenGL rendering
 5. Verify DRM atomic modesetting with a real connector
+6. Verify Vulkan instance/device/swapchain creation
 
 **Blocker**: Needs `sudo` access to install packages.
 
-### Priority 2: Custom Wayland Compositor (Large effort)
+### Priority 2: Real GBM/DRM/EGL/Vulkan Integration (4 weeks)
 
-**Goal**: Build a minimal Wayland compositor for testing and development.
+**Goal**: Replace stub implementations with real hardware interaction.
+
+**Tasks**:
+1. **GBM**: Wire `gbm_create_device()` to real `libgbm.so` dlopen
+2. **DRM**: Wire `DRM_IOCTL_MODE_GETCONNECTOR` to real ioctl
+3. **EGL**: Wire `eglInitialize()` / `eglChooseConfig()` to real `libEGL.so`
+4. **Vulkan**: Wire `vkCreateInstance()` / `vkCreateDevice()` to real `libvulkan.so`
+5. Integration tests with real hardware
+
+### Priority 3: Custom Wayland Compositor (6 weeks)
+
+**Goal**: Build a minimal Wayland compositor for automated CI testing.
 
 **Why**: A custom compositor would allow:
 - Automated GPU rendering tests in CI
@@ -65,22 +81,7 @@ date: 2026-09-01
 2. Implement input handling (`wl_seat`, `wl_keyboard`, `wl_pointer`)
 3. Implement output management (`wl_output`)
 4. Implement frame callbacks (`wl_callback`)
-
-**Estimated scope**: Large — 4-6 weeks
-
-### Priority 3: Vulkan Rendering (ADR-0010) (Large effort)
-
-**Goal**: Implement Vulkan as the native graphics API per ADR-0010.
-
-**Why**: ADR-0010 specifies Vulkan as the native graphics API for Nyrqis.
-
-**Tasks**:
-1. Add `ash` or `vulkano` dependency
-2. Implement Vulkan instance/device/swapchain
-3. Integrate with GBM buffers for Wayland submission
-4. Add Vulkan rendering pipeline
-
-**Estimated scope**: Large — 6-8 weeks
+5. DRM/KMS backend for display output
 
 ### Priority 4: Package Update Signing (1 week)
 
@@ -118,18 +119,18 @@ date: 2026-09-01
 | Week | Priority | Deliverable |
 |------|----------|-------------|
 | 1 | 1 | Test with real hardware |
-| 2-3 | 4 | Package update signing |
-| 4-6 | 5 | Multi-monitor enhancements |
-| 7-8 | 6 | Performance benchmarks |
-| 9-14 | 2 | Custom Wayland compositor |
-| 15-22 | 3 | Vulkan rendering |
+| 2-5 | 2 | Real GBM/DRM/EGL/Vulkan integration |
+| 6-11 | 3 | Custom Wayland compositor |
+| 12-13 | 4 | Package update signing |
+| 14-15 | 5 | Multi-monitor enhancements |
+| 16-17 | 6 | Performance benchmarks |
 
 ## Success Criteria
 
 | Metric | Target |
 |--------|--------|
 | Tests passing | 2,800+ |
-| GPU rendering | GBM/EGL/DRM path working on real hardware |
+| GPU rendering | GBM/EGL/DRM/Vulkan path working on real hardware |
 | Package signing | Update signing verified |
 | Multi-monitor | Per-output rendering working |
 | Benchmarks | All display paths measured |
