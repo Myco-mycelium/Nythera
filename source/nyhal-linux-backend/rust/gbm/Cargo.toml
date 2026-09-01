@@ -13,5 +13,6 @@ crate-type = ["cdylib", "rlib"]
 # GBM provides a generic buffer allocation interface that works with
 # DRM/KMS for direct scanout and EGL for OpenGL/Vulkan rendering.
 libc = "0.2"
+libloading = "0.8"
 
 [dev-dependencies]

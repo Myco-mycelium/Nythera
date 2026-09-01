@@ -45,30 +45,30 @@ type gbm_bo = std::ffi::c_void;
 // State management
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct DeviceSlot {
     fd: c_int,
+    gbm_device: *mut gbm_device,
     active: bool,
 }
 unsafe impl Send for DeviceSlot {}
 
-#[allow(dead_code)]
 struct SurfaceSlot {
     width: i32,
     height: i32,
     format: u32,
     device_id: i32,
+    gbm_surface: *mut gbm_surface,
     active: bool,
 }
 unsafe impl Send for SurfaceSlot {}
 
-#[allow(dead_code)]
 struct BufferSlot {
     width: i32,
     height: i32,
     stride: i32,
     format: u32,
     surface_id: i32,
+    gbm_bo: *mut gbm_bo,
     active: bool,
 }
 unsafe impl Send for BufferSlot {}
@@ -108,13 +108,71 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
     slots.iter().position(|s| s.is_none())
 }
 
+/// GBM function pointers loaded via dlopen.
+struct GbmFns {
+    create_device: unsafe extern "C" fn(fd: c_int) -> *mut gbm_device,
+    device_destroy: unsafe extern "C" fn(device: *mut gbm_device) -> c_int,
+    surface_create: unsafe extern "C" fn(
+        device: *mut gbm_device, width: u32, height: u32, format: u32, flags: u32,
+    ) -> *mut gbm_surface,
+    surface_destroy: unsafe extern "C" fn(surface: *mut gbm_surface) -> c_int,
+    surface_lock_front_buffer: unsafe extern "C" fn(surface: *mut gbm_surface) -> *mut gbm_bo,
+    bo_destroy: unsafe extern "C" fn(bo: *mut gbm_bo) -> c_int,
+    bo_get_width: unsafe extern "C" fn(bo: *mut gbm_bo) -> u32,
+    bo_get_height: unsafe extern "C" fn(bo: *mut gbm_bo) -> u32,
+    bo_get_stride: unsafe extern "C" fn(bo: *mut gbm_bo) -> u32,
+}
+unsafe impl Send for GbmFns {}
+unsafe impl Sync for GbmFns {}
+
+#[allow(static_mut_refs)]
+static mut GBM_FNS: Option<GbmFns> = None;
+
+/// Load libgbm.so and resolve function pointers.
+unsafe fn load_gbm_library() -> Option<GbmFns> {
+    let lib_paths = [
+        "libgbm.so.1",
+        "libgbm.so",
+        "/usr/lib/x86_64-linux-gnu/libgbm.so.1",
+        "/usr/lib/aarch64-linux-gnu/libgbm.so.1",
+    ];
+    for path in &lib_paths {
+        if let Ok(lib) = libloading::Library::new(path) {
+            // Resolve all symbols before leaking the library handle.
+            let fns = GbmFns {
+                create_device: **lib.get::<libloading::Symbol<unsafe extern "C" fn(c_int) -> *mut gbm_device>>(b"gbm_create_device").ok()?,
+                device_destroy: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_device) -> c_int>>(b"gbm_device_destroy").ok()?,
+                surface_create: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_device, u32, u32, u32, u32) -> *mut gbm_surface>>(b"gbm_surface_create").ok()?,
+                surface_destroy: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_surface) -> c_int>>(b"gbm_surface_destroy").ok()?,
+                surface_lock_front_buffer: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_surface) -> *mut gbm_bo>>(b"gbm_surface_lock_front_buffer").ok()?,
+                bo_destroy: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_bo) -> c_int>>(b"gbm_bo_destroy").ok()?,
+                bo_get_width: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_bo) -> u32>>(b"gbm_bo_get_width").ok()?,
+                bo_get_height: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_bo) -> u32>>(b"gbm_bo_get_height").ok()?,
+                bo_get_stride: **lib.get::<libloading::Symbol<unsafe extern "C" fn(*mut gbm_bo) -> u32>>(b"gbm_bo_get_stride").ok()?,
+            };
+            // Leak the library handle so the symbols stay valid.
+            std::mem::forget(lib);
+            return Some(fns);
+        }
+    }
+    None
+}
+
 /// Check if libgbm is available at runtime.
 ///
 /// In test builds, this can be overridden via `set_gbm_available` to
 /// exercise the state-management path without real libgbm.
 #[cfg(not(test))]
 fn is_gbm_available() -> bool {
-    // Phase 1: stub — real implementation will dlopen libgbm.so
+    unsafe {
+        if GBM_FNS.is_some() {
+            return true;
+        }
+        if let Some(fns) = load_gbm_library() {
+            GBM_FNS = Some(fns);
+            return true;
+        }
+    }
     false
 }
 
@@ -191,9 +249,46 @@ pub extern "C" fn nyrqis_gbm_open_device(
             }
         };
 
-        // Phase 1: stub — real implementation will call gbm_create_device()
+        // Open the DRM render node
+        let fd = if !_render_node_ptr.is_null() && _render_node_len > 0 {
+            let path = unsafe {
+                std::ffi::CStr::from_ptr(_render_node_ptr)
+                    .to_str()
+                    .unwrap_or("/dev/dri/renderD128")
+            };
+            unsafe { libc::open(path.as_ptr() as *const c_char, libc::O_RDWR) }
+        } else {
+            unsafe { libc::open(b"/dev/dri/renderD128\0".as_ptr() as *const c_char, libc::O_RDWR) }
+        };
+
+        if fd < 0 {
+            set_last_error(state, "failed to open DRM render node");
+            return -1;
+        }
+
+        // Create GBM device from the DRM fd
+        #[cfg(not(test))]
+        let gbm_dev = unsafe {
+            if let Some(ref fns) = GBM_FNS {
+                (fns.create_device)(fd)
+            } else {
+                std::ptr::null_mut()
+            }
+        };
+        #[cfg(test)]
+        let gbm_dev: *mut gbm_device = std::ptr::null_mut();
+
+        // In test mode, skip the null check (simulating a valid device)
+        #[cfg(not(test))]
+        if gbm_dev.is_null() {
+            unsafe { libc::close(fd); }
+            set_last_error(state, "gbm_create_device failed");
+            return -1;
+        }
+
         state.devices[dev_idx as usize] = Some(DeviceSlot {
-            fd: -1, // would be the DRM fd
+            fd,
+            gbm_device: gbm_dev,
             active: true,
         });
 
@@ -222,7 +317,7 @@ pub extern "C" fn nyrqis_gbm_create_surface(
             return -1;
         }
 
-        let _dev = match &state.devices[device_id as usize] {
+        let dev = match &state.devices[device_id as usize] {
             Some(d) if d.active => d,
             _ => {
                 set_last_error(state, "device not active");
@@ -234,6 +329,24 @@ pub extern "C" fn nyrqis_gbm_create_surface(
             set_last_error(state, "invalid dimensions");
             return -1;
         }
+
+        // Create GBM surface via real API
+        #[cfg(not(test))]
+        let gbm_surf = unsafe {
+            if let Some(ref fns) = GBM_FNS {
+                (fns.surface_create)(
+                    dev.gbm_device,
+                    width as u32,
+                    height as u32,
+                    format,
+                    0, // flags
+                )
+            } else {
+                std::ptr::null_mut()
+            }
+        };
+        #[cfg(test)]
+        let gbm_surf: *mut gbm_surface = std::ptr::null_mut();
 
         let surf_idx = match alloc_slot(&mut state.surfaces) {
             Some(i) => i as i32,
@@ -248,6 +361,7 @@ pub extern "C" fn nyrqis_gbm_create_surface(
             height,
             format,
             device_id,
+            gbm_surface: gbm_surf,
             active: true,
         });
 
@@ -275,6 +389,40 @@ pub extern "C" fn nyrqis_gbm_lock_buffer(surface_id: c_int) -> c_int {
             }
         };
 
+        // Lock the front buffer from the GBM surface
+        #[cfg(not(test))]
+        let gbm_bo = unsafe {
+            if let Some(ref fns) = GBM_FNS {
+                if !surf.gbm_surface.is_null() {
+                    (fns.surface_lock_front_buffer)(surf.gbm_surface)
+                } else {
+                    std::ptr::null_mut()
+                }
+            } else {
+                std::ptr::null_mut()
+            }
+        };
+        #[cfg(test)]
+        let gbm_bo: *mut gbm_bo = std::ptr::null_mut();
+
+        // Query real dimensions from the GBM bo if available
+        #[cfg(not(test))]
+        let (w, h, s) = unsafe {
+            if let Some(ref fns) = GBM_FNS {
+                if !gbm_bo.is_null() {
+                    ((fns.bo_get_width)(gbm_bo) as i32,
+                     (fns.bo_get_height)(gbm_bo) as i32,
+                     (fns.bo_get_stride)(gbm_bo) as i32)
+                } else {
+                    (surf.width, surf.height, surf.width * 4)
+                }
+            } else {
+                (surf.width, surf.height, surf.width * 4)
+            }
+        };
+        #[cfg(test)]
+        let (w, h, s) = (surf.width, surf.height, surf.width * 4);
+
         let buf_idx = match alloc_slot(&mut state.buffers) {
             Some(i) => i as i32,
             None => {
@@ -284,11 +432,12 @@ pub extern "C" fn nyrqis_gbm_lock_buffer(surface_id: c_int) -> c_int {
         };
 
         state.buffers[buf_idx as usize] = Some(BufferSlot {
-            width: surf.width,
-            height: surf.height,
-            stride: surf.width * 4, // ARGB8888 = 4 bytes per pixel
+            width: w,
+            height: h,
+            stride: s,
             format: surf.format,
             surface_id,
+            gbm_bo,
             active: true,
         });
 
@@ -342,6 +491,15 @@ pub extern "C" fn nyrqis_gbm_release_buffer(buffer_id: c_int) -> c_int {
             return -1;
         }
         if let Some(buf) = &mut state.buffers[buffer_id as usize] {
+            // Release the GBM buffer object
+            #[cfg(not(test))]
+            unsafe {
+                if let Some(ref fns) = GBM_FNS {
+                    if !buf.gbm_bo.is_null() {
+                        (fns.bo_destroy)(buf.gbm_bo);
+                    }
+                }
+            }
             buf.active = false;
             0
         } else {
@@ -358,6 +516,15 @@ pub extern "C" fn nyrqis_gbm_destroy_surface(surface_id: c_int) -> c_int {
             return -1;
         }
         if let Some(surf) = &mut state.surfaces[surface_id as usize] {
+            // Destroy the GBM surface
+            #[cfg(not(test))]
+            unsafe {
+                if let Some(ref fns) = GBM_FNS {
+                    if !surf.gbm_surface.is_null() {
+                        (fns.surface_destroy)(surf.gbm_surface);
+                    }
+                }
+            }
             surf.active = false;
             0
         } else {
@@ -374,6 +541,16 @@ pub extern "C" fn nyrqis_gbm_close_device(device_id: c_int) -> c_int {
             return -1;
         }
         if let Some(dev) = &mut state.devices[device_id as usize] {
+            // Destroy the GBM device
+            #[cfg(not(test))]
+            unsafe {
+                if let Some(ref fns) = GBM_FNS {
+                    if !dev.gbm_device.is_null() {
+                        (fns.device_destroy)(dev.gbm_device);
+                    }
+                }
+                libc::close(dev.fd);
+            }
             dev.active = false;
             0
         } else {
