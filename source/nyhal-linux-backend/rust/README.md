@@ -22,7 +22,7 @@ matrix and the three normative rules.## Status
 | IPC transport hot path (`transport/`) | **IMPLEMENTED 2026-08-14** (ABI 2.0.0, caller-supplied buffers) | `rust-transport` build + required `rust-transport-conformance` gate green; §20 benchmark data |
 | IPC serving loop (`ipcd/`, ADR-0021 — the first NyRuntime-shaped artifact) | **IMPLEMENTED 2026-08-15** (ABI 1.0.0) | `rust-ipcd` build + required `rust-ipcd-conformance` gate green; §22 A/B: beats the Python floor ~2.8× at the wire median |
 | NUI (.nstudio) import gate (`nyui/`, ADR-0025 — the UI layer's first compiled artifact) | **IMPLEMENTED 2026-08-16** (ABI 1.0.0) | `rust-nyui` build + required `rust-nyui-conformance` gate green (floor's suite forced through the FFI; error messages byte-identical on single-issue documents) |
-| Wayland display-server client (`wayland/`, ADR-0026 — display integration) | **PHASE 1 IMPLEMENTED 2026-09-01** (ABI 1.0.0) | real wl_display connection via wayland-sys FFI; wl_compositor bind + wl_surface creation + event dispatch; 12 unit tests; SHM buffer submission (Phase 1b pending) |
+| Wayland display-server client (`wayland/`, ADR-0026 — display integration) | **PHASE 1b COMPLETE 2026-09-01** (ABI 1.1.0) | real wl_display connection + wl_shm SHM buffer submission (memfd_create + mmap + wl_shm_pool + wl_buffer); xdg-shell (xdg_surface + xdg_toplevel + set_title); wl_seat input binding; event handler callback; 17 unit tests; DesktopSession event loop integration |
 
 All nine crates build and pass their unit tests **in CI on every push**
 (the `dtolnay/rust-toolchain@stable` jobs) and locally on the dev host
