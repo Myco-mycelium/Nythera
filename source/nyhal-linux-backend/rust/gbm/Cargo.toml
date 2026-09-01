@@ -1,0 +1,17 @@
+[package]
+name = "nyrqis-gbm"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis GBM buffer allocation — GPU buffer management for Wayland rendering (ADR-0026 Phase 3)"
+
+[lib]
+name = "nyrqis_gbm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Raw FFI bindings to libgbm for GPU buffer allocation.
+# GBM provides a generic buffer allocation interface that works with
+# DRM/KMS for direct scanout and EGL for OpenGL/Vulkan rendering.
+libc = "0.2"
+
+[dev-dependencies]

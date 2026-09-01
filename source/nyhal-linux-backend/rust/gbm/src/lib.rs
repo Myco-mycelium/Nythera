@@ -1,0 +1,430 @@
+//! Nyrqis GBM buffer allocation — ADR-0026 Phase 3.
+//!
+//! Provides GPU buffer allocation via `libgbm` for hardware-accelerated
+//! rendering through Wayland.  GBM (Generic Buffer Manager) provides a
+//! vendor-neutral interface for allocating buffers that can be used with
+//! DRM/KMS (direct scanout) and EGL (OpenGL/Vulkan rendering).
+//!
+//! This crate is the shipped form of the GPU buffer hot path;
+//! the pure-Python path uses software rendering via `wl_shm`.
+//!
+//! **FFI surface (ABI 1.0.0).** Stub implementation — real GBM
+//! integration requires `libgbm-dev` and a DRM render node.
+//!
+//! References:
+//! - ADR-0026 Phase 3: GPU acceleration
+//! - ADR-0010: Vulkan as native graphics API
+//! - GBM API: https://docs.kernel.org/gpu/gbm.html
+
+use std::os::raw::{c_char, c_int};
+use std::sync::Mutex;
+
+/// ABI version: 0x0001_0000 (1.0.0).
+const ABI_VERSION: u32 = 0x0001_0000;
+const MAX_DEVICES: usize = 4;
+const MAX_SURFACES: usize = 16;
+const MAX_BUFFERS: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Opaque handle types
+// ---------------------------------------------------------------------------
+
+/// Opaque GBM device handle.
+#[allow(non_camel_case_types)]
+type gbm_device = std::ffi::c_void;
+
+/// Opaque GBM surface handle.
+#[allow(non_camel_case_types)]
+type gbm_surface = std::ffi::c_void;
+
+/// Opaque GBM buffer handle.
+#[allow(non_camel_case_types)]
+type gbm_bo = std::ffi::c_void;
+
+// ---------------------------------------------------------------------------
+// State management
+// ---------------------------------------------------------------------------
+
+struct DeviceSlot {
+    fd: c_int,
+    active: bool,
+}
+unsafe impl Send for DeviceSlot {}
+
+struct SurfaceSlot {
+    width: i32,
+    height: i32,
+    format: u32,
+    device_id: i32,
+    active: bool,
+}
+unsafe impl Send for SurfaceSlot {}
+
+struct BufferSlot {
+    width: i32,
+    height: i32,
+    stride: i32,
+    format: u32,
+    surface_id: i32,
+    active: bool,
+}
+unsafe impl Send for BufferSlot {}
+
+struct GbmState {
+    devices: Vec<Option<DeviceSlot>>,
+    surfaces: Vec<Option<SurfaceSlot>>,
+    buffers: Vec<Option<BufferSlot>>,
+    last_error: String,
+}
+
+static STATE: Mutex<Option<GbmState>> = Mutex::new(None);
+
+fn with_state<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut GbmState) -> R,
+{
+    let mut guard = STATE.lock().unwrap();
+    let state = guard.get_or_insert_with(|| GbmState {
+        devices: (0..MAX_DEVICES).map(|_| None).collect(),
+        surfaces: (0..MAX_SURFACES).map(|_| None).collect(),
+        buffers: (0..MAX_BUFFERS).map(|_| None).collect(),
+        last_error: String::new(),
+    });
+    f(state)
+}
+
+fn set_last_error(state: &mut GbmState, msg: &str) {
+    state.last_error = msg.to_string();
+}
+
+fn get_last_error(state: &GbmState) -> String {
+    state.last_error.clone()
+}
+
+fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
+    slots.iter().position(|s| s.is_none())
+}
+
+/// Check if libgbm is available at runtime.
+fn is_gbm_available() -> bool {
+    // Phase 1: stub — real implementation will dlopen libgbm.so
+    false
+}
+
+// ---------------------------------------------------------------------------
+// GBM format constants
+// ---------------------------------------------------------------------------
+
+/// GBM format: ARGB8888 (32-bit, 8 bits per channel, alpha first).
+const GBM_FORMAT_ARGB8888: u32 = 0x34325241; // DRM_FORMAT_ARGB8888
+
+/// GBM usage flags.
+const GBM_BO_USE_RENDERING: u32 = 1 << 2;
+const GBM_BO_USE_SCANOUT: u32 = 1 << 0;
+
+// ---------------------------------------------------------------------------
+// FFI exports
+// ---------------------------------------------------------------------------
+
+/// Return the ABI version of this crate.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_version() -> u32 {
+    ABI_VERSION
+}
+
+/// Open a GBM device from a DRM render node.
+///
+/// `render_node` is the path to the DRM render node
+/// (e.g. `/dev/dri/renderD128`).  Pass NULL for the default.
+///
+/// Returns a device ID (0-based) on success, or -1 on failure.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_open_device(
+    _render_node_ptr: *const c_char,
+    _render_node_len: c_int,
+) -> c_int {
+    with_state(|state| {
+        if !is_gbm_available() {
+            set_last_error(state, "libgbm.so not found — install libgbm-dev");
+            return -1;
+        }
+
+        let dev_idx = match alloc_slot(&mut state.devices) {
+            Some(i) => i as i32,
+            None => {
+                set_last_error(state, "too many devices (max 4)");
+                return -1;
+            }
+        };
+
+        // Phase 1: stub — real implementation will call gbm_create_device()
+        state.devices[dev_idx as usize] = Some(DeviceSlot {
+            fd: -1, // would be the DRM fd
+            active: true,
+        });
+
+        dev_idx
+    })
+}
+
+/// Create a GBM surface for rendering.
+///
+/// Parameters:
+/// - `device_id`: the device to create the surface on
+/// - `width`, `height`: surface dimensions in pixels
+/// - `format`: GBM pixel format (default: GBM_FORMAT_ARGB8888)
+///
+/// Returns a surface ID (0-based) on success, or -1 on failure.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_create_surface(
+    device_id: c_int,
+    width: i32,
+    height: i32,
+    format: u32,
+) -> c_int {
+    with_state(|state| {
+        if device_id < 0 || device_id as usize >= MAX_DEVICES {
+            set_last_error(state, "invalid device ID");
+            return -1;
+        }
+
+        let _dev = match &state.devices[device_id as usize] {
+            Some(d) if d.active => d,
+            _ => {
+                set_last_error(state, "device not active");
+                return -1;
+            }
+        };
+
+        if width <= 0 || height <= 0 {
+            set_last_error(state, "invalid dimensions");
+            return -1;
+        }
+
+        let surf_idx = match alloc_slot(&mut state.surfaces) {
+            Some(i) => i as i32,
+            None => {
+                set_last_error(state, "too many surfaces (max 16)");
+                return -1;
+            }
+        };
+
+        state.surfaces[surf_idx as usize] = Some(SurfaceSlot {
+            width,
+            height,
+            format,
+            device_id,
+            active: true,
+        });
+
+        surf_idx
+    })
+}
+
+/// Lock a GBM surface buffer for CPU access.
+///
+/// Returns a buffer ID (0-based) on success, or -1 on failure.
+/// The buffer contains the rendered pixels in the surface's format.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_lock_buffer(surface_id: c_int) -> c_int {
+    with_state(|state| {
+        if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
+            set_last_error(state, "invalid surface ID");
+            return -1;
+        }
+
+        let surf = match &state.surfaces[surface_id as usize] {
+            Some(s) if s.active => s,
+            _ => {
+                set_last_error(state, "surface not active");
+                return -1;
+            }
+        };
+
+        let buf_idx = match alloc_slot(&mut state.buffers) {
+            Some(i) => i as i32,
+            None => {
+                set_last_error(state, "too many buffers (max 64)");
+                return -1;
+            }
+        };
+
+        state.buffers[buf_idx as usize] = Some(BufferSlot {
+            width: surf.width,
+            height: surf.height,
+            stride: surf.width * 4, // ARGB8888 = 4 bytes per pixel
+            format: surf.format,
+            surface_id,
+            active: true,
+        });
+
+        buf_idx
+    })
+}
+
+/// Get buffer dimensions and stride.
+///
+/// Returns 0 on success, negative on failure.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_get_buffer_info(
+    buffer_id: c_int,
+    width: *mut i32,
+    height: *mut i32,
+    stride: *mut i32,
+) -> c_int {
+    with_state(|state| {
+        if buffer_id < 0 || buffer_id as usize >= MAX_BUFFERS {
+            set_last_error(state, "invalid buffer ID");
+            return -1;
+        }
+
+        let buf = match &state.buffers[buffer_id as usize] {
+            Some(b) if b.active => b,
+            _ => {
+                set_last_error(state, "buffer not active");
+                return -1;
+            }
+        };
+
+        if !width.is_null() {
+            unsafe { *width = buf.width; }
+        }
+        if !height.is_null() {
+            unsafe { *height = buf.height; }
+        }
+        if !stride.is_null() {
+            unsafe { *stride = buf.stride; }
+        }
+
+        0
+    })
+}
+
+/// Release a buffer.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_release_buffer(buffer_id: c_int) -> c_int {
+    with_state(|state| {
+        if buffer_id < 0 || buffer_id as usize >= MAX_BUFFERS {
+            return -1;
+        }
+        if let Some(buf) = &mut state.buffers[buffer_id as usize] {
+            buf.active = false;
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// Destroy a surface.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_destroy_surface(surface_id: c_int) -> c_int {
+    with_state(|state| {
+        if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
+            return -1;
+        }
+        if let Some(surf) = &mut state.surfaces[surface_id as usize] {
+            surf.active = false;
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// Close a device.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_close_device(device_id: c_int) -> c_int {
+    with_state(|state| {
+        if device_id < 0 || device_id as usize >= MAX_DEVICES {
+            return -1;
+        }
+        if let Some(dev) = &mut state.devices[device_id as usize] {
+            dev.active = false;
+            0
+        } else {
+            -1
+        }
+    })
+}
+
+/// Copy the last error message into `buf`.
+#[no_mangle]
+pub extern "C" fn nyrqis_gbm_last_error(buf: *mut c_char, cap: c_int) -> c_int {
+    let msg = with_state(|state| get_last_error(state));
+    if buf.is_null() || cap <= 0 {
+        return -1;
+    }
+    let bytes = msg.as_bytes();
+    let write_len = (cap as usize).min(bytes.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, write_len);
+        if (cap as usize) > write_len {
+            *buf.add(write_len) = 0;
+        }
+    }
+    write_len as c_int
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_returns_abi_version() {
+        assert_eq!(nyrqis_gbm_version(), 0x0001_0000);
+    }
+
+    #[test]
+    fn open_device_returns_stub_error() {
+        assert_eq!(nyrqis_gbm_open_device(std::ptr::null(), 0), -1);
+    }
+
+    #[test]
+    fn create_surface_invalid_device() {
+        assert_eq!(nyrqis_gbm_create_surface(-1, 800, 600, GBM_FORMAT_ARGB8888), -1);
+    }
+
+    #[test]
+    fn create_surface_invalid_dimensions() {
+        assert_eq!(nyrqis_gbm_create_surface(0, 0, 600, GBM_FORMAT_ARGB8888), -1);
+        assert_eq!(nyrqis_gbm_create_surface(0, 800, 0, GBM_FORMAT_ARGB8888), -1);
+    }
+
+    #[test]
+    fn lock_buffer_invalid_surface() {
+        assert_eq!(nyrqis_gbm_lock_buffer(-1), -1);
+    }
+
+    #[test]
+    fn get_buffer_info_invalid_buffer() {
+        assert_eq!(nyrqis_gbm_get_buffer_info(-1, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), -1);
+    }
+
+    #[test]
+    fn release_buffer_invalid_id() {
+        assert_eq!(nyrqis_gbm_release_buffer(-1), -1);
+    }
+
+    #[test]
+    fn destroy_surface_invalid_id() {
+        assert_eq!(nyrqis_gbm_destroy_surface(-1), -1);
+    }
+
+    #[test]
+    fn close_device_invalid_id() {
+        assert_eq!(nyrqis_gbm_close_device(-1), -1);
+    }
+
+    #[test]
+    fn last_error_returns_message() {
+        with_state(|state| set_last_error(state, "test error"));
+        let mut buf = [0u8; 64];
+        let n = nyrqis_gbm_last_error(buf.as_mut_ptr() as *mut c_char, 64);
+        assert!(n > 0);
+    }
+}
