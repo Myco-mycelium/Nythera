@@ -331,9 +331,45 @@ static WL_OUTPUT_IFACE: wayland_sys::common::wl_interface =
         version: 4,
         request_count: 0,
         requests: ptr::null(),
-        event_count: 0,
-        events: ptr::null(),
+        // wl_output events: geometry(0), mode(1), done(2), scale(3)
+        event_count: 4,
+        events: WL_OUTPUT_EVENTS.0.as_ptr(),
     };
+
+/// Thread-safe wrapper for statics containing raw pointers.
+struct SyncRaw<T>(T);
+unsafe impl<T> Send for SyncRaw<T> {}
+unsafe impl<T> Sync for SyncRaw<T> {}
+
+/// wl_output event message descriptors.
+static WL_OUTPUT_EVENTS: SyncRaw<[wayland_sys::common::wl_message; 4]> = SyncRaw([
+    // geometry: i32 x, i32 y, i32 phys_w, i32 phys_h, i32 subpixel, 
+    //           string make, string model, i32 transform, i32 scale, 
+    //           object [wl_output_mode] (modes)
+    wayland_sys::common::wl_message {
+        name: b"geometry\0".as_ptr() as *const c_char,
+        signature: b"iiiiisssio\0".as_ptr() as *const c_char,
+        types: [ptr::null(); 10].as_ptr() as *const *const wayland_sys::common::wl_interface,
+    },
+    // mode: u32 flags, i32 width, i32 height, i32 refresh
+    wayland_sys::common::wl_message {
+        name: b"mode\0".as_ptr() as *const c_char,
+        signature: b"uiiif\0".as_ptr() as *const c_char,
+        types: [ptr::null(); 5].as_ptr() as *const *const wayland_sys::common::wl_interface,
+    },
+    // done: no arguments (wl_output.done event)
+    wayland_sys::common::wl_message {
+        name: b"done\0".as_ptr() as *const c_char,
+        signature: b"\0".as_ptr() as *const c_char,
+        types: [ptr::null()].as_ptr() as *const *const wayland_sys::common::wl_interface,
+    },
+    // scale: i32 factor
+    wayland_sys::common::wl_message {
+        name: b"scale\0".as_ptr() as *const c_char,
+        signature: b"i\0".as_ptr() as *const c_char,
+        types: [ptr::null()].as_ptr() as *const *const wayland_sys::common::wl_interface,
+    },
+]);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -486,6 +522,134 @@ unsafe fn xdg_surface_get_toplevel(xdg_surface: *mut wl_proxy) -> *mut wl_proxy 
         ptr::null_mut(),
         &XDG_TOPLEVEL_IFACE,
     )
+}
+
+// ---------------------------------------------------------------------------
+// wl_output listener — handles geometry, mode, done, scale events
+// ---------------------------------------------------------------------------
+
+/// C callback for wl_output.geometry event.
+/// Parameters: x, y, phys_w, phys_h, subpixel, make, model, transform, scale
+unsafe extern "C" fn wl_output_geometry(
+    _data: *mut std::ffi::c_void,
+    _output: *mut wl_proxy,
+    x: i32, y: i32, phys_w: i32, phys_h: i32,
+    _subpixel: i32,
+    _make: *const c_char, _model: *const c_char,
+    _transform: i32, _scale: i32,
+) {
+    // Store geometry in the output slot
+    with_state(|state| {
+        for slot in &mut state.outputs {
+            if let Some(out) = slot {
+                if out.output == _output {
+                    out.x = x;
+                    out.y = y;
+                    out.width = phys_w;
+                    out.height = phys_h;
+                    // Emit OutputChanged event
+                    if let Some(handler) = state.event_handler {
+                        let data = WaylandEventData { configure: WaylandConfigureData { width: phys_w, height: phys_h } };
+                        handler(WaylandEventType::OutputChanged, 0, data);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// C callback for wl_output.mode event.
+/// Parameters: flags, width, height, refresh
+unsafe extern "C" fn wl_output_mode(
+    _data: *mut std::ffi::c_void,
+    _output: *mut wl_proxy,
+    _flags: u32, width: i32, height: i32, _refresh: i32,
+) {
+    // Update dimensions if this is the current mode (flag bit 0 = current)
+    if _flags & 1 != 0 {
+        with_state(|state| {
+            for slot in &mut state.outputs {
+                if let Some(out) = slot {
+                    if out.output == _output {
+                        out.width = width;
+                        out.height = height;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// C callback for wl_output.done event.
+/// Signals that all geometry/mode/scale events for this output have been sent.
+unsafe extern "C" fn wl_output_done(
+    _data: *mut std::ffi::c_void,
+    _output: *mut wl_proxy,
+) {
+    // Emit OutputChanged event to notify the application
+    with_state(|state| {
+        for slot in &mut state.outputs {
+            if let Some(out) = slot {
+                if out.output == _output {
+                    if let Some(handler) = state.event_handler {
+                        let data = WaylandEventData { configure: WaylandConfigureData { width: out.width, height: out.height } };
+                        handler(WaylandEventType::OutputChanged, 0, data);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// C callback for wl_output.scale event.
+/// Parameters: factor
+unsafe extern "C" fn wl_output_scale(
+    _data: *mut std::ffi::c_void,
+    _output: *mut wl_proxy,
+    factor: i32,
+) {
+    with_state(|state| {
+        for slot in &mut state.outputs {
+            if let Some(out) = slot {
+                if out.output == _output {
+                    out.scale = factor;
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Custom wl_output listener vtable (matches wl_output_listener C layout).
+#[repr(C)]
+struct WlOutputListener {
+    geometry: unsafe extern "C" fn(*mut std::ffi::c_void, *mut wl_proxy, i32, i32, i32, i32, i32, *const c_char, *const c_char, i32, i32),
+    mode: unsafe extern "C" fn(*mut std::ffi::c_void, *mut wl_proxy, u32, i32, i32, i32),
+    done: unsafe extern "C" fn(*mut std::ffi::c_void, *mut wl_proxy),
+    scale: unsafe extern "C" fn(*mut std::ffi::c_void, *mut wl_proxy, i32),
+}
+unsafe impl Send for WlOutputListener {}
+unsafe impl Sync for WlOutputListener {}
+
+static WL_OUTPUT_LISTENER: WlOutputListener = WlOutputListener {
+    geometry: wl_output_geometry,
+    mode: wl_output_mode,
+    done: wl_output_done,
+    scale: wl_output_scale,
+};
+
+/// Register the wl_output listener on a proxy.
+unsafe fn output_add_listener(proxy: *mut wl_proxy) {
+    let h = wayland_client_handle();
+    let data: *mut std::ffi::c_void = ptr::null_mut();
+    (h.wl_proxy_add_listener)(
+        proxy,
+        &WL_OUTPUT_LISTENER as *const _ as *mut _,
+        data,
+    );
 }
 
 /// Set xdg_toplevel title.
@@ -757,6 +921,8 @@ pub extern "C" fn nyrqis_wayland_connect(
                             let class_cstr = std::ffi::CStr::from_ptr(class);
                             if class_cstr.to_bytes() == b"wl_output" {
                                 output = candidate;
+                                // Register listener for geometry/mode/done/scale events
+                                output_add_listener(candidate);
                                 // Store first output
                                 if let Some(idx) = alloc_slot(&mut state.outputs) {
                                     state.outputs[idx] = Some(OutputSlot {
@@ -795,6 +961,8 @@ pub extern "C" fn nyrqis_wayland_connect(
                         if !class.is_null() {
                             let class_cstr = std::ffi::CStr::from_ptr(class);
                             if class_cstr.to_bytes() == b"wl_output" {
+                                // Register listener for geometry/mode/done/scale events
+                                output_add_listener(candidate);
                                 if let Some(idx) = alloc_slot(&mut state.outputs) {
                                     state.outputs[idx] = Some(OutputSlot {
                                         output: candidate,
