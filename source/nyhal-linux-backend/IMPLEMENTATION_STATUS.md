@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **2548/2548 passing** (2500 backend + 31 package signing + 17 installer tests — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
+Test suite: **2562/2562 passing** (2500 backend + 31 package signing + 17 installer tests + 14 GBM crate tests — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
 
 ### Rust crate migrations (ADR-0020, all Implemented and CI-verified)
 
@@ -589,6 +589,22 @@ follow-ons per ADR-0026.
 
 Status: **implemented + tested** — NPS-026 §6 compliance achieved.
 Manifest serialization uses compact JSON to match signing.
+
+### 9. GBM Buffer Allocation (ADR-0026 Phase 3)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| GBM FFI crate scaffold | **implemented** | `nyrqis-gbm` ABI 1.0.0 — 14 unit tests |
+| Device open/close | **stub** | Returns error until `libgbm-dev` available |
+| Surface create/destroy | **stub** | State management verified via mock |
+| Buffer lock/release | **stub** | Dimensions and stride computed correctly |
+| Multiple device support | **implemented** | Up to 4 devices, slot allocation tested |
+| Multiple surface support | **implemented** | Up to 16 surfaces per device |
+| Buffer info query | **implemented** | Width, height, stride returned via FFI |
+
+Status: **scaffold + tested** — full lifecycle verified with mock GBM availability.
+Positive-path tests (`full_surface_lifecycle`, `multiple_surfaces_per_device`, `open_multiple_devices`) exercise device → surface → buffer → cleanup flow.
+Real integration requires `libgbm-dev` and a DRM render node (`/dev/dri/renderD128`).
 
 ## Conformance Assessment
 

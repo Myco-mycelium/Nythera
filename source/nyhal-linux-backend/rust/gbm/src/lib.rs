@@ -106,9 +106,37 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
 }
 
 /// Check if libgbm is available at runtime.
+///
+/// In test builds, this can be overridden via `set_gbm_available` to
+/// exercise the state-management path without real libgbm.
+#[cfg(not(test))]
 fn is_gbm_available() -> bool {
     // Phase 1: stub — real implementation will dlopen libgbm.so
     false
+}
+
+#[cfg(test)]
+static GBM_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn is_gbm_available() -> bool {
+    GBM_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn set_gbm_available(val: bool) {
+    GBM_AVAILABLE.store(val, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn reset_state() {
+    let mut guard = STATE.lock().unwrap();
+    *guard = Some(GbmState {
+        devices: (0..MAX_DEVICES).map(|_| None).collect(),
+        surfaces: (0..MAX_SURFACES).map(|_| None).collect(),
+        buffers: (0..MAX_BUFFERS).map(|_| None).collect(),
+        last_error: String::new(),
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +409,42 @@ mod tests {
 
     #[test]
     fn open_device_returns_stub_error() {
+        reset_state();
+        set_gbm_available(false);
         assert_eq!(nyrqis_gbm_open_device(std::ptr::null(), 0), -1);
+    }
+
+    #[test]
+    fn open_device_succeeds_when_gbm_available() {
+        reset_state();
+        set_gbm_available(true);
+        let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        assert!(dev >= 0, "expected valid device id, got {}", dev);
+        // cleanup
+        assert_eq!(nyrqis_gbm_close_device(dev), 0);
+        set_gbm_available(false);
+    }
+
+    #[test]
+    fn open_multiple_devices() {
+        reset_state();
+        set_gbm_available(true);
+        let d0 = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        let d1 = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        let d2 = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        let d3 = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        assert!(d0 >= 0);
+        assert!(d1 >= 0);
+        assert!(d2 >= 0);
+        assert!(d3 >= 0);
+        // 5th should fail (max 4)
+        assert_eq!(nyrqis_gbm_open_device(std::ptr::null(), 0), -1);
+        // cleanup
+        nyrqis_gbm_close_device(d0);
+        nyrqis_gbm_close_device(d1);
+        nyrqis_gbm_close_device(d2);
+        nyrqis_gbm_close_device(d3);
+        set_gbm_available(false);
     }
 
     #[test]
@@ -396,12 +459,72 @@ mod tests {
     }
 
     #[test]
+    fn full_surface_lifecycle() {
+        reset_state();
+        set_gbm_available(true);
+        let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        assert!(dev >= 0);
+
+        let surf = nyrqis_gbm_create_surface(dev, 1920, 1080, GBM_FORMAT_ARGB8888);
+        assert!(surf >= 0, "expected valid surface id, got {}", surf);
+
+        // lock a buffer
+        let buf = nyrqis_gbm_lock_buffer(surf);
+        assert!(buf >= 0, "expected valid buffer id, got {}", buf);
+
+        // query buffer info
+        let mut w = 0i32;
+        let mut h = 0i32;
+        let mut s = 0i32;
+        assert_eq!(nyrqis_gbm_get_buffer_info(buf, &mut w, &mut h, &mut s), 0);
+        assert_eq!(w, 1920);
+        assert_eq!(h, 1080);
+        assert_eq!(s, 1920 * 4);
+
+        // cleanup: buffer -> surface -> device
+        assert_eq!(nyrqis_gbm_release_buffer(buf), 0);
+        assert_eq!(nyrqis_gbm_destroy_surface(surf), 0);
+        assert_eq!(nyrqis_gbm_close_device(dev), 0);
+        set_gbm_available(false);
+    }
+
+    #[test]
+    fn multiple_surfaces_per_device() {
+        reset_state();
+        set_gbm_available(true);
+        let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
+        let s1 = nyrqis_gbm_create_surface(dev, 800, 600, GBM_FORMAT_ARGB8888);
+        let s2 = nyrqis_gbm_create_surface(dev, 1024, 768, GBM_FORMAT_ARGB8888);
+        assert!(s1 >= 0);
+        assert!(s2 >= 0);
+
+        let b1 = nyrqis_gbm_lock_buffer(s1);
+        let b2 = nyrqis_gbm_lock_buffer(s2);
+        assert!(b1 >= 0);
+        assert!(b2 >= 0);
+
+        // check dimensions are correct for each surface
+        let mut w = 0i32; let mut h = 0i32; let mut s = 0i32;
+        assert_eq!(nyrqis_gbm_get_buffer_info(b1, &mut w, &mut h, &mut s), 0);
+        assert_eq!((w, h), (800, 600));
+        assert_eq!(nyrqis_gbm_get_buffer_info(b2, &mut w, &mut h, &mut s), 0);
+        assert_eq!((w, h), (1024, 768));
+
+        nyrqis_gbm_release_buffer(b1);
+        nyrqis_gbm_release_buffer(b2);
+        nyrqis_gbm_destroy_surface(s1);
+        nyrqis_gbm_destroy_surface(s2);
+        nyrqis_gbm_close_device(dev);
+        set_gbm_available(false);
+    }
+
+    #[test]
     fn lock_buffer_invalid_surface() {
         assert_eq!(nyrqis_gbm_lock_buffer(-1), -1);
     }
 
     #[test]
-    fn get_buffer_info_invalid_buffer() {
+    fn get_buffer_info_null_pointers() {
         assert_eq!(nyrqis_gbm_get_buffer_info(-1, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), -1);
     }
 
