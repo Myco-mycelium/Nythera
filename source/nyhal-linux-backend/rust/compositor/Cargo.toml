@@ -1,0 +1,15 @@
+[package]
+name = "nyrqis-compositor"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis minimal Wayland compositor for testing and development"
+license = "UNLICENSED"
+
+[lib]
+name = "nyrqis_compositor"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]

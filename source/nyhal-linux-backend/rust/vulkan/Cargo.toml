@@ -1,0 +1,15 @@
+[package]
+name = "nyrqis-vulkan"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis Vulkan rendering — native graphics API foundation (ADR-0010)"
+license = "UNLICENSEED"
+
+[lib]
+name = "nyrqis_vulkan"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
