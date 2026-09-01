@@ -44,6 +44,11 @@ try:
 except ImportError:
     drm_codec = None
 
+try:
+    from . import egl_codec
+except ImportError:
+    egl_codec = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -333,6 +338,82 @@ class WaylandDisplay:
     def has_drm(self) -> bool:
         """Whether a DRM device is open for direct scanout."""
         return hasattr(self, '_drm_device_id')
+
+    # -- EGL integration ------------------------------------------------
+
+    def init_egl(self, width: int = 1920, height: int = 1080) -> bool:
+        """Initialize EGL for OpenGL ES rendering.
+
+        Parameters
+        ----------
+        width : int
+            Surface width in pixels.
+        height : int
+            Surface height in pixels.
+
+        Returns
+        -------
+        bool
+            True if EGL was initialized successfully.
+        """
+        if egl_codec is None or not egl_codec.is_available():
+            logger.info("EGL crate not available — OpenGL rendering disabled")
+            return False
+
+        display_id = egl_codec.get_display()
+        if display_id < 0:
+            logger.warning("Failed to get EGL display: %s", egl_codec.last_error())
+            return False
+
+        if not egl_codec.initialize(display_id):
+            logger.warning("Failed to initialize EGL: %s", egl_codec.last_error())
+            return False
+
+        config_id = egl_codec.choose_config(display_id)
+        if config_id < 0:
+            logger.warning("Failed to choose EGL config: %s", egl_codec.last_error())
+            return False
+
+        surface_id = egl_codec.create_window_surface(display_id, width, height)
+        if surface_id < 0:
+            logger.warning("Failed to create EGL surface: %s", egl_codec.last_error())
+            return False
+
+        context_id = egl_codec.create_context(display_id)
+        if context_id < 0:
+            logger.warning("Failed to create EGL context: %s", egl_codec.last_error())
+            return False
+
+        self._egl_display_id = display_id
+        self._egl_surface_id = surface_id
+        self._egl_context_id = context_id
+        logger.info("EGL initialized: display=%d surface=%d context=%d",
+                    display_id, surface_id, context_id)
+        return True
+
+    def shutdown_egl(self) -> bool:
+        """Shut down EGL and release resources."""
+        if egl_codec is None or not hasattr(self, '_egl_display_id'):
+            return False
+
+        if hasattr(self, '_egl_context_id'):
+            egl_codec.destroy_context(self._egl_context_id)
+        if hasattr(self, '_egl_surface_id'):
+            egl_codec.destroy_surface(self._egl_surface_id)
+        result = egl_codec.terminate(self._egl_display_id)
+
+        del self._egl_display_id
+        if hasattr(self, '_egl_surface_id'):
+            del self._egl_surface_id
+        if hasattr(self, '_egl_context_id'):
+            del self._egl_context_id
+
+        return result
+
+    @property
+    def has_egl(self) -> bool:
+        """Whether EGL is initialized for OpenGL rendering."""
+        return hasattr(self, '_egl_display_id')
 
     # -- Event callbacks ------------------------------------------------
 
