@@ -18152,6 +18152,163 @@ class TestDefaultDenyAllowlist(unittest.TestCase):
                                  seccomp.build_program(policy))
 
 
+class TestCrossArchitectureConformance(unittest.TestCase):
+    """Cross-architecture syscall table conformance.
+
+    Validates that the aarch64 table covers the same functional
+    categories as x86_64, that all entries resolve, and that the
+    policy compiles for every capability combination.
+    """
+
+    # Syscalls that exist on x86_64 but NOT on aarch64 (arm64 uses
+    # only *at/ppoll forms from asm-generic/unistd.h): the aarch64
+    # table must NOT have these, and the baseline allowlist must still
+    # resolve (they are silently skipped by _nr returning None).
+    _X86_ONLY = {
+        # x86 legacy forms (no generic unistd.h equivalent)
+        "open", "creat", "stat", "lstat", "access", "pipe",
+        "select", "dup2", "poll", "readlink", "getdents",
+        "utimes", "fadvise64", "fork", "vfork", "tee",
+        "vmsplice", "arch_prctl", "time",
+        # x86-specific signal/timer/event fds
+        "signalfd", "timerfd_settime", "timerfd_gettime", "eventfd",
+        "epoll_wait", "epoll_create",
+        # x86 legacy non-at filesystem calls (arm64 has *at only)
+        "unlink", "rmdir", "rename", "mkdir", "chmod", "chown",
+        "lchown", "link", "symlink", "mknod", "getpgrp",
+    }
+
+    def test_aarch64_baseline_entries_resolve(self):
+        """Every baseline entry must resolve to a real syscall number on
+        aarch64, or be in the known x86-only set (silently skipped).
+        """
+        aarch64 = seccomp.SyscallArch.AARCH64
+        x86 = seccomp.SyscallArch.X86_64
+        unresolved = []
+        for name in seccomp._BASELINE_ALLOW:
+            nr = seccomp._SYSCALLS[aarch64].get(name)
+            if nr is None and name not in self._X86_ONLY:
+                unresolved.append(name)
+        self.assertEqual(unresolved, [],
+                         f"aarch64 baseline missing: {unresolved}")
+
+    def test_aarch64_always_deny_entries_resolve(self):
+        """Every always-deny entry must resolve on aarch64 (or be
+        absent from arm64 entirely, like ptrace).
+        """
+        aarch64 = seccomp.SyscallArch.AARCH64
+        missing = []
+        for name in seccomp._ALWAYS_DENY:
+            nr = seccomp._SYSCALLS[aarch64].get(name)
+            if nr is None and name != "ptrace":
+                # ptrace is not a syscall on arm64 (-1 in the table)
+                missing.append(name)
+        self.assertEqual(missing, [],
+                         f"aarch64 always-deny missing: {missing}")
+
+    def test_aarch64_capability_gated_entries_resolve(self):
+        """All capability-gated syscall families must resolve on aarch64.
+        """
+        aarch64 = seccomp.SyscallArch.AARCH64
+        all_gated = (
+            seccomp._FS_WRITE_SYSCALLS
+            + seccomp._NETWORK_GENERAL_SYSCALLS
+            + seccomp._NETWORK_INBOUND_SYSCALLS
+            + seccomp._IPC_SEND_SYSCALLS
+            + seccomp._IPC_RECV_SYSCALLS
+            + seccomp._IPC_SOCKET_SYSCALLS
+            + seccomp._PROCESS_SPAWN_SYSCALLS
+        )
+        missing = []
+        for name in all_gated:
+            nr = seccomp._SYSCALLS[aarch64].get(name)
+            if nr is None and name not in self._X86_ONLY:
+                missing.append(name)
+        self.assertEqual(missing, [],
+                         f"aarch64 capability-gated missing: {missing}")
+
+    def test_aarch64_table_no_x86_only_syscalls(self):
+        """The aarch64 table must NOT contain syscalls that only exist
+        on x86_64 (open, fork, select, etc.).
+        """
+        aarch64 = seccomp.SyscallArch.AARCH64
+        found = []
+        for name in self._X86_ONLY:
+            nr = seccomp._SYSCALLS[aarch64].get(name)
+            if nr is not None and nr >= 0:
+                found.append(f"{name}={nr}")
+        self.assertEqual(found, [],
+                         f"aarch64 has x86-only entries: {found}")
+
+    def test_aarch64_policy_compiles_for_all_default_cap_combinations(self):
+        """The aarch64 policy compiles for the default capability set
+        (both postures)."""
+        aarch64 = seccomp.SyscallArch.AARCH64
+        default_caps = {c.value for c in CapabilityManager().get_default_capabilities()}
+        for builder in (seccomp.build_policy, seccomp.build_allowlist_policy):
+            policy = builder(default_caps, arch=aarch64)
+            program = seccomp.build_program(policy)
+            seccomp.validate_program(program)
+
+    def test_aarch64_baseline_covers_same_functional_categories(self):
+        """Verify that both architectures cover the same functional
+        categories in their baseline, even if the specific syscalls
+        differ."""
+        x86 = seccomp.SyscallArch.X86_64
+        aarch64 = seccomp.SyscallArch.AARCH64
+        # Functional categories that must be present on BOTH architectures
+        categories = {
+            "memory": ["brk", "mmap", "munmap", "mprotect", "mremap",
+                       "madvise"],
+            "io": ["read", "write", "close", "lseek", "pread64",
+                    "pwrite64", "readv", "writev"],
+            "process": ["execve", "exit", "exit_group", "getpid",
+                        "getppid", "gettid", "kill", "prctl"],
+            "signals": ["rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+                        "sigaltstack"],
+            "time": ["clock_gettime", "nanosleep", "clock_nanosleep"],
+            "descriptors": ["dup", "dup3", "fcntl", "pipe2"],
+            "threading": ["futex", "set_tid_address", "set_robust_list",
+                          "get_robust_list", "rseq"],
+            "fs_read": ["getcwd", "chdir", "fstatfs", "newfstatat",
+                        "statx", "faccessat", "readlinkat", "getdents64"],
+            "networking": ["socket", "connect", "sendto", "recvfrom",
+                           "bind", "listen", "accept"],
+            "ipc": ["shmget", "shmat", "semget", "semop", "msgget"],
+            "filesystem_write": ["unlinkat", "mkdirat", "renameat",
+                                  "truncate", "ftruncate"],
+        }
+        for cat_name, syscalls in categories.items():
+            x86_present = [s for s in syscalls
+                           if seccomp._SYSCALLS[x86].get(s) is not None
+                           and seccomp._SYSCALLS[x86][s] >= 0]
+            aarch64_present = [s for s in syscalls
+                               if seccomp._SYSCALLS[aarch64].get(s) is not None
+                               and seccomp._SYSCALLS[aarch64][s] >= 0]
+            self.assertGreater(
+                len(aarch64_present), 0,
+                f"aarch64 has no {cat_name} syscalls (x86 has {x86_present})")
+            # Both should have the same COUNT of syscalls in each category
+            # (allowing for x86-only legacy forms like open/stat/fork)
+            self.assertGreaterEqual(
+                len(aarch64_present), len(x86_present) - 3,
+                f"aarch64 {cat_name}: {len(aarch64_present)} vs x86 {len(x86_present)}")
+
+    def test_aarch64_deny_wins_over_baseline(self):
+        """A syscall in the always-deny list must NOT also appear in
+        the baseline allowlist (deny-wins, but this is a logical error
+        in the tables)."""
+        for arch in seccomp.SyscallArch:
+            baseline = set(seccomp._BASELINE_ALLOW)
+            deny = set(seccomp._ALWAYS_DENY)
+            overlap = baseline & deny
+            # ptrace is in _ALWAYS_DENY but not in _BASELINE_ALLOW, so
+            # this should always be empty
+            self.assertTrue(
+                overlap.isdisjoint(deny),
+                f"{arch.value}: always-deny overlaps baseline: {overlap}")
+
+
 class TestLauncherSecurity(unittest.TestCase):
     """Test container launch safety (FIND-BACKEND-004) and cgroup
     hardening (FIND-BACKEND-003).
