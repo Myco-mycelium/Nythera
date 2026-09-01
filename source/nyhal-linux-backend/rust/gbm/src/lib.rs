@@ -30,27 +30,29 @@ const MAX_BUFFERS: usize = 64;
 // ---------------------------------------------------------------------------
 
 /// Opaque GBM device handle.
-#[allow(non_camel_case_types)]
+#[allow(dead_code, non_camel_case_types)]
 type gbm_device = std::ffi::c_void;
 
 /// Opaque GBM surface handle.
-#[allow(non_camel_case_types)]
+#[allow(dead_code, non_camel_case_types)]
 type gbm_surface = std::ffi::c_void;
 
 /// Opaque GBM buffer handle.
-#[allow(non_camel_case_types)]
+#[allow(dead_code, non_camel_case_types)]
 type gbm_bo = std::ffi::c_void;
 
 // ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct DeviceSlot {
     fd: c_int,
     active: bool,
 }
 unsafe impl Send for DeviceSlot {}
 
+#[allow(dead_code)]
 struct SurfaceSlot {
     width: i32,
     height: i32,
@@ -60,6 +62,7 @@ struct SurfaceSlot {
 }
 unsafe impl Send for SurfaceSlot {}
 
+#[allow(dead_code)]
 struct BufferSlot {
     width: i32,
     height: i32,
@@ -144,10 +147,13 @@ fn reset_state() {
 // ---------------------------------------------------------------------------
 
 /// GBM format: ARGB8888 (32-bit, 8 bits per channel, alpha first).
+#[allow(dead_code)]
 const GBM_FORMAT_ARGB8888: u32 = 0x34325241; // DRM_FORMAT_ARGB8888
 
 /// GBM usage flags.
+#[allow(dead_code)]
 const GBM_BO_USE_RENDERING: u32 = 1 << 2;
+#[allow(dead_code)]
 const GBM_BO_USE_SCANOUT: u32 = 1 << 0;
 
 // ---------------------------------------------------------------------------
