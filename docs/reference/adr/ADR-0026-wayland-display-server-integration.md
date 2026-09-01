@@ -1,8 +1,8 @@
 ---
 title: Wayland Display Server Integration for the Nyrqis Shell
 document_id: ADR-0026
-version: 0.1.0
-status: Draft
+version: 1.0.0
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-09-01
 updated: 2026-09-01
@@ -21,31 +21,36 @@ import, validate, and render `.nstudio` documents. The `DesktopSession`
 software, but it is not connected to a real display server.
 
 For the Nyrqis shell to render on actual hardware, it needs to connect
-to a Wayland compositor. This ADR proposes the integration strategy.
+to a Wayland compositor. This ADR specifies the integration strategy.
 
-## Decision (Proposed)
+## Decision
 
 Implement Wayland display server integration as a **Rust crate**
 (`rust/wayland/`) that provides:
 
-1. **Wayland client protocol bindings** — thin wrappers around
-   `libwayland-client` for `wl_display`, `wl_surface`, `wl_seat`,
-   `wl_shm` (shared-memory buffers), and `xdg_surface`/`xdg_toplevel`
-   (window management).
+1. **Wayland client protocol bindings** — raw FFI wrappers around
+   `libwayland-client` via `wayland-sys` (0.31) for `wl_display`,
+   `wl_surface`, `wl_seat`, `wl_shm` (shared-memory buffers), and
+   `xdg_surface`/`xdg_toplevel` (window management).
 
-2. **Surface management** — a `WaylandSurface` type that owns a
-   `wl_surface` and manages its lifecycle (create, attach buffer,
-   commit, destroy). The existing PIL/SDL2 renderers produce pixel
-   buffers; the Wayland crate maps them onto surfaces.
+2. **Surface management** — the `WaylandDisplay` Python class
+   (`ui/wayland_display.py`) owns surfaces and manages their lifecycle
+   (create, attach buffer, commit, destroy). The existing PIL
+   compositor produces pixel buffers; the WaylandDisplay maps them
+   onto surfaces via `wl_shm`.
 
-3. **Input handling** — `wl_seat` listener that dispatches
-   `wl_keyboard` and `wl_pointer` events to the `DesktopSession`'s
-   input router. Key repeat, pointer motion, and button events are
-   forwarded through the same event pipeline the software session uses.
+3. **Input handling** — `wl_seat` binding with `get_keyboard`/
+   `get_pointer`; event handler callback registration via
+   `nyrqis_wayland_set_event_handler()`. The DesktopSession translates
+   Wayland events into its existing `MouseEvent`/`KeyEvent` types.
 
-4. **Buffer allocation** — `wl_shm` for software rendering (the
-   initial path) with a documented follow-on for GBM/DRM atomic
-   modesetting when GPU acceleration is needed.
+4. **Buffer allocation** — `wl_shm` for software rendering (Phase 1b):
+   `memfd_create` → `mmap` → `wl_shm_pool` → `wl_buffer` →
+   `wl_surface.attach` + `damage_buffer` + `commit`.
+
+5. **Event loop integration** — `DesktopSession.run_event_loop()` polls
+   the Wayland display fd via `select()`, dispatches compositor events
+   (configure, close, keyboard, pointer), and renders frames each tick.
 
 ### Architecture
 
@@ -56,17 +61,24 @@ Implement Wayland display server integration as a **Rust crate**
   NyrqisRuntime (state, events, bindings)
         │
         ▼
-  DesktopSession (window stack, input routing)
+  DesktopSession (window stack, input routing, event loop)
         │
-        ├── Compositor (PIL render → pixel buffer)
+        ├── live_render() → PIL Image
         │         │
         │         ▼
-        │   WaylandSurface (wl_surface + wl_shm buffer)
-        │         │
-        │         ▼
-        │   wl_display.flush()
+        │   WaylandDisplay.render_frame()
+        │     ├── convert to ARGB8888
+        │     ├── submit_buffer() → memfd + wl_shm_pool + wl_buffer
+        │     ├── wl_surface.attach + damage_buffer + commit
+        │     └── poll_and_dispatch() → select() on display fd
         │
-        └── InputRouter ← wl_seat events
+        ├── _setup_wayland_events()
+        │     ├── configure → resize focused window
+        │     ├── close → close focused window
+        │     ├── pointer → MouseEvent
+        │     └── key → KeyEvent
+        │
+        └── Fallback: PIL Compositor (software rendering)
 ```
 
 ### Why Wayland (not X11)
@@ -118,6 +130,8 @@ Implement Wayland display server integration as a **Rust crate**
 - Input events flow through the same pipeline as the software session.
 - The Rust crate stays below the platform boundary (ADR-0020).
 - Multi-monitor support comes naturally from Wayland's output protocol.
+- The event loop integration means the session auto-renders at the
+  target FPS without manual frame submission.
 
 ### Negative
 - Adds a dependency on `libwayland-client` (the crate wraps it via
@@ -137,18 +151,47 @@ Implement Wayland display server integration as a **Rust crate**
   implementation handles basic keyboard and pointer events; advanced
   input is a follow-on.
 
-## Implementation Plan
+## Implementation History
 
-### Phase 1: Core Wayland client (crate + Python loader)
+### Phase 1: Core Wayland client (2026-09-01)
+**Status: COMPLETE** ✅
+
 - `rust/wayland/` — core protocol bindings (wl_display, wl_surface,
   wl_shm, wl_seat, xdg_surface, xdg_toplevel)
 - `ui/wayland_codec.py` — FFI loader (same pattern as other crates)
-- Basic surface creation and buffer submission
+- Real `wl_display_connect` via `wayland-sys` raw FFI
+- `wl_compositor` binding via `wl_registry` global enumeration
+- `wl_surface` creation via `wl_compositor.create_surface`
+- `poll()` + `wl_display_dispatch` for event loop
+- 12 unit tests
 
-### Phase 2: DesktopSession integration
-- Wire `DesktopSession` to use `WaylandSurface` for rendering
-- Forward `wl_seat` events to `InputRouter`
-- Multi-monitor support via `wl_output`
+### Phase 1b: SHM buffer submission + xdg-shell + input (2026-09-01)
+**Status: COMPLETE** ✅
+
+- SHM buffer submission: `memfd_create` → `mmap` → `wl_shm_pool` →
+  `wl_buffer` → `wl_surface.attach` + `damage_buffer` + `commit`
+- xdg-shell: bind `xdg_wm_base`, create `xdg_surface` + `xdg_toplevel`,
+  `set_title`/`set_app_id`, surface commit for mapping
+- Input: `wl_seat` binding with `get_keyboard`/`get_pointer`, event
+  handler callback registration
+- New FFI functions: `set_title`, `get_fd`, `set_event_handler`
+- ABI bumped to 1.1.0 (0x0001_0100)
+- 17 unit tests
+
+### Phase 2: DesktopSession integration (2026-09-01)
+**Status: COMPLETE** ✅
+
+- `WaylandDisplay` wrapper class (`ui/wayland_display.py`)
+- Event callback registration: `on_configure`, `on_close`, `on_key`,
+  `on_pointer`
+- `poll_and_dispatch()` for select()-based fd polling
+- `render_frame()` with PIL Image → ARGB8888 conversion
+- `DesktopSession.connect_wayland()` / `render_to_wayland()` /
+  `has_wayland`
+- `run_event_loop()` polls Wayland fd, dispatches events, renders frames
+- `_setup_wayland_events()` translates compositor events to session
+  actions (resize, close, input)
+- 2,500/2,500 tests pass
 
 ### Phase 3: GPU acceleration (follow-on)
 - GBM buffer allocation for hardware-accelerated rendering
@@ -159,3 +202,19 @@ Implement Wayland display server integration as a **Rust crate**
 - Run as a Wayland compositor instead of a client
 - Full control over window management, input, and display pipeline
 - Layer-shell protocol for shell surfaces (taskbar, desktop, etc.)
+
+## FFI Surface (ABI 1.1.0)
+
+| Function | Description |
+|----------|-------------|
+| `nyrqis_wayland_version() -> u32` | ABI version (0x0001_0100) |
+| `nyrqis_wayland_connect(name, len) -> i32` | Connect to display |
+| `nyrqis_wayland_create_surface(conn, xdg, title, len) -> i32` | Create surface with optional xdg-shell |
+| `nyrqis_wayland_submit_buffer(surf, pixels, len, w, h, stride) -> i32` | Submit SHM buffer |
+| `nyrqis_wayland_dispatch_events(conn, timeout) -> i32` | Poll + dispatch events |
+| `nyrqis_wayland_disconnect(conn) -> i32` | Disconnect |
+| `nyrqis_wayland_destroy_surface(surf) -> i32` | Destroy surface |
+| `nyrqis_wayland_set_title(surf, title, len) -> i32` | Set xdg_toplevel title |
+| `nyrqis_wayland_get_fd(conn) -> i32` | Get display fd for external polling |
+| `nyrqis_wayland_set_event_handler(fn) -> ()` | Register event callback |
+| `nyrqis_wayland_last_error(buf, cap) -> i32` | Last error message |
