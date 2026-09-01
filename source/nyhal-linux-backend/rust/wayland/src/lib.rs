@@ -21,6 +21,7 @@ const ABI_VERSION: u32 = 0x0001_0100;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_SURFACES: usize = 64;
 const MAX_BUFFERS: usize = 128;
+const MAX_OUTPUTS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Event types (for the FFI callback)
@@ -46,6 +47,10 @@ pub enum WaylandEventType {
     SurfaceEnter = 7,
     /// Surface left (pointer left surface).
     SurfaceLeave = 8,
+    /// Output (monitor) added or changed.
+    OutputChanged = 9,
+    /// Output (monitor) removed.
+    OutputRemoved = 10,
 }
 
 /// Event data union — carries the relevant data for each event type.
@@ -107,6 +112,19 @@ pub type WaylandEventHandler = extern "C" fn(
     data: WaylandEventData,
 );
 
+/// Output (monitor) information.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WaylandOutputInfo {
+    pub id: c_int,           // output ID (0-based)
+    pub x: i32,              // global x offset
+    pub y: i32,              // global y offset
+    pub width: i32,          // physical width in pixels
+    pub height: i32,         // physical height in pixels
+    pub scale: i32,          // buffer scale factor
+    pub primary: c_int,      // 1 if primary, 0 otherwise
+}
+
 // ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
@@ -147,6 +165,18 @@ struct SurfaceSlot {
 }
 unsafe impl Send for SurfaceSlot {}
 
+struct OutputSlot {
+    output: *mut wl_proxy,  // wl_output proxy
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    scale: i32,
+    conn_id: i32,
+    active: bool,
+}
+unsafe impl Send for OutputSlot {}
+
 /// Opaque handle type for surfaces.
 #[allow(non_camel_case_types)]
 type wl_surface = std::ffi::c_void;
@@ -155,6 +185,7 @@ struct WaylandState {
     connections: Vec<Option<ConnectionSlot>>,
     surfaces: Vec<Option<SurfaceSlot>>,
     buffers: Vec<Option<BufferSlot>>,
+    outputs: Vec<Option<OutputSlot>>,
     last_error: String,
     event_handler: Option<WaylandEventHandler>,
 }
@@ -170,6 +201,7 @@ where
         connections: (0..MAX_CONNECTIONS).map(|_| None).collect(),
         surfaces: (0..MAX_SURFACES).map(|_| None).collect(),
         buffers: (0..MAX_BUFFERS).map(|_| None).collect(),
+        outputs: (0..MAX_OUTPUTS).map(|_| None).collect(),
         last_error: String::new(),
         event_handler: None,
     });
@@ -287,6 +319,16 @@ static WL_SEAT_IFACE: wayland_sys::common::wl_interface =
     wayland_sys::common::wl_interface {
         name: b"wl_seat\0".as_ptr() as *const c_char,
         version: 8,
+        request_count: 0,
+        requests: ptr::null(),
+        event_count: 0,
+        events: ptr::null(),
+    };
+
+static WL_OUTPUT_IFACE: wayland_sys::common::wl_interface =
+    wayland_sys::common::wl_interface {
+        name: b"wl_output\0".as_ptr() as *const c_char,
+        version: 4,
         request_count: 0,
         requests: ptr::null(),
         event_count: 0,
@@ -650,6 +692,7 @@ pub extern "C" fn nyrqis_wayland_connect(
             let mut shm: *mut wl_proxy = ptr::null_mut();
             let mut xdg_wm_base: *mut wl_proxy = ptr::null_mut();
             let mut seat: *mut wl_proxy = ptr::null_mut();
+            let mut output: *mut wl_proxy = ptr::null_mut();
 
             for global_name in 1..=20u32 {
                 macro_rules! try_bind {
@@ -687,6 +730,92 @@ pub extern "C" fn nyrqis_wayland_connect(
                 try_bind!(global_name, "wl_shm", &WL_SHM_IFACE, 2, shm);
                 try_bind!(global_name, "xdg_wm_base", &XDG_WM_BASE_IFACE, 2, xdg_wm_base);
                 try_bind!(global_name, "wl_seat", &WL_SEAT_IFACE, 8, seat);
+                try_bind!(global_name, "wl_output", &WL_OUTPUT_IFACE, 4, output);
+            }
+
+            // Enumerate wl_output globals (they can have multiple instances)
+            // by trying to bind each global name as wl_output
+            let mut output_count = 0i32;
+            for global_name in 1..=20u32 {
+                if output.is_null() {
+                    // First output already bound above
+                    let mut bind_args = [
+                        wl_argument { u: global_name },
+                        wl_argument { s: WL_OUTPUT_IFACE.name },
+                        wl_argument { u: 4 },
+                        wl_argument { n: 0 },
+                    ];
+                    let candidate = (h.wl_proxy_marshal_array_constructor)(
+                        registry,
+                        0, // bind
+                        bind_args.as_mut_ptr(),
+                        &WL_OUTPUT_IFACE,
+                    );
+                    if !candidate.is_null() {
+                        let class = (h.wl_proxy_get_class)(candidate);
+                        if !class.is_null() {
+                            let class_cstr = std::ffi::CStr::from_ptr(class);
+                            if class_cstr.to_bytes() == b"wl_output" {
+                                output = candidate;
+                                // Store first output
+                                if let Some(idx) = alloc_slot(&mut state.outputs) {
+                                    state.outputs[idx] = Some(OutputSlot {
+                                        output: candidate,
+                                        x: 0, y: 0,
+                                        width: 0, height: 0,
+                                        scale: 1,
+                                        conn_id: conn_idx,
+                                        active: true,
+                                    });
+                                    output_count += 1;
+                                }
+                            } else {
+                                (h.wl_proxy_destroy)(candidate);
+                            }
+                        } else {
+                            (h.wl_proxy_destroy)(candidate);
+                        }
+                    }
+                } else {
+                    // Try to bind additional outputs
+                    let mut bind_args = [
+                        wl_argument { u: global_name },
+                        wl_argument { s: WL_OUTPUT_IFACE.name },
+                        wl_argument { u: 4 },
+                        wl_argument { n: 0 },
+                    ];
+                    let candidate = (h.wl_proxy_marshal_array_constructor)(
+                        registry,
+                        0, // bind
+                        bind_args.as_mut_ptr(),
+                        &WL_OUTPUT_IFACE,
+                    );
+                    if !candidate.is_null() {
+                        let class = (h.wl_proxy_get_class)(candidate);
+                        if !class.is_null() {
+                            let class_cstr = std::ffi::CStr::from_ptr(class);
+                            if class_cstr.to_bytes() == b"wl_output" {
+                                if let Some(idx) = alloc_slot(&mut state.outputs) {
+                                    state.outputs[idx] = Some(OutputSlot {
+                                        output: candidate,
+                                        x: 0, y: 0,
+                                        width: 0, height: 0,
+                                        scale: 1,
+                                        conn_id: conn_idx,
+                                        active: true,
+                                    });
+                                    output_count += 1;
+                                } else {
+                                    (h.wl_proxy_destroy)(candidate);
+                                }
+                            } else {
+                                (h.wl_proxy_destroy)(candidate);
+                            }
+                        } else {
+                            (h.wl_proxy_destroy)(candidate);
+                        }
+                    }
+                }
             }
 
             (h.wl_proxy_destroy)(registry);
@@ -1154,6 +1283,49 @@ pub extern "C" fn nyrqis_wayland_set_title(
                 -1
             }
         }
+    })
+}
+
+/// Get the list of active outputs (monitors).
+///
+/// `outputs_buf` is a caller-allocated array of `WaylandOutputInfo`.
+/// `max_outputs` is the capacity of the buffer.
+/// Returns the number of outputs written, or -1 on error.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_get_outputs(
+    outputs_buf: *mut WaylandOutputInfo,
+    max_outputs: c_int,
+) -> c_int {
+    with_state(|state| {
+        if outputs_buf.is_null() || max_outputs <= 0 {
+            return -1;
+        }
+
+        let mut count = 0i32;
+        for (i, output_opt) in state.outputs.iter().enumerate() {
+            if count >= max_outputs {
+                break;
+            }
+            if let Some(out) = output_opt {
+                if out.active {
+                    let info = WaylandOutputInfo {
+                        id: i as c_int,
+                        x: out.x,
+                        y: out.y,
+                        width: out.width,
+                        height: out.height,
+                        scale: out.scale,
+                        primary: if count == 0 { 1 } else { 0 },
+                    };
+                    unsafe {
+                        *outputs_buf.add(count as usize) = info;
+                    }
+                    count += 1;
+                }
+            }
+        }
+
+        count
     })
 }
 

@@ -246,6 +246,17 @@ class WaylandDisplay:
             return -1
         return wayland_codec.get_fd(self._conn_id)
 
+    @property
+    def outputs(self) -> list:
+        """Get the list of active outputs (monitors).
+
+        Returns a list of dicts with id, x, y, width, height, scale,
+        primary.
+        """
+        if not self._connected:
+            return []
+        return wayland_codec.get_outputs()
+
     # -- Event callbacks ------------------------------------------------
 
     def on_configure(self, callback: Callable[[WaylandConfigureEvent], None]) -> None:

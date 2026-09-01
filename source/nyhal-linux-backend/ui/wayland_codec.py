@@ -207,6 +207,47 @@ def get_fd(conn_id: int) -> int:
     return _lib().nyrqis_wayland_get_fd(conn_id)
 
 
+class WaylandOutputInfo(ctypes.Structure):
+    """C struct for output (monitor) information."""
+    _fields_ = [
+        ("id", ctypes.c_int),
+        ("x", ctypes.c_int32),
+        ("y", ctypes.c_int32),
+        ("width", ctypes.c_int32),
+        ("height", ctypes.c_int32),
+        ("scale", ctypes.c_int32),
+        ("primary", ctypes.c_int),
+    ]
+
+
+def get_outputs() -> list:
+    """Get the list of active outputs (monitors).
+
+    Returns a list of dicts with id, x, y, width, height, scale, primary.
+    """
+    if WAYLAND_STUB:
+        return []
+    lib = _lib()
+    max_outputs = 16
+    buf = (WaylandOutputInfo * max_outputs)()
+    n = lib.nyrqis_wayland_get_outputs(buf, max_outputs)
+    if n < 0:
+        return []
+    result = []
+    for i in range(n):
+        info = buf[i]
+        result.append({
+            "id": info.id,
+            "x": info.x,
+            "y": info.y,
+            "width": info.width,
+            "height": info.height,
+            "scale": info.scale,
+            "primary": info.primary == 1,
+        })
+    return result
+
+
 def last_error() -> str:
     """Return the last error message from the Rust crate."""
     if WAYLAND_STUB:
