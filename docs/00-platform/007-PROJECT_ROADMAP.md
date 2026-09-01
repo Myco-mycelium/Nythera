@@ -216,5 +216,23 @@ starting from scratch. Full phase table and links:
 | 1.10.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): IPC latency (NPS-003 §6.1), token-bucket defaults (ADR-0009), NyFS ops-layer proxy (ADR-0016) — data collected, gates not declared met |
 | 1.11.0  | 2026-08-12 | M12 Phase 7 complete (Package Trust Model, NPS-027) — threat model milestone finished; Zstd level-sweep first-pass data recorded (tests/BENCHMARK_RESULTS.md §2) |
 
+### M13 — Display Server Integration
+
+The Nyrqis Linux Backend is substantially complete (all five NPS-017 §4
+requirements implemented, 2,500 tests passing). The next major milestone
+is connecting the shell to real hardware via Wayland.
+
+- [ ] ADR-0026 — Wayland display server integration (Draft)
+- [ ] `rust/wayland/` — Wayland client protocol bindings (wl_display, wl_surface, wl_seat, wl_shm, xdg_surface, xdg_toplevel)
+- [ ] `ui/wayland_codec.py` — FFI loader (same pattern as other crates)
+- [ ] DesktopSession integration — wire rendering to Wayland surfaces
+- [ ] Input handling — forward wl_seat events to InputRouter
+- [ ] Multi-monitor support via wl_output
+- [ ] Basic software rendering path (wl_shm buffers)
+- [ ] GPU acceleration follow-on (GBM + DRM atomic modesetting)
+- [ ] Custom compositor follow-on (run as Wayland compositor instead of client)
+
+**Depends on**: ADR-0016 (FUSE), ADR-0020 (language strategy), ADR-0021 (IPC loop), ADR-0025 (NUI runtime), NPS-017 (backend contract)
+
 ---
 **End of Document**
