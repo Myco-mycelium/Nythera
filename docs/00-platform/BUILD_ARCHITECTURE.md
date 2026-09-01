@@ -99,7 +99,8 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 | wayland | 1.2.0 | cdylib | 19 |
 | gbm | 1.0.0 | cdylib | 14 |
 | drm | 1.0.0 | cdylib | 7 |
-| **Total** | | | **93** |
+| egl | 1.0.0 | cdylib | 10 |
+| **Total** | | | **103** |
 
 ## Build Commands
 
@@ -234,6 +235,7 @@ default feature set.
 | wayland | 19 | Wayland protocol, FFI, output detection |
 | gbm | 14 | GBM buffer allocation |
 | drm | 7 | DRM atomic modesetting |
+| egl | 10 | EGL OpenGL ES rendering |
 | container | 10 | Container lifecycle |
 | syscalls | 8 | Clone/launch |
 | launcher | 6 | Process management |
@@ -245,7 +247,7 @@ default feature set.
 | transport | 3 | Network transport |
 | nyui | 3 | NUI document parsing |
 | nyruntime | 2 | Runtime loop |
-| **Total** | **93** | |
+| **Total** | **103** | |
 
 ### Conformance Testing
 
