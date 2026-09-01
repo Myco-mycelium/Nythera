@@ -665,31 +665,50 @@ class DesktopSession:
     def run_event_loop(self, duration: float = 1.0, fps: int = 60) -> None:
         """Run the event loop for ``duration`` seconds at ``fps``.
 
-        On a real OS this would read from /dev/input/eventX and
-        /dev/fb0 (or DRM/KMS). On the floor it simply ticks.
+        When a Wayland display is connected, this polls the display fd,
+        dispatches Wayland events (configure, close, input), renders
+        frames to the Wayland surface, and ticks the animation timeline.
+
+        On the floor (no Wayland), it simply ticks.
         """
         self._running = True
         frame_time = 1.0 / fps
         frames = int(duration * fps)
         start = time.monotonic()
 
-        for _ in range(frames):
+        for frame_idx in range(frames):
             if not self._running:
                 break
-            # On a real OS: poll input devices, dispatch events,
-            # render to framebuffer.
-            # On the floor: just tick (nothing to do — events come in
-            # via process_* methods).
+
+            # --- Wayland event dispatch + render cycle ---
+            if self.has_wayland:
+                # Poll Wayland display for events (configure, close, input)
+                self._wayland_display.poll_and_dispatch(timeout_s=frame_time * 0.5)
+
+                # Render the current state and submit to Wayland
+                try:
+                    img = self.live_render()
+                    self._wayland_display.render_frame(img)
+                except Exception as e:
+                    self._log(f"Wayland render frame {frame_idx}: {e}")
+
+            # --- Animation tick ---
+            self.tick(frame_time * 1000)  # tick takes milliseconds
+
+            # --- Timing ---
             elapsed = time.monotonic() - start
-            target = (len(self._event_log) + 1) * frame_time
+            target = (frame_idx + 1) * frame_time
             if elapsed < target:
                 time.sleep(target - elapsed)
 
         self._running = False
 
     def stop(self) -> None:
-        """Stop the event loop."""
+        """Stop the event loop and clean up the Wayland display."""
         self._running = False
+        if self._wayland_display is not None:
+            self._wayland_display.close()
+            self._wayland_display = None
 
     # -- Wayland display (ADR-0026) ----------------------------------
 
@@ -711,6 +730,7 @@ class DesktopSession:
             self._wayland_display = WaylandDisplay(display_name)
             if self._wayland_display.open():
                 self._log("Wayland display connected")
+                self._setup_wayland_events()
                 return True
             else:
                 self._wayland_display = None
@@ -815,6 +835,70 @@ class DesktopSession:
         except Exception as e:
             self._log(f"Wayland render failed: {e}")
             return False
+
+    def _setup_wayland_events(self) -> None:
+        """Wire Wayland compositor events to the DesktopSession.
+
+        Registers callbacks on the WaylandDisplay so that compositor
+        events (configure, close, keyboard, pointer) are translated
+        into DesktopSession actions (resize, close, input).
+        """
+        if not self.has_wayland:
+            return
+
+        from .wayland_display import (
+            WaylandConfigureEvent, WaylandCloseEvent,
+            WaylandKeyEvent, WaylandPointerEvent,
+        )
+
+        def on_configure(event: WaylandConfigureEvent) -> None:
+            """Handle compositor-driven resize."""
+            if event.width <= 0 or event.height <= 0:
+                return  # maximized or minimized — ignore size
+            # Find the window for this surface and resize it
+            for win in self._windows:
+                # In the current design, the primary window maps to
+                # the first Wayland surface
+                if win.visible and not win.minimized:
+                    win.width = event.width
+                    win.height = event.height
+                    self._log(
+                        f"Compositor resize: '{win.title or win.id}' "
+                        f"→ {event.width}x{event.height}")
+                    break
+
+        def on_close(event: WaylandCloseEvent) -> None:
+            """Handle compositor close request."""
+            # Close the focused window
+            if self._focused_window_id:
+                self.close_window(self._focused_window_id)
+                self._log("Compositor close: window closed")
+
+        def on_key(event: WaylandKeyEvent) -> None:
+            """Handle compositor keyboard event."""
+            # Translate Wayland key event to DesktopSession KeyEvent
+            # Key state: 0 = pressed, 1 = released (Wayland convention)
+            if event.state == 0:  # pressed
+                key_event = KeyEvent(key=str(event.key))
+                self.process_key_event(key_event)
+
+        def on_pointer(event: WaylandPointerEvent) -> None:
+            """Handle compositor pointer event."""
+            # Translate Wayland pointer event to DesktopSession MouseEvent
+            from .desktop_session import MouseButton
+            button = MouseButton.LEFT if event.button == 0x110 else MouseButton.NONE
+            mouse_event = MouseEvent(
+                x=int(event.x),
+                y=int(event.y),
+                button=button,
+            )
+            self.process_mouse_event(mouse_event)
+
+        self._wayland_display.on_configure(on_configure)
+        self._wayland_display.on_close(on_close)
+        self._wayland_display.on_key(on_key)
+        self._wayland_display.on_pointer(on_pointer)
+        self._log("Wayland event callbacks registered")
 
     # -- Notifications ------------------------------------------------
 

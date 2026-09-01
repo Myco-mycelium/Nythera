@@ -31,9 +31,11 @@ References:
 
 from __future__ import annotations
 
+import ctypes
 import logging
+import select
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from . import wayland_codec
 
@@ -47,6 +49,38 @@ class WaylandBuffer:
     width: int
     height: int
     stride: int
+
+
+@dataclass
+class WaylandConfigureEvent:
+    """A surface configure event from the compositor."""
+    surface_id: int
+    width: int
+    height: int
+
+
+@dataclass
+class WaylandCloseEvent:
+    """A surface close event from the compositor."""
+    surface_id: int
+
+
+@dataclass
+class WaylandKeyEvent:
+    """A keyboard event from the compositor."""
+    key: int
+    state: int  # 0=pressed, 1=released
+    surface_id: int = -1
+
+
+@dataclass
+class WaylandPointerEvent:
+    """A pointer event from the compositor."""
+    x: float
+    y: float
+    button: int = 0
+    state: int = 0  # 0=pressed, 1=released
+    surface_id: int = -1
 
 
 class WaylandDisplay:
@@ -68,6 +102,11 @@ class WaylandDisplay:
         self._conn_id: int = -1
         self._connected: bool = False
         self._surfaces: dict[int, WaylandBuffer] = {}
+        # Event callbacks — invoked when the compositor sends events
+        self._on_configure: Optional[Callable[[WaylandConfigureEvent], None]] = None
+        self._on_close: Optional[Callable[[WaylandCloseEvent], None]] = None
+        self._on_key: Optional[Callable[[WaylandKeyEvent], None]] = None
+        self._on_pointer: Optional[Callable[[WaylandPointerEvent], None]] = None
 
     @property
     def connected(self) -> bool:
@@ -207,6 +246,24 @@ class WaylandDisplay:
             return -1
         return wayland_codec.get_fd(self._conn_id)
 
+    # -- Event callbacks ------------------------------------------------
+
+    def on_configure(self, callback: Callable[[WaylandConfigureEvent], None]) -> None:
+        """Register a callback for surface configure events."""
+        self._on_configure = callback
+
+    def on_close(self, callback: Callable[[WaylandCloseEvent], None]) -> None:
+        """Register a callback for surface close events."""
+        self._on_close = callback
+
+    def on_key(self, callback: Callable[[WaylandKeyEvent], None]) -> None:
+        """Register a callback for keyboard events."""
+        self._on_key = callback
+
+    def on_pointer(self, callback: Callable[[WaylandPointerEvent], None]) -> None:
+        """Register a callback for pointer events."""
+        self._on_pointer = callback
+
     def dispatch_events(self, timeout_ms: int = 100) -> int:
         """Poll and dispatch pending Wayland events.
 
@@ -215,6 +272,54 @@ class WaylandDisplay:
         if not self._connected:
             return -1
         return wayland_codec.dispatch_events(self._conn_id, timeout_ms)
+
+    def poll_and_dispatch(self, timeout_s: float = 0.016) -> bool:
+        """Poll the Wayland fd and dispatch events.
+
+        Uses select() on the display fd to check for pending events,
+        then dispatches them.  Returns True if events were processed.
+
+        Parameters
+        ----------
+        timeout_s : float
+            Maximum time to wait for events (seconds).  Default 16ms
+            (one frame at 60fps).
+        """
+        if not self._connected:
+            return False
+
+        fd = self.fd
+        if fd < 0:
+            return False
+
+        try:
+            readable, _, _ = select.select([fd], [], [], timeout_s)
+            if readable:
+                result = self.dispatch_events(timeout_ms=0)
+                return result > 0
+        except (OSError, ValueError):
+            pass
+
+        return False
+
+    def render_and_submit(self, pil_image) -> bool:
+        """Render a PIL Image and submit it to the Wayland surface.
+
+        Combines render_frame() with dispatch_events() for a
+        single-frame render cycle.
+
+        Returns True on success.
+        """
+        if not self._connected or not self._surfaces:
+            return False
+
+        # Submit the frame
+        success = self.render_frame(pil_image)
+
+        # Process any pending events (configure, close, etc.)
+        self.poll_and_dispatch(timeout_s=0)
+
+        return success
 
     def render_frame(self, pil_image) -> bool:
         """Render a PIL Image to the primary Wayland surface.
