@@ -100,7 +100,9 @@ targets, CI/CD pipeline, and reproducible build guidelines.
 | gbm | 1.0.0 | cdylib | 14 |
 | drm | 1.0.0 | cdylib | 7 |
 | egl | 1.0.0 | cdylib | 10 |
-| **Total** | | | **103** |
+| compositor | 0.1.0 | cdylib | 8 |
+| vulkan | 0.1.0 | cdylib | 10 |
+| **Total** | | | **121** |
 
 ## Build Commands
 
@@ -236,6 +238,8 @@ default feature set.
 | gbm | 14 | GBM buffer allocation |
 | drm | 7 | DRM atomic modesetting |
 | egl | 10 | EGL OpenGL ES rendering |
+| vulkan | 10 | Vulkan rendering |
+| compositor | 8 | Wayland compositor |
 | container | 10 | Container lifecycle |
 | syscalls | 8 | Clone/launch |
 | launcher | 6 | Process management |
@@ -247,7 +251,7 @@ default feature set.
 | transport | 3 | Network transport |
 | nyui | 3 | NUI document parsing |
 | nyruntime | 2 | Runtime loop |
-| **Total** | **103** | |
+| **Total** | **121** | |
 
 ### Conformance Testing
 
