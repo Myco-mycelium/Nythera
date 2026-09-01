@@ -311,11 +311,10 @@ jobs:
       - name: Build the crate
         working-directory: source/nyhal-linux-backend/rust/container
         run: cargo build --release
-      - name: Force the container test classes through the FFI
+      - name: Run the container test classes with the Rust crate
         working-directory: source/nyhal-linux-backend
         env:
           NYRQIS_RUST_LIB: rust/container/target/release/libnyrqis_container.so
-          NYRQIS_RUST_FORCE: "1"
         run: >
           python3 -B -m unittest
           test_backend.TestContainerPrimitives
