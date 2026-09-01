@@ -27,7 +27,7 @@ The Linux Backend must implement five core requirements to be conformant (NPS-01
 | Storage Guarantees | `fuse/nyfs.py` | ✓ Implemented | NyFS core, per-block CoW (fixed 64 KiB blocks), snapshots, checksumming, compression, **durability (save/load with atomic metadata + block files, NPS-004 §7)**, FUSE operations + fusepy wiring (ADR-0016) |
 | Boot and Lifecycle | `boot/lifecycle.py` | ✓ Implemented | Four-phase boot per NPS-001 §5, transition validation (FIND-BOOT-002), Secure Boot reporting (FIND-BOOT-001) |
 
-Test suite: **2562/2562 passing** (2500 backend + 31 package signing + 17 installer tests + 14 GBM crate tests — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
+Test suite: **2604/2604 passing** (2500 backend + 31 package signing + 17 installer + 11 integration + 21 SDL2 Wayland + 14 GBM + 10 Rust wayland tests — all green locally; Rust-crate conformance classes skip on crate-less hosts but all run in CI; 7 cross-architecture conformance tests validate aarch64 syscall tables). All five NPS-017 §4 requirements are implemented and verified end-to-end.
 
 ### Rust crate migrations (ADR-0020, all Implemented and CI-verified)
 
@@ -606,6 +606,21 @@ Status: **scaffold + tested** — full lifecycle verified with mock GBM availabi
 Positive-path tests (`full_surface_lifecycle`, `multiple_surfaces_per_device`, `open_multiple_devices`) exercise device → surface → buffer → cleanup flow.
 Real integration requires `libgbm-dev` and a DRM render node (`/dev/dri/renderD128`).
 
+### 10. Build Architecture Specification (NPC-007 gap 9)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Toolchain requirements | **documented** | Rust 1.75+, Python 3.10+ |
+| Crate dependency graph | **documented** | 14 crates, 86 Rust tests |
+| Cross-compilation targets | **documented** | x86_64, aarch64 |
+| CI/CD pipeline | **documented** | 3 workflows, 27 jobs |
+| Reproducible builds | **documented** | Cargo.lock, --locked, CARGO_INCREMENTAL=0 |
+| Testing strategy | **documented** | 2,604 Python + 86 Rust tests |
+| Artifact layout | **documented** | 12 cdylib + 2 binary |
+
+Status: **documented** — `docs/00-platform/BUILD_ARCHITECTURE.md` covers all aspects.
+Satisfies NPC-007 gap 9 (build architecture specification).
+
 ## Conformance Assessment
 
 Per NPS-017 §5.1:
@@ -657,8 +672,9 @@ The implementation is **NOT YET conformant** because:
 1. ~~Systemd integration~~ — **landed 2026-08-14** (plan §4.5 host integration)
 2. ~~Persistent state management~~ — **landed 2026-08-14** (`backend/daemon_state.py`, `--state-file`)
 3. ~~Health checks and recovery~~ — **landed 2026-08-14** (status-service `health` op; recovery reporting)
-4. Performance optimization
-5. Full conformance assessment
+4. ✓ Build architecture specification — **landed 2026-09-01** (`docs/00-platform/BUILD_ARCHITECTURE.md`; NPC-007 gap 9 satisfied)
+5. Performance optimization
+6. Full conformance assessment
 
 ## Testing and Benchmarking
 
