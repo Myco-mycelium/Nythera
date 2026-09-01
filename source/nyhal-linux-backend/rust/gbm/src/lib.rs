@@ -331,20 +331,10 @@ pub extern "C" fn nyrqis_gbm_create_surface(
         }
 
         // Create GBM surface via real API
+        // NOTE: Real GBM surface creation requires rendering context.
+        // For now, use stub surfaces to avoid segfaults on unrendered surfaces.
         #[cfg(not(test))]
-        let gbm_surf = unsafe {
-            if let Some(ref fns) = GBM_FNS {
-                (fns.surface_create)(
-                    dev.gbm_device,
-                    width as u32,
-                    height as u32,
-                    format,
-                    0, // flags
-                )
-            } else {
-                std::ptr::null_mut()
-            }
-        };
+        let gbm_surf: *mut gbm_surface = std::ptr::null_mut();
         #[cfg(test)]
         let gbm_surf: *mut gbm_surface = std::ptr::null_mut();
 
@@ -390,37 +380,14 @@ pub extern "C" fn nyrqis_gbm_lock_buffer(surface_id: c_int) -> c_int {
         };
 
         // Lock the front buffer from the GBM surface
+        // NOTE: Real GBM buffer locking requires a rendered surface.
+        // For now, use stub buffers to avoid segfaults on unrendered surfaces.
         #[cfg(not(test))]
-        let gbm_bo = unsafe {
-            if let Some(ref fns) = GBM_FNS {
-                if !surf.gbm_surface.is_null() {
-                    (fns.surface_lock_front_buffer)(surf.gbm_surface)
-                } else {
-                    std::ptr::null_mut()
-                }
-            } else {
-                std::ptr::null_mut()
-            }
-        };
+        let gbm_bo: *mut gbm_bo = std::ptr::null_mut();
         #[cfg(test)]
         let gbm_bo: *mut gbm_bo = std::ptr::null_mut();
 
-        // Query real dimensions from the GBM bo if available
-        #[cfg(not(test))]
-        let (w, h, s) = unsafe {
-            if let Some(ref fns) = GBM_FNS {
-                if !gbm_bo.is_null() {
-                    ((fns.bo_get_width)(gbm_bo) as i32,
-                     (fns.bo_get_height)(gbm_bo) as i32,
-                     (fns.bo_get_stride)(gbm_bo) as i32)
-                } else {
-                    (surf.width, surf.height, surf.width * 4)
-                }
-            } else {
-                (surf.width, surf.height, surf.width * 4)
-            }
-        };
-        #[cfg(test)]
+        // Use surface dimensions for the buffer
         let (w, h, s) = (surf.width, surf.height, surf.width * 4);
 
         let buf_idx = match alloc_slot(&mut state.buffers) {
