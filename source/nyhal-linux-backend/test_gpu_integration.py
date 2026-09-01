@@ -143,3 +143,63 @@ class TestGPURenderingPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVulkanIntegration(unittest.TestCase):
+    """Test Vulkan rendering integration."""
+
+    def test_vulkan_codec_loadable(self):
+        """Vulkan codec module should be importable."""
+        from ui import vulkan_codec as vc
+        self.assertIsNotNone(vc)
+
+    def test_vulkan_version(self):
+        """Vulkan crate should report a version."""
+        from ui import vulkan_codec as vc
+        v = vc.vulkan_version()
+        self.assertIsInstance(v, int)
+
+    def test_vulkan_instance_lifecycle(self):
+        """Vulkan instance create → destroy lifecycle."""
+        from ui import vulkan_codec as vc
+        if not vc.is_available():
+            self.skipTest("Vulkan crate not available")
+        instance_id = vc.create_instance()
+        if instance_id < 0:
+            self.skipTest("No Vulkan instance available")
+        self.assertGreaterEqual(instance_id, 0)
+        self.assertTrue(vc.destroy_instance(instance_id))
+
+    def test_vulkan_device_lifecycle(self):
+        """Vulkan device create → destroy lifecycle."""
+        from ui import vulkan_codec as vc
+        if not vc.is_available():
+            self.skipTest("Vulkan crate not available")
+        instance_id = vc.create_instance()
+        if instance_id < 0:
+            self.skipTest("No Vulkan instance available")
+        device_id = vc.create_device(instance_id)
+        if device_id < 0:
+            self.skipTest("No Vulkan device available")
+        self.assertGreaterEqual(device_id, 0)
+        self.assertTrue(vc.destroy_device(device_id))
+        self.assertTrue(vc.destroy_instance(instance_id))
+
+    def test_vulkan_swapchain_lifecycle(self):
+        """Vulkan swapchain create → destroy lifecycle."""
+        from ui import vulkan_codec as vc
+        if not vc.is_available():
+            self.skipTest("Vulkan crate not available")
+        instance_id = vc.create_instance()
+        if instance_id < 0:
+            self.skipTest("No Vulkan instance available")
+        device_id = vc.create_device(instance_id)
+        if device_id < 0:
+            self.skipTest("No Vulkan device available")
+        swapchain_id = vc.create_swapchain(device_id, 1920, 1080, 3)
+        if swapchain_id < 0:
+            self.skipTest("No Vulkan swapchain available")
+        self.assertGreaterEqual(swapchain_id, 0)
+        self.assertTrue(vc.destroy_swapchain(swapchain_id))
+        self.assertTrue(vc.destroy_device(device_id))
+        self.assertTrue(vc.destroy_instance(instance_id))
