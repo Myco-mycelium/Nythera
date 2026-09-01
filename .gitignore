@@ -23,3 +23,4 @@ __pycache__/
 # Rust (cdylib crates build fresh in CI; never commit binaries or locks)
 target/
 Cargo.lock
+.venv-docs/

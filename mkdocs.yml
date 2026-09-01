@@ -31,10 +31,16 @@ nav:
       - Repository State: 00-platform/REPOSITORY_STATE.md
       - Change Request Log: 00-platform/CHANGE_REQUEST_LOG.md
       - Rebrand Notice: 00-platform/REBRAND_NOTICE.md
+      - M14 Milestone Plan: 00-platform/M14_PLAN.md
+      - Next Session Plan: 00-platform/NEXT_SESSION_PLAN.md
   - Tutorials:
       - Index: tutorials/README.md
       - A Tour of the Repository: tutorials/first-repository-tour.md
       - Authoring Your First Manifest: tutorials/authoring-your-first-manifest.md
+      - Linux Backend Quickstart: tutorials/linux-backend-quickstart.md
+      - Wayland Integration: tutorials/wayland-integration.md
+      - Contributor Setup: tutorials/contributor-setup.md
+      - Vault Operations: how-to/vault-operations.md
   - How-To Guides:
       - Index: how-to/README.md
       - Add a New Capability: how-to/add-a-capability.md
@@ -70,6 +76,8 @@ nav:
           - ADR-0022 NyVault storage service: reference/adr/ADR-0022-nyvault-storage-service.md
           - ADR-0023 NyVault key manager: reference/adr/ADR-0023-nyvault-key-manager.md
           - ADR-0024 Streaming data plane: reference/adr/ADR-0024-streaming-data-plane.md
+          - ADR-0025 NUI runtime consumption: reference/adr/ADR-0025-nui-runtime-consumption.md
+          - ADR-0026 Wayland display server integration: reference/adr/ADR-0026-wayland-display-server-integration.md
       - NPS:
           - NPS-001 Kernel Architecture and Boot: reference/nps/NPS-001-kernel-architecture-and-boot.md
           - NPS-002 Process and Thread Model: reference/nps/NPS-002-process-and-thread-model.md

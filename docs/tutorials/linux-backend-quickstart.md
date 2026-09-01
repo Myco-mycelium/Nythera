@@ -199,5 +199,5 @@ python3 nyrqisctl.py app terminate --app-id "android:com.example.myapp"
   vault operations, quota management, and disaster recovery
 - [Run the Backend Tests](../how-to/run-linux-backend-tests.md) —
   verify the implementation works
-- [The NUI Schema Reference](../reference/nui-schema/NUI-SCHEMA.md) —
+- [NUI Runtime Consumption (ADR-0025)](../reference/adr/ADR-0025-nui-runtime-consumption.md) —
   the format Nyforge produces and the runtime consumes
