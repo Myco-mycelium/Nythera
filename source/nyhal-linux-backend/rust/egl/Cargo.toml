@@ -1,0 +1,15 @@
+[package]
+name = "nyrqis-egl"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis EGL integration — OpenGL ES rendering for Wayland (ADR-0026 Phase 3)"
+license = "UNLICENSED"
+
+[lib]
+name = "nyrqis_egl"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
