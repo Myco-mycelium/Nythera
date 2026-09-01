@@ -256,6 +256,11 @@ class DesktopSession:
         # Animation timeline (NUI-SCHEMA §8.3)
         self._timeline = AnimationTimeline()
 
+        # Wayland display (ADR-0026) — lazy-initialized.
+        # When available, rendering goes to real hardware surfaces.
+        # When unavailable, rendering falls back to PIL.
+        self._wayland_display: Optional[Any] = None
+
         # Build initial window list from top-level Window components
         self._build_windows()
         self._build_monitors()
@@ -686,6 +691,45 @@ class DesktopSession:
         """Stop the event loop."""
         self._running = False
 
+    # -- Wayland display (ADR-0026) ----------------------------------
+
+    def connect_wayland(self, display_name: Optional[str] = None) -> bool:
+        """Connect to a Wayland display server.
+
+        If a compositor is available, creates a WaylandDisplay and
+        connects.  Returns True on success, False on failure (caller
+        should fall back to PIL rendering).
+
+        Parameters
+        ----------
+        display_name : str, optional
+            Wayland display name (e.g. ``"wayland-0"``).  If None,
+            uses the ``WAYLAND_DISPLAY`` environment variable.
+        """
+        try:
+            from .wayland_display import WaylandDisplay
+            self._wayland_display = WaylandDisplay(display_name)
+            if self._wayland_display.open():
+                self._log("Wayland display connected")
+                return True
+            else:
+                self._wayland_display = None
+                return False
+        except Exception as e:
+            self._log(f"Wayland connection failed: {e}")
+            self._wayland_display = None
+            return False
+
+    @property
+    def wayland_display(self) -> Optional[Any]:
+        """The Wayland display, or None if not connected."""
+        return self._wayland_display
+
+    @property
+    def has_wayland(self) -> bool:
+        """Whether the session is connected to a Wayland display."""
+        return self._wayland_display is not None and self._wayland_display.connected
+
     # -- Render (delegates to compositor) ------------------------------
 
     def render(self) -> Any:
@@ -755,6 +799,23 @@ class DesktopSession:
         img.save(path)
         return path
 
+    def render_to_wayland(self) -> bool:
+        """Render the session to the Wayland display.
+
+        Renders with live window positions and submits the pixel
+        buffer to the Wayland surface.  Returns True on success,
+        False if Wayland is unavailable or rendering failed.
+        """
+        if not self.has_wayland:
+            return False
+
+        try:
+            img = self.live_render()
+            return self._wayland_display.render_frame(img)
+        except Exception as e:
+            self._log(f"Wayland render failed: {e}")
+            return False
+
     # -- Notifications ------------------------------------------------
 
     @property
@@ -765,7 +826,7 @@ class DesktopSession:
     def summary(self) -> Dict[str, Any]:
         """Session summary for diagnostics."""
         aws = self.active_workspace
-        return {
+        result = {
             "windows": len(self._windows),
             "focused": self._focused_window_id,
             "visible": sum(1 for w in self._windows if w.visible and not w.minimized),
@@ -775,8 +836,10 @@ class DesktopSession:
             "active_workspace": aws.name if aws else None,
             "active_notifications": self._notifications.count,
             "events_processed": len(self._event_log),
+            "wayland": self.has_wayland,
             **self._runtime.summary(),
         }
+        return result
 
     # -- Internal: tree helpers -----------------------------------------
 

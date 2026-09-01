@@ -74,8 +74,9 @@
 #   ui/nstudio.py).
 # - `rust-nyui-conformance`: the NUI import gate's gate — the loader
 #   and differential class (the floor's validation suite forced through
-#   the FFI, error messages byte-identical) run with the crate built
 #   and NYRQIS_RUST_FORCE=1.
+# - `rust-wayland`: builds and tests the ADR-0026 crate (the Wayland
+#   display-server client for Nyrqis shell rendering).
 # - `backend`: the pure-Python correctness floor.
 
 name: ci
@@ -466,6 +467,22 @@ jobs:
         env:
           NYRQIS_RUNTIME_LIB: rust/nyruntime/target/release/libnyrqis_nyruntime.so
         run: python3 -B backend/nyruntime.py
+
+  rust-wayland:
+    name: Rust Wayland crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/wayland
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install libwayland-dev (for runtime loading)
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_wayland.so
 
   backend:
     name: Python backend tests

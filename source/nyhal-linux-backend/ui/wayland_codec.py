@@ -156,6 +156,20 @@ def dispatch_events(conn_id: int, timeout_ms: int = 100) -> int:
     return _lib().nyrqis_wayland_dispatch_events(conn_id, timeout_ms)
 
 
+def disconnect(conn_id: int) -> int:
+    """Disconnect from a Wayland display and free resources."""
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_disconnect(conn_id)
+
+
+def destroy_surface(surface_id: int) -> int:
+    """Destroy a surface and free its resources."""
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_destroy_surface(surface_id)
+
+
 def last_error() -> str:
     """Return the last error message from the Rust crate."""
     if WAYLAND_STUB:

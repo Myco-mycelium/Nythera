@@ -6,20 +6,16 @@ description = "Nyrqis Wayland display-server client — surface management, inpu
 
 [lib]
 name = "nyrqis_wayland"
-# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
-# included so `cargo test` can link the crate's unit tests.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Minimal dependency surface: libc for FFI types and constants,
-# wayland-client for the core Wayland protocol bindings.  The crate
-# wraps the protocol layer and exposes a simplified FFI surface for
-# the Python DesktopSession — same migration pattern as ADR-0020.
 libc = "0.2"
-wayland-client = "0.31"
+# Raw FFI bindings to libwayland-client.  We use the raw C API directly
+# rather than the high-level wayland-client crate because our FFI surface
+# needs to be synchronous and C-compatible — the high-level crate's
+# event-dispatch model doesn't map cleanly to a cdylib boundary.
+# The wayland-client crate (0.31) is too tightly coupled to Rust's
+# async/event-loop model for our needs.
+wayland-sys = { version = "0.31", features = ["client", "dlopen"] }
 
 [dev-dependencies]
-# Wayland protocol XML schemas for compile-time code generation.
-# wayland-scanner is used at build time to generate the protocol
-# bindings from the XML definitions shipped with the wayland-client
-# crate, so no additional dev-dependencies are needed for basic tests.
