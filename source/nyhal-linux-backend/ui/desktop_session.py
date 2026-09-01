@@ -685,6 +685,10 @@ class DesktopSession:
                 # Poll Wayland display for events (configure, close, input)
                 self._wayland_display.poll_and_dispatch(timeout_s=frame_time * 0.5)
 
+                # Check for output changes (hot-plug events)
+                if self._wayland_display.check_output_changes():
+                    self._sync_wayland_outputs()
+
                 # Render the current state and submit to Wayland
                 try:
                     img = self.live_render()

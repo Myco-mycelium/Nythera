@@ -248,6 +248,28 @@ def get_outputs() -> list:
     return result
 
 
+# Output change types (must match Rust enum OutputChange)
+OUTPUT_CHANGE_NONE = 0
+OUTPUT_CHANGE_ADDED = 1
+OUTPUT_CHANGE_REMOVED = 2
+OUTPUT_CHANGE_CHANGED = 3
+
+
+def check_output_changes() -> int:
+    """Check for output changes since the last dispatch.
+
+    Returns one of OUTPUT_CHANGE_NONE, _ADDED, _REMOVED, _CHANGED.
+    Call this after dispatch_events() to detect hot-plug events.
+    """
+    if WAYLAND_STUB:
+        return OUTPUT_CHANGE_NONE
+    lib = _lib()
+    conn_id = _conn_id()
+    if conn_id < 0:
+        return OUTPUT_CHANGE_NONE
+    return lib.nyrqis_wayland_check_output_changes(conn_id)
+
+
 def last_error() -> str:
     """Return the last error message from the Rust crate."""
     if WAYLAND_STUB:

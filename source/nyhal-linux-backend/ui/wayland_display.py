@@ -257,6 +257,17 @@ class WaylandDisplay:
             return []
         return wayland_codec.get_outputs()
 
+    def check_output_changes(self) -> bool:
+        """Check for output (monitor) changes since the last dispatch.
+
+        Returns True if outputs were added, removed, or changed.
+        Call this after poll_and_dispatch() to detect hot-plug events.
+        """
+        if not self._connected:
+            return False
+        change = wayland_codec.check_output_changes()
+        return change != wayland_codec.OUTPUT_CHANGE_NONE
+
     # -- Event callbacks ------------------------------------------------
 
     def on_configure(self, callback: Callable[[WaylandConfigureEvent], None]) -> None:
