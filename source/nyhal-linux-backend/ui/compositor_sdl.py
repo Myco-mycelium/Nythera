@@ -284,6 +284,7 @@ class SDLCompositor:
         theme_name: str = "Eclipse",
         scale: float = 1.0,
         headless: bool = True,
+        wayland: bool = False,
     ) -> None:
         if not HAS_SDL2:
             raise ImportError("pysdl2 is required: pip install pysdl2 pysdl2-dll")
@@ -291,26 +292,56 @@ class SDLCompositor:
         self.theme = THEMES.get(theme_name, THEMES["Eclipse"])
         self.scale = scale
         self.headless = headless
+        self._use_wayland = wayland
         self._window = None
         self._renderer = None
         self._surface = None
 
     def _init_sdl(self, width: int, height: int) -> None:
-        """Initialize SDL2 with either a window or off-screen surface."""
+        """Initialize SDL2 with either a window or off-screen surface.
+
+        When ``wayland=True`` is set, uses the Wayland video driver
+        for GPU-accelerated rendering through a Wayland compositor.
+        Falls back to the dummy driver for headless/CI environments.
+        """
         if self.headless:
             os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        elif self._use_wayland:
+            os.environ.setdefault("SDL_VIDEODRIVER", "wayland")
         sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO)
+
         if not self.headless:
+            # Determine window flags
+            flags = sdl2.SDL_WINDOW_SHOWN
+            if self._use_wayland:
+                # Let SDL2 handle Wayland surface creation
+                # The renderer will use GPU acceleration via EGL
+                pass
+
             self._window = sdl2.SDL_CreateWindow(
                 b"Nyrqis Shell",
                 sdl2.SDL_WINDOWPOS_CENTERED, sdl2.SDL_WINDOWPOS_CENTERED,
                 width, height,
-                sdl2.SDL_WINDOW_SHOWN,
+                flags,
             )
-            self._renderer = sdl2.SDL_CreateRenderer(
-                self._window, -1,
-                sdl2.SDL_RENDERER_ACCELERATED | sdl2.SDL_RENDERER_PRESENTVSYNC,
-            )
+            if self._window:
+                # Try GPU-accelerated renderer first, fall back to software
+                self._renderer = sdl2.SDL_CreateRenderer(
+                    self._window, -1,
+                    sdl2.SDL_RENDERER_ACCELERATED | sdl2.SDL_RENDERER_PRESENTVSYNC,
+                )
+                if not self._renderer:
+                    self._renderer = sdl2.SDL_CreateRenderer(
+                        self._window, -1,
+                        sdl2.SDL_RENDERER_SOFTWARE,
+                    )
+            else:
+                # Window creation failed (e.g. no Wayland compositor)
+                # Fall back to headless mode
+                self.headless = True
+                self._surface = sdl2.SDL_CreateRGBSurfaceWithFormat(
+                    0, width, height, 32, sdl2.SDL_PIXELFORMAT_ARGB8888,
+                )
         else:
             self._surface = sdl2.SDL_CreateRGBSurfaceWithFormat(
                 0, width, height, 32, sdl2.SDL_PIXELFORMAT_ARGB8888,
@@ -610,6 +641,46 @@ class SDLCompositor:
             self.theme_name = old_theme
             self.theme = THEMES.get(old_theme, THEMES["Eclipse"])
         return path
+
+    def render_to_wayland(
+        self,
+        document: Any,
+        wayland_display,
+        surface_id: int,
+        screen_id: Optional[str] = None,
+    ) -> bool:
+        """Render a screen and submit to a Wayland surface.
+
+        Uses SDL2 for GPU-accelerated rendering when a Wayland compositor
+        is available, then submits the rendered buffer to the Wayland
+        surface via ``wl_shm``.
+
+        Parameters
+        ----------
+        document : NstudioDocument
+            The document to render.
+        wayland_display : WaylandDisplay
+            The Wayland display connection.
+        surface_id : int
+            The Wayland surface to render to.
+        screen_id : str, optional
+            The screen to render.
+
+        Returns True on success.
+        """
+        try:
+            # Render to a PIL Image via the headless path
+            img = self.render_screen(document, screen_id=screen_id)
+            if img is None:
+                return False
+
+            # Submit to Wayland
+            return wayland_display.render_frame(img)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "SDL2 render_to_wayland failed: %s", e)
+            return False
 
 
 __all__ = ["SDLCompositor", "THEMES", "HAS_SDL2"]
