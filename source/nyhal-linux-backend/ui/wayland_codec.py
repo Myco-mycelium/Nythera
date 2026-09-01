@@ -29,7 +29,7 @@ from typing import Optional
 
 # ABI version expected by this loader — must match
 # nyrqis_wayland_version() in rust/wayland/src/lib.rs.
-NYRQIS_WAYLAND_ABI: int = 0x0001_0000
+NYRQIS_WAYLAND_ABI: int = 0x0001_0100  # 1.1.0 — Phase 1b + xdg-shell + input
 
 # ---------------------------------------------------------------------------
 # Library search and load
@@ -126,11 +126,28 @@ def connect(display_name: Optional[str] = None) -> int:
     return lib.nyrqis_wayland_connect(None, 0)
 
 
-def create_surface(conn_id: int) -> int:
-    """Create an xdg_toplevel surface.  Returns surface_id or -1."""
+def create_surface(
+    conn_id: int,
+    use_xdg: bool = True,
+    title: Optional[str] = None,
+) -> int:
+    """Create a wl_surface with optional xdg-shell decoration.
+
+    If *use_xdg* is True (default), creates xdg_surface + xdg_toplevel
+    for proper window management.
+
+    Returns surface_id or -1.
+    """
     if WAYLAND_STUB:
         return -1
-    return _lib().nyrqis_wayland_create_surface(conn_id)
+    lib = _lib()
+    if title is not None:
+        encoded = title.encode("utf-8")
+        ptr = ctypes.create_string_buffer(encoded)
+        return lib.nyrqis_wayland_create_surface(
+            conn_id, 1 if use_xdg else 0, ptr, len(encoded)
+        )
+    return lib.nyrqis_wayland_create_surface(conn_id, 1 if use_xdg else 0, None, 0)
 
 
 def submit_buffer(
@@ -140,7 +157,11 @@ def submit_buffer(
     height: int,
     stride: int,
 ) -> int:
-    """Submit a pixel buffer to a surface via wl_shm."""
+    """Submit a pixel buffer to a surface via wl_shm.
+
+    Creates a memfd, copies pixel data, creates wl_shm_pool + wl_buffer,
+    attaches to the surface, and commits.  Returns buffer_id or -1.
+    """
     if WAYLAND_STUB:
         return -1
     buf = ctypes.create_string_buffer(pixel_data)
@@ -168,6 +189,22 @@ def destroy_surface(surface_id: int) -> int:
     if WAYLAND_STUB:
         return -1
     return _lib().nyrqis_wayland_destroy_surface(surface_id)
+
+
+def set_title(surface_id: int, title: str) -> int:
+    """Set the title of an xdg_toplevel surface."""
+    if WAYLAND_STUB:
+        return -1
+    encoded = title.encode("utf-8")
+    ptr = ctypes.create_string_buffer(encoded)
+    return _lib().nyrqis_wayland_set_title(surface_id, ptr, len(encoded))
+
+
+def get_fd(conn_id: int) -> int:
+    """Get the display connection file descriptor for external polling."""
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_get_fd(conn_id)
 
 
 def last_error() -> str:

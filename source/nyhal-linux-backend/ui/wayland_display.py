@@ -112,15 +112,22 @@ class WaylandDisplay:
         self._connected = False
         self._conn_id = -1
 
-    def create_surface(self) -> int:
-        """Create a Wayland surface.
+    def create_surface(self, title: Optional[str] = None) -> int:
+        """Create a Wayland surface with xdg-shell decoration.
+
+        Parameters
+        ----------
+        title : str, optional
+            Window title for the xdg_toplevel.
 
         Returns the surface ID on success, -1 on failure.
         """
         if not self._connected:
             return -1
 
-        surf_id = wayland_codec.create_surface(self._conn_id)
+        surf_id = wayland_codec.create_surface(
+            self._conn_id, use_xdg=True, title=title
+        )
         if surf_id < 0:
             err = wayland_codec.last_error()
             logger.warning("Failed to create surface: %s", err)
@@ -132,7 +139,7 @@ class WaylandDisplay:
             height=0,
             stride=0,
         )
-        logger.debug("Created surface %d", surf_id)
+        logger.debug("Created surface %d (title=%s)", surf_id, title)
         return surf_id
 
     def submit_buffer(
@@ -185,6 +192,20 @@ class WaylandDisplay:
         result = wayland_codec.destroy_surface(surface_id)
         del self._surfaces[surface_id]
         return result == 0
+
+    def set_title(self, surface_id: int, title: str) -> bool:
+        """Set the title of an xdg_toplevel surface."""
+        if surface_id not in self._surfaces:
+            return False
+        result = wayland_codec.set_title(surface_id, title)
+        return result == 0
+
+    @property
+    def fd(self) -> int:
+        """Get the display connection file descriptor."""
+        if not self._connected:
+            return -1
+        return wayland_codec.get_fd(self._conn_id)
 
     def dispatch_events(self, timeout_ms: int = 100) -> int:
         """Poll and dispatch pending Wayland events.
