@@ -731,6 +731,7 @@ class DesktopSession:
             if self._wayland_display.open():
                 self._log("Wayland display connected")
                 self._setup_wayland_events()
+                self._sync_wayland_outputs()
                 return True
             else:
                 self._wayland_display = None
@@ -900,6 +901,47 @@ class DesktopSession:
         self._wayland_display.on_pointer(on_pointer)
         self._log("Wayland event callbacks registered")
 
+    def _sync_wayland_outputs(self) -> None:
+        """Synchronize Wayland outputs with DesktopSession monitors.
+
+        Queries the Wayland display for active outputs and maps them
+        to Monitor objects.  If no outputs are reported, falls back
+        to the document's screen definitions.
+        """
+        if not self.has_wayland:
+            return
+
+        outputs = self._wayland_display.outputs
+        if not outputs:
+            self._log("No Wayland outputs reported — using document screens")
+            return
+
+        # Clear existing monitors and rebuild from Wayland outputs
+        self._monitors.clear()
+        for i, out in enumerate(outputs):
+            m = Monitor(
+                id=f"monitor-{out['id']}",
+                x=out['x'],
+                y=out['y'],
+                width=out['width'],
+                height=out['height'],
+                scale=float(out['scale']),
+                primary=out['primary'],
+                name=f"Output {out['id']}",
+            )
+            self._monitors.append(m)
+            self._log(
+                f"Wayland output {out['id']}: "
+                f"{out['width']}x{out['height']}@{out['scale']}x "
+                f"at ({out['x']}, {out['y']})"
+                f"{' [primary]' if out['primary'] else ''}")
+
+        # Rebuild workspaces for the new monitor layout
+        self._workspaces.clear()
+        self._build_workspaces()
+
+        self._log(f"Synced {len(self._monitors)} Wayland output(s) to monitors")
+
     # -- Notifications ------------------------------------------------
 
     @property
@@ -921,6 +963,7 @@ class DesktopSession:
             "active_notifications": self._notifications.count,
             "events_processed": len(self._event_log),
             "wayland": self.has_wayland,
+            "wayland_outputs": len(self._wayland_display.outputs) if self.has_wayland else 0,
             **self._runtime.summary(),
         }
         return result
