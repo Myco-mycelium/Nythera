@@ -43,13 +43,12 @@ const DRM_MODE_DISCONNECTED: u32 = 2;
 // State management
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct DeviceSlot {
     fd: c_int,
     active: bool,
 }
+unsafe impl Send for DeviceSlot {}
 
-#[allow(dead_code)]
 struct ConnectorSlot {
     connector_id: u32,
     width: u32,
@@ -57,11 +56,10 @@ struct ConnectorSlot {
     refresh: u32,      // mHz
     status: u32,
     crtc_id: u32,
-    device_idx: i32,
+    device_id: i32,
     active: bool,
 }
 
-#[allow(dead_code)]
 struct CrtcSlot {
     crtc_id: u32,
     x: i32,
@@ -72,7 +70,6 @@ struct CrtcSlot {
     device_idx: i32,
 }
 
-#[allow(dead_code)]
 struct PlaneSlot {
     plane_id: u32,
     crtc_id: u32,
@@ -118,10 +115,123 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
     slots.iter().position(|s| s.is_none())
 }
 
+// ---------------------------------------------------------------------------
+// DRM ioctl structures (matching kernel headers)
+// ---------------------------------------------------------------------------
+
+/// DRM mode connector structure for MODE_GETCONNECTOR ioctl.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct DrmModeGetConnector {
+    connector_id: u32,
+    encoder_id: u32,
+    connector_type: u32,
+    connector_type_id: u32,
+    connection: u32,
+    width: u32,
+    height: u32,
+    subpixel: u32,
+    num_modes: u32,
+    modes_ptr: u64,
+    num_encoders: u32,
+    encoders_ptr: u64,
+    num_modesources: u32,
+    modesources_ptr: u64,
+    blob_ids_ptr: u64,
+    count_encoders: u32,
+    count_modes: u32,
+    count_properties: u32,
+    properties_ptr: u64,
+    prop_values_ptr: u64,
+}
+
+/// DRM mode mode_info structure.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct DrmModeModeInfo {
+    clock: u32,
+    hdisplay: u16,
+    hsync_start: u16,
+    hsync_end: u16,
+    htotal: u16,
+    hskew: u16,
+    vdisplay: u16,
+    vsync_start: u16,
+    vsync_end: u16,
+    vtotal: u16,
+    vscan: u16,
+    vrefresh: u32,
+    flags: u32,
+    type_: u32,
+    name: [u8; 32],
+}
+
+/// DRM mode get resources structure.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct DrmModeGetResources {
+    count_fbs: u32,
+    fb_id_ptr: u64,
+    count_crtcs: u32,
+    crtc_id_ptr: u64,
+    count_connectors: u32,
+    connector_id_ptr: u64,
+    count_encoders: u32,
+    encoder_id_ptr: u64,
+    min_width: u32,
+    max_width: u32,
+    min_height: u32,
+    max_height: u32,
+}
+
+/// DRM mode atomic request structure.
+#[repr(C)]
+struct DrmModeAtomic {
+    flags: u32,
+    count_objs: u32,
+    objs_ptr: u64,
+    count_props: u32,
+    props_ptr: u64,
+    prop_values_ptr: u64,
+    reserved: u64,
+    count_clones: u32,
+    clone_ptr: u64,
+}
+
+// DRM ioctl magic number (from drm.h)
+const DRM_IOCTL_BASE: u8 = b'd';
+const DRM_IOCTL_MODE_GETRESOURCES: u64 = 0xc04064a0;
+const DRM_IOCTL_MODE_GETCONNECTOR: u64 = 0xc15064a7;
+const DRM_IOCTL_MODE_ATOMIC: u64 = 0xc01864ee;
+const DRM_IOCTL_SET_MASTER: u64 = 0x1b000014;
+const DRM_IOCTL_DROP_MASTER: u64 = 0x1b000015;
+
+/// Safe wrapper around ioctl syscall.
+unsafe fn drm_ioctl(fd: c_int, request: u64, arg: *mut libc::c_void) -> c_int {
+    libc::ioctl(fd, request, arg) as c_int
+}
+
 /// Check if DRM is available at runtime.
+///
+/// In test builds, this can be overridden via `set_drm_available`.
+#[cfg(not(test))]
 fn is_drm_available() -> bool {
-    // Phase 1: stub — real implementation will open /dev/dri/card0
-    false
+    // Check if any DRM device exists
+    std::path::Path::new("/dev/dri/card0").exists()
+        || std::path::Path::new("/dev/dri/renderD128").exists()
+}
+
+#[cfg(test)]
+static DRM_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn is_drm_available() -> bool {
+    DRM_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn set_drm_available(val: bool) {
+    DRM_AVAILABLE.store(val, std::sync::atomic::Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +269,31 @@ pub extern "C" fn nyrqis_drm_open_device(
             }
         };
 
+        // Open the DRM device file
+        let fd = if !_device_path_ptr.is_null() && _device_path_len > 0 {
+            let path = unsafe {
+                std::ffi::CStr::from_ptr(_device_path_ptr)
+                    .to_str()
+                    .unwrap_or("/dev/dri/card0")
+            };
+            unsafe { libc::open(path.as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) }
+        } else {
+            // Try card0 first, then renderD128
+            let fd_card = unsafe { libc::open(b"/dev/dri/card0\0".as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) };
+            if fd_card >= 0 {
+                fd_card
+            } else {
+                unsafe { libc::open(b"/dev/dri/renderD128\0".as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) }
+            }
+        };
+
+        if fd < 0 {
+            set_last_error(state, "failed to open DRM device");
+            return -1;
+        }
+
         state.devices[dev_idx as usize] = Some(DeviceSlot {
-            fd: -1,
+            fd,
             active: true,
         });
 
@@ -179,16 +312,104 @@ pub extern "C" fn nyrqis_drm_enumerate_connectors(device_id: c_int) -> c_int {
             return -1;
         }
 
-        match &state.devices[device_id as usize] {
-            Some(d) if d.active => {}
+        let fd = match &state.devices[device_id as usize] {
+            Some(d) if d.active => d.fd,
             _ => {
                 set_last_error(state, "device not active");
                 return -1;
             }
+        };
+
+        if fd < 0 {
+            set_last_error(state, "device fd not open");
+            return -1;
         }
 
-        // Phase 1: stub — real implementation will use DRM_IOCTL_MODE_GETCONNECTOR
-        0
+        // First call: get count of connectors
+        let mut res = DrmModeGetResources::default();
+        let ret = unsafe { drm_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &mut res as *mut _ as *mut libc::c_void) };
+        if ret < 0 {
+            set_last_error(state, "DRM_IOCTL_MODE_GETRESOURCES failed");
+            return -1;
+        }
+
+        let count = res.count_connectors as i32;
+        if count <= 0 {
+            return 0;
+        }
+
+        // Allocate buffer for connector IDs
+        let mut connector_ids: Vec<u32> = vec![0; count as usize];
+        res.connector_id_ptr = connector_ids.as_mut_ptr() as u64;
+        res.count_connectors = count as u32;
+
+        // Second call: fill connector IDs
+        let ret = unsafe { drm_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &mut res as *mut _ as *mut libc::c_void) };
+        if ret < 0 {
+            set_last_error(state, "DRM_IOCTL_MODE_GETRESOURCES (fill) failed");
+            return -1;
+        }
+
+        // Clear existing connectors
+        for slot in &mut state.connectors {
+            *slot = None;
+        }
+
+        // Query each connector
+        let mut found = 0i32;
+        for &conn_id in &connector_ids {
+            if found >= MAX_CONNECTORS as i32 {
+                break;
+            }
+
+            let mut conn = DrmModeGetConnector::default();
+            conn.connector_id = conn_id;
+
+            // First call: get connector info
+            let ret = unsafe { drm_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &mut conn as *mut _ as *mut libc::c_void) };
+            if ret < 0 {
+                continue;
+            }
+
+            // Get preferred mode dimensions
+            let mut width = 0u32;
+            let mut height = 0u32;
+            let mut refresh = 0u32;
+
+            if conn.count_modes > 0 {
+                let mut modes: Vec<DrmModeModeInfo> = vec![DrmModeModeInfo::default(); conn.count_modes as usize];
+                conn.modes_ptr = modes.as_mut_ptr() as u64;
+
+                let ret = unsafe { drm_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &mut conn as *mut _ as *mut libc::c_void) };
+                if ret >= 0 && !modes.is_empty() {
+                    // Use preferred mode or first mode
+                    let mode = if conn.count_modes > 0 {
+                        &modes[0]
+                    } else {
+                        &modes[0]
+                    };
+                    width = mode.hdisplay as u32;
+                    height = mode.vdisplay as u32;
+                    refresh = mode.vrefresh;
+                }
+            }
+
+            if let Some(idx) = alloc_slot(&mut state.connectors) {
+                state.connectors[idx] = Some(ConnectorSlot {
+                    connector_id: conn_id,
+                    width,
+                    height,
+                    refresh,
+                    status: conn.connection,
+                    crtc_id: 0,
+                    device_id,
+                    active: true,
+                });
+                found += 1;
+            }
+        }
+
+        found
     })
 }
 
@@ -265,6 +486,9 @@ pub extern "C" fn nyrqis_drm_close_device(device_id: c_int) -> c_int {
             return -1;
         }
         if let Some(dev) = &mut state.devices[device_id as usize] {
+            if dev.fd >= 0 {
+                unsafe { libc::close(dev.fd); }
+            }
             dev.active = false;
             0
         } else {
