@@ -1,0 +1,25 @@
+[package]
+name = "nyrqis-wayland"
+version = "0.1.0"
+edition = "2021"
+description = "Nyrqis Wayland display-server client — surface management, input handling, and buffer allocation (ADR-0026)"
+
+[lib]
+name = "nyrqis_wayland"
+# cdylib is the FFI artifact a Python ctypes loader dlopens; rlib is
+# included so `cargo test` can link the crate's unit tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Minimal dependency surface: libc for FFI types and constants,
+# wayland-client for the core Wayland protocol bindings.  The crate
+# wraps the protocol layer and exposes a simplified FFI surface for
+# the Python DesktopSession — same migration pattern as ADR-0020.
+libc = "0.2"
+wayland-client = "0.31"
+
+[dev-dependencies]
+# Wayland protocol XML schemas for compile-time code generation.
+# wayland-scanner is used at build time to generate the protocol
+# bindings from the XML definitions shipped with the wayland-client
+# crate, so no additional dev-dependencies are needed for basic tests.

@@ -22,13 +22,15 @@ matrix and the three normative rules.## Status
 | IPC transport hot path (`transport/`) | **IMPLEMENTED 2026-08-14** (ABI 2.0.0, caller-supplied buffers) | `rust-transport` build + required `rust-transport-conformance` gate green; §20 benchmark data |
 | IPC serving loop (`ipcd/`, ADR-0021 — the first NyRuntime-shaped artifact) | **IMPLEMENTED 2026-08-15** (ABI 1.0.0) | `rust-ipcd` build + required `rust-ipcd-conformance` gate green; §22 A/B: beats the Python floor ~2.8× at the wire median |
 | NUI (.nstudio) import gate (`nyui/`, ADR-0025 — the UI layer's first compiled artifact) | **IMPLEMENTED 2026-08-16** (ABI 1.0.0) | `rust-nyui` build + required `rust-nyui-conformance` gate green (floor's suite forced through the FFI; error messages byte-identical on single-issue documents) |
+| Wayland display-server client (`wayland/`, ADR-0026 — display integration) | **SCAFFOLDED 2026-09-01** (ABI 1.0.0) | skeleton FFI surface with 8 unit tests; real implementation pending Phase 1 |
 
-All eight crates build and pass their unit tests **in CI on every push**
+All nine crates build and pass their unit tests **in CI on every push**
 (the `dtolnay/rust-toolchain@stable` jobs) and locally on the dev host
 (the system rustc 1.75 builds them; a maintained stable toolchain via
 rustup is also being installed there). Each crate keeps its dependency
 surface minimal (`libc`-only, except `nyui/` which uses `serde_json`
-for .nstudio parsing), and each has a **required, blocking conformance
+for .nstudio parsing and `wayland/` which uses `wayland-client` for
+protocol bindings), and each has a **required, blocking conformance
 gate** that forces the relevant Python test classes through the FFI
 (`NYRQIS_RUST_LIB=... NYRQIS_RUST_FORCE=1`), so a semantic regression
 in any Rust module fails the build.
