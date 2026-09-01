@@ -275,10 +275,13 @@ class PackageInstaller:
         integrity_tree = IntegrityTree.from_dict(tree_data)
 
         # Verify signature against manifest + integrity tree
+        # Read the raw manifest bytes from disk to match the signing serialization
+        manifest_bytes = manifest_path.read_bytes()
+        tree_bytes = integrity_tree.to_bytes()
         try:
             valid = verify_package(
-                manifest.to_bytes(),
-                integrity_tree.to_bytes(),
+                manifest_bytes,
+                tree_bytes,
                 sig_block.signature,
                 sig_block.public_key,
             )
