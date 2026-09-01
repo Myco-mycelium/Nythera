@@ -49,6 +49,11 @@ try:
 except ImportError:
     egl_codec = None
 
+try:
+    from . import vulkan_codec
+except ImportError:
+    vulkan_codec = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -414,6 +419,76 @@ class WaylandDisplay:
     def has_egl(self) -> bool:
         """Whether EGL is initialized for OpenGL rendering."""
         return hasattr(self, '_egl_display_id')
+
+    # -- Vulkan integration -----------------------------------------------
+
+    def init_vulkan(self, width: int = 1920, height: int = 1080) -> bool:
+        """Initialize Vulkan for native rendering.
+
+        Parameters
+        ----------
+        width : int
+            Surface width in pixels.
+        height : int
+            Surface height in pixels.
+
+        Returns
+        -------
+        bool
+            True if Vulkan was initialized successfully.
+        """
+        if vulkan_codec is None or not vulkan_codec.is_available():
+            logger.info("Vulkan crate not available — native rendering disabled")
+            return False
+
+        instance_id = vulkan_codec.create_instance()
+        if instance_id < 0:
+            logger.warning("Failed to create Vulkan instance: %s", vulkan_codec.last_error())
+            return False
+
+        device_id = vulkan_codec.create_device(instance_id)
+        if device_id < 0:
+            logger.warning("Failed to create Vulkan device: %s", vulkan_codec.last_error())
+            vulkan_codec.destroy_instance(instance_id)
+            return False
+
+        swapchain_id = vulkan_codec.create_swapchain(device_id, width, height)
+        if swapchain_id < 0:
+            logger.warning("Failed to create Vulkan swapchain: %s", vulkan_codec.last_error())
+            vulkan_codec.destroy_device(device_id)
+            vulkan_codec.destroy_instance(instance_id)
+            return False
+
+        self._vulkan_instance_id = instance_id
+        self._vulkan_device_id = device_id
+        self._vulkan_swapchain_id = swapchain_id
+        logger.info("Vulkan initialized: instance=%d device=%d swapchain=%d",
+                    instance_id, device_id, swapchain_id)
+        return True
+
+    def shutdown_vulkan(self) -> bool:
+        """Shut down Vulkan and release resources."""
+        if vulkan_codec is None or not hasattr(self, '_vulkan_instance_id'):
+            return False
+
+        if hasattr(self, '_vulkan_swapchain_id'):
+            vulkan_codec.destroy_swapchain(self._vulkan_swapchain_id)
+        if hasattr(self, '_vulkan_device_id'):
+            vulkan_codec.destroy_device(self._vulkan_device_id)
+        result = vulkan_codec.destroy_instance(self._vulkan_instance_id)
+
+        del self._vulkan_instance_id
+        if hasattr(self, '_vulkan_device_id'):
+            del self._vulkan_device_id
+        if hasattr(self, '_vulkan_swapchain_id'):
+            del self._vulkan_swapchain_id
+
+        return result
+
+    @property
+    def has_vulkan(self) -> bool:
+        """Whether Vulkan is initialized for native rendering."""
+        return hasattr(self, '_vulkan_instance_id')
 
     # -- Event callbacks ------------------------------------------------
 
