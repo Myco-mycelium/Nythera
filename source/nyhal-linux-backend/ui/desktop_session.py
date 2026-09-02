@@ -248,6 +248,11 @@ class DesktopSession:
         from .notifications import NotificationService
         self._notifications = NotificationService()
 
+        # Shell chrome components (Taskbar, StartMenu, etc.) — tracked
+        # separately from user windows so window management only sees
+        # application windows.
+        self._shell_components: Dict[str, Any] = {}  # id -> nstudio node
+
         # Undo/redo manager — enabled by default so all mutations are
         # tracked automatically.  Call ``enable_undo()`` to reconfigure
         # the depth, or ``disable_undo()`` to turn it off.
@@ -995,21 +1000,20 @@ class DesktopSession:
     def _build_windows(self) -> None:
         """Build the initial window list from top-level Window components.
 
-        Walks each screen's root children — any component with type
-        ``Window`` or ``DesktopSurface`` becomes a session window.
+        Walks each screen's root children — only ``Window`` type
+        components become session windows.  Shell chrome (Taskbar,
+        StartMenu, etc.) is tracked separately in _shell_components.
         """
+        _SHELL_TYPES = {
+            "Taskbar", "StartMenu", "NotificationCenter",
+            "QuickSettings", "CommandPalette", "LockScreen",
+            "WorkspaceSwitcher",
+        }
         for screen in self._doc.screens:
             root = screen.root
-            sw = screen.size.get("width", 1920)
-            sh = screen.size.get("height", 1080)
 
-            # Walk children of the root — DesktopSurface is the root
-            # container, not a window itself.
             for child in root.children:
-                if child.type in ("Window", "Taskbar", "StartMenu",
-                                  "NotificationCenter",
-                                  "QuickSettings", "CommandPalette",
-                                  "LockScreen", "WorkspaceSwitcher"):
+                if child.type == "Window":
                     w = Window(
                         id=f"win-{child.id}",
                         component_id=child.id,
@@ -1020,6 +1024,8 @@ class DesktopSession:
                         height=child.layout.get("height", 600),
                     )
                     self._windows.append(w)
+                elif child.type in _SHELL_TYPES:
+                    self._shell_components[child.id] = child
 
         # Focus the topmost window
         if self._windows:

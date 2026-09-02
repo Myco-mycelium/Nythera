@@ -331,20 +331,22 @@ class TestCompositorRealHardware(unittest.TestCase):
         self.assertEqual(start(), 0)
         self.assertTrue(is_running())
 
+        count_before = output_count()
         out = add_output(1920, 1080, "test")
         self.assertGreaterEqual(out, 0)
-        self.assertEqual(output_count(), 1)
+        self.assertEqual(output_count(), count_before + 1)
 
+        scount_before = surface_count()
         surf = create_surface(0, 800, 600)
         self.assertGreaterEqual(surf, 0)
-        self.assertEqual(surface_count(), 1)
+        self.assertEqual(surface_count(), scount_before + 1)
 
         self.assertEqual(process_input(1, surf, 0, 0, 0.0, 0.0), 0)
         self.assertEqual(send_frame_callback(surf, 0), 0)
         self.assertEqual(commit_surface(surf), 0)
 
         self.assertEqual(destroy_surface(surf), 0)
-        self.assertEqual(surface_count(), 0)
+        self.assertEqual(surface_count(), scount_before)
 
         self.assertEqual(stop(), 0)
         self.assertFalse(is_running())

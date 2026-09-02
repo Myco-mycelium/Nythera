@@ -130,7 +130,7 @@ _DEFAULT_ROLES: Dict[str, A11yRole] = {
     "Dialog": A11yRole.DIALOG,
     "Card": A11yRole.REGION,
     "Panel": A11yRole.REGION,
-    "Taskbar": A11yRole.TOOLBAR,
+    "Taskbar": A11yRole.BANNER,
     "StartMenu": A11yRole.MENU,
     "SystemTray": A11yRole.REGION,
     "NotificationCenter": A11yRole.COMPLEMENTARY,
