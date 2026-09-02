@@ -190,10 +190,17 @@ def phase_load_shell(socket_path: str, design_path: str) -> bool:
         return True
 
     logger.info("Loading shell design: %s", design_path)
+    # Read the file content — the service expects JSON, not a path
+    try:
+        with open(design_path, "r") as f:
+            design_content = f.read()
+    except Exception as exc:
+        logger.error("Failed to read shell design: %s", exc)
+        return False
     payload = {
         "service": "nui",
         "op": "nui_load",
-        "document": design_path,
+        "document": design_content,
     }
     reply = _socket_command(socket_path, payload)
     if reply is None:
