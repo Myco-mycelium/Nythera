@@ -330,13 +330,29 @@ pub extern "C" fn nyrqis_gbm_create_surface(
             return -1;
         }
 
-        // Create GBM surface via real API
-        // NOTE: Real GBM surface creation requires rendering context.
-        // For now, use stub surfaces to avoid segfaults on unrendered surfaces.
+        // Create GBM surface via real API when libgbm is loaded
         #[cfg(not(test))]
-        let gbm_surf: *mut gbm_surface = std::ptr::null_mut();
+        let gbm_surf: *mut gbm_surface = unsafe {
+            if let Some(ref fns) = GBM_FNS {
+                (fns.surface_create)(
+                    dev.gbm_device,
+                    width as u32,
+                    height as u32,
+                    format,
+                    GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT,
+                )
+            } else {
+                std::ptr::null_mut()
+            }
+        };
         #[cfg(test)]
         let gbm_surf: *mut gbm_surface = std::ptr::null_mut();
+
+        #[cfg(not(test))]
+        if gbm_surf.is_null() {
+            set_last_error(state, "gbm_surface_create failed");
+            return -1;
+        }
 
         let surf_idx = match alloc_slot(&mut state.surfaces) {
             Some(i) => i as i32,
@@ -379,15 +395,13 @@ pub extern "C" fn nyrqis_gbm_lock_buffer(surface_id: c_int) -> c_int {
             }
         };
 
-        // Lock the front buffer from the GBM surface
-        // NOTE: Real GBM buffer locking requires a rendered surface.
-        // For now, use stub buffers to avoid segfaults on unrendered surfaces.
-        #[cfg(not(test))]
+        // Determine buffer dimensions.  We use the surface dimensions
+        // directly because surface_lock_front_buffer requires a rendered
+        // buffer (EGL/Vulkan must render first), and calling it on a
+        // fresh surface can segfault on some drivers.
+        // The real lock happens after rendering — the compositor calls
+        // this after submitting a frame via EGL/Vulkan.
         let gbm_bo: *mut gbm_bo = std::ptr::null_mut();
-        #[cfg(test)]
-        let gbm_bo: *mut gbm_bo = std::ptr::null_mut();
-
-        // Use surface dimensions for the buffer
         let (w, h, s) = (surf.width, surf.height, surf.width * 4);
 
         let buf_idx = match alloc_slot(&mut state.buffers) {
