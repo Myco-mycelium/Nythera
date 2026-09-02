@@ -200,7 +200,7 @@ class WaylandSocketServer:
         # Clean up socket file
         if os.path.exists(self.socket_path):
             try:
-                os.unlink(self._socket_path)
+                os.unlink(self.socket_path)
             except OSError:
                 pass
         
@@ -400,7 +400,7 @@ class WaylandSocketServer:
                            timestamp: int):
         """Send wl_callback.done event."""
         data = struct.pack("II", callback_id, 0)  # wl_callback.done
-        data += struct.pack("I", timestamp)
+        data += struct.pack("I", timestamp & 0xFFFFFFFF)  # Clamp to uint32
         try:
             client.fd.sendall(data)
         except OSError:

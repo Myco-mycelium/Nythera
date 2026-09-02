@@ -300,6 +300,80 @@ class DRMBackend:
             connected=connected,
         )
     
+    def set_mode(self, crtc_id: int, connector_id: int,
+                 mode_id: int, fb_id: int = 0) -> bool:
+        """Set the display mode via DRM_IOCTL_MODE_SETCRTC.
+        
+        Parameters
+        ----------
+        crtc_id : int
+            CRTC ID to configure.
+        connector_id : int
+            Connector ID to attach.
+        mode_id : int
+            Mode ID to use.
+        fb_id : int
+            Framebuffer ID (0 for disabled).
+            
+        Returns
+        -------
+        bool
+            True on success, False on failure.
+        """
+        if self._fd < 0:
+            logger.error("DRM device not open")
+            return False
+        
+        # DRM_IOCTL_MODE_SETCRTC: crtc_id, fb_id, x, y, *connectors, count_modes, mode
+        # Simplified: set crtc with connector
+        buf = struct.pack("IIiII", crtc_id, fb_id, 0, 0, connector_id)
+        buf += struct.pack("I", 1)  # count_connectors = 1
+        buf += b"\x00" * 64  # mode info (simplified)
+        
+        try:
+            result = fcntl.ioctl(self._fd, DRM_IOCTL_MODE_SETCRTC, buf)
+            return True
+        except OSError as exc:
+            logger.error("DRM_IOCTL_MODE_SETCRTC failed: %s", exc)
+            return False
+    
+    def page_flip(self, crtc_id: int, fb_id: int, flags: int = 0) -> bool:
+        """Request a page flip via DRM_IOCTL_MODE_ATOMIC.
+        
+        Parameters
+        ----------
+        crtc_id : int
+            CRTC ID.
+        fb_id : int
+            Framebuffer ID to flip to.
+        flags : int
+            Atomic flags (DRM_MODE_PAGE_FLIP_EVENT, etc.).
+            
+        Returns
+        -------
+        bool
+            True on success, False on failure.
+        """
+        if self._fd < 0:
+            logger.error("DRM device not open")
+            return False
+        
+        # DRM_IOCTL_MODE_ATOMIC: flags, count_objs, objs_ptr, count_props, props_ptr, prop_values_ptr, reserved
+        # Simplified atomic commit
+        buf = struct.pack("II", flags | DRM_MODE_PAGE_FLIP_EVENT, 0)
+        buf += struct.pack("Q", 0)  # objs_ptr
+        buf += struct.pack("I", 0)  # count_props
+        buf += struct.pack("Q", 0)  # props_ptr
+        buf += struct.pack("Q", 0)  # prop_values_ptr
+        buf += struct.pack("Q", 0)  # reserved
+        
+        try:
+            result = fcntl.ioctl(self._fd, DRM_IOCTL_MODE_ATOMIC, buf)
+            return True
+        except OSError as exc:
+            logger.error("DRM_IOCTL_MODE_ATOMIC failed: %s", exc)
+            return False
+    
     def get_fd(self) -> int:
         """Get the DRM file descriptor."""
         return self._fd
