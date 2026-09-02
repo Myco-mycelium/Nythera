@@ -7,6 +7,7 @@ Draws a full desktop with:
 - Start menu with app icons
 - Desktop icons
 - Multiple application windows
+- Live terminal emulator window
 
 References:
     - ADR-0026: Wayland display-server integration
@@ -16,10 +17,20 @@ References:
 from __future__ import annotations
 
 import math
+import os
 import struct
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+
+# Add parent directory to path for ui imports
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT = os.path.dirname(_DIR)
+if _PARENT not in sys.path:
+    sys.path.insert(0, _PARENT)
+
+from ui.terminal import TerminalEmulator, TerminalConfig, AnsiColor, DEFAULT_PALETTE
 
 
 # Color constants (R, G, B, A)
@@ -95,6 +106,14 @@ class DesktopRenderer:
             ("Settings", COLOR_ICON_SETTINGS),
             ("About", COLOR_ACCENT),
         ]
+        
+        # Live terminal emulator
+        self._terminal = TerminalEmulator(TerminalConfig(
+            cols=80, rows=20, font_size=1, padding=4,
+            bg_color=(20, 20, 28),
+            fg_color=AnsiColor.WHITE,
+        ))
+        self._setup_terminal()
     
     def render(self):
         """Render the complete desktop."""
@@ -168,6 +187,40 @@ class DesktopRenderer:
             
             # Label
             self._draw_text(icon.x - 2, icon.y + 64, icon.label, COLOR_TEXT_WHITE)
+    
+    def _setup_terminal(self):
+        """Feed startup output to the live terminal emulator."""
+        t = self._terminal
+        t.feed("\x1b[1;32m")  # Bold green
+        t.feed("╔══════════════════════════════════════════╗\r\n")
+        t.feed("║        ")
+        t.feed("\x1b[1;37mNyrqis OS\x1b[0;32m")
+        t.feed("                         ║\r\n")
+        t.feed("║        ")
+        t.feed("\x1b[0;37mTerminal v1.0.0\x1b[0;32m")
+        t.feed("              ║\r\n")
+        t.feed("╚══════════════════════════════════════════╝\r\n")
+        t.feed("\x1b[0m")  # Reset
+        t.feed("\r\n")
+        t.feed("\x1b[1;37mnyrqis\x1b[0;36m@\x1b[0;37mdesktop\x1b[0;37m:\x1b[0;34m~\x1b[0;37m$ \x1b[0m")
+        t.feed("nyrqisctl status\r\n")
+        t.feed("  \x1b[32m●\x1b[0m Backend: running (PID 1234)\r\n")
+        t.feed("  \x1b[32m●\x1b[0m Session: active\r\n")
+        t.feed("  \x1b[32m●\x1b[0m Output: 1920x1080@60Hz\r\n")
+        t.feed("  \x1b[32m●\x1b[0m GPU: Intel HD Graphics (Mesa 23.2)\r\n")
+        t.feed("\r\n")
+        t.feed("\x1b[1;37mnyrqis\x1b[0;36m@\x1b[0;37mdesktop\x1b[0;37m:\x1b[0;34m~\x1b[0;37m$ \x1b[0m")
+        t.feed("nyrqis-init --diagnose\r\n")
+        t.feed("\x1b[1;36m诊断检查:\x1b[0m\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m DRM device found: /dev/dri/card0\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m GBM available\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m EGL available\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m Vulkan available\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m Wayland compositor ready\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m Shell design loaded\r\n")
+        t.feed("  \x1b[32m✓\x1b[0m All checks passed\r\n")
+        t.feed("\r\n")
+        t.feed("\x1b[1;37mnyrqis\x1b[0;36m@\x1b[0;37mdesktop\x1b[0;37m:\x1b[0;34m~\x1b[0;37m$ \x1b[0m")
     
     def _setup_windows(self):
         """Set up application windows."""
@@ -251,31 +304,34 @@ class DesktopRenderer:
             self._draw_browser_content(x + 12, content_y + 8, w - 24, content_h - 16)
     
     def _draw_terminal_content(self, x: int, y: int, w: int, h: int):
-        """Draw terminal content."""
-        lines = [
-            "$ nyrqisctl status",
-            "  Backend: running (PID 1234)",
-            "  Session: active",
-            "  Output: 1920x1080@60Hz",
-            "",
-            "$ nyrqis-init --headless",
-            "Phase 1: Daemon started (200ms)",
-            "Phase 2: Shell design loaded",
-            "Phase 3: Session rendered",
-            "",
-            "$ nyrqis-ctl app list",
-            "  Terminal    v1.0.0",
-            "  Files       v1.2.0",
-            "  Browser     v2.1.0",
-            "",
-            "$ █",
-        ]
+        """Draw terminal content using the live terminal emulator."""
+        t = self._terminal
+        scale = 1
+        char_h = 8 * scale
+        char_w = 6 * scale
         
-        for i, line in enumerate(lines):
-            if y + i * 18 > y + h:
-                break
-            color = COLOR_ICON_TERMINAL if line.startswith("$") else COLOR_TEXT_DIM
-            self._draw_text(x, y + i * 18, line, color)
+        palette = list(DEFAULT_PALETTE)
+        
+        for row in range(min(t.config.rows, h // char_h)):
+            cells = t.screen[row] if row < len(t.screen) else []
+            for col in range(min(t.config.cols, w // char_w)):
+                cell = cells[col] if col < len(cells) else None
+                if cell is None or cell.char == " ":
+                    continue
+                
+                cx = x + col * char_w
+                cy = y + row * char_h
+                
+                fg = cell.fg
+                if cell.reverse:
+                    fg = cell.bg
+                if cell.bold:
+                    fg = min(fg + 8, 15)
+                
+                fg_rgb = palette[fg] if fg < len(palette) else (200, 200, 200)
+                color = (fg_rgb[0], fg_rgb[1], fg_rgb[2], 255)
+                
+                self._draw_text_char(cx, cy, cell.char, color, scale)
     
     def _draw_files_content(self, x: int, y: int, w: int, h: int):
         """Draw file manager content."""
@@ -421,6 +477,18 @@ class DesktopRenderer:
             for x in range(cx - r, cx + r + 1):
                 if (x - cx) ** 2 + (y - cy) ** 2 <= r ** 2:
                     self._set_pixel(x, y, color)
+    
+    def _draw_text_char(self, x: int, y: int, ch: str, color: Tuple[int, int, int, int], scale: int = 1):
+        """Draw a single character using the terminal's 5x7 bitmap font."""
+        from ui.terminal import _get_char_glyph
+        glyph = _get_char_glyph(ch)
+        for row in range(7):
+            bits = glyph[row]
+            for col in range(5):
+                if bits & (1 << (4 - col)):
+                    for sy in range(scale):
+                        for sx in range(scale):
+                            self._set_pixel(x + col * scale + sx, y + row * scale + sy, color)
     
     def _draw_text(self, x: int, y: int, text: str, color: Tuple[int, int, int, int]):
         """Draw text using a simple bitmap font (5x7 pixel characters)."""
