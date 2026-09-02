@@ -200,8 +200,8 @@ struct DrmModeAtomic {
 
 // DRM ioctl magic number (from drm.h)
 const DRM_IOCTL_BASE: u8 = b'd';
-const DRM_IOCTL_MODE_GETRESOURCES: u64 = 0xc04064a0;
-const DRM_IOCTL_MODE_GETCONNECTOR: u64 = 0xc15064a7;
+const DRM_IOCTL_MODE_GETRESOURCES: u64 = 0xc03c64a0;  // size=60 (struct drm_mode_card_res)
+const DRM_IOCTL_MODE_GETCONNECTOR: u64 = 0xc15064a7;  // size=80 (struct drm_mode_get_connector)
 const DRM_IOCTL_MODE_ATOMIC: u64 = 0xc01864ee;
 const DRM_IOCTL_SET_MASTER: u64 = 0x1b000014;
 const DRM_IOCTL_DROP_MASTER: u64 = 0x1b000015;
@@ -274,17 +274,24 @@ pub extern "C" fn nyrqis_drm_open_device(
             let path = unsafe {
                 std::ffi::CStr::from_ptr(_device_path_ptr)
                     .to_str()
-                    .unwrap_or("/dev/dri/card0")
+                    .unwrap_or("/dev/dri/card1")
             };
             unsafe { libc::open(path.as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) }
         } else {
-            // Try card0 first, then renderD128
-            let fd_card = unsafe { libc::open(b"/dev/dri/card0\0".as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) };
-            if fd_card >= 0 {
-                fd_card
-            } else {
-                unsafe { libc::open(b"/dev/dri/renderD128\0".as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) }
+            // Auto-detect: try card0, card1, renderD128
+            let paths = [
+                b"/dev/dri/card0\0".as_ptr() as *const c_char,
+                b"/dev/dri/card1\0".as_ptr() as *const c_char,
+                b"/dev/dri/renderD128\0".as_ptr() as *const c_char,
+            ];
+            let mut fd = -1;
+            for &p in &paths {
+                fd = unsafe { libc::open(p, libc::O_RDWR | libc::O_CLOEXEC) };
+                if fd >= 0 {
+                    break;
+                }
             }
+            fd
         };
 
         if fd < 0 {
