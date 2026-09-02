@@ -1,0 +1,526 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "Nyrqis Desktop Shell",
+    "id": "example-nyrqis-desktop-shell",
+    "created": "2026-08-17T00:00:00+00:00",
+    "updated": "2026-08-17T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "components": [
+    {
+      "id": "TaskbarButton",
+      "type": "Button",
+      "properties": { "text": "Taskbar", "icon": "NyrqisMark", "enabled": true },
+      "layout": { "x": 0, "y": 0, "width": 96, "height": 48 },
+      "events": {},
+      "children": []
+    }
+  ],
+  "resources": {
+    "assets": [
+      { "id": "wallpaper", "kind": "image", "path": "assets/wallpaper.png" }
+    ]
+  },
+  "animations": [
+    { "id": "start_menu_fade", "target": "start_menu", "property": "opacity",
+      "duration": 200, "easing": "ease-out",
+      "keyframes": [ { "offset": 0.0, "value": 0.0 },
+                       { "offset": 0.6, "value": 0.75 },
+                       { "offset": 1.0, "value": 1.0 } ] }
+  ],
+  "locales": {
+    "active": "en",
+    "tables": {
+      "en": { "search.label": "Search", "start.label": "Start", "lock.welcome": "Welcome", "notif.dnd": "Notifications paused until disabled" },
+      "af": { "search.label": "Soek", "start.label": "Begin", "lock.welcome": "Welkom", "notif.dnd": "Kennisgewings onderbreek" }
+    }
+  },
+  "states": {
+    "startMenuOpen": false,
+    "quickSettingsOpen": false,
+    "notifCenterOpen": false,
+    "doNotDisturb": false,
+    "volume": 60,
+    "themeName": "Eclipse",
+    "currentWorkspace": 1,
+    "clockTime": "14:32",
+    "clockFormat": "24h"
+  },
+  "stateScopes": {
+    "persistent": {
+      "theme": "Eclipse",
+      "volume": 60
+    },
+    "session": {
+      "clockTime": "14:32"
+    }
+  },
+  "behaviors": [
+    {
+      "id": "behavior_start_toggle",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_fade" }
+      }
+    },
+    {
+      "id": "behavior_search_open",
+      "condition": null,
+      "action": {
+        "target": "palette",
+        "name": "Open",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_qs_toggle",
+      "condition": null,
+      "action": {
+        "target": "qs",
+        "name": "Toggle",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_notif_open",
+      "condition": null,
+      "action": {
+        "target": "notif_center",
+        "name": "Open",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_theme_eclipse",
+      "condition": null,
+      "actions": [
+        {
+          "target": "System",
+          "name": "Nyrqis.Theme.Set",
+          "arguments": {
+            "theme": "Eclipse"
+          }
+        },
+        {
+          "target": "System",
+          "name": "Nyrqis.Animation.Play",
+          "arguments": {
+            "animation": "start_menu_fade"
+          }
+        }
+      ]
+    },
+    {
+      "id": "behavior_theme_solar",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Theme.Set",
+        "arguments": {
+          "theme": "$expr:if(state.persistent.theme == \"Eclipse\", \"Solar\", \"Eclipse\")"
+        }
+      }
+    },
+    {
+      "id": "behavior_launch_terminal",
+      "condition": null,
+      "action": {
+        "target": "icon_terminal",
+        "name": "Launch",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_dnd_on",
+      "condition": {
+        "expression": "state.doNotDisturb == true"
+      },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "$expr:format(state.session.clockTime, \"{0}\")",
+          "message": "$localize:notif.dnd",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_quiet_notify",
+      "condition": {
+        "logic": "and",
+        "conditions": [
+          { "expression": "state.doNotDisturb == true" },
+          { "expression": "state.volume > 50" }
+        ]
+      },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Notification.Show",
+        "arguments": {
+          "title": "Volume",
+          "message": "Volume above 50%",
+          "severity": "info"
+        }
+      }
+    },
+    {
+      "id": "behavior_launcher_open",
+      "condition": null,
+      "action": {
+        "target": "launcher",
+        "name": "Open",
+        "arguments": {}
+      }
+    },
+    {
+      "id": "behavior_close_files",
+      "condition": null,
+      "action": {
+        "target": "files_window",
+        "name": "Close",
+        "arguments": {}
+      }
+    }
+  ],
+  "bindings": [
+    { "component": "start_menu", "property": "open", "state": "startMenuOpen" },
+    { "component": "qs", "property": "open", "state": "quickSettingsOpen" },
+    { "component": "notif_center", "property": "open", "state": "notifCenterOpen" },
+    { "component": "toggle_dnd", "property": "value", "state": "doNotDisturb" },
+    { "component": "slider_volume", "property": "value", "state": "volume" },
+    { "component": "clock", "property": "format", "state": "clockFormat" }
+  ],
+  "screens": [
+    {
+      "id": "desktop",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_desktop",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Desktop", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "desktop",
+            "type": "DesktopSurface",
+            "properties": { "wallpaper": "$asset:wallpaper", "accent": "Primary", "iconSize": 96 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 820 },
+            "events": {},
+            "children": [
+              {
+                "id": "icon_files",
+                "type": "DesktopIcon",
+                "properties": { "glyph": "Folder", "label": "Files", "target": "files" },
+                "layout": { "x": 24, "y": 24, "width": 96, "height": 96, "aspectRatio": 1.0 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "icon_terminal",
+                "type": "DesktopIcon",
+                "properties": { "glyph": "Terminal", "label": "Terminal", "target": "terminal" },
+                "layout": { "x": 24, "y": 136, "width": 96, "height": 96 },
+                "events": { "activated": "behavior_launch_terminal" },
+                "children": []
+              },
+              {
+                "id": "icon_settings",
+                "type": "DesktopIcon",
+                "properties": { "glyph": "Gear", "label": "Settings", "target": "settings" },
+                "layout": { "x": 24, "y": 248, "width": 96, "height": 96 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "dock",
+                "type": "Dock",
+                "properties": { "position": "bottom", "pinnedApps": ["Files", "Vault", "Settings", "Media"], "runningApps": ["Terminal"], "autoHide": false, "iconSize": 48, "magnify": true },
+                "layout": { "x": 520, "y": 700, "width": 400, "height": 64 },
+                "events": { "appClicked": "behavior_launch_terminal" },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "files_window",
+            "type": "WindowFrame",
+            "properties": { "title": "Files", "resizable": true, "movable": true, "minimized": false, "maximized": false },
+            "layout": { "x": 520, "y": 140, "width": 480, "height": 360 },
+            "events": {},
+            "children": [
+              {
+                "id": "files_titlebar",
+                "type": "TitleBar",
+                "properties": { "title": "Files", "icon": "Folder" },
+                "layout": { "x": 0, "y": 0, "width": 480, "height": 40 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "files_controls",
+                "type": "WindowControls",
+                "properties": { "showMinimize": true, "showMaximize": true, "showClose": true },
+                "layout": { "x": 400, "y": 4, "width": 72, "height": 32 },
+                "events": { "closeClicked": "behavior_close_files" },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "taskbar",
+            "type": "Taskbar",
+            "properties": {
+              "position": "bottom",
+              "alignment": "center",
+              "autoHide": false,
+              "pinnedApps": ["Files", "Vault", "Settings"],
+              "runningApps": ["Terminal"],
+              "showClock": true,
+              "showTray": true
+            },            "layout": { "x": 0, "y": 0, "width": 1440, "height": 80, "anchorLeft": true, "anchorRight": true, "anchorBottom": true, "minWidth": 1200, "maxWidth": 1600, "maxHeight": 96 },
+
+
+            "events": {},
+            "children": [
+              {
+                "id": "btn_start",
+                "componentRef": "TaskbarButton",
+                "overrides": { "text": "Start" },
+                "layout": { "x": 8, "y": 16, "width": 96, "height": 48 },
+                "events": { "clicked": "behavior_start_toggle" },
+                "children": []
+              },
+              {
+                "id": "btn_search",
+                "componentRef": "TaskbarButton",
+                "overrides": { "text": "$localize:search.label" },
+                "layout": { "x": 112, "y": 16, "width": 96, "height": 48 },
+                "events": { "clicked": "behavior_launcher_open" },
+                "children": []
+              },
+              {
+                "id": "pinned_apps",
+                "type": "List",
+                "properties": { "items": ["Files", "Vault", "Settings", "Media"], "selectedIndex": -1, "multiple": false },
+                "layout": { "x": 216, "y": 16, "width": 320, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "ws_switcher",
+                "type": "WorkspaceSwitcher",
+                "properties": { "workspaces": 3, "currentWorkspace": 1 },
+                "layout": { "x": 976, "y": 16, "width": 120, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "clock",
+                "type": "Clock",
+                "properties": { "format": "24h", "showSeconds": false },
+                "layout": { "x": 1216, "y": 16, "width": 80, "height": 48 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "tray",
+                "type": "SystemTray",
+                "properties": { "icons": ["Network", "Volume", "Battery"], "visible": true },
+                "layout": { "x": 1304, "y": 16, "width": 128, "height": 48 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "start_menu",
+            "type": "StartMenu",
+            "properties": { "open": false, "pinnedApps": ["Files", "Vault", "Settings", "Media"], "recommendedApps": ["Calculator", "Notes"] },
+            "layout": { "x": 16, "y": 452, "width": 432, "height": 368 },
+            "events": {},
+            "children": [
+              {
+                "id": "search_apps",
+                "type": "Search",
+                "properties": { "query": "", "placeholder": "Search apps and settings", "results": [] },
+                "layout": { "x": 16, "y": 16, "width": 400, "height": 40 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "pinned_list",
+                "type": "List",
+                "properties": { "items": ["Files", "Vault", "Settings", "Media"], "selectedIndex": 0, "multiple": false },
+                "layout": { "x": 16, "y": 64, "width": 400, "height": 140 },
+                "events": { "itemActivated": "behavior_launch_terminal" },
+                "children": []
+              },
+              {
+                "id": "recommended_list",
+                "type": "List",
+                "properties": { "items": ["Calculator", "Notes", "Weather"], "selectedIndex": -1, "multiple": false },
+                "layout": { "x": 16, "y": 212, "width": 400, "height": 140 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "palette",
+            "type": "CommandPalette",
+            "properties": { "open": false, "query": "", "results": [] },
+            "layout": { "x": 320, "y": 180, "width": 800, "height": 120 },
+            "events": {},
+            "children": [
+              {
+                "id": "palette_input",
+                "type": "Input",
+                "properties": { "value": "", "placeholder": "Type a command…", "accessibility": { "label": "Command palette search" } },
+                "layout": { "x": 16, "y": 16, "width": 768, "height": 40 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "launcher",
+            "type": "Launcher",
+            "properties": { "open": false, "query": "" },
+            "layout": { "x": 320, "y": 120, "width": 800, "height": 620 },
+            "events": {},
+            "children": [
+              {
+                "id": "launcher_search",
+                "type": "Search",
+                "properties": { "query": "", "placeholder": "Search apps", "results": [] },
+                "layout": { "x": 32, "y": 32, "width": 736, "height": 40 },
+                "events": { "submitted": "behavior_search_open" },
+                "children": []
+              },
+              {
+                "id": "launcher_grid",
+                "type": "AppGrid",
+                "properties": { "apps": ["Calculator", "Notes", "Weather", "Clock", "Files", "Vault", "Settings", "Terminal"], "columns": 4, "iconSize": 48 },
+                "layout": { "x": 32, "y": 96, "width": 736, "height": 480 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "notif_center",
+            "type": "NotificationCenter",
+            "properties": { "open": false, "notifications": ["Update ready", "Vault synced"] },
+            "layout": { "x": 1040, "y": 120, "width": 384, "height": 320 },
+            "events": {},
+            "children": [
+              {
+                "id": "notif_list",
+                "type": "List",
+                "properties": { "items": ["Update ready", "Vault synced"], "selectedIndex": -1, "multiple": false },
+                "layout": { "x": 16, "y": 16, "width": 352, "height": 280 },
+                "events": {},
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "qs",
+            "type": "QuickSettings",
+            "properties": { "open": false, "toggles": ["Wi-Fi", "Bluetooth", "Do not disturb"] },
+            "layout": { "x": 1040, "y": 452, "width": 384, "height": 368 },
+            "events": {},
+            "children": [
+              {
+                "id": "toggle_wifi",
+                "type": "Toggle",
+                "properties": { "value": true, "label": "Wi-Fi", "accessibility": { "label": "Wi-Fi toggle" } },
+                "layout": { "x": 16, "y": 16, "width": 352, "height": 40 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "toggle_dnd",
+                "type": "Toggle",
+                "properties": { "value": false, "label": "Do not disturb", "accessibility": { "label": "Do not disturb toggle" } },
+                "layout": { "x": 16, "y": 64, "width": 352, "height": 40 },
+                "events": { "changed": "behavior_dnd_on" },
+                "children": []
+              },
+              {
+                "id": "slider_volume",
+                "type": "Slider",
+                "properties": { "value": 60, "min": 0, "max": 100, "accessibility": { "label": "Volume control" } },
+                "layout": { "x": 16, "y": 112, "width": 352, "height": 24 },
+                "events": { "changed": "behavior_quiet_notify" },
+                "children": []
+              },
+              {
+                "id": "btn_eclipse",
+                "type": "Button",
+                "properties": { "text": "Eclipse", "accessibility": { "label": "Switch to Eclipse theme" } },
+                "layout": { "x": 16, "y": 160, "width": 160, "height": 40 },
+                "events": { "clicked": "behavior_theme_eclipse" },
+                "children": []
+              },
+              {
+                "id": "btn_solar",
+                "type": "Button",
+                "properties": { "text": "Solar", "accessibility": { "label": "Switch to Solar theme" } },
+                "layout": { "x": 192, "y": 160, "width": 160, "height": 40 },
+                "events": { "clicked": "behavior_theme_solar" },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "lock",
+      "size": { "width": 1440, "height": 900 },
+      "root": {
+        "id": "window_lock",
+        "type": "Window",
+        "properties": { "title": "Nyrqis Lock", "width": 1440, "height": 900 },
+        "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+        "events": {},
+        "children": [
+          {
+            "id": "lock_screen",
+            "type": "LockScreen",
+            "properties": { "open": true, "clockFormat": "24h", "wallpaper": "NyrqisDefault" },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 900 },
+            "events": {},
+            "children": [
+              {
+                "id": "lock_clock",
+                "type": "Text",
+                "properties": { "text": "14:32" },
+                "layout": { "x": 560, "y": 300, "width": 320, "height": 96 },
+                "events": {},
+                "children": []
+              },
+              {
+                "id": "btn_unlock",
+                "type": "Button",
+                "properties": { "text": "Unlock", "accessibility": { "label": "Unlock screen" } },
+                "layout": { "x": 640, "y": 560, "width": 160, "height": 48 },
+                "events": {},
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

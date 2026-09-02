@@ -85,6 +85,10 @@ def _find_design(user_design: Optional[str] = None) -> str:
 
     candidates = [
         DEFAULT_DESIGN,
+        os.path.join(os.path.dirname(__file__), "shell", "defaults",
+                     "default-shell.nstudio"),
+        os.path.join(os.path.dirname(__file__), "shell", "defaults",
+                     "desktop.nstudio"),
         os.path.join(os.path.dirname(__file__), "tests", "fixtures",
                      "nstudio", "desktop.nstudio"),
         os.path.join(os.path.dirname(__file__), "tests", "fixtures",

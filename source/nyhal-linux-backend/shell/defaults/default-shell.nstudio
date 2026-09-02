@@ -1,0 +1,137 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "Nyrqis Desktop",
+    "id": "nyrqis-default-shell",
+    "created": "2026-09-02T00:00:00+00:00",
+    "updated": "2026-09-02T00:00:00+00:00"
+  },
+  "themes": {
+    "active": "Eclipse",
+    "overrides": {}
+  },
+  "components": [
+    {
+      "id": "TaskbarButton",
+      "type": "Button",
+      "properties": { "text": "Nyrqis", "icon": "NyrqisMark", "enabled": true },
+      "layout": { "x": 0, "y": 0, "width": 96, "height": 48 },
+      "events": {},
+      "children": []
+    }
+  ],
+  "resources": {
+    "assets": [
+      { "id": "wallpaper", "kind": "image", "path": "assets/wallpaper.png" }
+    ]
+  },
+  "animations": [
+    {
+      "id": "start_menu_fade",
+      "target": "start_menu",
+      "property": "opacity",
+      "duration": 200,
+      "easing": "ease-out",
+      "keyframes": [
+        { "offset": 0.0, "value": 0.0 },
+        { "offset": 1.0, "value": 1.0 }
+      ]
+    }
+  ],
+  "locales": {
+    "active": "en",
+    "tables": {
+      "en": {
+        "search.label": "Search",
+        "start.label": "Start"
+      }
+    }
+  },
+  "states": {
+    "startMenuOpen": false,
+    "doNotDisturb": false,
+    "themeName": "Eclipse"
+  },
+  "stateScopes": {
+    "persistent": {
+      "theme": "Eclipse"
+    }
+  },
+  "behaviors": [
+    {
+      "id": "behavior_start_toggle",
+      "condition": null,
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_fade" }
+      }
+    }
+  ],
+  "bindings": [],
+  "screens": [
+    {
+      "id": "main_screen",
+      "name": "Desktop",
+      "size": { "width": 1920, "height": 1080 },
+      "root": {
+        "id": "desktop_root",
+        "type": "DesktopSurface",
+        "properties": {},
+        "layout": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+        "children": [
+          {
+            "id": "taskbar",
+            "type": "Taskbar",
+            "properties": {
+              "position": "bottom",
+              "alignment": "center",
+              "showClock": true,
+              "showTray": true,
+              "pinnedApps": []
+            },
+            "layout": {
+              "x": 0,
+              "y": 1040,
+              "width": 1920,
+              "height": 40,
+              "anchorLeft": true,
+              "anchorRight": true,
+              "anchorBottom": true
+            },
+            "children": [
+              {
+                "id": "start_button",
+                "type": "Button",
+                "properties": { "text": "Nyrqis", "enabled": true },
+                "layout": { "x": 8, "y": 4, "width": 80, "height": 32 },
+                "children": []
+              },
+              {
+                "id": "clock_display",
+                "type": "Clock",
+                "properties": { "format": "24h", "showSeconds": false },
+                "layout": { "x": 1800, "y": 4, "width": 100, "height": 32 },
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "start_menu",
+            "type": "StartMenu",
+            "properties": { "visible": false },
+            "layout": { "x": 0, "y": 700, "width": 400, "height": 340 },
+            "children": []
+          },
+          {
+            "id": "search_bar",
+            "type": "Search",
+            "properties": { "placeholder": "Search apps, files, settings..." },
+            "layout": { "x": 500, "y": 100, "width": 920, "height": 48 },
+            "children": []
+          }
+        ]
+      }
+    }
+  ]
+}

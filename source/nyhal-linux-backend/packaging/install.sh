@@ -162,6 +162,28 @@ case "$INSTALL_MODE" in
         echo "  ✓ ~/.local/share/nyrqis"
         echo "  ✓ ~/.config/nyrqis"
         echo ""
+        # Install default shell design if not present
+        if [[ ! -f "${HOME}/.nyrqis/shell.nstudio" ]]; then
+            DEFAULT_SHELL="${BACKEND_DIR}/shell/defaults/default-shell.nstudio"
+            if [[ -f "$DEFAULT_SHELL" ]]; then
+                cp "$DEFAULT_SHELL" "${HOME}/.nyrqis/shell.nstudio"
+                echo "  ✓ Default shell design installed to ~/.nyrqis/shell.nstudio"
+            fi
+        else
+            echo "  → Shell design already exists at ~/.nyrqis/shell.nstudio"
+        fi
+        echo ""
+        # Install default shell design if not present
+        if [[ ! -f "${HOME}/.nyrqis/shell.nstudio" ]]; then
+            DEFAULT_SHELL="${BACKEND_DIR}/shell/defaults/default-shell.nstudio"
+            if [[ -f "$DEFAULT_SHELL" ]]; then
+                cp "$DEFAULT_SHELL" "${HOME}/.nyrqis/shell.nstudio"
+                echo "  ✓ Default shell design installed to ~/.nyrqis/shell.nstudio"
+            fi
+        else
+            echo "  → Shell design already exists at ~/.nyrqis/shell.nstudio"
+        fi
+        echo ""
         echo "To enable the user service:"
         echo "  systemctl --user enable nyrqis-backend"
         echo "  systemctl --user start nyrqis-backend"
@@ -177,6 +199,17 @@ case "$INSTALL_MODE" in
         echo "  ✓ ~/.nyrqis"
         echo "  ✓ ~/.local/share/nyrqis"
         echo "  ✓ ~/.config/nyrqis"
+        echo ""
+        # Install default shell design if not present
+        if [[ ! -f "${HOME}/.nyrqis/shell.nstudio" ]]; then
+            DEFAULT_SHELL="${BACKEND_DIR}/shell/defaults/default-shell.nstudio"
+            if [[ -f "$DEFAULT_SHELL" ]]; then
+                cp "$DEFAULT_SHELL" "${HOME}/.nyrqis/shell.nstudio"
+                echo "  ✓ Default shell design installed to ~/.nyrqis/shell.nstudio"
+            fi
+        else
+            echo "  → Shell design already exists at ~/.nyrqis/shell.nstudio"
+        fi
         ;;
 esac
 

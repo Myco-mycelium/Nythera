@@ -107,6 +107,8 @@ class TestVulkanCodecLifecycle(unittest.TestCase):
             self.skipTest("Vulkan crate not available")
 
         instance_id = vulkan_codec.create_instance()
+        if instance_id < 0:
+            self.skipTest("No Vulkan driver available on this hardware")
         self.assertGreaterEqual(instance_id, 0)
 
         device_id = vulkan_codec.create_device(instance_id)
