@@ -31,9 +31,14 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 from ui.terminal import TerminalEmulator, TerminalConfig, AnsiColor, DEFAULT_PALETTE
-from ui.notifications import NotificationShade, QuickSettings, Notification, NotificationCategory
+from ui.notifications import NotificationShade, QuickSettings, Notification, NotificationSeverity
 from ui.context_menu import ContextMenu, MenuItem, MenuItemType, desktop_context_menu
 from ui.settings_panel import SettingsPanel, BUILTIN_THEMES
+from ui.spotlight import Spotlight
+from ui.system_monitor import SystemMonitor
+from ui.drag_drop import DragDropManager, DragData, DropAction
+from ui.theme_engine import ThemeEngine, BUILTIN_THEMES as THEME_BUILTINS
+from ui.accessibility import AccessibilitySystem, FocusableElement, ReadingMode
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +111,10 @@ class InteractiveDesktop:
         # Notification shade
         self._notifications = NotificationShade(self.W, self.H)
         self._notifications.add_notification(Notification(
-            id="n1", title="System Update", body="Nyrqis v0.26.0 available",
-            app_name="System", icon_color=(80, 140, 255),
+            id="n1", title="System Update", message="Nyrqis v0.26.0 available",
         ))
         self._notifications.add_notification(Notification(
-            id="n2", title="Build Complete", body="nyrqis-backend built successfully",
-            app_name="CI", icon_color=(60, 200, 120),
+            id="n2", title="Build Complete", message="nyrqis-backend built successfully",
         ))
         
         # Quick settings
@@ -122,6 +125,44 @@ class InteractiveDesktop:
         
         # Settings panel
         self._settings = SettingsPanel(380, 600)
+        
+        # Spotlight search
+        self._spotlight = Spotlight()
+        self._spotlight.show()
+        self._spotlight.type_char("ter")
+        
+        # System monitor
+        self._monitor = SystemMonitor()
+        self._monitor.show()
+        self._monitor.update()
+        
+        # Drag and drop
+        self._dnd = DragDropManager()
+        self._dnd.register_zone(
+            rect=(120, 60, 700, 520),
+            label="Terminal",
+            window_id="terminal",
+        )
+        self._dnd.register_zone(
+            rect=(500, 180, 500, 440),
+            label="Files",
+            window_id="files",
+        )
+        
+        # Theme engine
+        self._theme = ThemeEngine("Eclipse")
+        
+        # Accessibility
+        self._a11y = AccessibilitySystem()
+        self._a11y.register_focusable(FocusableElement(
+            id="terminal", role="region", label="Terminal window",
+            rect=(120, 60, 700, 520)))
+        self._a11y.register_focusable(FocusableElement(
+            id="files", role="region", label="File manager",
+            rect=(500, 180, 500, 440)))
+        self._a11y.register_focusable(FocusableElement(
+            id="settings", role="region", label="Settings panel",
+            rect=(1420, 60, 380, 600)))
     
     def _setup_terminal(self):
         t = self._terminal
@@ -275,6 +316,94 @@ class InteractiveDesktop:
                         idx = ty * cw + tx
                         if idx < len(cm_pixels):
                             set_pixel(600 + tx, 300 + ty, cm_pixels[idx])
+        
+        if state == "spotlight":
+            # Draw base windows dimmed
+            draw_window(term_x, term_y, term_w, term_h, "Terminal", False)
+            composite_terminal(term_x + 8, term_y + 40, term_w - 16, term_h - 48)
+            # Spotlight overlay
+            try:
+                from PIL import Image as PILImage
+                spot_img = self._spotlight.render()
+                if spot_img:
+                    for sy in range(min(spot_img.height, h)):
+                        for sx in range(min(spot_img.width, w)):
+                            r, g, b, a = spot_img.getpixel((sx, sy))
+                            if a > 20:
+                                blend = a / 255.0
+                                pr, pg, pb = pixels[sy * w + sx]
+                                nr = int(pr * (1 - blend) + r * blend)
+                                ng = int(pg * (1 - blend) + g * blend)
+                                nb = int(pb * (1 - blend) + b * blend)
+                                pixels[sy * w + sx] = (min(255, nr), min(255, ng), min(255, nb))
+            except Exception:
+                pass
+        
+        if state == "monitor":
+            # Draw system monitor panel overlay
+            draw_window(term_x, term_y, term_w, term_h, "Terminal", False)
+            composite_terminal(term_x + 8, term_y + 40, term_w - 16, term_h - 48)
+            # Monitor panel
+            mon_x, mon_y = 200, 80
+            mon_w, mon_h = w - 400, h - 200
+            fill_rect(mon_x + 4, mon_y + 4, mon_w, mon_h, (10, 10, 15))
+            fill_rect(mon_x, mon_y, mon_w, mon_h, (25, 25, 30))
+            fill_rect(mon_x, mon_y, mon_w, 32, (40, 40, 50))
+            draw_text(mon_x + 16, mon_y + 8, "System Monitor", self.ACCENT)
+            # CPU section
+            sy = mon_y + 44
+            draw_text(mon_x + 16, sy, "CPU", self.ACCENT)
+            draw_text(mon_x + mon_w - 80, sy, "12.5%", self.TEXT_WHITE)
+            sy += 18
+            fill_rect(mon_x + 16, sy, mon_w - 32, 8, (50, 50, 60))
+            fill_rect(mon_x + 16, sy, int((mon_w - 32) * 0.125), 8, (100, 200, 100))
+            sy += 20
+            # Memory section
+            draw_text(mon_x + 16, sy, "Memory", self.ACCENT)
+            draw_text(mon_x + mon_w - 100, sy, "45.2%", self.TEXT_WHITE)
+            sy += 18
+            fill_rect(mon_x + 16, sy, mon_w - 32, 8, (50, 50, 60))
+            fill_rect(mon_x + 16, sy, int((mon_w - 32) * 0.452), 8, (100, 149, 237))
+            sy += 20
+            draw_text(mon_x + 16, sy, "Used: 3702 MB / Available: 4490 MB", self.TEXT_DIM)
+            sy += 30
+            # Disk section
+            draw_text(mon_x + 16, sy, "Disk", self.ACCENT)
+            sy += 18
+            fill_rect(mon_x + 16, sy, mon_w - 32, 8, (50, 50, 60))
+            fill_rect(mon_x + 16, sy, int((mon_w - 32) * 0.62), 8, (100, 200, 100))
+            sy += 18
+            draw_text(mon_x + 16, sy, "/ — 310.2 GB / 500.0 GB (62%)", self.TEXT_DIM)
+            sy += 30
+            # Network section
+            draw_text(mon_x + 16, sy, "Network", self.ACCENT)
+            sy += 18
+            draw_text(mon_x + 16, sy, "eth0  ↓ 1.2 MB/s  ↑ 256 KB/s", self.TEXT_WHITE)
+        
+        if state == "drag_drop":
+            # Draw windows with drag preview
+            draw_window(term_x, term_y, term_w, term_h, "Terminal", True)
+            composite_terminal(term_x + 8, term_y + 40, term_w - 16, term_h - 48)
+            draw_window(files_x, files_y, files_w, files_h, "Files", False)
+            # File list
+            dirs = [("📁 Documents", 0), ("📁 Downloads", 1),
+                    ("📄 readme.md", 2), ("📄 config.toml", 3)]
+            for i, (name, _) in enumerate(dirs):
+                fy = files_y + 44 + i * 32
+                fill_rect(files_x + 8, fy, files_w - 16, 28, (45, 45, 60))
+                draw_text(files_x + 16, fy + 6, name, self.TEXT_WHITE)
+            # Drop zone highlights
+            fill_rect(term_x, term_y, term_w, term_h, (60, 120, 220))
+            # Drag preview card
+            drag_x, drag_y = 750, 350
+            fill_rect(drag_x + 2, drag_y + 2, 140, 44, (0, 0, 0))
+            fill_rect(drag_x, drag_y, 140, 44, (50, 50, 50))
+            draw_text(drag_x + 12, drag_y + 12, "📄 readme.md", self.TEXT_WHITE)
+            draw_text(drag_x + 12, drag_y + 26, "Drop on Terminal", self.TEXT_DIM)
+            # Arrow from files to terminal
+            for ax in range(files_x, term_x + term_w, 2):
+                ay = files_y + 100 - int((ax - files_x) / (term_x + term_w - files_x) * 200)
+                set_pixel(ax, ay, self.ACCENT)
         
         # Render to RGB
         rgb_data = bytearray(w * h * 3)
@@ -456,6 +585,9 @@ class InteractiveDesktop:
             ("05_notifications", "Notification shade (pull from top-left)"),
             ("06_quick_settings", "Quick settings (pull from top-right)"),
             ("07_context_menu", "Right-click context menu"),
+            ("08_spotlight", "Spotlight search overlay"),
+            ("09_monitor", "System monitor panel"),
+            ("10_drag_drop", "Drag and drop between windows"),
         ]
         
         for filename, description in states:
