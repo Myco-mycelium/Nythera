@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# nyrqis-ctl — convenience wrapper for the Nyrqis operator CLI
+#
+# Usage:
+#   nyrqis-ctl status              # Check daemon status
+#   nyrqis-ctl containers list     # List containers
+#   nyrqis-ctl containers run /bin/sh  # Run a container
+#   nyrqis-ctl health              # Health check
+#   nyrqis-ctl app list            # List installed apps
+#   nyrqis-ctl app install ./app.nypkg  # Install an app
+#   nyrqis-ctl vault list          # List vault volumes
+#   nyrqis-ctl nui load shell.nstudio  # Load shell design
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Default socket path
+SOCKET="${NYRQIS_SOCKET:-/tmp/nyrqis-status.sock}"
+HEALTH_SOCKET="${NYRQIS_HEALTH_SOCKET:-/tmp/nyrqis-health.sock}"
+
+# Parse global options
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --socket)
+            SOCKET="$2"
+            shift 2
+            ;;
+        --health-socket)
+            HEALTH_SOCKET="$2"
+            shift 2
+            ;;
+        --json)
+            ARGS+=("--json")
+            shift
+            ;;
+        --help|-h)
+            echo "nyrqis-ctl — Nyrqis operator CLI wrapper"
+            echo ""
+            echo "Usage: nyrqis-ctl [options] <command> [args...]"
+            echo ""
+            echo "Options:"
+            echo "  --socket PATH         Daemon socket (default: /tmp/nyrqis-status.sock)"
+            echo "  --health-socket PATH  Health socket (default: /tmp/nyrqis-health.sock)"
+            echo "  --json                Output as JSON"
+            echo "  -h, --help            Show this help"
+            echo ""
+            echo "Commands:"
+            echo "  status                Check daemon status"
+            echo "  health                Health check"
+            echo "  ping                  Ping the daemon"
+            echo "  containers list       List containers"
+            echo "  containers run CMD    Run a container"
+            echo "  containers kill ID    Kill a container"
+            echo "  app list              List installed apps"
+            echo "  app install PATH      Install an app"
+            echo "  app launch ID         Launch an app"
+            echo "  app terminate ID      Terminate an app"
+            echo "  vault list            List vault volumes"
+            echo "  vault create NAME     Create a vault volume"
+            echo "  nui validate FILE     Validate a .nstudio file"
+            echo "  nui load FILE         Load a shell design"
+            echo "  nui current           Show loaded design"
+            echo "  init                  Start the full system (daemon + shell + session)"
+            echo "  init --daemon-only    Start only the daemon"
+            echo "  init --headless       Start headless (CI/testing)"
+            echo ""
+            exit 0
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Route to the appropriate command
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+    echo "nyrqis-ctl: no command specified (use --help for usage)" >&2
+    exit 2
+fi
+
+CMD="${ARGS[0]}"
+
+case "$CMD" in
+    init)
+        # Route to nyrqis_init.py
+        exec python3 "${SCRIPT_DIR}/nyrqis_init.py" "${ARGS[@]:1}"
+        ;;
+    status|health|ping)
+        # Route to nyrqisctl with the main socket
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}" "${ARGS[@]}"
+        ;;
+    containers)
+        # Route to nyrqisctl
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}"
+        ;;
+    app)
+        # Route to nyrqisctl
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}"
+        ;;
+    vault)
+        # Route to nyrqisctl
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}"
+        ;;
+    nui)
+        # Route to nyrqisctl
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}"
+        ;;
+    *)
+        # Pass through to nyrqisctl
+        exec python3 "${SCRIPT_DIR}/nyrqisctl.py" --socket "$SOCKET" "${ARGS[@]}"
+        ;;
+esac
