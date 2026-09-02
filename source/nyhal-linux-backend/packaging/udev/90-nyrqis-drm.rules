@@ -1,0 +1,29 @@
+# Nyrqis DRM device access rules
+#
+# These rules grant the 'nyrqis' group access to DRM devices
+# without requiring root privileges.
+#
+# Installation:
+#   sudo cp 90-nyrqis-drm.rules /etc/udev/rules.d/
+#   sudo groupadd -f nyrqis
+#   sudo usermod -aG nyrqis $USER
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   # Log out and back in for group changes to take effect
+#
+# References:
+#   - ADR-0026 Phase 3: GPU acceleration
+#   - DRM API: https://docs.kernel.org/gpu/drm.html
+
+# Create the nyrqis group if it doesn't exist
+ACTION=="add", SUBSYSTEM=="drm", RUN+="/bin/bash -c 'getent group nyrqis || groupadd nyrqis'"
+
+# Grant group read/write access to DRM render nodes
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0660", GROUP="nyrqis"
+
+# Grant group read/write access to DRM card devices
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card*", MODE="0660", GROUP="nyrqis"
+
+# Set extended attributes for DRM devices
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="renderD*", ENV{ID_NYRQIS}="1"
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card*", ENV{ID_NYRQIS}="1"
