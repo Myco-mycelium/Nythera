@@ -111,7 +111,7 @@ date: 2026-09-02
 - [x] Multi-surface rendering pipeline
 - [x] Workspace-to-output binding
 - [x] Window migration on output removal
-- [ ] Output hot-plug event handling (future enhancement)
+- [x] Output hot-plug event handling (HotPlugMonitor with periodic DRM polling)
 
 ### Priority 6: Performance Benchmarks (COMPLETE)
 
@@ -120,7 +120,7 @@ date: 2026-09-02
 - [x] Software rendering (PIL) baseline
 - [x] Raw pixel operations baseline
 - [x] SHM buffer operations baseline
-- [ ] SDL2 headless rendering (future enhancement)
+- [x] SDL2 headless rendering (via sdl2_codec.py)
 
 ## Next Priorities
 
