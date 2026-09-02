@@ -220,5 +220,52 @@ class TestOutputInfo(unittest.TestCase):
         self.assertFalse(output.primary)
 
 
+class TestHotPlugMonitor(unittest.TestCase):
+    """Tests for the hot-plug monitor."""
+
+    def test_monitor_create(self):
+        """Can create a hot-plug monitor."""
+        from ui.multi_monitor import MultiMonitorManager, HotPlugMonitor
+        manager = MultiMonitorManager()
+        monitor = HotPlugMonitor(manager)
+        self.assertFalse(monitor._running)
+
+    def test_monitor_start_stop(self):
+        """Can start and stop the monitor."""
+        from ui.multi_monitor import MultiMonitorManager, HotPlugMonitor
+        import time
+        manager = MultiMonitorManager()
+        monitor = HotPlugMonitor(manager, poll_interval=0.1)
+        monitor.start()
+        self.assertTrue(monitor._running)
+        time.sleep(0.2)  # Let it poll once
+        monitor.stop()
+        self.assertFalse(monitor._running)
+
+    def test_monitor_callbacks(self):
+        """Callbacks are set correctly."""
+        from ui.multi_monitor import MultiMonitorManager, HotPlugMonitor
+        manager = MultiMonitorManager()
+        monitor = HotPlugMonitor(manager)
+        
+        connected = []
+        disconnected = []
+        monitor.set_callbacks(
+            on_connect=lambda o: connected.append(o),
+            on_disconnect=lambda o: disconnected.append(o),
+        )
+        self.assertIsNotNone(monitor._on_connect)
+        self.assertIsNotNone(monitor._on_disconnect)
+
+    def test_monitor_double_start(self):
+        """Double start is idempotent."""
+        from ui.multi_monitor import MultiMonitorManager, HotPlugMonitor
+        manager = MultiMonitorManager()
+        monitor = HotPlugMonitor(manager)
+        monitor.start()
+        monitor.start()  # should not raise
+        monitor.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

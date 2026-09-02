@@ -17,9 +17,11 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -267,3 +269,92 @@ class MultiMonitorManager:
         """Get the number of active outputs."""
         return len([o for o in self.outputs.values()
                    if o.status in (OutputStatus.CONNECTED, OutputStatus.ACTIVE)])
+
+
+class HotPlugMonitor:
+    """Monitors for output hot-plug events.
+    
+    Periodically polls DRM for connected displays and fires callbacks
+    when outputs are added or removed.
+    
+    Usage:
+        monitor = HotPlugMonitor(manager)
+        monitor.set_callbacks(
+            on_connect=lambda out: print(f"Connected: {out.name}"),
+            on_disconnect=lambda out: print(f"Disconnected: {out.name}"),
+        )
+        monitor.start()
+        # ... monitor runs in background ...
+        monitor.stop()
+    """
+    
+    def __init__(self, manager: MultiMonitorManager, poll_interval: float = 2.0):
+        self.manager = manager
+        self.poll_interval = poll_interval
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._on_connect: Optional[Callable] = None
+        self._on_disconnect: Optional[Callable] = None
+        self._known_outputs: Dict[int, OutputInfo] = {}
+    
+    def set_callbacks(self,
+                     on_connect: Optional[Callable] = None,
+                     on_disconnect: Optional[Callable] = None):
+        """Set callbacks for hot-plug events."""
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
+    
+    def start(self):
+        """Start monitoring for hot-plug events."""
+        if self._running:
+            return
+        
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._poll_loop,
+            daemon=True,
+            name="hotplug-monitor",
+        )
+        self._thread.start()
+        logger.info("Hot-plug monitor started (poll every %.1fs)", self.poll_interval)
+    
+    def stop(self):
+        """Stop monitoring."""
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        logger.info("Hot-plug monitor stopped")
+    
+    def _poll_loop(self):
+        """Poll for output changes."""
+        while self._running:
+            try:
+                self._check_outputs()
+            except Exception as exc:
+                logger.error("Error checking outputs: %s", exc)
+            time.sleep(self.poll_interval)
+    
+    def _check_outputs(self):
+        """Check for connected/disconnected outputs."""
+        # Detect current outputs
+        current = self.manager.detect_outputs()
+        current_ids = {o.id for o in current}
+        known_ids = set(self._known_outputs.keys())
+        
+        # Find newly connected outputs
+        for output in current:
+            if output.id not in self._known_outputs:
+                logger.info("Output connected: %s (%dx%d)",
+                          output.name, output.width, output.height)
+                if self._on_connect:
+                    self._on_connect(output)
+        
+        # Find disconnected outputs
+        for output_id in known_ids - current_ids:
+            output = self._known_outputs[output_id]
+            logger.info("Output disconnected: %s", output.name)
+            if self._on_disconnect:
+                self._on_disconnect(output)
+        
+        # Update known outputs
+        self._known_outputs = {o.id: o for o in current}
