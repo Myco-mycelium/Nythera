@@ -1,0 +1,1 @@
+"""Nyrqis live demo package."""
