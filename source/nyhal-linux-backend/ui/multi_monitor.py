@@ -165,22 +165,45 @@ class MultiMonitorManager:
         
         return output
     
-    def remove_output(self, output_id: int) -> bool:
-        """Remove an output.
+    def remove_output(self, output_id: int, migrate: bool = True) -> List[int]:
+        """Remove an output and optionally migrate its workspaces.
         
-        Returns True if the output was removed, False if not found.
+        Parameters
+        ----------
+        output_id : int
+            The output to remove.
+        migrate : bool
+            If True, migrate bound workspaces to the primary output.
+            
+        Returns
+        -------
+        list of int
+            List of workspace IDs that were migrated.
         """
         if output_id not in self.outputs:
-            return False
+            return []
         
-        # Remove any workspace bindings
+        migrated = []
+        
+        # Migrate bound workspaces before removing
+        if migrate:
+            primary = self.get_primary_output()
+            if primary and primary.id != output_id:
+                for binding in self.bindings[:]:
+                    if binding.output_id == output_id:
+                        binding.output_id = primary.id
+                        migrated.append(binding.workspace_id)
+                        logger.info("Migrated workspace %d to output %d",
+                                   binding.workspace_id, primary.id)
+        
+        # Remove any remaining workspace bindings
         self.bindings = [b for b in self.bindings if b.output_id != output_id]
         
         # Remove the output
         del self.outputs[output_id]
-        logger.info("Removed output %d", output_id)
+        logger.info("Removed output %d (migrated %d workspaces)", output_id, len(migrated))
         
-        return True
+        return migrated
     
     def bind_workspace(self, workspace_id: int, output_id: int) -> bool:
         """Bind a workspace to an output.

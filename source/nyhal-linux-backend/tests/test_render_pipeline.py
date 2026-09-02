@@ -104,14 +104,15 @@ class TestMultiMonitor(unittest.TestCase):
         manager = MultiMonitorManager()
         out1 = manager.add_output(1920, 1080)
         out2 = manager.add_output(2560, 1440)
-        self.assertTrue(manager.remove_output(out1.id))
+        migrated = manager.remove_output(out1.id)
+        self.assertIsInstance(migrated, list)
         self.assertEqual(manager.get_output_count(), 1)
 
     def test_remove_nonexistent_output(self):
-        """Removing nonexistent output returns False."""
+        """Removing nonexistent output returns empty list."""
         from ui.multi_monitor import MultiMonitorManager
         manager = MultiMonitorManager()
-        self.assertFalse(manager.remove_output(999))
+        self.assertEqual(manager.remove_output(999), [])
 
     def test_bind_workspace(self):
         """Can bind workspace to output."""
