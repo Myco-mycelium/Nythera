@@ -174,7 +174,7 @@ class TestEGLRealHardware(unittest.TestCase):
             config = choose_config(display)
             if config < 0:
                 self.skipTest("Cannot choose EGL config")
-            ctx = create_context(display)
+            ctx = create_context(display, config)
             self.assertGreaterEqual(ctx, 0, "Failed to create EGL context")
             destroy_context(ctx)
         finally:
@@ -196,7 +196,7 @@ class TestEGLRealHardware(unittest.TestCase):
             config = choose_config(display)
             self.assertGreaterEqual(config, 0)
 
-            ctx = create_context(display)
+            ctx = create_context(display, config)
             self.assertGreaterEqual(ctx, 0)
 
             destroy_context(ctx)

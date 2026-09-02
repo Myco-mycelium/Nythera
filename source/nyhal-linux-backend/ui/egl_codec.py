@@ -107,7 +107,7 @@ def choose_config(display_id: int) -> int:
     return lib.nyrqis_egl_choose_config(display_id)
 
 
-def create_window_surface(display_id: int, width: int, height: int) -> int:
+def create_window_surface(display_id: int, config_id: int, width: int, height: int) -> int:
     """Create an EGL window surface.
 
     Returns a surface ID (0-based) on success, -1 on error.
@@ -115,10 +115,10 @@ def create_window_surface(display_id: int, width: int, height: int) -> int:
     lib = _load_lib()
     if lib is None:
         return -1
-    return lib.nyrqis_egl_create_window_surface(display_id, width, height)
+    return lib.nyrqis_egl_create_window_surface(display_id, config_id, width, height)
 
 
-def create_context(display_id: int) -> int:
+def create_context(display_id: int, config_id: int) -> int:
     """Create an EGL context.
 
     Returns a context ID (0-based) on success, -1 on error.
@@ -126,7 +126,29 @@ def create_context(display_id: int) -> int:
     lib = _load_lib()
     if lib is None:
         return -1
-    return lib.nyrqis_egl_create_context(display_id)
+    return lib.nyrqis_egl_create_context(display_id, config_id)
+
+
+def make_current(display_id: int, surface_id: int, context_id: int) -> bool:
+    """Make an EGL context current for rendering.
+
+    Returns True on success.
+    """
+    lib = _load_lib()
+    if lib is None:
+        return False
+    return lib.nyrqis_egl_make_current(display_id, surface_id, context_id) == EGL_TRUE
+
+
+def swap_buffers(display_id: int, surface_id: int) -> bool:
+    """Swap front and back buffers (present a rendered frame).
+
+    Returns True on success.
+    """
+    lib = _load_lib()
+    if lib is None:
+        return False
+    return lib.nyrqis_egl_swap_buffers(display_id, surface_id) == EGL_TRUE
 
 
 def destroy_surface(surface_id: int) -> bool:

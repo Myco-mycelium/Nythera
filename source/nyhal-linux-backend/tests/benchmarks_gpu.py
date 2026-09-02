@@ -128,7 +128,7 @@ def benchmark_egl_lifecycle(iterations: int = 100) -> Dict:
             initialize(display)
             t0 = time.perf_counter()
             config = choose_config(display)
-            ctx = create_context(display)
+            ctx = create_context(display, config)
             if ctx >= 0:
                 destroy_context(ctx)
             times.append(time.perf_counter() - t0)
