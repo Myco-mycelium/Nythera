@@ -1,89 +1,54 @@
 #!/usr/bin/env python3
-"""system_monitor — Nyrqis system monitor application.
+"""system_monitor — Nyrqis real-time system monitor.
 
-A real-time system monitor for the Nyrqis desktop showing:
+A full system monitoring panel with live graphs:
 
-- CPU usage (per-core, average, history)
-- Memory usage (used, free, cached, total)
-- Disk usage (per-mount usage, I/O)
-- Network stats (sent, received, connections)
-- Process list (sorted by CPU/memory, with search)
-- System info (hostname, uptime, OS, kernel)
-- Top processes (top 10 by CPU/memory)
-
-On the floor (development/testing) it reads from /proc and /sys.
-On a real OS it would use syscalls or hardware counters.
-
-Usage::
-
-    from ui.system_monitor import SystemMonitor
-    monitor = SystemMonitor()
-    snapshot = monitor.snapshot()
-    print(snapshot.cpu_percent)
-    print(snapshot.memory_used_mb)
+- CPU usage per-core with history graph
+- Memory usage (used/cached/buffers/swap)
+- Disk usage per mount with I/O stats
+- Network usage (sent/received) with history
+- Process list sorted by CPU/memory
+- Temperature sensors (if available)
+- Uptime and load average
+- Compact and expanded view modes
+- Historical data buffer for sparkline graphs
 
 References:
-    - NFS-001 §5: component vocabulary
-    - doc #14: Nyrqis Desktop Shell
+    - ADR-0025 §9: runtime consumption
+    - doc #14: Nyrqis Desktop Shell as a running product
 """
 
 from __future__ import annotations
 
-import datetime
-import logging
 import os
 import platform
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
-
-# PIL is imported lazily in render() to avoid a 5+ second import
-# penalty at module load time.  render() will raise ImportError if
-# Pillow is not installed.
-_PIL_AVAILABLE: Optional[bool] = None
-
-
-def _ensure_pil():
-    """Import PIL lazily, caching the result."""
-    global _PIL_AVAILABLE
-    if _PIL_AVAILABLE is not None:
-        return
-    try:
-        from PIL import Image, ImageDraw, ImageFont  # noqa: F401
-        _PIL_AVAILABLE = True
-    except ImportError:
-        _PIL_AVAILABLE = False
-
-
-def _pil():
-    """Return the PIL submodules (Image, ImageDraw, ImageFont).
-
-    Raises ImportError if Pillow is not installed.
-    """
-    _ensure_pil()
-    if _PIL_AVAILABLE is False:
-        raise ImportError("PIL/Pillow is required: pip install Pillow")
-    from PIL import Image, ImageDraw, ImageFont
-    return Image, ImageDraw, ImageFont
-
 
 # ---------------------------------------------------------------------------
-# Data classes
+# Data types
 # ---------------------------------------------------------------------------
+
+class MonitorView(Enum):
+    """Monitor display modes."""
+    COMPACT = "compact"      # Small widget in taskbar
+    OVERVIEW = "overview"    # Single-page summary
+    DETAILED = "detailed"    # Full multi-tab view
+
 
 @dataclass
 class CpuInfo:
-    """CPU usage information."""
-    percent: float = 0.0
-    per_core: List[float] = field(default_factory=list)
-    frequency_mhz: float = 0.0
-    model: str = ""
-    cores_physical: int = 0
-    cores_logical: int = 0
-    temperature: Optional[float] = None
+    """Per-core CPU information."""
+    core_id: int
+    usage: float = 0.0      # 0-100%
+    frequency: float = 0.0   # MHz
+    temperature: float = 0.0 # Celsius (0 = unavailable)
+    history: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -91,720 +56,885 @@ class MemoryInfo:
     """Memory usage information."""
     total_mb: float = 0.0
     used_mb: float = 0.0
-    free_mb: float = 0.0
-    cached_mb: float = 0.0
-    buffers_mb: float = 0.0
     available_mb: float = 0.0
+    buffers_mb: float = 0.0
+    cached_mb: float = 0.0
     swap_total_mb: float = 0.0
     swap_used_mb: float = 0.0
-    percent: float = 0.0
+    usage_percent: float = 0.0
+    history: List[float] = field(default_factory=list)
 
 
 @dataclass
 class DiskInfo:
-    """Disk usage for a single mount."""
-    mount: str = ""
-    device: str = ""
+    """Disk partition information."""
+    device: str
+    mount_point: str
+    fs_type: str = ""
     total_gb: float = 0.0
     used_gb: float = 0.0
     free_gb: float = 0.0
-    percent: float = 0.0
-    fs_type: str = ""
+    usage_percent: float = 0.0
+    read_speed: float = 0.0   # MB/s
+    write_speed: float = 0.0  # MB/s
 
 
 @dataclass
 class NetworkInfo:
-    """Network interface statistics."""
-    interface: str = ""
-    bytes_sent: int = 0
-    bytes_recv: int = 0
-    packets_sent: int = 0
-    packets_recv: int = 0
-    errors_in: int = 0
-    errors_out: int = 0
+    """Network interface information."""
+    interface: str
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    rx_speed: float = 0.0   # KB/s
+    tx_speed: float = 0.0   # KB/s
+    rx_history: List[float] = field(default_factory=list)
+    tx_history: List[float] = field(default_factory=list)
+    ip_address: str = ""
     is_up: bool = True
 
 
 @dataclass
 class ProcessInfo:
-    """A single process entry."""
-    pid: int = 0
-    name: str = ""
-    user: str = ""
+    """Process information."""
+    pid: int
+    name: str
     cpu_percent: float = 0.0
-    memory_percent: float = 0.0
     memory_mb: float = 0.0
-    status: str = ""
-    threads: int = 0
-    command: str = ""
+    memory_percent: float = 0.0
+    status: str = "R"
+    user: str = ""
 
 
 @dataclass
-class SystemSnapshot:
-    """A complete system snapshot at a point in time."""
-    timestamp: float = 0.0
-    uptime_seconds: float = 0.0
+class SystemInfo:
+    """System overview information."""
     hostname: str = ""
     os_name: str = ""
-    kernel_version: str = ""
-    cpu: CpuInfo = field(default_factory=CpuInfo)
-    memory: MemoryInfo = field(default_factory=MemoryInfo)
-    disks: List[DiskInfo] = field(default_factory=list)
-    network: List[NetworkInfo] = field(default_factory=list)
-    processes: List[ProcessInfo] = field(default_factory=list)
+    kernel: str = ""
+    architecture: str = ""
+    uptime_seconds: float = 0.0
     load_avg: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-    def __post_init__(self):
-        if self.timestamp == 0.0:
-            self.timestamp = time.time()
+    cpu_count: int = 0
+    boot_time: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Platform readers
-# ---------------------------------------------------------------------------
-
-def _read_proc_cpu() -> CpuInfo:
-    """Read CPU info from /proc/stat."""
-    info = CpuInfo()
-    try:
-        with open("/proc/stat") as f:
-            lines = f.readlines()
-
-        # Parse per-core usage from /proc/stat
-        for line in lines:
-            if line.startswith("cpu") and line[3] != " ":
-                # Per-core line: cpu0 12345 ...
-                parts = line.split()
-                if len(parts) >= 5:
-                    vals = [int(x) for x in parts[1:5]]
-                    total = sum(vals)
-                    idle = vals[3]
-                    usage = max(0, (total - idle) / total * 100) if total else 0
-                    info.per_core.append(usage)
-
-        # Average CPU
-        if info.per_core:
-            info.percent = sum(info.per_core) / len(info.per_core)
-
-        # CPU model/frequency: use platform info instead of
-        # /proc/cpuinfo which can hang in container environments.
-        info.model = platform.processor() or "Unknown"
-        info.cores_logical = len(info.per_core) or (os.cpu_count() or 1)
-
-        # Temperature
-        temp_paths = [
-            "/sys/class/thermal/thermal_zone0/temp",
-            "/sys/class/hwmon/hwmon0/temp1_input",
-        ]
-        for path in temp_paths:
-            try:
-                with open(path) as f:
-                    info.temperature = int(f.read().strip()) / 1000.0
-                break
-            except (OSError, IOError, ValueError):
-                continue
-
-    except (OSError, IOError):
-        # Fallback: simulate if /proc not available
-        info.percent = 0.0
-        info.model = platform.processor() or "Unknown"
-        info.cores_logical = os.cpu_count() or 1
-
-    return info
-
-
-def _quick_read_cpuinfo() -> CpuInfo:
-    """Best-effort CPU info from /proc/cpuinfo with no protection.
-    Called inside a thread with a timeout — if /proc hangs, the
-    thread is simply abandoned."""
-    info = CpuInfo()
-    try:
-        with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("model name") and info.model == "":
-                    info.model = line.split(":", 1)[1].strip()
-                elif line.startswith("cpu MHz") and info.frequency_mhz == 0:
-                    try:
-                        info.frequency_mhz = float(
-                            line.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-    except (OSError, IOError):
-        pass
-    return info
-
-
-def _read_proc_memory() -> MemoryInfo:
-    """Read memory info from /proc/meminfo."""
-    info = MemoryInfo()
-    try:
-        with open("/proc/meminfo") as f:
-            meminfo = f.read()
-
-        def extract_kb(key: str) -> float:
-            match = re.search(rf"{key}:\s+(\d+)", meminfo)
-            return int(match.group(1)) / 1024.0 if match else 0.0
-
-        info.total_mb = extract_kb("MemTotal")
-        info.free_mb = extract_kb("MemFree")
-        info.buffers_mb = extract_kb("Buffers")
-        info.cached_mb = extract_kb("Cached")
-        info.available_mb = extract_kb("MemAvailable")
-        info.used_mb = info.total_mb - info.free_mb - info.buffers_mb - info.cached_mb
-        if info.total_mb > 0:
-            info.percent = info.used_mb / info.total_mb * 100
-        info.swap_total_mb = extract_kb("SwapTotal")
-        info.swap_used_mb = info.swap_total_mb - extract_kb("SwapFree")
-
-    except (OSError, IOError):
-        info.total_mb = 16384.0  # fallback
-        info.percent = 0.0
-
-    return info
-
-
-def _read_proc_disks() -> List[DiskInfo]:
-    """Read disk info from /proc/mounts and statvfs."""
-    disks = []
-    try:
-        seen = set()
-        with open("/proc/mounts") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) < 2:
-                    continue
-                device, mount = parts[0], parts[1]
-                fstype = parts[2] if len(parts) > 2 else ""
-
-                # Skip virtual/pseudo filesystems
-                if fstype in ("proc", "sysfs", "devpts", "tmpfs", "cgroup",
-                              "cgroup2", "overlay", "squashfs", "devtmpfs"):
-                    continue
-                if mount in seen:
-                    continue
-                seen.add(mount)
-
-                try:
-                    stat = os.statvfs(mount)
-                    total = stat.f_blocks * stat.f_frsize
-                    free = stat.f_bavail * stat.f_frsize
-                    used = total - free
-                    total_gb = total / (1024**3)
-                    used_gb = used / (1024**3)
-                    free_gb = free / (1024**3)
-                    pct = (used / total * 100) if total else 0
-
-                    disks.append(DiskInfo(
-                        mount=mount, device=device,
-                        total_gb=round(total_gb, 1),
-                        used_gb=round(used_gb, 1),
-                        free_gb=round(free_gb, 1),
-                        percent=round(pct, 1),
-                        fs_type=fstype,
-                    ))
-                except (OSError, IOError):
-                    continue
-
-    except (OSError, IOError):
-        pass
-
-    return disks
-
-
-def _read_proc_network() -> List[NetworkInfo]:
-    """Read network stats from /proc/net/dev."""
-    interfaces = []
-    try:
-        with open("/proc/net/dev") as f:
-            for line in f:
-                line = line.strip()
-                if ":" not in line or line.startswith("Inter") or line.startswith("face"):
-                    continue
-                iface, data = line.split(":", 1)
-                iface = iface.strip()
-                parts = data.split()
-                if len(parts) >= 16:
-                    interfaces.append(NetworkInfo(
-                        interface=iface,
-                        bytes_recv=int(parts[0]),
-                        packets_recv=int(parts[1]),
-                        errors_in=int(parts[2]),
-                        bytes_sent=int(parts[8]),
-                        packets_sent=int(parts[9]),
-                        errors_out=int(parts[10]),
-                        is_up=True,
-                    ))
-    except (OSError, IOError):
-        pass
-    return interfaces
-
-
-def _read_processes(max_count: int = 40) -> List[ProcessInfo]:
-    """Read top processes from /proc.
-
-    Uses os.listdir for the PID count, then reads only a tiny
-    number of /proc/[pid]/stat files (fixed 512-byte read) to
-    avoid hanging on slow container/virtual filesystems.
-    """
-    processes = []
-    try:
-        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
-        pids.sort()
-        clk_tck = os.sysconf("SC_CLK_TCK")
-
-        # Only read top few PIDs — container /proc can be very slow
-        for pid in pids[:min(max_count, 20)]:
-            try:
-                with open(f"/proc/{pid}/stat") as f:
-                    raw = f.read(512)
-                rp = raw.rfind(')')
-                if rp < 0:
-                    continue
-                fields = raw[rp + 2:].split()
-                state = fields[0] if fields else "?"
-                utime = int(fields[11]) if len(fields) > 11 else 0
-                stime = int(fields[12]) if len(fields) > 12 else 0
-                cpu_pct = min(100.0, (utime + stime) / clk_tck * 0.1)
-                name = raw[raw.find('(') + 1:rp]
-                processes.append(ProcessInfo(
-                    pid=pid, name=name,
-                    cpu_percent=round(cpu_pct, 1),
-                    memory_mb=0.0,
-                    status=state,
-                ))
-            except (OSError, IOError, ValueError, IndexError):
-                continue
-        processes.sort(key=lambda p: p.cpu_percent, reverse=True)
-    except (OSError, IOError):
-        pass
-    return processes
-
-
-def _read_system_info() -> Tuple[str, str, float]:
-    """Read hostname, kernel, uptime."""
-    hostname = platform.node()
-    kernel = platform.release()
-    uptime = 0.0
-    try:
-        with open("/proc/uptime") as f:
-            uptime = float(f.read().split()[0])
-    except (OSError, IOError):
-        pass
-    return hostname, kernel, uptime
-
-
-def _read_load_avg() -> Tuple[float, float, float]:
-    """Read load averages from /proc/loadavg."""
-    try:
-        with open("/proc/loadavg") as f:
-            parts = f.read().split()
-            return (float(parts[0]), float(parts[1]), float(parts[2]))
-    except (OSError, IOError):
-        return (0.0, 0.0, 0.0)
-
-
-# ---------------------------------------------------------------------------
-# SystemMonitor
+# System monitor
 # ---------------------------------------------------------------------------
 
 class SystemMonitor:
-    """Nyrqis system monitor.
-
-    Collects system metrics and provides a snapshot API.  On the floor
-    it reads from /proc; on a real OS it would use syscalls.
+    """Real-time system monitor.
 
     Parameters
     ----------
+    session : DesktopSession, optional
+        The desktop session.
     history_size : int
-        Number of snapshots to keep in the history ring buffer.
+        Number of data points to keep in history buffers.
+    update_interval : float
+        Minimum seconds between data refreshes.
     """
 
-    def __init__(self, history_size: int = 60, include_processes: bool = True) -> None:
+    def __init__(
+        self,
+        session=None,
+        history_size: int = 60,
+        update_interval: float = 1.0,
+    ) -> None:
+        self._session = session
         self._history_size = history_size
-        self._history: List[SystemSnapshot] = []
-        self._callbacks: List[Callable] = []
+        self._update_interval = update_interval
+
+        # State
+        self._view: MonitorView = MonitorView.OVERVIEW
         self._visible: bool = False
-        self._process_search: str = ""
-        self._sort_by: str = "memory"  # "cpu", "memory", "name", "pid"
-        self._include_processes = include_processes
+        self._last_update: float = 0.0
+        self._callbacks: List[Callable] = []
 
-    # -- Snapshot API -------------------------------------------------
+        # Data
+        self._system = SystemInfo()
+        self._cpu_cores: List[CpuInfo] = []
+        self._memory = MemoryInfo()
+        self._disks: List[DiskInfo] = []
+        self._networks: List[NetworkInfo] = []
+        self._processes: List[ProcessInfo] = []
+        self._temperatures: Dict[str, float] = {}
 
-    def snapshot(self) -> SystemSnapshot:
-        """Take a snapshot of the current system state."""
-        hostname, kernel, uptime = _read_system_info()
-        snap = SystemSnapshot(
-            timestamp=time.time(),
-            uptime_seconds=uptime,
-            hostname=hostname,
-            os_name=platform.system(),
-            kernel_version=kernel,
-            cpu=_read_proc_cpu(),
-            memory=_read_proc_memory(),
-            disks=_read_proc_disks(),
-            network=_read_proc_network(),
-            processes=_read_processes() if self._include_processes else [],
-            load_avg=_read_load_avg(),
-        )
-        self._history.append(snap)
-        if len(self._history) > self._history_size:
-            self._history.pop(0)
-        self._notify("snapshot", snap)
-        return snap
+        # Previous CPU times for delta calculation
+        self._prev_cpu_times: List[Tuple[int, int]] = []
+        self._prev_net_bytes: Dict[str, Tuple[int, int]] = {}
+        self._prev_disk_io: Dict[str, Tuple[int, int]] = {}
 
-    @property
-    def latest(self) -> Optional[SystemSnapshot]:
-        """The most recent snapshot."""
-        return self._history[-1] if self._history else None
+        # View state
+        self._selected_tab: str = "overview"
+        self._process_sort_key: str = "cpu"
+        self._process_reverse: bool = True
+        self._scroll_offset: int = 0
 
-    @property
-    def history(self) -> List[SystemSnapshot]:
-        return list(self._history)
-
-    def cpu_history(self, count: int = 60) -> List[float]:
-        """Get the last N CPU usage percentages."""
-        return [s.cpu.percent for s in self._history[-count:]]
-
-    def memory_history(self, count: int = 60) -> List[float]:
-        """Get the last N memory usage percentages."""
-        return [s.memory.percent for s in self._history[-count:]]
-
-    # -- Process filtering -------------------------------------------
-
-    def filtered_processes(self, snap: Optional[SystemSnapshot] = None) -> List[ProcessInfo]:
-        """Get processes filtered by search and sorted."""
-        snap = snap or self.latest
-        if snap is None:
-            return []
-
-        procs = snap.processes
-
-        # Filter by search
-        if self._process_search:
-            q = self._process_search.lower()
-            procs = [p for p in procs if q in p.name.lower() or q in str(p.pid)]
-
-        # Sort
-        if self._sort_by == "cpu":
-            procs = sorted(procs, key=lambda p: p.cpu_percent, reverse=True)
-        elif self._sort_by == "memory":
-            procs = sorted(procs, key=lambda p: p.memory_mb, reverse=True)
-        elif self._sort_by == "name":
-            procs = sorted(procs, key=lambda p: p.name.lower())
-        elif self._sort_by == "pid":
-            procs = sorted(procs, key=lambda p: p.pid)
-
-        return procs
-
-    def top_processes(self, n: int = 10, by: str = "memory") -> List[ProcessInfo]:
-        """Get the top N processes by CPU or memory."""
-        snap = self.latest
-        if snap is None:
-            return []
-        procs = snap.processes
-        if by == "cpu":
-            procs = sorted(procs, key=lambda p: p.cpu_percent, reverse=True)
-        else:
-            procs = sorted(procs, key=lambda p: p.memory_mb, reverse=True)
-        return procs[:n]
-
-    # -- Controls -----------------------------------------------------
-
-    def set_process_search(self, query: str) -> None:
-        self._process_search = query
-
-    def set_sort_by(self, key: str) -> None:
-        if key in ("cpu", "memory", "name", "pid"):
-            self._sort_by = key
-
-    # -- Convenience --------------------------------------------------
-
-    def get_summary(self) -> Dict[str, Any]:
-        """Get a summary dict of the latest snapshot."""
-        snap = self.latest
-        if snap is None:
-            return {}
-        return {
-            "hostname": snap.hostname,
-            "os": snap.os_name,
-            "kernel": snap.kernel_version,
-            "uptime_hours": round(snap.uptime_seconds / 3600, 1),
-            "cpu_percent": round(snap.cpu.percent, 1),
-            "cpu_cores": snap.cpu.cores_logical,
-            "cpu_model": snap.cpu.model,
-            "cpu_temp": snap.cpu.temperature,
-            "memory_total_gb": round(snap.memory.total_mb / 1024, 1),
-            "memory_used_gb": round(snap.memory.used_mb / 1024, 1),
-            "memory_percent": round(snap.memory.percent, 1),
-            "swap_percent": round(
-                (snap.memory.swap_used_mb / snap.memory.swap_total_mb * 100)
-                if snap.memory.swap_total_mb > 0 else 0, 1),
-            "disks": len(snap.disks),
-            "disk_usage": [
-                f"{d.mount}: {d.used_gb}/{d.total_gb} GB ({d.percent}%)"
-                for d in snap.disks[:5]
-            ],
-            "processes": len(snap.processes),
-            "load_1m": round(snap.load_avg[0], 2),
-            "load_5m": round(snap.load_avg[1], 2),
-            "load_15m": round(snap.load_avg[2], 2),
-            "network_interfaces": len(snap.network),
-        }
-
-    # -- Visibility ---------------------------------------------------
+    # -- Public API ----------------------------------------------------
 
     def show(self) -> None:
+        """Show the system monitor."""
         self._visible = True
+        self.update()
+        self._dispatch("shown")
 
     def hide(self) -> None:
+        """Hide the system monitor."""
         self._visible = False
+        self._dispatch("hidden")
 
     def toggle(self) -> bool:
-        self._visible = not self._visible
+        """Toggle visibility."""
+        if self._visible:
+            self.hide()
+        else:
+            self.show()
         return self._visible
 
     @property
     def visible(self) -> bool:
         return self._visible
 
-    # -- Callbacks ----------------------------------------------------
+    def update(self) -> bool:
+        """Refresh all system data.
 
-    def on_snapshot(self, callback: Callable) -> None:
-        self._callbacks.append(callback)
+        Returns True if data was actually refreshed.
+        """
+        now = time.time()
+        if now - self._last_update < self._update_interval:
+            return False
 
-    # -- Rendering ----------------------------------------------------
+        self._last_update = now
+        self._read_system_info()
+        self._read_cpu()
+        self._read_memory()
+        self._read_disk()
+        self._read_network()
+        self._read_processes()
+        self._read_temperatures()
+        self._dispatch("updated")
+        return True
+
+    # -- Tab/view navigation -------------------------------------------
+
+    def set_view(self, view: MonitorView) -> None:
+        self._view = view
+
+    def set_tab(self, tab: str) -> None:
+        """Switch between overview, cpu, memory, disk, network, processes."""
+        self._selected_tab = tab
+
+    @property
+    def process_reverse(self) -> bool:
+        return self._process_reverse
+
+    def sort_processes(self, key: str) -> None:
+        """Sort processes by key (cpu, memory, name, pid)."""
+        if self._process_sort_key == key:
+            self._process_reverse = not self._process_reverse
+        else:
+            self._process_sort_key = key
+            self._process_reverse = True
+
+    def scroll(self, delta: int) -> None:
+        """Scroll the process list."""
+        self._scroll_offset = max(0, self._scroll_offset + delta)
+
+    # -- Data access ---------------------------------------------------
+
+    @property
+    def system(self) -> SystemInfo:
+        return self._system
+
+    @property
+    def cpu_cores(self) -> List[CpuInfo]:
+        return list(self._cpu_cores)
+
+    @property
+    def cpu_overall(self) -> float:
+        """Overall CPU usage across all cores."""
+        if not self._cpu_cores:
+            return 0.0
+        return sum(c.usage for c in self._cpu_cores) / len(self._cpu_cores)
+
+    @property
+    def memory(self) -> MemoryInfo:
+        return self._memory
+
+    @property
+    def disks(self) -> List[DiskInfo]:
+        return list(self._disks)
+
+    @property
+    def networks(self) -> List[NetworkInfo]:
+        return list(self._networks)
+
+    @property
+    def processes(self) -> List[ProcessInfo]:
+        """Get sorted process list."""
+        procs = list(self._processes)
+        reverse = self._process_reverse
+        if self._process_sort_key == "cpu":
+            procs.sort(key=lambda p: p.cpu_percent, reverse=reverse)
+        elif self._process_sort_key == "memory":
+            procs.sort(key=lambda p: p.memory_mb, reverse=reverse)
+        elif self._process_sort_key == "name":
+            procs.sort(key=lambda p: p.name.lower(), reverse=reverse)
+        elif self._process_sort_key == "pid":
+            procs.sort(key=lambda p: p.pid, reverse=reverse)
+        return procs
+
+    @property
+    def temperatures(self) -> Dict[str, float]:
+        return dict(self._temperatures)
+
+    @property
+    def uptime(self) -> str:
+        """Formatted uptime string."""
+        secs = self._system.uptime_seconds
+        if secs <= 0:
+            return "unknown"
+        days = int(secs // 86400)
+        hours = int((secs % 86400) // 3600)
+        mins = int((secs % 3600) // 60)
+        if days > 0:
+            return f"{days}d {hours}h {mins}m"
+        if hours > 0:
+            return f"{hours}h {mins}m"
+        return f"{mins}m"
+
+    # -- System data reading -------------------------------------------
+
+    def _read_system_info(self) -> None:
+        """Read basic system information."""
+        self._system.hostname = platform.node()
+        self._system.os_name = platform.system()
+        self._system.kernel = platform.release()
+        self._system.architecture = platform.machine()
+        self._system.cpu_count = os.cpu_count() or 1
+
+        # Boot time and uptime from /proc
+        try:
+            with open("/proc/stat") as f:
+                for line in f:
+                    if line.startswith("btime"):
+                        self._system.boot_time = float(line.split()[1])
+                        break
+            self._system.uptime_seconds = time.time() - self._system.boot_time
+        except (OSError, IndexError, ValueError):
+            self._system.uptime_seconds = 0.0
+
+        # Load average
+        try:
+            with open("/proc/loadavg") as f:
+                parts = f.read().split()
+                self._system.load_avg = (
+                    float(parts[0]), float(parts[1]), float(parts[2]))
+        except (OSError, IndexError):
+            self._system.load_avg = (0.0, 0.0, 0.0)
+
+    def _read_cpu(self) -> None:
+        """Read CPU usage from /proc/stat."""
+        try:
+            with open("/proc/stat") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+
+        cores = []
+        for i, line in enumerate(lines):
+            if not line.startswith("cpu"):
+                break
+            parts = line.split()
+            if parts[0] == "cpu":
+                continue  # Skip aggregate for per-core
+            try:
+                values = [int(x) for x in parts[1:]]
+            except ValueError:
+                continue
+
+            core_id = i - 1
+            idle = values[3] if len(values) > 3 else 0
+            total = sum(values)
+
+            usage = 0.0
+            if core_id < len(self._prev_cpu_times):
+                prev_total, prev_idle = self._prev_cpu_times[core_id]
+                d_total = total - prev_total
+                d_idle = idle - prev_idle
+                if d_total > 0:
+                    usage = (d_total - d_idle) / d_total * 100.0
+
+            # Ensure prev_cpu_times is long enough
+            while len(self._prev_cpu_times) <= core_id:
+                self._prev_cpu_times.append((0, 0))
+            self._prev_cpu_times[core_id] = (total, idle)
+
+            # Build or update CpuInfo
+            if core_id < len(self._cpu_cores):
+                info = self._cpu_cores[core_id]
+                info.usage = round(min(100.0, max(0.0, usage)), 1)
+                info.history.append(info.usage)
+                if len(info.history) > self._history_size:
+                    info.history.pop(0)
+            else:
+                info = CpuInfo(
+                    core_id=core_id,
+                    usage=round(min(100.0, max(0.0, usage)), 1),
+                    history=[round(usage, 1)],
+                )
+                self._cpu_cores.append(info)
+
+    def _read_memory(self) -> None:
+        """Read memory from /proc/meminfo."""
+        try:
+            with open("/proc/meminfo") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+
+        data = {}
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                key = parts[0].rstrip(":")
+                data[key] = int(parts[1])
+
+        total = data.get("MemTotal", 0)
+        available = data.get("MemAvailable", 0)
+        free = data.get("MemFree", 0)
+        buffers = data.get("Buffers", 0)
+        cached = data.get("Cached", 0)
+        swap_total = data.get("SwapTotal", 0)
+        swap_free = data.get("SwapFree", 0)
+
+        used = total - available if available else total - free
+        usage_pct = (used / total * 100) if total > 0 else 0.0
+
+        self._memory = MemoryInfo(
+            total_mb=round(total / 1024),
+            used_mb=round(used / 1024),
+            available_mb=round(available / 1024),
+            buffers_mb=round(buffers / 1024),
+            cached_mb=round(cached / 1024),
+            swap_total_mb=round(swap_total / 1024),
+            swap_used_mb=round((swap_total - swap_free) / 1024),
+            usage_percent=round(usage_pct, 1),
+            history=self._memory.history + [round(usage_pct, 1)]
+            if hasattr(self._memory, 'history') and self._memory.history else [round(usage_pct, 1)],
+        )
+        # Trim history
+        while len(self._memory.history) > self._history_size:
+            self._memory.history.pop(0)
+
+    def _read_disk(self) -> None:
+        """Read disk usage from statvfs."""
+        self._disks = []
+        try:
+            with open("/proc/mounts") as f:
+                mounts = f.readlines()
+        except OSError:
+            return
+
+        seen = set()
+        for line in mounts:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            device, mount = parts[0], parts[1]
+            if not device.startswith("/"):
+                continue
+            if mount in seen:
+                continue
+            seen.add(mount)
+
+            try:
+                stat = os.statvfs(mount)
+                total = stat.f_blocks * stat.f_frsize
+                free = stat.f_bavail * stat.f_frsize
+                used = total - free
+                total_gb = total / (1024 ** 3)
+                used_gb = used / (1024 ** 3)
+                free_gb = free / (1024 ** 3)
+                usage_pct = (used / total * 100) if total > 0 else 0.0
+
+                self._disks.append(DiskInfo(
+                    device=device,
+                    mount_point=mount,
+                    fs_type=parts[2] if len(parts) > 2 else "",
+                    total_gb=round(total_gb, 1),
+                    used_gb=round(used_gb, 1),
+                    free_gb=round(free_gb, 1),
+                    usage_percent=round(usage_pct, 1),
+                ))
+            except (OSError, ValueError):
+                continue
+
+    def _read_network(self) -> None:
+        """Read network statistics from /proc/net/dev."""
+        try:
+            with open("/proc/net/dev") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+
+        for line in lines[2:]:  # Skip headers
+            parts = line.split()
+            if len(parts) < 17:
+                continue
+
+            iface = parts[0].rstrip(":")
+            if iface == "lo":
+                continue
+
+            rx_bytes = int(parts[1])
+            tx_bytes = int(parts[9])
+
+            # Calculate speed (bytes/sec)
+            rx_speed = 0.0
+            tx_speed = 0.0
+            if iface in self._prev_net_bytes:
+                prev_rx, prev_tx = self._prev_net_bytes[iface]
+                dt = self._update_interval
+                if dt > 0:
+                    rx_speed = (rx_bytes - prev_rx) / dt / 1024  # KB/s
+                    tx_speed = (tx_bytes - prev_tx) / dt / 1024
+
+            self._prev_net_bytes[iface] = (rx_bytes, tx_bytes)
+
+            # Find or create
+            existing = None
+            for n in self._networks:
+                if n.interface == iface:
+                    existing = n
+                    break
+
+            if existing:
+                existing.rx_bytes = rx_bytes
+                existing.tx_bytes = tx_bytes
+                existing.rx_speed = round(max(0, rx_speed), 1)
+                existing.tx_speed = round(max(0, tx_speed), 1)
+                existing.rx_history.append(existing.rx_speed)
+                existing.tx_history.append(existing.tx_speed)
+                while len(existing.rx_history) > self._history_size:
+                    existing.rx_history.pop(0)
+                while len(existing.tx_history) > self._history_size:
+                    existing.tx_history.pop(0)
+            else:
+                self._networks.append(NetworkInfo(
+                    interface=iface,
+                    rx_bytes=rx_bytes,
+                    tx_bytes=tx_bytes,
+                    rx_speed=round(max(0, rx_speed), 1),
+                    tx_speed=round(max(0, tx_speed), 1),
+                    rx_history=[round(max(0, rx_speed), 1)],
+                    tx_history=[round(max(0, tx_speed), 1)],
+                ))
+
+    def _read_processes(self) -> None:
+        """Read process list from /proc."""
+        self._processes = []
+        try:
+            pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+        except OSError:
+            return
+
+        for pid in pids[:200]:  # Limit to 200 processes
+            try:
+                stat_path = f"/proc/{pid}/stat"
+                status_path = f"/proc/{pid}/status"
+
+                with open(stat_path) as f:
+                    stat = f.read()
+                # Parse: pid (comm) state ...
+                match = re.match(r"(\d+) \((.+)\) (.)", stat)
+                if not match:
+                    continue
+                p_pid = int(match.group(1))
+                name = match.group(2)[:20]
+                state = match.group(3)
+
+                # Read status for memory
+                with open(status_path) as f:
+                    status = f.read()
+
+                rss_kb = 0
+                for line in status.split("\n"):
+                    if line.startswith("VmRSS:"):
+                        rss_kb = int(line.split()[1])
+                        break
+
+                user = ""
+                try:
+                    import pwd
+                    uid = os.stat(stat_path).st_uid
+                    user = pwd.getpwuid(uid).pw_name
+                except (OSError, KeyError):
+                    user = str(os.stat(stat_path).st_uid)
+
+                self._processes.append(ProcessInfo(
+                    pid=p_pid,
+                    name=name,
+                    memory_mb=round(rss_kb / 1024, 1),
+                    status=state,
+                    user=user,
+                ))
+            except (OSError, ValueError):
+                continue
+
+    def _read_temperatures(self) -> None:
+        """Read temperature sensors from sysfs."""
+        self._temperatures = {}
+        thermal_base = "/sys/class/thermal"
+        try:
+            for entry in os.listdir(thermal_base):
+                if not entry.startswith("thermal_zone"):
+                    continue
+                type_path = os.path.join(thermal_base, entry, "type")
+                temp_path = os.path.join(thermal_base, entry, "temp")
+                try:
+                    with open(type_path) as f:
+                        sensor = f.read().strip()
+                    with open(temp_path) as f:
+                        temp_raw = int(f.read().strip())
+                    self._temperatures[sensor] = round(temp_raw / 1000, 1)
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            pass
+
+    # -- History utilities ---------------------------------------------
+
+    def sparkline(self, data: List[float], width: int = 40, height: int = 16) -> str:
+        """Generate a text sparkline from a list of values."""
+        if not data:
+            return ""
+        blocks = " ▁▂▃▄▅▆▇█"
+        mn = min(data)
+        mx = max(data)
+        rng = mx - mn if mx != mn else 1.0
+
+        # Sample data to fit width
+        if len(data) > width:
+            step = len(data) / width
+            sampled = [data[int(i * step)] for i in range(width)]
+        else:
+            sampled = data
+
+        return "".join(
+            blocks[min(len(blocks) - 1, int((v - mn) / rng * (len(blocks) - 1)))]
+            for v in sampled
+        )
+
+    def format_bytes(self, bytes_val: int) -> str:
+        """Format bytes to human-readable string."""
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(bytes_val) < 1024:
+                return f"{bytes_val:.1f} {unit}"
+            bytes_val /= 1024
+        return f"{bytes_val:.1f} PB"
+
+    def format_speed(self, kb_per_sec: float) -> str:
+        """Format KB/s to human-readable speed."""
+        if kb_per_sec < 1024:
+            return f"{kb_per_sec:.1f} KB/s"
+        return f"{kb_per_sec / 1024:.1f} MB/s"
+
+    # -- Rendering -----------------------------------------------------
 
     def render(
         self,
-        width: int = 800,
-        height: int = 600,
-        theme: Optional[Dict] = None,
-    ) -> Image.Image:
+        screen_width: int = 1920,
+        screen_height: int = 1080,
+    ) -> Any:
         """Render the system monitor to a PIL Image."""
-        if theme is None:
-            theme = {
-                "background": (30, 30, 30),
-                "surface": (40, 40, 40),
-                "text_primary": (230, 230, 230),
-                "text_secondary": (150, 150, 150),
-                "accent": (100, 149, 237),
-                "green": (80, 200, 120),
-                "orange": (255, 159, 10),
-                "red": (255, 80, 80),
-                "bar_bg": (60, 60, 60),
-                "border": (80, 80, 80),
-            }
+        if not self._visible:
+            return None
 
-        Image, ImageDraw, ImageFont = _pil()
-        img = Image.new("RGB", (width, height), theme["background"])
+        self.update()
+
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            return None
+
+        img = Image.new("RGBA", (screen_width, screen_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
         try:
             font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 13)
             font_bold = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
             font_title = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+            font_mono = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 12)
+            font_small = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
         except (OSError, IOError):
-            font = font_bold = font_title = ImageFont.load_default()
+            font = font_bold = font_title = font_mono = font_small = ImageFont.load_default()
 
-        snap = self.latest
-        if snap is None:
-            draw.text((width // 2 - 60, height // 2),
-                      "No data yet", fill=theme["text_secondary"], font=font)
-            return img
+        # Main panel
+        panel_x, panel_y = 100, 50
+        panel_w = screen_width - 200
+        panel_h = screen_height - 100
 
-        y = 12
+        # Background
+        draw.rounded_rectangle(
+            [panel_x, panel_y, panel_x + panel_w, panel_y + panel_h],
+            radius=16, fill=(25, 25, 30, 240), outline=(60, 60, 70))
 
-        # Title
-        draw.text((16, y), f"System Monitor — {snap.hostname}",
-                  fill=theme["text_primary"], font=font_title)
-        y += 30
+        # Title bar
+        draw.text((panel_x + 20, panel_y + 16), "System Monitor",
+                  fill=(220, 220, 220), font=font_title)
 
-        # Uptime
-        hours = int(snap.uptime_seconds // 3600)
-        mins = int((snap.uptime_seconds % 3600) // 60)
-        draw.text((16, y),
-                  f"Uptime: {hours}h {mins}m  |  "
-                  f"OS: {snap.os_name}  |  Kernel: {snap.kernel_version}",
-                  fill=theme["text_secondary"], font=font)
-        y += 24
+        # System info line
+        sys_line = (f"{self._system.hostname} | "
+                    f"{self._system.kernel} | "
+                    f"Uptime: {self.uptime} | "
+                    f"Load: {self._system.load_avg[0]:.1f} "
+                    f"{self._system.load_avg[1]:.1f} "
+                    f"{self._system.load_avg[2]:.1f}")
+        draw.text((panel_x + 20, panel_y + 44), sys_line,
+                  fill=(140, 140, 140), font=font_small)
 
-        # CPU bar
-        self._render_bar(draw, 16, y, width - 32, 20, snap.cpu.percent,
-                         "CPU", theme, font)
-        y += 30
+        content_y = panel_y + 70
+        col_w = (panel_w - 60) // 2
+        left_x = panel_x + 20
+        right_x = panel_x + col_w + 40
 
-        # CPU cores
-        core_text = "  ".join(
-            f"Core {i}: {c:.0f}%"
-            for i, c in enumerate(snap.cpu.per_core[:8]))
-        draw.text((16, y), core_text, fill=theme["text_secondary"], font=font)
-        y += 20
+        # CPU section
+        self._render_cpu(draw, left_x, content_y, col_w, font, font_bold, font_mono, font_small)
 
-        # Temperature
-        if snap.cpu.temperature is not None:
-            draw.text((16, y),
-                      f"Temp: {snap.cpu.temperature:.1f}°C  |  "
-                      f"{snap.cpu.model}",
-                      fill=theme["text_secondary"], font=font)
-            y += 20
+        # Memory section
+        self._render_memory(draw, right_x, content_y, col_w, font, font_bold, font_mono, font_small)
 
-        # Memory bar
-        self._render_bar(draw, 16, y, width - 32, 20, snap.memory.percent,
-                         "Memory", theme, font)
-        y += 30
+        # Disk section
+        disk_y = content_y + 180
+        self._render_disk(draw, left_x, disk_y, col_w, font, font_bold, font_small)
 
-        mem_text = (f"Used: {snap.memory.used_mb:.0f} MB / "
-                    f"{snap.memory.total_mb:.0f} MB  |  "
-                    f"Cache: {snap.memory.cached_mb:.0f} MB  |  "
-                    f"Swap: {snap.memory.swap_used_mb:.0f}/{snap.memory.swap_total_mb:.0f} MB")
-        draw.text((16, y), mem_text, fill=theme["text_secondary"], font=font)
-        y += 20
+        # Network section
+        self._render_network(draw, right_x, disk_y, col_w, font, font_bold, font_mono, font_small)
 
-        # Disks
-        y += 8
-        draw.text((16, y), "Disks:", fill=theme["text_primary"], font=font_bold)
-        y += 20
-        for disk in snap.disks[:4]:
-            self._render_bar(draw, 32, y, width - 64, 16, disk.percent,
-                             f"{disk.mount} ({disk.device})", theme, font)
-            y += 22
-
-        # Network
-        y += 8
-        draw.text((16, y), "Network:", fill=theme["text_primary"], font=font_bold)
-        y += 20
-        for net in snap.network[:3]:
-            sent_mb = net.bytes_sent / (1024 * 1024)
-            recv_mb = net.bytes_recv / (1024 * 1024)
-            draw.text((32, y),
-                      f"{net.interface}: ↑ {sent_mb:.1f} MB  ↓ {recv_mb:.1f} MB",
-                      fill=theme["text_secondary"], font=font)
-            y += 18
-
-        # Load average
-        y += 8
-        draw.text((16, y),
-                  f"Load: {snap.load_avg[0]:.2f}  "
-                  f"{snap.load_avg[1]:.2f}  {snap.load_avg[2]:.2f}",
-                  fill=theme["text_secondary"], font=font)
-        y += 20
-
-        # Top processes
-        y += 8
-        draw.text((16, y), "Top Processes:", fill=theme["text_primary"], font=font_bold)
-        y += 20
-
-        # Header
-        draw.text((32, y), "PID   Name                 CPU%    Mem MB",
-                  fill=theme["text_secondary"], font=font)
-        y += 18
-
-        for proc in snap.processes[:12]:
-            line = f"{proc.pid:<6}{proc.name[:20]:<20}{proc.cpu_percent:<8.1f}{proc.memory_mb:<.1f}"
-            draw.text((32, y), line, fill=theme["text_primary"], font=font)
-            y += 16
+        # Processes section
+        proc_y = disk_y + 180
+        self._render_processes(draw, left_x, proc_y, panel_w - 40, font, font_bold, font_mono, font_small)
 
         return img
 
-    def _render_bar(
-        self, draw: ImageDraw.ImageDraw,
-        x: int, y: int, w: int, h: int,
-        percent: float, label: str,
-        theme: Dict, font,
-    ) -> None:
-        """Render a progress bar with label."""
-        draw.rounded_rectangle([x, y, x + w, y + h], radius=4,
-                               fill=theme["bar_bg"])
-        fill_w = int(w * min(100, max(0, percent)) / 100)
+    def _render_cpu(self, draw, x, y, w, font, font_bold, font_mono, font_small):
+        """Render CPU section."""
+        # Section header
+        draw.rounded_rectangle(
+            [x, y, x + w, y + 28], radius=8, fill=(40, 40, 50))
+        draw.text((x + 12, y + 5), "CPU", fill=(100, 149, 237), font=font_bold)
+
+        # Overall usage
+        overall = self.cpu_overall
+        pct_text = f"{overall:.1f}%"
+        draw.text((x + w - 60, y + 5), pct_text,
+                  fill=(220, 220, 220), font=font_bold)
+
+        # Usage bar
+        bar_y = y + 34
+        bar_h = 8
+        draw.rounded_rectangle(
+            [x, bar_y, x + w, bar_y + bar_h], radius=4, fill=(50, 50, 60))
+        fill_w = int(w * overall / 100)
+        color = (100, 200, 100) if overall < 70 else (220, 180, 60) if overall < 90 else (220, 80, 80)
         if fill_w > 0:
-            if percent > 80:
-                color = theme["red"]
-            elif percent > 60:
-                color = theme["orange"]
-            else:
-                color = theme["green"]
-            draw.rounded_rectangle([x, y, x + fill_w, y + h], radius=4,
-                                   fill=color)
-        # Label
-        text = f"{label}: {percent:.1f}%"
-        draw.text((x + 4, y + 1), text, fill=theme["text_primary"], font=font)
+            draw.rounded_rectangle(
+                [x, bar_y, x + fill_w, bar_y + bar_h], radius=4, fill=color)
 
-    # -- Internal -----------------------------------------------------
+        # Per-core sparklines
+        core_y = bar_y + 16
+        cols = min(4, len(self._cpu_cores) or 1)
+        col_w = w // cols
+        for i, core in enumerate(self._cpu_cores[:8]):
+            cx = x + (i % cols) * col_w
+            cy = core_y + (i // cols) * 30
+            spark = self.sparkline(core.history, width=col_w // 8, height=12)
+            usage_text = f"C{core.core_id}: {core.usage:.0f}%"
+            draw.text((cx, cy), usage_text, fill=(180, 180, 180), font=font_small)
+            spark_x = cx + len(usage_text) * 7 + 4
+            if spark_x + len(spark) * 7 < x + w:
+                draw.text((spark_x, cy), spark,
+                          fill=(100, 149, 237), font=font_mono)
 
-    def _notify(self, event: str, data: Any = None) -> None:
+    def _render_memory(self, draw, x, y, w, font, font_bold, font_mono, font_small):
+        """Render memory section."""
+        draw.rounded_rectangle(
+            [x, y, x + w, y + 28], radius=8, fill=(40, 40, 50))
+        draw.text((x + 12, y + 5), "Memory", fill=(100, 149, 237), font=font_bold)
+
+        m = self._memory
+        pct_text = f"{m.usage_percent:.1f}%"
+        draw.text((x + w - 60, y + 5), pct_text,
+                  fill=(220, 220, 220), font=font_bold)
+
+        # Usage bar
+        bar_y = y + 34
+        bar_h = 8
+        draw.rounded_rectangle(
+            [x, bar_y, x + w, bar_y + bar_h], radius=4, fill=(50, 50, 60))
+        fill_w = int(w * m.usage_percent / 100)
+        color = (100, 149, 237) if m.usage_percent < 80 else (220, 180, 60) if m.usage_percent < 95 else (220, 80, 80)
+        if fill_w > 0:
+            draw.rounded_rectangle(
+                [x, bar_y, x + fill_w, bar_y + bar_h], radius=4, fill=color)
+
+        # Details
+        detail_y = bar_y + 14
+        details = [
+            f"Used: {m.used_mb:.0f} MB",
+            f"Available: {m.available_mb:.0f} MB",
+            f"Buffers: {m.buffers_mb:.0f} MB  Cached: {m.cached_mb:.0f} MB",
+        ]
+        if m.swap_total_mb > 0:
+            details.append(f"Swap: {m.swap_used_mb:.0f} / {m.swap_total_mb:.0f} MB")
+        for i, d in enumerate(details):
+            draw.text((x, detail_y + i * 16), d,
+                      fill=(160, 160, 160), font=font_small)
+
+        # History sparkline
+        spark_y = detail_y + len(details) * 16 + 4
+        spark = self.sparkline(m.history, width=w // 7, height=14)
+        if spark:
+            draw.text((x, spark_y), spark, fill=(100, 149, 237), font=font_mono)
+
+    def _render_disk(self, draw, x, y, w, font, font_bold, font_small):
+        """Render disk section."""
+        draw.rounded_rectangle(
+            [x, y, x + w, y + 28], radius=8, fill=(40, 40, 50))
+        draw.text((x + 12, y + 5), "Disk", fill=(100, 149, 237), font=font_bold)
+
+        dy = y + 34
+        for disk in self._disks[:4]:
+            # Mount point and usage
+            mount = disk.mount_point
+            if len(mount) > 20:
+                mount = "..." + mount[-17:]
+            draw.text((x, dy), mount, fill=(180, 180, 180), font=font)
+
+            pct = f"{disk.usage_percent:.0f}%"
+            draw.text((x + w - 40, dy), pct,
+                      fill=(220, 220, 220), font=font)
+
+            # Bar
+            by = dy + 16
+            draw.rounded_rectangle(
+                [x, by, x + w, by + 6], radius=3, fill=(50, 50, 60))
+            fw = int(w * disk.usage_percent / 100)
+            color = (100, 200, 100) if disk.usage_percent < 80 else (220, 180, 60) if disk.usage_percent < 95 else (220, 80, 80)
+            if fw > 0:
+                draw.rounded_rectangle(
+                    [x, by, x + fw, by + 6], radius=3, fill=color)
+
+            info = f"{disk.used_gb:.1f} / {disk.total_gb:.1f} GB"
+            draw.text((x, by + 8), info,
+                      fill=(140, 140, 140), font=font_small)
+            dy += 36
+
+        if not self._disks:
+            draw.text((x, dy), "No disks detected", fill=(120, 120, 120), font=font)
+
+    def _render_network(self, draw, x, y, w, font, font_bold, font_mono, font_small):
+        """Render network section."""
+        draw.rounded_rectangle(
+            [x, y, x + w, y + 28], radius=8, fill=(40, 40, 50))
+        draw.text((x + 12, y + 5), "Network", fill=(100, 149, 237), font=font_bold)
+
+        ny = y + 34
+        for net in self._networks[:3]:
+            # Interface name
+            draw.text((x, ny), net.interface, fill=(180, 180, 180), font=font)
+
+            # RX/TX
+            rx = f"↓ {self.format_speed(net.rx_speed)}"
+            tx = f"↑ {self.format_speed(net.tx_speed)}"
+            draw.text((x + w - len(rx) * 7, ny), rx,
+                      fill=(100, 200, 100), font=font_small)
+            draw.text((x + w - len(tx) * 7, ny + 14), tx,
+                      fill=(100, 149, 237), font=font_small)
+
+            # Sparklines
+            spark_y = ny + 30
+            rx_spark = self.sparkline(net.rx_history, width=w // 8, height=10)
+            tx_spark = self.sparkline(net.tx_history, width=w // 8, height=10)
+            if rx_spark:
+                draw.text((x, spark_y), f"RX {rx_spark}",
+                          fill=(100, 200, 100), font=font_mono)
+            if tx_spark:
+                draw.text((x, spark_y + 12), f"TX {tx_spark}",
+                          fill=(100, 149, 237), font=font_mono)
+
+            ny += 52
+
+        if not self._networks:
+            draw.text((x, ny), "No interfaces", fill=(120, 120, 120), font=font)
+
+    def _render_processes(self, draw, x, y, w, font, font_bold, font_mono, font_small):
+        """Render process list section."""
+        draw.rounded_rectangle(
+            [x, y, x + w, y + 28], radius=8, fill=(40, 40, 50))
+        draw.text((x + 12, y + 5), f"Processes ({len(self._processes)})",
+                  fill=(100, 149, 237), font=font_bold)
+
+        # Header
+        hy = y + 34
+        col_pids = x + 8
+        col_name = x + 70
+        col_cpu = x + w - 200
+        col_mem = x + w - 120
+        col_user = x + w - 50
+
+        draw.text((col_pids, hy), "PID", fill=(120, 120, 120), font=font_small)
+        draw.text((col_name, hy), "Name", fill=(120, 120, 120), font=font_small)
+        draw.text((col_cpu, hy), "CPU%", fill=(120, 120, 120), font=font_small)
+        draw.text((col_mem, hy), "RSS", fill=(120, 120, 120), font=font_small)
+        draw.text((col_user, hy), "User", fill=(120, 120, 120), font=font_small)
+
+        # Process rows
+        row_y = hy + 18
+        max_rows = min(15, (1080 - y - 40) // 16)
+
+        sorted_procs = self.processes
+        for proc in sorted_procs[self._scroll_offset:self._scroll_offset + max_rows]:
+            draw.text((col_pids, row_y), str(proc.pid),
+                      fill=(160, 160, 160), font=font_mono)
+            name = proc.name[:20]
+            draw.text((col_name, row_y), name,
+                      fill=(200, 200, 200), font=font)
+            draw.text((col_cpu, row_y), f"{proc.cpu_percent:.1f}",
+                      fill=(200, 200, 200), font=font_mono)
+            draw.text((col_mem, row_y), f"{proc.memory_mb:.0f}M",
+                      fill=(200, 200, 200), font=font_mono)
+            draw.text((col_user, row_y), proc.user[:10],
+                      fill=(160, 160, 160), font=font_small)
+            row_y += 16
+
+    # -- Callbacks -----------------------------------------------------
+
+    def on_event(self, callback: Callable) -> None:
+        self._callbacks.append(callback)
+
+    def _dispatch(self, event_type: str) -> None:
         for cb in self._callbacks:
             try:
-                cb(event, data)
-            except Exception as e:
-                self._log(f"Callback error: {e}")
+                cb(event_type)
+            except Exception:
+                pass
 
-    def _log(self, msg: str) -> None:
-        logger.info("[SystemMonitor] %s", msg)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def main():
-    """Run the system monitor standalone (for testing)."""
-    monitor = SystemMonitor()
-
-    print("=== Nyrqis System Monitor ===")
-
-    # Take a snapshot
-    snap = monitor.snapshot()
-    print(f"Hostname: {snap.hostname}")
-    print(f"OS: {snap.os_name}")
-    print(f"Kernel: {snap.kernel_version}")
-    print(f"Uptime: {snap.uptime_seconds:.0f}s")
-
-    # CPU
-    print(f"\nCPU: {snap.cpu.percent:.1f}%")
-    print(f"  Cores: {snap.cpu.cores_logical}")
-    print(f"  Model: {snap.cpu.model}")
-    if snap.cpu.per_core:
-        print(f"  Per-core: {[f'{c:.0f}%' for c in snap.cpu.per_core[:4]]}")
-    if snap.cpu.temperature is not None:
-        print(f"  Temperature: {snap.cpu.temperature:.1f}°C")
-
-    # Memory
-    print(f"\nMemory: {snap.memory.percent:.1f}%")
-    print(f"  Used: {snap.memory.used_mb:.0f} / {snap.memory.total_mb:.0f} MB")
-    print(f"  Cached: {snap.memory.cached_mb:.0f} MB")
-
-    # Disks
-    print(f"\nDisks: {len(snap.disks)}")
-    for d in snap.disks[:3]:
-        print(f"  {d.mount}: {d.used_gb}/{d.total_gb} GB ({d.percent}%)")
-
-    # Network
-    print(f"\nNetwork: {len(snap.network)} interfaces")
-    for n in snap.network[:3]:
-        print(f"  {n.interface}: ↑{n.bytes_sent} ↓{n.bytes_recv}")
-
-    # Processes
-    print(f"\nProcesses: {len(snap.processes)}")
-    top = monitor.top_processes(5, by="memory")
-    for p in top:
-        print(f"  {p.pid} {p.name}: {p.memory_mb:.1f} MB")
-
-    # Summary
-    summary = monitor.get_summary()
-    print(f"\nSummary keys: {sorted(summary.keys())}")
-
-    # Render
-    img = monitor.render(800, 600)
-    print(f"\nRendered: {img.size}")
-
-    # History
-    print(f"History entries: {len(monitor.history)}")
-
-    print("\nAll system monitor operations passed!")
+    def __repr__(self) -> str:
+        return (
+            f"SystemMonitor(cpu={len(self._cpu_cores)} cores, "
+            f"mem={self._memory.usage_percent:.0f}%, "
+            f"disks={len(self._disks)}, "
+            f"nets={len(self._networks)})"
+        )
 
 
-if __name__ == "__main__":
-    main()
+__all__ = ["SystemMonitor", "MonitorView", "SystemInfo", "CpuInfo",
+           "MemoryInfo", "DiskInfo", "NetworkInfo", "ProcessInfo"]
