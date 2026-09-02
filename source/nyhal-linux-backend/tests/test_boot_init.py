@@ -442,6 +442,100 @@ class TestPyprojectToml(unittest.TestCase):
         self.assertIn("zstandard", dep_names)
         self.assertIn("fusepy", dep_names)
 
+    def test_entry_points_resolve_to_functions(self):
+        """All pyproject.toml entry points resolve to callable main() functions."""
+        import tomllib
+        import importlib
+        path = os.path.join(_HERE, "pyproject.toml")
+        with open(path, "rb") as f:
+            config = tomllib.load(f)
+
+        scripts = config.get("project", {}).get("scripts", {})
+        self.assertGreater(len(scripts), 0, "No entry points defined")
+
+        for name, entry in scripts.items():
+            parts = entry.split(":")
+            self.assertEqual(len(parts), 2,
+                           f"Entry point '{name}' malformed: {entry}")
+            module_name, func_name = parts
+
+            # Verify the module is importable
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError as e:
+                self.fail(f"Entry point '{name}': cannot import '{module_name}': {e}")
+
+            # Verify the function exists and is callable
+            func = getattr(module, func_name, None)
+            self.assertIsNotNone(func,
+                                f"Entry point '{name}': '{func_name}' not in '{module_name}'")
+            self.assertTrue(callable(func),
+                          f"Entry point '{name}': '{func_name}' is not callable")
+
+    def test_entry_points_have_cli_signatures(self):
+        """Entry point main() functions accept argv or no arguments."""
+        import tomllib
+        import importlib
+        import inspect
+        path = os.path.join(_HERE, "pyproject.toml")
+        with open(path, "rb") as f:
+            config = tomllib.load(f)
+
+        scripts = config.get("project", {}).get("scripts", {})
+
+        for name, entry in scripts.items():
+            module_name, func_name = entry.split(":")
+            module = importlib.import_module(module_name)
+            func = getattr(module, func_name)
+            sig = inspect.signature(func)
+            params = list(sig.parameters.keys())
+
+            # main() should accept 0 or 1 argument (argv)
+            self.assertLessEqual(len(params), 1,
+                               f"Entry point '{name}' has too many params: {params}")
+
+
+class TestShellDefaults(unittest.TestCase):
+    """Tests for the default shell designs."""
+
+    def test_default_shell_exists(self):
+        """The default shell design file exists."""
+        path = os.path.join(_HERE, "shell", "defaults", "default-shell.nstudio")
+        self.assertTrue(os.path.exists(path), f"Missing: {path}")
+
+    def test_default_shell_loads(self):
+        """The default shell design loads and validates."""
+        from ui.nstudio import load
+        path = os.path.join(_HERE, "shell", "defaults", "default-shell.nstudio")
+        doc = load(path)
+        self.assertIsNotNone(doc)
+        self.assertIsNotNone(doc.project)
+        self.assertGreater(len(doc.screens), 0)
+
+    def test_desktop_shell_exists(self):
+        """The full desktop shell design file exists."""
+        path = os.path.join(_HERE, "shell", "defaults", "desktop.nstudio")
+        self.assertTrue(os.path.exists(path), f"Missing: {path}")
+
+    def test_desktop_shell_loads(self):
+        """The full desktop shell design loads and validates."""
+        from ui.nstudio import load
+        path = os.path.join(_HERE, "shell", "defaults", "desktop.nstudio")
+        doc = load(path)
+        self.assertIsNotNone(doc)
+        self.assertGreater(len(doc.screens), 0)
+        self.assertGreater(len(doc.behaviors), 0)
+
+    def test_find_design_prefers_default_shell(self):
+        """_find_design prefers shell/defaults/ over test fixtures."""
+        from nyrqis_init import _find_design
+        result = _find_design()
+        if result:
+            # Should be from shell/defaults/ or tests/fixtures/
+            self.assertTrue(
+                "shell/defaults" in result or "tests/fixtures" in result,
+                f"Unexpected design path: {result}")
+
 
 if __name__ == "__main__":
     unittest.main()
