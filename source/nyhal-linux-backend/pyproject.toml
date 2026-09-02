@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "nyrqis-backend"
+version = "0.22.0"
+description = "Nyrqis Linux Backend — NyHAL implementation on standard Linux"
+readme = "README.md"
+license = {text = "See LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Nyrqis Engineering"},
+]
+dependencies = [
+    "zstandard>=0.21.0",
+    "fusepy>=3.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.1.0",
+]
+crypto = [
+    "pynacl>=1.5.0",
+    "argon2-cffi>=21.3.0",
+]
+ui = [
+    "PySDL2>=0.9.16",
+    "Pillow>=9.0.0",
+]
+all = [
+    "nyrqis-backend[dev,crypto,ui]",
+]
+
+[project.scripts]
+nyrqisctl = "nyrqisctl:main"
+nyrqis-backend = "nyrqis_backend:main"
+nyrqis-session = "nyrqis_session:main"
+nyrqis-run = "nyrqis_run:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "ipc*", "ui*", "fuse*", "boot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+    "gpu: marks GPU integration tests",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+ignore = ["E501"]

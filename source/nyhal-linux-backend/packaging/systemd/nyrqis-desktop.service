@@ -1,0 +1,20 @@
+[Unit]
+Description=Nyrqis Desktop Session
+Documentation=https://github.com/Myco-mycelium/Nythera
+After=nyrqis-backend.service graphical-session.target
+Wants=nyrqis-backend.service
+Requires=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m nyrqis_session %h/.nyrqis/shell.nstudio
+Restart=on-failure
+RestartSec=3
+
+# Desktop-specific environment
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+[Install]
+WantedBy=graphical-session.target

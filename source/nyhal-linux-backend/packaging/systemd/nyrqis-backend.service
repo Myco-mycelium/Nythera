@@ -1,0 +1,44 @@
+[Unit]
+Description=Nyrqis Linux Backend Daemon
+Documentation=https://github.com/Myco-mycelium/Nythera
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m nyrqis_backend service serve \
+    --socket /run/nyrqis/status.sock \
+    --health-socket /run/nyrqis/health.sock \
+    --state-file /run/nyrqis/daemon-state.json \
+    --vault-dir /var/lib/nyrqis/vault \
+    --syslog
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/nyrqis /var/lib/nyrqis
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+# Runtime directory
+RuntimeDirectory=nyrqis
+StateDirectory=nyrqis
+LogsDirectory=nyrqis
+
+# File descriptor limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
