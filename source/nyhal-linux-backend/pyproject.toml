@@ -40,6 +40,7 @@ nyrqisctl = "nyrqisctl:main"
 nyrqis-backend = "nyrqis_backend:main"
 nyrqis-session = "nyrqis_session:main"
 nyrqis-run = "nyrqis_run:main"
+nyrqis-init = "nyrqis_init:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
