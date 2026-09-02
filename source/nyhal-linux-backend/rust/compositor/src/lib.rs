@@ -22,6 +22,7 @@ use std::os::raw::{c_char, c_int};
 use std::sync::Mutex;
 
 pub mod wayland;
+pub mod protocols;
 
 /// ABI version: 0x0000_0100 (0.1.0).
 const ABI_VERSION: u32 = 0x0000_0100;

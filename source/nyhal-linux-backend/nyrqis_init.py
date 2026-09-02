@@ -18,6 +18,7 @@ Usage:
     python3 nyrqis_init.py --design /path/to.nstudio
     python3 nyrqis_init.py --daemon-only          # just start daemon
     python3 nyrqis_init.py --session-only         # just start session
+    python3 nyrqis_init.py --diagnose             # diagnose common issues
 
 References:
     - NPS-017 §4.5: boot and lifecycle
@@ -31,6 +32,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -38,7 +40,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger("nyrqis.init")
 
@@ -54,6 +56,196 @@ DEFAULT_VAULT_KEY = ""
 DEFAULT_COMMIT_INTERVAL = 5.0
 SOCKET_WAIT_TIMEOUT = 10.0
 SOCKET_POLL_INTERVAL = 0.1
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+class DiagnosticCheck:
+    """A single diagnostic check result."""
+    
+    def __init__(self, name: str, passed: bool, message: str,
+                 fix_hint: Optional[str] = None):
+        self.name = name
+        self.passed = passed
+        self.message = message
+        self.fix_hint = fix_hint
+    
+    def __str__(self) -> str:
+        status = "✓" if self.passed else "✗"
+        s = f"  {status} {self.name}: {self.message}"
+        if not self.passed and self.fix_hint:
+            s += f"\n    Fix: {self.fix_hint}"
+        return s
+
+
+def run_diagnostics() -> List[DiagnosticCheck]:
+    """Run a comprehensive diagnostic check."""
+    checks = []
+    
+    # 1. Python version
+    py_ver = sys.version_info
+    py_ok = py_ver >= (3, 10)
+    checks.append(DiagnosticCheck(
+        "Python version",
+        py_ok,
+        f"{py_ver.major}.{py_ver.minor}.{py_ver.micro}",
+        "Install Python 3.10+" if not py_ok else None,
+    ))
+    
+    # 2. Rust/Cargo
+    cargo_path = shutil.which("cargo")
+    if cargo_path:
+        try:
+            result = subprocess.run(
+                ["cargo", "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            checks.append(DiagnosticCheck(
+                "Rust toolchain",
+                True,
+                result.stdout.strip().split()[1] if result.stdout else "unknown",
+            ))
+        except Exception:
+            checks.append(DiagnosticCheck(
+                "Rust toolchain",
+                False,
+                "cargo found but not working",
+                "Run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            ))
+    else:
+        checks.append(DiagnosticCheck(
+            "Rust toolchain",
+            False,
+            "cargo not found",
+            "Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+        ))
+    
+    # 3. DRM devices
+    dri_path = Path("/dev/dri")
+    if dri_path.exists():
+        devices = list(dri_path.glob("renderD*")) + list(dri_path.glob("card*"))
+        checks.append(DiagnosticCheck(
+            "DRM devices",
+            len(devices) > 0,
+            f"{len(devices)} device(s) found",
+            "Install GPU drivers" if not devices else None,
+        ))
+        
+        # Check access
+        for dev in devices:
+            try:
+                fd = os.open(str(dev), os.O_RDWR)
+                os.close(fd)
+                checks.append(DiagnosticCheck(
+                    f"Access {dev.name}",
+                    True,
+                    "read/write OK",
+                ))
+                break
+            except PermissionError:
+                checks.append(DiagnosticCheck(
+                    f"Access {dev.name}",
+                    False,
+                    "permission denied",
+                    "Run: ./packaging/setup-drm.sh --install",
+                ))
+    else:
+        checks.append(DiagnosticCheck(
+            "DRM devices",
+            False,
+            "/dev/dri not found",
+            "Install GPU drivers or load DRM kernel module",
+        ))
+    
+    # 4. FUSE
+    fuse_path = Path("/dev/fuse")
+    checks.append(DiagnosticCheck(
+        "FUSE support",
+        fuse_path.exists(),
+        "available" if fuse_path.exists() else "not available",
+        "Install fuse3: sudo apt install fuse3" if not fuse_path.exists() else None,
+    ))
+    
+    # 5. State directory
+    state_dir = Path(DEFAULT_STATE_DIR)
+    if state_dir.exists():
+        shell_file = state_dir / "shell.nstudio"
+        checks.append(DiagnosticCheck(
+            "Shell design",
+            shell_file.exists(),
+            str(shell_file) if shell_file.exists() else "not found",
+            "Copy a shell design to ~/.nyrqis/shell.nstudio" if not shell_file.exists() else None,
+        ))
+    else:
+        checks.append(DiagnosticCheck(
+            "State directory",
+            False,
+            f"{state_dir} not found",
+            f"Create: mkdir -p {state_dir}",
+        ))
+    
+    # 6. Socket availability
+    sock_path = Path(DEFAULT_SOCKET)
+    if sock_path.exists():
+        checks.append(DiagnosticCheck(
+            "Socket path",
+            False,
+            f"{sock_path} already exists (daemon running?)",
+            f"Remove stale socket: rm {sock_path}",
+        ))
+    else:
+        checks.append(DiagnosticCheck(
+            "Socket path",
+            True,
+            "available",
+        ))
+    
+    # 7. Vault directory
+    vault_dir = Path(DEFAULT_VAULT_DIR)
+    if vault_dir.exists():
+        checks.append(DiagnosticCheck(
+            "Vault directory",
+            True,
+            str(vault_dir),
+        ))
+    else:
+        checks.append(DiagnosticCheck(
+            "Vault directory",
+            False,
+            f"{vault_dir} not found",
+            f"Create: sudo mkdir -p {vault_dir}",
+        ))
+    
+    return checks
+
+
+def print_diagnostics(checks: List[DiagnosticCheck]) -> bool:
+    """Print diagnostic results. Returns True if all checks passed."""
+    print("\n╔══════════════════════════════════════════╗")
+    print("║         Nyrqis System Diagnostics         ║")
+    print("╚══════════════════════════════════════════╝\n")
+    
+    passed = sum(1 for c in checks if c.passed)
+    total = len(checks)
+    
+    for check in checks:
+        print(str(check))
+    
+    print(f"\n{'='*50}")
+    print(f"Result: {passed}/{total} checks passed")
+    
+    if passed == total:
+        print("✓ System is ready for Nyrqis")
+    else:
+        print("✗ Some issues need to be resolved")
+        print("\nQuick fix commands:")
+        for check in checks:
+            if not check.passed and check.fix_hint:
+                print(f"  {check.fix_hint}")
+    
+    return passed == total
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +314,6 @@ def _socket_command(socket_path: str, payload: dict, timeout: float = 10.0) -> O
         return None
     finally:
         client.close()
-        import shutil
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -258,7 +449,7 @@ Examples:
     python3 nyrqis_init.py --headless             # headless (CI/testing)
     python3 nyrqis_init.py --design shell.nstudio # custom design
     python3 nyrqis_init.py --daemon-only          # just the daemon
-    python3 nyrqis_init.py --session-only         # just the session
+    python3 nyrqis_init.py --diagnose             # diagnose issues
         """,
     )
     parser.add_argument(
@@ -317,6 +508,10 @@ Examples:
         "--no-daemon", action="store_true",
         help="Don't start daemon; assume it's already running",
     )
+    parser.add_argument(
+        "--diagnose", action="store_true",
+        help="Run system diagnostics and exit",
+    )
 
     args = parser.parse_args()
 
@@ -325,6 +520,12 @@ Examples:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
+
+    # Run diagnostics if requested
+    if args.diagnose:
+        checks = run_diagnostics()
+        all_ok = print_diagnostics(checks)
+        return 0 if all_ok else 1
 
     logger.info("╔══════════════════════════════════════════╗")
     logger.info("║         Nyrqis Init — Boot Sequence       ║")
@@ -342,6 +543,15 @@ Examples:
         # ── Phase 1: Start the daemon ────────────────────────────
         if not args.session_only and not args.no_daemon:
             logger.info("── Phase 1: Starting backend daemon ──")
+            
+            # Clean up stale socket
+            if os.path.exists(args.socket):
+                logger.warning("Removing stale socket: %s", args.socket)
+                try:
+                    os.unlink(args.socket)
+                except OSError:
+                    pass
+            
             daemon_process = phase_start_daemon(
                 socket_path=args.socket,
                 health_socket_path=args.health_socket,
@@ -353,6 +563,11 @@ Examples:
 
             if not phase_wait_for_daemon(args.socket):
                 logger.error("Daemon failed to start")
+                # Get error output from daemon
+                if daemon_process and daemon_process.stderr:
+                    stderr = daemon_process.stderr.read().decode(errors="replace")
+                    if stderr:
+                        logger.error("Daemon stderr: %s", stderr[:500])
                 return 1
 
         # ── Phase 2: Load the shell design ──────────────────────
