@@ -1,392 +1,235 @@
-"""
-Nyrqis Live Profiler — real-time system profiling application.
-
-Features:
-- Live CPU/memory/disk/network graphs with sparklines
-- Process tree view with hierarchy
-- Per-process resource usage
-- System load averages
-- Real-time network connections
-- File descriptor tracking
-- Keyboard navigation throughout
-"""
-
-import time
-import hashlib
-import random
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from enum import Enum
+from typing import Optional
+import time
+import math
 
 
-class ProcessState(Enum):
-    RUNNING = "R"
-    SLEEPING = "S"
-    STOPPED = "T"
-    ZOMBIE = "Z"
-    IDLE = "I"
+class ProfilerView(Enum):
+    OVERVIEW = "overview"
+    CPU = "cpu"
+    GPU = "gpu"
+    MEMORY = "memory"
+    DISK = "disk"
+    NETWORK = "network"
+    TEMPERATURE = "temperature"
+    ALERTS = "alerts"
 
 
-STATE_ICONS = {
-    ProcessState.RUNNING: "🟢",
-    ProcessState.SLEEPING: "💤",
-    ProcessState.STOPPED: "⏹️",
-    ProcessState.ZOMBIE: "👻",
-    ProcessState.IDLE: "😴",
-}
+class AlertSeverity(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class GraphStyle(Enum):
+    LINE = "line"
+    BAR = "bar"
+    SPARKLINE = "sparkline"
+    HEATMAP = "heatmap"
 
 
 @dataclass
-class ProcessInfo:
-    """A system process."""
-    pid: int
+class LiveDataPoint:
+    timestamp: float
+    value: float
+    label: str = ""
+
+
+@dataclass
+class HardwareMetric:
     name: str
-    state: ProcessState = ProcessState.SLEEPING
-    user: str = "user"
-    cpu_pct: float = 0.0
-    mem_pct: float = 0.0
-    mem_mb: int = 0
-    threads: int = 1
-    parent_pid: int = 0
-    # I/O
-    read_bytes: int = 0
-    write_bytes: int = 0
-    #_FDs
-    open_fds: int = 0
-    # Timing
-    cpu_time: float = 0.0
-    start_time: float = 0.0
-    # History for sparklines
-    cpu_history: List[float] = field(default_factory=list)
-    mem_history: List[float] = field(default_factory=list)
+    current: float
+    min_val: float
+    max_val: float
+    avg: float
+    unit: str
+    history: list = field(default_factory=list)
+    threshold_warn: float = 0
+    threshold_crit: float = 0
 
     @property
-    def state_icon(self) -> str:
-        return STATE_ICONS.get(self.state, "❓")
+    def current_display(self) -> str:
+        if self.current >= 1_000_000:
+            return f"{self.current / 1_000_000:.2f}M {self.unit}"
+        if self.current >= 1_000:
+            return f"{self.current / 1_000:.1f}K {self.unit}"
+        return f"{self.current:.1f} {self.unit}"
 
     @property
-    def display(self) -> str:
-        return f"{self.state_icon} {self.pid:>6d} {self.name:<25s} {self.cpu_pct:>5.1f}% {self.mem_pct:>5.1f}% {self.mem_mb:>6d}MB"
+    def bar(self) -> str:
+        max_display = max(self.max_val, 1)
+        pct = min(self.current / max_display, 1.0)
+        filled = int(pct * 20)
+        return "█" * filled + "░" * (20 - filled)
 
     @property
-    def cpu_sparkline(self) -> str:
-        return self._sparkline(self.cpu_history)
+    def sparkline(self) -> str:
+        if not self.history:
+            return "░" * 32
+        recent = self.history[-32:]
+        max_val = max(p.value for p in recent) if recent else 1
+        if max_val == 0:
+            return "░" * 32
+        chars = " ▁▂▃▄▅▆▇█"
+        return "".join(chars[min(int(p.value / max_val * 8), 8)] for p in recent)
 
     @property
-    def mem_sparkline(self) -> str:
-        return self._sparkline(self.mem_history)
-
-    @staticmethod
-    def _sparkline(data: List[float]) -> str:
-        if not data:
-            return "░" * 15
-        chars = "▁▂▃▄▅▆▇█"
-        max_val = max(data) if max(data) > 0 else 1
-        result = ""
-        step = max(1, len(data) // 15)
-        for i in range(0, min(len(data), 15 * step), step):
-            val = data[i]
-            idx = int(val / max_val * (len(chars) - 1))
-            result += chars[min(idx, len(chars) - 1)]
-        return result[:15]
-
-    @property
-    def io_str(self) -> str:
-        r = self.read_bytes
-        w = self.write_bytes
-        if r >= 1073741824:
-            r_str = f"{r / 1073741824:.1f}G"
-        elif r >= 1048576:
-            r_str = f"{r / 1048576:.0f}M"
-        elif r >= 1024:
-            r_str = f"{r / 1024:.0f}K"
-        else:
-            r_str = f"{r}B"
-        if w >= 1073741824:
-            w_str = f"{w / 1073741824:.1f}G"
-        elif w >= 1048576:
-            w_str = f"{w / 1048576:.0f}M"
-        elif w >= 1024:
-            w_str = f"{w / 1024:.0f}K"
-        else:
-            w_str = f"{w}B"
-        return f"R:{r_str} W:{w_str}"
+    def status(self) -> str:
+        if self.threshold_crit > 0 and self.current >= self.threshold_crit:
+            return "🔴"
+        if self.threshold_warn > 0 and self.current >= self.threshold_warn:
+            return "🟡"
+        return "🟢"
 
 
 @dataclass
-class SystemLoad:
-    """System load information."""
-    load_1: float = 0.0
-    load_5: float = 0.0
-    load_15: float = 0.0
-    uptime_seconds: float = 0.0
-    total_processes: int = 0
-    running_processes: int = 0
-    # History
-    cpu_history: List[float] = field(default_factory=list)
-    mem_history: List[float] = field(default_factory=list)
-    net_rx_history: List[float] = field(default_factory=list)
-    net_tx_history: List[float] = field(default_factory=list)
+class ProfilerAlert:
+    severity: AlertSeverity
+    title: str
+    message: str
+    timestamp: float
+    source: str
+    acknowledged: bool = False
 
     @property
-    def uptime_str(self) -> str:
-        d = int(self.uptime_seconds // 86400)
-        h = int((self.uptime_seconds % 86400) // 3600)
-        m = int((self.uptime_seconds % 3600) // 60)
-        if d > 0:
-            return f"{d}d {h}h {m}m"
-        elif h > 0:
-            return f"{h}h {m}m"
-        return f"{m}m"
-
-    @property
-    def load_bar(self) -> str:
-        filled = int(min(self.load_1 / 16, 1.0) * 20)
-        return "█" * filled + "░" * (20 - filled)
+    def icon(self) -> str:
+        icons = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}
+        return icons.get(self.severity.value, "?")
 
 
 class LiveProfiler:
-    """Real-time system profiling for Nyrqis OS."""
-
     def __init__(self):
-        self._processes: List[ProcessInfo] = []
-        self._load = SystemLoad()
-        self._selected_index: int = 0
-        self._view_mode: str = "overview"  # overview, processes, tree, io
-        self._sort_by: str = "cpu"  # cpu, mem, pid, name
-        self._tree_mode: bool = False
+        self._view: ProfilerView = ProfilerView.OVERVIEW
+        self._metrics: dict[str, HardwareMetric] = {}
+        self._alerts: list[ProfilerAlert] = []
+        self._selected_metric: str = ""
+        self._refresh_rate: int = 1
+        self._graph_style: GraphStyle = GraphStyle.SPARKLINE
+        self._is_running: bool = False
+        self._start_time: float = 0
+        self._uptime_secs: int = 86400 * 3 + 3600 * 7
+        self._create_samples()
 
-        self._init_sample_data()
-
-    def _init_sample_data(self) -> None:
-        random.seed(42)
+    def _create_samples(self):
         now = time.time()
-        procs = [
-            (1, "systemd", ProcessState.SLEEPING, "root", 0.1, 0.3, 12, 1, 0),
-            (234, "nyrqis-compositor", ProcessState.RUNNING, "user", 12.5, 4.8, 1540, 8, 1),
-            (456, "nyrqis-shell", ProcessState.SLEEPING, "user", 2.3, 2.1, 680, 4, 1),
-            (678, "firefox", ProcessState.SLEEPING, "user", 8.7, 6.2, 2000, 24, 1),
-            (901, "code", ProcessState.SLEEPING, "user", 5.2, 4.5, 1450, 18, 1),
-            (1123, "Xwayland", ProcessState.SLEEPING, "user", 1.8, 1.5, 480, 3, 234),
-            (1345, "pipewire", ProcessState.SLEEPING, "user", 0.5, 0.4, 128, 3, 1),
-            (1567, "NetworkManager", ProcessState.SLEEPING, "root", 0.2, 0.3, 96, 2, 1),
-            (1789, "sshd", ProcessState.SLEEPING, "root", 0.0, 0.1, 32, 1, 1),
-            (2011, "dockerd", ProcessState.SLEEPING, "root", 1.2, 1.8, 580, 12, 1),
-            (2233, "containerd", ProcessState.SLEEPING, "root", 0.8, 1.0, 320, 8, 2011),
-            (2456, "postgres", ProcessState.SLEEPING, "postgres", 2.1, 3.2, 1024, 6, 1),
-            (2678, "redis-server", ProcessState.SLEEPING, "redis", 0.4, 1.5, 480, 2, 1),
-            (2890, "nginx", ProcessState.SLEEPING, "www-data", 0.1, 0.2, 64, 4, 1),
-            (3012, "python3", ProcessState.RUNNING, "user", 3.5, 2.8, 896, 4, 1),
-            (3234, "node", ProcessState.SLEEPING, "user", 1.8, 1.5, 480, 6, 1),
-            (3456, "cargo", ProcessState.RUNNING, "user", 15.2, 3.5, 1120, 8, 1),
-            (3678, "rustc", ProcessState.RUNNING, "user", 45.0, 5.2, 1664, 12, 3456),
-            (3890, "pulseaudio", ProcessState.SLEEPING, "user", 0.3, 0.2, 64, 2, 1),
-            (4012, "dbus-daemon", ProcessState.SLEEPING, "dbus", 0.0, 0.1, 24, 1, 1),
+        def make_history(base, variance, n=60):
+            return [LiveDataPoint(now - (n - i), base + math.sin(i * 0.3) * variance) for i in range(n)]
+
+        self._metrics = {
+            "cpu_usage": HardwareMetric("CPU Usage", 35.2, 5, 100, 32.5, "%", make_history(35, 15), 75, 90),
+            "cpu_temp": HardwareMetric("CPU Temperature", 62.0, 35, 95, 58.3, "°C", make_history(62, 8), 75, 90),
+            "cpu_freq": HardwareMetric("CPU Frequency", 4850, 3600, 5700, 4650, "MHz", make_history(4850, 500)),
+            "gpu_usage": HardwareMetric("GPU Usage", 45.2, 0, 100, 38.7, "%", make_history(45, 20), 85, 95),
+            "gpu_temp": HardwareMetric("GPU Temperature", 62.0, 30, 95, 58.1, "°C", make_history(62, 6), 80, 90),
+            "gpu_vram": HardwareMetric("GPU VRAM", 7680, 0, 12288, 7200, "MB", make_history(7680, 500)),
+            "gpu_power": HardwareMetric("GPU Power", 120.0, 30, 200, 105.0, "W", make_history(120, 25)),
+            "mem_used": HardwareMetric("Memory Used", 38700, 16000, 64000, 36500, "MB", make_history(38700, 2000), 48000, 58000),
+            "mem_cached": HardwareMetric("Memory Cached", 12400, 4000, 20000, 11800, "MB", make_history(12400, 1000)),
+            "swap_used": HardwareMetric("Swap Used", 500, 0, 8192, 450, "MB", make_history(500, 200), 4096, 6144),
+            "disk_read": HardwareMetric("Disk Read", 125.4, 0, 500, 98.2, "MB/s", make_history(125, 40)),
+            "disk_write": HardwareMetric("Disk Write", 89.2, 0, 500, 75.1, "MB/s", make_history(89, 30)),
+            "net_rx": HardwareMetric("Network RX", 850.0, 0, 1000, 720.0, "Mbps", make_history(850, 150)),
+            "net_tx": HardwareMetric("Network TX", 120.0, 0, 500, 95.0, "Mbps", make_history(120, 50)),
+            "fan_cpu": HardwareMetric("CPU Fan", 1800, 800, 3000, 1650, "RPM", make_history(1800, 200)),
+            "fan_gpu": HardwareMetric("GPU Fan", 1400, 800, 3500, 1350, "RPM", make_history(1400, 150)),
+        }
+
+        self._alerts = [
+            ProfilerAlert(AlertSeverity.WARNING, "High CPU Temperature", "CPU temperature reached 62°C", now - 300, "cpu_temp"),
+            ProfilerAlert(AlertSeverity.INFO, "GPU Memory High", "GPU VRAM usage at 63%", now - 600, "gpu_vram"),
+            ProfilerAlert(AlertSeverity.WARNING, "Memory Pressure", "System using 60% of 64GB RAM", now - 900, "mem_used"),
         ]
-        for pid, name, state, user, cpu, mem, mem_mb, threads, ppid in procs:
-            proc = ProcessInfo(
-                pid=pid, name=name, state=state, user=user,
-                cpu_pct=cpu, mem_pct=mem, mem_mb=mem_mb,
-                threads=threads, parent_pid=ppid,
-                read_bytes=random.randint(0, 500_000_000),
-                write_bytes=random.randint(0, 200_000_000),
-                open_fds=random.randint(3, 200),
-                cpu_history=[random.uniform(0, cpu * 2) for _ in range(60)],
-                mem_history=[random.uniform(mem * 0.8, mem * 1.2) for _ in range(60)],
-            )
-            self._processes.append(proc)
-
-        self._load = SystemLoad(
-            load_1=4.2, load_5=3.8, load_15=3.5,
-            uptime_seconds=259200 + 50400,
-            total_processes=20, running_processes=3,
-            cpu_history=[random.uniform(10, 60) for _ in range(60)],
-            mem_history=[random.uniform(40, 60) for _ in range(60)],
-            net_rx_history=[random.uniform(1, 50) for _ in range(60)],
-            net_tx_history=[random.uniform(0.5, 20) for _ in range(60)],
-        )
-
-    def get_sorted_processes(self) -> List[ProcessInfo]:
-        procs = list(self._processes)
-        if self._sort_by == "cpu":
-            procs.sort(key=lambda p: p.cpu_pct, reverse=True)
-        elif self._sort_by == "mem":
-            procs.sort(key=lambda p: p.mem_mb, reverse=True)
-        elif self._sort_by == "pid":
-            procs.sort(key=lambda p: p.pid)
-        elif self._sort_by == "name":
-            procs.sort(key=lambda p: p.name.lower())
-        return procs
-
-    def get_tree(self) -> List[Tuple[int, ProcessInfo]]:
-        """Get process tree with indentation levels."""
-        proc_map = {p.pid: p for p in self._processes}
-        tree = []
-        visited = set()
-
-        def add_children(parent_pid: int, depth: int):
-            children = [p for p in self._processes if p.parent_pid == parent_pid and p.pid not in visited]
-            children.sort(key=lambda p: p.pid)
-            for child in children:
-                visited.add(child.pid)
-                tree.append((depth, child))
-                add_children(child.pid, depth + 1)
-
-        # Start from root processes
-        roots = [p for p in self._processes if p.parent_pid == 0]
-        roots.sort(key=lambda p: p.pid)
-        for root in roots:
-            visited.add(root.pid)
-            tree.append((0, root))
-            add_children(root.pid, 1)
-        return tree
-
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def select_down(self) -> None:
-        procs = self.get_sorted_processes()
-        self._selected_index = min(len(procs) - 1, self._selected_index + 1)
-
-    def get_selected_process(self) -> Optional[ProcessInfo]:
-        procs = self.get_sorted_processes()
-        if 0 <= self._selected_index < len(procs):
-            return procs[self._selected_index]
-        return None
-
-    def set_view(self, mode: str) -> None:
-        self._view_mode = mode
-        self._selected_index = 0
 
     @property
-    def selected_index(self) -> int:
-        return self._selected_index
+    def uptime_display(self) -> str:
+        d, rem = divmod(self._uptime_secs, 86400)
+        h, rem = divmod(rem, 3600)
+        m, s = divmod(rem, 60)
+        return f"{d}d {h}h {m}m"
 
     @property
-    def view_mode(self) -> str:
-        return self._view_mode
+    def unacked_alerts(self) -> int:
+        return sum(1 for a in self._alerts if not a.acknowledged)
 
-    @property
-    def load(self) -> SystemLoad:
-        return self._load
+    def select_metric(self, name: str):
+        self._selected_metric = name
 
-    def render_overview(self, width: int = 70) -> List[str]:
-        load = self._load
-        chars = "▁▂▃▄▅▆▇█"
+    def acknowledge_alert(self, idx: int):
+        if 0 <= idx < len(self._alerts):
+            self._alerts[idx].acknowledged = True
 
-        def make_spark(data, w=40):
-            if not data:
-                return "░" * w
-            mx = max(data) if max(data) > 0 else 1
-            step = max(1, len(data) // w)
-            return "".join(chars[min(int(data[i] / mx * 7), 7)] for i in range(0, min(len(data), w * step), step))[:w]
-
+    def render(self, width: int = 80, height: int = 20) -> list:
         lines = []
-        lines.append(" 📊 Live Profiler")
-        lines.append("─" * width)
-
-        # CPU
-        cpu = load.cpu_history[-1] if load.cpu_history else 0
-        lines.append(f" 🖥️  CPU:  {cpu:>5.1f}%  [{load.cpu_history[-1] if load.cpu_history else 0:.0f}%]  {make_spark(load.cpu_history)}")
-        lines.append(f"     Load: {load.load_1:.1f} / {load.load_5:.1f} / {load.load_15:.1f}  [{load.load_bar}]")
-
-        # Memory
-        mem = load.mem_history[-1] if load.mem_history else 0
-        lines.append(f" 🧠 RAM:  {mem:>5.1f}%  {make_spark(load.mem_history)}")
-
-        # Network
-        rx = load.net_rx_history[-1] if load.net_rx_history else 0
-        tx = load.net_tx_history[-1] if load.net_tx_history else 0
-        lines.append(f" 📥 Net:  RX {rx:>5.1f} Mbps  TX {tx:>5.1f} Mbps")
-
-        lines.append("─" * width)
-        lines.append(f" Processes: {load.total_processes} total, {load.running_processes} running")
-        lines.append(f" Uptime: {load.uptime_str}")
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS LIVE PROFILER                                    ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
         lines.append("")
-        lines.append("─" * width)
-        lines.append(" P:Processes  T:Tree  I:I/O  S:Sort  Esc:Back")
+        status = "🟢 RUNNING" if self._is_running else "⏹ STOPPED"
+        lines.append(f"  Status: {status}  Uptime: {self.uptime_display}  Refresh: {self._refresh_rate}s  Graph: {self._graph_style.value}")
+        lines.append(f"  Alerts: {self.unacked_alerts} unacknowledged  Metrics: {len(self._metrics)}")
+        lines.append("")
+        lines.append(f"  ── {self._view.value.upper()} ──")
+        lines.append("")
+        cpu = self._metrics.get("cpu_usage")
+        gpu = self._metrics.get("gpu_usage")
+        mem = self._metrics.get("mem_used")
+        if cpu:
+            lines.append(f"  CPU  {cpu.status} [{cpu.bar}] {cpu.current_display}  {cpu.sparkline}")
+        if gpu:
+            lines.append(f"  GPU  {gpu.status} [{gpu.bar}] {gpu.current_display}  {gpu.sparkline}")
+        if mem:
+            lines.append(f"  MEM  {mem.status} [{mem.bar}] {mem.current_display}  {mem.sparkline}")
+        lines.append("")
+        lines.append("  ── Temperatures ──")
+        for name in ["cpu_temp", "gpu_temp"]:
+            m = self._metrics.get(name)
+            if m:
+                lines.append(f"  {m.name:<20s} {m.status} [{m.bar}] {m.current_display}  {m.sparkline}")
+        lines.append("")
+        lines.append("  ── Fans ──")
+        for name in ["fan_cpu", "fan_gpu"]:
+            m = self._metrics.get(name)
+            if m:
+                lines.append(f"  {m.name:<20s} [{m.bar}] {m.current_display}  {m.sparkline}")
+        lines.append("")
+        lines.append("  ── Disk I/O ──")
+        for name in ["disk_read", "disk_write"]:
+            m = self._metrics.get(name)
+            if m:
+                lines.append(f"  {m.name:<20s} [{m.bar}] {m.current_display}  {m.sparkline}")
+        lines.append("")
+        lines.append("  ── Network ──")
+        for name in ["net_rx", "net_tx"]:
+            m = self._metrics.get(name)
+            if m:
+                lines.append(f"  {m.name:<20s} [{m.bar}] {m.current_display}  {m.sparkline}")
+        lines.append("")
+        lines.append("  [V]iew  [R]efresh  [G]raph style  [A]lerts  [E]xport  [S]tart/Stop")
         return lines
 
-    def render_processes(self, width: int = 80) -> List[str]:
+    def render_metric_detail(self, name: str) -> list:
+        m = self._metrics.get(name)
+        if not m:
+            return ["  Metric not found"]
         lines = []
-        lines.append(f" 📋 Processes ({len(self._processes)} total, sorted by {self._sort_by})")
-        lines.append("─" * width)
-        lines.append(f" {'State':>5s} {'PID':>6s} {'Name':<25s} {'CPU%':>5s} {'MEM%':>5s} {'MEM':>7s}")
-        lines.append("─" * width)
-
-        procs = self.get_sorted_processes()
-        for i, proc in enumerate(procs[:20]):
-            marker = "▸" if i == self._selected_index else " "
-            lines.append(f"{marker}{proc.display}")
-
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  S:Sort  Esc:Back")
+        lines.append(f"  ── {m.name} ──")
+        lines.append(f"  Current: {m.current_display}")
+        lines.append(f"  Min: {m.min_val:.1f} {m.unit}  Max: {m.max_val:.1f} {m.unit}  Avg: {m.avg:.1f} {m.unit}")
+        lines.append(f"  Status: {m.status}")
+        if m.threshold_warn > 0:
+            lines.append(f"  Warning: {m.threshold_warn} {m.unit}  Critical: {m.threshold_crit} {m.unit}")
+        lines.append("")
+        lines.append(f"  History: {m.sparkline}")
         return lines
 
-    def render_tree(self, width: int = 80) -> List[str]:
+    def render_alerts(self) -> list:
         lines = []
-        lines.append(" 🌳 Process Tree")
-        lines.append("─" * width)
-
-        tree = self.get_tree()
-        for depth, proc in tree[:20]:
-            indent = "  " * depth
-            connector = "└─" if depth > 0 else ""
-            state = STATE_ICONS.get(proc.state, "❓")
-            lines.append(f" {indent}{connector}{state} {proc.pid} {proc.name} ({proc.cpu_pct:.1f}% CPU, {proc.mem_mb}MB)")
-
-        lines.append("─" * width)
-        lines.append(" Esc:Back")
+        lines.append("  ── Alerts ──")
+        lines.append("")
+        for i, a in enumerate(self._alerts):
+            ack = "✅" if a.acknowledged else "  "
+            age = int((time.time() - a.timestamp) / 60)
+            lines.append(f"  {ack}{a.icon} {a.title}")
+            lines.append(f"    {a.message}  ({a.source}, {age}m ago)")
         return lines
-
-    def render_io(self, width: int = 80) -> List[str]:
-        lines = []
-        lines.append(" 💾 I/O Overview")
-        lines.append("─" * width)
-
-        procs = sorted(self._processes, key=lambda p: p.read_bytes + p.write_bytes, reverse=True)
-        for proc in procs[:15]:
-            lines.append(f" {proc.pid:>6d} {proc.name:<20s} {proc.io_str:>20s}  FDs:{proc.open_fds}")
-
-        lines.append("─" * width)
-        lines.append(" Esc:Back")
-        return lines
-
-    def render(self, width: int = 70, height: int = 30) -> List[str]:
-        renderers = {"processes": self.render_processes, "tree": self.render_tree, "io": self.render_io}
-        renderer = renderers.get(self._view_mode, self.render_overview)
-        return renderer(width)
-
-    def handle_key(self, key: str) -> Optional[str]:
-        if self._view_mode == "processes":
-            if key == "Escape":
-                self.set_view("overview")
-                return "back"
-            if key == "ArrowUp":
-                self.select_up()
-                return "select_up"
-            if key == "ArrowDown":
-                self.select_down()
-                return "select_down"
-            if key == "s":
-                sorts = ["cpu", "mem", "pid", "name"]
-                idx = sorts.index(self._sort_by) if self._sort_by in sorts else 0
-                self._sort_by = sorts[(idx + 1) % len(sorts)]
-                return "sort"
-            return None
-        if self._view_mode in ("tree", "io"):
-            if key == "Escape":
-                self.set_view("overview")
-                return "back"
-            return None
-        if key == "p":
-            self.set_view("processes")
-            return "processes"
-        if key == "t":
-            self.set_view("tree")
-            return "tree"
-        if key == "i":
-            self.set_view("io")
-            return "io"
-        return None
