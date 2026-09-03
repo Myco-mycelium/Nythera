@@ -1,463 +1,278 @@
-"""FontManager — Font management UI for Nyrqis.
-
-Provides font management with:
-- Font family browsing (system + user fonts)
-- Font preview with customizable text
-- Font style variants (Regular, Bold, Italic, etc.)
-- Font size preview
-- Install/uninstall user fonts
-- Font search and filter
-- Recently used fonts
-- Apple HIG clean aesthetics
-
-References:
-    - ADR-0026: Wayland display-server integration
-"""
-
-from __future__ import annotations
-
-import os
+"""Font Manager — preview, comparison, installation management for Nyrqis OS."""
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import List, Dict, Optional, Tuple
+import time
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
+class FontType(Enum):
+    TRUETYPE = "TrueType"
+    OPENTYPE = "OpenType"
+    WOFF = "WOFF"
+    WOFF2 = "WOFF2"
+    VARIABLE = "Variable"
+    BITMAP = "Bitmap"
+    VECTOR = "Vector"
+
 
 class FontCategory(Enum):
-    SERIF = auto()
-    SANS_SERIF = auto()
-    MONOSPACE = auto()
-    DISPLAY = auto()
-    HANDWRITING = auto()
-    SYSTEM = auto()
+    SANS_SERIF = "Sans-Serif"
+    SERIF = "Serif"
+    MONOSPACE = "Monospace"
+    DISPLAY = "Display"
+    HANDWRITING = "Handwriting"
+    DECORATIVE = "Decorative"
+    UNKNOWN = "Unknown"
 
 
-class FontStyle(Enum):
-    REGULAR = auto()
-    BOLD = auto()
-    ITALIC = auto()
-    BOLD_ITALIC = auto()
-    LIGHT = auto()
-    MEDIUM = auto()
-    SEMIBOLD = auto()
-    EXTRA_BOLD = auto()
-    THIN = auto()
+class FontLicense(Enum):
+    OFL = "Open Font License"
+    APACHE = "Apache License"
+    MIT = "MIT License"
+    COMMERCIAL = "Commercial"
+    FREE = "Free"
+    UNKNOWN = "Unknown"
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
+class FontWeight(Enum):
+    THIN = 100
+    EXTRA_LIGHT = 200
+    LIGHT = 300
+    REGULAR = 400
+    MEDIUM = 500
+    SEMI_BOLD = 600
+    BOLD = 700
+    EXTRA_BOLD = 800
+    BLACK = 900
+
 
 @dataclass
 class FontVariant:
-    """A specific font style variant."""
-    style: FontStyle
-    path: str = ""
-    weight: int = 400   # CSS weight (100-900)
+    name: str
+    weight: FontWeight = FontWeight.REGULAR
     italic: bool = False
-    available: bool = True
+    file_path: str = ""
+    file_size: int = 0
 
     @property
-    def label(self) -> str:
-        return self.style.name.replace("_", " ").title()
+    def weight_name(self) -> str:
+        names = {
+            100: "Thin", 200: "ExtraLight", 300: "Light", 400: "Regular",
+            500: "Medium", 600: "SemiBold", 700: "Bold", 800: "ExtraBold", 900: "Black",
+        }
+        return names.get(self.weight.value, "Regular")
+
+    @property
+    def style_str(self) -> str:
+        italic = " Italic" if self.italic else ""
+        return f"{self.weight_name}{italic}"
+
+    @property
+    def size_str(self) -> str:
+        if self.file_size < 1024:
+            return f"{self.file_size} B"
+        elif self.file_size < 1024**2:
+            return f"{self.file_size / 1024:.1f} KB"
+        return f"{self.file_size / 1024**2:.1f} MB"
 
 
 @dataclass
-class FontFamily:
-    """A font family with its variants."""
-    name: str
+class Font:
+    family: str = ""
+    font_type: FontType = FontType.TRUETYPE
     category: FontCategory = FontCategory.SANS_SERIF
-    variants: List[FontVariant] = field(default_factory=list)
-    is_system: bool = True
-    is_installed: bool = True
-    path: str = ""
+    license: FontLicense = FontLicense.OFL
     designer: str = ""
-    license: str = ""
+    variants: List[FontVariant] = field(default_factory=list)
+    installed: bool = True
+    variable: bool = False
+    variable_axes: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    languages: List[str] = field(default_factory=list)
+    opentype_features: List[str] = field(default_factory=list)
+    version: str = ""
+    copyright: str = ""
+    homepage: str = ""
 
     @property
     def variant_count(self) -> int:
         return len(self.variants)
 
     @property
-    def has_bold(self) -> bool:
-        return any(v.style == FontStyle.BOLD for v in self.variants)
+    def is_installed(self) -> str:
+        return "✅" if self.installed else "⬜"
 
     @property
-    def has_italic(self) -> bool:
-        return any(v.style == FontStyle.ITALIC for v in self.variants)
+    def type_icon(self) -> str:
+        icons = {
+            FontType.TRUETYPE: "🔤", FontType.OPENTYPE: "🔤",
+            FontType.VARIABLE: "✨", FontType.BITMAP: "🔠",
+        }
+        return icons.get(self.font_type, "🔤")
 
     @property
-    def display_category(self) -> str:
-        return self.category.name.replace("_", " ").title()
+    def category_icon(self) -> str:
+        icons = {
+            FontCategory.SANS_SERIF: "Aa", FontCategory.SERIF: "Aa",
+            FontCategory.MONOSPACE: "Aa", FontCategory.DISPLAY: "𝙰𝚊",
+            FontCategory.HANDWRITING: "𝒜𝒶", FontCategory.DECORATIVE: "ᎯᏗ",
+        }
+        return icons.get(self.category, "?")
 
 
-# ---------------------------------------------------------------------------
-# Built-in system fonts (simulated)
-# ---------------------------------------------------------------------------
+@dataclass
+class FontComparison:
+    fonts: List[str] = field(default_factory=list)
+    text: str = "The quick brown fox jumps over the lazy dog"
+    sizes: List[int] = field(default_factory=lambda: [12, 14, 16, 18, 24, 32, 48, 72])
 
-SYSTEM_FONTS = [
-    FontFamily(
-        name="DejaVu Sans", category=FontCategory.SANS_SERIF, is_system=True,
-        designer="Bitstream", license="Bitstream Vera",
-        variants=[
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.BOLD, weight=700),
-            FontVariant(FontStyle.EXTRA_BOLD, weight=800),
-        ]),
-    FontFamily(
-        name="DejaVu Sans Mono", category=FontCategory.MONOSPACE, is_system=True,
-        designer="Bitstream", license="Bitstream Vera",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="DejaVu Serif", category=FontCategory.SERIF, is_system=True,
-        designer="Bitstream", license="Bitstream Vera",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Liberation Sans", category=FontCategory.SANS_SERIF, is_system=True,
-        designer="Red Hat", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-            FontVariant(FontStyle.ITALIC, italic=True),
-            FontVariant(FontStyle.BOLD_ITALIC, weight=700, italic=True),
-        ]),
-    FontFamily(
-        name="Liberation Mono", category=FontCategory.MONOSPACE, is_system=True,
-        designer="Red Hat", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Noto Sans", category=FontCategory.SANS_SERIF, is_system=True,
-        designer="Google", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.THIN, weight=100),
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.SEMIBOLD, weight=600),
-            FontVariant(FontStyle.BOLD, weight=700),
-            FontVariant(FontStyle.EXTRA_BOLD, weight=900),
-        ]),
-    FontFamily(
-        name="Noto Serif", category=FontCategory.SERIF, is_system=True,
-        designer="Google", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Noto Sans Mono", category=FontCategory.MONOSPACE, is_system=True,
-        designer="Google", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Ubuntu", category=FontCategory.SANS_SERIF, is_system=True,
-        designer="Canonical", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Fira Code", category=FontCategory.MONOSPACE, is_system=True,
-        designer="Nikita Prokopov", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="JetBrains Mono", category=FontCategory.MONOSPACE, is_system=True,
-        designer="JetBrains", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.THIN, weight=100),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-    FontFamily(
-        name="Inter", category=FontCategory.SANS_SERIF, is_system=True,
-        designer="Rasmus Andersson", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.THIN, weight=100),
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.SEMIBOLD, weight=600),
-            FontVariant(FontStyle.BOLD, weight=700),
-            FontVariant(FontStyle.EXTRA_BOLD, weight=900),
-        ]),
-    FontFamily(
-        name="Source Code Pro", category=FontCategory.MONOSPACE, is_system=True,
-        designer="Adobe", license="SIL Open Font",
-        variants=[
-            FontVariant(FontStyle.THIN, weight=100),
-            FontVariant(FontStyle.LIGHT, weight=300),
-            FontVariant(FontStyle.REGULAR, weight=400),
-            FontVariant(FontStyle.MEDIUM, weight=500),
-            FontVariant(FontStyle.SEMIBOLD, weight=600),
-            FontVariant(FontStyle.BOLD, weight=700),
-        ]),
-]
+    @property
+    def font_count(self) -> int:
+        return len(self.fonts)
 
-
-# ---------------------------------------------------------------------------
-# FontManager
-# ---------------------------------------------------------------------------
 
 class FontManager:
-    """Font management UI for Nyrqis.
+    def __init__(self):
+        self._fonts: List[Font] = []
+        self._selected_font: int = 0
+        self._comparison = FontComparison()
+        self._preview_text: str = "The quick brown fox jumps over the lazy dog"
+        self._create_samples()
+        self._setup_comparison()
 
-    Parameters
-    ----------
-    width, height : int
-        Rendering dimensions.
-    """
+    def _create_samples(self):
+        self._fonts = [
+            Font("Inter", FontType.VARIABLE, FontCategory.SANS_SERIF, FontLicense.OFL,
+                 "Rasmus Andersson", installed=True, variable=True,
+                 variable_axes={"wght": (100, 900), "ital": (0, 1)},
+                 languages=["Latin", "Cyrillic", "Greek"], version="4.0"),
+            Font("Fira Code", FontType.TRUETYPE, FontCategory.MONOSPACE, FontLicense.OFL,
+                 "Nikita Prokopov", installed=True, opentype_features=["liga", "calt"],
+                 languages=["Latin", "Cyrillic"], version="6.2"),
+            Font("JetBrains Mono", FontType.TRUETYPE, FontCategory.MONOSPACE, FontLicense.OFL,
+                 "JetBrains", installed=True, opentype_features=["liga", "calt", "ss01"],
+                 languages=["Latin", "Cyrillic"], version="2.304"),
+            Font("Noto Sans", FontType.VARIABLE, FontCategory.SANS_SERIF, FontLicense.APACHE,
+                 "Google", installed=True, variable=True,
+                 languages=["Latin", "Greek", "Cyrillic", "Arabic", "CJK", "Hindi"],
+                 version="2.004"),
+            Font("Merriweather", FontType.TRUETYPE, FontCategory.SERIF, FontLicense.OFL,
+                 "Sorkin Type", installed=True, version="1.0"),
+            Font("Space Grotesk", FontType.VARIABLE, FontCategory.SANS_SERIF, FontLicense.OFL,
+                 "Florian Karsten", installed=True, variable=True, version="3.0"),
+            Font("DM Sans", FontType.VARIABLE, FontCategory.SANS_SERIF, FontLicense.OFL,
+                 "Colophon Foundry", installed=True, variable=True, version="1.0"),
+            Font("Source Code Pro", FontType.TRUETYPE, FontCategory.MONOSPACE, FontLicense.APACHE,
+                 "Adobe", installed=True, version="2.042"),
+            Font("Playfair Display", FontType.TRUETYPE, FontCategory.SERIF, FontLicense.OFL,
+                 "Claus Eggers Sørensen", installed=False, version="8.000"),
+            Font("IBM Plex Mono", FontType.TRUETYPE, FontCategory.MONOSPACE, FontLicense.APACHE,
+                 "Mike Abbink", installed=False, version="1.000"),
+            Font("Manrope", FontType.VARIABLE, FontCategory.SANS_SERIF, FontLicense.OFL,
+                 "Mikhail Sharanda", installed=True, variable=True, version="8.0"),
+            Font("Cascadia Code", FontType.TRUETYPE, FontCategory.MONOSPACE, FontLicense.OFL,
+                 "Microsoft", installed=True, opentype_features=["liga", "calt"],
+                 version="2111.01"),
+        ]
+        self._fonts[0].variants = [
+            FontVariant("Inter Thin", FontWeight.THIN, False, file_size=100000),
+            FontVariant("Inter Light", FontWeight.LIGHT, False, file_size=102000),
+            FontVariant("Inter Regular", FontWeight.REGULAR, False, file_size=105000),
+            FontVariant("Inter Medium", FontWeight.MEDIUM, False, file_size=108000),
+            FontVariant("Inter Bold", FontWeight.BOLD, False, file_size=110000),
+            FontVariant("Inter Black", FontWeight.BLACK, False, file_size=112000),
+        ]
+        self._fonts[1].variants = [
+            FontVariant("Fira Code Regular", FontWeight.REGULAR, False, file_size=280000),
+            FontVariant("Fira Code Bold", FontWeight.BOLD, False, file_size=285000),
+        ]
+        self._fonts[3].variants = [
+            FontVariant("Noto Sans Regular", FontWeight.REGULAR, False, file_size=350000),
+            FontVariant("Noto Sans Bold", FontWeight.BOLD, False, file_size=360000),
+        ]
 
-    PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog"
-    PREVIEW_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 60, 72]
-
-    def __init__(self, width: int = 480, height: int = 600):
-        self.width = width
-        self.height = height
-
-        # Fonts
-        self._families: List[FontFamily] = list(SYSTEM_FONTS)
-        self._user_fonts: List[FontFamily] = []
-
-        # UI state
-        self._search_query: str = ""
-        self._filter_category: Optional[FontCategory] = None
-        self._selected_index: int = 0
-        self._preview_text: str = self.PREVIEW_TEXT
-        self._preview_size: int = 24
-        self._selected_variant: int = 0
-        self._show_only_installed: bool = False
-        self._recent_fonts: List[str] = []
+    def _setup_comparison(self):
+        self._comparison.fonts = [self._fonts[0].family, self._fonts[1].family, self._fonts[2].family]
 
     @property
-    def families(self) -> List[FontFamily]:
-        return list(self._families) + list(self._user_fonts)
+    def selected_font(self) -> Optional[Font]:
+        if 0 <= self._selected_font < len(self._fonts):
+            return self._fonts[self._selected_font]
+        return None
 
     @property
-    def filtered_families(self) -> List[FontFamily]:
-        result = self.families
+    def total_fonts(self) -> int:
+        return len(self._fonts)
 
-        if self._show_only_installed:
-            result = [f for f in result if f.is_installed]
+    @property
+    def installed_fonts(self) -> int:
+        return sum(1 for f in self._fonts if f.installed)
 
-        if self._filter_category is not None:
-            result = [f for f in result if f.category == self._filter_category]
+    def select_font(self, idx: int):
+        if 0 <= idx < len(self._fonts):
+            self._selected_font = idx
 
-        if self._search_query:
-            q = self._search_query.lower()
-            result = [f for f in result if q in f.name.lower()
-                      or q in f.designer.lower()
-                      or q in f.display_category.lower()]
+    def toggle_install(self):
+        font = self.selected_font
+        if font:
+            font.installed = not font.installed
 
-        return sorted(result, key=lambda f: f.name)
+    def render(self, width: int = 80, height: int = 24) -> List[str]:
+        lines = []
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS FONT MANAGER                                       ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
+        lines.append("")
 
-    # -- Font management -------------------------------------------------
-
-    def get_family(self, name: str) -> Optional[FontFamily]:
-        for f in self.families:
-            if f.name == name:
-                return f
-        return None
-
-    def install_font(self, name: str, path: str,
-                     category: FontCategory = FontCategory.SANS_SERIF) -> FontFamily:
-        """Install a user font."""
-        family = FontFamily(
-            name=name, category=category, is_system=False,
-            is_installed=True, path=path,
-            variants=[FontVariant(FontStyle.REGULAR, weight=400, path=path)],
-        )
-        self._user_fonts.append(family)
-        return family
-
-    def uninstall_font(self, name: str) -> bool:
-        """Uninstall a user font (system fonts cannot be removed)."""
-        before = len(self._user_fonts)
-        self._user_fonts = [f for f in self._user_fonts
-                           if f.name != name or f.is_system]
-        return len(self._user_fonts) < before
-
-    def set_preview_text(self, text: str) -> None:
-        self._preview_text = text or self.PREVIEW_TEXT
-
-    def set_preview_size(self, size: int) -> None:
-        self._preview_size = max(8, min(200, size))
-
-    def select_variant(self, index: int) -> None:
-        self._selected_variant = index
-
-    # -- Search / Filter ------------------------------------------------
-
-    def set_search(self, query: str) -> None:
-        self._search_query = query
-        self._selected_index = 0
-
-    def set_category_filter(self, category: Optional[FontCategory]) -> None:
-        self._filter_category = category
-        self._selected_index = 0
-
-    def toggle_installed_only(self) -> bool:
-        self._show_only_installed = not self._show_only_installed
-        return self._show_only_installed
-
-    # -- Navigation ------------------------------------------------------
-
-    def move_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def move_down(self) -> None:
-        families = self.filtered_families
-        self._selected_index = min(len(families) - 1, self._selected_index + 1)
-
-    def select(self) -> Optional[FontFamily]:
-        families = self.filtered_families
-        if 0 <= self._selected_index < len(families):
-            return families[self._selected_index]
-        return None
-
-    def handle_key(self, key: str) -> str:
-        if key == "Up":
-            self.move_up()
-            return "navigate"
-        elif key == "Down":
-            self.move_down()
-            return "navigate"
-        elif key in ("Enter", "Return"):
-            family = self.select()
-            if family:
-                self._recent_fonts = [family.name] + [
-                    n for n in self._recent_fonts if n != family.name][:9]
-                return f"select:{family.name}"
-            return ""
-        elif key == "Escape":
-            return "close"
-        elif key == "BackSpace":
-            self._search_query = self._search_query[:-1]
-            self._selected_index = 0
-            return "search"
-        elif len(key) == 1 and key.isprintable():
-            self._search_query += key
-            self._selected_index = 0
-            return "search"
-        return ""
-
-    # -- Stats -----------------------------------------------------------
-
-    def get_stats(self) -> Dict[str, Any]:
-        all_fonts = self.families
-        return {
-            "total": len(all_fonts),
-            "system": sum(1 for f in all_fonts if f.is_system),
-            "user": sum(1 for f in all_fonts if not f.is_system),
-            "serif": sum(1 for f in all_fonts if f.category == FontCategory.SERIF),
-            "sans_serif": sum(1 for f in all_fonts if f.category == FontCategory.SANS_SERIF),
-            "monospace": sum(1 for f in all_fonts if f.category == FontCategory.MONOSPACE),
-            "preview_size": self._preview_size,
-        }
-
-    # -- Rendering -------------------------------------------------------
-
-    def render(self) -> Tuple[bytes, int, int]:
-        """Render the font manager UI."""
-        w, h = self.width, self.height
-        buf = bytearray(w * h * 3)
-        bg = (30, 30, 40)
-        for i in range(0, len(buf), 3):
-            buf[i] = bg[0]
-            buf[i + 1] = bg[1]
-            buf[i + 2] = bg[2]
-
-        # Header
-        self._fill_rect(buf, w, 0, 0, w, 48, (42, 42, 56))
-
-        # Search bar
-        self._fill_rect(buf, w, 12, 56, w - 24, 32, (42, 42, 56))
+        lines.append(f"  Fonts: {self.total_fonts}  Installed: {self.installed_fonts}  Comparison: {self._comparison.font_count} fonts")
+        lines.append(f"  Preview: {self._preview_text[:50]}")
+        lines.append("")
 
         # Font list
-        y = 100
-        families = self.filtered_families[:12]
-        for i, family in enumerate(families):
-            is_selected = (i == self._selected_index)
-            row_bg = (50, 50, 70) if is_selected else (35, 35, 48)
-            self._fill_rect(buf, w, 4, y, w - 8, 44, row_bg)
+        lines.append("  ── Fonts ──")
+        for i, font in enumerate(self._fonts):
+            sel = "▶" if i == self._selected_font else " "
+            var = "✨" if font.variable else "  "
+            lines.append(f"  {sel} {font.is_installed} {font.type_icon} {font.family:<25s} {font.category.value:<12s} {var} {font.variant_count} variants  {font.license.value}")
+        lines.append("")
 
-            # Category dot
-            cat_colors = {
-                FontCategory.SERIF: (200, 120, 80),
-                FontCategory.SANS_SERIF: (80, 140, 255),
-                FontCategory.MONOSPACE: (80, 200, 120),
-                FontCategory.DISPLAY: (255, 200, 60),
-            }
-            dot_color = cat_colors.get(family.category, (180, 180, 200))
-            self._fill_rect(buf, w, 12, y + 8, 12, 12, dot_color)
+        # Selected font detail
+        font = self.selected_font
+        if font:
+            lines.append(f"  ── {font.family} ──")
+            lines.append(f"  Type: {font.font_type.value}  Category: {font.category.value}  License: {font.license.value}")
+            lines.append(f"  Designer: {font.designer}  Version: {font.version}  Variable: {'Yes' if font.variable else 'No'}")
+            if font.languages:
+                lines.append(f"  Languages: {', '.join(font.languages[:6])}")
+            if font.opentype_features:
+                lines.append(f"  Features: {', '.join(font.opentype_features)}")
+            lines.append("")
 
-            # Font name
-            name_color = (230, 230, 240) if is_selected else (200, 200, 210)
-            self._fill_rect(buf, w, 32, y + 8, 160, 14, name_color)
+            # Variants
+            if font.variants:
+                lines.append("  ── Variants ──")
+                for v in font.variants:
+                    lines.append(f"  {v.style_str:<20s}  {v.size_str}")
+                lines.append("")
 
-            # Variant count
-            self._fill_rect(buf, w, 32, y + 26, 60, 10, (120, 120, 140))
+            # Variable axes
+            if font.variable and font.variable_axes:
+                lines.append("  ── Variable Axes ──")
+                for axis, (min_val, max_val) in font.variable_axes.items():
+                    filled = int((max_val - min_val) / 10)
+                    lines.append(f"  {axis}: {min_val}-{max_val}  [{'█' * min(filled, 20)}]")
+                lines.append("")
 
-            y += 48
+            # Preview
+            lines.append(f"  ── Preview ──")
+            for size in [14, 18, 24, 32]:
+                lines.append(f"  [{size}pt] {self._preview_text[:55]}")
+            lines.append("")
 
-        # Preview area at bottom
-        preview_y = max(y + 20, h - 100)
-        self._fill_rect(buf, w, 12, preview_y, w - 24, 80, (42, 42, 56))
-        # Preview text placeholder
-        bar_w = min(300, (w - 48) * self._preview_size // 36)
-        self._fill_rect(buf, w, 20, preview_y + 20, bar_w, 16, (200, 200, 210))
-        self._fill_rect(buf, w, 20, preview_y + 44, bar_w // 2, 12, (120, 120, 140))
+        # Comparison
+        lines.append("  ── Comparison ──")
+        for f_name in self._comparison.fonts:
+            lines.append(f"  {f_name}: {self._preview_text[:45]}")
+        lines.append("")
 
-        return bytes(buf), w, h
-
-    def _fill_rect(self, buf: bytearray, buf_width: int,
-                   x: int, y: int, w: int, h: int,
-                   color: Tuple[int, int, int]) -> None:
-        buf_height = len(buf) // (buf_width * 3)
-        for dy in range(h):
-            for dx in range(w):
-                px, py = x + dx, y + dy
-                if 0 <= px < buf_width and 0 <= py < buf_height:
-                    idx = (py * buf_width + px) * 3
-                    if idx + 2 < len(buf):
-                        buf[idx] = color[0]
-                        buf[idx + 1] = color[1]
-                        buf[idx + 2] = color[2]
-
-    # -- Serialization ---------------------------------------------------
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "total": len(self.families),
-            "preview_text": self._preview_text,
-            "preview_size": self._preview_size,
-            "recent": self._recent_fonts[:5],
-        }
-
-
-__all__ = [
-    "FontManager", "FontFamily", "FontVariant",
-    "FontCategory", "FontStyle", "SYSTEM_FONTS",
-]
+        lines.append("  [↑↓]Select [I]Install/Uninstall [C]Compare [P]Preview Text [F]Filter")
+        return lines
