@@ -1,26 +1,10 @@
-"""
-Nyrqis Clipboard Pro — advanced clipboard management application.
-
-Features:
-- Extended clipboard history with categories
-- Pin frequently used items
-- Snippet templates with variables
-- Search and filter
-- Auto-clear timer
-- Cross-app clipboard sync
-- Keyboard navigation throughout
-"""
-
-import time
-import hashlib
-import re
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from enum import Enum
+from typing import Optional
+import time
 
 
-class ClipCategory(Enum):
+class ClipType(Enum):
     TEXT = "text"
     CODE = "code"
     LINK = "link"
@@ -28,381 +12,241 @@ class ClipCategory(Enum):
     FILE = "file"
     COLOR = "color"
     PASSWORD = "password"
-    OTHER = "other"
 
 
-class SnippetVariable(Enum):
-    CURSOR = "cursor"
-    DATE = "date"
-    TIME = "time"
-    CLIPBOARD = "clipboard"
-    SELECTION = "selection"
+class SyncStatus(Enum):
+    SYNCED = "synced"
+    PENDING = "pending"
+    CONFLICT = "conflict"
+    DISABLED = "disabled"
 
 
-CATEGORY_ICONS = {
-    ClipCategory.TEXT: "📝",
-    ClipCategory.CODE: "💻",
-    ClipCategory.LINK: "🔗",
-    ClipCategory.IMAGE: "🖼️",
-    ClipCategory.FILE: "📁",
-    ClipCategory.COLOR: "🎨",
-    ClipCategory.PASSWORD: "🔐",
-    ClipCategory.OTHER: "❓",
-}
+class SnippetCategory(Enum):
+    GENERAL = "general"
+    CODE = "code"
+    EMAIL = "email"
+    URL = "url"
+    TEMPLATE = "template"
+    SQL = "sql"
+    SHELL = "shell"
+    MARKDOWN = "markdown"
 
 
 @dataclass
-class ClipboardItem:
-    """A clipboard history item."""
+class ClipEntry:
     content: str
-    category: ClipCategory = ClipCategory.TEXT
-    source_app: str = ""
-    pinned: bool = False
-    favorite: bool = False
-    timestamp: float = field(default_factory=time.time)
-    use_count: int = 1
-    size_bytes: int = 0
-    language: str = ""
-    item_id: str = ""
-
-    def __post_init__(self):
-        if not self.item_id:
-            self.item_id = hashlib.md5(f"{self.content}{self.timestamp}".encode()).hexdigest()[:8]
-        if self.size_bytes <= 0:
-            self.size_bytes = len(self.content.encode())
-
-    @property
-    def category_icon(self) -> str:
-        return CATEGORY_ICONS.get(self.category, "❓")
-
-    @property
-    def display(self) -> str:
-        pin = " 📌" if self.pinned else ""
-        fav = " ⭐" if self.favorite else ""
-        first_line = self.content.split("\n")[0][:50]
-        return f"{self.category_icon} {first_line}{pin}{fav}"
-
-    @property
-    def preview(self) -> str:
-        lines = self.content.split("\n")
-        if len(lines) > 1:
-            return f"{lines[0][:40]}... ({len(lines)} lines)"
-        return self.content[:60]
-
-    @property
-    def size_str(self) -> str:
-        if self.size_bytes >= 1048576:
-            return f"{self.size_bytes / 1048576:.1f} MB"
-        elif self.size_bytes >= 1024:
-            return f"{self.size_bytes / 1024:.1f} KB"
-        return f"{self.size_bytes} B"
-
-    @property
-    def time_ago(self) -> str:
-        diff = time.time() - self.timestamp
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            return f"{int(diff // 60)}m ago"
-        elif diff < 86400:
-            return f"{int(diff // 3600)}h ago"
-        return datetime.fromtimestamp(self.timestamp).strftime("%b %d")
-
-
-@dataclass
-class SnippetTemplate:
-    """A saved snippet template."""
-    name: str
-    content: str
-    category: ClipCategory = ClipCategory.TEXT
-    shortcut: str = ""  # keyboard shortcut
-    tags: List[str] = field(default_factory=list)
+    clip_type: ClipType
+    source: str
+    timestamp: float
+    is_pinned: bool = False
+    is_favorite: bool = False
     use_count: int = 0
-    created: float = field(default_factory=time.time)
-    snippet_id: str = ""
-
-    def __post_init__(self):
-        if not self.snippet_id:
-            self.snippet_id = hashlib.md5(f"{self.name}{self.created}".encode()).hexdigest()[:8]
-
-    @property
-    def category_icon(self) -> str:
-        return CATEGORY_ICONS.get(self.category, "❓")
-
-    @property
-    def display(self) -> str:
-        shortcut = f" [{self.shortcut}]" if self.shortcut else ""
-        return f"{self.category_icon} {self.name}{shortcut}"
+    tags: list = field(default_factory=list)
+    device: str = "local"
+    sync_status: SyncStatus = SyncStatus.SYNCED
 
     @property
     def preview(self) -> str:
         return self.content[:50] + "..." if len(self.content) > 50 else self.content
 
     @property
-    def has_variables(self) -> bool:
-        return "${" in self.content or "$(" in self.content
+    def age_display(self) -> str:
+        age = int((time.time() - self.timestamp) / 60)
+        if age < 1:
+            return "just now"
+        if age < 60:
+            return f"{age}m ago"
+        hours = age // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        return f"{hours // 24}d ago"
 
-    def render(self, variables: Dict[str, str] = None) -> str:
-        result = self.content
-        if variables:
-            for key, val in variables.items():
-                result = result.replace(f"${{{key}}}", val)
-        return result
+    @property
+    def type_icon(self) -> str:
+        icons = {"text": "📝", "code": "💻", "link": "🔗", "image": "🖼️", "file": "📁", "color": "🎨", "password": "🔐"}
+        return icons.get(self.clip_type.value, "📝")
+
+
+@dataclass
+class Snippet:
+    name: str
+    content: str
+    category: SnippetCategory
+    shortcut: str = ""
+    use_count: int = 0
+    tags: list = field(default_factory=list)
+
+    @property
+    def preview(self) -> str:
+        return self.content[:40] + "..." if len(self.content) > 40 else self.content
+
+
+@dataclass
+class SyncDevice:
+    name: str
+    device_type: str
+    last_sync: float
+    status: SyncStatus
+    entries_synced: int = 0
 
 
 class ClipboardPro:
-    """Advanced clipboard management for Nyrqis OS."""
-
     def __init__(self):
-        self._items: List[ClipboardItem] = []
-        self._snippets: List[SnippetTemplate] = []
-        self._selected_index: int = 0
-        self._view_mode: str = "history"  # history, snippets, favorites
-        self._filter_category: Optional[ClipCategory] = None
+        self._entries: list[ClipEntry] = []
+        self._selected: int = 0
+        self._snippets: list[Snippet] = []
+        self._selected_snippet: int = 0
+        self._devices: list[SyncDevice] = []
         self._search_query: str = ""
-        self._auto_clear_seconds: int = 0  # 0 = disabled
+        self._filter_type: Optional[ClipType] = None
         self._max_history: int = 500
+        self._auto_clear_mins: int = 0
+        self._sync_enabled: bool = True
+        self._view: str = "history"
+        self._create_samples()
 
-        self._init_sample_data()
-
-    def _init_sample_data(self) -> None:
+    def _create_samples(self):
         now = time.time()
-        self._items = [
-            ClipboardItem("git commit -m 'Add feature'\ngit push origin main", ClipCategory.CODE,
-                          "terminal", pinned=True, use_count=15, language="shell"),
-            ClipboardItem("https://github.com/Myco-mycelium/Nythera", ClipCategory.LINK,
-                          "browser", use_count=8),
-            ClipboardItem("def calculate_bmi(weight, height):\n    return weight / (height ** 2)",
-                          ClipCategory.CODE, "code-editor", use_count=5, language="python"),
-            ClipboardItem("#7aa2f7", ClipCategory.COLOR, "color-picker", use_count=3),
-            ClipboardItem("Meeting notes from sprint planning:\n- Complete UI components\n- Write tests\n- Deploy to staging",
-                          ClipCategory.TEXT, "notes", pinned=True),
-            ClipboardItem("ssh user@server.nyrqis.os -p 22", ClipCategory.CODE,
-                          "terminal", use_count=2, language="shell"),
-            ClipboardItem("https://nyrqis.os/docs/getting-started", ClipCategory.LINK,
-                          "browser"),
-            ClipboardItem("SELECT * FROM users WHERE active = 1 ORDER BY name;",
-                          ClipCategory.CODE, "database-viewer", use_count=4, language="sql"),
-            ClipboardItem("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore.",
-                          ClipCategory.TEXT, "editor"),
-            ClipboardItem("S3cr3tP@ssw0rd!", ClipCategory.PASSWORD, "password-manager",
-                          favorite=True),
+        self._entries = [
+            ClipEntry("def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        yield a\n        a, b = b, a + b", ClipType.CODE, "vscode", now - 120, is_pinned=True, use_count=15, tags=["python"]),
+            ClipEntry("https://github.com/Myco-mycelium/Nythera", ClipType.LINK, "firefox", now - 300, use_count=8),
+            ClipEntry("Meeting notes from sprint review - Q3 progress looks good", ClipType.TEXT, "thunderbird", now - 600, use_count=3),
+            ClipEntry("#FF6B6B", ClipType.COLOR, "gimp", now - 900, use_count=2),
+            ClipEntry("ssh root@server.nyrqis.dev", ClipType.CODE, "terminal", now - 1200, use_count=22, tags=["ssh"]),
+            ClipEntry("SELECT * FROM users WHERE active = true LIMIT 10;", ClipType.CODE, "dbeaver", now - 1800, use_count=5, tags=["sql"]),
+            ClipEntry("git commit -m \"Fix compositor frame pacing\"", ClipType.CODE, "terminal", now - 2400, use_count=12, tags=["git"]),
+            ClipEntry("/home/user/Documents/report-final-v3.pdf", ClipType.FILE, "nautilus", now - 3600, use_count=1),
+            ClipEntry("pip install --upgrade nyrqis-core", ClipType.CODE, "terminal", now - 5400, use_count=7, tags=["pip"]),
+            ClipEntry("The quick brown fox jumps over the lazy dog", ClipType.TEXT, "gedit", now - 7200, use_count=2),
+            ClipEntry("S3cr3tP@ssw0rd!2026", ClipType.PASSWORD, "bitwarden", now - 10800, use_count=4, tags=["password"]),
+            ClipEntry("docker compose up -d --build", ClipType.CODE, "terminal", now - 14400, use_count=18, tags=["docker"]),
         ]
 
         self._snippets = [
-            SnippetTemplate("Git Commit", "git add -A && git commit -m ''\ngit push origin main",
-                            ClipCategory.CODE, "Ctrl+Shift+G", ["git", "commit"]),
-            SnippetTemplate("Python Function", "def function_name(params):\n    \"\"\"Docstring.\"\"\"\n    pass",
-                            ClipCategory.CODE, "Ctrl+Shift+F", ["python", "function"]),
-            SnippetTemplate("SQL Select", "SELECT column1, column2\nFROM table_name\nWHERE condition\nORDER BY column1\nLIMIT 10;",
-                            ClipCategory.CODE, "", ["sql", "query"]),
-            SnippetTemplate("Email Signature", "---\nBest regards,\nUser\nNyrqis OS Team",
-                            ClipCategory.TEXT, "Ctrl+Shift+S", ["email", "signature"]),
-            SnippetTemplate("Markdown Table", "| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n| Data     | Data     | Data     |",
-                            ClipCategory.TEXT, "", ["markdown", "table"]),
-            SnippetTemplate("HTML Boilerplate", "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>${title}</title>\n</head>\n<body>\n  ${cursor}\n</body>\n</html>",
-                            ClipCategory.CODE, "", ["html", "template"]),
-            SnippetTemplate("Date Stamp", "$(date +%Y-%m-%d)", ClipCategory.TEXT, "", ["date"]),
-            SnippetTemplate("API Response", '{\n  "status": "success",\n  "data": {},\n  "message": ""\n}',
-                            ClipCategory.CODE, "", ["json", "api"]),
+            Snippet("Python Function", "def function_name(param):\n    pass", SnippetCategory.CODE, "Ctrl+Shift+F"),
+            Snippet("Git Commit", "git commit -m \"message\"", SnippetCategory.SHELL, "Ctrl+Shift+G"),
+            Snippet("Email Signature", "---\nBest regards,\nNyrqis Dev Team\nhttps://nyrqis.dev", SnippetCategory.EMAIL, ""),
+            Snippet("SQL Select", "SELECT column FROM table WHERE condition;", SnippetCategory.SQL, ""),
+            Snippet("Markdown Table", "| Header | Header |\n|--------|--------|\n| Cell   | Cell   |", SnippetCategory.MARKDOWN, ""),
+            Snippet("Dockerfile", "FROM ubuntu:24.04\nRUN apt update && apt install -y python3\nCOPY . /app\nCMD [\"python3\", \"main.py\"]", SnippetCategory.CODE, ""),
+            Snippet("API Response", '{\n  "status": "success",\n  "data": {},\n  "message": ""\n}', SnippetCategory.CODE, ""),
         ]
 
-    def copy_item(self, content: str, category: ClipCategory = ClipCategory.TEXT,
-                  source: str = "") -> ClipboardItem:
-        item = ClipboardItem(content, category, source)
-        self._items.insert(0, item)
-        if len(self._items) > self._max_history:
-            self._items.pop()
-        return item
+        self._devices = [
+            SyncDevice("nyrqis-workstation", "desktop", now - 60, SyncStatus.SYNCED, 12),
+            SyncDevice("nyrqis-laptop", "laptop", now - 300, SyncStatus.SYNCED, 12),
+            SyncDevice("nyrqis-phone", "phone", now - 1800, SyncStatus.PENDING, 10),
+        ]
 
-    def pin_item(self, index: int) -> bool:
-        items = self._get_filtered_items()
-        if 0 <= index < len(items):
-            items[index].pinned = not items[index].pinned
-            return True
-        return False
-
-    def favorite_item(self, index: int) -> bool:
-        items = self._get_filtered_items()
-        if 0 <= index < len(items):
-            items[index].favorite = not items[index].favorite
-            return True
-        return False
-
-    def delete_item(self, index: int) -> bool:
-        items = self._get_filtered_items()
-        if 0 <= index < len(items):
-            self._items.remove(items[index])
-            return True
-        return False
-
-    def clear_history(self) -> int:
-        count = len(self._items)
-        self._items.clear()
-        return count
-
-    def use_snippet(self, index: int) -> Optional[str]:
-        if 0 <= index < len(self._snippets):
-            snippet = self._snippets[index]
-            snippet.use_count += 1
-            return snippet.render()
+    @property
+    def selected_entry(self) -> Optional[ClipEntry]:
+        if 0 <= self._selected < len(self._entries):
+            return self._entries[self._selected]
         return None
 
-    def add_snippet(self, name: str, content: str, category: ClipCategory = ClipCategory.TEXT) -> SnippetTemplate:
-        snippet = SnippetTemplate(name=name, content=content, category=category)
-        self._snippets.append(snippet)
-        return snippet
-
-    def delete_snippet(self, index: int) -> bool:
-        if 0 <= index < len(self._snippets):
-            self._snippets.pop(index)
-            return True
-        return False
-
-    def set_search(self, query: str) -> None:
-        self._search_query = query
-
-    def set_filter(self, category: Optional[ClipCategory]) -> None:
-        self._filter_category = category
-
-    def _get_filtered_items(self) -> List[ClipboardItem]:
-        items = list(self._items)
-        if self._filter_category:
-            items = [i for i in items if i.category == self._filter_category]
-        if self._search_query:
-            q = self._search_query.lower()
-            items = [i for i in items if q in i.content.lower() or q in i.source_app.lower()]
-        pinned = [i for i in items if i.pinned]
-        unpinned = [i for i in items if not i.pinned]
-        return pinned + unpinned
-
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def select_down(self) -> None:
-        items = self._get_display_list()
-        self._selected_index = min(len(items) - 1, self._selected_index + 1)
-
-    def get_selected_item(self):
-        items = self._get_display_list()
-        if 0 <= self._selected_index < len(items):
-            return items[self._selected_index]
+    @property
+    def selected_snippet(self) -> Optional[Snippet]:
+        if 0 <= self._selected_snippet < len(self._snippets):
+            return self._snippets[self._selected_snippet]
         return None
 
-    def _get_display_list(self) -> list:
-        if self._view_mode == "snippets":
-            return self._snippets
-        elif self._view_mode == "favorites":
-            return [i for i in self._items if i.favorite or i.pinned]
-        return self._get_filtered_items()
-
-    def set_view(self, mode: str) -> None:
-        self._view_mode = mode
-        self._selected_index = 0
-
     @property
-    def selected_index(self) -> int:
-        return self._selected_index
-
-    @property
-    def view_mode(self) -> str:
-        return self._view_mode
-
-    @property
-    def total_items(self) -> int:
-        return len(self._items)
+    def total_entries(self) -> int:
+        return len(self._entries)
 
     @property
     def pinned_count(self) -> int:
-        return sum(1 for i in self._items if i.pinned)
+        return sum(1 for e in self._entries if e.is_pinned)
 
-    def render_history(self, width: int = 70) -> List[str]:
+    @property
+    def favorite_count(self) -> int:
+        return sum(1 for e in self._entries if e.is_favorite)
+
+    @property
+    def total_copies(self) -> int:
+        return sum(e.use_count for e in self._entries)
+
+    def select(self, idx: int):
+        if 0 <= idx < len(self._entries):
+            self._selected = idx
+
+    def select_snippet(self, idx: int):
+        if 0 <= idx < len(self._snippets):
+            self._selected_snippet = idx
+
+    def copy_entry(self, idx: int) -> str:
+        if 0 <= idx < len(self._entries):
+            entry = self._entries[idx]
+            entry.use_count += 1
+            return entry.content
+        return ""
+
+    def pin_entry(self, idx: int):
+        if 0 <= idx < len(self._entries):
+            self._entries[idx].is_pinned = not self._entries[idx].is_pinned
+
+    def delete_entry(self, idx: int) -> bool:
+        if 0 <= idx < len(self._entries):
+            self._entries.pop(idx)
+            if self._selected >= len(self._entries):
+                self._selected = max(0, len(self._entries) - 1)
+            return True
+        return False
+
+    def search(self, query: str) -> list:
+        self._search_query = query
+        return [e for e in self._entries if query.lower() in e.content.lower() or query.lower() in " ".join(e.tags)]
+
+    def render(self, width: int = 80, height: int = 20) -> list:
         lines = []
-        lines.append(f" 📋 Clipboard History ({self.total_items} items, {self.pinned_count} pinned)")
-        lines.append("─" * width)
-        items = self._get_filtered_items()
-        for i, item in enumerate(items[:15]):
-            marker = "▸" if i == self._selected_index else " "
-            lines.append(f"{marker} {item.display}")
-            lines.append(f"   {item.source_app or '—'} | {item.size_str} | {item.use_count}x | {item.time_ago}")
-            lines.append("")
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Copy  P:Pin  F:Favorite  Del:Delete")
-        lines.append(" S:Snippets  ⭐:Favorites  Esc:Clear filter")
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS CLIPBOARD PRO                                    ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
+        lines.append("")
+        sync = "🟢 ON" if self._sync_enabled else "🔴 OFF"
+        lines.append(f"  History: {self.total_entries}  📌 {self.pinned_count}  ⭐ {self.favorite_count}  📋 {self.total_copies} copies  Sync: {sync}")
+        lines.append(f"  Max: {self._max_history}  Auto-clear: {self._auto_clear_mins}min  Devices: {len(self._devices)}")
+        lines.append("")
+        lines.append("  ── Clipboard History ──")
+        for i, e in enumerate(self._entries[:12]):
+            sel = "▶" if i == self._selected else " "
+            pin = "📌" if e.is_pinned else " "
+            fav = "⭐" if e.is_favorite else " "
+            sync_icons = {"synced": "🟢", "pending": "🟡", "conflict": "🔴", "disabled": "⚪"}
+            sync_icon = sync_icons.get(e.sync_status.value, "?")
+            lines.append(f"  {sel}{pin}{fav} {e.type_icon} {e.source:<12s} {e.preview}")
+            lines.append(f"    {e.age_display}  uses: {e.use_count}  {sync_icon} {e.device}")
+        lines.append("")
+        lines.append("  ── Snippets ──")
+        for i, s in enumerate(self._snippets[:5]):
+            sel = "▶" if i == self._selected_snippet else " "
+            lines.append(f"  {sel} {s.name}  [{s.category.value}]  {s.shortcut or ''}  {s.preview}")
+        lines.append("")
+        lines.append("  ── Devices ──")
+        for d in self._devices:
+            sync_icons = {"synced": "🟢", "pending": "🟡", "conflict": "🔴", "disabled": "⚪"}
+            lines.append(f"  {sync_icons.get(d.status.value, '?')} {d.name}  ({d.device_type})  {d.entries_synced} entries")
+        lines.append("")
+        lines.append("  [C]opy  [P]in  [F]avorite  [D]elete  [S]earch  [N]ew snippet  [/]filter")
         return lines
 
-    def render_snippets(self, width: int = 70) -> List[str]:
+    def render_entry_detail(self) -> list:
+        e = self.selected_entry
+        if not e:
+            return ["  No entry selected"]
         lines = []
-        lines.append(f" 💾 Snippet Templates ({len(self._snippets)})")
-        lines.append("─" * width)
-        for i, snippet in enumerate(self._snippets):
-            marker = "▸" if i == self._selected_index else " "
-            lines.append(f"{marker} {snippet.display}")
-            lines.append(f"   {snippet.preview}")
-            lines.append(f"   Used {snippet.use_count}x | Tags: {', '.join(snippet.tags)}")
-            lines.append("")
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Use  N:New  Del:Delete  H:History")
+        lines.append(f"  ── {e.clip_type.value.upper()} ──")
+        lines.append(f"  Source: {e.source}")
+        lines.append(f"  Device: {e.device}")
+        lines.append(f"  Age: {e.age_display}")
+        lines.append(f"  Uses: {e.use_count}")
+        lines.append(f"  Pinned: {'Yes' if e.is_pinned else 'No'}")
+        lines.append(f"  Favorite: {'Yes' if e.is_favorite else 'No'}")
+        lines.append(f"  Sync: {e.sync_status.value}")
+        if e.tags:
+            lines.append(f"  Tags: {', '.join(e.tags)}")
+        lines.append("")
+        lines.append("  ── Content ──")
+        for line in e.content.split("\n"):
+            lines.append(f"  │ {line}")
         return lines
-
-    def render_favorites(self, width: int = 70) -> List[str]:
-        lines = []
-        favs = self._get_display_list()
-        lines.append(f" ⭐ Favorites & Pinned ({len(favs)})")
-        lines.append("─" * width)
-        for i, item in enumerate(favs):
-            marker = "▸" if i == self._selected_index else " "
-            lines.append(f"{marker} {item.display}")
-            lines.append(f"   {item.source_app} | {item.size_str}")
-            lines.append("")
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Copy  Esc:Back")
-        return lines
-
-    def render(self, width: int = 70, height: int = 30) -> List[str]:
-        renderers = {"snippets": self.render_snippets, "favorites": self.render_favorites}
-        renderer = renderers.get(self._view_mode, self.render_history)
-        return renderer(width)
-
-    def handle_key(self, key: str) -> Optional[str]:
-        if self._view_mode == "snippets":
-            if key == "Escape":
-                self.set_view("history")
-                return "back"
-            if key == "ArrowUp":
-                self.select_up()
-                return "select_up"
-            if key == "ArrowDown":
-                self.select_down()
-                return "select_down"
-            if key == "Enter":
-                return "use_snippet" if self.use_snippet(self._selected_index) else "use_failed"
-            return None
-        if self._view_mode == "favorites":
-            if key == "Escape":
-                self.set_view("history")
-                return "back"
-            if key == "ArrowUp":
-                self.select_up()
-                return "select_up"
-            if key == "ArrowDown":
-                self.select_down()
-                return "select_down"
-            return None
-        if key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        if key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        if key == "p":
-            return "pin" if self.pin_item(self._selected_index) else "pin_failed"
-        if key == "f":
-            self.set_view("favorites")
-            return "favorites"
-        if key == "s":
-            self.set_view("snippets")
-            return "snippets"
-        if key == "Delete":
-            return "delete" if self.delete_item(self._selected_index) else "delete_failed"
-        return None
