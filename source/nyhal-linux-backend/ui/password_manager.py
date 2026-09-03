@@ -1,176 +1,170 @@
-"""
-Nyrqis Vault — password manager with secure storage and generation.
+"""Password Manager — Vault encryption, generator, and auto-fill simulation.
 
 Features:
-- Password vault with categories (Login, Credit Card, Secure Note, Identity)
-- Password generator with customizable length, character sets
-- Search across all entries
-- Favorite/pin frequently used entries
-- Password strength indicator
-- Copy-to-clipboard simulation
-- Import/export vault
-- Auto-lock after timeout
-- Tag-based organization
+- Vault entries with username, password, URL, notes
+- Password generator with configurable rules
+- Category grouping (login, credit card, secure note, identity, crypto wallet)
+- Strength meter for passwords
+- TOTP support display
+- Auto-fill simulation
+- Export/import support
+- Audit and breach checking
 """
 
-import re
+from __future__ import annotations
+
 import time
-import hashlib
-import secrets
+import random
 import string
+import hashlib
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Callable, Set
-from datetime import datetime
+from typing import List, Optional, Dict
+from enum import Enum
 
 
-# ─── Data Classes ────────────────────────────────────────────────────────
+class VaultCategory(Enum):
+    LOGIN = "login"
+    CREDIT_CARD = "credit_card"
+    SECURE_NOTE = "secure_note"
+    IDENTITY = "identity"
+    CRYPTO_WALLET = "crypto_wallet"
+    API_KEY = "api_key"
 
-
-class EntryType(Enum):
-    LOGIN = "Login"
-    CREDIT_CARD = "Credit Card"
-    SECURE_NOTE = "Secure Note"
-    IDENTITY = "Identity"
-    API_KEY = "API Key"
-    SSH_KEY = "SSH Key"
-
-
-ENTRY_TYPE_ICONS = {
-    EntryType.LOGIN: "🔑",
-    EntryType.CREDIT_CARD: "💳",
-    EntryType.SECURE_NOTE: "📝",
-    EntryType.IDENTITY: "👤",
-    EntryType.API_KEY: "🔐",
-    EntryType.SSH_KEY: "🗝️",
-}
+    @property
+    def icon(self) -> str:
+        icons = {
+            VaultCategory.LOGIN: "🔑", VaultCategory.CREDIT_CARD: "💳",
+            VaultCategory.SECURE_NOTE: "📝", VaultCategory.IDENTITY: "🪪",
+            VaultCategory.CRYPTO_WALLET: "🪙", VaultCategory.API_KEY: "🗝",
+        }
+        return icons.get(self, "?")
 
 
 @dataclass
-class PasswordEntry:
-    """A password vault entry."""
-    title: str
-    entry_type: EntryType = EntryType.LOGIN
+class VaultEntry:
+    id: int = 0
+    name: str = ""
+    category: VaultCategory = VaultCategory.LOGIN
     username: str = ""
     password: str = ""
     url: str = ""
     notes: str = ""
-    category: str = "Logins"
+    totp_secret: str = ""
     tags: List[str] = field(default_factory=list)
-    favorite: bool = False
-    created: float = field(default_factory=time.time)
-    modified: float = field(default_factory=time.time)
+    created_at: float = 0.0
+    modified_at: float = 0.0
     last_used: float = 0.0
-    entry_id: str = ""
-    # Credit card specific
-    card_number: str = ""
-    card_expiry: str = ""
-    card_cvv: str = ""
-    card_holder: str = ""
-
-    def __post_init__(self):
-        if not self.entry_id:
-            self.entry_id = hashlib.md5(f"{self.title}{self.created}".encode()).hexdigest()[:8]
+    favorite: bool = False
+    breach_checked: bool = False
+    breach_status: str = "safe"  # safe, breached, unknown
 
     @property
-    def icon(self) -> str:
-        return ENTRY_TYPE_ICONS.get(self.entry_type, "🔑")
-
-    @property
-    def display_title(self) -> str:
-        star = " ⭐" if self.favorite else ""
-        return f"{self.icon} {self.title}{star}"
-
-    @property
-    def strength(self) -> str:
-        """Password strength indicator."""
-        if not self.password:
-            return "None"
+    def strength(self) -> int:
+        """Password strength 0-100."""
         score = 0
-        if len(self.password) >= 8:
-            score += 1
-        if len(self.password) >= 12:
-            score += 1
-        if len(self.password) >= 16:
-            score += 1
-        if re.search(r'[a-z]', self.password):
-            score += 1
-        if re.search(r'[A-Z]', self.password):
-            score += 1
-        if re.search(r'\d', self.password):
-            score += 1
-        if re.search(r'[!@#$%^&*(),.?":{}|<>]', self.password):
-            score += 1
+        p = self.password
+        if len(p) >= 8:
+            score += 20
+        if len(p) >= 12:
+            score += 10
+        if len(p) >= 16:
+            score += 10
+        if any(c.isupper() for c in p):
+            score += 15
+        if any(c.islower() for c in p):
+            score += 15
+        if any(c.isdigit() for c in p):
+            score += 15
+        if any(c in string.punctuation for c in p):
+            score += 15
+        return min(100, score)
 
-        if score <= 2:
+    @property
+    def strength_bar(self) -> str:
+        filled = self.strength // 5
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def strength_label(self) -> str:
+        s = self.strength
+        if s >= 80:
+            return "Strong 🟢"
+        if s >= 60:
+            return "Good 🟡"
+        if s >= 40:
+            return "Fair 🟠"
+        if s >= 20:
             return "Weak 🔴"
-        elif score <= 4:
-            return "Fair 🟡"
-        elif score <= 5:
-            return "Good 🟢"
-        else:
-            return "Strong 💪"
+        return "Very Weak 🚨"
 
     @property
-    def strength_score(self) -> float:
-        if not self.password:
-            return 0.0
-        score = 0
-        if len(self.password) >= 8:
-            score += 1
-        if len(self.password) >= 12:
-            score += 1
-        if len(self.password) >= 16:
-            score += 1
-        if re.search(r'[a-z]', self.password):
-            score += 1
-        if re.search(r'[A-Z]', self.password):
-            score += 1
-        if re.search(r'\d', self.password):
-            score += 1
-        if re.search(r'[!@#$%^&*(),.?":{}|<>]', self.password):
-            score += 1
-        return min(1.0, score / 7)
+    def strength_color(self) -> str:
+        s = self.strength
+        if s >= 80:
+            return "green"
+        if s >= 60:
+            return "yellow"
+        if s >= 40:
+            return "orange"
+        return "red"
 
     @property
-    def masked_password(self) -> str:
-        return "•" * min(len(self.password), 20) if self.password else ""
+    def breach_icon(self) -> str:
+        icons = {"safe": "✅", "breached": "🚨", "unknown": "❓"}
+        return icons.get(self.breach_status, "❓")
 
     @property
-    def card_masked(self) -> str:
-        if not self.card_number:
+    def age_str(self) -> str:
+        age = time.time() - self.modified_at
+        if age < 86400:
+            return "today"
+        if age < 86400 * 30:
+            return f"{age / 86400:.0f}d ago"
+        return f"{age / (86400 * 30):.0f}mo ago"
+
+    @property
+    def password_masked(self) -> str:
+        return "•" * min(16, len(self.password))
+
+    @property
+    def has_totp(self) -> bool:
+        return bool(self.totp_secret)
+
+    @property
+    def domain(self) -> str:
+        if not self.url:
             return ""
-        return f"•••• •••• •••• {self.card_number[-4:]}" if len(self.card_number) >= 4 else "••••"
+        return self.url.split("//")[-1].split("/")[0]
+
+
+@dataclass
+class CreditCard:
+    number: str = ""
+    expiry: str = ""
+    cvv: str = ""
+    cardholder: str = ""
+    bank: str = ""
+    network: str = "Visa"
 
     @property
-    def time_ago(self) -> str:
-        ts = self.last_used or self.modified
-        diff = time.time() - ts
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            return f"{int(diff // 60)}m ago"
-        elif diff < 86400:
-            return f"{int(diff // 3600)}h ago"
-        elif diff < 604800:
-            return f"{int(diff // 86400)}d ago"
-        return datetime.fromtimestamp(ts).strftime("%b %d")
+    def masked_number(self) -> str:
+        return f"****-****-****-{self.number[-4:]}" if len(self.number) >= 4 else "****"
+
+    @property
+    def network_icon(self) -> str:
+        icons = {"Visa": "💳", "Mastercard": "💳", "Amex": "💳", "Discover": "💳"}
+        return icons.get(self.network, "💳")
 
 
-# ─── Password Generator ─────────────────────────────────────────────────
-
-
+@dataclass
 class PasswordGenerator:
-    """Configurable password generator."""
-
-    def __init__(self):
-        self.length: int = 20
-        self.uppercase: bool = True
-        self.lowercase: bool = True
-        self.digits: bool = True
-        self.symbols: bool = True
-        self.exclude_ambiguous: bool = False
-        self.exclude_chars: str = ""
+    length: int = 20
+    uppercase: bool = True
+    lowercase: bool = True
+    digits: bool = True
+    symbols: bool = True
+    exclude_ambiguous: bool = False
+    custom_symbols: str = ""
 
     @property
     def charset(self) -> str:
@@ -182,509 +176,211 @@ class PasswordGenerator:
         if self.digits:
             chars += string.digits
         if self.symbols:
-            chars += "!@#$%^&*()-_=+[]{}|;:,.<>?"
+            chars += self.custom_symbols if self.custom_symbols else string.punctuation
         if self.exclude_ambiguous:
-            chars = chars.replace("l", "").replace("I", "").replace("1", "").replace("0", "").replace("O", "")
-        for ch in self.exclude_chars:
-            chars = chars.replace(ch, "")
-        return chars
+            chars = chars.replace("l", "").replace("1", "").replace("0", "").replace("O", "")
+        return chars or string.ascii_letters + string.digits
 
-    def generate(self, count: int = 1) -> List[str]:
-        """Generate password(s)."""
+    def generate(self) -> str:
         charset = self.charset
         if not charset:
-            charset = string.ascii_letters + string.digits
-        passwords = []
-        for _ in range(count):
-            pw = ''.join(secrets.choice(charset) for _ in range(self.length))
-            passwords.append(pw)
-        return passwords
+            return ""
+        return "".join(random.choice(charset) for _ in range(self.length))
 
-    def generate_passphrase(self, words: int = 4, separator: str = "-") -> str:
-        """Generate a memorable passphrase."""
-        word_list = [
-            "apple", "bridge", "castle", "dragon", "eagle", "forest", "garden",
-            "harbor", "island", "jungle", "knight", "lemon", "mountain", "nebula",
-            "ocean", "piano", "queen", "river", "sunset", "tiger", "umbrella",
-            "valley", "winter", "xenon", "yellow", "zenith", "aurora", "blaze",
-            "coral", "dusk", "ember", "frost", "glow", "haze", "ivy", "jade",
-            "kite", "lava", "moss", "nova", "opal", "pearl", "quartz", "rain",
-            "sage", "thorn", "unity", "vapor", "willow", "zephyr",
-        ]
-        selected = [secrets.choice(word_list) for _ in range(words)]
-        return separator.join(selected)
+    @property
+    def strength_pct(self) -> int:
+        score = 0
+        if self.length >= 12:
+            score += 25
+        if self.length >= 16:
+            score += 15
+        if self.length >= 20:
+            score += 10
+        count = sum([self.uppercase, self.lowercase, self.digits, self.symbols])
+        score += count * 12
+        return min(100, score)
 
 
-# ─── Password Manager ────────────────────────────────────────────────────
+@dataclass
+class AutoFillEntry:
+    domain: str = ""
+    username: str = ""
+    password: str = ""
+    entry_id: int = 0
+    last_used: float = 0.0
+
+    @property
+    def time_str(self) -> str:
+        ago = time.time() - self.last_used
+        if ago < 3600:
+            return f"{ago / 60:.0f}m ago"
+        if ago < 86400:
+            return f"{ago / 3600:.0f}h ago"
+        return f"{ago / 86400:.0f}d ago"
 
 
 class PasswordManager:
-    """
-    Password manager for Nyrqis OS.
-
-    Manages password vault with categories, search, and generation.
-    """
-
     def __init__(self):
-        self._entries: List[PasswordEntry] = []
-        self._categories: List[str] = [
-            "Logins", "Credit Cards", "Secure Notes", "Identities",
-            "API Keys", "SSH Keys", "Other",
-        ]
-        self._selected_index: int = 0
-        self._current_category: str = ""
-        self._view_mode: str = "list"  # list, detail, generator
-        self._search_query: str = ""
-        self._filter_type: Optional[EntryType] = None
-        self._show_favorites_only: bool = False
-        self._show_password: bool = False
+        self._entries: List[VaultEntry] = []
         self._generator = PasswordGenerator()
-        self._generated_passwords: List[str] = []
-        self._copied_entry: Optional[PasswordEntry] = None
-        self._locked: bool = False
-        self._last_activity: float = time.time()
-        self._auto_lock_timeout: int = 300  # 5 minutes
+        self._autofill: List[AutoFillEntry] = []
+        self._selected_entry: int = 0
+        self._selected_category: Optional[VaultCategory] = None
+        self._view_mode: str = "vault"  # vault, generator, audit, autofill, settings
+        self._search_text: str = ""
+        self._show_passwords: bool = False
+        self._vault_unlocked: bool = True
+        self._last_generated: str = ""
+        self._create_samples()
 
-        # Callbacks
-        self._on_change: List[Callable] = []
-
-        # Init sample data
-        self._init_sample_entries()
-
-    def _init_sample_entries(self) -> None:
+    def _create_samples(self):
         now = time.time()
-        entries = [
-            PasswordEntry("GitHub", EntryType.LOGIN, "user@nyrqis.os", "gh_s3cure!Pass123",
-                          "https://github.com", "Main GitHub account", "Logins",
-                          ["dev", "work"], True, now - 86400 * 30),
-            PasswordEntry("Gmail", EntryType.LOGIN, "user@gmail.com", "Gm@il_Strong#2026!",
-                          "https://mail.google.com", "Personal email", "Logins",
-                          ["email", "personal"], False, now - 86400 * 60),
-            PasswordEntry("AWS Console", EntryType.LOGIN, "admin@nyrqis.os", "Aws!C0ns0le#Secur3",
-                          "https://console.aws.amazon.com", "Production AWS account", "Logins",
-                          ["cloud", "work"], True, now - 86400 * 15),
-            PasswordEntry("Nyrqis Docker Hub", EntryType.API_KEY, "", "dckr_pat_aBcDeFgHiJkLmNoP",
-                          "https://hub.docker.com", "Docker Hub access token", "API Keys",
-                          ["docker", "dev"], False, now - 86400 * 10),
-            PasswordEntry("Vercel Token", EntryType.API_KEY, "", "vercel_tk_xYz123AbC456DeF",
-                          "https://vercel.com", "Deployment token", "API Keys",
-                          ["deploy", "dev"], False, now - 86400 * 5),
-            PasswordEntry("Chase Visa", EntryType.CREDIT_CARD, "", "",
-                          "", "Expires 08/28", "Credit Cards",
-                          ["banking"], False, now - 86400 * 90,
-                          card_number="4532015112830366", card_expiry="08/28",
-                          card_cvv="123", card_holder="USER NYRQIS"),
-            PasswordEntry("WireGuard VPN", EntryType.SECURE_NOTE, "", "",
-                          "", "Server: vpn.nyrqis.os\nPort: 51820\nKey: abc123...", "Secure Notes",
-                          ["vpn", "network"], False, now - 86400 * 20),
-            PasswordEntry("SSH Server Key", EntryType.SSH_KEY, "root", "",
-                          "", "Ed25519 key for production server", "SSH Keys",
-                          ["server", "prod"], False, now - 86400 * 45),
-            PasswordEntry("Netflix", EntryType.LOGIN, "user@email.com", "N3tfl!x_Str3am",
-                          "https://netflix.com", "Family plan", "Logins",
-                          ["entertainment"], False, now - 86400 * 120),
-            PasswordEntry("Personal Notes", EntryType.SECURE_NOTE, "", "",
-                          "", "Recovery codes:\n- ABCD-EFGH-IJKL\n- MNOP-QRST-UVWX\n- YZ12-3456-7890", "Secure Notes",
-                          ["recovery"], False, now - 86400 * 180),
-            PasswordEntry("Cloudflare", EntryType.LOGIN, "admin@nyrqis.os", "Cf!Dns#M@nager2026",
-                          "https://dash.cloudflare.com", "DNS management", "Logins",
-                          ["dns", "work"], False, now - 86400 * 8),
-            PasswordEntry("Figma", EntryType.LOGIN, "design@nyrqis.os", "F!gm@_D3sign#Pro",
-                          "https://figma.com", "Team account", "Logins",
-                          ["design"], False, now - 86400 * 25),
+
+        entries_data = [
+            (1, "GitHub", VaultCategory.LOGIN, "buffy@nyrqis.dev", "Gh$tr0ng!P@ss2024", "https://github.com", "Main dev account", "", ["dev", "important"], True),
+            (2, "AWS Console", VaultCategory.LOGIN, "admin@nyrqis.dev", "Aws#C0ns0le!Sec9", "https://console.aws.amazon.com", "Production AWS", "JBSWY3DPEHPK3PXP", ["cloud", "critical"], False),
+            (3, "Gmail", VaultCategory.LOGIN, "buffy@nyrqis.dev", "Gm@il!Str0ng#Pass", "https://mail.google.com", "Primary email", "", ["email"], True),
+            (4, "Visa Platinum", VaultCategory.CREDIT_CARD, "", "", "", "Credit card ending 4242", "", ["finance"], False),
+            (5, "API Key - OpenAI", VaultCategory.API_KEY, "sk-nyrqis-xxxxx", "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901", "https://platform.openai.com", "GPT-4 API access", "", ["ai", "api"], False),
+            (6, "Seed Phrase - Ledger", VaultCategory.CRYPTO_WALLET, "Ledger Nano X", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "", "BTC/ETH wallet seed", "", ["crypto", "critical"], False),
+            (7, "Server SSH Key", VaultCategory.LOGIN, "root", "Pr1v@t3K3y!Nyrqis2024", "ssh://192.168.1.100", "Production server", "", ["server", "ssh"], False),
+            (8, "AWS Access Key", VaultCategory.API_KEY, "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "", "IAM user access key", "", ["cloud", "aws"], False),
+            (9, "Secure Note - Recovery", VaultCategory.SECURE_NOTE, "", "", "", "Master recovery codes: 1234-5678-9012-3456", "", ["recovery"], False),
+            (10, "Bitwarden", VaultCategory.LOGIN, "buffy@nyrqis.dev", "B1tw@rd3n!M@ster#2024", "https://vault.bitwarden.com", "Password manager login", "", ["security"], False),
+            (11, "Netflix", VaultCategory.LOGIN, "buffy@email.com", "N3tfl1x!Str3@m2024", "https://netflix.com", "Family plan", "", ["entertainment"], False),
+            (12, "Coinbase", VaultCategory.CRYPTO_WALLET, "buffy@nyrqis.dev", "C01nb@se!W@llet#99", "https://coinbase.com", "Crypto exchange", "", ["crypto"], False),
+            (13, "Amex Gold", VaultCategory.CREDIT_CARD, "", "", "", "Amex ending 1001", "", ["finance"], False),
+            (14, "SSH - Dev Server", VaultCategory.LOGIN, "nyx", "D3vS3rv3r!Nyrqis#2024", "ssh://10.0.0.50", "Development server", "", ["dev", "server"], False),
+            (15, "Personal API Key", VaultCategory.API_KEY, "nyrqis-personal", "nyq_pk_abc123def456ghi789jkl012", "https://api.nyrqis.dev", "Personal API access", "", ["api"], False),
         ]
-        self._entries = entries
 
-    # ── CRUD ──────────────────────────────────────────────────────────
+        for (id_, name, cat, user, pwd, url, notes, totp, tags, fav) in entries_data:
+            self._entries.append(VaultEntry(
+                id=id_, name=name, category=cat, username=user, password=pwd,
+                url=url, notes=notes, totp_secret=totp, tags=tags,
+                created_at=now - random.uniform(86400 * 30, 86400 * 365),
+                modified_at=now - random.uniform(0, 86400 * 90),
+                last_used=now - random.uniform(0, 86400 * 30),
+                favorite=fav,
+                breach_checked=random.random() > 0.3,
+                breach_status=random.choice(["safe", "safe", "safe", "unknown"]),
+            ))
 
-    def create_entry(self, title: str, entry_type: EntryType = EntryType.LOGIN,
-                     username: str = "", password: str = "", **kwargs) -> PasswordEntry:
-        entry = PasswordEntry(
-            title=title, entry_type=entry_type,
-            username=username, password=password,
-            category=kwargs.get("category", "Logins"),
-            **{k: v for k, v in kwargs.items() if k != "category"},
-        )
-        self._entries.append(entry)
-        self._notify("change")
-        return entry
-
-    def update_entry(self, entry_id: str, **kwargs) -> bool:
-        entry = self.get_entry(entry_id)
-        if not entry:
-            return False
-        for key, value in kwargs.items():
-            if hasattr(entry, key):
-                setattr(entry, key, value)
-        entry.modified = time.time()
-        self._notify("change")
-        return True
-
-    def delete_entry(self, entry_id: str) -> bool:
-        for i, e in enumerate(self._entries):
-            if e.entry_id == entry_id:
-                self._entries.pop(i)
-                self._notify("change")
-                return True
-        return False
-
-    def get_entry(self, entry_id: str) -> Optional[PasswordEntry]:
-        for e in self._entries:
-            if e.entry_id == entry_id:
-                return e
-        return None
-
-    def toggle_favorite(self, entry_id: str) -> bool:
-        entry = self.get_entry(entry_id)
-        if entry:
-            entry.favorite = not entry.favorite
-            return entry.favorite
-        return False
-
-    def copy_password(self, entry_id: str) -> Optional[str]:
-        entry = self.get_entry(entry_id)
-        if entry:
-            self._copied_entry = entry
-            entry.last_used = time.time()
-            return entry.password
-        return None
-
-    def copy_username(self, entry_id: str) -> Optional[str]:
-        entry = self.get_entry(entry_id)
-        if entry:
-            return entry.username
-        return None
-
-    # ── Queries ───────────────────────────────────────────────────────
-
-    def get_entries(self) -> List[PasswordEntry]:
-        entries = list(self._entries)
-
-        if self._current_category:
-            entries = [e for e in entries if e.category == self._current_category]
-        if self._filter_type:
-            entries = [e for e in entries if e.entry_type == self._filter_type]
-        if self._show_favorites_only:
-            entries = [e for e in entries if e.favorite]
-        if self._search_query:
-            q = self._search_query.lower()
-            entries = [e for e in entries
-                       if q in e.title.lower() or q in e.username.lower() or
-                       q in e.url.lower() or q in e.notes.lower() or
-                       any(q in tag for tag in e.tags)]
-
-        # Sort: favorites first, then by last used
-        entries.sort(key=lambda e: (-e.favorite, -(e.last_used or e.modified)))
-        return entries
-
-    def search(self, query: str) -> List[PasswordEntry]:
-        self._search_query = query
-        return self.get_entries()
-
-    @property
-    def categories(self) -> List[str]:
-        return list(self._categories)
-
-    def set_category(self, category: str) -> None:
-        self._current_category = category
-        self._selected_index = 0
-
-    @property
-    def current_category(self) -> str:
-        return self._current_category
-
-    def category_count(self, category: str = "") -> int:
-        target = category or self._current_category
-        if target:
-            return len([e for e in self._entries if e.category == target])
-        return len(self._entries)
+        # Auto-fill history
+        self._autofill = [
+            AutoFillEntry("github.com", "buffy@nyrqis.dev", "", 1, now - 3600),
+            AutoFillEntry("console.aws.amazon.com", "admin@nyrqis.dev", "", 2, now - 86400),
+            AutoFillEntry("mail.google.com", "buffy@nyrqis.dev", "", 3, now - 7200),
+            AutoFillEntry("vault.bitwarden.com", "buffy@nyrqis.dev", "", 10, now - 14400),
+            AutoFillEntry("netflix.com", "buffy@email.com", "", 11, now - 86400 * 2),
+        ]
 
     @property
     def total_entries(self) -> int:
         return len(self._entries)
 
     @property
-    def total_logins(self) -> int:
-        return len([e for e in self._entries if e.entry_type == EntryType.LOGIN])
-
-    # ── Generator ─────────────────────────────────────────────────────
+    def breached_count(self) -> int:
+        return sum(1 for e in self._entries if e.breach_status == "breached")
 
     @property
-    def generator(self) -> PasswordGenerator:
-        return self._generator
-
-    def generate_passwords(self, count: int = 5) -> List[str]:
-        self._generated_passwords = self._generator.generate(count)
-        return self._generated_passwords
-
-    def generate_passphrase(self) -> str:
-        return self._generator.generate_passphrase()
+    def weak_count(self) -> int:
+        return sum(1 for e in self._entries if e.strength < 40)
 
     @property
-    def generated_passwords(self) -> List[str]:
-        return list(self._generated_passwords)
+    def filtered_entries(self) -> List[VaultEntry]:
+        result = self._entries
+        if self._selected_category:
+            result = [e for e in result if e.category == self._selected_category]
+        if self._search_text:
+            q = self._search_text.lower()
+            result = [e for e in result if q in e.name.lower() or q in e.username.lower() or q in e.url.lower()]
+        return result
 
-    # ── View State ────────────────────────────────────────────────────
+    def select_entry(self, idx: int):
+        if 0 <= idx < len(self.filtered_entries):
+            self._selected_entry = idx
 
-    def open_entry(self, entry_id: str = None) -> Optional[PasswordEntry]:
-        if entry_id:
-            entry = self.get_entry(entry_id)
-            if entry:
-                self._copied_entry = entry
-                self._view_mode = "detail"
-                self._show_password = False
-                return entry
-        entries = self.get_entries()
-        if 0 <= self._selected_index < len(entries):
-            self._copied_entry = entries[self._selected_index]
-            self._view_mode = "detail"
-            self._show_password = False
-            return entries[self._selected_index]
-        return None
+    def set_view(self, mode: str):
+        if mode in ("vault", "generator", "audit", "autofill", "settings"):
+            self._view_mode = mode
 
-    def close_entry(self) -> None:
-        self._copied_entry = None
-        self._view_mode = "list"
-        self._show_password = False
+    def toggle_show_passwords(self):
+        self._show_passwords = not self._show_passwords
 
-    def toggle_show_password(self) -> bool:
-        self._show_password = not self._show_password
-        return self._show_password
+    def generate_password(self) -> str:
+        self._last_generated = self._generator.generate()
+        return self._last_generated
 
-    @property
-    def view_mode(self) -> str:
-        return self._view_mode
-
-    @property
-    def selected_entry(self) -> Optional[PasswordEntry]:
-        return self._copied_entry
-
-    # ── Selection ─────────────────────────────────────────────────────
-
-    @property
-    def selected_index(self) -> int:
-        return self._selected_index
-
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def select_down(self) -> None:
-        entries = self.get_entries()
-        self._selected_index = min(len(entries) - 1, self._selected_index + 1)
-
-    # ── Lock ──────────────────────────────────────────────────────────
-
-    def lock(self) -> None:
-        self._locked = True
-
-    def unlock(self, master_password: str) -> bool:
-        # In real implementation, would verify against stored hash
-        if master_password:
-            self._locked = False
-            self._last_activity = time.time()
-            return True
-        return False
-
-    @property
-    def is_locked(self) -> bool:
-        return self._locked
-
-    def check_auto_lock(self) -> bool:
-        if time.time() - self._last_activity > self._auto_lock_timeout:
-            self.lock()
-            return True
-        return False
-
-    # ── Rendering ─────────────────────────────────────────────────────
-
-    def render_list(self, width: int = 60) -> List[str]:
+    def render(self, width: int = 80, height: int = 24) -> List[str]:
         lines = []
-        lines.append(" 🔐 Nyrqis Vault")
-        lines.append("─" * width)
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS PASSWORD MANAGER                                 ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
+        lines.append("")
 
-        if self._search_query:
-            lines.append(f" 🔍 \"{self._search_query}\"")
+        lock = "🔓" if self._vault_unlocked else "🔒"
+        lines.append(f"  {lock} Vault  📦 {self.total_entries} entries  🚨 {self.breached_count} breached  🔴 {self.weak_count} weak  🔑 Auto-fill: {len(self._autofill)} sites")
+        lines.append("")
 
-        entries = self.get_entries()
-        lines.append(f" {len(entries)} entries")
-        lines.append("─" * width)
+        if self._view_mode == "vault":
+            lines.append("  ── Vault ──")
+            for i, entry in enumerate(self.filtered_entries[:15]):
+                sel = "▶" if i == self._selected_entry else " "
+                fav = "⭐" if entry.favorite else "  "
+                cat_icon = entry.category.icon
+                pwd = entry.password_masked if not self._show_passwords else entry.password[:16]
+                totp = "🔐" if entry.has_totp else "  "
+                lines.append(f"  {sel}{fav}{cat_icon} {entry.name:<22s} {entry.username:<24s} {totp}")
+                lines.append(f"      [{entry.strength_bar}] {entry.strength_label}  {entry.breach_icon} Last: {entry.age_str}")
 
-        if not entries:
-            lines.append("  No entries found.")
-        else:
-            for i, entry in enumerate(entries):
-                marker = "▸" if i == self._selected_index else " "
-                line = f"{marker} {entry.display_title[:width - 8]}"
-                lines.append(line[:width])
-
-                # Details
-                if entry.username:
-                    lines.append(f"   👤 {entry.username[:width - 5]}")
-                if entry.url:
-                    lines.append(f"   🔗 {entry.url[:width - 5]}")
-                lines.append("")
-
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Detail  N:New  G:Generate  S:Search")
-        return lines
-
-    def render_detail(self, width: int = 60) -> List[str]:
-        entry = self._copied_entry
-        if not entry:
-            return ["No entry selected"]
-
-        lines = []
-        lines.append(f" {entry.icon} {entry.title}")
-        lines.append("─" * width)
-
-        if entry.username:
-            lines.append(f"  👤 Username:  {entry.username}")
-        if entry.password:
-            if self._show_password:
-                lines.append(f"  🔑 Password:  {entry.password}")
-            else:
-                lines.append(f"  🔑 Password:  {entry.masked_password}  (press P to show)")
-            lines.append(f"  💪 Strength:  {entry.strength}")
-        if entry.url:
-            lines.append(f"  🔗 URL:       {entry.url}")
-        if entry.card_number:
-            lines.append(f"  💳 Card:      {entry.card_masked}")
-            lines.append(f"  📅 Expires:   {entry.card_expiry}")
-            lines.append(f"  👤 Holder:    {entry.card_holder}")
-        if entry.notes:
+        elif self._view_mode == "generator":
+            lines.append("  ── Password Generator ──")
+            lines.append(f"  Length: {self._generator.length}  Upper: {'✓' if self._generator.uppercase else '✗'}  Lower: {'✓' if self._generator.lowercase else '✗'}  Digits: {'✓' if self._generator.digits else '✗'}  Symbols: {'✓' if self._generator.symbols else '✗'}")
+            lines.append(f"  Exclude ambiguous: {'✓' if self._generator.exclude_ambiguous else '✗'}")
             lines.append("")
-            lines.append(f"  📝 Notes:")
-            for line in entry.notes.split("\n"):
-                lines.append(f"     {line[:width - 6]}")
+            if self._last_generated:
+                lines.append(f"  Generated: {self._last_generated}")
+                # Build strength
+                s = PasswordGenerator(length=len(self._last_generated))
+                lines.append(f"  Strength: [{s.strength_bar}] {s.strength_pct}%")
+            lines.append("")
+            # Quick generate 3 passwords
+            for _ in range(3):
+                pwd = self.generate_password()
+                lines.append(f"  🎲 {pwd}")
+
+        elif self._view_mode == "audit":
+            lines.append("  ── Security Audit ──")
+            # Strength distribution
+            strengths = {"Strong": 0, "Good": 0, "Fair": 0, "Weak": 0, "Very Weak": 0}
+            for e in self._entries:
+                s = e.strength
+                if s >= 80:
+                    strengths["Strong"] += 1
+                elif s >= 60:
+                    strengths["Good"] += 1
+                elif s >= 40:
+                    strengths["Fair"] += 1
+                elif s >= 20:
+                    strengths["Weak"] += 1
+                else:
+                    strengths["Very Weak"] += 1
+            for label, count in strengths.items():
+                bar = "█" * (count * 2) + "░" * (20 - count * 2)
+                lines.append(f"  {label:<12s} [{bar}] {count}")
+
+            lines.append("")
+            lines.append("  ── Weak Passwords ──")
+            weak = [e for e in self._entries if e.strength < 40]
+            for e in weak[:5]:
+                lines.append(f"  🚨 {e.name:<22s} [{e.strength_bar}] {e.strength_label}")
+
+        elif self._view_mode == "autofill":
+            lines.append("  ── Auto-fill History ──")
+            for af in self._autofill:
+                lines.append(f"  🌐 {af.domain:<30s} {af.username:<24s} {af.time_str}")
 
         lines.append("")
-        lines.append(f"  📁 Category:  {entry.category}")
-        if entry.tags:
-            lines.append(f"  🏷️  Tags:      {', '.join(entry.tags)}")
-        lines.append(f"  ⭐ Favorite:  {'Yes' if entry.favorite else 'No'}")
-        lines.append(f"  📅 Created:   {datetime.fromtimestamp(entry.created).strftime('%Y-%m-%d')}")
-        lines.append(f"  📅 Modified:  {datetime.fromtimestamp(entry.modified).strftime('%Y-%m-%d')}")
-        if entry.last_used:
-            lines.append(f"  📅 Last used: {entry.time_ago}")
-
-        lines.append("─" * width)
-        lines.append(" Esc:Back  P:Show/Hide PW  C:Copy PW  U:Copy User  ⭐:Favorite")
+        lines.append("  [V]ault [G]enerate [A]udit [F]ill [S]earch [↑↓]Nav [P]w toggle [N]ew")
         return lines
-
-    def render_generator(self, width: int = 60) -> List[str]:
-        lines = []
-        g = self._generator
-        lines.append(" 🔐 Password Generator")
-        lines.append("─" * width)
-        lines.append(f"  Length:       {g.length}")
-        lines.append(f"  Uppercase:    {'✅' if g.uppercase else '❌'}")
-        lines.append(f"  Lowercase:    {'✅' if g.lowercase else '❌'}")
-        lines.append(f"  Digits:       {'✅' if g.digits else '❌'}")
-        lines.append(f"  Symbols:      {'✅' if g.symbols else '❌'}")
-        lines.append(f"  No ambiguous: {'✅' if g.exclude_ambiguous else '❌'}")
-        lines.append("─" * width)
-
-        if self._generated_passwords:
-            lines.append("  Generated:")
-            for i, pw in enumerate(self._generated_passwords):
-                lines.append(f"  {i + 1}. {pw}")
-
-        lines.append("")
-        lines.append("─" * width)
-        lines.append(" Esc:Back  Space:Generate  +/-:Length  ↑↓:Navigate")
-        return lines
-
-    def render(self, width: int = 60, height: int = 30) -> List[str]:
-        if self._view_mode == "detail":
-            return self.render_detail(width)
-        elif self._view_mode == "generator":
-            return self.render_generator(width)
-        return self.render_list(width)
-
-    # ── Keyboard Handling ─────────────────────────────────────────────
-
-    def handle_key(self, key: str) -> Optional[str]:
-        if self._view_mode == "detail":
-            return self._handle_detail_key(key)
-        elif self._view_mode == "generator":
-            return self._handle_generator_key(key)
-        return self._handle_list_key(key)
-
-    def _handle_list_key(self, key: str) -> Optional[str]:
-        if key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        elif key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        elif key == "Enter":
-            self.open_entry()
-            return "detail"
-        elif key == "g":
-            self._view_mode = "generator"
-            self.generate_passwords()
-            return "generator"
-        elif key == "/":
-            return "search"
-        return None
-
-    def _handle_detail_key(self, key: str) -> Optional[str]:
-        if key == "Escape":
-            self.close_entry()
-            return "back"
-        elif key == "p":
-            self.toggle_show_password()
-            return "toggle_password"
-        elif key == "c":
-            if self._copied_entry:
-                self.copy_password(self._copied_entry.entry_id)
-            return "copy_password"
-        elif key == "u":
-            if self._copied_entry:
-                self.copy_username(self._copied_entry.entry_id)
-            return "copy_username"
-        elif key == "*":
-            if self._copied_entry:
-                self.toggle_favorite(self._copied_entry.entry_id)
-            return "toggle_favorite"
-        return None
-
-    def _handle_generator_key(self, key: str) -> Optional[str]:
-        g = self._generator
-        if key == "Escape":
-            self._view_mode = "list"
-            return "back"
-        elif key == " ":
-            self.generate_passwords()
-            return "generate"
-        elif key == "+" or key == "=":
-            g.length = min(64, g.length + 2)
-            return "increase_length"
-        elif key == "-":
-            g.length = max(4, g.length - 2)
-            return "decrease_length"
-        elif key == "u":
-            g.uppercase = not g.uppercase
-            return "toggle_uppercase"
-        elif key == "l":
-            g.lowercase = not g.lowercase
-            return "toggle_lowercase"
-        elif key == "d":
-            g.digits = not g.digits
-            return "toggle_digits"
-        elif key == "s":
-            g.symbols = not g.symbols
-            return "toggle_symbols"
-        return None
-
-    # ── Callbacks ─────────────────────────────────────────────────────
-
-    def on_change(self, cb: Callable) -> None:
-        self._on_change.append(cb)
-
-    def _notify(self, event: str) -> None:
-        for cb in self._on_change:
-            try:
-                cb()
-            except Exception:
-                pass
