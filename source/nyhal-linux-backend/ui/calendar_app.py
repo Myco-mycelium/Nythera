@@ -1,303 +1,383 @@
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+"""Calendar App — Event creation, recurring events, and multi-view.
+
+Features:
+- Month/week/day views with navigation
+- Event creation with color coding and categories
+- Recurring events (daily, weekly, monthly, yearly)
+- All-day events
+- Multiple calendar overlays
+- Reminder system
+- Event search and filtering
+"""
+
+from __future__ import annotations
+
 import time
-import calendar
+import calendar as cal_mod
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Tuple
+from enum import Enum
 
 
-class ViewMode(Enum):
-    MONTH = "month"
-    WEEK = "week"
-    DAY = "day"
-    YEAR = "year"
-    AGENDA = "agenda"
-
-
-class Recurrence(Enum):
+class EventRecurrence(Enum):
     NONE = "none"
     DAILY = "daily"
     WEEKLY = "weekly"
-    BIWEEKLY = "biweekly"
     MONTHLY = "monthly"
     YEARLY = "yearly"
-    CUSTOM = "custom"
+
+    @property
+    def icon(self) -> str:
+        icons = {
+            EventRecurrence.NONE: "", EventRecurrence.DAILY: "📅",
+            EventRecurrence.WEEKLY: "📆", EventRecurrence.MONTHLY: "🗓",
+            EventRecurrence.YEARLY: "🎆",
+        }
+        return icons.get(self, "")
 
 
-class EventColor(Enum):
-    BLUE = "blue"
-    RED = "red"
-    GREEN = "green"
-    PURPLE = "purple"
-    ORANGE = "orange"
-    TEAL = "teal"
-    PINK = "pink"
-
-
-class Reminder(Enum):
+class ReminderType(Enum):
     NONE = "none"
-    AT_TIME = "at-time"
-    MIN_5 = "5-min"
-    MIN_10 = "10-min"
-    MIN_15 = "15-min"
-    MIN_30 = "30-min"
-    HOUR_1 = "1-hour"
-    DAY_1 = "1-day"
+    MINUTES_5 = "5min"
+    MINUTES_15 = "15min"
+    MINUTES_30 = "30min"
+    HOURS_1 = "1hr"
+    HOURS_24 = "1day"
 
-
-class EventStatus(Enum):
-    CONFIRMED = "confirmed"
-    TENTATIVE = "tentative"
-    CANCELLED = "cancelled"
+    @property
+    def icon(self) -> str:
+        return "🔔" if self != ReminderType.NONE else ""
 
 
 @dataclass
 class CalendarEvent:
-    title: str
-    start_hour: int
-    start_min: int
-    duration_mins: int
-    day: int
-    month: int
-    year: int
+    id: int = 0
+    title: str = ""
+    start_time: float = 0.0
+    end_time: float = 0.0
+    all_day: bool = False
     description: str = ""
     location: str = ""
-    color: EventColor = EventColor.BLUE
-    recurrence: Recurrence = Recurrence.NONE
-    reminder: Reminder = Reminder.MIN_15
-    status: EventStatus = EventStatus.CONFIRMED
-    attendees: list = field(default_factory=list)
-    all_day: bool = False
+    category: str = "personal"
+    color: str = "#4A90D9"
+    recurrence: EventRecurrence = EventRecurrence.NONE
+    reminder: ReminderType = ReminderType.MINUTES_15
+    attendees: List[str] = field(default_factory=list)
     calendar_name: str = "Personal"
-    is_busy: bool = True
-    event_id: str = ""
-
-    def __post_init__(self):
-        if not self.event_id:
-            self.event_id = f"{self.title[:8]}-{self.day}{self.month}"
+    is_recurring_instance: bool = False
+    original_event_id: Optional[int] = None
 
     @property
-    def time_display(self) -> str:
-        if self.all_day:
-            return "All Day"
-        return f"{self.start_hour:02d}:{self.start_min:02d}"
+    def start_date_str(self) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime(self.start_time))
 
     @property
-    def end_time_display(self) -> str:
-        end_min = self.start_hour * 60 + self.start_min + self.duration_mins
-        h, m = divmod(end_min, 60)
-        return f"{h:02d}:{m:02d}"
+    def start_time_str(self) -> str:
+        return time.strftime("%H:%M", time.localtime(self.start_time))
 
     @property
-    def date_display(self) -> str:
-        return f"{self.year}-{self.month:02d}-{self.day:02d}"
+    def end_time_str(self) -> str:
+        return time.strftime("%H:%M", time.localtime(self.end_time))
+
+    @property
+    def duration_minutes(self) -> int:
+        return int((self.end_time - self.start_time) / 60)
+
+    @property
+    def duration_str(self) -> str:
+        mins = self.duration_minutes
+        if mins < 60:
+            return f"{mins}m"
+        h = mins // 60
+        m = mins % 60
+        if m == 0:
+            return f"{h}h"
+        return f"{h}h{m}m"
+
+    @property
+    def day_of_week(self) -> int:
+        return time.localtime(self.start_time).tm_wday
+
+    @property
+    def day_of_month(self) -> int:
+        return time.localtime(self.start_time).tm_mday
+
+    @property
+    def month(self) -> int:
+        return time.localtime(self.start_time).tm_mon
+
+    @property
+    def year(self) -> int:
+        return time.localtime(self.start_time).tm_year
+
+    @property
+    def recurrence_str(self) -> str:
+        return self.recurrence.icon
+
+    @property
+    def attendee_str(self) -> str:
+        return ", ".join(self.attendees[:3])
 
 
 @dataclass
-class ReminderEntry:
-    event: CalendarEvent
-    trigger_time: float
-    fired: bool = False
+class Calendar:
+    name: str = ""
+    color: str = "#4A90D9"
+    visible: bool = True
+    event_count: int = 0
+
+
+@dataclass
+class Reminder:
+    event: CalendarEvent = None
+    trigger_time: float = 0.0
+    dismissed: bool = False
+
+    @property
+    def time_until_str(self) -> str:
+        delta = self.trigger_time - time.time()
+        if delta <= 0:
+            return "now"
+        if delta < 60:
+            return f"{delta:.0f}s"
+        if delta < 3600:
+            return f"{delta / 60:.0f}m"
+        return f"{delta / 3600:.1f}h"
 
 
 class CalendarApp:
     def __init__(self):
-        self._events: list[CalendarEvent] = []
+        self._events: List[CalendarEvent] = []
+        self._calendars: List[Calendar] = []
+        self._reminders: List[Reminder] = []
         self._selected_event: int = 0
-        self._view_mode: ViewMode = ViewMode.MONTH
-        self._current_year: int = 2026
-        self._current_month: int = 9
-        self._current_day: int = 3
-        self._current_week: int = 36
-        self._selected_hour: int = 9
-        self._calendars: dict[str, bool] = {"Personal": True, "Work": True, "Family": True, "Birthdays": True, "Holidays": True}
-        self._search_query: str = ""
-        self._search_results: list = []
-        self._reminders: list[ReminderEntry] = []
-        self._show_busy: bool = True
-        self._view: str = "calendar"
+        self._view_mode: str = "month"  # month, week, day, agenda, search
+        self._current_date: float = time.time()
+        self._search_text: str = ""
+        self._category_filter: str = ""
+        self._show_weekends: bool = True
+        self._week_start_monday: bool = True
         self._create_samples()
 
     def _create_samples(self):
+        now = time.time()
+        today = time.localtime(now)
+        year, month, day = today.tm_year, today.tm_mon, today.tm_mday
+
+        def ts(y, m, d, h=9, mi=0):
+            return time.mktime((y, m, d, h, mi, 0, 0, 0, -1))
+
+        # Calendars
+        self._calendars = [
+            Calendar("Personal", "#4A90D9", True, 25),
+            Calendar("Work", "#E74C3C", True, 18),
+            Calendar("Nyrqis Dev", "#2ECC71", True, 12),
+            Calendar("Birthdays", "#F39C12", False, 8),
+            Calendar("Holidays", "#9B59B6", False, 15),
+        ]
+
+        # Events this month
         self._events = [
-            CalendarEvent("Nyrqis Sprint Review", 10, 0, 60, 3, 9, 2026, "Review Q3 progress", "Conference Room A", EventColor.BLUE, Recurrence.NONE, Reminder.MIN_15, EventStatus.CONFIRMED, ["alice@nyrqis.dev", "bob@nyrqis.dev"]),
-            CalendarEvent("Lunch with Team", 12, 30, 60, 3, 9, 2026, "Team lunch at Cafe Mosaic", "Cafe Mosaic, Downtown", EventColor.GREEN),
-            CalendarEvent("Compositor Demo", 14, 0, 90, 3, 9, 2026, "Demo Wayland compositor to stakeholders", "Demo Lab", EventColor.PURPLE, Reminder.HOUR_1),
-            CalendarEvent("Yoga Class", 7, 0, 60, 4, 9, 2026, "", "Studio B", EventColor.TEAL, Recurrence.WEEKLY),
-            CalendarEvent("Code Review", 11, 0, 45, 5, 9, 2026, "Review PRs for nyrqis-core", "", EventColor.ORANGE, Recurrence.DAILY),
-            CalendarEvent("Sprint Planning", 9, 0, 120, 8, 9, 2026, "Plan next sprint", "Conference Room B", EventColor.BLUE, Recurrence.NONE, Reminder.HOUR_1),
-            CalendarEvent("Birthday Party", 18, 0, 180, 15, 9, 2026, "Alice's birthday", "Park Avenue", EventColor.PINK, Reminder.DAY_1),
-            CalendarEvent("Dentist", 15, 0, 45, 20, 9, 2026, "", "Dr. Smith Clinic", EventColor.RED, Reminder.HOUR_1),
-            CalendarEvent("Conference Talk", 14, 0, 120, 25, 9, 2026, "Nyrqis OS: Building the Future", "Convention Center", EventColor.PURPLE, EventStatus.CONFIRMED),
-            CalendarEvent("Flight to SF", 8, 0, 300, 1, 10, 2026, "Flight AA1234", "SFO Airport", EventColor.RED, all_day=False),
-            CalendarEvent("Monthly All-Hands", 16, 0, 60, 1, 10, 2026, "Company-wide sync", "Main Auditorium", EventColor.BLUE, Recurrence.MONTHLY),
-            CalendarEvent("1:1 with Manager", 10, 0, 30, 6, 9, 2026, "Weekly check-in", "", EventColor.TEAL, Recurrence.WEEKLY),
+            CalendarEvent(1, "Sprint Planning", ts(year, month, day, 10, 0), ts(year, month, day, 11, 0),
+                          category="work", color="#E74C3C", calendar_name="Work",
+                          location="Conference Room A", recurrence=EventRecurrence.WEEKLY,
+                          attendees=["alice@nyrqis.dev", "bob@nyrqis.dev"]),
+            CalendarEvent(2, "Compositor Code Review", ts(year, month, day, 14, 0), ts(year, month, day, 15, 0),
+                          category="dev", color="#2ECC71", calendar_name="Nyrqis Dev",
+                          description="Review PR #512 - Vulkan renderer"),
+            CalendarEvent(3, "Lunch with Dave", ts(year, month, day, 12, 0), ts(year, month, day, 13, 0),
+                          category="personal", color="#4A90D9", location="Cafe Miso",
+                          attendees=["dave@myco-mycelium.com"]),
+            CalendarEvent(4, "Nyrqis Community Meetup", ts(year, month, day + 2, 18, 0), ts(year, month, day + 2, 20, 0),
+                          category="dev", color="#2ECC71", calendar_name="Nyrqis Dev",
+                          location="Virtual (Zoom)", attendees=["team@nyrqis.dev"]),
+            CalendarEvent(5, "Gym Session", ts(year, month, day, 7, 0), ts(year, month, day, 8, 0),
+                          category="health", color="#1ABC9C", recurrence=EventRecurrence.WEEKLY),
+            CalendarEvent(6, "Dentist Appointment", ts(year, month, day + 3, 9, 30), ts(year, month, day + 3, 10, 30),
+                          category="health", color="#1ABC9C", reminder=ReminderType.HOURS_24),
+            CalendarEvent(7, "Release v1.0-rc2", ts(year, month, day + 5, 0, 0), ts(year, month, day + 5, 23, 59),
+                          all_day=True, category="dev", color="#E74C3C", calendar_name="Nyrqis Dev"),
+            CalendarEvent(8, "Security Audit Review", ts(year, month, day + 1, 11, 0), ts(year, month, day + 1, 12, 30),
+                          category="work", color="#E74C3C", calendar_name="Work",
+                          attendees=["eve@nyrqis.dev"]),
+            CalendarEvent(9, "Team Standup", ts(year, month, day, 9, 0), ts(year, month, day, 9, 15),
+                          category="work", color="#E74C3C", recurrence=EventRecurrence.DAILY,
+                          calendar_name="Work", attendees=["team@nyrqis.dev"]),
+            CalendarEvent(10, "GPU Benchmark Testing", ts(year, month, day + 4, 14, 0), ts(year, month, day + 4, 17, 0),
+                          category="dev", color="#2ECC71", calendar_name="Nyrqis Dev",
+                          description="Run full benchmark suite on AMD, Intel, NVIDIA"),
+            CalendarEvent(11, "Birthday: Grace", ts(year, month, day + 7, 0, 0), ts(year, month, day + 7, 23, 59),
+                          all_day=True, category="personal", color="#F39C12", calendar_name="Birthdays"),
+            CalendarEvent(12, "Budget Meeting", ts(year, month, day + 6, 15, 0), ts(year, month, day + 6, 16, 0),
+                          category="work", color="#E74C3C", calendar_name="Work",
+                          attendees=["dave@myco-mycelium.com", "henry@myco-mycelium.com"]),
+            CalendarEvent(13, "Hackathon Weekend", ts(year, month, day + 8, 9, 0), ts(year, month, day + 9, 18, 0),
+                          all_day=True, category="dev", color="#2ECC71", calendar_name="Nyrqis Dev",
+                          description="Build Nyrqis widgets hackathon"),
+            CalendarEvent(14, "1:1 with Buffy", ts(year, month, day, 16, 0), ts(year, month, day, 16, 30),
+                          category="work", color="#E74C3C"),
+            CalendarEvent(15, "Yoga Class", ts(year, month, day + 1, 18, 0), ts(year, month, day + 1, 19, 0),
+                          category="health", color="#1ABC9C", recurrence=EventRecurrence.WEEKLY),
         ]
+
+        # Reminders
         self._reminders = [
-            ReminderEntry(self._events[0], time.time() + 900),
-            ReminderEntry(self._events[2], time.time() + 3600),
+            Reminder(self._events[5], ts(year, month, day + 2, 9, 30)),
+            Reminder(self._events[7], ts(year, month, day + 1, 10, 0)),
         ]
 
     @property
-    def selected_event(self) -> Optional[CalendarEvent]:
-        if 0 <= self._selected_event < len(self._events):
-            return self._events[self._selected_event]
-        return None
+    def filtered_events(self) -> List[CalendarEvent]:
+        result = self._events
+        if self._search_text:
+            q = self._search_text.lower()
+            result = [e for e in result if q in e.title.lower() or q in e.location.lower() or q in e.description.lower()]
+        if self._category_filter:
+            result = [e for e in result if e.category == self._category_filter]
+        return result
 
     @property
-    def total_events(self) -> int:
-        return len(self._events)
+    def today_events(self) -> List[CalendarEvent]:
+        now = time.time()
+        today_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0) + time.localtime(now)[6:])
+        today_end = today_start + 86400
+        return [e for e in self._events if e.start_time >= today_start and e.start_time < today_end]
 
     @property
-    def events_this_month(self) -> int:
-        return sum(1 for e in self._events if e.month == self._current_month and e.year == self._current_year)
-
-    @property
-    def upcoming_events(self) -> list:
-        return sorted(self._events, key=lambda e: (e.year, e.month, e.day, e.start_hour))[:5]
-
-    @property
-    def busy_days_this_month(self) -> set:
-        return {e.day for e in self._events if e.month == self._current_month and e.year == self._current_year}
+    def upcoming_events(self) -> List[CalendarEvent]:
+        now = time.time()
+        future = [e for e in self._events if e.start_time >= now]
+        return sorted(future, key=lambda e: e.start_time)[:10]
 
     @property
     def month_name(self) -> str:
-        return calendar.month_name[self._current_month]
-
-    @property
-    def active_calendars(self) -> list:
-        return [name for name, active in self._calendars.items() if active]
+        return time.strftime("%B %Y", time.localtime(self._current_date))
 
     def select_event(self, idx: int):
-        if 0 <= idx < len(self._events):
+        events = self.filtered_events
+        if 0 <= idx < len(events):
             self._selected_event = idx
 
-    def add_event(self, event: CalendarEvent):
-        self._events.append(event)
-        self._selected_event = len(self._events) - 1
+    def set_view(self, mode: str):
+        if mode in ("month", "week", "day", "agenda", "search"):
+            self._view_mode = mode
 
-    def delete_event(self, idx: int) -> bool:
-        if 0 <= idx < len(self._events):
-            self._events.pop(idx)
-            if self._selected_event >= len(self._events):
-                self._selected_event = max(0, len(self._events) - 1)
-            return True
-        return False
+    def navigate(self, direction: int):
+        t = time.localtime(self._current_date)
+        if self._view_mode == "month":
+            new_month = t.tm_mon + direction
+            new_year = t.tm_year
+            if new_month < 1:
+                new_month = 12
+                new_year -= 1
+            elif new_month > 12:
+                new_month = 1
+                new_year += 1
+            self._current_date = time.mktime((new_year, new_month, 1, 12, 0, 0, 0, 0, -1))
+        elif self._view_mode == "week":
+            self._current_date += direction * 7 * 86400
+        elif self._view_mode == "day":
+            self._current_date += direction * 86400
 
-    def toggle_calendar(self, name: str):
-        if name in self._calendars:
-            self._calendars[name] = not self._calendars[name]
-
-    def search(self, query: str) -> list:
-        self._search_query = query
-        self._search_results = [e for e in self._events if query.lower() in e.title.lower() or query.lower() in e.description.lower()]
-        return self._search_results
-
-    def get_day_events(self, day: int) -> list:
-        return [e for e in self._events if e.day == day and e.month == self._current_month and e.year == self._current_year]
-
-    def set_view(self, view: ViewMode):
-        self._view_mode = view
-
-    def render(self, width: int = 80, height: int = 20) -> list:
+    def render(self, width: int = 80, height: int = 24) -> List[str]:
         lines = []
         lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
-        lines.append("║                        NYRQIS CALENDAR                                     ║")
+        lines.append("║                    NYRQIS CALENDAR                                         ║")
         lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
         lines.append("")
-        lines.append(f"  View: {self._view_mode.value}  Date: {self.month_name} {self._current_day}, {self._current_year}")
-        lines.append(f"  Events this month: {self.events_this_month}  Total: {self.total_events}")
-        lines.append("")
-        if self._view_mode == ViewMode.MONTH:
-            lines.extend(self._render_month())
-        elif self._view_mode == ViewMode.WEEK:
-            lines.extend(self._render_week())
-        elif self._view_mode == ViewMode.DAY:
-            lines.extend(self._render_day())
-        elif self._view_mode == ViewMode.AGENDA:
-            lines.extend(self._render_agenda())
-        lines.append("")
-        lines.append("  [V]iew  [N]ew event  [E]dit  [D]elete  [S]earch  [/]filter")
-        return lines
 
-    def _render_month(self) -> list:
-        lines = []
-        lines.append("  ── September 2026 ──")
-        lines.append("  Mon  Tue  Wed  Thu  Fri  Sat  Sun")
-        busy = self.busy_days_this_month
-        cal = calendar.monthcalendar(self._current_year, self._current_month)
-        for week in cal:
-            row = "  "
-            for day in week:
-                if day == 0:
-                    row += "    "
-                elif day == self._current_day:
-                    marker = "●" if day in busy else "·"
-                    row += f"[{day:2d}]{marker}"[:5]
-                elif day in busy:
-                    row += f" {day:2d} ●"[:5]
+        lines.append(f"  📅 {self.month_name}  📆 {len(self._events)} events  🔔 {len(self._reminders)} reminders  🗂 {len(self._calendars)} calendars")
+        lines.append("")
+
+        if self._view_mode == "month":
+            # Month grid
+            lines.append("  ── Month View ──")
+            lines.append("  Mon  Tue  Wed  Thu  Fri  Sat  Sun")
+            t = time.localtime(self._current_date)
+            year, month = t.tm_year, t.tm_mon
+            first_day, days_in_month = cal_mod.monthrange(year, month)
+            # Adjust for Monday start
+            start = (first_day - 0) % 7
+
+            # Events map by day
+            day_events = {}
+            for e in self._events:
+                et = time.localtime(e.start_time)
+                if et.tm_year == year and et.tm_mon == month:
+                    d = et.tm_mday
+                    day_events[d] = day_events.get(d, 0) + 1
+
+            today = time.localtime().tm_mday if time.localtime().tm_year == year and time.localtime().tm_mon == month else 0
+
+            week = "  "
+            for i in range(start):
+                week += "     "
+            for day in range(1, days_in_month + 1):
+                marker = f"{day:2d}"
+                if day == today:
+                    marker = f"[{day:2d}]"
+                evts = day_events.get(day, 0)
+                evt_mark = "•" if evts > 0 else " "
+                week += f"{marker}{evt_mark}"
+                if (start + day) % 7 == 0:
+                    lines.append(week)
+                    week = "  "
+            if week.strip():
+                lines.append(week)
+
+            lines.append("")
+            # Today's events
+            lines.append("  ── Today's Events ──")
+            for e in self.today_events:
+                lines.append(f"  {e.start_time_str}-{e.end_time_str} {e.title}  {e.recurrence_str} 📍{e.location}")
+
+        elif self._view_mode == "week":
+            lines.append("  ── Week View ──")
+            t = time.localtime(self._current_date)
+            # Get week start
+            weekday = t.tm_wday
+            for d in range(7):
+                day_ts = self._current_date - weekday * 86400 + d * 86400
+                day_name = time.strftime("%a", time.localtime(day_ts))
+                day_num = time.strftime("%d", time.localtime(day_ts))
+                day_events_list = [e for e in self._events
+                                   if time.localtime(e.start_time).tm_mday == time.localtime(day_ts).tm_mday
+                                   and time.localtime(e.start_time).tm_mon == time.localtime(day_ts).tm_mon]
+                marker = "▸" if d == weekday else " "
+                lines.append(f"  {marker} {day_name} {day_num}:")
+                if day_events_list:
+                    for e in day_events_list[:3]:
+                        lines.append(f"      {e.start_time_str}-{e.end_time_str} {e.title}")
                 else:
-                    row += f" {day:2d}  "[:5]
-            lines.append(row)
-        return lines
+                    lines.append(f"      (no events)")
 
-    def _render_week(self) -> list:
-        lines = []
-        lines.append("  ── Week 37 ──")
-        for hour in range(8, 20):
-            events = [e for e in self._events if e.day == self._current_day and e.start_hour == hour]
-            ev_str = ", ".join(e.title for e in events) or ""
-            lines.append(f"  {hour:02d}:00  {'│' + ev_str if ev_str else '│'}")
-        return lines
+        elif self._view_mode == "day":
+            lines.append("  ── Day View ──")
+            day_name = time.strftime("%A, %B %d, %Y", time.localtime(self._current_date))
+            lines.append(f"  {day_name}")
+            lines.append("")
+            for hour in range(8, 22):
+                time_str = f"{hour:02d}:00"
+                events_at_hour = [e for e in self._events
+                                  if time.localtime(e.start_time).tm_hour == hour
+                                  and time.localtime(e.start_time).tm_mday == time.localtime(self._current_date).tm_mday]
+                if events_at_hour:
+                    for e in events_at_hour:
+                        lines.append(f"  {time_str} ▸ {e.title} ({e.duration_str}) 📍{e.location}")
+                else:
+                    lines.append(f"  {time_str} ─")
 
-    def _render_day(self) -> list:
-        lines = []
-        lines.append(f"  ── {self.month_name} {self._current_day} ──")
-        day_events = self.get_day_events(self._current_day)
-        for e in day_events:
-            color_icons = {"blue": "🔵", "red": "🔴", "green": "🟢", "purple": "🟣", "orange": "🟠", "teal": "🔹", "pink": "💗"}
-            icon = color_icons.get(e.color.value, "⚪")
-            lines.append(f"  {icon} {e.time_display} - {e.end_time_display}  {e.title}")
-            if e.location:
-                lines.append(f"    📍 {e.location}")
-        if not day_events:
-            lines.append("  No events today")
-        return lines
+        elif self._view_mode == "agenda":
+            lines.append("  ── Upcoming Events ──")
+            for e in self.upcoming_events[:10]:
+                lines.append(f"  📅 {e.start_date_str} {e.start_time_str}-{e.end_time_str} {e.title}")
+                lines.append(f"     📍 {e.location or 'No location'}  {e.recurrence_str}  Attendees: {e.attendee_str or 'None'}")
 
-    def _render_agenda(self) -> list:
-        lines = []
-        lines.append("  ── Upcoming Events ──")
-        for e in self.upcoming_events:
-            color_icons = {"blue": "🔵", "red": "🔴", "green": "🟢", "purple": "🟣", "orange": "🟠", "teal": "🔹", "pink": "💗"}
-            icon = color_icons.get(e.color.value, "⚪")
-            lines.append(f"  {icon} {e.date_display} {e.time_display}  {e.title}")
-            if e.location:
-                lines.append(f"    📍 {e.location}")
-        return lines
+        elif self._view_mode == "search":
+            lines.append(f"  ── Search: '{self._search_text}' ──")
+            for e in self.filtered_events[:10]:
+                lines.append(f"  📅 {e.start_date_str} {e.start_time_str} {e.title}")
 
-    def render_event_detail(self) -> list:
-        e = self.selected_event
-        if not e:
-            return ["  No event selected"]
-        lines = []
-        lines.append(f"  ── {e.title} ──")
-        lines.append(f"  Date: {e.date_display}")
-        lines.append(f"  Time: {e.time_display} - {e.end_time_display} ({e.duration_mins} min)")
-        lines.append(f"  Location: {e.location or 'None'}")
-        lines.append(f"  Description: {e.description or 'None'}")
-        lines.append(f"  Color: {e.color.value}")
-        lines.append(f"  Recurrence: {e.recurrence.value}")
-        lines.append(f"  Reminder: {e.reminder.value}")
-        lines.append(f"  Status: {e.status.value}")
-        if e.attendees:
-            lines.append(f"  Attendees: {', '.join(e.attendees)}")
-        lines.append(f"  Calendar: {e.calendar_name}")
-        return lines
-
-    def render_calendars(self) -> list:
-        lines = []
-        lines.append("  ── Calendars ──")
-        for name, active in self._calendars.items():
-            status = "✅" if active else "⬜"
-            count = sum(1 for e in self._events if e.calendar_name == name or (name == "Personal" and e.calendar_name == "Personal"))
-            lines.append(f"  {status} {name} ({count})")
+        lines.append("")
+        lines.append("  [M]onth [W]eek [D]ay [A]genda [/]Search [←→]Nav [+N]ew [E]dit [R]eminders")
         return lines
