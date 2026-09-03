@@ -14,8 +14,7 @@ from ui.repo_manager import (
     PackageStatus, RepoStatus, SignatureStatus
 )
 from ui.system_journal import (
-    SystemJournal, LogEntry, LogFilter, LogStats,
-    LogLevel
+    SystemJournal, JournalEntry as LogEntry, LogLevel
 )
 from ui.vfs_manager import (
     VFSManager, MountPoint, FileEntry, Bookmark,

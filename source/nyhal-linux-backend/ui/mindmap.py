@@ -1,488 +1,341 @@
-"""
-Nyrqis Mind Map — visual thinking and idea organization tool.
-
-Features:
-- Hierarchical node creation and editing
-- Connection lines between nodes
-- Auto-layout (tree, radial, force-directed)
-- Node colors and icons
-- Notes/attachments on nodes
-- Collapse/expand branches
-- Zoom and pan
-- Export as text outline, JSON, or Markdown
-- Keyboard navigation between nodes
-- Undo/redo
-- Search across nodes
-"""
-
-import time
-import hashlib
-import json
+"""Mind Map Editor — nodes, connections, export for Nyrqis OS."""
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Callable, Tuple, Set
-from datetime import datetime
+from enum import Enum
+from typing import List, Dict, Optional, Tuple
+import time
 
 
-# ─── Data Classes ────────────────────────────────────────────────────────
+class NodeShape(Enum):
+    ROUNDED_RECT = "Rounded Rectangle"
+    RECTANGLE = "Rectangle"
+    CIRCLE = "Circle"
+    DIAMOND = "Diamond"
+    HEXAGON = "Hexagon"
+    CLOUD = "Cloud"
+    ELLIPSE = "Ellipse"
 
 
-class LayoutType(Enum):
-    TREE = "tree"
-    RADIAL = "radial"
-    FORCE = "force"
+class ExportFormat(Enum):
+    MARKDOWN = "Markdown"
+    TEXT = "Plain Text"
+    JSON = "JSON"
+    HTML = "HTML"
+    SVG = "SVG"
+    OPML = "OPML"
+    FREEFORM = "FreeMind"
 
 
-class NodeType(Enum):
-    ROOT = "root"
-    BRANCH = "branch"
-    LEAF = "leaf"
-    NOTE = "note"
-
-
-NODE_ICONS = {
-    NodeType.ROOT: "🍄",
-    NodeType.BRANCH: "📁",
-    NodeType.LEAF: "💡",
-    NodeType.NOTE: "📝",
-}
-
-NODE_COLORS = [
-    "#4A90D9", "#2ECC71", "#E74C3C", "#F39C12",
-    "#9B59B6", "#1ABC9C", "#E67E22", "#3498DB",
-]
+class NodeStyle(Enum):
+    DEFAULT = "Default"
+    IDEA = "Idea"
+    TASK = "Task"
+    NOTE = "Note"
+    QUESTION = "Question"
+    ANSWER = "Answer"
+    PROBLEM = "Problem"
+    SOLUTION = "Solution"
 
 
 @dataclass
 class MindNode:
-    """A node in the mind map."""
-    text: str
-    node_type: NodeType = NodeType.BRANCH
-    notes: str = ""
-    color: str = "#4A90D9"
-    icon: str = ""
+    id: int
+    text: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 120.0
+    height: float = 40.0
+    color: str = "#4a9eff"
+    shape: NodeShape = NodeShape.ROUNDED_RECT
+    style: NodeStyle = NodeStyle.DEFAULT
     collapsed: bool = False
-    x: int = 0
-    y: int = 0
-    node_id: str = ""
-    parent_id: str = ""
-    created: float = field(default_factory=time.time)
-    modified: float = field(default_factory=time.time)
-
-    def __post_init__(self):
-        if not self.node_id:
-            self.node_id = hashlib.md5(f"{self.text}{self.created}".encode()).hexdigest()[:8]
-        if not self.icon:
-            self.icon = NODE_ICONS.get(self.node_type, "💡")
+    notes: str = ""
+    url: str = ""
+    tags: List[str] = field(default_factory=list)
+    priority: int = 0  # 0=none, 1=low, 2=medium, 3=high
+    completed: bool = False
+    children_ids: List[int] = field(default_factory=list)
+    parent_id: int = -1
 
     @property
-    def display(self) -> str:
-        return f"{self.icon} {self.text}"
+    def priority_icon(self) -> str:
+        icons = {1: "🟢", 2: "🟡", 3: "🔴"}
+        return icons.get(self.priority, "")
 
     @property
-    def has_children(self) -> bool:
-        return False  # Will be set externally
+    def style_icon(self) -> str:
+        icons = {
+            NodeStyle.IDEA: "💡", NodeStyle.TASK: "✅", NodeStyle.NOTE: "📝",
+            NodeStyle.QUESTION: "❓", NodeStyle.ANSWER: "✅", NodeStyle.PROBLEM: "⚠️",
+            NodeStyle.SOLUTION: "🔧",
+        }
+        return icons.get(self.style, "●")
 
     @property
-    def depth(self) -> int:
-        return 0  # Will be calculated
+    def shape_char(self) -> str:
+        chars = {
+            NodeShape.ROUNDED_RECT: "▢", NodeShape.RECTANGLE: "□",
+            NodeShape.CIRCLE: "○", NodeShape.DIAMOND: "◇",
+            NodeShape.HEXAGON: "⬡", NodeShape.CLOUD: "☁",
+        }
+        return chars.get(self.shape, "●")
+
+    @property
+    def child_count(self) -> int:
+        return len(self.children_ids)
+
+    @property
+    def depth_str(self) -> str:
+        return "root" if self.parent_id == -1 else f"child of {self.parent_id}"
 
 
 @dataclass
-class MindConnection:
-    """A connection between two nodes."""
-    from_id: str
-    to_id: str
+class Connection:
+    source_id: int
+    target_id: int
     label: str = ""
     color: str = "#888888"
-    connection_id: str = ""
-
-    def __post_init__(self):
-        if not self.connection_id:
-            self.connection_id = hashlib.md5(f"{self.from_id}{self.to_id}".encode()).hexdigest()[:8]
+    dashed: bool = False
+    thickness: float = 1.0
+    style: str = "solid"  # solid, dashed, dotted
 
 
-# ─── Mind Map Editor ─────────────────────────────────────────────────────
+@dataclass
+class MindMapLayout:
+    direction: str = "right"  # right, down, radial, tree
+    spacing_h: float = 200.0
+    spacing_v: float = 80.0
+    auto_arrange: bool = True
 
 
+@dataclass
 class MindMap:
-    """
-    Mind map editor for Nyrqis OS.
-
-    Creates and manages hierarchical mind maps with visual layout.
-    """
-
-    def __init__(self):
-        self._nodes: List[MindNode] = []
-        self._connections: List[MindConnection] = []
-        self._selected_index: int = 0
-        self._edit_mode: bool = False
-        self._edit_text: str = ""
-        self._layout: LayoutType = LayoutType.TREE
-        self._zoom: float = 1.0
-        self._pan_x: int = 0
-        self._pan_y: int = 0
-        self._search_query: str = ""
-        self._history: List[str] = []  # Undo stack
-        self._redo_stack: List[str] = []
-
-        # Callbacks
-        self._on_change: List[Callable] = []
-
-        # Init sample mind map
-        self._init_sample_map()
-
-    def _init_sample_map(self) -> None:
-        """Create a sample mind map."""
-        # Root
-        root = MindNode("Nyrqis OS", NodeType.ROOT, color="#4A90D9", node_id="root")
-        self._nodes.append(root)
-
-        # Level 1 branches
-        branches = [
-            ("Architecture", "branch", "#2ECC71", "root", "arch"),
-            ("Applications", "branch", "#E74C3C", "root", "apps"),
-            ("Development", "branch", "#F39C12", "root", "dev"),
-            ("Community", "branch", "#9B59B6", "root", "community"),
-        ]
-
-        for text, ntype, color, parent, nid in branches:
-            node = MindNode(text, NodeType.BRANCH, color=color, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-        # Level 2 - Architecture
-        arch_children = [
-            ("Wayland Compositor", "leaf", "arch", "wayland"),
-            ("Vulkan Renderer", "leaf", "arch", "vulkan"),
-            ("DRM/KMS Backend", "leaf", "arch", "drm"),
-            ("Plugin System", "leaf", "arch", "plugins"),
-        ]
-        for text, ntype, parent, nid in arch_children:
-            node = MindNode(text, NodeType.LEAF, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-        # Level 2 - Applications
-        app_children = [
-            ("Terminal", "leaf", "apps", "terminal"),
-            ("File Manager", "leaf", "apps", "files"),
-            ("Web Browser", "leaf", "apps", "browser"),
-            ("Settings", "leaf", "apps", "settings"),
-        ]
-        for text, ntype, parent, nid in app_children:
-            node = MindNode(text, NodeType.LEAF, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-        # Level 2 - Development
-        dev_children = [
-            ("Python UI Layer", "leaf", "dev", "python"),
-            ("Rust Core", "leaf", "dev", "rust"),
-            ("Test Suite", "leaf", "dev", "tests"),
-        ]
-        for text, ntype, parent, nid in dev_children:
-            node = MindNode(text, NodeType.LEAF, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-        # Level 2 - Community
-        community_children = [
-            ("GitHub Repository", "leaf", "community", "github"),
-            ("Documentation", "leaf", "community", "docs"),
-            ("Contributing Guide", "leaf", "community", "contrib"),
-        ]
-        for text, ntype, parent, nid in community_children:
-            node = MindNode(text, NodeType.LEAF, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-        # Level 3 examples
-        more_children = [
-            ("Window Manager", "leaf", "wayland", "wm"),
-            ("Input Handling", "leaf", "wayland", "input"),
-            ("GPU Acceleration", "leaf", "vulkan", "gpu"),
-        ]
-        for text, ntype, parent, nid in more_children:
-            node = MindNode(text, NodeType.LEAF, parent_id=parent, node_id=nid)
-            self._nodes.append(node)
-            self._connections.append(MindConnection(parent, nid))
-
-    # ── Node Operations ───────────────────────────────────────────────
-
-    def get_node(self, node_id: str) -> Optional[MindNode]:
-        for n in self._nodes:
-            if n.node_id == node_id:
-                return n
-        return None
-
-    def get_children(self, node_id: str) -> List[MindNode]:
-        """Get direct children of a node."""
-        child_ids = [c.to_id for c in self._connections if c.from_id == node_id]
-        return [self.get_node(cid) for cid in child_ids if self.get_node(cid)]
-
-    def get_root(self) -> Optional[MindNode]:
-        return self.get_node("root")
-
-    def add_node(self, text: str, parent_id: str = "", node_type: NodeType = NodeType.LEAF) -> MindNode:
-        """Add a new node."""
-        if not parent_id and self._selected_index < len(self._nodes):
-            parent_id = self._nodes[self._selected_index].node_id
-
-        node = MindNode(text, node_type, parent_id=parent_id)
-        self._nodes.append(node)
-
-        if parent_id:
-            self._connections.append(MindConnection(parent_id, node.node_id))
-
-        self._save_undo()
-        self._notify("change")
-        return node
-
-    def delete_node(self, node_id: str) -> bool:
-        """Delete a node and its children."""
-        if node_id == "root":
-            return False
-
-        # Get all descendants
-        to_delete = self._get_descendants(node_id)
-        to_delete.add(node_id)
-
-        self._nodes = [n for n in self._nodes if n.node_id not in to_delete]
-        self._connections = [c for c in self._connections
-                             if c.from_id not in to_delete and c.to_id not in to_delete]
-
-        self._save_undo()
-        self._notify("change")
-        return True
-
-    def _get_descendants(self, node_id: str) -> Set[str]:
-        """Get all descendant node IDs."""
-        result = set()
-        children = self.get_children(node_id)
-        for child in children:
-            result.add(child.node_id)
-            result.update(self._get_descendants(child.node_id))
-        return result
-
-    def update_node_text(self, node_id: str, text: str) -> bool:
-        node = self.get_node(node_id)
-        if node:
-            node.text = text
-            node.modified = time.time()
-            self._notify("change")
-            return True
-        return False
-
-    def update_node_notes(self, node_id: str, notes: str) -> bool:
-        node = self.get_node(node_id)
-        if node:
-            node.notes = notes
-            node.modified = time.time()
-            return True
-        return False
-
-    def update_node_color(self, node_id: str, color: str) -> bool:
-        node = self.get_node(node_id)
-        if node:
-            node.color = color
-            return True
-        return False
-
-    def toggle_collapse(self, node_id: str) -> bool:
-        node = self.get_node(node_id)
-        if node:
-            node.collapsed = not node.collapsed
-            return node.collapsed
-        return False
-
-    @property
-    def selected_node(self) -> Optional[MindNode]:
-        if 0 <= self._selected_index < len(self._nodes):
-            return self._nodes[self._selected_index]
-        return None
-
-    @property
-    def visible_nodes(self) -> List[MindNode]:
-        """Get nodes visible (not collapsed behind a parent)."""
-        collapsed_parents = set()
-        for node in self._nodes:
-            if node.collapsed:
-                collapsed_parents.update(self._get_descendants(node.node_id))
-
-        return [n for n in self._nodes if n.node_id not in collapsed_parents]
+    name: str = "Untitled"
+    created: float = 0.0
+    modified: float = 0.0
+    root_id: int = 0
+    nodes: List[MindNode] = field(default_factory=list)
+    connections: List[Connection] = field(default_factory=list)
+    layout: MindMapLayout = field(default_factory=MindMapLayout)
+    description: str = ""
+    tags: List[str] = field(default_factory=list)
 
     @property
     def node_count(self) -> int:
-        return len(self._nodes)
+        return len(self.nodes)
 
     @property
     def connection_count(self) -> int:
-        return len(self._connections)
+        return len(self.connections)
 
-    # ── Selection ─────────────────────────────────────────────────────
+    @property
+    def depth(self) -> int:
+        return self._calc_depth(0)
 
-    def select(self, index: int) -> None:
-        visible = self.visible_nodes
-        self._selected_index = max(0, min(len(visible) - 1, index))
+    def _calc_depth(self, node_id: int, visited: set = None) -> int:
+        if visited is None:
+            visited = set()
+        if node_id in visited:
+            return 0
+        visited.add(node_id)
+        node = next((n for n in self.nodes if n.id == node_id), None)
+        if not node or not node.children_ids:
+            return 0
+        return 1 + max(self._calc_depth(cid, visited) for cid in node.children_ids)
 
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
 
-    def select_down(self) -> None:
-        visible = self.visible_nodes
-        self._selected_index = min(len(visible) - 1, self._selected_index + 1)
+class MindMapEditor:
+    def __init__(self):
+        self._maps: List[MindMap] = []
+        self._selected_map: int = 0
+        self._selected_node: int = 0
+        self._zoom: float = 1.0
+        self._pan_x: float = 0.0
+        self._pan_y: float = 0.0
+        self._clipboard_node: Optional[MindNode] = None
+        self._history: List[str] = []
+        self._create_samples()
 
-    def select_parent(self) -> None:
-        """Move selection to parent node."""
+    def _create_samples(self):
+        now = time.time()
+
+        # Map 1: Project Architecture
+        m1 = MindMap("Nyrqis Architecture", now - 86400 * 30, now - 3600,
+                      description="System architecture overview", tags=["architecture", "design"])
+        m1.nodes = [
+            MindNode(0, "Nyrqis OS", 400, 300, 160, 50, "#1a73e8", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     children_ids=[1, 2, 3, 4]),
+            MindNode(1, "Compositor", 700, 150, 130, 40, "#ea4335", NodeShape.ROUNDED_RECT, NodeStyle.IDEA,
+                     notes="Rust-based Wayland compositor", parent_id=0, children_ids=[5, 6, 7]),
+            MindNode(2, "Shell", 700, 250, 130, 40, "#34a853", NodeShape.ROUNDED_RECT, NodeStyle.TASK,
+                     parent_id=0, children_ids=[8, 9]),
+            MindNode(3, "HAL", 700, 350, 130, 40, "#fbbc04", NodeShape.ROUNDED_RECT, NodeStyle.NOTE,
+                     parent_id=0, children_ids=[10, 11]),
+            MindNode(4, "Apps", 700, 450, 130, 40, "#9334e6", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=0, children_ids=[12, 13, 14]),
+            MindNode(5, "Wayland Protocols", 1000, 100, 150, 35, "#ea4335", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     notes="wl_compositor, xdg_wm_base, wl_seat", parent_id=1),
+            MindNode(6, "DRM/KMS", 1000, 160, 130, 35, "#ea4335", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=1),
+            MindNode(7, "Input Handling", 1000, 220, 130, 35, "#ea4335", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=1),
+            MindNode(8, "NUI Schema", 1000, 250, 130, 35, "#34a853", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=2),
+            MindNode(9, "State Management", 1000, 310, 150, 35, "#34a853", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=2),
+            MindNode(10, "GPU Access", 1000, 350, 130, 35, "#fbbc04", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=3),
+            MindNode(11, "Input Devices", 1000, 410, 140, 35, "#fbbc04", NodeShape.ROUNDED_RECT, NodeStyle.DEFAULT,
+                     parent_id=3),
+            MindNode(12, "File Manager", 1000, 450, 130, 35, "#9334e6", NodeShape.ROUNDED_RECT, NodeStyle.TASK,
+                     completed=True, parent_id=4),
+            MindNode(13, "Terminal", 1000, 510, 130, 35, "#9334e6", NodeShape.ROUNDED_RECT, NodeStyle.TASK,
+                     completed=True, parent_id=4),
+            MindNode(14, "Settings", 1000, 570, 130, 35, "#9334e6", NodeShape.ROUNDED_RECT, NodeStyle.TASK,
+                     parent_id=4),
+        ]
+        m1.connections = [
+            Connection(0, 1), Connection(0, 2), Connection(0, 3), Connection(0, 4),
+            Connection(1, 5), Connection(1, 6), Connection(1, 7),
+            Connection(2, 8), Connection(2, 9),
+            Connection(3, 10), Connection(3, 11),
+            Connection(4, 12), Connection(4, 13), Connection(4, 14),
+        ]
+        self._maps.append(m1)
+
+        # Map 2: Feature Planning
+        m2 = MindMap("Feature Roadmap", now - 86400 * 15, now - 86400,
+                      description="Q3/Q4 feature planning", tags=["roadmap", "planning"])
+        m2.nodes = [
+            MindNode(0, "v2.0 Features", 400, 300, 160, 50, "#1a73e8", children_ids=[1, 2, 3]),
+            MindNode(1, "Q3 2026", 700, 200, 130, 40, "#ea4335", parent_id=0, children_ids=[4, 5]),
+            MindNode(2, "Q4 2026", 700, 300, 130, 40, "#34a853", parent_id=0, children_ids=[6, 7]),
+            MindNode(3, "2027", 700, 400, 130, 40, "#fbbc04", parent_id=0, children_ids=[8]),
+            MindNode(4, "Vulkan Renderer", 1000, 170, 140, 35, "#ea4335", priority=3, parent_id=1),
+            MindNode(5, "Bluetooth Stack", 1000, 230, 140, 35, "#ea4335", priority=2, parent_id=1),
+            MindNode(6, "App Store", 1000, 270, 130, 35, "#34a853", priority=2, parent_id=2),
+            MindNode(7, "Mobile Support", 1000, 330, 140, 35, "#34a853", priority=3, parent_id=2),
+            MindNode(8, "AI Assistant", 1000, 400, 130, 35, "#fbbc04", priority=1, parent_id=3),
+        ]
+        m2.connections = [
+            Connection(0, 1), Connection(0, 2), Connection(0, 3),
+            Connection(1, 4), Connection(1, 5), Connection(2, 6), Connection(2, 7), Connection(3, 8),
+        ]
+        self._maps.append(m2)
+
+    @property
+    def selected_map(self) -> Optional[MindMap]:
+        if 0 <= self._selected_map < len(self._maps):
+            return self._maps[self._selected_map]
+        return None
+
+    @property
+    def selected_node(self) -> Optional[MindNode]:
+        m = self.selected_map
+        if m and 0 <= self._selected_node < len(m.nodes):
+            return m.nodes[self._selected_node]
+        return None
+
+    @property
+    def total_nodes(self) -> int:
+        return sum(m.node_count for m in self._maps)
+
+    def select_map(self, idx: int):
+        if 0 <= idx < len(self._maps):
+            self._selected_map = idx
+            self._selected_node = 0
+
+    def select_node(self, idx: int):
+        self._selected_node = idx
+
+    def add_child(self):
+        m = self.selected_map
         node = self.selected_node
-        if node and node.parent_id:
-            visible = self.visible_nodes
-            for i, n in enumerate(visible):
-                if n.node_id == node.parent_id:
-                    self._selected_index = i
-                    break
+        if m and node:
+            new_id = max(n.id for n in m.nodes) + 1
+            child = MindNode(new_id, "New Idea", node.x + 200, node.y + len(node.children_ids) * 50,
+                             parent_id=node.id)
+            m.nodes.append(child)
+            node.children_ids.append(new_id)
+            m.connections.append(Connection(node.id, new_id))
+            self._history.append(f"Added child to {node.text}")
 
-    def select_child(self) -> None:
-        """Move selection to first child."""
+    def delete_node(self):
+        m = self.selected_map
         node = self.selected_node
-        if node:
-            children = self.get_children(node.node_id)
-            if children:
-                visible = self.visible_nodes
-                for i, n in enumerate(visible):
-                    if n.node_id == children[0].node_id:
-                        self._selected_index = i
-                        break
+        if m and node and node.id != 0:
+            m.nodes = [n for n in m.nodes if n.id != node.id]
+            m.connections = [c for c in m.connections if c.source_id != node.id and c.target_id != node.id]
+            self._selected_node = max(0, self._selected_node - 1)
+            self._history.append(f"Deleted {node.text}")
 
-    # ── Search ────────────────────────────────────────────────────────
+    def handle_input(self, key: str):
+        key = key.lower()
+        if key == "a":
+            self.add_child()
+        elif key == "d":
+            self.delete_node()
+        elif key == "c":
+            if self.selected_node:
+                self._clipboard_node = self.selected_node
 
-    def search(self, query: str) -> List[MindNode]:
-        self._search_query = query
-        if not query:
-            return []
-        q = query.lower()
-        return [n for n in self._nodes if q in n.text.lower() or q in n.notes.lower()]
-
-    # ── Undo/Redo ─────────────────────────────────────────────────────
-
-    def _save_undo(self) -> None:
-        state = json.dumps([{"id": n.node_id, "text": n.text, "parent": n.parent_id} for n in self._nodes])
-        self._history.append(state)
-        if len(self._history) > 50:
-            self._history.pop(0)
-        self._redo_stack.clear()
-
-    def undo(self) -> bool:
-        if self._history:
-            self._redo_stack.append(self._history.pop())
-            return True
-        return False
-
-    def redo(self) -> bool:
-        if self._redo_stack:
-            self._history.append(self._redo_stack.pop())
-            return True
-        return False
-
-    # ── Export ────────────────────────────────────────────────────────
-
-    def export_outline(self) -> str:
-        """Export as text outline."""
+    def render(self, width: int = 80, height: int = 24) -> List[str]:
         lines = []
-        self._export_node("root", lines, 0)
-        return "\n".join(lines)
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS MIND MAP EDITOR                                   ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
+        lines.append("")
 
-    def _export_node(self, node_id: str, lines: List[str], depth: int) -> None:
-        node = self.get_node(node_id)
-        if node:
-            indent = "  " * depth
-            lines.append(f"{indent}{'├── ' if depth > 0 else ''}{node.text}")
-            if node.notes:
-                lines.append(f"{indent}    📝 {node.notes[:50]}")
-            children = self.get_children(node_id)
-            for child in children:
-                self._export_node(child.node_id, lines, depth + 1)
+        lines.append(f"  Maps: {len(self._maps)}  Total Nodes: {self.total_nodes}  Zoom: {self._zoom:.0%}")
+        lines.append("")
 
-    def export_markdown(self) -> str:
-        """Export as Markdown."""
-        lines = ["# Nyrqis Mind Map\n"]
-        self._export_md_node("root", lines, 0)
-        return "\n".join(lines)
+        # Maps
+        lines.append("  ── Mind Maps ──")
+        for i, m in enumerate(self._maps):
+            sel = "▶" if i == self._selected_map else " "
+            lines.append(f"  {sel} 🧠 {m.name}  {m.node_count} nodes  {m.connection_count} connections  Depth: {m.depth}")
+        lines.append("")
 
-    def _export_md_node(self, node_id: str, lines: List[str], depth: int) -> None:
-        node = self.get_node(node_id)
-        if node:
-            prefix = "#" * min(depth + 1, 6)
-            lines.append(f"{prefix} {node.text}")
-            if node.notes:
-                lines.append(f"\n{node.notes}\n")
-            children = self.get_children(node_id)
-            for child in children:
-                self._export_md_node(child.node_id, lines, depth + 1)
+        # Nodes in tree view
+        m = self.selected_map
+        if m:
+            lines.append(f"  ── {m.name} ──")
+            root = next((n for n in m.nodes if n.id == m.root_id), None)
+            if root:
+                self._render_node_tree(lines, m, root, 0)
+            lines.append("")
 
-    # ── Rendering ─────────────────────────────────────────────────────
-
-    def render(self, width: int = 60, height: int = 30) -> List[str]:
-        lines = []
-        lines.append(f" 🧠 Mind Map — {self.node_count} nodes, {self.connection_count} connections")
-        lines.append("─" * width)
-
-        # Tree view
-        self._render_tree("root", lines, 0, width)
-
-        lines.append("─" * width)
-
-        # Selected node info
+        # Selected node detail
         node = self.selected_node
         if node:
-            lines.append(f" Selected: {node.display}")
+            lines.append(f"  ── Node: {node.text} ──")
+            lines.append(f"  Shape: {node.shape.value}  Style: {node.style.value}  Color: {node.color}")
+            lines.append(f"  Position: ({node.x:.0f}, {node.y:.0f})  Children: {node.child_count}  Parent: {node.depth_str}")
             if node.notes:
-                lines.append(f" Notes: {node.notes[:width - 8]}")
-            lines.append(f" Color: {node.color}")
-            lines.append(f" Children: {len(self.get_children(node.node_id))}")
+                lines.append(f"  Notes: {node.notes[:60]}")
+            if node.tags:
+                lines.append(f"  Tags: {' '.join(f'[{t}]' for t in node.tags)}")
+            if node.priority:
+                lines.append(f"  Priority: {node.priority_icon} {'Low' if node.priority == 1 else 'Medium' if node.priority == 2 else 'High'}")
+            if node.completed:
+                lines.append(f"  Status: ✅ Completed")
+            lines.append("")
 
-        if self._search_query:
-            results = self.search(self._search_query)
-            lines.append(f" 🔍 \"{self._search_query}\" ({len(results)} matches)")
+        # Layout
+        if m:
+            lines.append(f"  ── Layout ──")
+            lines.append(f"  Direction: {m.layout.direction}  Spacing: {m.layout.spacing_h:.0f}x{m.layout.spacing_v:.0f}  Auto: {'ON' if m.layout.auto_arrange else 'OFF'}")
+            lines.append("")
 
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Add child  D:Delete  Space:Collapse")
-        lines.append(" N:Notes  C:Color  Tab:Parent  Shift+Tab:Child")
+        lines.append("  [A]Add Child [D]Delete [C]Copy [E]Export [↑↓]Node [←→]Map")
         return lines
 
-    def _render_tree(self, node_id: str, lines: List[str], depth: int, width: int) -> None:
-        node = self.get_node(node_id)
-        if not node:
-            return
-
-        indent = "  " * depth
-        connector = "├── " if depth > 0 else ""
-        collapse = " ▸" if node.collapsed else ""
-
-        # Highlight selected
-        visible = self.visible_nodes
-        is_selected = (self._selected_index < len(visible) and
-                       visible[self._selected_index].node_id == node_id)
-        marker = "▸ " if is_selected else "  "
-
-        line = f"{marker}{indent}{connector}{node.display}{collapse}"
-        lines.append(line[:width])
-
-        # Children (if not collapsed)
+    def _render_node_tree(self, lines: List[str], m: MindMap, node: MindNode, depth: int):
+        indent = "  " * (depth + 2)
+        check = "✅" if node.completed else "  "
+        priority = node.priority_icon
+        lines.append(f"  {indent}{check} {node.style_icon} {node.text} {priority}")
         if not node.collapsed:
-            children = self.get_children(node_id)
-            for child in children:
-                self._render_tree(child.node_id, lines, depth + 1, width)
-
-    # ── Callbacks ─────────────────────────────────────────────────────
-
-    def on_change(self, cb: Callable) -> None:
-        self._on_change.append(cb)
-
-    def _notify(self, event: str) -> None:
-        for cb in self._on_change:
-            try:
-                cb()
-            except Exception:
-                pass
+            for child_id in node.children_ids:
+                child = next((n for n in m.nodes if n.id == child_id), None)
+                if child:
+                    self._render_node_tree(lines, m, child, depth + 1)

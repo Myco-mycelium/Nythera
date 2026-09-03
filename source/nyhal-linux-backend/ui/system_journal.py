@@ -1,694 +1,342 @@
-"""
-Nyrqis System Journal — system log viewer application.
-
-Features:
-- Real-time log tailing with live updates
-- Log levels (debug, info, warning, error, critical)
-- Filter by service, level, and time range
-- Full-text search with regex support
-- Log statistics and timeline
-- Bookmark important log entries
-- Export logs to file
-- Log rotation management
-- Keyboard navigation throughout
-"""
-
-import time
-import re
-import hashlib
+"""System Journal Viewer — systemd logs, service status, log filtering for Nyrqis OS."""
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Callable, Tuple
-from datetime import datetime, timedelta
-
-
-# ─── Data Classes ────────────────────────────────────────────────────────
+from enum import Enum
+from typing import List, Dict, Optional, Tuple
+import time
+import random
 
 
 class LogLevel(Enum):
-    DEBUG = "debug"
-    INFO = "info"
+    EMERGENCY = "emerg"
+    ALERT = "alert"
+    CRITICAL = "crit"
+    ERROR = "err"
     WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
+    NOTICE = "notice"
+    INFO = "info"
+    DEBUG = "debug"
 
 
-LEVEL_ICONS = {
-    LogLevel.DEBUG: "🔍",
-    LogLevel.INFO: "ℹ️",
-    LogLevel.WARNING: "⚠️",
-    LogLevel.ERROR: "❌",
-    LogLevel.CRITICAL: "🔥",
-}
+class ServiceState(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    FAILED = "failed"
+    ACTIVATING = "activating"
+    DEACTIVATING = "deactivating"
+    MAINTENANCE = "maintenance"
 
-LEVEL_COLORS = {
-    LogLevel.DEBUG: "#808080",
-    LogLevel.INFO: "#7aa2f7",
-    LogLevel.WARNING: "#e0af68",
-    LogLevel.ERROR: "#f7768e",
-    LogLevel.CRITICAL: "#ff0000",
-}
+
+class UnitType(Enum):
+    SERVICE = "service"
+    SOCKET = "socket"
+    TIMER = "timer"
+    MOUNT = "mount"
+    TARGET = "target"
+    PATH = "path"
+    SLICE = "slice"
+    SCOPE = "scope"
 
 
 @dataclass
-class LogEntry:
-    """A single log entry."""
-    timestamp: float
-    level: LogLevel
-    service: str
-    message: str
-    pid: int = 0
-    uid: int = 0
+class JournalEntry:
+    timestamp: float = 0.0
     hostname: str = "nyrqis"
+    service: str = ""
+    pid: int = 0
+    level: LogLevel = LogLevel.INFO
+    message: str = ""
     extra: Dict[str, str] = field(default_factory=dict)
-    bookmarked: bool = False
-    entry_id: str = ""
-
-    def __post_init__(self):
-        if not self.entry_id:
-            self.entry_id = hashlib.md5(
-                f"{self.timestamp}{self.service}{self.message[:50]}".encode()
-            ).hexdigest()[:8]
 
     @property
     def time_str(self) -> str:
-        return datetime.fromtimestamp(self.timestamp).strftime("%H:%M:%S.%f")[:-3]
+        return time.strftime("%b %d %H:%M:%S", time.localtime(self.timestamp))
 
     @property
-    def date_str(self) -> str:
-        return datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S")
-
-    @property
-    def level_str(self) -> str:
-        return self.level.value.upper().ljust(8)
+    def short_time(self) -> str:
+        return time.strftime("%H:%M:%S", time.localtime(self.timestamp))
 
     @property
     def level_icon(self) -> str:
-        return LEVEL_ICONS.get(self.level, "❓")
+        icons = {
+            LogLevel.EMERGENCY: "🚨", LogLevel.ALERT: "🚨", LogLevel.CRITICAL: "🔴",
+            LogLevel.ERROR: "❌", LogLevel.WARNING: "⚠️", LogLevel.NOTICE: "📋",
+            LogLevel.INFO: "ℹ️", LogLevel.DEBUG: "🔍",
+        }
+        return icons.get(self.level, "")
 
     @property
-    def display(self) -> str:
-        return f"{self.time_str} {self.level_icon} [{self.service}] {self.message[:80]}"
-
-    @property
-    def full_display(self) -> str:
-        return f"{self.date_str} {self.level_str} {self.hostname} {self.service}[{self.pid}]: {self.message}"
-
-    @property
-    def time_ago(self) -> str:
-        diff = time.time() - self.timestamp
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            return f"{int(diff // 60)}m ago"
-        elif diff < 86400:
-            return f"{int(diff // 3600)}h ago"
-        return datetime.fromtimestamp(self.timestamp).strftime("%b %d")
+    def level_color(self) -> str:
+        colors = {
+            LogLevel.EMERGENCY: "red", LogLevel.ALERT: "red", LogLevel.CRITICAL: "red",
+            LogLevel.ERROR: "red", LogLevel.WARNING: "yellow", LogLevel.NOTICE: "cyan",
+            LogLevel.INFO: "white", LogLevel.DEBUG: "gray",
+        }
+        return colors.get(self.level, "white")
 
 
 @dataclass
-class LogFilter:
-    """Active log filters."""
-    level_min: LogLevel = LogLevel.DEBUG
-    services: List[str] = field(default_factory=list)
-    search_query: str = ""
-    time_range_hours: int = 0  # 0 = all
-    hide_services: List[str] = field(default_factory=list)
-    regex_enabled: bool = False
-
-
-@dataclass
-class LogStats:
-    """Log statistics for a time period."""
-    total: int = 0
-    debug: int = 0
-    info: int = 0
-    warning: int = 0
-    error: int = 0
-    critical: int = 0
-    services: Dict[str, int] = field(default_factory=dict)
+class ServiceUnit:
+    name: str
+    unit_type: UnitType = UnitType.SERVICE
+    state: ServiceState = ServiceState.ACTIVE
+    sub_state: str = "running"
+    description: str = ""
+    pid: int = 0
+    main_pid: int = 0
+    memory_current: int = 0  # bytes
+    cpu_usage: float = 0.0
+    tasks: int = 0
+    restart_count: int = 0
+    active_enter: float = 0.0
+    active_exit: float = 0.0
+    load_state: str = "loaded"
+    description_short: str = ""
 
     @property
-    def error_rate(self) -> float:
-        errors = self.error + self.critical
-        return (errors / self.total * 100) if self.total > 0 else 0
+    def state_icon(self) -> str:
+        icons = {
+            ServiceState.ACTIVE: "🟢", ServiceState.INACTIVE: "⚪",
+            ServiceState.FAILED: "🔴", ServiceState.ACTIVATING: "🟡",
+            ServiceState.DEACTIVATING: "🟡", ServiceState.MAINTENANCE: "🔧",
+        }
+        return icons.get(self.state, "?")
 
     @property
-    def level_bar(self) -> str:
-        if self.total == 0:
-            return ""
-        parts = []
-        for level, count in [(LogLevel.DEBUG, self.debug), (LogLevel.INFO, self.info),
-                              (LogLevel.WARNING, self.warning), (LogLevel.ERROR, self.error),
-                              (LogLevel.CRITICAL, self.critical)]:
-            if count > 0:
-                pct = int(count / self.total * 20)
-                icon = LEVEL_ICONS[level][0]  # first char
-                parts.append(f"{icon}" * max(1, pct))
-        return " ".join(parts)
+    def memory_str(self) -> str:
+        b = self.memory_current
+        if b < 1024:
+            return f"{b} B"
+        elif b < 1024**2:
+            return f"{b / 1024:.1f} KB"
+        elif b < 1024**3:
+            return f"{b / 1024**2:.1f} MB"
+        return f"{b / 1024**3:.2f} GB"
 
+    @property
+    def memory_bar(self) -> str:
+        filled = int(min(self.memory_current / (500 * 1024**2), 1.0) * 20)
+        return "█" * filled + "░" * (20 - filled)
 
-# ─── System Journal ──────────────────────────────────────────────────────
+    @property
+    def cpu_bar(self) -> str:
+        filled = int(self.cpu_usage / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def uptime_str(self) -> str:
+        if self.active_enter <= 0:
+            return "N/A"
+        uptime = time.time() - self.active_enter
+        if uptime < 60:
+            return f"{uptime:.0f}s"
+        elif uptime < 3600:
+            return f"{uptime / 60:.0f}m"
+        elif uptime < 86400:
+            return f"{uptime / 3600:.1f}h"
+        return f"{uptime / 86400:.1f}d"
 
 
 class SystemJournal:
-    """
-    System log viewer for Nyrqis OS.
-    """
-
     def __init__(self):
-        self._entries: List[LogEntry] = []
-        self._filter: LogFilter = LogFilter()
-        self._bookmarks: List[str] = []  # entry_ids
-        self._selected_index: int = 0
-        self._view_mode: str = "logs"  # logs, stats, services, bookmarks
-        self._auto_scroll: bool = True
-        self._wrap_lines: bool = False
-        self._show_timestamps: bool = True
-        self._show_service: bool = True
-        self._tail_mode: bool = False
-        self._export_path: str = ""
+        self._entries: List[JournalEntry] = []
+        self._services: List[ServiceUnit] = []
+        self._selected_entry: int = 0
+        self._selected_service: int = 0
+        self._view_mode: str = "journal"
+        self._filter_level: Optional[LogLevel] = None
+        self._filter_service: str = ""
+        self._filter_text: str = ""
+        self._follow_mode: bool = False
+        self._show_kernel: bool = False
+        self._history: List[str] = []
+        self._create_samples()
 
-        # Stats cache
-        self._stats_cache: Optional[LogStats] = None
-        self._stats_time: float = 0
-
-        self._init_sample_data()
-
-    def _init_sample_data(self) -> None:
+    def _create_samples(self):
         now = time.time()
-        services = [
-            "nyrqis-compositor", "nyrqis-shell", "nyrqis-panel",
-            "systemd", "kernel", "dbus", "NetworkManager",
-            "pipewire", "polkitd", "sshd", "crond", "kernel",
+
+        # Sample journal entries
+        services = ["nyrqis-compositor", "nyrqis-shell", "systemd", "NetworkManager",
+                    "sshd", "dbus", "polkitd", "cron", "kernel", "pulseaudio",
+                    "bluetooth", "cups", "gdm", "firewalld"]
+        messages = [
+            "Started Wayland compositor session",
+            "Shell loaded successfully",
+            "Listening on port 22",
+            "Network connection established (eth0: 192.168.1.100)",
+            "Bluetooth adapter hci0 powered on",
+            "Timer triggered: /etc/cron.daily/logrotate",
+            "User session started for uid=1000",
+            "GPU driver loaded: nvidia 560.50",
+            "Compositor: 60fps stable, memory 256MB",
+            "Failed to start cups.service: Connection refused",
+            "Certificate verification failed for nyrqis.io",
+            "Low disk warning: /home at 92%",
+            "Security audit completed: 0 critical, 2 warnings",
+            "Kernel: NVRM: loading driver version 560.50",
+            "System clock synchronized via chronyd",
+            "Firewall: blocked connection from 185.220.101.34",
+            "Backup completed: 2.4GB archived",
+            "Package manager: 3 security updates available",
         ]
 
-        messages = {
-            LogLevel.DEBUG: [
-                "Cache hit for key 'theme-dark'",
-                "Rendering frame 1452 at 60fps",
-                "Buffer pool: 12/16 buffers allocated",
-                "Input event processed: key press code=28",
-                "Wayland surface committed: width=1920 height=1080",
-                "GPU memory usage: 256MB / 8192MB",
-                "Texture atlas updated: 1024x1024",
-            ],
-            LogLevel.INFO: [
-                "Service started successfully",
-                "Session locked by user",
-                "New connection from 192.168.1.100",
-                "Package updated: firefox 130.0",
-                "Backup completed: 2.3 GB archived",
-                "NTP sync completed, offset: +0.002s",
-                "Volume mounted at /mnt/data",
-                "Desktop session started for user",
-                "Wayland display initialized: 2560x1440@144Hz",
-                "Audio device detected: PulseAudio HD",
-            ],
-            LogLevel.WARNING: [
-                "Disk space below 10% on /home",
-                "Certificate expires in 14 days",
-                "Connection timeout after 30s, retrying",
-                "Memory usage above 80% threshold",
-                "Deprecated API call from module 'legacy'",
-                "Failed to load font 'Fira Code', falling back",
-                "High CPU usage detected: 95% for 60s",
-                "Network interface eth0: link flapping",
-            ],
-            LogLevel.ERROR: [
-                "Failed to connect to database: timeout",
-                "Permission denied: /etc/shadow",
-                "Segmentation fault in module 'gpu-accel'",
-                "Out of memory: killed process 1234",
-                "Failed to start service 'docker': port 2375 in use",
-                "SSL handshake failed: certificate invalid",
-                "Core dump generated for process 5678",
-                "Read-only file system: cannot write /tmp",
-            ],
-            LogLevel.CRITICAL: [
-                "Kernel panic: unable to mount root filesystem",
-                "Hardware failure: NVMe drive /dev/nvme0n1 unrecoverable",
-                "System overheating: CPU at 105°C, shutting down",
-                "Power supply failure detected",
-                "Filesystem corruption on /dev/sda2",
-            ],
-        }
-
-        # Generate 200 sample log entries spread over 24 hours
-        import random
-        random.seed(42)
-        for i in range(200):
-            age = random.uniform(0, 86400)
-            level = random.choices(
-                list(LogLevel),
-                weights=[10, 50, 20, 15, 5]
-            )[0]
+        for i in range(80):
+            level = random.choices(list(LogLevel), weights=[1, 1, 2, 5, 15, 10, 50, 16])[0]
             service = random.choice(services)
-            msg = random.choice(messages[level])
-            pid = random.randint(100, 99999)
+            msg = random.choice(messages)
+            if service == "kernel":
+                msg = f"kernel: {msg}"
+            self._entries.append(JournalEntry(
+                now - i * random.randint(5, 120),
+                "nyrqis", service, random.randint(1000, 99999),
+                level, msg,
+            ))
 
-            entry = LogEntry(
-                timestamp=now - age,
-                level=level,
-                service=service,
-                message=msg,
-                pid=pid,
-                uid=1000 if service.startswith("nyrqis") else 0,
-            )
-            self._entries.append(entry)
+        # Sample services
+        self._services = [
+            ServiceUnit("nyrqis-compositor.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Nyrqis Wayland Compositor", 1234, 1234, 256 * 1024**2, 12.5, 24, 0, now - 86400 * 5),
+            ServiceUnit("nyrqis-shell.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Nyrqis Desktop Shell", 1235, 1235, 128 * 1024**2, 3.2, 16, 0, now - 86400 * 5),
+            ServiceUnit("systemd-resolved.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "DNS Name Resolution", 456, 456, 12 * 1024**2, 0.5, 4, 0, now - 86400 * 10),
+            ServiceUnit("NetworkManager.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Network Manager", 678, 678, 28 * 1024**2, 1.0, 8, 2, now - 86400 * 10),
+            ServiceUnit("sshd.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "OpenSSH Server", 890, 890, 8 * 1024**2, 0.2, 3, 0, now - 86400 * 15),
+            ServiceUnit("dbus.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "D-Bus System Message Bus", 567, 567, 5 * 1024**2, 0.3, 2, 0, now - 86400 * 20),
+            ServiceUnit("cups.service", UnitType.SERVICE, ServiceState.FAILED, "failed",
+                        "CUPS Printing Service", 0, 0, 0, 0, 0, 5, now - 86400),
+            ServiceUnit("bluetooth.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Bluetooth Service", 1122, 1122, 15 * 1024**2, 0.1, 3, 1, now - 86400 * 8),
+            ServiceUnit("firewalld.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Firewall Daemon", 1345, 1345, 22 * 1024**2, 0.8, 5, 0, now - 86400 * 20),
+            ServiceUnit("polkit.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "Authorization Manager", 1567, 1567, 8 * 1024**2, 0.2, 2, 0, now - 86400 * 20),
+            ServiceUnit("logrotate.timer", UnitType.TIMER, ServiceState.ACTIVE, "waiting",
+                        "Daily log rotation"),
+            ServiceUnit("fstrim.timer", UnitType.TIMER, ServiceState.ACTIVE, "waiting",
+                        "Weekly TRIM for SSDs"),
+            ServiceUnit("chronyd.service", UnitType.SERVICE, ServiceState.ACTIVE, "running",
+                        "NTP Client/Sync", 2345, 2345, 4 * 1024**2, 0.1, 2, 0, now - 86400 * 30),
+        ]
 
-        # Sort by timestamp (newest first)
-        self._entries.sort(key=lambda e: e.timestamp, reverse=True)
+    @property
+    def selected_entry(self) -> Optional[JournalEntry]:
+        filtered = self._filtered_entries()
+        if 0 <= self._selected_entry < len(filtered):
+            return filtered[self._selected_entry]
+        return None
 
-        # Bookmark a few entries
-        if len(self._entries) > 10:
-            self._entries[5].bookmarked = True
-            self._bookmarks.append(self._entries[5].entry_id)
-        if len(self._entries) > 20:
-            self._entries[15].bookmarked = True
-            self._bookmarks.append(self._entries[15].entry_id)
+    @property
+    def selected_service(self) -> Optional[ServiceUnit]:
+        if 0 <= self._selected_service < len(self._services):
+            return self._services[self._selected_service]
+        return None
 
-    # ── Entry Operations ──────────────────────────────────────────────
+    @property
+    def total_entries(self) -> int:
+        return len(self._filtered_entries())
 
-    def add_entry(self, level: LogLevel, service: str, message: str, pid: int = 0) -> LogEntry:
-        entry = LogEntry(
-            timestamp=time.time(),
-            level=level,
-            service=service,
-            message=message,
-            pid=pid,
-        )
-        self._entries.insert(0, entry)
-        self._stats_cache = None  # invalidate cache
-        return entry
+    @property
+    def active_services(self) -> int:
+        return sum(1 for s in self._services if s.state == ServiceState.ACTIVE)
 
-    def toggle_bookmark(self, index: int = -1) -> bool:
-        idx = index if index >= 0 else self._selected_index
-        entries = self._get_filtered_entries()
-        if 0 <= idx < len(entries):
-            entry = entries[idx]
-            entry.bookmarked = not entry.bookmarked
-            if entry.bookmarked:
-                if entry.entry_id not in self._bookmarks:
-                    self._bookmarks.append(entry.entry_id)
-            else:
-                if entry.entry_id in self._bookmarks:
-                    self._bookmarks.remove(entry.entry_id)
-            return entry.bookmarked
-        return False
+    @property
+    def failed_services(self) -> int:
+        return sum(1 for s in self._services if s.state == ServiceState.FAILED)
 
-    def clear_bookmarks(self) -> int:
-        count = len(self._bookmarks)
-        self._bookmarks.clear()
-        for entry in self._entries:
-            entry.bookmarked = False
-        return count
-
-    def export_logs(self) -> str:
-        """Export filtered logs as text."""
-        lines = []
-        for entry in self._get_filtered_entries():
-            lines.append(entry.full_display)
-        self._export_path = f"/tmp/nyrqis-logs-{int(time.time())}.txt"
-        return "\n".join(lines)
-
-    # ── Filtering ─────────────────────────────────────────────────────
-
-    def set_level_filter(self, level: LogLevel) -> None:
-        self._filter.level_min = level
-
-    def set_service_filter(self, services: List[str]) -> None:
-        self._filter.services = services
-
-    def add_service_filter(self, service: str) -> None:
-        if service not in self._filter.services:
-            self._filter.services.append(service)
-
-    def remove_service_filter(self, service: str) -> None:
-        if service in self._filter.services:
-            self._filter.services.remove(service)
-
-    def set_search(self, query: str) -> None:
-        self._filter.search_query = query
-
-    def toggle_regex(self) -> bool:
-        self._filter.regex_enabled = not self._filter.regex_enabled
-        return self._filter.regex_enabled
-
-    def toggle_auto_scroll(self) -> bool:
-        self._auto_scroll = not self._auto_scroll
-        return self._auto_scroll
-
-    def toggle_tail(self) -> bool:
-        self._tail_mode = not self._tail_mode
-        return self._tail_mode
-
-    def clear_filters(self) -> None:
-        self._filter = LogFilter()
-
-    def _get_filtered_entries(self) -> List[LogEntry]:
-        entries = list(self._entries)
-
-        # Level filter
-        level_order = [LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARNING,
-                       LogLevel.ERROR, LogLevel.CRITICAL]
-        min_idx = level_order.index(self._filter.level_min)
-        entries = [e for e in entries if level_order.index(e.level) >= min_idx]
-
-        # Service filter
-        if self._filter.services:
-            entries = [e for e in entries if e.service in self._filter.services]
-
-        # Hide services
-        if self._filter.hide_services:
-            entries = [e for e in entries if e.service not in self._filter.hide_services]
-
-        # Time range
-        if self._filter.time_range_hours > 0:
-            cutoff = time.time() - (self._filter.time_range_hours * 3600)
-            entries = [e for e in entries if e.timestamp >= cutoff]
-
-        # Search
-        if self._filter.search_query:
-            q = self._filter.search_query
-            if self._filter.regex_enabled:
-                try:
-                    pattern = re.compile(q, re.IGNORECASE)
-                    entries = [e for e in entries if pattern.search(e.message) or pattern.search(e.service)]
-                except re.error:
-                    pass
-            else:
-                ql = q.lower()
-                entries = [e for e in entries
-                           if ql in e.message.lower() or ql in e.service.lower()]
-
+    def _filtered_entries(self) -> List[JournalEntry]:
+        entries = self._entries
+        if self._filter_level:
+            entries = [e for e in entries if e.level == self._filter_level]
+        if self._filter_service:
+            entries = [e for e in entries if self._filter_service in e.service]
+        if self._filter_text:
+            entries = [e for e in entries if self._filter_text.lower() in e.message.lower()]
+        if not self._show_kernel:
+            entries = [e for e in entries if e.service != "kernel"]
         return entries
 
-    def get_bookmarked_entries(self) -> List[LogEntry]:
-        return [e for e in self._entries if e.bookmarked]
+    def select_entry(self, idx: int):
+        self._selected_entry = idx
 
-    # ── Statistics ────────────────────────────────────────────────────
+    def select_service(self, idx: int):
+        self._selected_service = idx
 
-    def get_stats(self, hours: int = 24) -> LogStats:
-        now = time.time()
-        if self._stats_cache and (now - self._stats_time) < 30:
-            return self._stats_cache
+    def set_filter(self, level: LogLevel = None, service: str = "", text: str = ""):
+        self._filter_level = level
+        self._filter_service = service
+        self._filter_text = text
+        self._selected_entry = 0
 
-        cutoff = now - (hours * 3600)
-        recent = [e for e in self._entries if e.timestamp >= cutoff]
+    def handle_input(self, key: str):
+        key = key.lower()
+        if key == "f":
+            self._follow_mode = not self._follow_mode
+        elif key == "k":
+            self._show_kernel = not self._show_kernel
+        elif key == "e":
+            self._view_mode = "errors"
+        elif key == "s":
+            self._view_mode = "services"
 
-        stats = LogStats(total=len(recent))
-        for e in recent:
-            if e.level == LogLevel.DEBUG:
-                stats.debug += 1
-            elif e.level == LogLevel.INFO:
-                stats.info += 1
-            elif e.level == LogLevel.WARNING:
-                stats.warning += 1
-            elif e.level == LogLevel.ERROR:
-                stats.error += 1
-            elif e.level == LogLevel.CRITICAL:
-                stats.critical += 1
-            stats.services[e.service] = stats.services.get(e.service, 0) + 1
-
-        self._stats_cache = stats
-        self._stats_time = now
-        return stats
-
-    def get_services(self) -> Dict[str, Dict]:
-        """Get services with their log counts and levels."""
-        services: Dict[str, Dict] = {}
-        for entry in self._entries:
-            if entry.service not in services:
-                services[entry.service] = {
-                    "total": 0, "errors": 0, "warnings": 0, "last_seen": entry.timestamp
-                }
-            svc = services[entry.service]
-            svc["total"] += 1
-            if entry.level in (LogLevel.ERROR, LogLevel.CRITICAL):
-                svc["errors"] += 1
-            elif entry.level == LogLevel.WARNING:
-                svc["warnings"] += 1
-        return services
-
-    # ── Navigation ────────────────────────────────────────────────────
-
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def select_down(self) -> None:
-        entries = self._get_filtered_entries()
-        self._selected_index = min(len(entries) - 1, self._selected_index + 1)
-
-    def get_selected_entry(self) -> Optional[LogEntry]:
-        entries = self._get_filtered_entries()
-        if 0 <= self._selected_index < len(entries):
-            return entries[self._selected_index]
-        return None
-
-    def set_view(self, mode: str) -> None:
-        self._view_mode = mode
-        self._selected_index = 0
-
-    # ── Properties ────────────────────────────────────────────────────
-
-    @property
-    def entries(self) -> List[LogEntry]:
-        return list(self._entries)
-
-    @property
-    def filtered_count(self) -> int:
-        return len(self._get_filtered_entries())
-
-    @property
-    def total_count(self) -> int:
-        return len(self._entries)
-
-    @property
-    def bookmark_count(self) -> int:
-        return len(self._bookmarks)
-
-    @property
-    def selected_index(self) -> int:
-        return self._selected_index
-
-    @property
-    def view_mode(self) -> str:
-        return self._view_mode
-
-    @property
-    def auto_scroll(self) -> bool:
-        return self._auto_scroll
-
-    @property
-    def filter(self) -> LogFilter:
-        return self._filter
-
-    # ── Rendering ─────────────────────────────────────────────────────
-
-    def render_logs(self, width: int = 80) -> List[str]:
+    def render(self, width: int = 80, height: int = 24) -> List[str]:
         lines = []
-        stats = self.get_stats(24)
-        tail = " 🔄 LIVE" if self._tail_mode else ""
-        lines.append(f" 📋 System Journal ({self.filtered_count}/{self.total_count}){tail}")
-        lines.append("─" * width)
-
-        # Quick stats bar
-        lines.append(f" {stats.level_bar} | Errors: {stats.error + stats.critical} | "
-                     f"Warnings: {stats.warning} | Error rate: {stats.error_rate:.1f}%")
-
-        # Active filters
-        filters = []
-        if self._filter.level_min != LogLevel.DEBUG:
-            filters.append(f"level≥{self._filter.level_min.value}")
-        if self._filter.services:
-            filters.append(f"svc={','.join(self._filter.services[:2])}")
-        if self._filter.search_query:
-            filters.append(f"search=\"{self._filter.search_query[:20]}\"")
-        if self._filter.time_range_hours > 0:
-            filters.append(f"time={self._filter.time_range_hours}h")
-        if filters:
-            lines.append(f" 🔍 Filters: {' | '.join(filters)}")
-
-        lines.append("─" * width)
-
-        entries = self._get_filtered_entries()
-        if not entries:
-            lines.append("  No log entries match the current filters.")
-        else:
-            start = max(0, self._selected_index - 10)
-            for i, entry in enumerate(entries[start:start + 20]):
-                actual_idx = start + i
-                marker = "▸" if actual_idx == self._selected_index else " "
-                bookmark = " 📌" if entry.bookmarked else ""
-
-                if self._show_timestamps:
-                    ts = entry.time_str
-                else:
-                    ts = ""
-
-                level_icon = entry.level_icon
-                if self._show_service:
-                    svc = f"[{entry.service}]"
-                else:
-                    svc = ""
-
-                msg = entry.message[:width - len(ts) - len(svc) - 6]
-                lines.append(f"{marker} {ts} {level_icon} {svc} {msg}{bookmark}")
-
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  B:Bookmark  F:Filter  S:Search  T:Tail")
-        lines.append(" L:Level  Tab:Stats  R:Regex  Esc:Clear filters")
-        return lines
-
-    def render_stats(self, width: int = 70) -> List[str]:
-        lines = []
-        lines.append(" 📊 Log Statistics (24h)")
-        lines.append("─" * width)
-
-        stats = self.get_stats(24)
-        lines.append(f" Total entries: {stats.total}")
+        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+        lines.append("║                    NYRQIS SYSTEM JOURNAL                                    ║")
+        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
         lines.append("")
 
-        # Level breakdown
-        lines.append(" By Level:")
-        for level, count in [(LogLevel.DEBUG, stats.debug), (LogLevel.INFO, stats.info),
-                              (LogLevel.WARNING, stats.warning), (LogLevel.ERROR, stats.error),
-                              (LogLevel.CRITICAL, stats.critical)]:
-            icon = LEVEL_ICONS[level]
-            bar_len = int(count / max(stats.total, 1) * 30)
-            bar = "█" * bar_len + "░" * (30 - bar_len)
-            lines.append(f"  {icon} {level.value:<10s} {count:>5d}  [{bar}]")
-
+        lines.append(f"  Entries: {self.total_entries}  Services: {self.active_services}/{len(self._services)} active  Failed: {self.failed_services}  Follow: {'ON' if self._follow_mode else 'OFF'}  Kernel: {'ON' if self._show_kernel else 'OFF'}")
+        if self._filter_level or self._filter_service or self._filter_text:
+            filters = []
+            if self._filter_level:
+                filters.append(f"level={self._filter_level.value}")
+            if self._filter_service:
+                filters.append(f"service={self._filter_service}")
+            if self._filter_text:
+                filters.append(f"text={self._filter_text}")
+            lines.append(f"  Filter: {' & '.join(filters)}")
         lines.append("")
-        lines.append(f" Error rate: {stats.error_rate:.1f}%")
 
-        # Top services
-        if stats.services:
+        # Journal entries
+        lines.append("  ── Journal ──")
+        entries = self._filtered_entries()
+        for i, entry in enumerate(entries[:15]):
+            sel = "▶" if i == self._selected_entry else " "
+            lines.append(f"  {sel} {entry.level_icon} {entry.time_str} {entry.hostname} {entry.service:<24s} [{entry.pid}] {entry.message[:50]}")
+        if len(entries) > 15:
+            lines.append(f"  ... ({len(entries) - 15} more entries)")
+        lines.append("")
+
+        # Selected entry
+        entry = self.selected_entry
+        if entry:
+            lines.append(f"  ── Entry Detail ──")
+            lines.append(f"  Time: {entry.time_str}  Level: {entry.level.value}  Service: {entry.service}")
+            lines.append(f"  Host: {entry.hostname}  PID: {entry.pid}")
+            lines.append(f"  Message: {entry.message}")
+            if entry.extra:
+                for k, v in entry.extra.items():
+                    lines.append(f"  {k}: {v}")
             lines.append("")
-            lines.append(" Top Services:")
-            sorted_svcs = sorted(stats.services.items(), key=lambda x: x[1], reverse=True)
-            for svc, count in sorted_svcs[:8]:
-                lines.append(f"  {svc:<25s} {count:>5d} entries")
 
-        lines.append("─" * width)
-        lines.append(" Tab:Logs  Esc:Back")
+        # Services
+        lines.append("  ── Services ──")
+        for i, svc in enumerate(self._services[:10]):
+            sel = "▶" if i == self._selected_service else " "
+            lines.append(f"  {sel} {svc.state_icon} {svc.name:<35s} {svc.state.value:<10s} PID:{svc.pid:>6d}  Mem:[{svc.memory_bar}] {svc.memory_str}  CPU:[{svc.cpu_bar}]")
+        lines.append("")
+
+        # Error summary
+        errors = [e for e in self._entries if e.level in (LogLevel.ERROR, LogLevel.CRITICAL, LogLevel.EMERGENCY)]
+        if errors:
+            lines.append(f"  ── Recent Errors ({len(errors)}) ──")
+            for e in errors[:3]:
+                lines.append(f"  {e.level_icon} {e.time_str} {e.service}: {e.message[:55]}")
+            lines.append("")
+
+        lines.append("  [F]Follow [K]ernel [E]Errors [S]Services [↑↓]Select [/]Search")
+        lines.append("  [1]Emerg [2]Err [3]Warn [4]Info [5]Debug [0]Clear Filter")
         return lines
-
-    def render_services(self, width: int = 70) -> List[str]:
-        lines = []
-        lines.append(" 📡 Services")
-        lines.append("─" * width)
-
-        services = self.get_services()
-        sorted_svcs = sorted(services.items(), key=lambda x: x[1]["total"], reverse=True)
-
-        for svc, info in sorted_svcs:
-            error_icon = " ❌" if info["errors"] > 0 else ""
-            warn_icon = " ⚠️" if info["warnings"] > 0 else ""
-            lines.append(f" 📦 {svc}{error_icon}{warn_icon}")
-            lines.append(f"    {info['total']} entries | {info['errors']} errors | {info['warnings']} warnings")
-
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Enter:Filter by service  Esc:Back")
-        return lines
-
-    def render_bookmarks(self, width: int = 80) -> List[str]:
-        lines = []
-        lines.append(f" 📌 Bookmarked Entries ({self.bookmark_count})")
-        lines.append("─" * width)
-
-        entries = self.get_bookmarked_entries()
-        if not entries:
-            lines.append("  No bookmarked entries.")
-        else:
-            for i, entry in enumerate(entries):
-                marker = "▸" if i == self._selected_index else " "
-                lines.append(f"{marker} {entry.display}")
-                lines.append("")
-
-        lines.append("─" * width)
-        lines.append(" ↑↓:Select  Del:Remove bookmark  Esc:Back")
-        return lines
-
-    def render(self, width: int = 80, height: int = 30) -> List[str]:
-        renderers = {
-            "stats": self.render_stats,
-            "services": self.render_services,
-            "bookmarks": self.render_bookmarks,
-        }
-        renderer = renderers.get(self._view_mode, self.render_logs)
-        return renderer(width)
-
-    # ── Keyboard Handling ─────────────────────────────────────────────
-
-    def handle_key(self, key: str) -> Optional[str]:
-        if self._view_mode == "stats":
-            return self._handle_stats_key(key)
-        elif self._view_mode == "services":
-            return self._handle_services_key(key)
-        elif self._view_mode == "bookmarks":
-            return self._handle_bookmarks_key(key)
-        return self._handle_logs_key(key)
-
-    def _handle_logs_key(self, key: str) -> Optional[str]:
-        if key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        elif key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        elif key == "b":
-            return "bookmark" if self.toggle_bookmark() else "unbookmark"
-        elif key == "t":
-            return "tail_on" if self.toggle_tail() else "tail_off"
-        elif key == "\t":
-            self.set_view("stats")
-            return "stats"
-        elif key == "r":
-            return "regex_on" if self.toggle_regex() else "regex_off"
-        elif key == "Escape":
-            self.clear_filters()
-            return "clear_filters"
-        return None
-
-    def _handle_stats_key(self, key: str) -> Optional[str]:
-        if key in ("Escape", "\t"):
-            self.set_view("logs")
-            return "back"
-        return None
-
-    def _handle_services_key(self, key: str) -> Optional[str]:
-        if key == "Escape":
-            self.set_view("logs")
-            return "back"
-        elif key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        elif key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        elif key == "Enter":
-            services = list(self.get_services().keys())
-            if 0 <= self._selected_index < len(services):
-                self.add_service_filter(services[self._selected_index])
-                self.set_view("logs")
-                return "filter_service"
-        return None
-
-    def _handle_bookmarks_key(self, key: str) -> Optional[str]:
-        if key == "Escape":
-            self.set_view("logs")
-            return "back"
-        elif key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        elif key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        elif key == "Delete":
-            entries = self.get_bookmarked_entries()
-            if 0 <= self._selected_index < len(entries):
-                self.toggle_bookmark(self._selected_index)
-                return "remove_bookmark"
-        return None
