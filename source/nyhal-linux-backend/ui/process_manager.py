@@ -1,32 +1,16 @@
 """
-Nyrqis Process Manager — system process viewer and manager.
-
-Features:
-- Process list with CPU, memory, PID, name, user, status
-- Sort by CPU, memory, PID, name
-- Kill/terminate processes with confirmation
-- Process detail view with resource graphs, open files, environment
-- Real-time CPU/memory sparklines
-- Group by application or user
-- Search and filter
-- Resource usage summaries (total CPU, memory, swap, disk I/O)
-- Process priority management (nice values)
+Nyrqis OS - Process Manager
+Resource limits, priority scheduling, and tree view.
 """
 
-import os
 import time
-import hashlib
 import random
 from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import List, Dict, Optional, Callable, Tuple
-from datetime import datetime
+from enum import Enum
+from typing import List, Dict, Optional, Tuple
 
 
-# ─── Data Classes ────────────────────────────────────────────────────────
-
-
-class ProcessStatus(Enum):
+class ProcessState(Enum):
     RUNNING = "running"
     SLEEPING = "sleeping"
     STOPPED = "stopped"
@@ -34,623 +18,319 @@ class ProcessStatus(Enum):
     IDLE = "idle"
 
 
-class SortField(Enum):
-    CPU = "cpu"
-    MEMORY = "memory"
-    PID = "pid"
-    NAME = "name"
-    USER = "user"
-
-
-class ProcessGroup(Enum):
-    ALL = "all"
-    USER = "user"
-    SYSTEM = "system"
-    APPS = "apps"
+class ProcessPriority(Enum):
+    REALTIME = "realtime"
+    HIGH = "high"
+    ABOVE_NORMAL = "above_normal"
+    NORMAL = "normal"
+    BELOW_NORMAL = "below_normal"
+    LOW = "low"
+    IDLE = "idle"
 
 
 @dataclass
-class ProcessInfo:
-    """Information about a running process."""
+class Process:
     pid: int
     name: str
-    user: str = "user"
-    status: ProcessStatus = ProcessStatus.RUNNING
+    state: ProcessState = ProcessState.RUNNING
     cpu_percent: float = 0.0
-    memory_percent: float = 0.0
     memory_mb: float = 0.0
-    virtual_mb: float = 0.0
+    memory_percent: float = 0.0
+    user: str = "root"
+    uid: int = 0
+    ppid: int = 0
+    priority: ProcessPriority = ProcessPriority.NORMAL
+    nice_value: int = 0
     threads: int = 1
-    nice: int = 0
-    parent_pid: int = 0
-    start_time: float = 0.0
-    command: str = ""
-    cpu_history: List[float] = field(default_factory=list)
-    mem_history: List[float] = field(default_factory=list)
     open_files: int = 0
-    io_read_mb: float = 0.0
-    io_write_mb: float = 0.0
+    uptime_s: float = 0.0
+    cmdline: str = ""
+    start_time: float = 0.0
+    io_read_bytes: int = 0
+    io_write_bytes: int = 0
+    children: List[int] = field(default_factory=list)
 
     @property
-    def uptime_str(self) -> str:
-        if self.start_time <= 0:
-            return "unknown"
-        diff = time.time() - self.start_time
-        if diff < 60:
-            return f"{int(diff)}s"
-        elif diff < 3600:
-            return f"{int(diff // 60)}m"
-        elif diff < 86400:
-            return f"{int(diff // 3600)}h {int((diff % 3600) // 60)}m"
-        else:
-            return f"{int(diff // 86400)}d {int((diff % 86400) // 3600)}h"
-
-    @property
-    def memory_str(self) -> str:
-        if self.memory_mb < 1024:
-            return f"{self.memory_mb:.0f} MB"
-        return f"{self.memory_mb / 1024:.1f} GB"
-
-    @property
-    def cpu_str(self) -> str:
-        return f"{self.cpu_percent:.1f}%"
-
-    @property
-    def status_icon(self) -> str:
+    def state_icon(self) -> str:
         icons = {
-            ProcessStatus.RUNNING: "🟢",
-            ProcessStatus.SLEEPING: "💤",
-            ProcessStatus.STOPPED: "⏸",
-            ProcessStatus.ZOMBIE: "💀",
-            ProcessStatus.IDLE: "🟡",
+            ProcessState.RUNNING: "🟢",
+            ProcessState.SLEEPING: "💤",
+            ProcessState.STOPPED: "⏸",
+            ProcessState.ZOMBIE: "🧟",
+            ProcessState.IDLE: "⚪",
         }
-        return icons.get(self.status, "❓")
+        return icons.get(self.state, "?")
 
     @property
-    def nice_str(self) -> str:
-        if self.nice < 0:
-            return f"HIGH ({self.nice})"
-        elif self.nice > 0:
-            return f"LOW (+{self.nice})"
-        return "NORMAL"
+    def cpu_bar(self) -> str:
+        filled = int(self.cpu_percent / 5)
+        return "█" * filled + "░" * (20 - filled)
 
-    def update_history(self) -> None:
-        """Add current values to history."""
-        self.cpu_history.append(self.cpu_percent)
-        self.mem_history.append(self.memory_percent)
-        if len(self.cpu_history) > 60:
-            self.cpu_history = self.cpu_history[-60:]
-        if len(self.mem_history) > 60:
-            self.mem_history = self.mem_history[-60:]
+    @property
+    def memory_bar(self) -> str:
+        filled = int(self.memory_percent / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def priority_icon(self) -> str:
+        icons = {
+            ProcessPriority.REALTIME: "🔴",
+            ProcessPriority.HIGH: "🟠",
+            ProcessPriority.ABOVE_NORMAL: "🟡",
+            ProcessPriority.NORMAL: "🟢",
+            ProcessPriority.BELOW_NORMAL: "⚪",
+            ProcessPriority.LOW: "🔵",
+            ProcessPriority.IDLE: "⚫",
+        }
+        return icons.get(self.priority, "?")
+
+    @property
+    def uptime_display(self) -> str:
+        if self.uptime_s < 60:
+            return f"{self.uptime_s:.0f}s"
+        elif self.uptime_s < 3600:
+            return f"{self.uptime_s / 60:.1f}m"
+        elif self.uptime_s < 86400:
+            return f"{self.uptime_s / 3600:.1f}h"
+        return f"{self.uptime_s / 86400:.1f}d"
+
+    @property
+    def io_read_display(self) -> str:
+        if self.io_read_bytes < 1024:
+            return f"{self.io_read_bytes} B"
+        elif self.io_read_bytes < 1024 * 1024:
+            return f"{self.io_read_bytes / 1024:.1f} KB"
+        elif self.io_read_bytes < 1024 * 1024 * 1024:
+            return f"{self.io_read_bytes / (1024 * 1024):.1f} MB"
+        return f"{self.io_read_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+    @property
+    def io_write_display(self) -> str:
+        if self.io_write_bytes < 1024:
+            return f"{self.io_write_bytes} B"
+        elif self.io_write_bytes < 1024 * 1024:
+            return f"{self.io_write_bytes / 1024:.1f} KB"
+        elif self.io_write_bytes < 1024 * 1024 * 1024:
+            return f"{self.io_write_bytes / (1024 * 1024):.1f} MB"
+        return f"{self.io_write_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
+@dataclass
+class ResourceLimit:
+    pid: int
+    process_name: str = ""
+    max_memory_mb: float = 0.0
+    max_cpu_percent: float = 100.0
+    max_open_files: int = 1024
+    max_threads: int = 256
+    oom_score_adj: int = 0
+    io_weight: int = 100
+    cpu_shares: int = 1024
+    cgroup_path: str = ""
+
+
+@dataclass
+class ProcessGroup:
+    name: str
+    pids: List[int] = field(default_factory=list)
+    total_cpu: float = 0.0
+    total_memory_mb: float = 0.0
+    process_count: int = 0
+    description: str = ""
 
 
 @dataclass
 class SystemResources:
-    """System-wide resource usage."""
-    total_cpu: float = 0.0
-    total_memory_mb: float = 0.0
-    used_memory_mb: float = 0.0
-    total_swap_mb: float = 0.0
-    used_swap_mb: float = 0.0
-    total_disk_gb: float = 0.0
-    used_disk_gb: float = 0.0
-    io_read_mb: float = 0.0
-    io_write_mb: float = 0.0
+    total_cpu_percent: float = 0.0
+    total_memory_gb: float = 0.0
+    used_memory_gb: float = 0.0
+    swap_total_gb: float = 0.0
+    swap_used_gb: float = 0.0
     load_1m: float = 0.0
     load_5m: float = 0.0
     load_15m: float = 0.0
-    uptime_seconds: float = 0.0
-
-    @property
-    def memory_percent(self) -> float:
-        if self.total_memory_mb <= 0:
-            return 0.0
-        return (self.used_memory_mb / self.total_memory_mb) * 100
-
-    @property
-    def swap_percent(self) -> float:
-        if self.total_swap_mb <= 0:
-            return 0.0
-        return (self.used_swap_mb / self.total_swap_mb) * 100
-
-    @property
-    def disk_percent(self) -> float:
-        if self.total_disk_gb <= 0:
-            return 0.0
-        return (self.used_disk_gb / self.total_disk_gb) * 100
-
-    @property
-    def memory_str(self) -> str:
-        used = self.used_memory_mb / 1024
-        total = self.total_memory_mb / 1024
-        return f"{used:.1f} / {total:.1f} GB"
-
-    @property
-    def disk_str(self) -> str:
-        return f"{self.used_disk_gb:.1f} / {self.total_disk_gb:.1f} GB"
-
-    @property
-    def uptime_str(self) -> str:
-        d = int(self.uptime_seconds // 86400)
-        h = int((self.uptime_seconds % 86400) // 3600)
-        m = int((self.uptime_seconds % 3600) // 60)
-        if d > 0:
-            return f"{d}d {h}h {m}m"
-        return f"{h}h {m}m"
-
-
-# ─── Process Manager ─────────────────────────────────────────────────────
+    uptime_hours: float = 0.0
+    total_processes: int = 0
+    running_processes: int = 0
+    sleeping_processes: int = 0
+    zombie_processes: int = 0
 
 
 class ProcessManager:
-    """
-    Process manager for Nyrqis OS.
-
-    Displays and manages system processes.
-    """
-
     def __init__(self):
-        self._processes: List[ProcessInfo] = []
-        self._resources = SystemResources()
-        self._selected_index: int = 0
-        self._sort_field: SortField = SortField.CPU
-        self._sort_reverse: bool = True
-        self._filter_text: str = ""
-        self._group_mode: ProcessGroup = ProcessGroup.ALL
-        self._view_mode: str = "list"  # list, detail
-        self._detail_process: Optional[ProcessInfo] = None
-        self._confirm_kill: Optional[ProcessInfo] = None
+        self.processes: List[Process] = []
+        self.resource_limits: List[ResourceLimit] = []
+        self.groups: List[ProcessGroup] = []
+        self.system = SystemResources()
+        self.selected_pid: Optional[int] = None
+        self.sort_by: str = "cpu_percent"
+        self.sort_reverse: bool = True
+        self.filter_user: str = ""
+        self.filter_state: Optional[ProcessState] = None
+        self.show_tree: bool = True
+        self._create_sample_data()
 
-        # Callbacks
-        self._on_kill: List[Callable] = []
-
-        # Init sample data
-        self._init_sample_processes()
-        self._init_sample_resources()
-
-    def _init_sample_processes(self) -> None:
-        """Create simulated process list."""
+    def _create_sample_data(self):
         now = time.time()
-        samples = [
-            (1, "systemd", "root", ProcessStatus.SLEEPING, 0.1, 1.2, 24, 0, 1, now - 864000),
-            (2, "kthreadd", "root", ProcessStatus.SLEEPING, 0.0, 0.0, 0, 0, 0, now - 864000),
-            (100, "nyrqis-compositor", "user", ProcessStatus.RUNNING, 12.5, 4.8, 280, 512, 8, now - 86400),
-            (150, "nyrqis-shell", "user", ProcessStatus.RUNNING, 3.2, 2.1, 150, 320, 4, now - 86400),
-            (200, "nyrqis-terminal", "user", ProcessStatus.RUNNING, 1.8, 1.5, 120, 256, 2, now - 7200),
-            (201, "bash", "user", ProcessStatus.SLEEPING, 0.1, 0.3, 8, 32, 1, now - 7200),
-            (202, "zsh", "user", ProcessStatus.SLEEPING, 0.2, 0.4, 12, 40, 1, now - 3600),
-            (300, "firefox", "user", ProcessStatus.RUNNING, 8.3, 6.2, 420, 1024, 12, now - 1800),
-            (301, "firefox - Content", "user", ProcessStatus.RUNNING, 5.1, 3.8, 310, 768, 8, now - 1800),
-            (302, "firefox - GPU", "user", ProcessStatus.RUNNING, 2.1, 1.2, 95, 256, 4, now - 1800),
-            (400, "code", "user", ProcessStatus.RUNNING, 4.2, 3.5, 290, 640, 6, now - 5400),
-            (401, "code - Extension", "user", ProcessStatus.SLEEPING, 0.8, 1.1, 85, 192, 3, now - 5400),
-            (500, "spotify", "user", ProcessStatus.SLEEPING, 1.2, 2.0, 180, 384, 4, now - 10800),
-            (501, "pulseaudio", "user", ProcessStatus.RUNNING, 0.5, 0.3, 18, 64, 2, now - 86400),
-            (600, "Xwayland", "user", ProcessStatus.SLEEPING, 0.3, 0.5, 32, 96, 2, now - 86400),
-            (700, "NetworkManager", "root", ProcessStatus.SLEEPING, 0.1, 0.2, 14, 48, 1, now - 86400),
-            (701, "wpa_supplicant", "root", ProcessStatus.SLEEPING, 0.0, 0.1, 6, 24, 1, now - 86400),
-            (800, "dbus-daemon", "user", ProcessStatus.SLEEPING, 0.1, 0.1, 8, 32, 1, now - 86400),
-            (900, "dockerd", "root", ProcessStatus.SLEEPING, 0.8, 1.5, 120, 256, 3, now - 43200),
-            (901, "containerd", "root", ProcessStatus.SLEEPING, 0.3, 0.6, 48, 128, 2, now - 43200),
-            (1000, "mysqld", "root", ProcessStatus.SLEEPING, 1.5, 2.8, 220, 512, 8, now - 172800),
-            (1100, "nginx", "root", ProcessStatus.SLEEPING, 0.2, 0.3, 16, 48, 2, now - 86400),
-            (1200, "cron", "root", ProcessStatus.SLEEPING, 0.0, 0.1, 4, 16, 1, now - 86400),
-            (1300, "rsyslogd", "root", ProcessStatus.SLEEPING, 0.1, 0.2, 10, 40, 1, now - 86400),
-            (1400, "udisksd", "root", ProcessStatus.SLEEPING, 0.0, 0.2, 12, 48, 1, now - 86400),
-            (1500, "thermald", "root", ProcessStatus.SLEEPING, 0.0, 0.1, 6, 32, 1, now - 86400),
-            (1600, "gdm3", "root", ProcessStatus.SLEEPING, 0.1, 0.3, 18, 64, 2, now - 86400),
-            (1700, "snapd", "root", ProcessStatus.SLEEPING, 0.2, 0.4, 24, 96, 2, now - 43200),
+        sample_processes = [
+            (1, "systemd", ProcessState.RUNNING, 0.1, 12.5, 0.2, "root", 0, 0,
+             ProcessPriority.NORMAL, 0, 4, 15, 86400, "/sbin/init"),
+            (2, "nyrqis-compositor", ProcessState.RUNNING, 35.2, 256.0, 3.9, "root", 0, 1,
+             ProcessPriority.HIGH, -5, 8, 45, 7200, "/usr/bin/nyrqis-compositor --wayland"),
+            (3, "nyrqis-shell", ProcessState.RUNNING, 12.8, 128.0, 1.9, "zeus", 1000, 2,
+             ProcessPriority.NORMAL, 0, 4, 32, 7200, "/usr/bin/nyrqis-shell"),
+            (4, "wayland-bridge", ProcessState.RUNNING, 8.5, 64.0, 0.9, "root", 0, 2,
+             ProcessPriority.NORMAL, 0, 2, 18, 7200, "/usr/libexec/wayland-bridge"),
+            (5, "Xwayland", ProcessState.RUNNING, 2.1, 45.0, 0.6, "root", 0, 4,
+             ProcessPriority.NORMAL, 0, 1, 8, 7200, "Xwayland"),
+            (100, "dbus-daemon", ProcessState.SLEEPING, 0.0, 8.0, 0.1, "messagebus", 101, 1,
+             ProcessPriority.NORMAL, 0, 1, 5, 86400, "dbus-daemon --system"),
+            (101, "NetworkManager", ProcessState.SLEEPING, 0.2, 15.0, 0.2, "root", 0, 100,
+             ProcessPriority.NORMAL, 0, 1, 12, 86400, "NetworkManager"),
+            (102, "sshd", ProcessState.SLEEPING, 0.0, 5.0, 0.0, "root", 0, 1,
+             ProcessPriority.NORMAL, 0, 1, 3, 86400, "/usr/sbin/sshd"),
+            (200, "firefox", ProcessState.RUNNING, 18.5, 1024.0, 15.4, "zeus", 1000, 2,
+             ProcessPriority.BELOW_NORMAL, 5, 45, 128, 3600, "firefox"),
+            (201, "firefox-content", ProcessState.RUNNING, 5.2, 512.0, 7.7, "zeus", 1000, 200,
+             ProcessPriority.BELOW_NORMAL, 5, 12, 64, 3600, "firefox-content"),
+            (202, "firefox-gpu", ProcessState.RUNNING, 3.1, 256.0, 3.9, "zeus", 1000, 200,
+             ProcessPriority.BELOW_NORMAL, 5, 2, 8, 3600, "firefox-gpu-process"),
+            (300, "code-server", ProcessState.RUNNING, 8.0, 384.0, 5.8, "zeus", 1000, 3,
+             ProcessPriority.NORMAL, 0, 16, 42, 1800, "code-server"),
+            (301, "node", ProcessState.RUNNING, 4.5, 192.0, 2.9, "zeus", 1000, 300,
+             ProcessPriority.NORMAL, 0, 8, 24, 1800, "node /usr/lib/code-server/lib/vscode/out/main.js"),
+            (400, "pulseaudio", ProcessState.SLEEPING, 0.1, 24.0, 0.3, "zeus", 1000, 2,
+             ProcessPriority.NORMAL, 0, 3, 8, 86400, "pulseaudio"),
+            (500, "cron", ProcessState.SLEEPING, 0.0, 3.0, 0.0, "root", 0, 1,
+             ProcessPriority.LOW, 10, 1, 2, 86400, "/usr/sbin/cron"),
+            (600, "python3", ProcessState.SLEEPING, 0.3, 48.0, 0.7, "zeus", 1000, 3,
+             ProcessPriority.NORMAL, 0, 4, 6, 600, "python3 /opt/nyrqis/tools/monitor.py"),
+            (700, "containerd", ProcessState.SLEEPING, 0.5, 64.0, 0.9, "root", 0, 1,
+             ProcessPriority.NORMAL, 0, 8, 16, 86400, "containerd"),
+            (701, "docker-proxy", ProcessState.SLEEPING, 0.0, 16.0, 0.2, "root", 0, 700,
+             ProcessPriority.NORMAL, 0, 2, 4, 43200, "docker-proxy"),
+            (800, "thermald", ProcessState.SLEEPING, 0.1, 8.0, 0.1, "root", 0, 1,
+             ProcessPriority.LOW, 10, 1, 3, 86400, "thermald"),
+        ]
+        for (pid, name, state, cpu, mem, mem_pct, user, uid, ppid,
+             prio, nice, threads, files, uptime, cmd) in sample_processes:
+            self.processes.append(Process(
+                pid=pid, name=name, state=state, cpu_percent=cpu, memory_mb=mem,
+                memory_percent=mem_pct, user=user, uid=uid, ppid=ppid,
+                priority=prio, nice_value=nice, threads=threads, open_files=files,
+                uptime_s=uptime + random.uniform(-60, 60), cmdline=cmd,
+                start_time=now - uptime,
+                io_read_bytes=random.randint(1024, 1024 * 1024 * 100),
+                io_write_bytes=random.randint(512, 1024 * 1024 * 50),
+            ))
+        self.processes[3].children = [4, 5]
+
+        self.groups = [
+            ProcessGroup(name="Nyrqis Core", pids=[2, 3, 4, 5],
+                         description="Nyrqis OS compositor, shell, and Wayland"),
+            ProcessGroup(name="Browsers", pids=[200, 201, 202],
+                         description="Firefox and content processes"),
+            ProcessGroup(name="Development", pids=[300, 301, 600],
+                         description="Code server, Node.js, Python"),
+            ProcessGroup(name="System Services", pids=[100, 101, 102, 500, 800],
+                         description="DBus, NetworkManager, SSH, Cron, Thermald"),
         ]
 
-        for pid, name, user, status, cpu, mem, mem_mb, virt, threads, start in samples:
-            # Generate realistic CPU history
-            cpu_hist = [max(0, cpu + random.uniform(-cpu * 0.3, cpu * 0.3)) for _ in range(30)]
-            mem_hist = [max(0, mem + random.uniform(-0.5, 0.5)) for _ in range(30)]
+        self.resource_limits = [
+            ResourceLimit(pid=2, process_name="nyrqis-compositor",
+                          max_memory_mb=1024, max_cpu_percent=50, oom_score_adj=-1000),
+            ResourceLimit(pid=200, process_name="firefox",
+                          max_memory_mb=4096, max_cpu_percent=80, max_open_files=2048),
+            ResourceLimit(pid=300, process_name="code-server",
+                          max_memory_mb=2048, max_cpu_percent=60),
+        ]
 
-            self._processes.append(ProcessInfo(
-                pid=pid,
-                name=name,
-                user=user,
-                status=status,
-                cpu_percent=cpu,
-                memory_percent=mem,
-                memory_mb=mem_mb,
-                virtual_mb=virt,
-                threads=threads,
-                parent_pid=1 if pid > 1 else 0,
-                start_time=start,
-                command=f"/usr/bin/{name}",
-                cpu_history=cpu_hist,
-                mem_history=mem_hist,
-                open_files=random.randint(3, 50),
-                io_read_mb=random.uniform(0.1, 100),
-                io_write_mb=random.uniform(0.01, 50),
-            ))
-
-    def _init_sample_resources(self) -> None:
-        self._resources = SystemResources(
-            total_cpu=800.0,  # 8 cores * 100%
-            total_memory_mb=16384.0,
-            used_memory_mb=8192.0,
-            total_swap_mb=4096.0,
-            used_swap_mb=512.0,
-            total_disk_gb=500.0,
-            used_disk_gb=215.0,
-            io_read_mb=1234.5,
-            io_write_mb=567.8,
-            load_1m=2.35,
-            load_5m=1.89,
-            load_15m=1.42,
-            uptime_seconds=2592000,
+        self.system = SystemResources(
+            total_cpu_percent=81.2, total_memory_gb=64.0, used_memory_gb=28.3,
+            swap_total_gb=8.0, swap_used_gb=0.5,
+            load_1m=4.2, load_5m=3.8, load_15m=3.5,
+            uptime_hours=72.0, total_processes=len(self.processes),
+            running_processes=sum(1 for p in self.processes if p.state == ProcessState.RUNNING),
+            sleeping_processes=sum(1 for p in self.processes if p.state == ProcessState.SLEEPING),
         )
 
-    # ── Process Operations ────────────────────────────────────────────
+    def get_tree_view(self) -> List[Tuple[int, Process]]:
+        result = []
+        def add_children(ppid, depth):
+            children = [p for p in self.processes if p.ppid == ppid]
+            children.sort(key=lambda p: getattr(p, self.sort_by, 0), reverse=self.sort_reverse)
+            for child in children:
+                result.append((depth, child))
+                add_children(child.pid, depth + 1)
+        roots = [p for p in self.processes if p.ppid == 0]
+        roots.sort(key=lambda p: getattr(p, self.sort_by, 0), reverse=self.sort_reverse)
+        for root in roots:
+            result.append((0, root))
+            add_children(root.pid, 1)
+        return result
 
-    def get_processes(self) -> List[ProcessInfo]:
-        """Get filtered and sorted process list."""
-        procs = list(self._processes)
-
-        # Filter
-        if self._filter_text:
-            q = self._filter_text.lower()
-            procs = [p for p in procs if q in p.name.lower() or q in str(p.pid) or q in p.user.lower()]
-
-        # Group
-        if self._group_mode == ProcessGroup.USER:
-            procs = [p for p in procs if p.user == "user"]
-        elif self._group_mode == ProcessGroup.SYSTEM:
-            procs = [p for p in procs if p.user == "root"]
-        elif self._group_mode == ProcessGroup.APPS:
-            procs = [p for p in procs if p.pid >= 200]
-
-        # Sort
-        key_map = {
-            SortField.CPU: lambda p: p.cpu_percent,
-            SortField.MEMORY: lambda p: p.memory_percent,
-            SortField.PID: lambda p: p.pid,
-            SortField.NAME: lambda p: p.name.lower(),
-            SortField.USER: lambda p: p.user.lower(),
-        }
-        procs.sort(key=key_map.get(self._sort_field, lambda p: p.pid), reverse=self._sort_reverse)
-
+    def get_filtered_processes(self) -> List[Process]:
+        procs = self.processes
+        if self.filter_user:
+            procs = [p for p in procs if p.user == self.filter_user]
+        if self.filter_state:
+            procs = [p for p in procs if p.state == self.filter_state]
+        procs.sort(key=lambda p: getattr(p, self.sort_by, 0), reverse=self.sort_reverse)
         return procs
 
-    def get_process(self, pid: int) -> Optional[ProcessInfo]:
-        for p in self._processes:
-            if p.pid == pid:
-                return p
-        return None
-
-    def kill_process(self, pid: int, signal: str = "SIGTERM") -> bool:
-        """Kill a process."""
-        for i, p in enumerate(self._processes):
-            if p.pid == pid:
-                self._processes.pop(i)
-                self._notify("kill", p)
-                return True
-        return False
-
-    def confirm_kill(self, pid: int) -> Optional[ProcessInfo]:
-        """Get process for kill confirmation."""
-        p = self.get_process(pid)
-        if p:
-            self._confirm_kill = p
-        return p
-
-    def execute_kill(self) -> bool:
-        """Execute confirmed kill."""
-        if self._confirm_kill:
-            result = self.kill_process(self._confirm_kill.pid)
-            self._confirm_kill = None
-            return result
-        return False
-
-    def cancel_kill(self) -> None:
-        self._confirm_kill = None
-
-    @property
-    def confirm_kill_target(self) -> Optional[ProcessInfo]:
-        return self._confirm_kill
-
-    def set_nice(self, pid: int, nice: int) -> bool:
-        """Set process priority."""
-        p = self.get_process(pid)
-        if p:
-            p.nice = max(-20, min(19, nice))
+    def kill_process(self, pid: int, signal: str = "TERM") -> bool:
+        idx = next((i for i, p in enumerate(self.processes) if p.pid == pid), None)
+        if idx is not None:
+            if signal == "KILL":
+                self.processes[idx].state = ProcessState.ZOMBIE
             return True
         return False
 
-    def update_processes(self) -> None:
-        """Simulate process resource updates."""
-        for p in self._processes:
-            # Slight random variation
-            p.cpu_percent = max(0, p.cpu_percent + random.uniform(-0.5, 0.5))
-            p.memory_percent = max(0, p.memory_percent + random.uniform(-0.1, 0.1))
-            p.update_history()
+    def set_priority(self, pid: int, priority: ProcessPriority) -> bool:
+        proc = next((p for p in self.processes if p.pid == pid), None)
+        if proc:
+            proc.priority = priority
+            priority_nice = {
+                ProcessPriority.REALTIME: -20, ProcessPriority.HIGH: -10,
+                ProcessPriority.ABOVE_NORMAL: -5, ProcessPriority.NORMAL: 0,
+                ProcessPriority.BELOW_NORMAL: 5, ProcessPriority.LOW: 10,
+                ProcessPriority.IDLE: 19,
+            }
+            proc.nice_value = priority_nice.get(priority, 0)
+            return True
+        return False
 
-        # Update system resources
-        total_cpu = sum(p.cpu_percent for p in self._processes)
-        self._resources.total_cpu = max(100, total_cpu + random.uniform(-5, 5))
-        self._resources.used_memory_mb = sum(p.memory_mb for p in self._processes)
-        self._resources.load_1m = max(0, self._resources.load_1m + random.uniform(-0.1, 0.1))
+    def set_resource_limit(self, pid: int, **kwargs) -> bool:
+        limit = next((l for l in self.resource_limits if l.pid == pid), None)
+        if not limit:
+            proc = next((p for p in self.processes if p.pid == pid), None)
+            if not proc:
+                return False
+            limit = ResourceLimit(pid=pid, process_name=proc.name)
+            self.resource_limits.append(limit)
+        for k, v in kwargs.items():
+            if hasattr(limit, k):
+                setattr(limit, k, v)
+        return True
 
-    # ── Selection ─────────────────────────────────────────────────────
+    def get_process(self, pid: int) -> Optional[Process]:
+        return next((p for p in self.processes if p.pid == pid), None)
 
-    @property
-    def selected_index(self) -> int:
-        return self._selected_index
+    def get_group_stats(self) -> List[Dict]:
+        result = []
+        for group in self.groups:
+            procs = [p for p in self.processes if p.pid in group.pids]
+            result.append({
+                "name": group.name,
+                "description": group.description,
+                "process_count": len(procs),
+                "total_cpu": round(sum(p.cpu_percent for p in procs), 1),
+                "total_memory_mb": round(sum(p.memory_mb for p in procs), 1),
+            })
+        return result
 
-    def select(self, index: int) -> None:
-        procs = self.get_processes()
-        self._selected_index = max(0, min(len(procs) - 1, index))
+    def get_top_cpu(self, limit: int = 5) -> List[Process]:
+        return sorted(self.processes, key=lambda p: p.cpu_percent, reverse=True)[:limit]
 
-    def select_up(self) -> None:
-        self._selected_index = max(0, self._selected_index - 1)
-
-    def select_down(self) -> None:
-        procs = self.get_processes()
-        self._selected_index = min(len(procs) - 1, self._selected_index + 1)
-
-    def get_selected_process(self) -> Optional[ProcessInfo]:
-        procs = self.get_processes()
-        if 0 <= self._selected_index < len(procs):
-            return procs[self._selected_index]
-        return None
-
-    # ── View Mode ─────────────────────────────────────────────────────
-
-    def open_detail(self, pid: int = None) -> Optional[ProcessInfo]:
-        if pid:
-            p = self.get_process(pid)
-        else:
-            p = self.get_selected_process()
-        if p:
-            self._detail_process = p
-            self._view_mode = "detail"
-        return p
-
-    def close_detail(self) -> None:
-        self._detail_process = None
-        self._view_mode = "list"
-
-    @property
-    def view_mode(self) -> str:
-        return self._view_mode
-
-    @property
-    def detail_process(self) -> Optional[ProcessInfo]:
-        return self._detail_process
-
-    # ── Sorting & Filtering ───────────────────────────────────────────
-
-    def set_sort(self, field: SortField) -> None:
-        if self._sort_field == field:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_field = field
-            self._sort_reverse = True
-
-    def set_filter(self, text: str) -> None:
-        self._filter_text = text
-        self._selected_index = 0
-
-    def set_group(self, group: ProcessGroup) -> None:
-        self._group_mode = group
-        self._selected_index = 0
-
-    @property
-    def resources(self) -> SystemResources:
-        return self._resources
-
-    @property
-    def process_count(self) -> int:
-        return len(self._processes)
-
-    @property
-    def running_count(self) -> int:
-        return len([p for p in self._processes if p.status == ProcessStatus.RUNNING])
-
-    # ── Sparkline ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def sparkline(values: List[float], width: int = 20) -> str:
-        """Create a text sparkline from values."""
-        if not values:
-            return " " * width
-        blocks = " ▁▂▃▄▅▆▇█"
-        max_val = max(values) if max(values) > 0 else 1
-        # Resize to width
-        if len(values) > width:
-            step = len(values) / width
-            values = [values[int(i * step)] for i in range(width)]
-        elif len(values) < width:
-            values = values + [0] * (width - len(values))
-
-        return "".join(blocks[min(int(v / max_val * 8), 8)] for v in values)
-
-    # ── Rendering ─────────────────────────────────────────────────────
-
-    def render_summary(self, width: int = 72) -> List[str]:
-        """Render resource summary."""
-        lines = []
-        r = self._resources
-
-        # CPU bar
-        cpu_pct = min(100, sum(p.cpu_percent for p in self._processes))
-        cpu_bar = self._bar(cpu_pct, 30)
-        lines.append(f" CPU   {cpu_bar} {cpu_pct:5.1f}%  load: {r.load_1m:.2f}")
-
-        # Memory bar
-        mem_pct = r.memory_percent
-        mem_bar = self._bar(mem_pct, 30)
-        lines.append(f" MEM   {mem_bar} {r.memory_str}")
-
-        # Swap bar
-        if r.total_swap_mb > 0:
-            swap_pct = r.swap_percent
-            swap_bar = self._bar(swap_pct, 30)
-            lines.append(f" SWAP  {swap_bar} {r.used_swap_mb / 1024:.1f} / {r.total_swap_mb / 1024:.1f} GB")
-
-        # Disk bar
-        disk_pct = r.disk_percent
-        disk_bar = self._bar(disk_pct, 30)
-        lines.append(f" DISK  {disk_bar} {r.disk_str}")
-
-        lines.append(f" I/O   R: {r.io_read_mb:.1f} MB  W: {r.io_write_mb:.1f} MB")
-        lines.append(f" Up: {r.uptime_str}  Processes: {self.process_count}  Running: {self.running_count}")
-
-        return lines
-
-    def render_list(self, width: int = 72) -> List[str]:
-        """Render process list."""
-        lines = []
-
-        # Summary
-        lines.extend(self.render_summary(width))
-        lines.append("─" * width)
-
-        # Column header
-        sort_marker = " ▲" if self._sort_reverse else " ▼"
-        header = f" {'PID':>7}  {'User':<8} {'CPU%':>6} {'MEM%':>6} {'MEM':>8} {'Status':<4} {'Name'}"
-        lines.append(header[:width])
-        lines.append("─" * width)
-
-        # Processes
-        procs = self.get_processes()
-        for i, p in enumerate(procs):
-            marker = "▸" if i == self._selected_index else " "
-            cpu_spark = self.sparkline(p.cpu_history[-10:], 8)
-            line = (
-                f"{marker} {p.pid:>7}  {p.user:<8} "
-                f"{p.cpu_percent:>5.1f}% {p.memory_percent:>5.1f}% "
-                f"{p.memory_str:>8} {p.status_icon} {p.name}"
-            )
-            lines.append(line[:width])
-
-        lines.append("─" * width)
-        lines.append(f" {self.process_count} processes | ↑↓:Select  Enter:Detail  K:Kill  S:Sort  /:Filter")
-        return lines
-
-    def render_detail(self, width: int = 72) -> List[str]:
-        """Render process detail view."""
-        p = self._detail_process
-        if not p:
-            return ["No process selected"]
-
-        lines = []
-        lines.append(f" 📊 {p.name} (PID {p.pid})")
-        lines.append("─" * width)
-
-        # Basic info
-        lines.append(f"  Command: {p.command}")
-        lines.append(f"  User:    {p.user}")
-        lines.append(f"  Status:  {p.status_icon} {p.status.value}")
-        lines.append(f"  Parent:  {p.parent_pid}")
-        lines.append(f"  Threads: {p.threads}")
-        lines.append(f"  Nice:    {p.nice_str}")
-        lines.append(f"  Uptime:  {p.uptime_str}")
-        lines.append(f"  Files:   {p.open_files} open")
-        lines.append("")
-
-        # Resource usage
-        lines.append("  ── CPU ──")
-        cpu_spark = self.sparkline(p.cpu_history, 40)
-        lines.append(f"  Current: {p.cpu_str}")
-        lines.append(f"  History: {cpu_spark}")
-        lines.append("")
-
-        lines.append("  ── Memory ──")
-        mem_spark = self.sparkline(p.mem_history, 40)
-        lines.append(f"  Current: {p.memory_str} ({p.memory_percent:.1f}%)")
-        lines.append(f"  Virtual: {p.virtual_mb:.0f} MB")
-        lines.append(f"  History: {mem_spark}")
-        lines.append("")
-
-        lines.append("  ── I/O ──")
-        lines.append(f"  Read:  {p.io_read_mb:.1f} MB")
-        lines.append(f"  Write: {p.io_write_mb:.1f} MB")
-
-        lines.append("")
-        lines.append("─" * width)
-        lines.append(" K:Kill  P:Priority  Esc:Back")
-        return lines
-
-    def render(self, width: int = 72, height: int = 30) -> List[str]:
-        if self._view_mode == "detail":
-            return self.render_detail(width)
-        return self.render_list(width)
-
-    def _bar(self, percent: float, width: int = 30) -> str:
-        """Render a progress bar."""
-        filled = int(min(100, percent) / 100 * width)
-        empty = width - filled
-        if percent > 90:
-            color_bar = "█" * filled + "░" * empty
-        elif percent > 70:
-            color_bar = "█" * filled + "░" * empty
-        else:
-            color_bar = "█" * filled + "░" * empty
-        return f"[{color_bar}]"
-
-    # ── Keyboard Handling ─────────────────────────────────────────────
-
-    def handle_key(self, key: str) -> Optional[str]:
-        if self._view_mode == "detail":
-            return self._handle_detail_key(key)
-        return self._handle_list_key(key)
-
-    def _handle_list_key(self, key: str) -> Optional[str]:
-        if key == "ArrowUp":
-            self.select_up()
-            return "select_up"
-        elif key == "ArrowDown":
-            self.select_down()
-            return "select_down"
-        elif key == "Enter":
-            self.open_detail()
-            return "detail"
-        elif key == "k" or key == "K":
-            p = self.get_selected_process()
-            if p:
-                self.confirm_kill(p.pid)
-            return "kill_confirm"
-        elif key == "s" or key == "S":
-            fields = [SortField.CPU, SortField.MEMORY, SortField.PID, SortField.NAME]
-            idx = fields.index(self._sort_field) if self._sort_field in fields else 0
-            self.set_sort(fields[(idx + 1) % len(fields)])
-            return "sort"
-        elif key == "/":
-            return "filter"
-        elif key == "g":
-            groups = [ProcessGroup.ALL, ProcessGroup.USER, ProcessGroup.SYSTEM, ProcessGroup.APPS]
-            idx = groups.index(self._group_mode)
-            self.set_group(groups[(idx + 1) % len(groups)])
-            return "group"
-        return None
-
-    def _handle_detail_key(self, key: str) -> Optional[str]:
-        if key == "Escape":
-            self.close_detail()
-            return "back"
-        elif key == "k" or key == "K":
-            if self._detail_process:
-                self.confirm_kill(self._detail_process.pid)
-            return "kill_confirm"
-        elif key == "p":
-            if self._detail_process:
-                self._detail_process.nice = max(-20, self._detail_process.nice - 1)
-            return "priority"
-        return None
-
-    # ── Callbacks ─────────────────────────────────────────────────────
-
-    def on_kill(self, cb: Callable) -> None:
-        self._on_kill.append(cb)
-
-    def _notify(self, event: str, *args) -> None:
-        if event == "kill":
-            for cb in self._on_kill:
-                try:
-                    cb(*args)
-                except Exception:
-                    pass
+    def get_top_memory(self, limit: int = 5) -> List[Process]:
+        return sorted(self.processes, key=lambda p: p.memory_mb, reverse=True)[:limit]
