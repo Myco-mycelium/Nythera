@@ -1,14 +1,14 @@
 """
-Nyrqis OS - Notification Center
-Message history, priority levels, and do-not-disturb scheduling.
+Notification Center — manage, group, and display notifications for Nyrqis OS.
 """
 
 import time
-import random
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional
 
+
+# ─── Enums ───────────────────────────────────────────────────────────────
 
 class NotificationPriority(Enum):
     LOW = "low"
@@ -22,12 +22,10 @@ class NotificationCategory(Enum):
     MESSAGE = "message"
     EMAIL = "email"
     CALENDAR = "calendar"
-    WEATHER = "weather"
-    MEDIA = "media"
-    DOWNLOAD = "download"
-    SECURITY = "security"
-    UPDATE = "update"
     SOCIAL = "social"
+    REMINDER = "reminder"
+    UPDATE = "update"
+    OTHER = "other"
 
 
 class NotificationStatus(Enum):
@@ -35,23 +33,21 @@ class NotificationStatus(Enum):
     READ = "read"
     DISMISSED = "dismissed"
     PINNED = "pinned"
+    SNOOZED = "snoozed"
 
+
+# ─── Data classes ────────────────────────────────────────────────────────
 
 @dataclass
 class Notification:
-    id: int = 0
     title: str = ""
     body: str = ""
-    app_name: str = ""
-    app_icon: str = ""
-    category: NotificationCategory = NotificationCategory.SYSTEM
+    app: str = ""
+    category: NotificationCategory = NotificationCategory.OTHER
     priority: NotificationPriority = NotificationPriority.NORMAL
     status: NotificationStatus = NotificationStatus.NEW
     timestamp: float = 0.0
-    actions: List[str] = field(default_factory=list)
-    sound: bool = True
-    persistent: bool = False
-    dismiss_timeout_s: int = 5
+    notification_id: int = 0
 
     def __post_init__(self):
         if self.timestamp == 0.0:
@@ -65,24 +61,30 @@ class Notification:
             NotificationPriority.HIGH: "🟠",
             NotificationPriority.URGENT: "🔴",
         }
-        return icons.get(self.priority, "?")
+        return icons.get(self.priority, "❓")
 
     @property
     def category_icon(self) -> str:
         icons = {
-            NotificationCategory.SYSTEM: "⚙️", NotificationCategory.MESSAGE: "💬",
-            NotificationCategory.EMAIL: "📧", NotificationCategory.CALENDAR: "📅",
-            NotificationCategory.WEATHER: "🌤️", NotificationCategory.MEDIA: "🎵",
-            NotificationCategory.DOWNLOAD: "📥", NotificationCategory.SECURITY: "🔐",
-            NotificationCategory.UPDATE: "🔄", NotificationCategory.SOCIAL: "👥",
+            NotificationCategory.SYSTEM: "⚙️",
+            NotificationCategory.MESSAGE: "💬",
+            NotificationCategory.EMAIL: "📧",
+            NotificationCategory.CALENDAR: "📅",
+            NotificationCategory.SOCIAL: "👥",
+            NotificationCategory.REMINDER: "⏰",
+            NotificationCategory.UPDATE: "🔄",
+            NotificationCategory.OTHER: "📌",
         }
-        return icons.get(self.category, "?")
+        return icons.get(self.category, "❓")
 
     @property
     def status_icon(self) -> str:
         icons = {
-            NotificationStatus.NEW: "🔵", NotificationStatus.READ: "⚪",
-            NotificationStatus.DISMISSED: "⬜", NotificationStatus.PINNED: "📌",
+            NotificationStatus.NEW: "●",
+            NotificationStatus.READ: "○",
+            NotificationStatus.DISMISSED: "×",
+            NotificationStatus.PINNED: "📌",
+            NotificationStatus.SNOOZED: "💤",
         }
         return icons.get(self.status, "?")
 
@@ -90,196 +92,246 @@ class Notification:
     def time_ago(self) -> str:
         delta = time.time() - self.timestamp
         if delta < 60:
-            return f"{delta:.0f}s ago"
+            return "just now"
         elif delta < 3600:
-            return f"{delta / 60:.0f}m ago"
+            return f"{delta/60:.0f}m ago"
         elif delta < 86400:
-            return f"{delta / 3600:.0f}h ago"
-        return f"{delta / 86400:.0f}d ago"
-
-
-@dataclass
-class DNDschedule:
-    name: str
-    enabled: bool = True
-    start_hour: int = 22
-    start_minute: int = 0
-    end_hour: int = 7
-    end_minute: int = 0
-    days: List[str] = field(default_factory=lambda: ["Mon", "Tue", "Wed", "Thu", "Fri"])
-    allow_urgent: bool = True
-    allow_calls: bool = True
-    allow_repeated: bool = False
-    repeat_threshold: int = 3
+            return f"{delta/3600:.0f}h ago"
+        return f"{delta/86400:.0f}d ago"
 
     @property
-    def time_display(self) -> str:
-        return f"{self.start_hour:02d}:{self.start_minute:02d} - {self.end_hour:02d}:{self.end_minute:02d}"
+    def display(self) -> str:
+        return f"{self.status_icon} {self.priority_icon} {self.title}"
 
     @property
-    def days_display(self) -> str:
-        if len(self.days) == 5 and all(d in self.days for d in ["Mon", "Tue", "Wed", "Thu", "Fri"]):
-            return "Weekdays"
-        if len(self.days) == 7:
-            return "Every day"
-        return ", ".join(self.days)
+    def preview(self) -> str:
+        return f"{self.app}: {self.body[:50]}"
 
     @property
-    def status_icon(self) -> str:
-        return "🟢" if self.enabled else "⚪"
+    def is_active(self) -> bool:
+        return self.status == NotificationStatus.NEW
 
 
 @dataclass
 class NotificationGroup:
-    app_name: str
-    icon: str = ""
+    app: str = ""
     count: int = 0
-    latest: Optional[Notification] = None
-    muted: bool = False
-    priority_override: Optional[NotificationPriority] = None
+    notifications: List[Notification] = field(default_factory=list)
 
 
 @dataclass
 class NotificationStats:
     total: int = 0
     unread: int = 0
-    today: int = 0
-    by_category: Dict[str, int] = field(default_factory=dict)
-    by_priority: Dict[str, int] = field(default_factory=dict)
+    pinned: int = 0
+    dismissed: int = 0
 
+
+@dataclass
+class DNDschedule:
+    enabled: bool = False
+    start_hour: int = 22
+    end_hour: int = 7
+    days: List[str] = field(default_factory=lambda: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+
+    @property
+    def time_display(self) -> str:
+        return f"{self.start_hour:02d}:00 - {self.end_hour:02d}:00"
+
+    @property
+    def days_display(self) -> str:
+        return ", ".join(self.days)
+
+    @property
+    def status_icon(self) -> str:
+        return "🌙" if self.enabled else "☀️"
+
+
+@dataclass
+class AppNotificationSettings:
+    app: str = ""
+    enabled: bool = True
+    count: int = 0
+
+    @property
+    def display(self) -> str:
+        status = "✅" if self.enabled else "❌"
+        return f"{status} {self.app} [{self.count}]"
+
+
+@dataclass
+class NotificationAction:
+    label: str = ""
+    action: str = ""
+    icon: str = ""
+
+
+# ─── Notification Center ─────────────────────────────────────────────────
 
 class NotificationCenter:
+    """Main notification center with views, groups, and DND."""
+
     def __init__(self):
+        self.view_mode: str = "notifications"
+        self._selected_index: int = 0
         self.notifications: List[Notification] = []
-        self.dnd_schedules: List[DNDschedule] = []
-        self.groups: List[NotificationGroup] = []
-        self.dnd_active: bool = False
-        self.global_mute: bool = False
-        self.show_previews: bool = True
-        self.sound_enabled: bool = True
-        self.max_notifications: int = 200
-        self.auto_dismiss_seconds: int = 5
+        self.dnd_enabled: bool = False
+        self._dnd_schedule: DNDschedule = DNDschedule()
+        self._app_settings: List[AppNotificationSettings] = []
         self._create_sample_data()
 
     def _create_sample_data(self):
         now = time.time()
-        sample_notifications = [
-            (1, "System Update Available", "Nyrqis OS 0.2.0 is ready to install", "nyrqis-update",
-             "🔄", NotificationCategory.UPDATE, NotificationPriority.HIGH,
-             ["Install Now", "Remind Later", "Skip"], now - 300),
-            (2, "New Message from Alice", "Hey, did you see the new Nyrqis build?", "chat",
-             "💬", NotificationCategory.MESSAGE, NotificationPriority.NORMAL,
-             ["Reply", "Mark Read"], now - 600),
-            (3, "Security Alert", "New login from 10.0.0.5 at 09:15 AM", "security",
-             "🔐", NotificationCategory.SECURITY, NotificationPriority.URGENT,
-             ["View Details", "Block IP"], now - 900),
-            (4, "Weather Update", "Partly cloudy, 22°C today", "weather",
-             "🌤️", NotificationCategory.WEATHER, NotificationPriority.LOW,
-             [], now - 1200),
-            (5, "Download Complete", "nyrqis-kernel-1.0.0-rc1.tar.gz (45 MB)", "download",
-             "📥", NotificationCategory.DOWNLOAD, NotificationPriority.NORMAL,
-             ["Open File", "Show in Folder"], now - 1800),
-            (6, "Calendar Reminder", "Team standup in 15 minutes", "calendar",
-             "📅", NotificationCategory.CALENDAR, NotificationPriority.HIGH,
-             ["Dismiss", "Snooze 10m"], now - 2400),
-            (7, "Spotify", "Now playing: M83 - Midnight City", "media",
-             "🎵", NotificationCategory.MEDIA, NotificationPriority.LOW,
-             ["Next", "Pause"], now - 3000),
-            (8, "Package Update", "3 packages can be updated", "package",
-             "📦", NotificationCategory.SYSTEM, NotificationPriority.NORMAL,
-             ["View Updates"], now - 3600),
-            (9, "Memory Warning", "Memory usage at 85%. Consider closing unused applications.",
-             "system", "⚠️", NotificationCategory.SYSTEM, NotificationPriority.HIGH,
-             ["View Processes"], now - 4200),
-            (10, "GitHub", "Nyrqis/Nythera: 3 new issues assigned to you", "social",
-             "👥", NotificationCategory.SOCIAL, NotificationPriority.NORMAL,
-             ["View Issues", "Dismiss"], now - 4800),
-            (11, "Email from bob@nyrqis.dev", "Re: Architecture Review - Approved", "email",
-             "📧", NotificationCategory.EMAIL, NotificationPriority.NORMAL,
-             ["Reply", "Archive"], now - 5400),
-            (12, "System", "Backup completed successfully", "system",
-             "⚙️", NotificationCategory.SYSTEM, NotificationPriority.LOW,
-             [], now - 7200),
-            (13, "Battery", "Battery level below 15%. Connecting to power recommended.",
-             "system", "🔋", NotificationCategory.SYSTEM, NotificationPriority.HIGH,
-             ["Power Settings"], now - 7800),
-            (14, "Git Push", "Successfully pushed 5 commits to main", "terminal",
-             "📤", NotificationCategory.SYSTEM, NotificationPriority.LOW,
-             [], now - 8400),
-            (15, "Printer", "Nyrqis Lab Printer is now available", "system",
-             "🖨️", NotificationCategory.SYSTEM, NotificationPriority.LOW,
-             [], now - 9000),
+        self.notifications = [
+            Notification("System Update Available", "Nyrqis 2.1 is ready to install", "System",
+                         NotificationCategory.UPDATE, NotificationPriority.HIGH, NotificationStatus.NEW,
+                         timestamp=now - 300, notification_id=0),
+            Notification("New Message from Alice", "Hey, are you free for a call?", "Messages",
+                         NotificationCategory.MESSAGE, NotificationPriority.NORMAL, NotificationStatus.NEW,
+                         timestamp=now - 600, notification_id=1),
+            Notification("Build Failed", "CI pipeline #2847 failed on main", "GitHub",
+                         NotificationCategory.SYSTEM, NotificationPriority.HIGH, NotificationStatus.READ,
+                         timestamp=now - 1800, notification_id=2),
+            Notification("Calendar Reminder", "Team standup in 15 minutes", "Calendar",
+                         NotificationCategory.CALENDAR, NotificationPriority.NORMAL, NotificationStatus.NEW,
+                         timestamp=now - 900, notification_id=3),
+            Notification("Disk Space Warning", "/home is 85% full", "System",
+                         NotificationCategory.SYSTEM, NotificationPriority.URGENT, NotificationStatus.PINNED,
+                         timestamp=now - 3600, notification_id=4),
         ]
 
-        for (nid, title, body, app, icon, cat, prio, actions, ts) in sample_notifications:
-            status = random.choice([NotificationStatus.NEW, NotificationStatus.NEW,
-                                     NotificationStatus.READ, NotificationStatus.READ,
-                                     NotificationStatus.PINNED])
-            self.notifications.append(Notification(
-                id=nid, title=title, body=body, app_name=app, app_icon=icon,
-                category=cat, priority=prio, status=status, timestamp=ts,
-                actions=actions))
-
-        self.dnd_schedules = [
-            DNDschedule(name="Night Mode", enabled=True,
-                         start_hour=22, end_hour=7, days=["Mon", "Tue", "Wed", "Thu", "Fri"],
-                         allow_urgent=True, allow_calls=False),
-            DNDschedule(name="Meeting Hours", enabled=False,
-                         start_hour=14, start_minute=0, end_hour=15, end_minute=0,
-                         days=["Mon", "Wed", "Fri"], allow_urgent=True,
-                         allow_calls=False, allow_repeated=True, repeat_threshold=2),
-            DNDschedule(name="Focus Time", enabled=False,
-                         start_hour=9, end_hour=12,
-                         days=["Tue", "Thu"], allow_urgent=True),
+        self._app_settings = [
+            AppNotificationSettings("System", True, 3),
+            AppNotificationSettings("Messages", True, 1),
+            AppNotificationSettings("GitHub", False, 0),
+            AppNotificationSettings("Calendar", True, 1),
         ]
 
-        for notif in self.notifications:
-            group = next((g for g in self.groups if g.app_name == notif.app_name), None)
-            if not group:
-                self.groups.append(NotificationGroup(
-                    app_name=notif.app_name, icon=notif.app_icon,
-                    count=1, latest=notif))
-            else:
-                group.count += 1
+    @property
+    def unread_count(self) -> int:
+        return sum(1 for n in self.notifications
+                   if n.status in (NotificationStatus.NEW,))
 
-    def add_notification(self, notification: Notification) -> None:
-        self.notifications.insert(0, notification)
-        if len(self.notifications) > self.max_notifications:
-            self.notifications = self.notifications[:self.max_notifications]
+    @property
+    def selected_index(self) -> int:
+        return self._selected_index
 
-    def dismiss(self, notification_id: int) -> bool:
-        notif = next((n for n in self.notifications if n.id == notification_id), None)
-        if notif:
-            notif.status = NotificationStatus.DISMISSED
+    def add_notification(self, title: str, body: str = "", app: str = "") -> Notification:
+        n = Notification(title=title, body=body, app=app,
+                         notification_id=len(self.notifications))
+        self.notifications.insert(0, n)
+        return n
+
+    def dismiss(self, index: int) -> bool:
+        if 0 <= index < len(self.notifications):
+            self.notifications[index].status = NotificationStatus.DISMISSED
             return True
         return False
 
-    def mark_read(self, notification_id: int) -> bool:
-        notif = next((n for n in self.notifications if n.id == notification_id), None)
-        if notif:
-            notif.status = NotificationStatus.READ
-            return True
-        return False
-
-    def mark_all_read(self) -> int:
+    def dismiss_all(self) -> int:
         count = 0
-        for notif in self.notifications:
-            if notif.status == NotificationStatus.NEW:
-                notif.status = NotificationStatus.READ
+        for n in self.notifications:
+            if n.status != NotificationStatus.PINNED:
+                n.status = NotificationStatus.DISMISSED
                 count += 1
         return count
 
-    def pin(self, notification_id: int) -> bool:
-        notif = next((n for n in self.notifications if n.id == notification_id), None)
-        if notif:
-            notif.status = NotificationStatus.PINNED
+    def mark_read(self, index: int) -> bool:
+        if 0 <= index < len(self.notifications):
+            self.notifications[index].status = NotificationStatus.READ
             return True
         return False
 
-    def clear_all(self) -> int:
-        before = len(self.notifications)
-        self.notifications = [n for n in self.notifications if n.status == NotificationStatus.PINNED]
-        return before - len(self.notifications)
+    def pin(self, index: int) -> bool:
+        if 0 <= index < len(self.notifications):
+            self.notifications[index].status = NotificationStatus.PINNED
+            return True
+        return False
+
+    def snooze(self, index: int, minutes: int = 30) -> bool:
+        if 0 <= index < len(self.notifications):
+            self.notifications[index].status = NotificationStatus.SNOOZED
+            return True
+        return False
+
+    def toggle_dnd(self) -> bool:
+        self.dnd_enabled = not self.dnd_enabled
+        self._dnd_schedule.enabled = self.dnd_enabled
+        return self.dnd_enabled
+
+    def get_groups(self) -> List[NotificationGroup]:
+        groups: Dict[str, NotificationGroup] = {}
+        for n in self.notifications:
+            if n.app not in groups:
+                groups[n.app] = NotificationGroup(app=n.app)
+            groups[n.app].count += 1
+            groups[n.app].notifications.append(n)
+        return list(groups.values())
+
+    def set_view(self, view: str):
+        self.view_mode = view
+        self._selected_index = 0
+
+    def select_down(self):
+        if self._selected_index < len(self.notifications) - 1:
+            self._selected_index += 1
+
+    def select_up(self):
+        if self._selected_index > 0:
+            self._selected_index -= 1
+
+    def handle_key(self, key: str) -> str:
+        if key == "d":
+            self.dnd_enabled = True
+            return "dnd_on"
+        if key == "x":
+            self.dnd_enabled = True
+            return "dnd_on"
+        if key == "ArrowDown":
+            self.select_down()
+            return "navigate"
+        if key == "ArrowUp":
+            self.select_up()
+            return "navigate"
+        if key == "Escape":
+            self.set_view("notifications")
+            return "close"
+        return "unknown"
+
+    def render_notifications(self) -> List[str]:
+        lines = ["── Notifications ──"]
+        for i, n in enumerate(self.notifications):
+            marker = "▸ " if i == self._selected_index else "  "
+            lines.append(f"{marker}{n.display} ({n.time_ago})")
+        if not self.notifications:
+            lines.append("  No notifications.")
+        return lines
+
+    def render_history(self) -> List[str]:
+        lines = ["── History ──"]
+        for n in self.notifications:
+            if n.status == NotificationStatus.READ:
+                lines.append(f"  {n.display} ({n.time_ago})")
+        if len(lines) == 1:
+            lines.append("  No read notifications.")
+        return lines
+
+    def render_apps(self) -> List[str]:
+        lines = ["── App Settings ──"]
+        for s in self._app_settings:
+            lines.append(f"  {s.display}")
+        return lines
+
+    # ─── Legacy API ──────────────────────────────────────────────────
+
+    @property
+    def stats(self) -> NotificationStats:
+        return NotificationStats(
+            total=len(self.notifications),
+            unread=self.unread_count,
+            pinned=sum(1 for n in self.notifications if n.status == NotificationStatus.PINNED),
+            dismissed=sum(1 for n in self.notifications if n.status == NotificationStatus.DISMISSED),
+        )
 
     def search(self, query: str) -> List[Notification]:
         q = query.lower()
@@ -294,27 +346,16 @@ class NotificationCenter:
     def get_unread(self) -> List[Notification]:
         return [n for n in self.notifications if n.status == NotificationStatus.NEW]
 
-    def get_stats(self) -> NotificationStats:
-        today_start = time.time() - 86400
-        today_notifs = [n for n in self.notifications if n.timestamp >= today_start]
-        by_cat = {}
-        by_prio = {}
+    def mark_all_read(self) -> int:
+        count = 0
         for n in self.notifications:
-            by_cat[n.category.value] = by_cat.get(n.category.value, 0) + 1
-            by_prio[n.priority.value] = by_prio.get(n.priority.value, 0) + 1
-        return NotificationStats(
-            total=len(self.notifications),
-            unread=len(self.get_unread()),
-            today=len(today_notifs),
-            by_category=by_cat, by_priority=by_prio)
+            if n.status == NotificationStatus.NEW:
+                n.status = NotificationStatus.READ
+                count += 1
+        return count
 
+    def clear_all(self) -> int:
+        return self.dismiss_all()
 
-@dataclass
-class AppNotificationSettings:
-    app_name: str = ""
-    enabled: bool = True
-    sound: bool = True
-    badge: bool = True
-    priority: str = "normal"
-
-NotificationAction = Notification
+    def get_stats(self) -> NotificationStats:
+        return self.stats

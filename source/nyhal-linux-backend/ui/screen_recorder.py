@@ -104,6 +104,8 @@ class Recording:
     duration_s: float = 0.0
     status: RecordingStatus = RecordingStatus.IDLE
     codec: RecordingCodec = RecordingCodec.H264
+    profile: Optional["RecordingProfile"] = None
+    file_size_bytes: int = 0
 
     @property
     def status_icon(self) -> str:
@@ -117,13 +119,22 @@ class Recording:
 
     @property
     def duration_display(self) -> str:
+        if self.duration_s < 60:
+            return f"{self.duration_s:.1f}s"
         mins = int(self.duration_s) // 60
         secs = int(self.duration_s) % 60
-        return f"{mins:02d}:{secs:02d}"
+        return f"{mins}m {secs}s"
 
     @property
     def file_size_display(self) -> str:
-        return "0 B"
+        size = self.file_size_bytes
+        if size == 0:
+            return "0 B"
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.0f} KB"
+        return f"{size / (1024*1024):.1f} MB"
 
     @property
     def quality_label(self) -> str:
@@ -148,6 +159,7 @@ class RecordingProfile:
     fps: int = 30
     width: int = 1920
     height: int = 1080
+    resolution: str = "1920x1080"
 
     @property
     def codec_display(self) -> str:
@@ -155,7 +167,83 @@ class RecordingProfile:
 
     @property
     def description(self) -> str:
-        return f"{self.width}x{self.height} @ {self.fps}fps ({self.codec.value})"
+        res = self.resolution or f"{self.width}x{self.height}"
+        return f"{res} @ {self.fps}fps ({self.codec.value})"
+
+
+# ─── Screen Recorder ─────────────────────────────────────────────────────
+
+class Recording:
+    """Legacy Recording class."""
+    name: str = ""
+    duration_s: float = 0.0
+    status: RecordingStatus = RecordingStatus.IDLE
+    codec: RecordingCodec = RecordingCodec.H264
+    profile: Optional["RecordingProfile"] = None
+    file_size_bytes: int = 0
+
+    @property
+    def status_icon(self) -> str:
+        icons = {
+            RecordingStatus.IDLE: "⏹",
+            RecordingStatus.RECORDING: "🔴",
+            RecordingStatus.PAUSED: "⏸",
+            RecordingStatus.STOPPED: "⏹",
+        }
+        return icons.get(self.status, "?")
+
+    @property
+    def duration_display(self) -> str:
+        if self.duration_s < 60:
+            return f"{self.duration_s:.1f}s"
+        mins = int(self.duration_s) // 60
+        secs = int(self.duration_s) % 60
+        return f"{mins}m {secs}s"
+
+    @property
+    def file_size_display(self) -> str:
+        size = self.file_size_bytes
+        if size == 0:
+            return "0 B"
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.0f} KB"
+        return f"{size / (1024*1024):.1f} MB"
+
+    @property
+    def quality_label(self) -> str:
+        return self.codec.value
+
+
+@dataclass
+class RecordingSchedule:
+    days: List[str] = field(default_factory=list)
+    start_time: str = "09:00"
+    end_time: str = "17:00"
+
+    @property
+    def days_display(self) -> str:
+        return ", ".join(self.days) if self.days else "None"
+
+
+@dataclass
+class RecordingProfile:
+    name: str = ""
+    codec: RecordingCodec = RecordingCodec.H264
+    fps: int = 30
+    width: int = 1920
+    height: int = 1080
+    resolution: str = "1920x1080"
+
+    @property
+    def codec_display(self) -> str:
+        return self.codec.value
+
+    @property
+    def description(self) -> str:
+        res = self.resolution or f"{self.width}x{self.height}"
+        return f"{res} @ {self.fps}fps ({self.codec.value})"
 
 
 # ─── Screen Recorder ─────────────────────────────────────────────────────
@@ -201,6 +289,39 @@ class ScreenRecorder:
         return None
 
     @property
+    def profiles(self) -> List[RecordingProfile]:
+        return [
+            RecordingProfile("Standard", "1920x1080", 30),
+            RecordingProfile("High Quality", "1920x1080", 60),
+            RecordingProfile("Lossless", "3840x2160", 60),
+            RecordingProfile("Compact", "1280x720", 30),
+        ]
+
+    @property
+    def recordings(self) -> List[RecordingSession]:
+        return self._sessions
+
+    @property
+    def active_profile(self) -> RecordingProfile:
+        name = getattr(self, "_active_profile_name", "Standard")
+        return RecordingProfile(
+            name=name,
+            resolution=f"{1920}x{1080}",
+            fps=self._current_fps,
+        )
+
+    @property
+    def current_recording(self) -> Optional[Recording]:
+        if self._status == RecordingStatus.IDLE:
+            return None
+        return Recording(
+            name="Active Recording",
+            duration_s=time.time() - self._rec_start if self._rec_start else 0,
+            status=self._status,
+            profile=self.active_profile,
+        )
+
+    @property
     def total_recordings(self) -> int:
         return len(self._sessions)
 
@@ -229,10 +350,10 @@ class ScreenRecorder:
         if 0 <= index < len(self._sessions):
             self._selected_index = index
 
-    def start_recording(self) -> Optional[RecordingSession]:
+    def start_recording(self) -> Optional[Recording]:
         self._status = RecordingStatus.RECORDING
         self._rec_start = time.time()
-        return None
+        return Recording(name="Recording", status=RecordingStatus.RECORDING, profile=self.active_profile)
 
     def stop_recording(self, name: str = "") -> Optional[RecordingSession]:
         if self._status in (RecordingStatus.RECORDING, RecordingStatus.PAUSED):
@@ -311,8 +432,6 @@ class ScreenRecorder:
 
     # ─── Legacy API ──────────────────────────────────────────────────
 
-    def set_profile(self, name: str) -> bool:
-        return True
 
     def get_total_recordings(self) -> int:
         return self.total_recordings
@@ -328,6 +447,8 @@ class ScreenRecorder:
 
     def get_stats(self) -> Dict:
         return {
+            "profiles": len(self.profiles),
+            "recordings": self.total_recordings,
             "total": self.total_recordings,
             "duration": self.total_duration_secs,
             "size": self.total_size,
