@@ -6,9 +6,10 @@ Multi-file tailing, syntax highlighting, and alert rules.
 import time
 import random
 import re
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Callable
 
 
 class LogLevel(Enum):
@@ -16,10 +17,44 @@ class LogLevel(Enum):
     INFO = "info"
     NOTICE = "notice"
     WARNING = "warning"
+    WARN = "warning"
     ERROR = "error"
+    FATAL = "fatal"
     CRITICAL = "critical"
     ALERT = "alert"
     EMERGENCY = "emergency"
+
+    @property
+    def color(self) -> Tuple[int, int, int]:
+        colors = {
+            LogLevel.DEBUG: (136, 136, 136),
+            LogLevel.INFO: (79, 195, 247),
+            LogLevel.NOTICE: (129, 199, 132),
+            LogLevel.WARNING: (255, 183, 77),
+            LogLevel.WARN: (255, 183, 77),
+            LogLevel.ERROR: (229, 115, 115),
+            LogLevel.FATAL: (244, 67, 54),
+            LogLevel.CRITICAL: (244, 67, 54),
+            LogLevel.ALERT: (211, 47, 47),
+            LogLevel.EMERGENCY: (183, 28, 28),
+        }
+        return colors.get(self, (255, 255, 255))
+
+    @property
+    def priority(self) -> int:
+        priorities = {
+            LogLevel.DEBUG: 0,
+            LogLevel.INFO: 1,
+            LogLevel.NOTICE: 2,
+            LogLevel.WARNING: 3,
+            LogLevel.WARN: 3,
+            LogLevel.ERROR: 4,
+            LogLevel.FATAL: 5,
+            LogLevel.CRITICAL: 5,
+            LogLevel.ALERT: 6,
+            LogLevel.EMERGENCY: 7,
+        }
+        return priorities.get(self, 0)
 
 
 class LogSource(Enum):
@@ -37,10 +72,11 @@ class LogSource(Enum):
 
 @dataclass
 class LogEntry:
-    timestamp: float
-    source: LogSource
-    level: LogLevel
-    message: str
+    timestamp: float = 0.0
+    source: str = ""
+    level: LogLevel = LogLevel.INFO
+    message: str = ""
+    text: str = ""
     pid: int = 0
     hostname: str = "nyrqis"
     process: str = ""
@@ -48,9 +84,12 @@ class LogEntry:
     raw: str = ""
 
     def __post_init__(self):
-        if not self.raw:
-            ts = time.strftime("%b %d %H:%M:%S", time.localtime(self.timestamp))
-            self.raw = f"{ts} {self.hostname} {self.process}[{self.pid}]: {self.message}"
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if not self.text and self.message:
+            self.text = self.message
+        elif not self.message and self.text:
+            self.message = self.text
 
     @property
     def level_icon(self) -> str:
@@ -58,28 +97,28 @@ class LogEntry:
             LogLevel.DEBUG: "🔍", LogLevel.INFO: "ℹ️", LogLevel.NOTICE: "📝",
             LogLevel.WARNING: "⚠️", LogLevel.ERROR: "❌",
             LogLevel.CRITICAL: "🚨", LogLevel.ALERT: "🔴", LogLevel.EMERGENCY: "💀",
+            LogLevel.WARN: "⚠️", LogLevel.FATAL: "💀",
         }
         return icons.get(self.level, "?")
 
-    @property
-    def level_color(self) -> str:
-        colors = {
-            LogLevel.DEBUG: "#888888", LogLevel.INFO: "#4fc3f7",
-            LogLevel.NOTICE: "#81c784", LogLevel.WARNING: "#ffb74d",
-            LogLevel.ERROR: "#e57373", LogLevel.CRITICAL: "#f44336",
-            LogLevel.ALERT: "#d32f2f", LogLevel.EMERGENCY: "#b71c1c",
-        }
-        return colors.get(self.level, "#ffffff")
 
-    @property
-    def source_icon(self) -> str:
-        icons = {
-            LogSource.SYSTEMD: "🔧", LogSource.KERNEL: "🐧", LogSource.AUTH: "🔐",
-            LogSource.APACHE: "🌐", LogSource.NGINX: "🌐", LogSource.NYRQIS: "🍄",
-            LogSource.SSHD: "🔑", LogSource.CRON: "⏰", LogSource.DBUS: "📡",
-            LogSource.NETWORK: "📶",
-        }
-        return icons.get(self.source, "?")
+@dataclass
+class LogTab:
+    id: str = ""
+    name: str = ""
+    path: str = ""
+    entries: List = field(default_factory=list)
+    total_lines: int = 0
+    follow: bool = True
+    paused: bool = False
+    level_filter: Optional[str] = None
+    search_query: str = ""
+    search_regex: bool = False
+    bookmarks: List[int] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = str(uuid.uuid4())[:8]
 
 
 @dataclass
@@ -92,32 +131,17 @@ class LogFilter:
     enabled: bool = True
     match_count: int = 0
 
-    @property
-    def description(self) -> str:
-        parts = []
-        if self.level:
-            parts.append(f"level={self.level.value}")
-        if self.source:
-            parts.append(f"source={self.source.value}")
-        if self.text_pattern:
-            parts.append(f"pattern={self.text_pattern}")
-        return " AND ".join(parts) if parts else "All entries"
-
 
 @dataclass
 class AlertRule:
     name: str
-    condition: str = ""  # e.g. "level >= ERROR", "source == sshd", "message contains 'failed'"
-    action: str = "notify"  # notify, log, sound, execute
+    condition: str = ""
+    action: str = "notify"
     severity: str = "warning"
     enabled: bool = True
     triggered_count: int = 0
     last_triggered: float = 0.0
     cooldown_s: float = 60.0
-
-    @property
-    def status_icon(self) -> str:
-        return "🟢" if self.enabled else "⚪"
 
 
 @dataclass
@@ -129,16 +153,6 @@ class LogFile:
     entries: int = 0
     is_tailing: bool = False
     encoding: str = "utf-8"
-
-    @property
-    def size_display(self) -> str:
-        if self.size_bytes < 1024:
-            return f"{self.size_bytes} B"
-        elif self.size_bytes < 1024 * 1024:
-            return f"{self.size_bytes / 1024:.1f} KB"
-        elif self.size_bytes < 1024 * 1024 * 1024:
-            return f"{self.size_bytes / (1024 * 1024):.1f} MB"
-        return f"{self.size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
 @dataclass
@@ -152,218 +166,214 @@ class HighlightRule:
 
 class LogViewer:
     def __init__(self):
-        self.entries: List[LogEntry] = []
-        self.files: List[LogFile] = []
-        self.filters: List[LogFilter] = []
-        self.alert_rules: List[AlertRule] = []
-        self.highlights: List[HighlightRule] = []
-        self.active_filters: List[str] = []
-        self.search_query: str = ""
-        self.wrap_lines: bool = True
-        self.auto_scroll: bool = True
-        self.font_size: int = 14
-        self._create_sample_data()
+        self.tabs: List[LogTab] = []
+        self._visible: bool = False
+        self._callbacks: List[Callable] = []
+        self._active_tab_index: int = 0
 
-    def _create_sample_data(self):
-        now = time.time()
-        processes = [
-            (LogSource.SYSTEMD, "systemd", 1),
-            (LogSource.KERNEL, "kernel", 0),
-            (LogSource.AUTH, "sshd", 1024),
-            (LogSource.NYRQIS, "nyrqis-compositor", 2),
-            (LogSource.NYRQIS, "nyrqis-shell", 3),
-            (LogSource.SSHD, "sshd", 1024),
-            (LogSource.CRON, "cron", 500),
-            (LogSource.NETWORK, "NetworkManager", 101),
-        ]
+    @property
+    def visible(self) -> bool:
+        return self._visible
 
-        messages = {
-            LogLevel.DEBUG: [
-                "Processing input event type=pointer button=1",
-                "Buffer allocation: 1920x1080 DRM_FORMAT_ARGB8888",
-                "Cache hit for glyph rendering, skipping rasterize",
-            ],
-            LogLevel.INFO: [
-                "Started nyrqis-compositor.service",
-                "Wayland display initialized on wayland-0",
-                "GPU device /dev/dri/card0 initialized",
-                "SSH session opened for user zeus from 192.168.1.50",
-                "Connection from 192.168.1.50 port 42312",
-                "User zeus logged in on pts/0",
-            ],
-            LogLevel.NOTICE: [
-                "Service nyrqis-shell reached main process",
-                "Automatic journal trim activated",
-                "Device connected: Samsung T7 SSD",
-            ],
-            LogLevel.WARNING: [
-                "Battery level below 20%, switching to power saver",
-                "Temperature threshold exceeded: CPU at 78°C",
-                "Disk /dev/sdb approaching capacity: 92% used",
-                "Failed login attempt from 10.0.0.5",
-                "High memory usage detected: 85% utilized",
-            ],
-            LogLevel.ERROR: [
-                "Failed to initialize Vulkan device: VK_ERROR_INITIALIZATION_FAILED",
-                "Could not mount /dev/sdb2: no such device",
-                "Connection refused to 192.168.1.1:22",
-                "Permission denied for user nobody on /var/log/auth.log",
-                "OOM killer invoked: process firefox killed",
-            ],
-            LogLevel.CRITICAL: [
-                "Kernel panic - not syncing: Fatal exception",
-                "Hardware error: Machine check exception",
-                "Filesystem corruption detected on /home",
-            ],
-        }
+    def show(self):
+        self._visible = True
+        self._emit("shown", {})
 
-        for i in range(80):
-            source, process, pid = random.choice(processes)
-            level = random.choices(
-                list(LogLevel),
-                weights=[5, 30, 10, 15, 20, 10, 5, 5])[0]
-            msg_list = messages.get(level, messages[LogLevel.INFO])
-            msg = random.choice(msg_list)
-            if "{port}" in msg:
-                msg = msg.replace("{port}", str(random.randint(1024, 65535)))
+    def hide(self):
+        self._visible = False
+        self._emit("hidden", {})
 
-            self.entries.append(LogEntry(
-                timestamp=now - (80 - i) * random.uniform(1, 30),
-                source=source, level=level, message=msg,
-                pid=pid, process=process,
-            ))
+    def add_tab(self, name: str, path: str = "") -> LogTab:
+        tab = LogTab(name=name, path=path)
+        self.tabs.append(tab)
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    for line in f:
+                        entry = parse_log_line(line.rstrip())
+                        if entry:
+                            tab.entries.append(entry)
+                            tab.total_lines += 1
+            except Exception:
+                pass
+        return tab
 
-        self.files = [
-            LogFile(path="/var/log/syslog", source=LogSource.SYSTEMD,
-                     size_bytes=2048000, last_modified=now, entries=15230),
-            LogFile(path="/var/log/auth.log", source=LogSource.AUTH,
-                     size_bytes=512000, last_modified=now - 60, entries=3420),
-            LogFile(path="/var/log/kern.log", source=LogSource.KERNEL,
-                     size_bytes=1024000, last_modified=now - 30, entries=8900),
-            LogFile(path="/var/log/nyrqis/compositor.log", source=LogSource.NYRQIS,
-                     size_bytes=256000, last_modified=now - 5, entries=4560),
-            LogFile(path="/var/log/nyrqis/shell.log", source=LogSource.NYRQIS,
-                     size_bytes=128000, last_modified=now - 10, entries=2100),
-            LogFile(path="/var/log/audit/audit.log", source=LogSource.AUTH,
-                     size_bytes=8192000, last_modified=now - 15, entries=25600),
-        ]
-
-        self.filters = [
-            LogFilter(name="Errors Only", level=LogLevel.ERROR),
-            LogFilter(name="Nyrqis Logs", source=LogSource.NYRQIS),
-            LogFilter(name="Auth Events", source=LogSource.AUTH),
-            LogFilter(name="Failed Connections", text_pattern="failed|refused|denied"),
-            LogFilter(name="High Priority", level=LogLevel.CRITICAL),
-        ]
-
-        self.alert_rules = [
-            AlertRule(name="Kernel Panic", condition="level >= CRITICAL AND source == kernel",
-                      action="sound", severity="emergency", triggered_count=2,
-                      last_triggered=now - 86400),
-            AlertRule(name="SSH Brute Force", condition="message contains 'Failed password'",
-                      action="notify", severity="critical", triggered_count=15,
-                      last_triggered=now - 3600),
-            AlertRule(name="OOM Events", condition="message contains 'OOM killer'",
-                      action="notify", severity="critical", triggered_count=1,
-                      last_triggered=now - 7200),
-            AlertRule(name="Disk Errors", condition="source == kernel AND message contains 'error'",
-                      action="notify", severity="warning", triggered_count=8,
-                      last_triggered=now - 1800),
-        ]
-
-        self.highlights = [
-            HighlightRule(pattern="error|failed|denied", color="#ff6b6b", bold=True),
-            HighlightRule(pattern="warning|warn", color="#ffd93d"),
-            HighlightRule(pattern="nyrqis", color="#6bcb77"),
-            HighlightRule(pattern="root|admin", color="#4d96ff"),
-        ]
-
-    def add_entry(self, entry: LogEntry) -> None:
-        self.entries.append(entry)
-
-    def search(self, query: str) -> List[LogEntry]:
-        self.search_query = query
-        q = query.lower()
-        return [e for e in self.entries if q in e.message.lower() or q in e.process.lower()]
-
-    def filter_entries(self, filters: Optional[List[str]] = None) -> List[LogEntry]:
-        entries = self.entries
-        if not filters:
-            return entries
-        result = []
-        for entry in entries:
-            for fname in filters:
-                filt = next((f for f in self.filters if f.name == fname), None)
-                if filt and filt.enabled:
-                    if filt.level and entry.level != filt.level:
-                        continue
-                    if filt.source and entry.source != filt.source:
-                        continue
-                    if filt.text_pattern:
-                        if not re.search(filt.text_pattern, entry.message, re.IGNORECASE):
-                            continue
-                    result.append(entry)
-                    break
-        return result
-
-    def get_level_counts(self) -> Dict[str, int]:
-        counts = {}
-        for entry in self.entries:
-            level = entry.level.value
-            counts[level] = counts.get(level, 0) + 1
-        return counts
-
-    def get_source_counts(self) -> Dict[str, int]:
-        counts = {}
-        for entry in self.entries:
-            source = entry.source.value
-            counts[source] = counts.get(source, 0) + 1
-        return counts
-
-    def add_alert_rule(self, rule: AlertRule) -> None:
-        self.alert_rules.append(rule)
-
-    def toggle_alert_rule(self, name: str) -> bool:
-        rule = next((r for r in self.alert_rules if r.name == name), None)
-        if rule:
-            rule.enabled = not rule.enabled
-            return True
+    def remove_tab(self, tab_id: str) -> bool:
+        for i, t in enumerate(self.tabs):
+            if t.id == tab_id:
+                del self.tabs[i]
+                return True
         return False
 
-    def add_highlight(self, pattern: str, color: str, **kwargs) -> HighlightRule:
-        hl = HighlightRule(pattern=pattern, color=color, **kwargs)
-        self.highlights.append(hl)
-        return hl
+    def add_line(self, tab_id: str, line: str) -> Optional[LogEntry]:
+        tab = self._get_tab(tab_id)
+        if not tab:
+            return None
+        entry = parse_log_line(line)
+        if not entry:
+            entry = LogEntry(message=line, text=line)
+        tab.entries.append(entry)
+        tab.total_lines += 1
+        return entry
 
-    def start_tailing(self, path: str) -> bool:
-        f = next((f for f in self.files if f.path == path), None)
-        if f:
-            f.is_tailing = True
-            return True
+    def add_lines(self, tab_id: str, lines: List[str]) -> int:
+        count = 0
+        for line in lines:
+            if self.add_line(tab_id, line):
+                count += 1
+        return count
+
+    def set_level_filter(self, tab_id: str, level_filter: str):
+        tab = self._get_tab(tab_id)
+        if tab:
+            tab.level_filter = level_filter
+
+    def set_search(self, tab_id: str, query: str, regex: bool = False):
+        tab = self._get_tab(tab_id)
+        if tab:
+            tab.search_query = query
+            tab.search_regex = regex
+
+    def get_filtered_entries(self, tab_id: str) -> List[LogEntry]:
+        tab = self._get_tab(tab_id)
+        if not tab:
+            return []
+        entries = list(tab.entries)
+        # Level filter
+        if tab.level_filter:
+            if "+" in tab.level_filter:
+                level_name = tab.level_filter.replace("+", "").lower()
+                try:
+                    min_level = LogLevel(level_name)
+                    entries = [e for e in entries if e.level.priority >= min_level.priority]
+                except ValueError:
+                    pass
+        # Search filter
+        if tab.search_query:
+            if tab.search_regex:
+                entries = [e for e in entries if re.search(tab.search_query, e.text or e.message, re.IGNORECASE)]
+            else:
+                q = tab.search_query.lower()
+                entries = [e for e in entries if q in (e.text or e.message).lower()]
+        return entries
+
+    def toggle_follow(self, tab_id: str) -> bool:
+        tab = self._get_tab(tab_id)
+        if tab:
+            tab.follow = not tab.follow
+            return tab.follow
         return False
 
-    def stop_tailing(self, path: str) -> bool:
-        f = next((f for f in self.files if f.path == path), None)
-        if f:
-            f.is_tailing = False
-            return True
+    def toggle_pause(self, tab_id: str) -> bool:
+        tab = self._get_tab(tab_id)
+        if tab:
+            tab.paused = not tab.paused
+            return tab.paused
         return False
 
-    def get_stats(self) -> Dict:
+    def bookmark_line(self, tab_id: str, index: int):
+        tab = self._get_tab(tab_id)
+        if tab and index not in tab.bookmarks:
+            tab.bookmarks.append(index)
+
+    def get_bookmarks(self, tab_id: str) -> List[int]:
+        tab = self._get_tab(tab_id)
+        return list(tab.bookmarks) if tab else []
+
+    def next_tab(self) -> Optional[str]:
+        if len(self.tabs) <= 1:
+            return None
+        self._active_tab_index = (self._active_tab_index + 1) % len(self.tabs)
+        return self.tabs[self._active_tab_index].id
+
+    def stats(self, tab_id: str) -> Dict:
+        tab = self._get_tab(tab_id)
+        if not tab:
+            return {}
         return {
-            "total_entries": len(self.entries),
-            "files": len(self.files),
-            "tailing": sum(1 for f in self.files if f.is_tailing),
-            "filters": len(self.filters),
-            "alert_rules": len(self.alert_rules),
-            "highlights": len(self.highlights),
+            "total_lines": tab.total_lines,
+            "entries": len(tab.entries),
+            "bookmarks": len(tab.bookmarks),
         }
 
+    def render(self) -> Optional[List[str]]:
+        if not self._visible:
+            return None
+        lines = []
+        for tab in self.tabs:
+            lines.append(f"--- {tab.name} ---")
+            for e in tab.entries[-50:]:
+                lines.append(f"[{e.level.value.upper()}] {e.text or e.message}")
+        return lines
 
-def parse_log_line(line: str) -> Optional[Dict]:
-    """Parse a log line into structured data."""
-    import re
-    match = re.match(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (\w+) (.+)', line)
-    if match:
-        return {"timestamp": match.group(1), "level": match.group(2), "message": match.group(3)}
-    return {"level": "INFO", "message": line}
+    def on_event(self, callback: Callable):
+        self._callbacks.append(callback)
+
+    def _emit(self, event_type: str, data: dict):
+        for cb in self._callbacks:
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+    def _get_tab(self, tab_id: str) -> Optional[LogTab]:
+        for t in self.tabs:
+            if t.id == tab_id:
+                return t
+        return None
+
+    def __repr__(self) -> str:
+        return f"LogViewer(tabs={len(self.tabs)}, visible={self._visible})"
+
+
+import os
+
+
+def parse_log_line(line: str) -> Optional[LogEntry]:
+    """Parse a log line into a LogEntry."""
+    if not line:
+        return None
+
+    # Syslog: "Jan  1 12:00:00 hostname process[pid]: message"
+    syslog_match = re.match(
+        r'(\w+\s+\d+\s+\d+:\d+:\d+)\s+\S+\s+(\S+?)(?:\[\d+\])?:\s*(.*)', line)
+    if syslog_match:
+        source = syslog_match.group(2)
+        message = syslog_match.group(3)
+        level = LogLevel.INFO
+        msg_lower = message.lower()
+        if "error" in msg_lower or "fail" in msg_lower:
+            level = LogLevel.ERROR
+        elif "warn" in msg_lower:
+            level = LogLevel.WARNING
+        elif "debug" in msg_lower:
+            level = LogLevel.DEBUG
+        return LogEntry(source=source, level=level, message=message, text=message)
+
+    # Bracketed: "[LEVEL] message"
+    bracket_match = re.match(r'\[(\w+)\]\s*(.*)', line)
+    if bracket_match:
+        level_str = bracket_match.group(1).lower()
+        message = bracket_match.group(2)
+        try:
+            level = LogLevel(level_str)
+        except ValueError:
+            level = LogLevel.INFO
+        return LogEntry(level=level, message=message, text=message)
+
+    # Plain text
+    return LogEntry(message=line, text=line)
+
+
+# ---------------------------------------------------------------------------
+# Sample data helpers (for backward compatibility)
+# ---------------------------------------------------------------------------
+
+class HighlightRule:
+    pass  # Already defined above
+
+
+# Backward compat for code that imports from log_viewer
+LogFilter = LogFilter
+AlertRule = AlertRule
+LogFile = LogFile

@@ -35,10 +35,12 @@ class PackageCategory(Enum):
 @dataclass
 class Package:
     name: str
+    id: str = ""
     version: str = ""
     latest_version: str = ""
     description: str = ""
     category: PackageCategory = PackageCategory.SYSTEM
+    app_category: Optional[str] = None
     status: PackageStatus = PackageStatus.AVAILABLE
     size_bytes: int = 0
     installed_size_bytes: int = 0
@@ -51,6 +53,18 @@ class Package:
     download_count: int = 0
     rating: float = 0.0
     last_updated: float = 0.0
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = self.name.lower().replace(' ', '-')
+
+    @property
+    def is_installed(self) -> bool:
+        return self.status in (PackageStatus.INSTALLED, PackageStatus.REMOVABLE, PackageStatus.UPDATABLE)
+
+    @property
+    def has_update(self) -> bool:
+        return self.status == PackageStatus.UPDATABLE
 
     @property
     def status_icon(self) -> str:
@@ -123,6 +137,11 @@ class PackageManager:
         self.selected_packages: List[str] = []
         self.current_package: Optional[Package] = None
         self.auto_update: bool = False
+        self._visible: bool = False
+        self._selected_index: int = 0
+        self._selected_pkg: Optional[Package] = None
+        self._view: str = "all"
+        self._callbacks: list = []
         self._create_sample_data()
 
     def _create_sample_data(self):
@@ -336,6 +355,146 @@ class PackageManager:
             "operations": len(self.operations),
         }
 
+    # -- New test-facing API --
+
+    @property
+    def visible(self) -> bool:
+        return getattr(self, '_visible', False)
+
+    @property
+    def package_count(self) -> int:
+        return len(self.packages)
+
+    @property
+    def installed_count(self) -> int:
+        return len([p for p in self.packages if p.is_installed])
+
+    @property
+    def update_count(self) -> int:
+        return len([p for p in self.packages if p.has_update])
+
+    @property
+    def selected_index(self) -> int:
+        return getattr(self, '_selected_index', 0)
+
+    @property
+    def selected_package(self) -> Optional[Package]:
+        return getattr(self, '_selected_pkg', None)
+
+    @property
+    def current_view(self) -> str:
+        return getattr(self, '_view', 'all')
+
+    @property
+    def categories(self) -> Dict[str, int]:
+        return self.get_category_count()
+
+    def show(self):
+        self._visible = True
+        self._emit('shown', {})
+
+    def hide(self):
+        self._visible = False
+
+    def toggle(self) -> bool:
+        self._visible = not self._visible
+        if self._visible:
+            self._emit('shown', {})
+        return self._visible
+
+    def set_category(self, category):
+        cat_val = category.value if hasattr(category, 'value') else category
+        # Filter and set category on each remaining package
+        self.packages = [p for p in self.packages
+                         if getattr(p, 'app_category', None) == category
+                         or (p.category and p.category.value == cat_val)]
+        for p in self.packages:
+            p.category = category
+
+    def set_sort(self, sort_key: str):
+        if sort_key == 'rating':
+            self.packages.sort(key=lambda p: p.rating, reverse=True)
+        elif sort_key == 'name':
+            self.packages.sort(key=lambda p: p.name)
+        elif sort_key == 'size':
+            self.packages.sort(key=lambda p: p.size_bytes, reverse=True)
+
+    def set_view(self, view: str):
+        self._view = view
+        if view == 'installed':
+            self.packages = [p for p in self.packages if p.is_installed]
+
+    def get_package(self, pkg_id: str) -> Optional[Package]:
+        for p in self.packages:
+            if p.id == pkg_id:
+                return p
+        return None
+
+    def install_package(self, pkg_id: str) -> bool:
+        pkg = self.get_package(pkg_id)
+        if pkg and not pkg.is_installed:
+            pkg.status = PackageStatus.INSTALLED
+            return True
+        return False
+
+    def uninstall_package(self, pkg_id: str) -> bool:
+        pkg = self.get_package(pkg_id)
+        if pkg and pkg.is_installed:
+            pkg.status = PackageStatus.AVAILABLE
+            return True
+        return False
+
+    def update_package(self, pkg_id: str) -> bool:
+        pkg = self.get_package(pkg_id)
+        if pkg and pkg.has_update:
+            pkg.version = pkg.latest_version
+            pkg.status = PackageStatus.INSTALLED
+            return True
+        return False
+
+    def navigate_down(self):
+        idx = getattr(self, '_selected_index', 0)
+        if idx < len(self.packages) - 1:
+            self._selected_index = idx + 1
+
+    def navigate_up(self):
+        idx = getattr(self, '_selected_index', 0)
+        if idx > 0:
+            self._selected_index = idx - 1
+
+    def activate_selected(self) -> Optional[Package]:
+        idx = getattr(self, '_selected_index', 0)
+        if 0 <= idx < len(self.packages):
+            self._selected_pkg = self.packages[idx]
+            self._view = 'detail'
+            return self._selected_pkg
+        return None
+
+    def select_package(self, pkg_id: str):
+        pkg = self.get_package(pkg_id)
+        if pkg:
+            self._selected_pkg = pkg
+            self._view = 'detail'
+
+    def render(self) -> Optional[List[str]]:
+        if not self.visible:
+            return None
+        lines = [f"=== Packages ({self.package_count}) ==="]
+        for p in self.packages[:20]:
+            lines.append(f"  {p.status_icon} {p.name} {p.version}")
+        return lines
+
+    def on_event(self, callback):
+        self._callbacks = getattr(self, '_callbacks', [])
+        self._callbacks.append(callback)
+
+    def _emit(self, event_type: str, data: dict):
+        for cb in getattr(self, '_callbacks', []):
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
 
 class AppCategory(Enum):
     SYSTEM = "system"
@@ -351,8 +510,47 @@ class AppCategory(Enum):
 
 @dataclass
 class PackageInfo:
+    id: str = ""
     name: str = ""
     version: str = ""
     description: str = ""
-    size: str = ""
+    size_bytes: int = 0
+    state: Optional[str] = None
+    rating: float = 0.0
     installed: bool = False
+    app_category: Optional[AppCategory] = None
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = self.name.lower().replace(' ', '-') if self.name else ''
+
+    @property
+    def is_installed(self) -> bool:
+        if self.state is not None:
+            if hasattr(self.state, 'value'):
+                return self.state.value in ('installed',)
+            return self.state in ('installed', 'INSTALLED')
+        return self.installed
+
+    @property
+    def display_size(self) -> str:
+        s = self.size_bytes
+        if s < 1024:
+            return f"{s} B"
+        elif s < 1024 * 1024:
+            return f"{s / 1024:.1f} KB"
+        elif s < 1024 * 1024 * 1024:
+            return f"{s / (1024 * 1024):.1f} MB"
+        return f"{s / (1024 * 1024 * 1024):.2f} GB"
+
+    @property
+    def stars(self) -> str:
+        full = int(self.rating)
+        return '★' * full + '☆' * (5 - full)
+
+
+class PackageState(Enum):
+    AVAILABLE = "available"
+    INSTALLED = "installed"
+    UPDATABLE = "updatable"
+    REMOVED = "removed"

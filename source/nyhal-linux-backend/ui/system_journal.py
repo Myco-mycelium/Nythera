@@ -40,11 +40,11 @@ class UnitType(Enum):
 @dataclass
 class JournalEntry:
     timestamp: float = 0.0
-    hostname: str = "nyrqis"
-    service: str = ""
-    pid: int = 0
     level: LogLevel = LogLevel.INFO
+    service: str = ""
     message: str = ""
+    hostname: str = "nyrqis"
+    pid: int = 0
     extra: Dict[str, str] = field(default_factory=dict)
 
     @property
@@ -72,6 +72,10 @@ class JournalEntry:
             LogLevel.INFO: "white", LogLevel.DEBUG: "gray",
         }
         return colors.get(self.level, "white")
+
+    @property
+    def display(self) -> str:
+        return f"{self.level_icon} {self.time_str} {self.service}: {self.message}"
 
 
 @dataclass
@@ -142,7 +146,7 @@ class SystemJournal:
         self._services: List[ServiceUnit] = []
         self._selected_entry: int = 0
         self._selected_service: int = 0
-        self._view_mode: str = "journal"
+        self._view_mode: str = "logs"
         self._filter_level: Optional[LogLevel] = None
         self._filter_service: str = ""
         self._filter_text: str = ""
@@ -186,10 +190,16 @@ class SystemJournal:
             if service == "kernel":
                 msg = f"kernel: {msg}"
             self._entries.append(JournalEntry(
-                now - i * random.randint(5, 120),
-                "nyrqis", service, random.randint(1000, 99999),
-                level, msg,
+                timestamp=now - i * random.randint(5, 120),
+                level=level, service=service, message=msg,
+                hostname="nyrqis", pid=random.randint(1000, 99999),
             ))
+
+        # Pre-bookmark some entries for sample data
+        if len(self._entries) > 5:
+            self._entries[3]._bookmarked = True
+            self._entries[7]._bookmarked = True
+            self._entries[12]._bookmarked = True
 
         # Sample services
         self._services = [
@@ -233,6 +243,18 @@ class SystemJournal:
         if 0 <= self._selected_service < len(self._services):
             return self._services[self._selected_service]
         return None
+
+    @property
+    def view_mode(self) -> str:
+        return self._view_mode
+
+    @property
+    def total_count(self) -> int:
+        return len(self._entries)
+
+    @property
+    def selected_index(self) -> int:
+        return self._selected_entry
 
     @property
     def total_entries(self) -> int:
@@ -340,3 +362,145 @@ class SystemJournal:
         lines.append("  [F]Follow [K]ernel [E]Errors [S]Services [↑↓]Select [/]Search")
         lines.append("  [1]Emerg [2]Err [3]Warn [4]Info [5]Debug [0]Clear Filter")
         return lines
+
+    # -- Test-facing API --
+
+    def add_entry(self, level: LogLevel, service: str, message: str) -> JournalEntry:
+        entry = JournalEntry(
+            timestamp=time.time(),
+            level=level,
+            service=service,
+            message=message,
+        )
+        self._entries.insert(0, entry)
+        return entry
+
+    def toggle_bookmark(self, idx: int):
+        entries = self._filtered_entries()
+        if 0 <= idx < len(entries):
+            entry = entries[idx]
+            if not hasattr(entry, '_bookmarked'):
+                entry._bookmarked = False
+            entry._bookmarked = not entry._bookmarked
+            return entry
+        return None
+
+    def set_level_filter(self, level: LogLevel):
+        self._filter_level = level
+
+    def set_search(self, query: str):
+        self._filter_text = query
+
+    def toggle_regex(self) -> bool:
+        self._regex_mode = not getattr(self, '_regex_mode', False)
+        return self._regex_mode
+
+    def toggle_tail(self) -> bool:
+        self._follow_mode = not self._follow_mode
+        return self._follow_mode
+
+    def get_stats(self, hours: int = 24) -> "LogStats":
+        cutoff = time.time() - hours * 3600
+        entries = [e for e in self._entries if e.timestamp > cutoff]
+        level_counts = {}
+        for e in entries:
+            key = e.level.value
+            level_counts[key] = level_counts.get(key, 0) + 1
+        return LogStats(
+            total=len(entries),
+            hours=hours,
+            level_counts=level_counts,
+        )
+
+    def get_services(self) -> Dict:
+        result = {}
+        for svc in self._services:
+            result[svc.name] = {
+                'state': svc.state.value,
+                'pid': svc.pid,
+                'memory': svc.memory_str,
+                'cpu': f"{svc.cpu_usage:.1f}%",
+            }
+        return result
+
+    def get_bookmarked_entries(self) -> List[JournalEntry]:
+        return [e for e in self._entries if getattr(e, '_bookmarked', False)]
+
+    def export_logs(self) -> str:
+        lines = []
+        for e in self._entries[:100]:
+            lines.append(e.display)
+        return "\n".join(lines)
+
+    def select_down(self):
+        self._selected_entry += 1
+
+    def select_up(self):
+        if self._selected_entry > 0:
+            self._selected_entry -= 1
+
+    def _get_filtered_entries(self) -> List[JournalEntry]:
+        return self._filtered_entries()
+
+    def set_view(self, view: str):
+        self._view_mode = view
+
+    def render_logs(self) -> List[str]:
+        lines = []
+        for e in self._filtered_entries()[:20]:
+            lines.append(e.display)
+        return lines
+
+    def render_stats(self) -> List[str]:
+        stats = self.get_stats(24)
+        return [
+            f"Total entries: {stats.total}",
+            f"Hours: {stats.hours}",
+        ]
+
+    def render_services(self) -> List[str]:
+        lines = []
+        for svc in self._services:
+            lines.append(f"  {svc.state_icon} {svc.name}: {svc.state.value}")
+        return lines
+
+    def render_bookmarks(self) -> List[str]:
+        bookmarks = self.get_bookmarked_entries()
+        lines = []
+        for e in bookmarks[:20]:
+            lines.append(e.display)
+        return lines
+
+    def handle_key(self, key: str) -> str:
+        if key == "ArrowDown":
+            self.select_down()
+            return "select_down"
+        elif key == "ArrowUp":
+            self.select_up()
+            return "select_up"
+        elif key == "f":
+            self.toggle_tail()
+            return "toggle_tail"
+        elif key == "r":
+            self.toggle_regex()
+            return "toggle_regex"
+        elif key == "b":
+            self.toggle_bookmark(self._selected_entry)
+            return "bookmark"
+        return "noop"
+
+
+class LogStats:
+    """Statistics container for journal entries."""
+    def __init__(self, total: int = 0, hours: int = 24, level_counts: Dict = None, **kwargs):
+        self.total = total
+        self.hours = hours
+        self.level_counts = level_counts or {}
+        self.error = kwargs.get('error', self.level_counts.get('err', 0))
+        self.critical = kwargs.get('critical', self.level_counts.get('crit', 0))
+
+    @property
+    def error_rate(self) -> float:
+        if self.total == 0:
+            return 0.0
+        return round((self.error + self.critical) / self.total * 100, 1)

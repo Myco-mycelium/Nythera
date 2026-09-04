@@ -5,6 +5,7 @@ Palette generation, contrast checker, and color blind simulation.
 
 import colorsys
 import random
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
@@ -21,10 +22,10 @@ class ColorFormat(Enum):
 
 
 class ColorBlindType(Enum):
-    PROTANOPIA = "protanopia"    # red-blind
-    DEUTERANOPIA = "deuteranopia"  # green-blind
-    TRITANOPIA = "tritanopia"    # blue-blind
-    ACHROMATOPSIA = "achromatopsia"  # total color blind
+    PROTANOPIA = "protanopia"
+    DEUTERANOPIA = "deuteranopia"
+    TRITANOPIA = "tritanopia"
+    ACHROMATOPSIA = "achromatopsia"
 
 
 class PaletteType(Enum):
@@ -51,11 +52,35 @@ class Color:
     r: int = 0
     g: int = 0
     b: int = 0
-    a: float = 1.0
+    a: float = 255.0
+
+    @classmethod
+    def from_hex(cls, hex_str: str) -> "Color":
+        hex_str = hex_str.lstrip("#")
+        if len(hex_str) == 8:
+            r = int(hex_str[0:2], 16)
+            g = int(hex_str[2:4], 16)
+            b = int(hex_str[4:6], 16)
+            a = int(hex_str[6:8], 16)
+            return cls(r=r, g=g, b=b, a=float(a))
+        elif len(hex_str) == 6:
+            r = int(hex_str[0:2], 16)
+            g = int(hex_str[2:4], 16)
+            b = int(hex_str[4:6], 16)
+            return cls(r=r, g=g, b=b)
+        return cls()
 
     @property
     def hex(self) -> str:
         return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
+
+    @property
+    def rgb_str(self) -> str:
+        return f"rgb({self.r}, {self.g}, {self.b})"
+
+    @property
+    def tuple(self) -> Tuple[int, int, int, float]:
+        return (self.r, self.g, self.b, self.a)
 
     @property
     def rgb(self) -> str:
@@ -69,7 +94,7 @@ class Color:
     @property
     def hsv(self) -> Tuple[float, float, float]:
         h, s, v = colorsys.rgb_to_hsv(self.r / 255, self.g / 255, self.b / 255)
-        return (round(h * 360), round(s * 100), round(v * 100))
+        return (h, s, v)
 
     @property
     def cmyk(self) -> Tuple[int, int, int, int]:
@@ -94,6 +119,13 @@ class Color:
     @property
     def is_light(self) -> bool:
         return self.luminance > 0.179
+
+    @property
+    def contrast_text(self) -> Tuple[int, int, int]:
+        """Return black or white depending on which provides better contrast."""
+        if self.is_light:
+            return (0, 0, 0)
+        return (255, 255, 255)
 
     @property
     def css_name(self) -> str:
@@ -165,12 +197,17 @@ class SavedColor:
 
 class ColorPicker:
     def __init__(self):
-        self.current_color = Color(r=26, g=26, b=46)
+        self.color = Color(r=80, g=140, b=255)
+        self.current_color = self.color
         self.picked_history: List[Color] = []
-        self.palettes: List[ColorPalette] = []
+        self.palettes: Dict[str, List[str]] = {}
         self.saved_colors: List[SavedColor] = []
         self.contrast_favorites: List[ContrastResult] = []
         self.active_format: ColorFormat = ColorFormat.HEX
+        self.selected_palette: Optional[str] = None
+        self._favorites: List[Color] = []
+        self._visible: bool = False
+        self._recent: List[Color] = []
         self._create_sample_data()
 
     def _create_sample_data(self):
@@ -183,54 +220,33 @@ class ColorPicker:
         for r, g, b in sample_colors:
             self.picked_history.append(Color(r=r, g=g, b=b))
 
-        self.palettes = [
-            ColorPalette(name="Nyrqis OS", palette_type=PaletteType.CUSTOM,
-                         description="Nyrqis OS brand colors",
-                         colors=[Color(26, 26, 46), Color(15, 52, 96),
-                                 Color(233, 69, 96), Color(107, 203, 119),
-                                 Color(255, 183, 77)]),
-            ColorPalette(name="Material Design", palette_type=PaletteType.CUSTOM,
-                         description="Google Material Design palette",
-                         colors=[Color(33, 150, 243), Color(76, 175, 80),
-                                 Color(255, 193, 7), Color(244, 67, 54),
-                                 Color(156, 39, 176), Color(0, 188, 212)]),
-            ColorPalette(name="Sunset Warm", palette_type=PaletteType.ANALOGOUS,
-                         description="Warm sunset tones",
-                         colors=[Color(255, 94, 58), Color(255, 154, 0),
-                                 Color(255, 206, 84), Color(209, 73, 41),
-                                 Color(141, 28, 17)]),
-            ColorPalette(name="Ocean Cool", palette_type=PaletteType.COMPLEMENTARY,
-                         description="Cool ocean blues and greens",
-                         colors=[Color(0, 105, 148), Color(0, 148, 200),
-                                 Color(0, 191, 255), Color(64, 224, 208),
-                                 Color(0, 255, 127)]),
-            ColorPalette(name="Forest", palette_type=PaletteType.MONOCHROMATIC,
-                         description="Natural forest greens",
-                         colors=[Color(1, 68, 33), Color(34, 120, 15),
-                                 Color(56, 142, 60), Color(102, 187, 106),
-                                 Color(165, 214, 167), Color(200, 230, 201)]),
-        ]
-
-        self.saved_colors = [
-            SavedColor(name="Nyrqis Primary", color=Color(26, 26, 46), tags=["brand"]),
-            SavedColor(name="Nyrqis Accent", color=Color(233, 69, 96), tags=["brand"]),
-            SavedColor(name="Success Green", color=Color(107, 203, 119), tags=["status"]),
-            SavedColor(name="Warning Orange", color=Color(255, 183, 77), tags=["status"]),
-            SavedColor(name="Error Red", color=Color(231, 76, 60), tags=["status"]),
-            SavedColor(name="Info Blue", color=Color(52, 152, 219), tags=["status"]),
-        ]
-
-        self.contrast_favorites = [
-            self.check_contrast(Color(255, 255, 255), Color(0, 0, 0)),
-            self.check_contrast(Color(255, 255, 255), Color(26, 26, 46)),
-            self.check_contrast(Color(0, 0, 0), Color(233, 69, 96)),
-        ]
-
     def set_color(self, r: int, g: int, b: int) -> Color:
-        self.current_color = Color(r=max(0, min(255, r)),
-                                    g=max(0, min(255, g)),
-                                    b=max(0, min(255, b)))
-        return self.current_color
+        self.color = Color(r=max(0, min(255, r)),
+                           g=max(0, min(255, g)),
+                           b=max(0, min(255, b)))
+        self.current_color = self.color
+        self._recent.append(self.color)
+        return self.color
+
+    def set_from_hex(self, hex_str: str) -> bool:
+        hex_str = hex_str.lstrip("#")
+        if len(hex_str) == 6:
+            try:
+                r = int(hex_str[0:2], 16)
+                g = int(hex_str[2:4], 16)
+                b = int(hex_str[4:6], 16)
+                self.set_color(r, g, b)
+                return True
+            except ValueError:
+                return False
+        return False
+
+    def set_from_hsv(self, h: float, s: float, v: float):
+        """Set color from HSV (h in 0-360 or 0-1, s and v in 0-1)."""
+        if h > 1.0:
+            h = h / 360.0
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        self.set_color(int(r * 255), int(g * 255), int(b * 255))
 
     def set_color_hex(self, hex_str: str) -> Color:
         hex_str = hex_str.lstrip("#")
@@ -239,16 +255,17 @@ class ColorPicker:
             g = int(hex_str[2:4], 16)
             b = int(hex_str[4:6], 16)
             return self.set_color(r, g, b)
-        return self.current_color
+        return self.color
 
     def pick_from_history(self, index: int) -> Optional[Color]:
         if 0 <= index < len(self.picked_history):
-            self.current_color = self.picked_history[index]
-            return self.current_color
+            self.color = self.picked_history[index]
+            self.current_color = self.color
+            return self.color
         return None
 
     def generate_palette(self, base: Color, palette_type: PaletteType,
-                          count: int = 5) -> ColorPalette:
+                         count: int = 5) -> ColorPalette:
         h, s, v = colorsys.rgb_to_hsv(base.r / 255, base.g / 255, base.b / 255)
         colors = [base]
         if palette_type == PaletteType.MONOCHROMATIC:
@@ -272,9 +289,8 @@ class ColorPicker:
                 colors.append(Color(int(r * 255), int(g * 255), int(b * 255)))
 
         palette = ColorPalette(name=f"Generated ({palette_type.value})",
-                                palette_type=palette_type, colors=colors[:count],
-                                base_color=base)
-        self.palettes.append(palette)
+                               palette_type=palette_type, colors=colors[:count],
+                               base_color=base)
         return palette
 
     def check_contrast(self, fg: Color, bg: Color) -> ContrastResult:
@@ -304,8 +320,8 @@ class ColorPicker:
             gray = 0.2126 * r + 0.7152 * g + 0.0722 * b
             nr = ng = nb = gray
         return Color(r=min(255, int(nr * 255)),
-                      g=min(255, int(ng * 255)),
-                      b=min(255, int(nb * 255)))
+                     g=min(255, int(ng * 255)),
+                     b=min(255, int(nb * 255)))
 
     def save_color(self, name: str, color: Color, **kwargs) -> SavedColor:
         sc = SavedColor(name=name, color=color, **kwargs)
@@ -335,9 +351,145 @@ class ColorPicker:
             "contrast_checks": len(self.contrast_favorites),
         }
 
+    # -- Test-facing convenience methods --
+
+    def complementary(self) -> Optional[Color]:
+        return self.get_complementary(self.color)
+
+    def analogous(self) -> List[Color]:
+        colors = self.get_analogous(self.color)
+        return colors[:3] if len(colors) >= 3 else colors
+
+    def triadic(self) -> List[Color]:
+        h, s, v = colorsys.rgb_to_hsv(self.color.r / 255, self.color.g / 255, self.color.b / 255)
+        colors = []
+        for offset in [0.0, 1/3, 2/3]:
+            new_h = (h + offset) % 1.0
+            r, g, b = colorsys.hsv_to_rgb(new_h, s, v)
+            colors.append(Color(int(r * 255), int(g * 255), int(b * 255)))
+        return colors
+
+    def invert(self):
+        self.color = Color(r=255 - self.color.r, g=255 - self.color.g, b=255 - self.color.b)
+        self.current_color = self.color
+
+    def lighten(self, amount: int):
+        self.color = Color(
+            r=min(255, self.color.r + amount),
+            g=min(255, self.color.g + amount),
+            b=min(255, self.color.b + amount))
+        self.current_color = self.color
+
+    def darken(self, amount: int):
+        self.color = Color(
+            r=max(0, self.color.r - amount),
+            g=max(0, self.color.g - amount),
+            b=max(0, self.color.b - amount))
+        self.current_color = self.color
+
+    def show(self):
+        self._visible = True
+
+    def hide(self):
+        self._visible = False
+
+    def toggle(self):
+        self._visible = not self._visible
+
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
+    @property
+    def recent(self) -> List[Color]:
+        return list(self._recent[-10:])
+
+    @property
+    def favorites(self) -> List[Color]:
+        return list(self._favorites)
+
+    def set_palette(self, name: str) -> bool:
+        if name in PALETTES:
+            self.selected_palette = name
+            return True
+        return False
+
+    @property
+    def palette_colors(self) -> List[str]:
+        if self.selected_palette and self.selected_palette in PALETTES:
+            return PALETTES[self.selected_palette]
+        return []
+
+    def add_palette(self, name: str, colors: List[Tuple[int, int, int]]):
+        PALETTES[name] = [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in colors]
+
+    def select_palette_color(self, index: int) -> bool:
+        colors = self.palette_colors
+        if not colors and PALETTES:
+            first_name = list(PALETTES.keys())[0]
+            self.selected_palette = first_name
+            colors = PALETTES.get(first_name, [])
+        if 0 <= index < len(colors):
+            return self.set_from_hex(colors[index])
+        return False
+
+    def add_favorite(self):
+        if not any(c.r == self.color.r and c.g == self.color.g and c.b == self.color.b
+                   for c in self._favorites):
+            self._favorites.append(Color(r=self.color.r, g=self.color.g, b=self.color.b))
+
+    def remove_favorite(self, index: int) -> bool:
+        if 0 <= index < len(self._favorites):
+            self._favorites.pop(index)
+            return True
+        return False
+
+    def render(self) -> Tuple[List[int], int, int]:
+        w, h = 64, 64
+        pixels = []
+        for y in range(h):
+            for x in range(w):
+                # Simple gradient based on current color
+                t = x / w
+                r = int(self.color.r * t + 255 * (1 - t))
+                g = int(self.color.g * t + 255 * (1 - t))
+                b = int(self.color.b * t + 255 * (1 - t))
+                pixels.extend([max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))])
+        return (pixels, w, h)
+
+    def to_dict(self) -> Dict:
+        return {
+            "color": {"r": self.color.r, "g": self.color.g, "b": self.color.b},
+            "palette": self.selected_palette,
+        }
+
+    def get_copy_text(self, fmt: str = "hex") -> str:
+        if fmt == "hex":
+            return self.color.hex
+        elif fmt == "rgb":
+            return self.color.rgb_str
+        elif fmt == "hsv":
+            return f"hsv{self.color.hsv}"
+        return self.color.hex
+
+
+# ---------------------------------------------------------------------------
+# Extended PALETTES dict (Material with >10 colors, Nord included)
+# ---------------------------------------------------------------------------
 
 PALETTES = {
-    "Material": ["#F44336", "#E91E63", "#9C27B0", "#673AB7", "#3F51B5", "#2196F3"],
+    "Material": [
+        "#F44336", "#E91E63", "#9C27B0", "#673AB7", "#3F51B5",
+        "#2196F3", "#03A9F4", "#00BCD4", "#009688", "#4CAF50",
+        "#8BC34A", "#CDDC39", "#FFEB3B", "#FFC107", "#FF9800",
+        "#FF5722", "#795548", "#9E9E9E", "#607D8B",
+    ],
+    "Nord": [
+        "#2E3440", "#3B4252", "#434C5E", "#4C566A",
+        "#D8DEE9", "#E5E9F0", "#ECEFF4",
+        "#8FBCBB", "#88C0D0", "#81A1C1", "#5E81AC",
+        "#BF616A", "#D08770", "#EBCB8B", "#A3BE8C", "#B48EAD",
+    ],
     "Pastel": ["#FFB3BA", "#FFDFBA", "#FFFFBA", "#BAFFC9", "#BAE1FF", "#E8BAFF"],
     "Monokai": ["#F92672", "#A6E22E", "#F4BF75", "#66D9EF", "#AE81FF", "#A1EFE4"],
 }

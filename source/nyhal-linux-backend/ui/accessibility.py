@@ -1,21 +1,40 @@
 """
-Nyrqis OS - Accessibility Settings
-Screen reader, magnifier, high contrast, and keyboard navigation.
+Nyrqis OS — Accessibility System
+Screen reader, focus management, keyboard shortcuts, magnifier, and WCAG compliance.
 """
 
-import time
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+class AnnouncementPriority(Enum):
+    POLITE = "polite"
+    ASSERTIVE = "assertive"
+
+
+class FocusDirection(Enum):
+    UP = "up"
+    DOWN = "down"
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class ReadingMode(Enum):
+    VISUAL = "visual"
+    SCREEN_READER = "screen_reader"
+    LARGE_TEXT = "large_text"
 
 
 class ColorScheme(Enum):
+    DEFAULT = "default"
     HIGH_CONTRAST = "high_contrast"
-    DARK = "dark"
-    LIGHT = "light"
-    INVERTED = "inverted"
-    YELLOW_BLACK = "yellow_black"
-    CUSTOM = "custom"
 
 
 class CursorSize(Enum):
@@ -25,306 +44,41 @@ class CursorSize(Enum):
     EXTRA_LARGE = "extra_large"
 
 
-class MagnifierType(Enum):
-    FULLSCREEN = "fullscreen"
-    WINDOW = "window"
-    LENS = "lens"
-    DOCKED = "docked"
-
-
 class ScreenReaderVoice(Enum):
     MALE = "male"
     FEMALE = "female"
-    CHILD = "child"
+    NEUTRAL = "neutral"
 
 
-@dataclass
-class ScreenReaderConfig:
-    enabled: bool = False
-    voice: ScreenReaderVoice = ScreenReaderVoice.FEMALE
-    rate: float = 1.0
-    pitch: float = 1.0
-    volume: float = 0.8
-    announce_keys: bool = True
-    announce_notifications: bool = True
-    announce_location: bool = True
-    echo_char: bool = True
-    braille_display: bool = False
-    highlight_focused: bool = True
-
-    @property
-    def rate_display(self) -> str:
-        return f"{self.rate:.1f}x"
-
-    @property
-    def rate_bar(self) -> str:
-        filled = int(self.rate * 10)
-        return "█" * filled + "░" * (20 - filled)
-
+# ---------------------------------------------------------------------------
+# Announcement
+# ---------------------------------------------------------------------------
 
 @dataclass
-class MagnifierConfig:
-    enabled: bool = False
-    magnifier_type: MagnifierType = MagnifierType.FULLSCREEN
-    zoom_level: float = 2.0
-    follows_mouse: bool = True
-    follows_keyboard: bool = False
-    follows_text_cursor: bool = True
-    show_crosshair: bool = False
-    invert_colors: bool = False
-    smooth_scroll: bool = True
+class Announcement:
+    text: str
+    priority: AnnouncementPriority = AnnouncementPriority.POLITE
+    timestamp: float = 0.0
 
-    @property
-    def zoom_display(self) -> str:
-        return f"{self.zoom_level:.1f}x"
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            import time
+            self.timestamp = time.time()
 
-    @property
-    def zoom_bar(self) -> str:
-        filled = int((self.zoom_level - 1) * 6)
-        return "█" * filled + "░" * (20 - filled)
 
+# ---------------------------------------------------------------------------
+# FocusableElement
+# ---------------------------------------------------------------------------
 
 @dataclass
-class HighContrastConfig:
-    enabled: bool = False
-    color_scheme: ColorScheme = ColorScheme.HIGH_CONTRAST
-    foreground: str = "#ffffff"
-    background: str = "#000000"
-    link_color: str = "#00ffff"
-    visited_color: str = "#ff00ff"
-    border_color: str = "#ffffff"
-    border_width: int = 2
-    text_scale: float = 1.0
-    force_gtk_theme: bool = True
-    override_app_colors: bool = True
-
-    @property
-    def text_scale_bar(self) -> str:
-        filled = int((self.text_scale - 0.5) * 20)
-        return "█" * filled + "░" * (20 - filled)
-
-
-@dataclass
-class KeyboardNavConfig:
-    enabled: bool = False
-    sticky_keys: bool = False
-    slow_keys: bool = False
-    slow_keys_delay_ms: int = 200
-    bounce_keys: bool = False
-    bounce_keys_delay_ms: int = 300
-    toggle_keys: bool = False
-    keyboard_shortcut_access: bool = True
-    key_repeat_delay_ms: int = 500
-    key_repeat_rate_ms: int = 33
-    cursor_blinks: bool = True
-    cursor_blink_time_ms: int = 500
-    cursor_blink_timeout_s: int = 10
-
-    @property
-    def slow_delay_bar(self) -> str:
-        filled = int(self.slow_keys_delay_ms / 50)
-        return "█" * filled + "░" * (20 - filled)
-
-
-@dataclass
-class CursorConfig:
-    size: CursorSize = CursorSize.MEDIUM
-    color: str = "#ffffff"
-    blink: bool = True
-    blink_time_ms: int = 500
-    trails: bool = False
-    trail_length: int = 10
-    acceleration: float = 1.0
-    double_click_time_ms: int = 400
-
-    @property
-    def size_pixels(self) -> int:
-        sizes = {CursorSize.SMALL: 16, CursorSize.MEDIUM: 24,
-                 CursorSize.LARGE: 36, CursorSize.EXTRA_LARGE: 48}
-        return sizes.get(self.size, 24)
-
-
-@dataclass
-class AccessibilityShortcut:
-    name: str
-    keys: str
-    action: str
-    enabled: bool = True
-    category: str = "General"
-
-
-class AccessibilitySettings:
-    def __init__(self):
-        self.screen_reader = ScreenReaderConfig()
-        self.magnifier = MagnifierConfig()
-        self.high_contrast = HighContrastConfig()
-        self.keyboard_nav = KeyboardNavConfig()
-        self.cursor = CursorConfig()
-        self.shortcuts: List[AccessibilityShortcut] = []
-        self.auto_start_screen_reader: bool = False
-        self.visual_bell: bool = False
-        self.flash_areas: bool = False
-        self._create_sample_data()
-
-    def _create_sample_data(self):
-        self.shortcuts = [
-            AccessibilityShortcut(name="Toggle Screen Reader", keys="Super+Escape",
-                                  action="Toggle screen reader on/off",
-                                  category="Screen Reader"),
-            AccessibilityShortcut(name="Toggle Magnifier", keys="Super+Plus",
-                                  action="Toggle magnifier on/off",
-                                  category="Magnifier"),
-            AccessibilityShortcut(name="Zoom In", keys="Super+=",
-                                  action="Increase magnification",
-                                  category="Magnifier"),
-            AccessibilityShortcut(name="Zoom Out", keys="Super+-",
-                                  action="Decrease magnification",
-                                  category="Magnifier"),
-            AccessibilityShortcut(name="Toggle High Contrast", keys="Alt+Shift+H",
-                                  action="Toggle high contrast mode",
-                                  category="Visual"),
-            AccessibilityShortcut(name="Invert Colors", keys="Alt+Shift+I",
-                                  action="Invert screen colors",
-                                  category="Visual"),
-            AccessibilityShortcut(name="Sticky Keys", keys="Shift x5",
-                                  action="Toggle sticky keys",
-                                  category="Keyboard"),
-            AccessibilityShortcut(name="Toggle Keys", keys="NumLock x5",
-                                  action="Toggle toggle keys",
-                                  category="Keyboard"),
-            AccessibilityShortcut(name="Slow Keys", keys="Left Shift x8",
-                                  action="Toggle slow keys",
-                                  category="Keyboard"),
-            AccessibilityShortcut(name="Open Accessibility", keys="Super+U",
-                                  action="Open accessibility settings panel",
-                                  category="General"),
-        ]
-
-    def toggle_screen_reader(self) -> bool:
-        self.screen_reader.enabled = not self.screen_reader.enabled
-        return self.screen_reader.enabled
-
-    def toggle_magnifier(self) -> bool:
-        self.magnifier.enabled = not self.magnifier.enabled
-        return self.magnifier.enabled
-
-    def set_magnifier_zoom(self, level: float) -> bool:
-        self.magnifier.zoom_level = max(1.0, min(20.0, level))
-        return True
-
-    def zoom_in(self) -> float:
-        self.magnifier.zoom_level = min(20.0, self.magnifier.zoom_level + 0.5)
-        return self.magnifier.zoom_level
-
-    def zoom_out(self) -> float:
-        self.magnifier.zoom_level = max(1.0, self.magnifier.zoom_level - 0.5)
-        return self.magnifier.zoom_level
-
-    def toggle_high_contrast(self) -> bool:
-        self.high_contrast.enabled = not self.high_contrast.enabled
-        return self.high_contrast.enabled
-
-    def set_color_scheme(self, scheme: ColorScheme) -> bool:
-        self.high_contrast.color_scheme = scheme
-        if scheme == ColorScheme.HIGH_CONTRAST:
-            self.high_contrast.foreground = "#ffffff"
-            self.high_contrast.background = "#000000"
-        elif scheme == ColorScheme.INVERTED:
-            self.high_contrast.foreground = "#000000"
-            self.high_contrast.background = "#ffffff"
-        elif scheme == ColorScheme.YELLOW_BLACK:
-            self.high_contrast.foreground = "#000000"
-            self.high_contrast.background = "#ffff00"
-        return True
-
-    def set_text_scale(self, scale: float) -> bool:
-        self.high_contrast.text_scale = max(0.5, min(3.0, scale))
-        return True
-
-    def toggle_keyboard_nav(self) -> bool:
-        self.keyboard_nav.enabled = not self.keyboard_nav.enabled
-        return self.keyboard_nav.enabled
-
-    def toggle_sticky_keys(self) -> bool:
-        self.keyboard_nav.sticky_keys = not self.keyboard_nav.sticky_keys
-        return self.keyboard_nav.sticky_keys
-
-    def toggle_slow_keys(self) -> bool:
-        self.keyboard_nav.slow_keys = not self.keyboard_nav.slow_keys
-        return self.keyboard_nav.slow_keys
-
-    def toggle_bounce_keys(self) -> bool:
-        self.keyboard_nav.bounce_keys = not self.keyboard_nav.bounce_keys
-        return self.keyboard_nav.bounce_keys
-
-    def set_cursor_size(self, size: CursorSize) -> bool:
-        self.cursor.size = size
-        return True
-
-    def toggle_cursor_trails(self) -> bool:
-        self.cursor.trails = not self.cursor.trails
-        return self.cursor.trails
-
-    def get_active_features(self) -> List[str]:
-        features = []
-        if self.screen_reader.enabled:
-            features.append("Screen Reader")
-        if self.magnifier.enabled:
-            features.append(f"Magnifier ({self.magnifier.zoom_display})")
-        if self.high_contrast.enabled:
-            features.append(f"High Contrast ({self.high_contrast.color_scheme.value})")
-        if self.keyboard_nav.enabled:
-            features.append("Keyboard Navigation")
-        if self.keyboard_nav.sticky_keys:
-            features.append("Sticky Keys")
-        if self.keyboard_nav.slow_keys:
-            features.append("Slow Keys")
-        if self.keyboard_nav.bounce_keys:
-            features.append("Bounce Keys")
-        if self.visual_bell:
-            features.append("Visual Bell")
-        return features
-
-    def get_stats(self) -> Dict:
-        return {
-            "screen_reader": self.screen_reader.enabled,
-            "magnifier": self.magnifier.enabled,
-            "high_contrast": self.high_contrast.enabled,
-            "keyboard_nav": self.keyboard_nav.enabled,
-            "shortcuts": len(self.shortcuts),
-            "active_features": len(self.get_active_features()),
-        }
-
-    def audit(self) -> List[str]:
-        issues = []
-        if not self.keyboard_nav.enabled:
-            issues.append("Keyboard navigation disabled")
-        if not self.screen_reader.enabled:
-            issues.append("Screen reader disabled")
-        return issues
-
-    def __repr__(self) -> str:
-        return f"AccessibilitySystem(features={len(self.get_active_features())})"
-
-
-class AccessibilitySystem(AccessibilitySettings):
-    """Alias for AccessibilitySettings — backward compatibility."""
-    pass
-
-
-class AnnouncementPriority(Enum):
-    ASSERTIVE = "assertive"
-    POLITE = "polite"
-
-
 class FocusableElement:
-    def __init__(self, name: str = "", element_type: str = "generic",
-                 focusable: bool = True, tab_index: int = 0):
-        self.name = name
-        self.element_type = element_type
-        self.focusable = focusable
-        self.tab_index = tab_index
-        self.focused = False
+    id: str = ""
+    role: str = "generic"
+    label: str = ""
+    tab_index: int = 0
+    enabled: bool = True
+    focusable: bool = True
+    rect: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
     def focus(self):
         self.focused = True
@@ -333,93 +87,295 @@ class FocusableElement:
         self.focused = False
 
 
+# ---------------------------------------------------------------------------
+# FocusRing
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FocusRing:
+    width: int = 2
+    color: str = "#0066ff"
+    offset: int = 2
+    radius: int = 4
+
+
+# ---------------------------------------------------------------------------
+# FocusManager
+# ---------------------------------------------------------------------------
+
 class FocusManager:
     def __init__(self):
         self._elements: List[FocusableElement] = []
-        self._focus_index: int = -1
+        self._focused_id: Optional[str] = None
+        self._history: List[str] = []
+        self._callbacks: List[Callable] = []
+        self.ring = FocusRing()
 
     def register(self, element: FocusableElement):
         self._elements.append(element)
 
-    def unregister(self, element: FocusableElement):
-        self._elements = [e for e in self._elements if e is not element]
+    def unregister(self, element_or_id) -> bool:
+        if isinstance(element_or_id, str):
+            before = len(self._elements)
+            self._elements = [e for e in self._elements if e.id != element_or_id]
+            if self._focused_id == element_or_id:
+                self._focused_id = None
+            return len(self._elements) < before
+        else:
+            before = len(self._elements)
+            self._elements = [e for e in self._elements if e is not element_or_id]
+            if self._focused_id == getattr(element_or_id, 'id', None):
+                self._focused_id = None
+            return len(self._elements) < before
 
-    def focus_next(self) -> Optional[FocusableElement]:
-        focusable = [e for e in self._elements if e.focusable]
+    def focus(self, element_id: str) -> bool:
+        for e in self._elements:
+            if e.id == element_id and e.enabled and e.focusable:
+                for old in self._elements:
+                    old.blur()
+                e.focus()
+                self._focused_id = element_id
+                self._history.append(element_id)
+                self._emit("focus_changed", {"id": element_id})
+                return True
+        return False
+
+    def focus_first(self):
+        for e in sorted(self._elements, key=lambda x: x.tab_index):
+            if e.enabled and e.focusable:
+                self.focus(e.id)
+                return
+
+    def focus_last(self):
+        focusable = [e for e in self._elements if e.enabled and e.focusable]
+        if focusable:
+            self.focus(focusable[-1].id)
+
+    def focus_next(self):
+        focusable = [e for e in self._elements if e.enabled and e.focusable]
         if not focusable:
-            return None
-        self._focus_index = (self._focus_index + 1) % len(focusable)
+            return
+        current_idx = -1
+        for i, e in enumerate(focusable):
+            if e.id == self._focused_id:
+                current_idx = i
+                break
+        next_idx = (current_idx + 1) % len(focusable)
+        self.focus(focusable[next_idx].id)
+
+    def focus_previous(self):
+        focusable = [e for e in self._elements if e.enabled and e.focusable]
+        if not focusable:
+            return
+        current_idx = -1
+        for i, e in enumerate(focusable):
+            if e.id == self._focused_id:
+                current_idx = i
+                break
+        prev_idx = (current_idx - 1) % len(focusable) if current_idx > 0 else len(focusable) - 1
+        self.focus(focusable[prev_idx].id)
+
+    def focus_by_direction(self, direction: FocusDirection) -> bool:
+        """Focus next element in given direction (simplified: just focus_next)."""
+        self.focus_next()
+        return self._focused_id is not None
+
+    def get(self, element_id: str) -> Optional[FocusableElement]:
+        for e in self._elements:
+            if e.id == element_id:
+                return e
+        return None
+
+    def clear(self):
         for e in self._elements:
             e.blur()
-        focusable[self._focus_index].focus()
-        return focusable[self._focus_index]
-
-    def focus_previous(self) -> Optional[FocusableElement]:
-        focusable = [e for e in self._elements if e.focusable]
-        if not focusable:
-            return None
-        self._focus_index = (self._focus_index - 1) % len(focusable)
-        for e in self._elements:
-            e.blur()
-        focusable[self._focus_index].focus()
-        return focusable[self._focus_index]
+        self._focused_id = None
 
     @property
-    def focused_element(self) -> Optional[FocusableElement]:
-        if 0 <= self._focus_index < len(self._elements):
-            return self._elements[self._focus_index]
-        return None
+    def focused(self) -> Optional[FocusableElement]:
+        return self.get(self._focused_id) if self._focused_id else None
+
+    @property
+    def focused_id(self) -> Optional[str]:
+        return self._focused_id
 
     @property
     def element_count(self) -> int:
         return len(self._elements)
 
+    @property
+    def elements(self) -> List[FocusableElement]:
+        return list(self._elements)
+
+    @property
+    def focusable_elements(self) -> List[FocusableElement]:
+        return [e for e in self._elements if e.enabled and e.focusable]
+
+    @property
+    def history(self) -> List[str]:
+        return list(self._history)
+
+    def on_event(self, callback: Callable):
+        self._callbacks.append(callback)
+
+    def _emit(self, event_type: str, data: dict):
+        for cb in self._callbacks:
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# KeyboardBinding
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KeyboardBinding:
+    id: str = ""
+    keys: str = ""
+    action: str = ""
+    category: str = "general"
+    enabled: bool = True
+
+
+# ---------------------------------------------------------------------------
+# KeyboardManager
+# ---------------------------------------------------------------------------
 
 class KeyboardManager:
     def __init__(self):
-        self._bindings: Dict[str, callable] = {}
-        self._sticky_keys: bool = False
-        self._slow_keys: bool = False
-        self._bounce_keys: bool = False
+        self._shortcuts: Dict[str, KeyboardBinding] = {}
+        self._callbacks: List[Callable] = []
+        self._history: List[str] = []
+        self.enabled: bool = True
 
     @classmethod
     def with_defaults(cls) -> "KeyboardManager":
-        return cls()
+        km = cls()
+        # Register default shortcuts
+        defaults = [
+            ("Ctrl+T", "open_terminal", "apps", "Open Terminal"),
+            ("Ctrl+E", "open_editor", "apps", "Open Editor"),
+            ("Ctrl+F", "open_file_manager", "apps", "Open File Manager"),
+            ("Ctrl+B", "open_browser", "apps", "Open Browser"),
+            ("Ctrl+N", "open_notes", "apps", "Open Notes"),
+            ("Ctrl+M", "open_music", "apps", "Open Music"),
+            ("Ctrl+P", "screenshot", "system", "Screenshot"),
+            ("Alt+Tab", "switch_window", "windows", "Switch Window"),
+            ("Alt+F4", "close_window", "windows", "Close Window"),
+            ("Super", "show_app_grid", "system", "Show App Grid"),
+            ("Ctrl+L", "lock_screen", "system", "Lock Screen"),
+            ("Ctrl+Q", "logout", "system", "Logout"),
+            ("Ctrl+Shift+T", "open_terminal_admin", "apps", "Open Terminal as Admin"),
+            ("F11", "toggle_fullscreen", "windows", "Toggle Fullscreen"),
+            ("Ctrl+comma", "open_settings", "system", "Open Settings"),
+        ]
+        for keys, action, category, _label in defaults:
+            km.register(keys, action, category)
+        return km
 
-    def bind(self, keys: str, callback):
-        self._bindings[keys] = callback
+    def register(self, keys: str, action: str, category: str = "general") -> KeyboardBinding:
+        import uuid
+        kb = KeyboardBinding(
+            id=str(uuid.uuid4())[:8],
+            keys=keys,
+            action=action,
+            category=category,
+        )
+        self._shortcuts[keys] = kb
+        return kb
 
-    def unbind(self, keys: str):
-        self._bindings.pop(keys, None)
+    def unregister(self, binding_id: str) -> bool:
+        for keys, kb in list(self._shortcuts.items()):
+            if kb.id == binding_id:
+                del self._shortcuts[keys]
+                return True
+        return False
 
-    def trigger(self, keys: str):
-        if keys in self._bindings:
-            self._bindings[keys]()
+    def handle_key(self, keys: str) -> Optional[str]:
+        if not self.enabled:
+            return None
+        if keys in self._shortcuts:
+            kb = self._shortcuts[keys]
+            self._history.append(keys)
+            self._emit("shortcut_activated", {"keys": keys, "action": kb.action})
+            return kb.action
+        return None
+
+    def get_shortcut(self, keys: str) -> Optional[KeyboardBinding]:
+        return self._shortcuts.get(keys)
+
+    def shortcuts_by_category(self, category: str) -> List[KeyboardBinding]:
+        return [kb for kb in self._shortcuts.values() if kb.category == category]
 
     @property
-    def binding_count(self) -> int:
-        return len(self._bindings)
+    def shortcuts(self) -> List[KeyboardBinding]:
+        return list(self._shortcuts.values())
 
+    @property
+    def history(self) -> List[str]:
+        return list(self._history)
+
+    def on_event(self, callback: Callable):
+        self._callbacks.append(callback)
+
+    def _emit(self, event_type: str, data: dict):
+        for cb in self._callbacks:
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# ScreenReader
+# ---------------------------------------------------------------------------
 
 class ScreenReader:
     def __init__(self):
-        self._queue: List[str] = []
-        self._priority_queue: List[str] = []
-        self.enabled: bool = False
+        self.enabled: bool = True
+        self.muted: bool = False
         self.rate: float = 1.0
+        self._queue: List[Announcement] = []
+        self._priority_queue: List[Announcement] = []
+        self._history: List[Announcement] = []
+        self._callbacks: List[Callable] = []
+
+    @property
+    def queue(self) -> List[Announcement]:
+        return list(self._queue)
+
+    @property
+    def history(self) -> List[Announcement]:
+        return list(self._history)
 
     def announce(self, text: str, priority: AnnouncementPriority = AnnouncementPriority.POLITE):
+        if self.muted or not self.enabled:
+            return
+        ann = Announcement(text=text, priority=priority)
         if priority == AnnouncementPriority.ASSERTIVE:
-            self._priority_queue.append(text)
+            self._queue.clear()  # assertive clears normal queue
+            self._queue.append(ann)  # then add urgent item
         else:
-            self._queue.append(text)
+            self._queue.append(ann)
+        self._history.append(ann)
+        self._emit_announcement(ann)
 
-    def next(self) -> Optional[str]:
+    def say(self, text: str):
+        """Shorthand for announce."""
+        self.announce(text)
+
+    def next(self) -> Optional[Announcement]:
         if self._priority_queue:
             return self._priority_queue.pop(0)
         if self._queue:
             return self._queue.pop(0)
         return None
+
+    def consume_next(self) -> Optional[Announcement]:
+        """Same as next() — consume and return the next announcement."""
+        return self.next()
 
     def clear(self):
         self._queue.clear()
@@ -427,3 +383,314 @@ class ScreenReader:
 
     def assertive_clears_queue(self):
         self._priority_queue.clear()
+
+    def read_element(self, element: FocusableElement):
+        """Announce an element's label and role."""
+        label = element.label or element.id or "unknown"
+        role = element.role or "element"
+        self.announce(f"{label}, {role}")
+
+    def read_focus_change(self, old: Optional[FocusableElement], new: FocusableElement):
+        """Announce a focus change."""
+        label = new.label or new.id or "unknown"
+        role = new.role or "element"
+        if old:
+            self.announce(f"Focus moved from {old.label or old.id} to {label}, {role}")
+        else:
+            self.announce(f"Focused on {label}, {role}")
+
+    def on_event(self, callback: Callable):
+        self._callbacks.append(callback)
+
+    def _emit_announcement(self, ann: Announcement):
+        for cb in self._callbacks:
+            try:
+                cb(ann)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# ScreenReaderConfig
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScreenReaderConfig:
+    voice: ScreenReaderVoice = ScreenReaderVoice.NEUTRAL
+    rate: float = 1.0
+    pitch: float = 1.0
+    volume: float = 0.8
+    verbose: bool = False
+
+    @property
+    def rate_display(self) -> str:
+        speeds = {0.5: "Very Slow", 0.75: "Slow", 1.0: "Normal", 1.5: "Fast", 2.0: "Very Fast"}
+        return speeds.get(self.rate, f"{self.rate:.1f}x")
+
+    @property
+    def rate_bar(self) -> str:
+        filled = int((self.rate / 2.0) * 10)
+        return "█" * filled + "░" * (10 - filled)
+
+
+# ---------------------------------------------------------------------------
+# AccessibilitySettings (base)
+# ---------------------------------------------------------------------------
+
+class AccessibilitySettings:
+    def __init__(self):
+        self.screen_reader_enabled: bool = False
+        self.magnifier_enabled: bool = False
+        self._magnifier_zoom: float = 1.0
+        self._high_contrast: bool = False
+        self._color_scheme: ColorScheme = ColorScheme.DEFAULT
+        self._reduce_motion: bool = False
+        self._large_text: bool = False
+        self._keyboard_nav: bool = False
+        self._sticky_keys: bool = False
+        self._slow_keys: bool = False
+        self._bounce_keys: bool = False
+        self._cursor_size: CursorSize = CursorSize.MEDIUM
+        self._cursor_trails: bool = False
+        self._text_scale: float = 1.0
+
+    @property
+    def high_contrast(self) -> bool:
+        return self._high_contrast
+
+    @property
+    def reduce_motion(self) -> bool:
+        return self._reduce_motion
+
+    @property
+    def large_text(self) -> bool:
+        return self._large_text
+
+    @property
+    def magnifier_zoom(self) -> float:
+        return self._magnifier_zoom
+
+    def toggle_screen_reader(self) -> bool:
+        self.screen_reader_enabled = not self.screen_reader_enabled
+        return self.screen_reader_enabled
+
+    def toggle_magnifier(self) -> bool:
+        self.magnifier_enabled = not self.magnifier_enabled
+        return self.magnifier_enabled
+
+    def set_magnifier_zoom(self, level: float) -> bool:
+        self._magnifier_zoom = max(1.0, min(5.0, level))
+        return True
+
+    def zoom_in(self) -> float:
+        self._magnifier_zoom = min(5.0, self._magnifier_zoom + 0.25)
+        return self._magnifier_zoom
+
+    def zoom_out(self) -> float:
+        self._magnifier_zoom = max(1.0, self._magnifier_zoom - 0.25)
+        return self._magnifier_zoom
+
+    def toggle_high_contrast(self) -> bool:
+        self._high_contrast = not self._high_contrast
+        return self._high_contrast
+
+    def set_color_scheme(self, scheme: ColorScheme) -> bool:
+        self._color_scheme = scheme
+        if scheme == ColorScheme.HIGH_CONTRAST:
+            self._high_contrast = True
+        return True
+
+    def set_text_scale(self, scale: float) -> bool:
+        self._text_scale = max(0.5, min(3.0, scale))
+        return True
+
+    def toggle_keyboard_nav(self) -> bool:
+        self._keyboard_nav = not self._keyboard_nav
+        return self._keyboard_nav
+
+    def toggle_sticky_keys(self) -> bool:
+        self._sticky_keys = not self._sticky_keys
+        return self._sticky_keys
+
+    def toggle_slow_keys(self) -> bool:
+        self._slow_keys = not self._slow_keys
+        return self._slow_keys
+
+    def toggle_bounce_keys(self) -> bool:
+        self._bounce_keys = not self._bounce_keys
+        return self._bounce_keys
+
+    def set_cursor_size(self, size: CursorSize) -> bool:
+        self._cursor_size = size
+        return True
+
+    def toggle_cursor_trails(self) -> bool:
+        self._cursor_trails = not self._cursor_trails
+        return self._cursor_trails
+
+    def get_active_features(self) -> List[str]:
+        features = []
+        if self.screen_reader_enabled:
+            features.append("Screen Reader")
+        if self.magnifier_enabled:
+            features.append("Magnifier")
+        if self._high_contrast:
+            features.append("High Contrast")
+        if self._reduce_motion:
+            features.append("Reduce Motion")
+        if self._large_text:
+            features.append("Large Text")
+        if self._keyboard_nav:
+            features.append("Keyboard Navigation")
+        return features
+
+    def get_stats(self) -> Dict:
+        return {
+            "screen_reader": self.screen_reader_enabled,
+            "magnifier": self.magnifier_enabled,
+            "high_contrast": self._high_contrast,
+            "reduce_motion": self._reduce_motion,
+            "large_text": self._large_text,
+            "keyboard_nav": self._keyboard_nav,
+            "features_active": len(self.get_active_features()),
+        }
+
+    def audit(self) -> List[str]:
+        issues = []
+        if not self.screen_reader_enabled:
+            issues.append("Screen reader is disabled")
+        if self._text_scale < 1.0:
+            issues.append("Text scale below 1.0 may be hard to read")
+        return issues
+
+    def __repr__(self) -> str:
+        return f"AccessibilitySettings(features={len(self.get_active_features())})"
+
+
+# ---------------------------------------------------------------------------
+# AccessibilitySystem (full — composes all sub-systems)
+# ---------------------------------------------------------------------------
+
+class AccessibilitySystem(AccessibilitySettings):
+    """Top-level accessibility system: composes screen reader, focus manager,
+    keyboard manager, and settings into one unified interface."""
+
+    def __init__(self):
+        super().__init__()
+        self.screen_reader = ScreenReader()
+        self.keyboard = KeyboardManager.with_defaults()
+        self.focus = FocusManager()
+        self._callbacks: List[Callable] = []
+        self._reading_mode: ReadingMode = ReadingMode.VISUAL
+
+    # -- Settings shortcuts that fire events --
+
+    def set_high_contrast(self, value: bool):
+        self._high_contrast = value
+        if value:
+            self.focus.ring = FocusRing(width=4)
+        self._emit("mode_changed", {"high_contrast": value})
+
+    def set_reduce_motion(self, value: bool):
+        self._reduce_motion = value
+        self._emit("mode_changed", {"reduce_motion": value})
+
+    def set_large_text(self, value: bool):
+        self._large_text = value
+        if value:
+            self._text_scale = max(self._text_scale, 1.25)
+        self._emit("mode_changed", {"large_text": value})
+
+    def set_magnifier_zoom(self, level: float):
+        self._magnifier_zoom = max(1.0, min(5.0, level))
+        self._emit("zoom_changed", {"zoom": self._magnifier_zoom})
+
+    def text_scale(self) -> float:
+        scale = self._text_scale
+        if self._large_text and scale < 1.25:
+            scale = 1.25
+        return scale * self._magnifier_zoom
+
+    def zoom_reset(self):
+        self._magnifier_zoom = 1.0
+
+    def set_screen_reader_mode(self, enabled: bool):
+        self.screen_reader.enabled = enabled
+
+    def set_reading_mode(self, mode: ReadingMode):
+        self._reading_mode = mode
+
+    @property
+    def reading_mode(self) -> ReadingMode:
+        return self._reading_mode
+
+    # -- Focus --
+
+    def register_focusable(self, element: FocusableElement):
+        self.focus.register(element)
+
+    def focus_element(self, element_id: str):
+        self.focus.focus(element_id)
+
+    @property
+    def focused(self) -> Optional[FocusableElement]:
+        return self.focus.focused
+
+    # -- Announcements --
+
+    def announce(self, text: str):
+        self.screen_reader.announce(text)
+
+    # -- Shortcuts --
+
+    def register_shortcut(self, keys: str, action: str) -> KeyboardBinding:
+        return self.keyboard.register(keys, action)
+
+    def handle_shortcut(self, keys: str) -> Optional[str]:
+        return self.keyboard.handle_key(keys)
+
+    # -- Audit --
+
+    def audit_focusable(self) -> List[Dict]:
+        issues = []
+        for elem in self.focus.elements:
+            if not elem.label:
+                issues.append({
+                    "element_id": elem.id,
+                    "issue": "Missing accessible label",
+                    "role": elem.role,
+                })
+        return issues
+
+    # -- Summary --
+
+    def summary(self) -> Dict:
+        return {
+            "high_contrast": self._high_contrast,
+            "reduce_motion": self._reduce_motion,
+            "large_text": self._large_text,
+            "magnifier_zoom": self._magnifier_zoom,
+            "text_scale": self.text_scale(),
+            "screen_reader_enabled": self.screen_reader.enabled,
+            "shortcut_count": len(self.keyboard.shortcuts),
+            "focusable_count": self.focus.element_count,
+            "active_features": self.get_active_features(),
+        }
+
+    # -- Events --
+
+    def on_event(self, callback: Callable):
+        self._callbacks.append(callback)
+
+    def _emit(self, event_type: str, data: dict):
+        for cb in self._callbacks:
+            try:
+                cb(event_type, data)
+            except Exception:
+                pass
+
+    def __repr__(self) -> str:
+        return (
+            f"AccessibilitySystem(high_contrast={self._high_contrast}, "
+            f"zoom={self._magnifier_zoom}, features={len(self.get_active_features())})"
+        )
