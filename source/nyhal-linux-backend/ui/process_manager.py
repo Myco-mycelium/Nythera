@@ -343,3 +343,5 @@ class ProcessInfo:
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
     status: str = ""
+
+ProcessStatus = ProcessState

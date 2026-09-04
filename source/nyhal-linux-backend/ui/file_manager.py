@@ -340,3 +340,5 @@ class SortMode(Enum):
     SIZE = "size"
     DATE = "date"
     TYPE = "type"
+
+EXTENSION_MAP = {}

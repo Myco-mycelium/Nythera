@@ -311,3 +311,5 @@ class TerminalTheme:
 
 class THEMES:
     pass  # backward compat stub
+
+HistoryEntry = TerminalTab

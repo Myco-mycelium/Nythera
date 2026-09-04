@@ -269,3 +269,10 @@ class TemperatureReading:
     timestamp: float = 0.0
     temperature_c: float = 0.0
     disk: str = ""
+
+BenchmarkResult = SMARTAttribute
+
+class AlertSeverity(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"

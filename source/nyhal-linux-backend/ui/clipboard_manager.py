@@ -61,7 +61,11 @@ class ClipboardEntry:
 
     @property
     def preview(self) -> str:
-        return self.content.split("\n")[0][:80]
+        lines = self.content.split("\n")
+        first = lines[0][:80]
+        if len(lines) > 1:
+            return f"{first} +{len(lines) - 1} lines"
+        return first
 
     @property
     def size_str(self) -> str:
@@ -136,7 +140,11 @@ class Snippet:
 
     @property
     def preview(self) -> str:
-        return self.content.split("\n")[0][:80]
+        lines = self.content.split("\n")
+        first = lines[0][:80]
+        if len(lines) > 1:
+            return f"{first} +{len(lines) - 1} lines"
+        return first
 
     @property
     def icon(self) -> str:

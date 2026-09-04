@@ -426,7 +426,8 @@ class TestClipboardEntry(unittest.TestCase):
 
     def test_preview(self):
         entry = ClipboardEntry("Hello World\nSecond line")
-        self.assertEqual(entry.preview, "Hello World")
+        self.assertIn("Hello World", entry.preview)
+        self.assertIn("+1 lines", entry.preview)
 
     def test_size_str(self):
         entry = ClipboardEntry("test")
@@ -445,7 +446,8 @@ class TestSnippet(unittest.TestCase):
 
     def test_preview(self):
         snippet = Snippet("Test", "Hello World\nSecond line")
-        self.assertEqual(snippet.preview, "Hello World")
+        self.assertIn("Hello World", snippet.preview)
+        self.assertIn("+1 lines", snippet.preview)
 
     def test_icon(self):
         snippet = Snippet("Test", "code", SnippetCategory.CODE)

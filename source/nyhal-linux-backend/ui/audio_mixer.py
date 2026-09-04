@@ -306,3 +306,5 @@ class AudioStream:
 
 class AudioDirection:
     pass  # backward compat stub
+
+AudioProfile = AudioDevice

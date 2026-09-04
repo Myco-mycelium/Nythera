@@ -288,3 +288,5 @@ class FontFamily(Enum):
 
 class FontStyle:
     pass  # backward compat stub
+
+SYSTEM_FONTS = []

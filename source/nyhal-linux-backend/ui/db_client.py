@@ -310,3 +310,5 @@ class DBClient:
 
 class Connection:
     pass  # backward compat stub
+
+Index = Table

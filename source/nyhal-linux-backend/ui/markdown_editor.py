@@ -448,3 +448,5 @@ class ReadingMode(Enum):
 
 class MarkdownBlock:
     pass  # backward compat stub
+
+DocumentStats = TOCEntry

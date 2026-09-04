@@ -356,3 +356,7 @@ class VirtualDisk:
 
 class VMNetwork:
     pass  # backward compat stub
+
+Snapshot = VMSnapshot
+
+VMOS = VMOSType

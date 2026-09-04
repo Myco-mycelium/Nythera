@@ -393,3 +393,5 @@ class ReminderEntry:
 
 class ViewMode:
     pass  # backward compat stub
+
+Recurrence = EventRecurrence

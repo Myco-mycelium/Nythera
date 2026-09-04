@@ -299,3 +299,5 @@ class InterfaceType(Enum):
 
 class InterfaceStatus:
     pass  # backward compat stub
+
+TrafficSample = BandwidthSample

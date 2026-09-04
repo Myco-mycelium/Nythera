@@ -487,3 +487,5 @@ class Folder:
     name: str = ""
     notes: list = field(default_factory=list)
     color: str = ""
+
+NoteEditor = Note

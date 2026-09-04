@@ -395,3 +395,5 @@ class PasswordEntry:
     url: str = ""
     notes: str = ""
     category: str = ""
+
+EntryType = VaultCategory

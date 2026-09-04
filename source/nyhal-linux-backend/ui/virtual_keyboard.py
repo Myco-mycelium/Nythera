@@ -315,3 +315,5 @@ class Key:
     label: str = ""
     width: int = 1
     modifier: bool = False
+
+KeyPress = KeyDef

@@ -284,3 +284,18 @@ class RecordingPreset(Enum):
 
 class RecordingSession:
     pass  # backward compat stub
+
+Hotkey = RecordingPreset
+
+RecordPreset = RecordingPreset
+
+# Backward-compat aliases
+RecordFormat = RecordingCodec
+RecordArea = RecordingArea
+RecordStatus = RecordingStatus
+RecordPreset = RecordingPreset
+
+class OverlayType(Enum):
+    NONE = "none"
+    CAMERA = "camera"
+    TEXT = "text"

@@ -355,3 +355,5 @@ class PacketHeader:
 
 class MACAddress:
     pass  # backward compat stub
+
+IPAddress = MACAddress

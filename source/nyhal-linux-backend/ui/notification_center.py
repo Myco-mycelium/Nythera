@@ -316,3 +316,5 @@ class AppNotificationSettings:
     sound: bool = True
     badge: bool = True
     priority: str = "normal"
+
+NotificationAction = Notification
