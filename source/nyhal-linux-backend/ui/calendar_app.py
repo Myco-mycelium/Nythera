@@ -381,3 +381,11 @@ class CalendarApp:
         lines.append("")
         lines.append("  [M]onth [W]eek [D]ay [A]genda [/]Search [←→]Nav [+N]ew [E]dit [R]eminders")
         return lines
+
+
+@dataclass
+class ReminderEntry:
+    id: int = 0
+    title: str = ""
+    time: float = 0.0
+    recurring: bool = False

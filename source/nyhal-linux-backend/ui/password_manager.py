@@ -384,3 +384,14 @@ class PasswordManager:
         lines.append("")
         lines.append("  [V]ault [G]enerate [A]udit [F]ill [S]earch [↑↓]Nav [P]w toggle [N]ew")
         return lines
+
+
+@dataclass
+class PasswordEntry:
+    id: int = 0
+    name: str = ""
+    username: str = ""
+    password: str = ""
+    url: str = ""
+    notes: str = ""
+    category: str = ""

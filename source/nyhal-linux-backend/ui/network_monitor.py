@@ -287,3 +287,11 @@ class NetworkMonitor:
             "total_rx_gb": round(self.total_rx / (1024 ** 3), 2),
             "total_tx_gb": round(self.total_tx / (1024 ** 3), 2),
         }
+
+
+class InterfaceType(Enum):
+    ETHERNET = "ethernet"
+    WIFI = "wifi"
+    LOOPBACK = "loopback"
+    BRIDGE = "bridge"
+    TUNNEL = "tunnel"

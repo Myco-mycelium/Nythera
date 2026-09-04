@@ -262,3 +262,10 @@ class DiskHealthMonitor:
             "avg_health": round(sum(d.health_percent for d in self.disks) / len(self.disks), 1) if self.disks else 0,
             "alerts": len(self.alerts),
         }
+
+
+@dataclass
+class TemperatureReading:
+    timestamp: float = 0.0
+    temperature_c: float = 0.0
+    disk: str = ""

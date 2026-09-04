@@ -240,7 +240,7 @@ class TestLogEntry(unittest.TestCase):
         self.assertIn(":", entry.time_str)
 
     def test_level_icon(self):
-        entry = LogEntry(time.time(), LogLevel.ERROR, "test", "message")
+        entry = LogEntry(time.time(), level=LogLevel.ERROR, service="test", message="message")
         self.assertEqual(entry.level_icon, "❌")
 
     def test_display(self):

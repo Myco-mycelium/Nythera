@@ -273,3 +273,10 @@ class ScreenRecorder:
             "active_profile": self.active_profile.name if self.active_profile else "None",
             "is_recording": self.current_recording is not None,
         }
+
+
+class RecordingPreset(Enum):
+    HIGH_QUALITY = "high_quality"
+    STANDARD = "standard"
+    LOW_LATENCY = "low_latency"
+    STREAMING = "streaming"

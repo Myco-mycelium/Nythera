@@ -259,3 +259,11 @@ class VirtualAssistant:
             "quick_actions": len(self.quick_actions),
             "commands_run": len(self.command_history),
         }
+
+
+@dataclass
+class Message:
+    id: int = 0
+    role: str = "user"
+    content: str = ""
+    timestamp: float = 0.0

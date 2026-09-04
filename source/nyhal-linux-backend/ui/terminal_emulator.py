@@ -298,3 +298,12 @@ class TerminalEmulator:
             "history_entries": len(self.global_history),
             "active_tab": self.current_tab.display_title if self.current_tab else "None",
         }
+
+
+@dataclass
+class TerminalTheme:
+    name: str = ""
+    bg_color: str = "#1e1e2e"
+    fg_color: str = "#cdd6f4"
+    cursor_color: str = "#f5e0dc"
+    palette: list = field(default_factory=list)

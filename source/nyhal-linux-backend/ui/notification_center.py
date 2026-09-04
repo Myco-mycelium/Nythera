@@ -307,3 +307,12 @@ class NotificationCenter:
             unread=len(self.get_unread()),
             today=len(today_notifs),
             by_category=by_cat, by_priority=by_prio)
+
+
+@dataclass
+class AppNotificationSettings:
+    app_name: str = ""
+    enabled: bool = True
+    sound: bool = True
+    badge: bool = True
+    priority: str = "normal"

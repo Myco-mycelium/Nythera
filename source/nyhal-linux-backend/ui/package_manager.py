@@ -335,3 +335,24 @@ class PackageManager:
             "repositories": len(self.repositories),
             "operations": len(self.operations),
         }
+
+
+class AppCategory(Enum):
+    SYSTEM = "system"
+    DEVELOPMENT = "development"
+    UTILITIES = "utilities"
+    INTERNET = "internet"
+    MULTIMEDIA = "multimedia"
+    GRAPHICS = "graphics"
+    OFFICE = "office"
+    GAMES = "games"
+    OTHER = "other"
+
+
+@dataclass
+class PackageInfo:
+    name: str = ""
+    version: str = ""
+    description: str = ""
+    size: str = ""
+    installed: bool = False

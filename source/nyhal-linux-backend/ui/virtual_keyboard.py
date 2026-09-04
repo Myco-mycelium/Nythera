@@ -306,3 +306,12 @@ class VirtualKeyboard:
             "active_layer": self.active_layer,
             "pressed": len(self.pressed_keys),
         }
+
+
+@dataclass
+class Key:
+    name: str = ""
+    keycode: int = 0
+    label: str = ""
+    width: int = 1
+    modifier: bool = False

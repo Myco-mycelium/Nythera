@@ -430,3 +430,17 @@ class ShellModule:
         lines.append("")
         lines.append("  [S]plit [E]ditor [P]review [O]utline e[X]port [↑↓]Nav [F]ind [Z]oom")
         return lines
+
+
+@dataclass
+class MarkdownDocument:
+    title: str = ""
+    content: str = ""
+    tags: list = field(default_factory=list)
+    modified: float = 0.0
+
+
+class ReadingMode(Enum):
+    READING = "reading"
+    EDITING = "editing"
+    PREVIEW = "preview"

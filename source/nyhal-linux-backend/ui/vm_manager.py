@@ -336,3 +336,19 @@ class VMManager:
             "snapshots": len(self.snapshots),
             "templates": len(self.templates),
         }
+
+
+@dataclass
+class VMStorage:
+    name: str = ""
+    size_gb: int = 0
+    format: str = "qcow2"
+    path: str = ""
+
+
+@dataclass
+class VirtualDisk:
+    name: str = ""
+    size_gb: int = 0
+    bus: str = "virtio"
+    path: str = ""

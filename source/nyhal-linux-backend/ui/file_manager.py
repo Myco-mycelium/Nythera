@@ -333,3 +333,10 @@ class FileManager:
             "files": regular,
             "clipboard": len(self.clipboard_files),
         }
+
+
+class SortMode(Enum):
+    NAME = "name"
+    SIZE = "size"
+    DATE = "date"
+    TYPE = "type"

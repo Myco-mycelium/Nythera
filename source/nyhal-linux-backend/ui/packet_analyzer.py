@@ -341,3 +341,13 @@ class PacketAnalyzer:
             "conversations": len(self.conversations),
             "state": self.state.value,
         }
+
+
+@dataclass
+class PacketHeader:
+    source_ip: str = ""
+    dest_ip: str = ""
+    source_port: int = 0
+    dest_port: int = 0
+    protocol: str = ""
+    length: int = 0

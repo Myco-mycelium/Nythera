@@ -293,3 +293,12 @@ class AudioMixer:
             "effects": len(self.effects),
             "master_volume": self.master_volume,
         }
+
+
+@dataclass
+class AudioStream:
+    name: str = ""
+    source: str = ""
+    volume: float = 1.0
+    muted: bool = False
+    sample_rate: int = 44100

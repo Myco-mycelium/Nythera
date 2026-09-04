@@ -294,3 +294,136 @@ class AccessibilitySettings:
             "shortcuts": len(self.shortcuts),
             "active_features": len(self.get_active_features()),
         }
+
+    def audit(self) -> List[str]:
+        issues = []
+        if not self.keyboard_nav.enabled:
+            issues.append("Keyboard navigation disabled")
+        if not self.screen_reader.enabled:
+            issues.append("Screen reader disabled")
+        return issues
+
+    def __repr__(self) -> str:
+        return f"AccessibilitySystem(features={len(self.get_active_features())})"
+
+
+class AccessibilitySystem(AccessibilitySettings):
+    """Alias for AccessibilitySettings — backward compatibility."""
+    pass
+
+
+class AnnouncementPriority(Enum):
+    ASSERTIVE = "assertive"
+    POLITE = "polite"
+
+
+class FocusableElement:
+    def __init__(self, name: str = "", element_type: str = "generic",
+                 focusable: bool = True, tab_index: int = 0):
+        self.name = name
+        self.element_type = element_type
+        self.focusable = focusable
+        self.tab_index = tab_index
+        self.focused = False
+
+    def focus(self):
+        self.focused = True
+
+    def blur(self):
+        self.focused = False
+
+
+class FocusManager:
+    def __init__(self):
+        self._elements: List[FocusableElement] = []
+        self._focus_index: int = -1
+
+    def register(self, element: FocusableElement):
+        self._elements.append(element)
+
+    def unregister(self, element: FocusableElement):
+        self._elements = [e for e in self._elements if e is not element]
+
+    def focus_next(self) -> Optional[FocusableElement]:
+        focusable = [e for e in self._elements if e.focusable]
+        if not focusable:
+            return None
+        self._focus_index = (self._focus_index + 1) % len(focusable)
+        for e in self._elements:
+            e.blur()
+        focusable[self._focus_index].focus()
+        return focusable[self._focus_index]
+
+    def focus_previous(self) -> Optional[FocusableElement]:
+        focusable = [e for e in self._elements if e.focusable]
+        if not focusable:
+            return None
+        self._focus_index = (self._focus_index - 1) % len(focusable)
+        for e in self._elements:
+            e.blur()
+        focusable[self._focus_index].focus()
+        return focusable[self._focus_index]
+
+    @property
+    def focused_element(self) -> Optional[FocusableElement]:
+        if 0 <= self._focus_index < len(self._elements):
+            return self._elements[self._focus_index]
+        return None
+
+    @property
+    def element_count(self) -> int:
+        return len(self._elements)
+
+
+class KeyboardManager:
+    def __init__(self):
+        self._bindings: Dict[str, callable] = {}
+        self._sticky_keys: bool = False
+        self._slow_keys: bool = False
+        self._bounce_keys: bool = False
+
+    @classmethod
+    def with_defaults(cls) -> "KeyboardManager":
+        return cls()
+
+    def bind(self, keys: str, callback):
+        self._bindings[keys] = callback
+
+    def unbind(self, keys: str):
+        self._bindings.pop(keys, None)
+
+    def trigger(self, keys: str):
+        if keys in self._bindings:
+            self._bindings[keys]()
+
+    @property
+    def binding_count(self) -> int:
+        return len(self._bindings)
+
+
+class ScreenReader:
+    def __init__(self):
+        self._queue: List[str] = []
+        self._priority_queue: List[str] = []
+        self.enabled: bool = False
+        self.rate: float = 1.0
+
+    def announce(self, text: str, priority: AnnouncementPriority = AnnouncementPriority.POLITE):
+        if priority == AnnouncementPriority.ASSERTIVE:
+            self._priority_queue.append(text)
+        else:
+            self._queue.append(text)
+
+    def next(self) -> Optional[str]:
+        if self._priority_queue:
+            return self._priority_queue.pop(0)
+        if self._queue:
+            return self._queue.pop(0)
+        return None
+
+    def clear(self):
+        self._queue.clear()
+        self._priority_queue.clear()
+
+    def assertive_clears_queue(self):
+        self._priority_queue.clear()

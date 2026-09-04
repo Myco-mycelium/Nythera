@@ -334,3 +334,12 @@ class ProcessManager:
 
     def get_top_memory(self, limit: int = 5) -> List[Process]:
         return sorted(self.processes, key=lambda p: p.memory_mb, reverse=True)[:limit]
+
+
+@dataclass
+class ProcessInfo:
+    pid: int = 0
+    name: str = ""
+    cpu_percent: float = 0.0
+    memory_mb: float = 0.0
+    status: str = ""

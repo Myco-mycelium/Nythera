@@ -480,3 +480,10 @@ GitHub Actions runs on every push:
         lines.append("")
         lines.append("  [E]ditor [P]review [T]ags [L]inks [G]raph [D]aily [/]Search [↑↓]Nav [★]Star")
         return lines
+
+
+@dataclass
+class Folder:
+    name: str = ""
+    notes: list = field(default_factory=list)
+    color: str = ""

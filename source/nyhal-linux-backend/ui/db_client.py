@@ -297,3 +297,12 @@ class DatabaseClient:
             "queries_run": len(self.query_history),
             "saved_queries": len(self.saved_queries),
         }
+
+
+@dataclass
+class DBClient:
+    name: str = ""
+    host: str = ""
+    port: int = 5432
+    database: str = ""
+    connected: bool = False

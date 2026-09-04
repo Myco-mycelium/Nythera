@@ -333,3 +333,11 @@ class ClipboardManager:
         else:
             self.history = []
         return before - len(self.history)
+
+
+class SnippetCategory(Enum):
+    CODE = "code"
+    TEXT = "text"
+    EMAIL = "email"
+    URL = "url"
+    OTHER = "other"

@@ -276,3 +276,11 @@ class FontManager:
 
         lines.append("  [↑↓]Select [I]Install/Uninstall [C]Compare [P]Preview Text [F]Filter")
         return lines
+
+
+class FontFamily(Enum):
+    SANS_SERIF = "sans-serif"
+    SERIF = "serif"
+    MONOSPACE = "monospace"
+    DISPLAY = "display"
+    HANDWRITING = "handwriting"

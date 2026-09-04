@@ -334,3 +334,10 @@ class ColorPicker:
             "saved_colors": len(self.saved_colors),
             "contrast_checks": len(self.contrast_favorites),
         }
+
+
+PALETTES = {
+    "Material": ["#F44336", "#E91E63", "#9C27B0", "#673AB7", "#3F51B5", "#2196F3"],
+    "Pastel": ["#FFB3BA", "#FFDFBA", "#FFFFBA", "#BAFFC9", "#BAE1FF", "#E8BAFF"],
+    "Monokai": ["#F92672", "#A6E22E", "#F4BF75", "#66D9EF", "#AE81FF", "#A1EFE4"],
+}
