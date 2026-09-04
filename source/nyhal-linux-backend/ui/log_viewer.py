@@ -101,6 +101,21 @@ class LogEntry:
         }
         return icons.get(self.level, "?")
 
+    @property
+    def source_icon(self) -> str:
+        icons = {
+            "systemd": "🔧", "kernel": "🐧", "auth": "🔐",
+            "sshd": "🔑", "nyrqis": "🍄", "cron": "⏰",
+            "NetworkManager": "📶", "pulseaudio": "🔊",
+            LogSource.SYSTEMD: "🔧", LogSource.KERNEL: "🐧", LogSource.AUTH: "🔐",
+            LogSource.SSHD: "🔑", LogSource.NYRQIS: "🍄", LogSource.CRON: "⏰",
+            LogSource.NETWORK: "📶",
+        }
+        src = self.source
+        if hasattr(src, 'value'):
+            src = src.value
+        return icons.get(src or self.process, "?")
+
 
 @dataclass
 class LogTab:
@@ -154,6 +169,17 @@ class LogFile:
     is_tailing: bool = False
     encoding: str = "utf-8"
 
+    @property
+    def size_display(self) -> str:
+        s = self.size_bytes
+        if s < 1024:
+            return f"{s} B"
+        elif s < 1024 * 1024:
+            return f"{s / 1024:.1f} KB"
+        elif s < 1024 * 1024 * 1024:
+            return f"{s / (1024 * 1024):.1f} MB"
+        return f"{s / (1024 * 1024 * 1024):.2f} GB"
+
 
 @dataclass
 class HighlightRule:
@@ -170,6 +196,111 @@ class LogViewer:
         self._visible: bool = False
         self._callbacks: List[Callable] = []
         self._active_tab_index: int = 0
+        # Backward-compatible attributes
+        self.entries: List[LogEntry] = []
+        self.files: List[LogFile] = []
+        self.filters: List[LogFilter] = []
+        self.alert_rules: List[AlertRule] = []
+        self.highlights: List[HighlightRule] = []
+        self.search_query: str = ""
+        self.wrap_lines: bool = True
+        self.auto_scroll: bool = True
+        self.font_size: int = 14
+        self._create_compat_data()
+
+    def _create_compat_data(self):
+        """Create sample data for backward-compatible API."""
+        now = time.time()
+        sample_msgs = [
+            (LogLevel.INFO, "systemd", "Started nyrqis-compositor.service"),
+            (LogLevel.INFO, "nyrqis", "Wayland display initialized on wayland-0"),
+            (LogLevel.INFO, "sshd", "Connection from 192.168.1.50"),
+            (LogLevel.ERROR, "kernel", "Failed to initialize Vulkan device"),
+            (LogLevel.WARNING, "NetworkManager", "Battery level below 20%"),
+            (LogLevel.DEBUG, "pulseaudio", "Cache hit for glyph rendering"),
+        ]
+        for i, (level, process, msg) in enumerate(sample_msgs):
+            self.entries.append(LogEntry(
+                timestamp=now - i * 60, source=process, level=level, message=msg, text=msg))
+
+        self.files = [
+            LogFile(path="/var/log/syslog", size_bytes=2048000, last_modified=now, entries=15230),
+            LogFile(path="/var/log/auth.log", size_bytes=512000, last_modified=now - 60, entries=3420),
+            LogFile(path="/var/log/kern.log", size_bytes=1024000, last_modified=now - 30, entries=8900),
+        ]
+        self.filters = [
+            LogFilter(name="Errors Only", level=LogLevel.ERROR),
+            LogFilter(name="Nyrqis Logs", source="nyrqis"),
+        ]
+        self.alert_rules = [
+            AlertRule(name="Kernel Panic", condition="level >= CRITICAL", action="sound"),
+            AlertRule(name="SSH Brute Force", condition="message contains failed", action="notify"),
+        ]
+
+    def add_entry(self, entry: LogEntry):
+        self.entries.append(entry)
+
+    def search(self, query: str) -> List[LogEntry]:
+        q = query.lower()
+        return [e for e in self.entries if q in (e.text or e.message).lower()]
+
+    def filter_entries(self, filter_names: List[str]) -> List[LogEntry]:
+        result = []
+        for entry in self.entries:
+            for fn in filter_names:
+                filt = next((f for f in self.filters if f.name == fn), None)
+                if filt and filt.enabled:
+                    if filt.level and entry.level != filt.level:
+                        continue
+                    result.append(entry)
+                    break
+        return result
+
+    def get_level_counts(self) -> Dict[str, int]:
+        counts = {}
+        for e in self.entries:
+            key = e.level.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def get_source_counts(self) -> Dict[str, int]:
+        counts = {}
+        for e in self.entries:
+            key = e.source or "unknown"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def get_stats(self) -> Dict:
+        return {"total_entries": len(self.entries), "files": len(self.files)}
+
+    def add_alert_rule(self, rule: AlertRule):
+        self.alert_rules.append(rule)
+
+    def toggle_alert_rule(self, name: str) -> bool:
+        rule = next((r for r in self.alert_rules if r.name == name), None)
+        if rule:
+            rule.enabled = not rule.enabled
+            return True
+        return False
+
+    def add_highlight(self, pattern: str, color: str = "#ffff00", **kwargs) -> HighlightRule:
+        hl = HighlightRule(pattern=pattern, color=color, **kwargs)
+        self.highlights.append(hl)
+        return hl
+
+    def start_tailing(self, path: str) -> bool:
+        f = next((f for f in self.files if f.path == path), None)
+        if f:
+            f.is_tailing = True
+            return True
+        return False
+
+    def stop_tailing(self, path: str) -> bool:
+        f = next((f for f in self.files if f.path == path), None)
+        if f:
+            f.is_tailing = False
+            return True
+        return False
 
     @property
     def visible(self) -> bool:
@@ -368,11 +499,6 @@ def parse_log_line(line: str) -> Optional[LogEntry]:
 # ---------------------------------------------------------------------------
 # Sample data helpers (for backward compatibility)
 # ---------------------------------------------------------------------------
-
-class HighlightRule:
-    pass  # Already defined above
-
-
 # Backward compat for code that imports from log_viewer
 LogFilter = LogFilter
 AlertRule = AlertRule

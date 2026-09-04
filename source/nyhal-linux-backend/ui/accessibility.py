@@ -35,6 +35,8 @@ class ReadingMode(Enum):
 class ColorScheme(Enum):
     DEFAULT = "default"
     HIGH_CONTRAST = "high_contrast"
+    YELLOW_BLACK = "yellow_black"
+    DARK_BLUE = "dark_blue"
 
 
 class CursorSize(Enum):
@@ -429,8 +431,96 @@ class ScreenReaderConfig:
 
     @property
     def rate_bar(self) -> str:
-        filled = int((self.rate / 2.0) * 10)
-        return "█" * filled + "░" * (10 - filled)
+        filled = int((self.rate / 2.0) * 20)
+        return "█" * filled + "░" * (20 - filled)
+
+
+# ---------------------------------------------------------------------------
+# Proxy sub-objects for backward-compatible access
+# ---------------------------------------------------------------------------
+
+class _ScreenReaderProxy:
+    def __init__(self, parent):
+        self._parent = parent
+        self._enabled = False
+        self.rate: float = 1.0
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+    @enabled.setter
+    def enabled(self, v: bool):
+        self._enabled = v
+        self._parent.screen_reader_enabled = v
+    @property
+    def rate_bar(self) -> str:
+        filled = int((self.rate / 2.0) * 20)
+        return "█" * filled + "░" * (20 - filled)
+
+class _MagnifierProxy:
+    def __init__(self, parent):
+        self._parent = parent
+    @property
+    def enabled(self) -> bool:
+        return self._parent.magnifier_enabled
+    @property
+    def zoom_level(self) -> float:
+        return self._parent._magnifier_zoom
+    @zoom_level.setter
+    def zoom_level(self, v: float):
+        self._parent._magnifier_zoom = max(1.0, min(20.0, v))
+    @property
+    def zoom_bar(self) -> str:
+        filled = int(((self._parent._magnifier_zoom - 1.0) / 19.0) * 24)
+        return "█" * filled + "░" * (24 - filled)
+
+class _HighContrastProxy:
+    def __init__(self, parent):
+        self._parent = parent
+    @property
+    def enabled(self) -> bool:
+        return self._parent._high_contrast
+    @property
+    def text_scale(self) -> float:
+        return self._parent._text_scale
+    @text_scale.setter
+    def text_scale(self, v: float):
+        self._parent._text_scale = v
+    @property
+    def background(self) -> str:
+        return "#ffff00" if self._parent._color_scheme == ColorScheme.YELLOW_BLACK else "#000000"
+
+class _KeyboardNavProxy:
+    def __init__(self, parent):
+        self._parent = parent
+    @property
+    def enabled(self) -> bool:
+        return self._parent._keyboard_nav
+    @property
+    def sticky_keys(self) -> bool:
+        return self._parent._sticky_keys
+    @property
+    def slow_keys(self) -> bool:
+        return self._parent._slow_keys
+    @property
+    def bounce_keys(self) -> bool:
+        return self._parent._bounce_keys
+
+class _CursorProxy:
+    def __init__(self, parent):
+        self._parent = parent
+    @property
+    def size(self):
+        return self._parent._cursor_size
+    @size.setter
+    def size(self, v):
+        self._parent._cursor_size = v
+    @property
+    def trails(self) -> bool:
+        return self._parent._cursor_trails
+    @property
+    def size_pixels(self) -> int:
+        sizes = {CursorSize.SMALL: 24, CursorSize.MEDIUM: 32, CursorSize.LARGE: 36, CursorSize.EXTRA_LARGE: 48}
+        return sizes.get(self._parent._cursor_size, 32)
 
 
 # ---------------------------------------------------------------------------
@@ -453,10 +543,45 @@ class AccessibilitySettings:
         self._cursor_size: CursorSize = CursorSize.MEDIUM
         self._cursor_trails: bool = False
         self._text_scale: float = 1.0
+        # Sub-objects for backward-compatible access
+        self._sr_obj = _ScreenReaderProxy(self)
+        self._magnifier_obj = _MagnifierProxy(self)
+        self._hc_obj = _HighContrastProxy(self)
+        self._kb_obj = _KeyboardNavProxy(self)
+        self._cursor_obj = _CursorProxy(self)
+        self._shortcuts: List[KeyboardBinding] = []
+        # Register some default shortcuts
+        for keys, action, cat in [
+            ("Ctrl+T", "open_terminal", "apps"),
+            ("Ctrl+E", "open_editor", "apps"),
+            ("Alt+Tab", "switch_window", "windows"),
+            ("Ctrl+L", "lock_screen", "system"),
+        ]:
+            self._shortcuts.append(KeyboardBinding(id=keys, keys=keys, action=action, category=cat))
 
     @property
-    def high_contrast(self) -> bool:
-        return self._high_contrast
+    def screen_reader(self):
+        return self._sr_obj
+
+    @property
+    def magnifier(self):
+        return self._magnifier_obj
+
+    @property
+    def high_contrast(self):
+        return self._hc_obj
+
+    @property
+    def keyboard_nav(self):
+        return self._kb_obj
+
+    @property
+    def cursor(self):
+        return self._cursor_obj
+
+    @property
+    def shortcuts(self):
+        return self._shortcuts
 
     @property
     def reduce_motion(self) -> bool:
@@ -472,6 +597,7 @@ class AccessibilitySettings:
 
     def toggle_screen_reader(self) -> bool:
         self.screen_reader_enabled = not self.screen_reader_enabled
+        self._sr_obj._enabled = self.screen_reader_enabled
         return self.screen_reader_enabled
 
     def toggle_magnifier(self) -> bool:
@@ -498,10 +624,16 @@ class AccessibilitySettings:
         self._color_scheme = scheme
         if scheme == ColorScheme.HIGH_CONTRAST:
             self._high_contrast = True
+        elif scheme == ColorScheme.YELLOW_BLACK:
+            self._high_contrast = True
         return True
 
     def set_text_scale(self, scale: float) -> bool:
         self._text_scale = max(0.5, min(3.0, scale))
+        return True
+
+    def set_magnifier_zoom(self, level: float) -> bool:
+        self._magnifier_zoom = max(1.0, min(20.0, level))
         return True
 
     def toggle_keyboard_nav(self) -> bool:
@@ -553,6 +685,7 @@ class AccessibilitySettings:
             "large_text": self._large_text,
             "keyboard_nav": self._keyboard_nav,
             "features_active": len(self.get_active_features()),
+            "shortcuts": len(self._shortcuts),
         }
 
     def audit(self) -> List[str]:

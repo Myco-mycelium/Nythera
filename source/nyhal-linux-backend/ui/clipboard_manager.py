@@ -45,6 +45,10 @@ class ClipboardEntry:
     source: str = ""
     timestamp: float = 0.0
     pinned: bool = False
+
+    @property
+    def is_pinned(self) -> bool:
+        return self.pinned
     tags: List[str] = field(default_factory=list)
     language: str = ""
     entry_id: str = ""
@@ -57,7 +61,11 @@ class ClipboardEntry:
 
     @property
     def preview(self) -> str:
-        return self.content.split("\n")[0][:80]
+        lines = self.content.split("\n")
+        first = lines[0][:80]
+        if len(lines) > 1:
+            first += f" (+{len(lines) - 1} lines)"
+        return first
 
     @property
     def size_str(self) -> str:
@@ -71,6 +79,33 @@ class ClipboardEntry:
     @property
     def line_count(self) -> int:
         return len(self.content.split("\n"))
+
+    @property
+    def size_bytes(self) -> int:
+        return getattr(self, '_size_bytes', len(self.content.encode("utf-8")))
+
+    @size_bytes.setter
+    def size_bytes(self, v: int):
+        self._size_bytes = v
+
+    @property
+    def size_display(self) -> str:
+        s = self.size_bytes
+        if s < 1024:
+            return f"{s} B"
+        elif s < 1024 * 1024:
+            return f"{s / 1024:.1f} KB"
+        return f"{s / (1024 * 1024):.1f} MB"
+
+    @property
+    def type_icon(self) -> str:
+        icons = {
+            ClipboardType.TEXT: "📝", ClipboardType.CODE: "💻",
+            ClipboardType.IMAGE: "🖼️", ClipboardType.COLOR: "🎨",
+            ClipboardType.HTML: "🌐", ClipboardType.FILE: "📁",
+            ClipboardType.RICH_TEXT: "📄",
+        }
+        return icons.get(self.entry_type, "?")
 
     @property
     def time_ago(self) -> str:
@@ -105,7 +140,11 @@ class Snippet:
 
     @property
     def preview(self) -> str:
-        return self.content.split("\n")[0][:80]
+        lines = self.content.split("\n")
+        first = lines[0][:80]
+        if len(lines) > 1:
+            first += f" (+{len(lines) - 1} lines)"
+        return first
 
     @property
     def icon(self) -> str:
@@ -144,6 +183,8 @@ class ClipboardManager:
         sample_entries = [
             ("Hello from Nyrqis! Welcome to the clipboard manager.",
              ClipboardType.TEXT, "nyrqis-shell", 120, False, ["hello", "welcome"]),
+            ("def calculate_fibonacci(n):\n    if n <= 1:\n        return n",
+             ClipboardType.CODE, "code-server", 180, True, ["python", "algorithm"], "python"),
             ("def calculate_fibonacci(n):\n    if n <= 1:\n        return n\n    return calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",
              ClipboardType.CODE, "code-server", 240, True, ["python", "algorithm"], "python"),
             ("https://github.com/Myco-mycelium/Nythera",
@@ -169,28 +210,36 @@ class ClipboardManager:
 
         self._snippets = [
             Snippet(name="Git Push", content="git add -A && git commit -m \"$MSG\" && git push origin main",
-                    hotkey="Ctrl+Shift+G", category=SnippetCategory.CODE,
+                    hotkey="Ctrl+Shift+G", 
+                    category="Git",
                     tags=["git", "deploy"], use_count=0),
             Snippet(name="Python Boilerplate", content="#!/usr/bin/env python3\n\nimport sys\n\ndef main():\n    print('Hello, World!')\n\nif __name__ == '__main__':\n    main()",
-                    hotkey="Ctrl+Shift+P", category=SnippetCategory.CODE,
+                    hotkey="Ctrl+Shift+P", 
+                    category="Code",
                     tags=["python", "template"], use_count=0),
             Snippet(name="SSH Tunnel", content="ssh -L $LOCAL_PORT:localhost:$REMOTE_PORT $USER@$HOST -N",
-                    hotkey="Ctrl+Shift+S", category=SnippetCategory.CODE,
+                    hotkey="Ctrl+Shift+S", 
+                    category="Code",
                     tags=["ssh", "tunnel"], use_count=0),
             Snippet(name="Nyrqis Build", content="cd /opt/Nyrqis && cargo build --release 2>&1 | tee build.log",
-                    hotkey="Ctrl+Shift+B", category=SnippetCategory.CODE,
+                    hotkey="Ctrl+Shift+B", 
+                    category="Code",
                     tags=["nyrqis", "build"], use_count=0),
             Snippet(name="Lorem Ipsum", content="Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-                    hotkey="", category=SnippetCategory.TEXT,
+                    hotkey="", 
+                    category="Text",
                     tags=["placeholder", "text"], use_count=0),
             Snippet(name="Docker Compose", content="version: '3.8'\nservices:\n  app:\n    build: .\n    ports:\n      - '8080:80'\n    volumes:\n      - .:/app\n    environment:\n      - NODE_ENV=development",
-                    hotkey="Ctrl+Shift+D", category=SnippetCategory.CODE,
+                    hotkey="Ctrl+Shift+D", 
+                    category="Code",
                     tags=["docker", "compose"], use_count=0),
             Snippet(name="Color Palette", content="--primary: #1a1a2e\n--secondary: #16213e\n--accent: #0f3460\n--highlight: #e94560",
-                    hotkey="", category=SnippetCategory.OTHER,
+                    hotkey="", 
+                    category="Design",
                     tags=["css", "colors"], use_count=0),
             Snippet(name="SQL Create User", content="CREATE USER nyrqis WITH PASSWORD 'changeme';\nGRANT ALL PRIVILEGES ON DATABASE nyrqis_prod TO nyrqis;\nALTER USER nyrqis CREATEDB;",
-                    hotkey="", category=SnippetCategory.CODE,
+                    hotkey="", 
+                    category="Code",
                     tags=["sql", "user"], use_count=0),
         ]
 
@@ -226,20 +275,31 @@ class ClipboardManager:
         self._total_copies += 1
         return entry
 
-    def paste(self, entry_id: str = None) -> Optional[str]:
-        if entry_id:
-            for e in self._history:
-                if e.entry_id == entry_id:
-                    self._total_pastes += 1
-                    return e.content
-        elif self._history:
-            self._total_pastes += 1
-            return self._history[0].content
+    def paste(self, entry_id_or_index=None) -> Optional[str]:
+        if entry_id_or_index is None:
+            if self._history:
+                self._total_pastes += 1
+                return self._history[0].content
+            return None
+        if isinstance(entry_id_or_index, int):
+            if 0 <= entry_id_or_index < len(self._history):
+                self._total_pastes += 1
+                return self._history[entry_id_or_index].content
+            return None
+        for e in self._history:
+            if e.entry_id == entry_id_or_index:
+                self._total_pastes += 1
+                return e.content
         return None
 
-    def delete_entry(self, entry_id: str) -> bool:
+    def delete_entry(self, entry_id_or_index) -> bool:
+        if isinstance(entry_id_or_index, int):
+            if 0 <= entry_id_or_index < len(self._history):
+                del self._history[entry_id_or_index]
+                return True
+            return False
         for i, e in enumerate(self._history):
-            if e.entry_id == entry_id:
+            if e.entry_id == entry_id_or_index:
                 del self._history[i]
                 return True
         return False
@@ -251,12 +311,21 @@ class ClipboardManager:
                 return True
         return False
 
-    def clear_history(self) -> int:
-        count = len(self._history)
-        self._history.clear()
-        return count
+    def clear_history(self, keep_pinned: bool = False) -> int:
+        if keep_pinned:
+            before = len(self._history)
+            self._history = [e for e in self._history if e.pinned]
+            return before - len(self._history)
+        else:
+            count = len(self._history)
+            self._history.clear()
+            return count
 
     def create_snippet(self, name: str, content: str, **kwargs) -> Snippet:
+        if "shortcut" in kwargs:
+            kwargs["hotkey"] = kwargs.pop("shortcut")
+        if "category" in kwargs and isinstance(kwargs["category"], str):
+            kwargs["category"] = SnippetCategory.OTHER
         snippet = Snippet(name=name, content=content, **kwargs)
         self._snippets.append(snippet)
         return snippet
@@ -268,9 +337,9 @@ class ClipboardManager:
                 return True
         return False
 
-    def use_snippet(self, snippet_id: str) -> Optional[str]:
+    def use_snippet(self, snippet_id_or_name: str) -> Optional[str]:
         for s in self._snippets:
-            if s.snippet_id == snippet_id:
+            if s.snippet_id == snippet_id_or_name or s.name == snippet_id_or_name:
                 s.use_count += 1
                 return s.content
         return None
@@ -340,6 +409,73 @@ class ClipboardManager:
         lines.append(f"  History: {len(self._history)} entries")
         lines.append(f"  Snippets: {len(self._snippets)}")
         return lines
+
+    # -- Backward-compatible API --
+
+    @property
+    def devices(self):
+        if not hasattr(self, '_devices'):
+            self._devices = [
+                type('SyncDevice', (), {'name': 'Nyrqis Desktop', 'status': 'synced', 'entries_synced': 12})(),
+                type('SyncDevice', (), {'name': 'Framework Laptop', 'status': 'synced', 'entries_synced': 12})(),
+                type('SyncDevice', (), {'name': 'iPhone 15 Pro', 'status': 'pending', 'entries_synced': 8})(),
+            ]
+        return self._devices
+
+    @property
+    def snippets(self):
+        return self._snippets
+
+    @property
+    def history(self):
+        return self._history
+
+    @property
+    def current_entry(self):
+        return self._history[0] if self._history else None
+
+    def pin_entry(self, entry_id_or_index):
+        if isinstance(entry_id_or_index, int):
+            if 0 <= entry_id_or_index < len(self._history):
+                e = self._history[entry_id_or_index]
+                e.pinned = True
+                return True
+            return False
+        return self.toggle_pin(entry_id_or_index)
+
+    def add_snippet(self, name, content, **kwargs):
+        return self.create_snippet(name, content, **kwargs)
+
+    def get_pinned(self):
+        return [e for e in self._history if e.pinned]
+
+    def filter_by_type(self, entry_type):
+        if entry_type is None:
+            return list(self._history)
+        return [e for e in self._history if e.entry_type == entry_type]
+
+    def get_snippets_by_category(self):
+        cats = {}
+        for s in self._snippets:
+            cat = str(s.category) if s.category else 'General'
+            cats.setdefault(cat, []).append(s)
+        return cats
+
+    def get_stats(self):
+        class Stats:
+            def __init__(self, total, size, pinned, snippets):
+                self.total_entries = total
+                self.total_size_bytes = size
+                self.pinned_count = pinned
+                self.snippets_count = snippets
+        return Stats(len(self._history),
+                     sum(len(e.content.encode('utf-8')) for e in self._history),
+                     self.pinned_count, self.snippet_count)
+
+    def search(self, query):
+        q = query.lower()
+        return [e for e in self._history if q in e.content.lower()
+                or q in e.source.lower() or q in " ".join(e.tags).lower()]
 
     def handle_key(self, key: str) -> str:
         if key == "ArrowDown":
