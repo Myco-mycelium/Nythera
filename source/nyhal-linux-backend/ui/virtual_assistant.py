@@ -267,3 +267,39 @@ class Message:
     role: str = "user"
     content: str = ""
     timestamp: float = 0.0
+
+
+class TimerItem:
+    """Timer/countdown item for the virtual assistant."""
+    def __init__(self, name: str = "", duration_s: float = 0.0, remaining_s: float = 0.0):
+        self.name = name
+        self.duration_s = duration_s
+        self.remaining_s = remaining_s
+        self.running = False
+
+    def start(self):
+        self.running = True
+
+    def stop(self):
+        self.running = False
+
+    @property
+    def progress(self) -> float:
+        if self.duration_s <= 0:
+            return 0.0
+        return max(0.0, min(1.0, 1.0 - self.remaining_s / self.duration_s))
+
+
+class AssistantIntent(Enum):
+    CHAT = "chat"
+    REMINDER = "reminder"
+    TIMER = "timer"
+    SEARCH = "search"
+    SYSTEM = "system"
+    UNKNOWN = "unknown"
+
+
+class MessageRole(Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
