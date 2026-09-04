@@ -61,11 +61,7 @@ class ClipboardEntry:
 
     @property
     def preview(self) -> str:
-        lines = self.content.split("\n")
-        first = lines[0][:80]
-        if len(lines) > 1:
-            first += f" (+{len(lines) - 1} lines)"
-        return first
+        return self.content.split("\n")[0][:80]
 
     @property
     def size_str(self) -> str:
@@ -140,11 +136,7 @@ class Snippet:
 
     @property
     def preview(self) -> str:
-        lines = self.content.split("\n")
-        first = lines[0][:80]
-        if len(lines) > 1:
-            first += f" (+{len(lines) - 1} lines)"
-        return first
+        return self.content.split("\n")[0][:80]
 
     @property
     def icon(self) -> str:
@@ -183,8 +175,6 @@ class ClipboardManager:
         sample_entries = [
             ("Hello from Nyrqis! Welcome to the clipboard manager.",
              ClipboardType.TEXT, "nyrqis-shell", 120, False, ["hello", "welcome"]),
-            ("def calculate_fibonacci(n):\n    if n <= 1:\n        return n",
-             ClipboardType.CODE, "code-server", 180, True, ["python", "algorithm"], "python"),
             ("def calculate_fibonacci(n):\n    if n <= 1:\n        return n\n    return calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",
              ClipboardType.CODE, "code-server", 240, True, ["python", "algorithm"], "python"),
             ("https://github.com/Myco-mycelium/Nythera",

@@ -710,11 +710,28 @@ class AccessibilitySystem(AccessibilitySettings):
 
     def __init__(self):
         super().__init__()
-        self.screen_reader = ScreenReader()
-        self.keyboard = KeyboardManager.with_defaults()
-        self.focus = FocusManager()
+        self._sr = ScreenReader()
+        self._kb = KeyboardManager.with_defaults()
+        self._fm = FocusManager()
         self._callbacks: List[Callable] = []
         self._reading_mode: ReadingMode = ReadingMode.VISUAL
+
+    # Override parent properties to return actual objects (not proxies)
+    @property
+    def screen_reader(self):
+        return self._sr
+
+    @property
+    def keyboard(self):
+        return self._kb
+
+    @property
+    def focus(self):
+        return self._fm
+
+    @property
+    def high_contrast(self) -> bool:
+        return self._high_contrast
 
     # -- Settings shortcuts that fire events --
 

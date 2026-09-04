@@ -475,6 +475,7 @@ class PackageManager:
         if pkg:
             self._selected_pkg = pkg
             self._view = 'detail'
+        return pkg
 
     def render(self) -> Optional[List[str]]:
         if not self.visible:

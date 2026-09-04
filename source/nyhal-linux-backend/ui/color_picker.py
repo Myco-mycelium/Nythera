@@ -200,8 +200,12 @@ class ColorPicker:
         self.color = Color(r=80, g=140, b=255)
         self.current_color = self.color
         self.picked_history: List[Color] = []
-        self.palettes: Dict[str, List[str]] = {}
-        self.saved_colors: List[SavedColor] = []
+        self.palettes: Dict[str, List[str]] = dict(PALETTES)
+        self.saved_colors: List[SavedColor] = [
+            SavedColor(name="Nyrqis Primary", color=Color(26, 26, 46), tags=["brand"]),
+            SavedColor(name="Nyrqis Accent", color=Color(233, 69, 96), tags=["brand"]),
+            SavedColor(name="Success Green", color=Color(107, 203, 119), tags=["status"]),
+        ]
         self.contrast_favorites: List[ContrastResult] = []
         self.active_format: ColorFormat = ColorFormat.HEX
         self.selected_palette: Optional[str] = None
