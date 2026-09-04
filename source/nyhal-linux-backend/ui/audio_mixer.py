@@ -1,440 +1,295 @@
-"""AudioMixer — Audio management UI for Nyrqis.
-
-Provides a complete audio management interface:
-- Master volume control
-- Per-app volume sliders
-- Output device selection (speakers, headphones, HDMI, Bluetooth)
-- Input device selection (microphone)
-- Audio profiles (music, movie, voice, gaming)
-- Mute/unmute per app and master
-- Apple HIG clean aesthetics
-
-References:
-    - ADR-0026: Wayland display-server integration
+"""
+Nyrqis OS - Audio Mixer
+Per-app volume, equalizer, and device switching.
 """
 
-from __future__ import annotations
-
 import time
+import random
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import List, Dict, Optional
 
-
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
 
 class AudioDeviceType(Enum):
-    SPEAKERS = auto()
-    HEADPHONES = auto()
-    HDMI = auto()
-    BLUETOOTH = auto()
-    USB = auto()
-    ANALOG = auto()
+    SPEAKER = "speaker"
+    HEADPHONE = "headphone"
+    USB_DAC = "usb_dac"
+    HDMI = "hdmi"
+    BLUETOOTH = "bluetooth"
+    DIGITAL = "digital"
 
 
-class AudioDirection(Enum):
-    OUTPUT = auto()
-    INPUT = auto()
+class AudioDeviceState(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    UNPLUGGED = "unplugged"
+    CONNECTING = "connecting"
 
-
-class AudioProfile(Enum):
-    CUSTOM = auto()
-    MUSIC = auto()
-    MOVIE = auto()
-    VOICE = auto()
-    GAMING = auto()
-    FLAT = auto()  # no EQ
-
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 @dataclass
 class AudioDevice:
-    """An audio device (input or output)."""
-    id: str
     name: str
-    device_type: AudioDeviceType
-    direction: AudioDirection
-    volume: int = 100  # 0-100
+    device_type: AudioDeviceType = AudioDeviceType.SPEAKER
+    state: AudioDeviceState = AudioDeviceState.ACTIVE
+    volume: int = 75
     muted: bool = False
-    active: bool = False
+    max_volume: int = 100
+    sample_rate: int = 48000
+    bit_depth: int = 16
     channels: int = 2
-    sample_rate: int = 44100
+    latency_ms: float = 5.0
+    is_default: bool = False
+    icon: str = ""
+
+    @property
+    def volume_bar(self) -> str:
+        filled = int(self.volume / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def state_icon(self) -> str:
+        icons = {
+            AudioDeviceState.ACTIVE: "🟢", AudioDeviceState.INACTIVE: "⚪",
+            AudioDeviceState.UNPLUGGED: "🔴", AudioDeviceState.CONNECTING: "🟡",
+        }
+        return icons.get(self.state, "?")
+
+    @property
+    def mute_icon(self) -> str:
+        return "🔇" if self.muted else "🔊"
+
+    @property
+    def type_icon(self) -> str:
+        icons = {
+            AudioDeviceType.SPEAKER: "🔊", AudioDeviceType.HEADPHONE: "🎧",
+            AudioDeviceType.USB_DAC: "🎵", AudioDeviceType.HDMI: "📺",
+            AudioDeviceType.BLUETOOTH: "📶", AudioDeviceType.DIGITAL: "💿",
+        }
+        return icons.get(self.device_type, "?")
+
+
+@dataclass
+class AudioApp:
+    name: str
+    pid: int = 0
+    icon: str = ""
+    volume: int = 80
+    muted: bool = False
+    peak_volume: float = 0.0
+    is_playing: bool = False
+    device: str = ""
+
+    @property
+    def volume_bar(self) -> str:
+        filled = int(self.volume / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def peak_bar(self) -> str:
+        filled = int(self.peak_volume / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def mute_icon(self) -> str:
+        return "🔇" if self.muted else "🔊"
+
+    @property
+    def play_icon(self) -> str:
+        return "▶️" if self.is_playing else "⏸"
+
+
+@dataclass
+class EQBand:
+    frequency: float = 0.0
+    label: str = ""
+    gain_db: float = 0.0
+    min_db: float = -12.0
+    max_db: float = 12.0
+
+    @property
+    def gain_bar(self) -> str:
+        normalized = (self.gain_db - self.min_db) / (self.max_db - self.min_db)
+        filled = int(normalized * 20)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def value_display(self) -> str:
+        sign = "+" if self.gain_db > 0 else ""
+        return f"{sign}{self.gain_db:.0f} dB"
+
+
+@dataclass
+class EQPreset:
+    name: str
+    bands: List[float] = field(default_factory=list)
     description: str = ""
 
-
-@dataclass
-class AudioStream:
-    """An application audio stream."""
-    app_id: str
-    app_name: str
-    icon_color: Tuple[int, int, int, int] = (180, 180, 200, 255)
-    volume: int = 100  # 0-100
-    muted: bool = False
-    peak: float = 0.0  # 0.0-1.0 current audio level
-    playing: bool = True
+    @property
+    def band_display(self) -> str:
+        return " ".join(f"{g:+.0f}" for g in self.bands)
 
 
 @dataclass
-class AudioProfileConfig:
-    """Audio profile settings."""
+class AudioEffect:
     name: str
-    profile: AudioProfile
-    master_volume: int = 80
-    bass: int = 50       # 0-100
-    treble: int = 50
-    balance: int = 50    # 0=left, 50=center, 100=right
-    spatial: bool = False
-    night_mode: bool = False  # compress dynamic range
+    enabled: bool = False
+    parameters: Dict[str, float] = field(default_factory=dict)
 
-
-# ---------------------------------------------------------------------------
-# AudioMixer
-# ---------------------------------------------------------------------------
 
 class AudioMixer:
-    """Audio management UI for Nyrqis.
+    def __init__(self):
+        self.devices: List[AudioDevice] = []
+        self.apps: List[AudioApp] = []
+        self.master_volume: int = 75
+        self.master_muted: bool = False
+        self.eq_bands: List[EQBand] = []
+        self.eq_enabled: bool = False
+        self.eq_presets: List[EQPreset] = []
+        self.active_preset: Optional[EQPreset] = None
+        self.effects: List[AudioEffect] = []
+        self._create_sample_data()
 
-    Provides master volume, per-app mixing, device selection,
-    and audio profiles.
-
-    Parameters
-    ----------
-    width, height : int
-        Rendering dimensions.
-    """
-
-    # Built-in profiles
-    BUILTIN_PROFILES = [
-        AudioProfileConfig("Flat", AudioProfile.FLAT,
-                          bass=50, treble=50),
-        AudioProfileConfig("Music", AudioProfile.MUSIC,
-                          bass=65, treble=55),
-        AudioProfileConfig("Movie", AudioProfile.MOVIE,
-                          bass=70, treble=45, spatial=True),
-        AudioProfileConfig("Voice", AudioProfile.VOICE,
-                          bass=30, treble=70),
-        AudioProfileConfig("Gaming", AudioProfile.GAMING,
-                          bass=60, treble=60, spatial=True),
-    ]
-
-    def __init__(self, width: int = 400, height: int = 600):
-        self.width = width
-        self.height = height
-
-        # Master volume
-        self._master_volume = 80
-        self._master_muted = False
-
-        # Devices
-        self._output_devices: List[AudioDevice] = []
-        self._input_devices: List[AudioDevice] = []
-        self._active_output: Optional[str] = None
-        self._active_input: Optional[str] = None
-
-        # App streams
-        self._streams: List[AudioStream] = []
-
-        # Profiles
-        self._profiles = list(self.BUILTIN_PROFILES)
-        self._active_profile = AudioProfile.FLAT
-
-        # EQ state
-        self._bass = 50
-        self._treble = 50
-        self._balance = 50
-        self._spatial = False
-        self._night_mode = False
-
-        # UI state
-        self._tab = "output"  # output, input, apps, profiles
-
-        # Initialize devices
-        self._init_devices()
-
-    def _init_devices(self) -> None:
-        """Initialize simulated audio devices."""
-        self._output_devices = [
-            AudioDevice("speakers", "Built-in Speakers",
-                       AudioDeviceType.SPEAKERS, AudioDirection.OUTPUT,
-                       active=True, channels=2, sample_rate=48000,
-                       description="Realtek ALC256"),
-            AudioDevice("headphones", "Headphones",
-                       AudioDeviceType.HEADPHONES, AudioDirection.OUTPUT,
-                       channels=2, sample_rate=44100,
-                       description="3.5mm analog jack"),
-            AudioDevice("hdmi", "HDMI Output",
-                       AudioDeviceType.HDMI, AudioDirection.OUTPUT,
-                       channels=8, sample_rate=48000,
-                       description="Intel HD Audio"),
-            AudioDevice("bluetooth", "AirPods Pro",
-                       AudioDeviceType.BLUETOOTH, AudioDirection.OUTPUT,
-                       channels=2, sample_rate=44100,
-                       description="AAC codec"),
-        ]
-        self._active_output = "speakers"
-
-        self._input_devices = [
-            AudioDevice("mic-internal", "Built-in Microphone",
-                       AudioDeviceType.ANALOG, AudioDirection.INPUT,
-                       active=True, channels=1, sample_rate=44100,
-                       description="Realtek ALC256"),
-            AudioDevice("mic-usb", "USB Microphone",
-                       AudioDeviceType.USB, AudioDirection.INPUT,
-                       channels=1, sample_rate=48000,
-                       description="Blue Yeti"),
-        ]
-        self._active_input = "mic-internal"
-
-        # Default app streams
-        self._streams = [
-            AudioStream("firefox", "Firefox", (255, 120, 60, 255),
-                       volume=70, peak=0.3),
-            AudioStream("spotify", "Spotify", (30, 215, 96, 255),
-                       volume=85, peak=0.6),
-            AudioStream("terminal", "Terminal", (60, 200, 120, 255),
-                       volume=50, muted=True),
+    def _create_sample_data(self):
+        self.devices = [
+            AudioDevice(name="Built-in Audio", device_type=AudioDeviceType.SPEAKER,
+                         state=AudioDeviceState.ACTIVE, volume=80, is_default=True,
+                         sample_rate=48000, bit_depth=24, latency_ms=10),
+            AudioDevice(name="Sony WH-1000XM5", device_type=AudioDeviceType.BLUETOOTH,
+                         state=AudioDeviceState.ACTIVE, volume=70,
+                         sample_rate=44100, bit_depth=16, latency_ms=40),
+            AudioDevice(name="Topping DX3 Pro+", device_type=AudioDeviceType.USB_DAC,
+                         state=AudioDeviceState.INACTIVE, volume=65,
+                         sample_rate=192000, bit_depth=32, latency_ms=2),
+            AudioDevice(name="HDMI - LG C2", device_type=AudioDeviceType.HDMI,
+                         state=AudioDeviceState.UNPLUGGED, volume=50,
+                         sample_rate=48000, bit_depth=16, latency_ms=20),
+            AudioDevice(name="AirPods Pro", device_type=AudioDeviceType.BLUETOOTH,
+                         state=AudioDeviceState.INACTIVE, volume=60,
+                         sample_rate=44100, bit_depth=16, latency_ms=50),
         ]
 
-    # -- Master volume --------------------------------------------------
+        self.apps = [
+            AudioApp(name="Spotify", pid=2001, icon="🎵", volume=85,
+                      peak_volume=60.0, is_playing=True),
+            AudioApp(name="Firefox", pid=2002, icon="🦊", volume=70,
+                      peak_volume=25.0, is_playing=False),
+            AudioApp(name="Discord", pid=2003, icon="💬", volume=90,
+                      peak_volume=45.0, is_playing=True),
+            AudioApp(name="OBS Studio", pid=2004, icon="📺", volume=100,
+                      peak_volume=80.0, is_playing=True),
+            AudioApp(name="System Sounds", pid=1, icon="🔊", volume=60,
+                      peak_volume=0.0),
+            AudioApp(name="Code", pid=3001, icon="📝", volume=0, muted=True),
+        ]
 
-    @property
-    def master_volume(self) -> int:
-        return self._master_volume
+        self.eq_bands = [
+            EQBand(frequency=32, label="32", gain_db=2.0),
+            EQBand(frequency=64, label="64", gain_db=3.0),
+            EQBand(frequency=125, label="125", gain_db=1.0),
+            EQBand(frequency=250, label="250", gain_db=-1.0),
+            EQBand(frequency=500, label="500", gain_db=0.0),
+            EQBand(frequency=1000, label="1K", gain_db=2.0),
+            EQBand(frequency=2000, label="2K", gain_db=3.0),
+            EQBand(frequency=4000, label="4K", gain_db=1.0),
+            EQBand(frequency=8000, label="8K", gain_db=-1.0),
+            EQBand(frequency=16000, label="16K", gain_db=-2.0),
+        ]
 
-    @property
-    def master_muted(self) -> bool:
-        return self._master_muted
+        self.eq_presets = [
+            EQPreset(name="Flat", bands=[0]*10, description="No EQ adjustments"),
+            EQPreset(name="Bass Boost", bands=[6, 5, 3, 1, 0, 0, 0, 0, 0, 0],
+                      description="Enhanced low frequencies"),
+            EQPreset(name="Treble Boost", bands=[0, 0, 0, 0, 0, 1, 2, 4, 5, 6],
+                      description="Enhanced high frequencies"),
+            EQPreset(name="Vocal", bands=[-2, -1, 0, 2, 4, 4, 2, 0, -1, -2],
+                      description="Optimized for speech"),
+            EQPreset(name="Rock", bands=[4, 3, 1, 0, -1, 0, 2, 3, 4, 4],
+                      description="Enhanced for rock music"),
+            EQPreset(name="Electronic", bands=[5, 4, 2, 0, -1, 0, 1, 3, 4, 5],
+                      description="Enhanced for electronic music"),
+        ]
+        self.active_preset = self.eq_presets[0]
 
-    def set_master_volume(self, volume: int) -> None:
-        self._master_volume = max(0, min(100, volume))
+        self.effects = [
+            AudioEffect(name="Noise Suppression", enabled=True,
+                        parameters={"level": 0.7}),
+            AudioEffect(name="Echo Cancellation", enabled=False,
+                        parameters={"delay_ms": 50, "decay": 0.3}),
+            AudioEffect(name="Loudness Normalization", enabled=True,
+                        parameters={"target_lufs": -16.0}),
+        ]
+
+    def set_master_volume(self, volume: int) -> bool:
+        self.master_volume = max(0, min(100, volume))
+        return True
 
     def toggle_master_mute(self) -> bool:
-        self._master_muted = not self._master_muted
-        return self._master_muted
+        self.master_muted = not self.master_muted
+        return self.master_muted
 
-    # -- Device management ----------------------------------------------
-
-    @property
-    def output_devices(self) -> List[AudioDevice]:
-        return list(self._output_devices)
-
-    @property
-    def input_devices(self) -> List[AudioDevice]:
-        return list(self._input_devices)
-
-    @property
-    def active_output(self) -> Optional[AudioDevice]:
-        for d in self._output_devices:
-            if d.id == self._active_output:
-                return d
-        return None
-
-    @property
-    def active_input(self) -> Optional[AudioDevice]:
-        for d in self._input_devices:
-            if d.id == self._active_input:
-                return d
-        return None
-
-    def set_output_device(self, device_id: str) -> bool:
-        for d in self._output_devices:
-            d.active = (d.id == device_id)
-            if d.active:
-                self._active_output = device_id
-        return self._active_output == device_id
-
-    def set_input_device(self, device_id: str) -> bool:
-        for d in self._input_devices:
-            d.active = (d.id == device_id)
-            if d.active:
-                self._active_input = device_id
-        return self._active_input == device_id
-
-    def set_device_volume(self, device_id: str, volume: int) -> bool:
-        for d in self._output_devices + self._input_devices:
-            if d.id == device_id:
-                d.volume = max(0, min(100, volume))
-                return True
+    def set_app_volume(self, app_name: str, volume: int) -> bool:
+        app = next((a for a in self.apps if a.name == app_name), None)
+        if app:
+            app.volume = max(0, min(100, volume))
+            return True
         return False
 
-    def toggle_device_mute(self, device_id: str) -> Optional[bool]:
-        for d in self._output_devices + self._input_devices:
-            if d.id == device_id:
-                d.muted = not d.muted
-                return d.muted
-        return None
-
-    # -- App streams ----------------------------------------------------
-
-    @property
-    def streams(self) -> List[AudioStream]:
-        return list(self._streams)
-
-    def add_stream(self, app_id: str, app_name: str,
-                   icon_color: Tuple[int, int, int, int] = (180, 180, 200, 255)) -> AudioStream:
-        stream = AudioStream(app_id, app_name, icon_color)
-        self._streams.append(stream)
-        return stream
-
-    def remove_stream(self, app_id: str) -> bool:
-        before = len(self._streams)
-        self._streams = [s for s in self._streams if s.app_id != app_id]
-        return len(self._streams) < before
-
-    def set_stream_volume(self, app_id: str, volume: int) -> bool:
-        for s in self._streams:
-            if s.app_id == app_id:
-                s.volume = max(0, min(100, volume))
-                return True
+    def toggle_app_mute(self, app_name: str) -> bool:
+        app = next((a for a in self.apps if a.name == app_name), None)
+        if app:
+            app.muted = not app.muted
+            return True
         return False
 
-    def toggle_stream_mute(self, app_id: str) -> Optional[bool]:
-        for s in self._streams:
-            if s.app_id == app_id:
-                s.muted = not s.muted
-                return s.muted
-        return None
-
-    def update_stream_peak(self, app_id: str, peak: float) -> None:
-        """Update the audio peak level for a stream (for VU meter)."""
-        for s in self._streams:
-            if s.app_id == app_id:
-                s.peak = max(0.0, min(1.0, peak))
-
-    # -- Profiles -------------------------------------------------------
-
-    @property
-    def profiles(self) -> List[AudioProfileConfig]:
-        return list(self._profiles)
-
-    @property
-    def active_profile(self) -> AudioProfile:
-        return self._active_profile
-
-    def set_profile(self, profile: AudioProfile) -> bool:
-        for p in self._profiles:
-            if p.profile == profile:
-                self._active_profile = profile
-                self._bass = p.bass
-                self._treble = p.treble
-                self._spatial = p.spatial
-                self._night_mode = p.night_mode
-                return True
+    def set_device_volume(self, device_name: str, volume: int) -> bool:
+        device = next((d for d in self.devices if d.name == device_name), None)
+        if device:
+            device.volume = max(0, min(100, volume))
+            return True
         return False
 
-    def set_bass(self, value: int) -> None:
-        self._bass = max(0, min(100, value))
+    def set_default_device(self, device_name: str) -> bool:
+        for d in self.devices:
+            d.is_default = (d.name == device_name)
+        return True
 
-    def set_treble(self, value: int) -> None:
-        self._treble = max(0, min(100, value))
+    def set_eq_band(self, band_index: int, gain_db: float) -> bool:
+        if 0 <= band_index < len(self.eq_bands):
+            band = self.eq_bands[band_index]
+            band.gain_db = max(band.min_db, min(band.max_db, gain_db))
+            return True
+        return False
 
-    def set_balance(self, value: int) -> None:
-        self._balance = max(0, min(100, value))
+    def apply_eq_preset(self, preset_name: str) -> bool:
+        preset = next((p for p in self.eq_presets if p.name == preset_name), None)
+        if preset:
+            self.active_preset = preset
+            for i, gain in enumerate(preset.bands):
+                if i < len(self.eq_bands):
+                    self.eq_bands[i].gain_db = gain
+            return True
+        return False
 
-    def toggle_spatial(self) -> bool:
-        self._spatial = not self._spatial
-        return self._spatial
+    def toggle_effect(self, name: str) -> bool:
+        effect = next((e for e in self.effects if e.name == name), None)
+        if effect:
+            effect.enabled = not effect.enabled
+            return True
+        return False
 
-    def toggle_night_mode(self) -> bool:
-        self._night_mode = not self._night_mode
-        return self._night_mode
+    def get_active_devices(self) -> List[AudioDevice]:
+        return [d for d in self.devices if d.state == AudioDeviceState.ACTIVE]
 
-    # -- Statistics -----------------------------------------------------
+    def get_playing_apps(self) -> List[AudioApp]:
+        return [a for a in self.apps if a.is_playing]
 
-    def get_stats(self) -> Dict[str, Any]:
-        playing = sum(1 for s in self._streams if s.playing and not s.muted)
+    def get_stats(self) -> Dict:
         return {
-            "master_volume": self._master_volume,
-            "master_muted": self._master_muted,
-            "active_output": self._active_output,
-            "active_input": self._active_input,
-            "output_devices": len(self._output_devices),
-            "input_devices": len(self._input_devices),
-            "streams": len(self._streams),
-            "playing": playing,
-            "profile": self._active_profile.name,
-            "spatial": self._spatial,
+            "devices": len(self.devices),
+            "active_devices": len(self.get_active_devices()),
+            "apps": len(self.apps),
+            "playing": len(self.get_playing_apps()),
+            "eq_bands": len(self.eq_bands),
+            "effects": len(self.effects),
+            "master_volume": self.master_volume,
         }
-
-    # -- Rendering ------------------------------------------------------
-
-    def render(self) -> Tuple[bytes, int, int]:
-        """Render the audio mixer UI to an RGB byte buffer."""
-        w, h = self.width, self.height
-        buf = bytearray(w * h * 3)
-        bg = (30, 30, 40)
-        for i in range(0, len(buf), 3):
-            buf[i] = bg[0]
-            buf[i + 1] = bg[1]
-            buf[i + 2] = bg[2]
-
-        # Header
-        self._fill_rect(buf, w, 0, 0, w, 48, (42, 42, 56))
-
-        # Master volume bar
-        bar_y = 60
-        bar_w = w - 40
-        bar_h = 24
-        self._fill_rect(buf, w, 20, bar_y, bar_w, bar_h, (50, 50, 65))
-        fill_w = int(bar_w * self._master_volume / 100)
-        fill_color = (255, 80, 80) if self._master_volume > 90 else (
-            (255, 200, 60) if self._master_volume > 70 else (80, 200, 120))
-        if self._master_muted:
-            fill_color = (100, 100, 120)
-        self._fill_rect(buf, w, 20, bar_y, fill_w, bar_h, fill_color)
-
-        # App streams
-        y = bar_y + bar_h + 24
-        for stream in self._streams:
-            # Stream name placeholder
-            name_color = stream.icon_color[:3]
-            self._fill_rect(buf, w, 20, y, 16, 16, name_color)
-
-            # Volume slider
-            slider_y = y + 22
-            slider_w = w - 120
-            self._fill_rect(buf, w, 20, slider_y, slider_w, 10, (50, 50, 65))
-            vol_w = int(slider_w * stream.volume / 100)
-            vol_color = (80, 140, 255) if not stream.muted else (80, 80, 100)
-            self._fill_rect(buf, w, 20, slider_y, vol_w, 10, vol_color)
-
-            y += 64
-
-        return bytes(buf), w, h
-
-    # -- Serialization --------------------------------------------------
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "master_volume": self._master_volume,
-            "master_muted": self._master_muted,
-            "active_output": self._active_output,
-            "active_input": self._active_input,
-            "streams": len(self._streams),
-            "profile": self._active_profile.name,
-        }
-
-    def _fill_rect(self, buf: bytearray, buf_width: int,
-                   x: int, y: int, w: int, h: int,
-                   color: Tuple[int, int, int]) -> None:
-        buf_height = len(buf) // (buf_width * 3)
-        for dy in range(h):
-            for dx in range(w):
-                px, py = x + dx, y + dy
-                if 0 <= px < buf_width and 0 <= py < buf_height:
-                    idx = (py * buf_width + px) * 3
-                    if idx + 2 < len(buf):
-                        buf[idx] = color[0]
-                        buf[idx + 1] = color[1]
-                        buf[idx + 2] = color[2]
-
-
-__all__ = [
-    "AudioMixer", "AudioDevice", "AudioStream", "AudioDeviceType",
-    "AudioDirection", "AudioProfile", "AudioProfileConfig",
-]
