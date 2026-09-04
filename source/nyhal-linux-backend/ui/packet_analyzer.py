@@ -351,3 +351,7 @@ class PacketHeader:
     dest_port: int = 0
     protocol: str = ""
     length: int = 0
+
+
+class MACAddress:
+    pass  # backward compat stub

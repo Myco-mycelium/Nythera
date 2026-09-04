@@ -280,3 +280,7 @@ class RecordingPreset(Enum):
     STANDARD = "standard"
     LOW_LATENCY = "low_latency"
     STREAMING = "streaming"
+
+
+class RecordingSession:
+    pass  # backward compat stub

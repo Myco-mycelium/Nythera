@@ -352,3 +352,7 @@ class VirtualDisk:
     size_gb: int = 0
     bus: str = "virtio"
     path: str = ""
+
+
+class VMNetwork:
+    pass  # backward compat stub

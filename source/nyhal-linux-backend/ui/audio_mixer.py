@@ -302,3 +302,7 @@ class AudioStream:
     volume: float = 1.0
     muted: bool = False
     sample_rate: int = 44100
+
+
+class AudioDirection:
+    pass  # backward compat stub

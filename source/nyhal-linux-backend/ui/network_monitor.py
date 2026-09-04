@@ -295,3 +295,7 @@ class InterfaceType(Enum):
     LOOPBACK = "loopback"
     BRIDGE = "bridge"
     TUNNEL = "tunnel"
+
+
+class InterfaceStatus:
+    pass  # backward compat stub

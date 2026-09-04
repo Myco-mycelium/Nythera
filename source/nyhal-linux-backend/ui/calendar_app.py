@@ -389,3 +389,7 @@ class ReminderEntry:
     title: str = ""
     time: float = 0.0
     recurring: bool = False
+
+
+class ViewMode:
+    pass  # backward compat stub

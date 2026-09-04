@@ -307,3 +307,7 @@ class TerminalTheme:
     fg_color: str = "#cdd6f4"
     cursor_color: str = "#f5e0dc"
     palette: list = field(default_factory=list)
+
+
+class THEMES:
+    pass  # backward compat stub

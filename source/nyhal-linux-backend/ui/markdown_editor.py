@@ -444,3 +444,7 @@ class ReadingMode(Enum):
     READING = "reading"
     EDITING = "editing"
     PREVIEW = "preview"
+
+
+class MarkdownBlock:
+    pass  # backward compat stub

@@ -306,3 +306,7 @@ class DBClient:
     port: int = 5432
     database: str = ""
     connected: bool = False
+
+
+class Connection:
+    pass  # backward compat stub

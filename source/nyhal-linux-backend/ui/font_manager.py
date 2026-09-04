@@ -284,3 +284,7 @@ class FontFamily(Enum):
     MONOSPACE = "monospace"
     DISPLAY = "display"
     HANDWRITING = "handwriting"
+
+
+class FontStyle:
+    pass  # backward compat stub
