@@ -1,209 +1,67 @@
-"""Network Packet Analyzer — protocol dissection, filtering, statistics for Nyrqis OS."""
+"""
+Nyrqis OS - Network Packet Analyzer
+Protocol decoding, traffic statistics, and filter expressions.
+"""
+
+import time
+import random
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
-import time
-import random
 
 
 class Protocol(Enum):
-    ETHERNET = "Ethernet"
-    ARP = "ARP"
-    IPV4 = "IPv4"
-    IPV6 = "IPv6"
     TCP = "TCP"
     UDP = "UDP"
     ICMP = "ICMP"
-    DNS = "DNS"
     HTTP = "HTTP"
     HTTPS = "HTTPS"
+    DNS = "DNS"
+    ARP = "ARP"
     SSH = "SSH"
-    TLS = "TLS"
-    DHCP = "DHCP"
-    OSPF = "OSPF"
-    BGP = "BGP"
-    SNMP = "SNMP"
-    MQTT = "MQTT"
-    WebSocket = "WebSocket"
+    SMTP = "SMTP"
+    FTP = "FTP"
 
 
 class PacketDirection(Enum):
-    INBOUND = "Inbound"
-    OUTBOUND = "Outbound"
-    LOCAL = "Local"
-    BROADCAST = "Broadcast"
-    MULTICAST = "Multicast"
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+    LOCAL = "local"
 
 
-class PacketStatus(Enum):
-    CAPTURED = "Captured"
-    ANALYZED = "Analyzed"
-    FLAGGED = "Flagged"
-    DROPPED = "Dropped"
-    REASSEMBLED = "Reassembled"
-
-
-class FilterAction(Enum):
-    CAPTURE = "Capture"
-    DISPLAY = "Display"
-    EXPORT = "Export"
-
-
-class ThreatLevel(Enum):
-    NONE = "None"
-    LOW = "Low"
-    MEDIUM = "Medium"
-    HIGH = "High"
-    CRITICAL = "Critical"
-
-
-@dataclass
-class MACAddress:
-    octets: Tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0)
-
-    @property
-    def str(self) -> str:
-        return ":".join(f"{o:02x}" for o in self.octets)
-
-    @property
-    def is_broadcast(self) -> bool:
-        return self.octets == (0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
-
-    @property
-    def is_multicast(self) -> bool:
-        return (self.octets[0] & 0x01) == 1
-
-
-@dataclass
-class IPAddress:
-    addr: str = "0.0.0.0"
-    version: int = 4
-
-    @property
-    def is_private(self) -> bool:
-        parts = self.addr.split(".")
-        if len(parts) != 4:
-            return False
-        try:
-            first = int(parts[0])
-            second = int(parts[1])
-            if first == 10:
-                return True
-            if first == 172 and 16 <= second <= 31:
-                return True
-            if first == 192 and second == 168:
-                return True
-        except ValueError:
-            pass
-        return False
-
-    @property
-    def is_loopback(self) -> bool:
-        return self.addr.startswith("127.")
-
-    @property
-    def type_str(self) -> str:
-        if self.is_loopback:
-            return "Loopback"
-        if self.is_private:
-            return "Private"
-        return "Public"
-
-
-@dataclass
-class PacketHeader:
-    src_mac: MACAddress = field(default_factory=MACAddress)
-    dst_mac: MACAddress = field(default_factory=MACAddress)
-    src_ip: IPAddress = field(default_factory=IPAddress)
-    dst_ip: IPAddress = field(default_factory=IPAddress)
-    src_port: int = 0
-    dst_port: int = 0
-    protocol: Protocol = Protocol.IPV4
-    ttl: int = 64
-    tos: int = 0
-    flags: str = ""
-    window_size: int = 0
-    sequence: int = 0
-    ack: int = 0
-    length: int = 0
-
-    @property
-    def protocol_stack(self) -> str:
-        parts = []
-        if self.src_port > 0 or self.dst_port > 0:
-            parts.append(f"{self.protocol.value}")
-        else:
-            parts.append(self.protocol.value)
-        return " → ".join(parts)
-
-    @property
-    def endpoint(self) -> str:
-        if self.src_port > 0:
-            return f"{self.src_ip.addr}:{self.src_port} → {self.dst_ip.addr}:{self.dst_port}"
-        return f"{self.src_ip.addr} → {self.dst_ip.addr}"
+class CaptureState(Enum):
+    STOPPED = "stopped"
+    RUNNING = "running"
+    PAUSED = "paused"
 
 
 @dataclass
 class Packet:
-    id: int
-    timestamp: float = 0.0
-    header: PacketHeader = field(default_factory=PacketHeader)
-    data_length: int = 0
-    raw_data: bytes = b""
-    direction: PacketDirection = PacketDirection.INBOUND
-    status: PacketStatus = PacketStatus.CAPTURED
-    threat_level: ThreatLevel = ThreatLevel.NONE
-    annotations: List[str] = field(default_factory=list)
-    dissected: bool = False
-
-    @property
-    def size_str(self) -> str:
-        if self.data_length < 1024:
-            return f"{self.data_length} B"
-        elif self.data_length < 1024 * 1024:
-            return f"{self.data_length / 1024:.1f} KB"
-        else:
-            return f"{self.data_length / (1024 * 1024):.1f} MB"
-
-    @property
-    def time_str(self) -> str:
-        t = time.localtime(self.timestamp)
-        return time.strftime("%H:%M:%S", t)
-
-    @property
-    def threat_icon(self) -> str:
-        icons = {
-            ThreatLevel.NONE: "",
-            ThreatLevel.LOW: "🟡",
-            ThreatLevel.MEDIUM: "🟠",
-            ThreatLevel.HIGH: "🔴",
-            ThreatLevel.CRITICAL: "🚨",
-        }
-        return icons.get(self.threat_level, "")
+    number: int
+    timestamp: float
+    source_ip: str
+    dest_ip: str
+    source_port: int = 0
+    dest_port: int = 0
+    protocol: Protocol = Protocol.TCP
+    size: int = 0
+    direction: PacketDirection = PacketDirection.OUTBOUND
+    payload_preview: str = ""
+    flags: List[str] = field(default_factory=list)
+    ttl: int = 64
+    sequence: int = 0
+    ack: int = 0
+    window: int = 0
 
     @property
     def direction_icon(self) -> str:
         icons = {
-            PacketDirection.INBOUND: "⬇",
-            PacketDirection.OUTBOUND: "⬆",
-            PacketDirection.LOCAL: "↔",
-            PacketDirection.BROADCAST: "📢",
-            PacketDirection.MULTICAST: "📡",
+            PacketDirection.INBOUND: "⬇️",
+            PacketDirection.OUTBOUND: "⬆️",
+            PacketDirection.LOCAL: "↔️",
         }
         return icons.get(self.direction, "?")
-
-
-@dataclass
-class CaptureFilter:
-    name: str
-    expression: str = ""
-    action: FilterAction = FilterAction.DISPLAY
-    match_count: int = 0
-    enabled: bool = True
-
-    @property
-    def match_bar(self) -> str:
-        return f"{self.match_count}"
 
 
 @dataclass
@@ -212,237 +70,274 @@ class ProtocolStats:
     packet_count: int = 0
     byte_count: int = 0
     avg_size: float = 0.0
-    percentage: float = 0.0
+    first_seen: float = 0.0
+    last_seen: float = 0.0
 
     @property
-    def size_str(self) -> str:
+    def size_display(self) -> str:
         if self.byte_count < 1024:
             return f"{self.byte_count} B"
         elif self.byte_count < 1024 * 1024:
             return f"{self.byte_count / 1024:.1f} KB"
-        else:
-            return f"{self.byte_count / (1024 * 1024):.1f} MB"
+        return f"{self.byte_count / (1024 * 1024):.1f} MB"
 
     @property
-    def pct_bar(self) -> str:
-        filled = int(self.percentage / 5)
-        return "█" * filled + "░" * (20 - filled)
+    def protocol_icon(self) -> str:
+        icons = {
+            Protocol.TCP: "🔗", Protocol.UDP: "📡", Protocol.ICMP: "📶",
+            Protocol.HTTP: "🌐", Protocol.HTTPS: "🔒", Protocol.DNS: "🔍",
+            Protocol.ARP: "📢", Protocol.SSH: "🔐", Protocol.SMTP: "📧",
+            Protocol.FTP: "📂",
+        }
+        return icons.get(self.protocol, "?")
 
 
 @dataclass
 class Conversation:
-    src_ip: str = ""
-    dst_ip: str = ""
-    src_port: int = 0
-    dst_port: int = 0
-    protocol: str = ""
+    ip_a: str
+    ip_b: str
     packet_count: int = 0
-    bytes_sent: int = 0
-    bytes_received: int = 0
-    duration_s: float = 0.0
+    bytes_a_to_b: int = 0
+    bytes_b_to_a: int = 0
+    protocols: List[Protocol] = field(default_factory=list)
     first_seen: float = 0.0
     last_seen: float = 0.0
 
     @property
     def total_bytes(self) -> int:
-        return self.bytes_sent + self.bytes_received
+        return self.bytes_a_to_b + self.bytes_b_to_a
 
     @property
-    def endpoint(self) -> str:
-        return f"{self.src_ip}:{self.src_port} ↔ {self.dst_ip}:{self.dst_port}"
+    def bytes_display(self) -> str:
+        total = self.total_bytes
+        if total < 1024:
+            return f"{total} B"
+        elif total < 1024 * 1024:
+            return f"{total / 1024:.1f} KB"
+        return f"{total / (1024 * 1024):.1f} MB"
+
+
+@dataclass
+class FilterExpression:
+    name: str
+    expression: str
+    description: str = ""
+    matches: int = 0
+    enabled: bool = True
+
+    @property
+    def match_icon(self) -> str:
+        if self.matches > 100:
+            return "🔴"
+        elif self.matches > 10:
+            return "🟡"
+        return "🟢"
+
+
+@dataclass
+class CaptureInterface:
+    name: str
+    mac_address: str = ""
+    ip_address: str = ""
+    netmask: str = ""
+    gateway: str = ""
+    mtu: int = 1500
+    status: str = "up"
+    speed_mbps: int = 1000
+    packets_captured: int = 0
+    bytes_captured: int = 0
+    drops: int = 0
+
+    @property
+    def status_icon(self) -> str:
+        return "🟢" if self.status == "up" else "🔴"
 
 
 class PacketAnalyzer:
     def __init__(self):
-        self._packets: List[Packet] = []
-        self._selected_packet: int = 0
-        self._filters: List[CaptureFilter] = []
-        self._protocol_stats: Dict[str, ProtocolStats] = {}
-        self._conversations: List[Conversation] = []
-        self._view_mode: str = "packet_list"
-        self._auto_scroll: bool = True
-        self._capture_active: bool = False
-        self._packet_counter: int = 0
-        self._total_bytes: int = 0
-        self._capture_start: float = 0.0
-        self._display_filter: str = ""
-        self._history: List[str] = []
-        self._create_samples()
+        self.packets: List[Packet] = []
+        self.state: CaptureState = CaptureState.STOPPED
+        self.interfaces: List[CaptureInterface] = []
+        self.filters: List[FilterExpression] = []
+        self.protocol_stats: Dict[str, ProtocolStats] = {}
+        self.conversations: List[Conversation] = []
+        self.current_filter: str = ""
+        self.packet_count: int = 0
+        self.byte_count: int = 0
+        self.start_time: float = 0.0
+        self._create_sample_data()
 
-    def _create_samples(self):
-        self._capture_start = time.time() - 300
+    def _create_sample_data(self):
+        self.interfaces = [
+            CaptureInterface(name="eth0", mac_address="00:1a:2b:3c:4d:5e",
+                             ip_address="192.168.1.100", netmask="255.255.255.0",
+                             gateway="192.168.1.1", status="up", speed_mbps=1000,
+                             packets_captured=45000, bytes_captured=52000000),
+            CaptureInterface(name="wlan0", mac_address="00:1a:2b:3c:4d:5f",
+                             ip_address="192.168.1.101", netmask="255.255.255.0",
+                             gateway="192.168.1.1", status="up", speed_mbps=300,
+                             packets_captured=12000, bytes_captured=15000000),
+            CaptureInterface(name="lo", mac_address="", ip_address="127.0.0.1",
+                             netmask="255.0.0.0", status="up", speed_mbps=0,
+                             packets_captured=8000, bytes_captured=500000),
+        ]
 
-        # Sample packets
-        protocols = [Protocol.TCP, Protocol.UDP, Protocol.HTTPS, Protocol.DNS, Protocol.ICMP, Protocol.ARP]
-        src_ips = ["192.168.1.100", "10.0.0.50", "172.16.0.25", "8.8.8.8", "1.1.1.1"]
-        dst_ips = ["93.184.216.34", "142.250.80.46", "104.244.42.193", "8.8.4.4", "192.168.1.1"]
+        ips = ["192.168.1.100", "192.168.1.1", "10.0.0.5", "8.8.8.8",
+               "142.250.80.46", "151.101.1.69", "104.244.42.65"]
+        protocols = [Protocol.TCP, Protocol.UDP, Protocol.HTTP, Protocol.HTTPS,
+                     Protocol.DNS, Protocol.ICMP, Protocol.ARP, Protocol.SSH]
+        http_payloads = [
+            "GET /index.html HTTP/1.1\r\nHost: example.com",
+            "POST /api/data HTTP/1.1\r\nContent-Type: application/json",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html",
+            "GET /api/health HTTP/1.1\r\nHost: nyrqis.local",
+            "PUT /api/config HTTP/1.1\r\nHost: nyrqis.local",
+        ]
 
-        for i in range(50):
-            self._packet_counter += 1
+        now = time.time()
+        self.packets = []
+        for i in range(120):
+            src = random.choice(ips)
+            dst = random.choice([ip for ip in ips if ip != src])
             proto = random.choice(protocols)
-            src_ip = random.choice(src_ips)
-            dst_ip = random.choice(dst_ips)
-            src_port = random.randint(1024, 65535)
-            dst_port = {Protocol.TCP: 443, Protocol.UDP: 53, Protocol.HTTPS: 443,
-                        Protocol.DNS: 53, Protocol.ICMP: 0, Protocol.ARP: 0}.get(proto, 80)
-            length = random.randint(64, 1500)
+            sport = random.choice([80, 443, 53, 22, 25, 21, 8080, 3000, 8443, 0])
+            dport = random.choice([5432, 80, 443, 53, 22, 8080, 3000, 8443, 3306, 0])
+
+            if proto in (Protocol.HTTP, Protocol.HTTPS):
+                payload = random.choice(http_payloads)
+            elif proto == Protocol.DNS:
+                payload = "query: nyrqis.local A"
+            elif proto == Protocol.ICMP:
+                payload = "echo request"
+            else:
+                payload = f"data-{hashlib.md5(str(i).encode()).hexdigest()[:16]}"
 
             pkt = Packet(
-                self._packet_counter,
-                self._capture_start + i * 0.6,
-                PacketHeader(
-                    MACAddress((0x00, 0x1a, 0x2b, random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))),
-                    MACAddress((0x00, 0x3c, 0x4d, random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))),
-                    IPAddress(src_ip), IPAddress(dst_ip),
-                    src_port, dst_port, proto, random.choice([64, 128, 255]),
-                ),
-                length,
+                number=i + 1,
+                timestamp=now - (120 - i) * 0.5 + random.uniform(0, 0.3),
+                source_ip=src, dest_ip=dst,
+                source_port=sport, dest_port=dport,
+                protocol=proto,
+                size=random.randint(40, 1500),
                 direction=random.choice(list(PacketDirection)),
-                threat_level=random.choices(
-                    [ThreatLevel.NONE, ThreatLevel.LOW, ThreatLevel.MEDIUM],
-                    weights=[80, 15, 5]
-                )[0],
+                payload_preview=payload[:80],
+                flags=random.sample(["SYN", "ACK", "FIN", "RST", "PSH"], k=random.randint(0, 2)),
+                ttl=random.choice([32, 64, 128, 255]),
+                sequence=random.randint(0, 2**32),
+                ack=random.randint(0, 2**32) if "ACK" in ["SYN", "ACK", "FIN", "RST", "PSH"] else 0,
+                window=random.choice([8192, 16384, 32768, 65535]),
             )
-            self._packets.append(pkt)
-            self._total_bytes += length
+            self.packets.append(pkt)
 
-            # Update protocol stats
-            proto_name = proto.value
-            if proto_name not in self._protocol_stats:
-                self._protocol_stats[proto_name] = ProtocolStats(proto, 0, 0, 0, 0)
-            ps = self._protocol_stats[proto_name]
-            ps.packet_count += 1
-            ps.byte_count += length
-            ps.avg_size = ps.byte_count / ps.packet_count
+        for proto in protocols:
+            count = sum(1 for p in self.packets if p.protocol == proto)
+            total_bytes = sum(p.size for p in self.packets if p.protocol == proto)
+            self.protocol_stats[proto.value] = ProtocolStats(
+                protocol=proto, packet_count=count, byte_count=total_bytes,
+                avg_size=total_bytes / count if count else 0,
+                first_seen=min((p.timestamp for p in self.packets if p.protocol == proto), default=0),
+                last_seen=max((p.timestamp for p in self.packets if p.protocol == proto), default=0),
+            )
 
-        # Calculate percentages
-        total_pkts = len(self._packets)
-        for ps in self._protocol_stats.values():
-            ps.percentage = (ps.packet_count / total_pkts * 100) if total_pkts > 0 else 0
+        seen_pairs = set()
+        for pkt in self.packets:
+            pair = tuple(sorted([pkt.source_ip, pkt.dest_ip]))
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                self.conversations.append(Conversation(
+                    ip_a=pair[0], ip_b=pair[1],
+                    packet_count=sum(1 for p in self.packets if
+                                     tuple(sorted([p.source_ip, p.dest_ip])) == pair),
+                    bytes_a_to_b=sum(p.size for p in self.packets if p.source_ip == pair[0]),
+                    bytes_b_to_a=sum(p.size for p in self.packets if p.source_ip == pair[1]),
+                    protocols=list(set(p.protocol for p in self.packets if
+                                       tuple(sorted([p.source_ip, p.dest_ip])) == pair)),
+                    first_seen=min((p.timestamp for p in self.packets if
+                                     tuple(sorted([p.source_ip, p.dest_ip])) == pair), default=0),
+                    last_seen=max((p.timestamp for p in self.packets if
+                                    tuple(sorted([p.source_ip, p.dest_ip])) == pair), default=0),
+                ))
+        self.conversations.sort(key=lambda c: c.total_bytes, reverse=True)
 
-        # Sample conversations
-        self._conversations = [
-            Conversation("192.168.1.100", "93.184.216.34", 49152, 443, "TCP/TLS", 45, 12800, 85000, 280),
-            Conversation("192.168.1.100", "142.250.80.46", 49153, 443, "TCP/TLS", 32, 8400, 62000, 195),
-            Conversation("10.0.0.50", "8.8.8.8", 49154, 53, "UDP/DNS", 12, 840, 2400, 45),
-            Conversation("172.16.0.25", "1.1.1.1", 49155, 443, "TCP/TLS", 18, 3200, 24000, 90),
-            Conversation("192.168.1.100", "192.168.1.1", 0, 0, "ICMP", 8, 640, 640, 12),
+        self.filters = [
+            FilterExpression(name="HTTP Traffic", expression="tcp.port == 80 || tcp.port == 8080",
+                             description="All HTTP requests and responses", matches=24),
+            FilterExpression(name="DNS Queries", expression="udp.port == 53",
+                             description="DNS lookup traffic", matches=18),
+            FilterExpression(name="SSH Sessions", expression="tcp.port == 22",
+                             description="Secure Shell connections", matches=6),
+            FilterExpression(name="Large Packets", expression="frame.len > 1000",
+                             description="Packets larger than 1000 bytes", matches=42),
+            FilterExpression(name="External Traffic", expression="ip.dst != 192.168.0.0/16",
+                             description="Traffic going to external networks", matches=55),
         ]
 
-        # Sample filters
-        self._filters = [
-            CaptureFilter("HTTP Traffic", "tcp.port == 80", FilterAction.DISPLAY, 120),
-            CaptureFilter("DNS Queries", "udp.port == 53", FilterAction.DISPLAY, 45),
-            CaptureFilter("External IPs", "not (ip.src == 192.168.0.0/16)", FilterAction.DISPLAY, 200),
-            CaptureFilter("Suspicious", "tcp.flags.syn == 1 and tcp.flags.ack == 0", FilterAction.DISPLAY, 15),
-            CaptureFilter("Large Packets", "frame.len > 1000", FilterAction.CAPTURE, 35),
-        ]
+        self.packet_count = len(self.packets)
+        self.byte_count = sum(p.size for p in self.packets)
+        self.start_time = now - 60
 
-    @property
-    def selected_packet(self) -> Optional[Packet]:
-        if 0 <= self._selected_packet < len(self._packets):
-            return self._packets[self._selected_packet]
-        return None
+    def start_capture(self, interface: str = "eth0") -> bool:
+        self.state = CaptureState.RUNNING
+        self.start_time = time.time()
+        return True
 
-    @property
-    def total_packets(self) -> int:
-        return len(self._packets)
+    def stop_capture(self) -> int:
+        self.state = CaptureState.STOPPED
+        return len(self.packets)
 
-    @property
-    def total_bytes_display(self) -> str:
-        if self._total_bytes < 1024:
-            return f"{self._total_bytes} B"
-        elif self._total_bytes < 1024 * 1024:
-            return f"{self._total_bytes / 1024:.1f} KB"
-        else:
-            return f"{self._total_bytes / (1024 * 1024):.1f} MB"
+    def pause_capture(self) -> bool:
+        self.state = CaptureState.PAUSED
+        return True
 
-    @property
-    def packets_per_second(self) -> float:
-        elapsed = time.time() - self._capture_start
-        return len(self._packets) / max(1, elapsed)
+    def resume_capture(self) -> bool:
+        self.state = CaptureState.RUNNING
+        return True
 
-    def select_packet(self, idx: int):
-        if 0 <= idx < len(self._packets):
-            self._selected_packet = idx
+    def apply_filter(self, expression: str) -> List[Packet]:
+        self.current_filter = expression
+        if not expression:
+            return self.packets
+        upper = expression.upper()
+        if "TCP" in upper and "80" in upper:
+            return [p for p in self.packets if p.protocol in (Protocol.HTTP, Protocol.TCP) and p.dest_port == 80]
+        if "UDP" in upper and "53" in upper:
+            return [p for p in self.packets if p.protocol == Protocol.DNS]
+        if "SSH" in upper or "22" in upper:
+            return [p for p in self.packets if p.protocol == Protocol.SSH or p.dest_port == 22]
+        return self.packets
 
-    def start_capture(self):
-        self._capture_active = True
-        self._capture_start = time.time()
-        self._history.append("Capture started")
+    def get_packet_detail(self, number: int) -> Optional[Packet]:
+        return next((p for p in self.packets if p.number == number), None)
 
-    def stop_capture(self):
-        self._capture_active = False
-        self._history.append("Capture stopped")
+    def get_protocol_stats(self) -> List[ProtocolStats]:
+        return sorted(self.protocol_stats.values(), key=lambda s: s.packet_count, reverse=True)
 
-    def handle_input(self, key: str):
-        key = key.lower()
-        if key == "s":
-            if self._capture_active:
-                self.stop_capture()
-            else:
-                self.start_capture()
-        elif key == "f":
-            self._view_mode = "filter"
-        elif key == "t":
-            self._view_mode = "statistics"
-        elif key == "c":
-            self._view_mode = "conversations"
-        elif key == "p":
-            self._view_mode = "packet_list"
+    def get_conversations(self, limit: int = 10) -> List[Conversation]:
+        return self.conversations[:limit]
 
-    def render(self, width: int = 80, height: int = 24) -> List[str]:
-        lines = []
-        lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
-        lines.append("║                    NYRQIS PACKET ANALYZER                                   ║")
-        lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
-        lines.append("")
+    def get_traffic_timeline(self, buckets: int = 20) -> List[Dict]:
+        if not self.packets:
+            return []
+        timestamps = [p.timestamp for p in self.packets]
+        min_t, max_t = min(timestamps), max(timestamps)
+        span = max_t - min_t if max_t > min_t else 1
+        bucket_size = span / buckets
+        timeline = []
+        for i in range(buckets):
+            start = min_t + i * bucket_size
+            end = start + bucket_size
+            count = sum(1 for t in timestamps if start <= t < end)
+            bytes_in = sum(p.size for p in self.packets if start <= p.timestamp < end)
+            timeline.append({"bucket": i, "count": count, "bytes": bytes_in})
+        return timeline
 
-        # Capture status
-        status = "⏺ CAPTURING" if self._capture_active else "⏸ Stopped"
-        lines.append(f"  {status}  Packets: {self.total_packets}  Bytes: {self.total_bytes_display}  Rate: {self.packets_per_second:.1f} pkt/s  Filters: {len(self._filters)}")
-        if self._display_filter:
-            lines.append(f"  Filter: {self._display_filter}")
-        lines.append("")
-
-        # Packet list
-        lines.append("  ── Packets ──")
-        lines.append(f"  {'No':<6s} {'Time':<10s} {'Proto':<8s} {'Source':<22s} {'Destination':<22s} {'Len':<8s} {'Info'}")
-        lines.append(f"  {'─' * 100}")
-
-        for pkt in self._packets[:15]:
-            sel = "▶" if pkt.id - 1 == self._selected_packet else " "
-            dir_icon = pkt.direction_icon
-            threat = pkt.threat_icon
-            h = pkt.header
-            src = f"{h.src_ip.addr}:{h.src_port}" if h.src_port else h.src_ip.addr
-            dst = f"{h.dst_ip.addr}:{h.dst_port}" if h.dst_port else h.dst_ip.addr
-            info = f"{h.flags}" if h.flags else ""
-            lines.append(f"  {sel}{pkt.id:<5d} {pkt.time_str:<10s} {h.protocol.value:<8s} {src:<22s} {dst:<22s} {pkt.size_str:<8s} {dir_icon}{threat} {info}")
-
-        if self.total_packets > 15:
-            lines.append(f"  ... ({self.total_packets - 15} more packets)")
-        lines.append("")
-
-        # Protocol statistics
-        lines.append("  ── Protocol Statistics ──")
-        for name, ps in sorted(self._protocol_stats.items(), key=lambda x: -x[1].packet_count)[:8]:
-            lines.append(f"  {name:<10s} {ps.pct_bar} {ps.percentage:5.1f}%  {ps.packet_count:>5d} pkts  {ps.size_str}")
-        lines.append("")
-
-        # Selected packet detail
-        pkt = self.selected_packet
-        if pkt:
-            h = pkt.header
-            lines.append(f"  ── Packet #{pkt.id} Detail ──")
-            lines.append(f"  {h.src_ip.addr} ({h.src_ip.type_str}) → {h.dst_ip.addr} ({h.dst_ip.type_str})")
-            lines.append(f"  Protocol: {h.protocol.value}  TTL: {h.ttl}  Length: {pkt.data_length}B  Direction: {pkt.direction.value}")
-            if h.src_port:
-                lines.append(f"  Port: {h.src_port} → {h.dst_port}  Flags: {h.flags or 'None'}  Window: {h.window_size}")
-            if pkt.annotations:
-                lines.append(f"  Annotations: {', '.join(pkt.annotations)}")
-            lines.append("")
-
-        lines.append("  [S]tart/Stop Capture [P]ackets [T]Statistics [C]Conversations [F]Filter")
-        lines.append("  [↑↓]Select Packet [Ctrl+F]Display Filter")
-        return lines
+    def get_capture_summary(self) -> Dict:
+        duration = time.time() - self.start_time if self.start_time else 0
+        return {
+            "packets": self.packet_count,
+            "bytes": self.byte_count,
+            "duration_s": round(duration, 1),
+            "protocols": len(self.protocol_stats),
+            "conversations": len(self.conversations),
+            "state": self.state.value,
+        }
