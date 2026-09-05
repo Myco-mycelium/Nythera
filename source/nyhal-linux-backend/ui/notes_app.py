@@ -499,6 +499,23 @@ class MarkdownRenderer:
         return self.text
     def render_inline(self, text: str) -> str:
         return text
+    def char_count(self, text: str = "") -> int:
+        return len(text or self.text)
+    def line_count(self, text: str = "") -> int:
+        t = text or self.text
+        return len(t.splitlines()) if t else 0
+    def word_count(self, text: str = "") -> int:
+        t = text or self.text
+        return len(t.split()) if t else 0
+    def strip_markdown(self, text: str = "") -> str:
+        import re
+        t = text or self.text
+        t = re.sub(r'#+\s*', '', t)
+        t = re.sub(r'\*\*(.+?)\*\*', r'\1', t)
+        t = re.sub(r'\*(.+?)\*', r'\1', t)
+        t = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', t)
+        t = re.sub(r'`(.+?)`', r'\1', t)
+        return t.strip()
 
 
 from enum import Enum as _SortMode

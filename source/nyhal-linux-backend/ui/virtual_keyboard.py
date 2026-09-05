@@ -307,6 +307,113 @@ class VirtualKeyboard:
             "pressed": len(self.pressed_keys),
         }
 
+    # --- backward-compat properties ---
+    @property
+    def input_text(self) -> str:
+        return getattr(self, '_input_text', '')
+
+    @input_text.setter
+    def input_text(self, value: str):
+        self._input_text = value
+
+    @property
+    def mode(self):
+        return getattr(self, '_mode', KeyboardMode.LETTERS)
+
+    @property
+    def layout(self):
+        return self.current_layout
+
+    @property
+    def caps_lock(self) -> bool:
+        return getattr(self, '_caps_lock', False)
+
+    @property
+    def shift_active(self) -> bool:
+        return getattr(self, '_shift_active', False)
+
+    @property
+    def current_keys(self) -> list:
+        return self.pressed_keys
+
+    @property
+    def predictions(self) -> list:
+        return getattr(self, '_predictions', [])
+
+    @property
+    def recent_emojis(self) -> list:
+        return getattr(self, '_recent_emojis', [])
+
+    @property
+    def _cursor_pos(self):
+        return getattr(self, '__cursor_pos', len(self.input_text))
+
+    @property
+    def _key_history(self):
+        return getattr(self, '__key_history', [])
+
+    # --- backward-compat methods ---
+    def set_mode(self, mode) -> bool:
+        self._mode = mode
+        return True
+
+    def set_layout(self, layout_name: str) -> bool:
+        for layout in self.layouts:
+            if layout.name == layout_name:
+                self.current_layout = layout
+                return True
+        return False
+
+    def cycle_mode(self) -> str:
+        modes = [KeyboardMode.LETTERS, KeyboardMode.NUMBERS, KeyboardMode.SYMBOLS]
+        if not hasattr(self, '_mode_idx'):
+            self._mode_idx = 0
+        self._mode_idx = (self._mode_idx + 1) % len(modes)
+        self._mode = modes[self._mode_idx]
+        return self._mode.value
+
+    def cycle_layout(self) -> str:
+        if not self.layouts:
+            return ""
+        idx = 0
+        if self.current_layout:
+            for i, l in enumerate(self.layouts):
+                if l.name == self.current_layout.name:
+                    idx = i
+                    break
+        next_idx = (idx + 1) % len(self.layouts)
+        self.current_layout = self.layouts[next_idx]
+        return self.current_layout.name
+
+    def set_input_text(self, text: str):
+        self._input_text = text
+
+    def clear_input(self):
+        self._input_text = ""
+
+    def move_cursor(self, delta: int):
+        pos = self._cursor_pos + delta
+        self.__cursor_pos = max(0, min(len(self.input_text), pos))
+
+    def toggle_caps_lock(self) -> bool:
+        self._caps_lock = not self._caps_lock
+        return self._caps_lock
+
+    def toggle_high_contrast(self) -> bool:
+        self._high_contrast = not getattr(self, '_high_contrast', False)
+        return self._high_contrast
+
+    def toggle_magnifier(self) -> bool:
+        self._magnifier = not getattr(self, '_magnifier', False)
+        return self._magnifier
+
+    def toggle_sticky_keys(self) -> bool:
+        self._sticky_keys = not getattr(self, '_sticky_keys', False)
+        return self._sticky_keys
+
+    def _update_predictions(self):
+        self._predictions = getattr(self, '_predictions', [])
+
 
 @dataclass
 class Key:
