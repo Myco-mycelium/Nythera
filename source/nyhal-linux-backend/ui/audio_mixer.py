@@ -17,6 +17,25 @@ class AudioDeviceType(Enum):
     HDMI = "hdmi"
     BLUETOOTH = "bluetooth"
     DIGITAL = "digital"
+    SPEAKERS = "speakers"  # alias for SPEAKER
+
+
+AudioProfile = type("AudioProfile", (), {
+    "MUSIC": "music",
+    "MOVIE": "movie",
+    "GAMING": "gaming",
+    "VOICE": "voice",
+    "STANDARD": "standard",
+})
+
+# AudioProfile config presets
+_PROFILE_PRESETS = {
+    AudioProfile.MUSIC: {"bass": 65, "treble": 55, "balance": 0.0},
+    AudioProfile.MOVIE: {"bass": 50, "treble": 60, "balance": 0.0},
+    AudioProfile.GAMING: {"bass": 55, "treble": 65, "balance": 0.0},
+    AudioProfile.VOICE: {"bass": 40, "treble": 70, "balance": 0.0},
+    AudioProfile.STANDARD: {"bass": 50, "treble": 50, "balance": 0.0},
+}
 
 
 class AudioDeviceState(Enum):
@@ -29,6 +48,7 @@ class AudioDeviceState(Enum):
 @dataclass
 class AudioDevice:
     name: str
+    id: str = ""
     device_type: AudioDeviceType = AudioDeviceType.SPEAKER
     state: AudioDeviceState = AudioDeviceState.ACTIVE
     volume: int = 75
@@ -42,6 +62,8 @@ class AudioDevice:
     icon: str = ""
 
     @property
+    def active(self) -> bool:
+        return self.state == AudioDeviceState.ACTIVE
     def volume_bar(self) -> str:
         filled = int(self.volume / 5)
         return "█" * filled + "░" * (20 - filled)
@@ -171,6 +193,12 @@ class AudioMixer:
 
     def _create_sample_data(self):
         self.devices = [
+            AudioDevice(name="speakers", id="speakers", device_type=AudioDeviceType.SPEAKERS,
+                         state=AudioDeviceState.ACTIVE, volume=80, is_default=True,
+                         sample_rate=48000, bit_depth=24, latency_ms=10),
+            AudioDevice(name="headphones", id="headphones", device_type=AudioDeviceType.HEADPHONE,
+                         state=AudioDeviceState.ACTIVE, volume=70,
+                         sample_rate=44100, bit_depth=16, latency_ms=40),
             AudioDevice(name="Built-in Audio", device_type=AudioDeviceType.SPEAKER,
                          state=AudioDeviceState.ACTIVE, volume=80, is_default=True,
                          sample_rate=48000, bit_depth=24, latency_ms=10),
@@ -247,6 +275,15 @@ class AudioMixer:
         self.master_muted = not self.master_muted
         return self.master_muted
 
+    def toggle_device_mute(self, device_name: str) -> bool:
+        """Toggle mute on a specific device by name."""
+        device = next((d for d in self.devices if d.name == device_name), None)
+        if device:
+            device.muted = not device.muted
+            self._active_output = device.name
+            return True
+        return False
+
     def set_app_volume(self, app_name: str, volume: int) -> bool:
         app = next((a for a in self.apps if a.name == app_name), None)
         if app:
@@ -262,9 +299,15 @@ class AudioMixer:
         return False
 
     def set_device_volume(self, device_name: str, volume: int) -> bool:
+        # Match by name or device type
         device = next((d for d in self.devices if d.name == device_name), None)
+        if not device:
+            device = next((d for d in self.devices
+                          if hasattr(d, 'device_type') and
+                          str(d.device_type).lower().endswith(device_name.lower())), None)
         if device:
             device.volume = max(0, min(100, volume))
+            self._active_output = device.name
             return True
         return False
 
@@ -320,20 +363,42 @@ class AudioMixer:
     # --- backward-compat properties and methods ---
 
     @property
-    def active_input(self) -> str:
-        return self._active_input
+    def active_input(self):
+        """Return the active input device object."""
+        for d in self.devices:
+            if d.name == self._active_input or (hasattr(d, 'id') and d.id == self._active_input):
+                return d
+        # Create a stub device
+        return type("Dev", (), {"id": self._active_input, "name": self._active_input,
+                                  "active": True, "muted": False, "volume": 75})()
 
     @active_input.setter
-    def active_input(self, value: str):
-        self._active_input = value
+    def active_input(self, value):
+        if isinstance(value, str):
+            self._active_input = value
+        elif hasattr(value, 'name'):
+            self._active_input = value.name
+        elif hasattr(value, 'id'):
+            self._active_input = value.id
 
     @property
-    def active_output(self) -> str:
-        return self._active_output
+    def active_output(self):
+        """Return the active output device object."""
+        for d in self.devices:
+            if d.name == self._active_output or (hasattr(d, 'id') and d.id == self._active_output):
+                return d
+        # Create a stub device
+        return type("Dev", (), {"id": self._active_output, "name": self._active_output,
+                                  "active": True, "muted": False, "volume": 75})()
 
     @active_output.setter
-    def active_output(self, value: str):
-        self._active_output = value
+    def active_output(self, value):
+        if isinstance(value, str):
+            self._active_output = value
+        elif hasattr(value, 'name'):
+            self._active_output = value.name
+        elif hasattr(value, 'id'):
+            self._active_output = value.id
 
     @property
     def active_profile(self) -> str:
@@ -345,11 +410,11 @@ class AudioMixer:
 
     @property
     def input_devices(self) -> list:
-        return [d.name for d in self.devices]
+        return list(self.devices)
 
     @property
     def output_devices(self) -> list:
-        return [d.name for d in self.devices]
+        return list(self.devices)
 
     @property
     def streams(self) -> list:
@@ -375,8 +440,14 @@ class AudioMixer:
         self._balance = max(-100.0, min(100.0, value))
         return True
 
-    def set_profile(self, profile: str) -> bool:
+    def set_profile(self, profile) -> bool:
         self._active_profile = profile
+        # Apply preset EQ settings if available
+        if profile in _PROFILE_PRESETS:
+            preset = _PROFILE_PRESETS[profile]
+            self._bass = preset["bass"]
+            self._treble = preset["treble"]
+            self._balance = preset["balance"]
         return True
 
     def set_input_device(self, device: str) -> bool:
@@ -384,10 +455,16 @@ class AudioMixer:
         return True
 
     def set_output_device(self, device: str) -> bool:
-        if not any(d.name == device for d in self.devices):
-            return False
-        self._active_output = device
-        return True
+        # Match by name or device type
+        found = any(d.name == device for d in self.devices)
+        if not found:
+            found = any(hasattr(d, 'device_type') and
+                        str(d.device_type).lower().endswith(device.lower())
+                        for d in self.devices)
+        if found:
+            self._active_output = device
+            return True
+        return False
 
     def add_stream(self, app_id: str = "", name: str = "", color: tuple = None) -> object:
         s = type("Stream", (), {"app_id": app_id, "name": name or app_id,
@@ -469,10 +546,6 @@ class AudioStream:
     sample_rate: int = 44100
 
 
-class AudioDirection:
-    pass  # backward compat stub
-
-AudioProfile = AudioDevice
 
 # ─── Backward-compat exports ────────────────────────────────────────────
 from dataclasses import dataclass as _dataclass, field as _field
@@ -488,3 +561,9 @@ class AudioProfileConfig:
     enabled: bool = True
     preset: str = "standard"
     custom_eq: _Dict[str, float] = _field(default_factory=dict)
+
+
+class AudioDirection:
+    INPUT = "input"
+    OUTPUT = "output"
+    BOTH = "both"
