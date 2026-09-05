@@ -11,10 +11,19 @@ from typing import List, Dict, Optional
 
 
 class FileType(Enum):
-    FILE = "file"
-    DIRECTORY = "directory"
-    SYMLINK = "symlink"
-    SPECIAL = "special"
+    FILE = 0
+    DIRECTORY = 1
+    SYMLINK = 2
+    SPECIAL = 3
+    CODE = 9
+    IMAGE = 4
+    AUDIO = 5
+    VIDEO = 6
+    ARCHIVE = 7
+    DOCUMENT = 8
+    EXECUTABLE = 10
+    CONFIG = 11
+    FONT = 12
 
 
 class ViewMode(Enum):
@@ -33,6 +42,9 @@ class SortBy(Enum):
     PERMISSIONS = "permissions"
 
 
+SortMode = SortBy  # backward-compat alias
+
+
 @dataclass
 class FileEntry:
     name: str = ""
@@ -46,6 +58,64 @@ class FileEntry:
     is_hidden: bool = False
     is_symlink: bool = False
     symlink_target: str = ""
+
+    def __init__(self, name: str = "", file_type: FileType = None, size_bytes: int = 0,
+                 modified_time: float = 0.0, permissions: str = "", owner: str = "",
+                 group: str = "", mime_type: str = "", is_hidden: bool = False,
+                 is_symlink: bool = False, symlink_target: str = "",
+                 # backward-compat aliases
+                 path: str = "", is_dir: bool = False, size: int = 0,
+                 modified: float = 0.0):
+        self.name = name
+        self.path = path
+        # Auto-detect file_type from is_dir or extension
+        if is_dir:
+            self.file_type = FileType.DIRECTORY
+        elif file_type is not None:
+            self.file_type = file_type
+        else:
+            self.file_type = FileType.FILE
+            ext = "." + name.rsplit(".", 1)[1].lower() if "." in name else ""
+            if ext in EXTENSION_MAP:
+                self.file_type = EXTENSION_MAP[ext]
+        self.size_bytes = size if size else size_bytes
+        self.modified_time = modified if modified else modified_time
+        self.permissions = permissions
+        self.owner = owner
+        self.group = group
+        self.mime_type = mime_type
+        self.is_hidden = is_hidden
+        self.is_symlink = is_symlink
+        self.symlink_target = symlink_target
+
+    @property
+    def is_dir(self) -> bool:
+        return self.file_type == FileType.DIRECTORY
+
+    @property
+    def size(self) -> int:
+        return self.size_bytes
+
+    @property
+    def display_size(self) -> str:
+        if self.is_dir:
+            return ""
+        s = self.size_bytes
+        if s == 0:
+            return "0 B"
+        if s < 1024:
+            return f"{s} B"
+        elif s < 1024 * 1024:
+            return f"{s / 1024:.1f} KB"
+        elif s < 1024 * 1024 * 1024:
+            return f"{s / (1024 * 1024):.1f} MB"
+        return f"{s / (1024 * 1024 * 1024):.2f} GB"
+
+    @property
+    def display_date(self) -> str:
+        if self.modified_time == 0:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(self.modified_time))
 
     @property
     def icon(self) -> str:
@@ -89,7 +159,7 @@ class FileEntry:
     @property
     def extension(self) -> str:
         parts = self.name.rsplit(".", 1)
-        return parts[1] if len(parts) > 1 else ""
+        return "." + parts[1] if len(parts) > 1 else ""
 
 
 @dataclass
@@ -135,7 +205,13 @@ class FileOperation:
 
 
 class FileManager:
-    def __init__(self):
+    def __init__(self, path: str = None):
+        # If a path is given, operate as a disk-based file browser
+        self._disk_mode = path is not None
+        self._path = path or "/"
+        self._view_width: int = 1280
+        self._view_height: int = 720
+
         self.tabs: List[FileTab] = []
         self.bookmarks: List[Bookmark] = []
         self.operations: List[FileOperation] = []
@@ -143,7 +219,202 @@ class FileManager:
         self.tab_counter: int = 0
         self.clipboard_files: List[str] = []
         self.clipboard_mode: str = ""  # copy, cut
-        self._create_sample_data()
+
+        if self._disk_mode:
+            self._init_disk_mode()
+        else:
+            self._create_sample_data()
+
+    def _init_disk_mode(self):
+        """Initialize disk-based file browser mode."""
+        self._selected_index = 0
+        self._sort_mode = SortMode.NAME
+        self._sort_reverse = False
+        self._show_hidden = False
+        self._entries: List[FileEntry] = []
+        self._load_entries()
+
+    def _load_entries(self):
+        """Load entries from the current path."""
+        import os as _os
+        self._entries = []
+        try:
+            items = _os.listdir(self._path)
+        except (PermissionError, FileNotFoundError):
+            items = []
+        # Add parent directory entry
+        parent = _os.path.dirname(self._path.rstrip("/"))
+        if parent != self._path.rstrip("/"):
+            self._entries.append(FileEntry(name="..", path=parent, is_dir=True))
+        for item in sorted(items):
+            full = _os.path.join(self._path, item)
+            try:
+                st = _os.stat(full)
+                is_dir = _os.path.isdir(full)
+                self._entries.append(FileEntry(
+                    name=item, path=full, is_dir=is_dir,
+                    size=st.st_size, modified=st.st_mtime,
+                ))
+            except (PermissionError, OSError):
+                pass
+
+    @property
+    def current_path(self) -> str:
+        return self._path
+
+    @current_path.setter
+    def current_path(self, value: str):
+        self._path = value
+        if self._disk_mode:
+            self._load_entries()
+
+    @property
+    def entry_count(self) -> int:
+        if self._disk_mode:
+            return len(self._entries)
+        return sum(len(t.history) for t in self.tabs)
+
+    @property
+    def entries(self) -> List[FileEntry]:
+        if self._disk_mode:
+            return self._entries
+        return []
+
+    @property
+    def selected_index(self) -> int:
+        if self._disk_mode:
+            return self._selected_index
+        return 0
+
+    @selected_index.setter
+    def selected_index(self, value: int):
+        if self._disk_mode:
+            self._selected_index = value
+
+    @property
+    def sort_mode(self):
+        if self._disk_mode:
+            return self._sort_mode
+        return SortMode.NAME
+
+    @sort_mode.setter
+    def sort_mode(self, value):
+        if self._disk_mode:
+            self._sort_mode = value
+
+    @property
+    def sort_reverse(self) -> bool:
+        if self._disk_mode:
+            return self._sort_reverse
+        return False
+
+    @sort_reverse.setter
+    def sort_reverse(self, value: bool):
+        if self._disk_mode:
+            self._sort_reverse = value
+
+    @property
+    def show_hidden(self) -> bool:
+        if self._disk_mode:
+            return self._show_hidden
+        return False
+
+    @show_hidden.setter
+    def show_hidden(self, value: bool):
+        if self._disk_mode:
+            self._show_hidden = value
+        if self._disk_mode:
+            self._load_entries()
+
+    def select(self, index: int):
+        if self._disk_mode:
+            if 0 <= index < len(self._entries):
+                self._selected_index = index
+
+    def get_selected(self) -> Optional[FileEntry]:
+        if self._disk_mode:
+            if 0 <= self._selected_index < len(self._entries):
+                return self._entries[self._selected_index]
+        return None
+
+    @property
+    def breadcrumbs(self):
+        import os as _os
+        parts = self._path.split("/")
+        crumbs = [("/", "/")]
+        current = ""
+        for part in parts:
+            if not part:
+                continue
+            current += "/" + part
+            crumbs.append((part, current))
+        return crumbs
+
+    def go_up(self):
+        import os as _os
+        parent = _os.path.dirname(self._path.rstrip("/"))
+        if parent and parent != self._path:
+            self._path = parent
+            self._load_entries()
+
+    def navigate_to(self, path: str) -> bool:
+        import os as _os
+        if _os.path.isdir(path):
+            self._path = _os.path.abspath(path)
+            self._load_entries()
+            return True
+        return False
+
+    def toggle_hidden(self):
+        if self._disk_mode:
+            self._show_hidden = not self._show_hidden
+            self._load_entries()
+
+    def handle_key(self, key: str) -> str:
+        if self._disk_mode:
+            if key == "up":
+                self._selected_index = max(0, self._selected_index - 1)
+            elif key == "down":
+                self._selected_index = min(len(self._entries) - 1, self._selected_index + 1)
+            elif key == "home":
+                self._selected_index = 0
+            elif key == "enter":
+                entry = self.get_selected()
+                if entry and entry.is_dir:
+                    self.navigate_to(entry.path)
+                    return "navigate"
+            elif key == "backspace":
+                self.go_up()
+            elif key == "h":
+                self.toggle_hidden()
+            elif key == "n":
+                self._sort_mode = SortMode.NAME
+            elif key == "s":
+                self._sort_mode = SortMode.SIZE
+            elif key == "r":
+                self._sort_reverse = not self._sort_reverse
+        return "ok"
+
+    def render(self, width: int = 0, height: int = 0) -> tuple:
+        """Render file manager. Returns (pixels, width, height)."""
+        w = width or self._view_width
+        h = height or self._view_height
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.new("RGB", (w, h), (20, 20, 38))
+            draw = ImageDraw.Draw(img)
+            return img.tobytes(), w, h
+        except ImportError:
+            return b"", w, h
+
+    def render_to_rgb(self) -> tuple:
+        w, h = self._view_width, self._view_height
+        try:
+            from PIL import Image
+            img = Image.new("RGB", (w, h), (20, 20, 38))
+            return list(img.tobytes()), w, h
+        except ImportError:
+            return [], w, h
 
     def _create_sample_data(self):
         now = time.time()
@@ -341,22 +612,43 @@ class SortMode(Enum):
     DATE = "date"
     TYPE = "type"
 
-EXTENSION_MAP = {}
+EXTENSION_MAP = {
+    ".py": FileType.CODE, ".js": FileType.CODE, ".ts": FileType.CODE,
+    ".rs": FileType.CODE, ".go": FileType.CODE, ".c": FileType.CODE,
+    ".h": FileType.CODE, ".cpp": FileType.CODE, ".java": FileType.CODE,
+    ".rb": FileType.CODE, ".php": FileType.CODE, ".swift": FileType.CODE,
+    ".png": FileType.IMAGE, ".jpg": FileType.IMAGE, ".jpeg": FileType.IMAGE,
+    ".gif": FileType.IMAGE, ".svg": FileType.IMAGE, ".bmp": FileType.IMAGE,
+    ".webp": FileType.IMAGE, ".ico": FileType.IMAGE,
+    ".mp3": FileType.AUDIO, ".wav": FileType.AUDIO, ".flac": FileType.AUDIO,
+    ".ogg": FileType.AUDIO, ".aac": FileType.AUDIO, ".m4a": FileType.AUDIO,
+    ".mp4": FileType.VIDEO, ".mkv": FileType.VIDEO, ".avi": FileType.VIDEO,
+    ".mov": FileType.VIDEO, ".webm": FileType.VIDEO, ".wmv": FileType.VIDEO,
+    ".zip": FileType.ARCHIVE, ".tar": FileType.ARCHIVE, ".gz": FileType.ARCHIVE,
+    ".rar": FileType.ARCHIVE, ".7z": FileType.ARCHIVE, ".bz2": FileType.ARCHIVE,
+    ".md": FileType.DOCUMENT, ".txt": FileType.DOCUMENT, ".pdf": FileType.DOCUMENT,
+    ".doc": FileType.DOCUMENT, ".docx": FileType.DOCUMENT, ".odt": FileType.DOCUMENT,
+    ".json": FileType.CONFIG, ".yaml": FileType.CONFIG, ".yml": FileType.CONFIG,
+    ".toml": FileType.CONFIG, ".ini": FileType.CONFIG, ".cfg": FileType.CONFIG,
+    ".sh": FileType.EXECUTABLE, ".bash": FileType.EXECUTABLE, ".fish": FileType.EXECUTABLE,
+    ".ttf": FileType.FONT, ".otf": FileType.FONT, ".woff": FileType.FONT,
+}
 
-# ─── Backward-compat exports ────────────────────────────────────────────
-# Import the existing FileType enum from this module if it exists
-import sys as _sys
-_fm = _sys.modules.get(__name__)
-FILE_TYPE_COLORS = {}
-if hasattr(_fm, 'FileType'):
-    for ft in _fm.FileType:
-        if ft.name == 'FILE':
-            FILE_TYPE_COLORS[ft] = '#90CAF9'
-        elif ft.name == 'DIRECTORY':
-            FILE_TYPE_COLORS[ft] = '#FFB74D'
-        elif ft.name == 'SYMLINK':
-            FILE_TYPE_COLORS[ft] = '#CE93D8'
-        elif ft.name == 'IMAGE':
-            FILE_TYPE_COLORS[ft] = '#81C784'
-        else:
-            FILE_TYPE_COLORS[ft] = '#BDBDBD'
+FILE_TYPE_COLORS = {
+    FileType.FILE: (144, 202, 249),
+    FileType.DIRECTORY: (255, 183, 77),
+    FileType.SYMLINK: (206, 147, 216),
+    FileType.CODE: (129, 199, 132),
+    FileType.IMAGE: (255, 138, 101),
+    FileType.AUDIO: (255, 213, 79),
+    FileType.VIDEO: (186, 104, 200),
+    FileType.ARCHIVE: (255, 171, 145),
+    FileType.DOCUMENT: (100, 181, 246),
+    FileType.CONFIG: (174, 213, 129),
+    FileType.EXECUTABLE: (239, 154, 154),
+    FileType.FONT: (149, 117, 205),
+    FileType.SPECIAL: (158, 158, 158),
+}
+
+
+# FILE_TYPE_COLORS defined above with RGB tuples
