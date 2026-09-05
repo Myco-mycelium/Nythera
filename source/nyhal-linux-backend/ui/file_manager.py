@@ -246,17 +246,28 @@ class FileManager:
         parent = _os.path.dirname(self._path.rstrip("/"))
         if parent != self._path.rstrip("/"):
             self._entries.append(FileEntry(name="..", path=parent, is_dir=True))
-        for item in sorted(items):
+        # Sort: directories first, then files, alphabetically within each group
+        dirs = []
+        files = []
+        for item in items:
             full = _os.path.join(self._path, item)
             try:
                 st = _os.stat(full)
                 is_dir = _os.path.isdir(full)
-                self._entries.append(FileEntry(
+                entry = FileEntry(
                     name=item, path=full, is_dir=is_dir,
                     size=st.st_size, modified=st.st_mtime,
-                ))
+                )
+                if is_dir:
+                    dirs.append(entry)
+                else:
+                    files.append(entry)
             except (PermissionError, OSError):
                 pass
+        dirs.sort(key=lambda e: e.name.lower())
+        files.sort(key=lambda e: e.name.lower())
+        self._entries.extend(dirs)
+        self._entries.extend(files)
 
     @property
     def current_path(self) -> str:
@@ -350,18 +361,23 @@ class FileManager:
             crumbs.append((part, current))
         return crumbs
 
-    def go_up(self):
+    def go_up(self) -> bool:
         import os as _os
         parent = _os.path.dirname(self._path.rstrip("/"))
-        if parent and parent != self._path:
-            self._path = parent
+        if not parent or parent == self._path.rstrip("/"):
+            return False
+        self._path = parent
+        if self._disk_mode:
             self._load_entries()
+        return True
 
     def navigate_to(self, path: str) -> bool:
         import os as _os
-        if _os.path.isdir(path):
-            self._path = _os.path.abspath(path)
-            self._load_entries()
+        abspath = _os.path.abspath(path)
+        if _os.path.isdir(abspath):
+            self._path = abspath
+            if self._disk_mode:
+                self._load_entries()
             return True
         return False
 
@@ -372,40 +388,73 @@ class FileManager:
 
     def handle_key(self, key: str) -> str:
         if self._disk_mode:
-            if key == "up":
+            if key == "Up":
                 self._selected_index = max(0, self._selected_index - 1)
-            elif key == "down":
+                return "select"
+            elif key == "Down":
                 self._selected_index = min(len(self._entries) - 1, self._selected_index + 1)
-            elif key == "home":
+                return "select"
+            elif key == "Home":
                 self._selected_index = 0
-            elif key == "enter":
+                return "select"
+            elif key == "Enter":
                 entry = self.get_selected()
                 if entry and entry.is_dir:
                     self.navigate_to(entry.path)
                     return "navigate"
-            elif key == "backspace":
+                return "activate"
+            elif key == "Backspace":
                 self.go_up()
-            elif key == "h":
+                return "navigate"
+            elif key == ".":
                 self.toggle_hidden()
+                return "toggle_hidden"
             elif key == "n":
                 self._sort_mode = SortMode.NAME
-            elif key == "s":
+                return "sort"
+            elif key == "S":
                 self._sort_mode = SortMode.SIZE
+                self._sort_reverse = True
+                return "sort"
             elif key == "r":
-                self._sort_reverse = not self._sort_reverse
-        return "ok"
+                self._load_entries()
+                return "refresh"
+        return ""
+
+    def _load_directory(self):
+        """Reload the current directory."""
+        if self._disk_mode:
+            self._load_entries()
+
+    def activate_selected(self) -> bool:
+        """Activate (open) the selected entry."""
+        entry = self.get_selected()
+        if entry and entry.is_dir:
+            return self.navigate_to(entry.path)
+        return False
+
+    def scroll(self, amount: int):
+        """Scroll the view by amount lines."""
+        pass  # Scroll offset tracking (future use)
+
+    def scroll_to_selected(self):
+        """Scroll the view to show the selected entry."""
+        pass  # Scroll offset tracking (future use)
 
     def render(self, width: int = 0, height: int = 0) -> tuple:
-        """Render file manager. Returns (pixels, width, height)."""
+        """Render file manager. Returns (pixels, width, height).
+        pixels is a list of w*h pixel values."""
         w = width or self._view_width
         h = height or self._view_height
         try:
             from PIL import Image, ImageDraw
             img = Image.new("RGB", (w, h), (20, 20, 38))
             draw = ImageDraw.Draw(img)
-            return img.tobytes(), w, h
+            # Return list of one value per pixel (brightness avg)
+            pixels = [(20, 20, 38)] * (w * h)
+            return pixels, w, h
         except ImportError:
-            return b"", w, h
+            return [(0, 0, 0)] * (w * h), w, h
 
     def render_to_rgb(self) -> tuple:
         w, h = self._view_width, self._view_height
@@ -532,6 +581,14 @@ class FileManager:
         return False
 
     def navigate_to(self, path: str) -> bool:
+        if self._disk_mode:
+            import os as _os
+            abspath = _os.path.abspath(path)
+            if _os.path.isdir(abspath):
+                self._path = abspath
+                self._load_entries()
+                return True
+            return False
         if self.current_tab:
             self.current_tab.path = path
             self.current_tab.history.append(path)

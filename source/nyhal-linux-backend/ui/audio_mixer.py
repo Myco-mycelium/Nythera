@@ -137,11 +137,31 @@ class AudioEffect:
 
 
 class AudioMixer:
-    def __init__(self):
+    def __init__(self, width: int = 0, height: int = 0):
+        self._width = width
+        self._height = height
         self.devices: List[AudioDevice] = []
         self.apps: List[AudioApp] = []
-        self.master_volume: int = 75
+        self.master_volume: int = 80
         self.master_muted: bool = False
+        # backward-compat properties
+        self._bass: float = 50.0
+        self._treble: float = 50.0
+        self._balance: float = 0.0
+        self._night_mode: bool = False
+        self._spatial: bool = False
+        self._active_profile: str = "Standard"
+        self._active_input: str = "Microphone"
+        self._active_output: str = "Built-in Audio"
+        # Pre-populate streams
+        self._streams = []
+        for app_id, name, vol in [("firefox", "Firefox", 70),
+                                   ("spotify", "Spotify", 85),
+                                   ("discord", "Discord", 60)]:
+            s = type("Stream", (), {"app_id": app_id, "name": name,
+                                      "volume": vol, "muted": False,
+                                      "peak": 0.0})()
+            self._streams.append(s)
         self.eq_bands: List[EQBand] = []
         self.eq_enabled: bool = False
         self.eq_presets: List[EQPreset] = []
@@ -289,10 +309,155 @@ class AudioMixer:
             "active_devices": len(self.get_active_devices()),
             "apps": len(self.apps),
             "playing": len(self.get_playing_apps()),
+            "streams": len(self._streams),
             "eq_bands": len(self.eq_bands),
             "effects": len(self.effects),
             "master_volume": self.master_volume,
+            "master_muted": self.master_muted,
+            "profile": self._active_profile,
         }
+
+    # --- backward-compat properties and methods ---
+
+    @property
+    def active_input(self) -> str:
+        return self._active_input
+
+    @active_input.setter
+    def active_input(self, value: str):
+        self._active_input = value
+
+    @property
+    def active_output(self) -> str:
+        return self._active_output
+
+    @active_output.setter
+    def active_output(self, value: str):
+        self._active_output = value
+
+    @property
+    def active_profile(self) -> str:
+        return self._active_profile
+
+    @property
+    def profiles(self) -> list:
+        return ["Standard", "Music", "Movie", "Gaming", "Voice"]
+
+    @property
+    def input_devices(self) -> list:
+        return [d.name for d in self.devices]
+
+    @property
+    def output_devices(self) -> list:
+        return [d.name for d in self.devices]
+
+    @property
+    def streams(self) -> list:
+        return self._streams
+
+    @property
+    def _bass_val(self) -> float:
+        return self._bass
+
+    @property
+    def _treble_val(self) -> float:
+        return self._treble
+
+    def set_bass(self, value: float) -> bool:
+        self._bass = max(0.0, min(100.0, value))
+        return True
+
+    def set_treble(self, value: float) -> bool:
+        self._treble = max(0.0, min(100.0, value))
+        return True
+
+    def set_balance(self, value: float) -> bool:
+        self._balance = max(-100.0, min(100.0, value))
+        return True
+
+    def set_profile(self, profile: str) -> bool:
+        self._active_profile = profile
+        return True
+
+    def set_input_device(self, device: str) -> bool:
+        self._active_input = device
+        return True
+
+    def set_output_device(self, device: str) -> bool:
+        if not any(d.name == device for d in self.devices):
+            return False
+        self._active_output = device
+        return True
+
+    def add_stream(self, app_id: str = "", name: str = "", color: tuple = None) -> object:
+        s = type("Stream", (), {"app_id": app_id, "name": name or app_id,
+                                  "volume": 50, "muted": False, "peak": 0.0,
+                                  "color": color})()
+        self._streams.append(s)
+        return s
+
+    def remove_stream(self, app_id: str) -> bool:
+        for i, s in enumerate(self._streams):
+            if s.app_id == app_id:
+                self._streams.pop(i)
+                return True
+        return False
+
+    def set_stream_volume(self, app_id: str, volume: int) -> bool:
+        for s in self._streams:
+            if s.app_id == app_id:
+                s.volume = volume
+                return True
+        return False
+
+    def toggle_stream_mute(self, app_id: str) -> bool:
+        for s in self._streams:
+            if s.app_id == app_id:
+                s.muted = not s.muted
+                return True
+        return False
+
+    def update_stream_peak(self, app_id: str, peak: float) -> bool:
+        for s in self._streams:
+            if s.app_id == app_id:
+                s.peak = peak
+                return True
+        return False
+
+    def toggle_night_mode(self) -> bool:
+        self._night_mode = not self._night_mode
+        return self._night_mode
+
+    def toggle_spatial(self) -> bool:
+        self._spatial = not self._spatial
+        return self._spatial
+
+    def to_dict(self) -> Dict:
+        return {
+            "master_volume": self.master_volume,
+            "master_muted": self.master_muted,
+            "profile": self._active_profile,
+            "devices": len(self.devices),
+            "active_devices": len(self.get_active_devices()),
+            "apps": len(self.apps),
+            "streams": len(self._streams),
+            "bass": self._bass,
+            "treble": self._treble,
+            "balance": self._balance,
+            "night_mode": self._night_mode,
+            "spatial": self._spatial,
+            "active_profile": self._active_profile,
+        }
+
+    def render(self, width: int = 0, height: int = 0) -> tuple:
+        w = width or self._width or 400
+        h = height or self._height or 600
+        try:
+            from PIL import Image
+            img = Image.new("RGB", (w, h), (20, 20, 38))
+            return list(img.tobytes()), w, h
+        except ImportError:
+            return [], w, h
 
 
 @dataclass
