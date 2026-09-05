@@ -39,8 +39,6 @@ class TerminalTheme:
         return self.name
 
 
-# ─── THEMES constant ─────────────────────────────────────────────────────
-
 THEMES = {
     "Default": TerminalTheme("Default", "#1a1b26", "#c0caf5"),
     "Monokai": TerminalTheme("Monokai", "#272822", "#f8f8f2"),
@@ -49,10 +47,9 @@ THEMES = {
     "Dracula": TerminalTheme("Dracula", "#282a36", "#f8f8f2"),
     "Nord": TerminalTheme("Nord", "#2e3440", "#d8dee9"),
     "Gruvbox": TerminalTheme("Gruvbox", "#282828", "#ebdbb2"),
+    "Matrix": TerminalTheme("Matrix", "#000000", "#00ff00"),
 }
 
-
-# ─── Terminal Profile ────────────────────────────────────────────────────
 
 class TerminalProfile:
     """Named color scheme / profile for the terminal."""
@@ -100,6 +97,12 @@ class TerminalTab:
     id: int = 0
     output_buffer: List[str] = field(default_factory=list)
     history: List[CommandHistory] = field(default_factory=list)
+    profile: Optional[TerminalTheme] = None
+    zoom_level: float = 1.0
+
+    def __post_init__(self):
+        if self.profile is None:
+            self.profile = THEMES.get("Default")
 
     @property
     def display_title(self) -> str:
@@ -132,27 +135,40 @@ class TerminalEmulator:
         self._create_sample_data()
 
     def _create_sample_data(self):
-        tab1 = TerminalTab(title="zsh", cwd="/home/user", id=0)
+        tab1 = TerminalTab(title="dev", cwd="/home/dev", id=0,
+                           profile=THEMES["Default"])
         tab1.output_buffer = ["Welcome to Nyrqis Terminal", "$ "]
-        tab2 = TerminalTab(title="ssh server", cwd="/opt", id=1)
+        tab2 = TerminalTab(title="ssh server", cwd="/opt", id=1,
+                           profile=THEMES["Default"])
         tab2.output_buffer = ["Connected to remote server", "[root@server ~]# "]
-        tab3 = TerminalTab(title="python", cwd="/home/user/projects", id=2)
+        tab3 = TerminalTab(title="python", cwd="/home/dev/projects", id=2,
+                           profile=THEMES["Default"])
         tab3.output_buffer = ["Python 3.12.0", ">>> "]
         self._tabs = [tab1, tab2, tab3]
 
         self._history = [
             CommandHistory(command="ls -la", result="Desktop  Documents  Downloads"),
             CommandHistory(command="git status", result="On branch main"),
+            CommandHistory(command="cargo build", result="Finished release [optimized]"),
             CommandHistory(command="python3 main.py", result="Hello world"),
             CommandHistory(command="cd /tmp", result=""),
             CommandHistory(command="git push origin main", result="Everything up-to-date"),
+            CommandHistory(command="cargo test", result="running 42 tests"),
         ]
+
+    @property
+    def profiles(self) -> List[TerminalTheme]:
+        return list(THEMES.values())
 
     @property
     def selected_tab(self) -> Optional[TerminalTab]:
         if 0 <= self._selected_tab < len(self._tabs):
             return self._tabs[self._selected_tab]
         return None
+
+    @property
+    def current_tab(self) -> Optional[TerminalTab]:
+        return self.selected_tab
 
     @property
     def tab_count(self) -> int:
@@ -175,12 +191,22 @@ class TerminalEmulator:
         self._tabs.append(tab)
         return tab
 
-    def close_tab(self, index: int) -> bool:
-        if 0 <= index < len(self._tabs) and len(self._tabs) > 1:
-            del self._tabs[index]
-            if self._selected_tab >= len(self._tabs):
-                self._selected_tab = len(self._tabs) - 1
-            return True
+    def close_tab(self, index_or_id) -> bool:
+        # Support both index and id
+        if isinstance(index_or_id, int):
+            # Try as index first
+            if 0 <= index_or_id < len(self._tabs) and len(self._tabs) > 1:
+                del self._tabs[index_or_id]
+                if self._selected_tab >= len(self._tabs):
+                    self._selected_tab = len(self._tabs) - 1
+                return True
+            # Try as id
+            for i, t in enumerate(self._tabs):
+                if t.id == index_or_id and len(self._tabs) > 1:
+                    del self._tabs[i]
+                    if self._selected_tab >= len(self._tabs):
+                        self._selected_tab = len(self._tabs) - 1
+                    return True
         return False
 
     def execute_command(self, command: str) -> str:
@@ -206,17 +232,20 @@ class TerminalEmulator:
             self._history.append(CommandHistory(command=command, result=result))
             return result
 
-        if command.startswith("cd "):
-            path = command[3:].strip()
-            tab.cwd = os.path.join(tab.cwd, path) if not path.startswith("/") else path
-            result = ""
-            self._history.append(CommandHistory(command=command, result=""))
-            return result
-
         if command == "pwd":
             result = tab.cwd
             tab.output_buffer.append(result)
             self._history.append(CommandHistory(command=command, result=result))
+            return result
+
+        if command.startswith("cd "):
+            path = command[3:].strip()
+            if path.startswith("/"):
+                tab.cwd = path
+            else:
+                tab.cwd = os.path.join(tab.cwd, path)
+            result = ""
+            self._history.append(CommandHistory(command=command, result=""))
             return result
 
         if command.startswith("echo "):
@@ -241,6 +270,33 @@ class TerminalEmulator:
     def set_theme(self, theme: TerminalTheme):
         self._current_theme = theme
         self.theme = theme
+
+    def zoom_in(self) -> float:
+        tab = self.selected_tab
+        if tab:
+            tab.zoom_level += 0.1
+            return tab.zoom_level
+        return 1.0
+
+    def zoom_out(self) -> float:
+        tab = self.selected_tab
+        if tab and tab.zoom_level > 0.5:
+            tab.zoom_level -= 0.1
+            return tab.zoom_level
+        return 1.0
+
+    def set_profile(self, tab_id_or_int, profile_name_or_str=None) -> bool:
+        # Support both set_profile(tab_id, name) and set_profile(theme)
+        if profile_name_or_str is not None:
+            tab_id = tab_id_or_int
+            name = profile_name_or_str
+            for t in self._tabs:
+                if t.id == tab_id:
+                    theme = THEMES.get(name)
+                    if theme:
+                        t.profile = theme
+                    return True
+        return True
 
     def render(self) -> List[str]:
         lines = [
@@ -283,22 +339,18 @@ class TerminalEmulator:
     def resize_split(self, tab_id: int, ratio: float) -> bool:
         return True
 
-    def zoom_in(self) -> float:
-        return 1.0
-
-    def zoom_out(self) -> float:
-        return 1.0
-
-    def set_profile(self, tab_id: int, profile_name: str) -> bool:
-        return True
-
     def clear_tab(self, tab_id: int) -> bool:
-        return True
+        for t in self._tabs:
+            if t.id == tab_id:
+                t.output_buffer = []
+                return True
+        return False
 
     def get_stats(self) -> Dict:
         return {
             "tabs": self.tab_count,
             "history": self.history_count,
+            "history_entries": self.history_count,
             "failed": self.failed_commands,
         }
 

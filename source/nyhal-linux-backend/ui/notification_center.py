@@ -25,6 +25,7 @@ class NotificationCategory(Enum):
     SOCIAL = "social"
     REMINDER = "reminder"
     UPDATE = "update"
+    SECURITY = "security"
     OTHER = "other"
 
 
@@ -40,9 +41,11 @@ class NotificationStatus(Enum):
 
 @dataclass
 class Notification:
+    id: int = 0
     title: str = ""
     body: str = ""
     app: str = ""
+    app_name: str = ""
     category: NotificationCategory = NotificationCategory.OTHER
     priority: NotificationPriority = NotificationPriority.NORMAL
     status: NotificationStatus = NotificationStatus.NEW
@@ -129,6 +132,7 @@ class NotificationStats:
 
 @dataclass
 class DNDschedule:
+    name: str = "DND"
     enabled: bool = False
     start_hour: int = 22
     end_hour: int = 7
@@ -140,6 +144,11 @@ class DNDschedule:
 
     @property
     def days_display(self) -> str:
+        if not self.days:
+            return "None"
+        weekdays = {"Mon", "Tue", "Wed", "Thu", "Fri"}
+        if set(self.days) == weekdays:
+            return "Weekdays"
         return ", ".join(self.days)
 
     @property
@@ -177,27 +186,31 @@ class NotificationCenter:
         self.notifications: List[Notification] = []
         self.dnd_enabled: bool = False
         self._dnd_schedule: DNDschedule = DNDschedule()
+        self.dnd_schedules: List[DNDschedule] = [self._dnd_schedule]
         self._app_settings: List[AppNotificationSettings] = []
         self._create_sample_data()
 
     def _create_sample_data(self):
         now = time.time()
         self.notifications = [
-            Notification("System Update Available", "Nyrqis 2.1 is ready to install", "System",
-                         NotificationCategory.UPDATE, NotificationPriority.HIGH, NotificationStatus.NEW,
-                         timestamp=now - 300, notification_id=0),
-            Notification("New Message from Alice", "Hey, are you free for a call?", "Messages",
-                         NotificationCategory.MESSAGE, NotificationPriority.NORMAL, NotificationStatus.NEW,
-                         timestamp=now - 600, notification_id=1),
-            Notification("Build Failed", "CI pipeline #2847 failed on main", "GitHub",
-                         NotificationCategory.SYSTEM, NotificationPriority.HIGH, NotificationStatus.READ,
-                         timestamp=now - 1800, notification_id=2),
-            Notification("Calendar Reminder", "Team standup in 15 minutes", "Calendar",
-                         NotificationCategory.CALENDAR, NotificationPriority.NORMAL, NotificationStatus.NEW,
-                         timestamp=now - 900, notification_id=3),
-            Notification("Disk Space Warning", "/home is 85% full", "System",
-                         NotificationCategory.SYSTEM, NotificationPriority.URGENT, NotificationStatus.PINNED,
-                         timestamp=now - 3600, notification_id=4),
+            Notification(id=0, title="System Update Available", body="Nyrqis 2.1 is ready to install", app="System",
+                         category=NotificationCategory.UPDATE, priority=NotificationPriority.HIGH, status=NotificationStatus.NEW,
+                         timestamp=now - 300),
+            Notification(id=1, title="New Message from Alice", body="Hey, are you free for a call?", app="Messages",
+                         category=NotificationCategory.MESSAGE, priority=NotificationPriority.NORMAL, status=NotificationStatus.NEW,
+                         timestamp=now - 600),
+            Notification(id=2, title="Build Failed", body="CI pipeline #2847 failed on main", app="GitHub",
+                         category=NotificationCategory.SYSTEM, priority=NotificationPriority.HIGH, status=NotificationStatus.READ,
+                         timestamp=now - 1800),
+            Notification(id=3, title="Calendar Reminder", body="Team standup in 15 minutes", app="Calendar",
+                         category=NotificationCategory.CALENDAR, priority=NotificationPriority.NORMAL, status=NotificationStatus.NEW,
+                         timestamp=now - 900),
+            Notification(id=4, title="Disk Space Warning", body="/home is 85% full", app="System",
+                         category=NotificationCategory.SYSTEM, priority=NotificationPriority.URGENT, status=NotificationStatus.PINNED,
+                         timestamp=now - 3600),
+            Notification(id=5, title="Security Alert", body="Unauthorized access attempt", app="Firewall",
+                         category=NotificationCategory.SECURITY, priority=NotificationPriority.HIGH, status=NotificationStatus.NEW,
+                         timestamp=now - 120),
         ]
 
         self._app_settings = [
@@ -216,9 +229,14 @@ class NotificationCenter:
     def selected_index(self) -> int:
         return self._selected_index
 
-    def add_notification(self, title: str, body: str = "", app: str = "") -> Notification:
-        n = Notification(title=title, body=body, app=app,
-                         notification_id=len(self.notifications))
+    def add_notification(self, notif_or_title, body: str = "", app: str = "") -> Notification:
+        if isinstance(notif_or_title, Notification):
+            n = notif_or_title
+            if not n.app and n.app_name:
+                n.app = n.app_name
+        else:
+            n = Notification(title=notif_or_title, body=body, app=app,
+                             notification_id=len(self.notifications))
         self.notifications.insert(0, n)
         return n
 
@@ -258,6 +276,10 @@ class NotificationCenter:
         self.dnd_enabled = not self.dnd_enabled
         self._dnd_schedule.enabled = self.dnd_enabled
         return self.dnd_enabled
+
+    @property
+    def groups(self) -> List[NotificationGroup]:
+        return self.get_groups()
 
     def get_groups(self) -> List[NotificationGroup]:
         groups: Dict[str, NotificationGroup] = {}

@@ -173,50 +173,6 @@ class RecordingProfile:
 
 # ─── Screen Recorder ─────────────────────────────────────────────────────
 
-class Recording:
-    """Legacy Recording class."""
-    name: str = ""
-    duration_s: float = 0.0
-    status: RecordingStatus = RecordingStatus.IDLE
-    codec: RecordingCodec = RecordingCodec.H264
-    profile: Optional["RecordingProfile"] = None
-    file_size_bytes: int = 0
-
-    @property
-    def status_icon(self) -> str:
-        icons = {
-            RecordingStatus.IDLE: "⏹",
-            RecordingStatus.RECORDING: "🔴",
-            RecordingStatus.PAUSED: "⏸",
-            RecordingStatus.STOPPED: "⏹",
-        }
-        return icons.get(self.status, "?")
-
-    @property
-    def duration_display(self) -> str:
-        if self.duration_s < 60:
-            return f"{self.duration_s:.1f}s"
-        mins = int(self.duration_s) // 60
-        secs = int(self.duration_s) % 60
-        return f"{mins}m {secs}s"
-
-    @property
-    def file_size_display(self) -> str:
-        size = self.file_size_bytes
-        if size == 0:
-            return "0 B"
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size / 1024:.0f} KB"
-        return f"{size / (1024*1024):.1f} MB"
-
-    @property
-    def quality_label(self) -> str:
-        return self.codec.value
-
-
-@dataclass
 class RecordingSchedule:
     days: List[str] = field(default_factory=list)
     start_time: str = "09:00"
@@ -355,14 +311,22 @@ class ScreenRecorder:
         self._rec_start = time.time()
         return Recording(name="Recording", status=RecordingStatus.RECORDING, profile=self.active_profile)
 
-    def stop_recording(self, name: str = "") -> Optional[RecordingSession]:
+    def stop_recording(self, name: str = "") -> Optional[Recording]:
         if self._status in (RecordingStatus.RECORDING, RecordingStatus.PAUSED):
             duration = time.time() - self._rec_start if self._rec_start else 0
-            session = RecordingSession(
+            rec = Recording(
                 name=name or f"Recording {len(self._sessions) + 1}",
-                filename=f"rec_{len(self._sessions) + 1}.mkv",
                 duration_s=max(duration, 1.0),
-                file_size=int(duration * 700_000),
+                status=RecordingStatus.STOPPED,
+                codec=self._current_format,
+                profile=self.active_profile,
+                file_size_bytes=int(duration * 700_000),
+            )
+            session = RecordingSession(
+                name=rec.name,
+                filename=f"rec_{len(self._sessions) + 1}.mkv",
+                duration_s=rec.duration_s,
+                file_size=rec.file_size_bytes,
                 codec=self._current_format,
                 area=self._current_area,
                 fps=self._current_fps,
@@ -370,7 +334,7 @@ class ScreenRecorder:
             self._sessions.insert(0, session)
             self._status = RecordingStatus.IDLE
             self._rec_start = 0.0
-            return session
+            return rec
         return None
 
     def pause_recording(self):
@@ -386,6 +350,14 @@ class ScreenRecorder:
             del self._sessions[index]
             return True
         return False
+
+    def set_profile(self, name: str) -> bool:
+        for p in self.profiles:
+            if p.name == name:
+                self._current_fps = p.fps
+                self._active_profile_name = name
+                return True
+        return True
 
     def set_area(self, area: RecordingArea):
         self._current_area = area

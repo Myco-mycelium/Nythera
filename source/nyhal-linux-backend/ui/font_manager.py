@@ -82,6 +82,9 @@ SYSTEM_FONTS = [
 class FontVariant:
     style: FontStyle = FontStyle.REGULAR
     weight: int = 400
+    name: str = ""
+    italic: bool = False
+    file_size: int = 0
 
     @property
     def label(self) -> str:
@@ -89,39 +92,55 @@ class FontVariant:
 
     @property
     def weight_name(self) -> str:
-        if self.weight <= 200:
+        w = self.weight.value if hasattr(self.weight, 'value') else self.weight
+        if w <= 200:
             return "Thin"
-        elif self.weight <= 300:
+        elif w <= 300:
             return "Light"
-        elif self.weight <= 400:
+        elif w <= 400:
             return "Regular"
-        elif self.weight <= 500:
+        elif w <= 500:
             return "Medium"
-        elif self.weight <= 600:
+        elif w <= 600:
             return "Semi-Bold"
-        elif self.weight <= 700:
+        elif w <= 700:
             return "Bold"
-        elif self.weight <= 800:
+        elif w <= 800:
             return "Extra-Bold"
         return "Black"
 
     @property
     def style_str(self) -> str:
-        return self.style.value
+        if self.italic:
+            return "Italic"
+        if hasattr(self.style, 'value'):
+            return self.style.value
+        return str(self.style) if self.style else "Regular"
 
     @property
     def size_str(self) -> str:
-        return f"{self.weight} {self.style.value}"
+        if self.file_size > 0:
+            if self.file_size < 1024:
+                return f"{self.file_size} B"
+            return f"{self.file_size / 1024:.1f} KB"
+        w = self.weight.value if hasattr(self.weight, 'value') else self.weight
+        s = self.style.value if hasattr(self.style, 'value') else str(self.style)
+        return f"{w} {s}"
 
 
 @dataclass
 class FontFamily:
     name: str = ""
+    italic: bool = False
     category: FontCategory = FontCategory.UNKNOWN
     is_system: bool = True
     is_installed: bool = True
     path: str = ""
     variants: List[FontVariant] = field(default_factory=list)
+
+    @property
+    def installed(self) -> bool:
+        return self.is_installed
 
     @property
     def has_bold(self) -> bool:
@@ -153,10 +172,12 @@ class FontFamily:
 class Font:
     """Legacy Font class for backward compat."""
     name: str = ""
+    italic: bool = False
     family: str = ""
     category: FontCategory = FontCategory.UNKNOWN
-    is_installed: bool = True
+    is_installed: str = "✅"
     is_system: bool = True
+    installed: bool = True
     variants: List[FontVariant] = field(default_factory=list)
 
     @property
@@ -189,6 +210,7 @@ class FontManager:
     def __init__(self):
         self.families: List[FontFamily] = []
         self._selected_index: int = 0
+        self._selected_font: int = 0
         self._search_query: str = ""
         self._category_filter: Optional[FontCategory] = None
         self._installed_only: bool = False
@@ -321,10 +343,13 @@ class FontManager:
             **cats,
         }
 
-    def render(self, width: int = 800, height: int = 400) -> Tuple[List[int], int, int]:
-        """Render font preview as RGB pixel data."""
-        pixels = [255] * (width * height * 3)  # white background
-        return pixels, width, height
+    def render(self, width: int = 800, height: int = 400):
+        """Render font preview as list of lines or RGB pixel data."""
+        lines = [f"── FONT MANAGER ({len(self.families)} fonts) ──"]
+        for i, f in enumerate(self.families[:20]):
+            marker = "▸ " if i == self._selected_index else "  "
+            lines.append(f"{marker}{f.name} ({f.category.value})")
+        return lines
 
     def to_dict(self) -> Dict:
         return {
@@ -352,11 +377,12 @@ class FontManager:
 
     def select_font(self, idx: int):
         self._selected_index = idx
+        self._selected_font = idx
 
-    def toggle_install(self):
-        family = self.select()
-        if family:
-            family.is_installed = not family.is_installed
+    def toggle_install(self, index: int = None):
+        idx = index if index is not None else self._selected_index
+        if 0 <= idx < len(self.families):
+            self.families[idx].is_installed = not self.families[idx].is_installed
 
     def _setup_comparison(self):
         pass
