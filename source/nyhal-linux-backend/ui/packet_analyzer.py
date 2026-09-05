@@ -370,3 +370,31 @@ class CaptureFilter:
 
     def matches(self, packet_info: dict) -> bool:
         return self.enabled
+
+
+from enum import Enum as _PacketStatus
+class PacketStatus(_PacketStatus):
+    CAPTURED = "captured"
+    ANALYZED = "analyzed"
+    FILTERED = "filtered"
+    DROPPED = "dropped"
+    ERROR = "error"
+
+
+from enum import Enum as _ThreatLevel
+class ThreatLevel(_ThreatLevel):
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+from enum import Enum as _FilterAction
+class FilterAction(_FilterAction):
+    ACCEPT = "accept"
+    REJECT = "reject"
+    DROP = "drop"
+    LOG = "log"
+    ALERT = "alert"
+    MIRROR = "mirror"

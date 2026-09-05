@@ -409,3 +409,13 @@ class EventColor(_Enum):
     PINK = "pink"
     YELLOW = "yellow"
     GRAY = "gray"
+
+
+from enum import Enum as _EventStatus
+class EventStatus(_EventStatus):
+    SCHEDULED = "scheduled"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    POSTPONED = "postponed"
+    ALL_DAY = "all_day"

@@ -438,3 +438,53 @@ class Hotkey:
     alt: bool = False
     shift: bool = False
     meta: bool = False
+
+
+from dataclasses import dataclass as _dc2
+@_dc2
+class AudioDevice:
+    name: str = ""
+    device_id: str = ""
+    sample_rate: int = 44100
+    channels: int = 2
+    is_input: bool = False
+    is_default: bool = False
+
+
+from enum import Enum as _CaptureMode
+class CaptureMode(_CaptureMode):
+    FULL_SCREEN = "full_screen"
+    WINDOW = "window"
+    REGION = "region"
+    AREA = "area"
+    STREAM = "stream"
+
+
+from enum import Enum as _VideoFormat
+class VideoFormat(_VideoFormat):
+    MP4 = "mp4"
+    WEBM = "webm"
+    MKV = "mkv"
+    AVI = "avi"
+    MOV = "mov"
+    GIF = "gif"
+
+from enum import Enum as _QualityPreset
+class QualityPreset(_QualityPreset):
+    DRAFT = "draft"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    ULTRA = "ultra"
+    LOSSLESS = "lossless"
+
+# Backward-compat aliases
+RecordingState = RecordingStatus
+
+from enum import Enum as _AudioSource
+class AudioSource(_AudioSource):
+    SYSTEM = "system"
+    MICROPHONE = "microphone"
+    BOTH = "both"
+    APPLICATION = "application"
+    NONE = "none"

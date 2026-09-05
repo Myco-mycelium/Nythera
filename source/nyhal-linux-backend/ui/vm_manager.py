@@ -379,3 +379,13 @@ class NetworkMode(_Enum):
     HOST = "host"
     ISOLATED = "isolated"
     CUSTOM = "custom"
+
+
+from enum import Enum as _DiskFormat
+class DiskFormat(_DiskFormat):
+    QCOW2 = "qcow2"
+    RAW = "raw"
+    VMDK = "vmdk"
+    VDI = "vdi"
+    VHDX = "vhdx"
+    VHD = "vhd"

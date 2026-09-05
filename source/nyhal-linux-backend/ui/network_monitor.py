@@ -325,3 +325,28 @@ class ProtocolStats:
     def error_rate(self) -> float:
         total = self.packets + self.errors
         return self.errors / total if total > 0 else 0.0
+
+
+from dataclasses import dataclass as _dc3, field as _f3
+@_dc3
+class ConnectionEntry:
+    local_addr: str = ""
+    local_port: int = 0
+    remote_addr: str = ""
+    remote_port: int = 0
+    protocol: str = "tcp"
+    state: str = "established"
+    pid: int = 0
+    process_name: str = ""
+    bytes_sent: int = 0
+    bytes_received: int = 0
+
+
+from enum import Enum as _GraphType
+class GraphType(_GraphType):
+    LINE = "line"
+    BAR = "bar"
+    AREA = "area"
+    PIE = "pie"
+    SCATTER = "scatter"
+    HEATMAP = "heatmap"

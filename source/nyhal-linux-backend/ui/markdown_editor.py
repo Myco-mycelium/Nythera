@@ -467,3 +467,23 @@ class BlockType(_Enum):
     BOLD = "bold"
     ITALIC = "italic"
     INLINE_CODE = "inline_code"
+
+
+from enum import Enum as _HeadingLevel
+class HeadingLevel(_HeadingLevel):
+    H1 = 1
+    H2 = 2
+    H3 = 3
+    H4 = 4
+    H5 = 5
+    H6 = 6
+
+
+from enum import Enum as _ExportType
+class ExportType(_ExportType):
+    HTML = "html"
+    PDF = "pdf"
+    MARKDOWN = "markdown"
+    PLAINTEXT = "plaintext"
+    RICHTEXT = "richtext"
+    JSON = "json"

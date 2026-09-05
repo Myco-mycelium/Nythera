@@ -339,3 +339,13 @@ class ColumnType(_Enum):
     SET = "SET"
     CHAR = "CHAR"
     VARBINARY = "VARBINARY"
+
+class ConstraintType:
+    PRIMARY_KEY = "PRIMARY KEY"
+    FOREIGN_KEY = "FOREIGN KEY"
+    UNIQUE = "UNIQUE"
+    NOT_NULL = "NOT NULL"
+    CHECK = "CHECK"
+    DEFAULT = "DEFAULT"
+    INDEX = "INDEX"
+    EXCLUDE = "EXCLUDE"

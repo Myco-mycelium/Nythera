@@ -294,3 +294,13 @@ class DiskAlert:
     message: str = ""
     timestamp: float = 0.0
     resolved: bool = False
+
+
+from enum import Enum as _HealthStatus
+class HealthStatus(_HealthStatus):
+    HEALTHY = "healthy"
+    WARNING = "warning"
+    CRITICAL = "critical"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+    DEGRADED = "degraded"

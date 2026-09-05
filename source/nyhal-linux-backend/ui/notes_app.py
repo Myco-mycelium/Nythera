@@ -499,3 +499,25 @@ class MarkdownRenderer:
         return self.text
     def render_inline(self, text: str) -> str:
         return text
+
+
+from enum import Enum as _SortMode
+class SortMode(_SortMode):
+    DATE = "date"
+    TITLE = "title"
+    MODIFIED = "modified"
+    SIZE = "size"
+    ALPHABETICAL = "alphabetical"
+
+
+from enum import Enum as _NoteColor
+class NoteColor(_NoteColor):
+    RED = "red"
+    ORANGE = "orange"
+    YELLOW = "yellow"
+    GREEN = "green"
+    BLUE = "blue"
+    PURPLE = "purple"
+    PINK = "pink"
+    GRAY = "gray"
+    WHITE = "white"
