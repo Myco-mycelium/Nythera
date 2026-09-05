@@ -154,6 +154,43 @@ class SystemResources:
     running_processes: int = 0
     sleeping_processes: int = 0
     zombie_processes: int = 0
+    total_memory_mb: float = 0.0
+    used_memory_mb: float = 0.0
+    total_disk_gb: float = 0.0
+    used_disk_gb: float = 0.0
+    uptime_seconds: float = 0.0
+    disk_read_bytes: float = 0.0
+    disk_write_bytes: float = 0.0
+
+    @property
+    def memory_str(self) -> str:
+        total = self.total_memory_mb or (self.total_memory_gb * 1024)
+        used = self.used_memory_mb or (self.used_memory_gb * 1024)
+        if total >= 1024:
+            return f"{used / 1024:.1f} / {total / 1024:.1f} GB"
+        return f"{used:.0f} / {total:.0f} MB"
+
+    @property
+    def memory_percent(self) -> float:
+        total = self.total_memory_mb or (self.total_memory_gb * 1024)
+        used = self.used_memory_mb or (self.used_memory_gb * 1024)
+        return (used / total * 100) if total > 0 else 0.0
+
+    @property
+    def disk_percent(self) -> float:
+        return (self.used_disk_gb / self.total_disk_gb * 100) if self.total_disk_gb > 0 else 0.0
+
+    @property
+    def uptime_str(self) -> str:
+        seconds = self.uptime_seconds or (self.uptime_hours * 3600)
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds / 60:.0f}m"
+        elif seconds < 86400:
+            return f"{seconds / 3600:.1f}h"
+        days = seconds / 86400
+        return f"{days:.0f}d {seconds % 86400 / 3600:.0f}h"
 
 
 class ProcessManager:
@@ -343,6 +380,75 @@ class ProcessInfo:
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
     status: str = ""
+    nice: int = 0
+    user: str = ""
+    cpu_time: float = 0.0
+    memory_percent: float = 0.0
+    disk_read: float = 0.0
+    disk_write: float = 0.0
+    net_sent: float = 0.0
+    net_recv: float = 0.0
+    threads: int = 1
+    command: str = ""
+    start_time: float = 0.0
+
+    @property
+    def memory_str(self) -> str:
+        if self.memory_mb >= 1024:
+            return f"{self.memory_mb / 1024:.1f} GB"
+        return f"{self.memory_mb:.0f} MB"
+
+    @property
+    def status_icon(self) -> str:
+        icons = {
+            "running": "●", "sleeping": "○", "stopped": "■",
+            "zombie": "Z", "idle": "○",
+        }
+        return icons.get(str(self.status).lower(), "?")
+
+    @property
+    def uptime_str(self) -> str:
+        if self.start_time <= 0:
+            return "N/A"
+        import time
+        delta = time.time() - self.start_time
+        if delta < 60:
+            return f"{delta:.0f}s"
+        elif delta < 3600:
+            return f"{delta / 60:.0f}m"
+        elif delta < 86400:
+            return f"{delta / 3600:.1f}h"
+        return f"{delta / 86400:.1f}d"
+
+    @property
+    def nice_str(self) -> str:
+        if self.nice == 0:
+            return "Normal"
+        elif self.nice < 0:
+            return f"High ({self.nice})"
+        return f"Low (+{self.nice})"
+
+    @property
+    def cpu_bar(self) -> str:
+        filled = int(self.cpu_percent / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def memory_bar(self) -> str:
+        filled = int(self.memory_percent / 5) if self.memory_percent else int(self.memory_mb / 10)
+        return "█" * min(filled, 20) + "░" * max(0, 20 - filled)
+
+    @property
+    def disk_bar(self) -> str:
+        total = self.disk_read + self.disk_write
+        filled = int(total / 1024 / 5)
+        return "█" * min(filled, 20) + "░" * max(0, 20 - filled)
+
+    @property
+    def net_bar(self) -> str:
+        total = self.net_sent + self.net_recv
+        filled = int(total / 1024 / 5)
+        return "█" * min(filled, 20) + "░" * max(0, 20 - filled)
 
 ProcessStatus = ProcessState
 

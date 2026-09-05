@@ -495,8 +495,38 @@ class MarkdownRenderer:
     """Renders markdown text to styled output."""
     def __init__(self, text: str = ""):
         self.text = text
-    def render(self) -> str:
-        return self.text
+    def render(self, text: str = None) -> str:
+        t = text if text is not None else self.text
+        import re
+        result = t
+        # Headers
+        result = re.sub(r'^######\s+(.+)$', r'<h6>\1</h6>', result, flags=re.MULTILINE)
+        result = re.sub(r'^#####\s+(.+)$', r'<h5>\1</h5>', result, flags=re.MULTILINE)
+        result = re.sub(r'^####\s+(.+)$', r'<h4>\1</h4>', result, flags=re.MULTILINE)
+        result = re.sub(r'^###\s+(.+)$', r'<h3>\1</h3>', result, flags=re.MULTILINE)
+        result = re.sub(r'^##\s+(.+)$', r'<h2>\1</h2>', result, flags=re.MULTILINE)
+        result = re.sub(r'^#\s+(.+)$', r'<h1>\1</h1>', result, flags=re.MULTILINE)
+        # Bold
+        result = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', result)
+        # Italic
+        result = re.sub(r'\*(.+?)\*', r'<em>\1</em>', result)
+        # Code blocks
+        result = re.sub(r'```(\w*)\n(.*?)```', r'<pre><code>\2</code></pre>', result, flags=re.DOTALL)
+        # Inline code
+        result = re.sub(r'`(.+?)`', r'<code>\1</code>', result)
+        # Links
+        result = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', result)
+        # Images
+        result = re.sub(r'!\[(.+?)\]\((.+?)\)', r'<img src="\2" alt="\1">', result)
+        # Lists
+        result = re.sub(r'^[-*]\s+(.+)$', r'<li>\1</li>', result, flags=re.MULTILINE)
+        # Blockquotes
+        result = re.sub(r'^>\s+(.+)$', r'<blockquote>\1</blockquote>', result, flags=re.MULTILINE)
+        # Horizontal rules
+        result = re.sub(r'^---+$', r'<hr>', result, flags=re.MULTILINE)
+        # Line breaks
+        result = result.replace('\n', '<br>')
+        return result
     def render_inline(self, text: str) -> str:
         return text
     def char_count(self, text: str = "") -> int:
