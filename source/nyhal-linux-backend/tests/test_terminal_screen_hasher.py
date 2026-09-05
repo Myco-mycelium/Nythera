@@ -66,7 +66,7 @@ class TestTerminalEmulator(unittest.TestCase):
         self.assertEqual(self.te.theme.name, "Monokai")
 
     def test_themes_exist(self):
-        self.assertEqual(len(THEMES), 7)
+        self.assertEqual(len(THEMES), 8)
 
     def test_render(self):
         lines = self.te.render()

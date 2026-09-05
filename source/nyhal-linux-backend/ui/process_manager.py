@@ -345,3 +345,16 @@ class ProcessInfo:
     status: str = ""
 
 ProcessStatus = ProcessState
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class SortField(_Enum):
+    PID = "pid"
+    NAME = "name"
+    CPU = "cpu"
+    MEMORY = "memory"
+    DISK = "disk"
+    NETWORK = "network"
+    THREADS = "threads"
+    USER = "user"

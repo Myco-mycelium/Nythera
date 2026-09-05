@@ -360,3 +360,22 @@ class VMNetwork:
 Snapshot = VMSnapshot
 
 VMOS = VMOSType
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class VMStatus(_Enum):
+    RUNNING = "running"
+    STOPPED = "stopped"
+    PAUSED = "paused"
+    SAVED = "saved"
+    ERROR = "error"
+    CREATING = "creating"
+    DELETING = "deleting"
+
+class NetworkMode(_Enum):
+    NAT = "nat"
+    BRIDGED = "bridged"
+    HOST = "host"
+    ISOLATED = "isolated"
+    CUSTOM = "custom"

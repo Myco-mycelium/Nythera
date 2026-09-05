@@ -276,3 +276,21 @@ class AlertSeverity(Enum):
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+from dataclasses import dataclass as _dataclass
+from typing import Optional as _Optional
+
+class DiskAlertLevel(_Enum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+@_dataclass
+class DiskAlert:
+    disk: str = ""
+    level: DiskAlertLevel = DiskAlertLevel.INFO
+    message: str = ""
+    timestamp: float = 0.0
+    resolved: bool = False

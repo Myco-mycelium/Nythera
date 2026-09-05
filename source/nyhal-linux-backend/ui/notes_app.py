@@ -489,3 +489,13 @@ class Folder:
     color: str = ""
 
 NoteEditor = Note
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+class MarkdownRenderer:
+    """Renders markdown text to styled output."""
+    def __init__(self, text: str = ""):
+        self.text = text
+    def render(self) -> str:
+        return self.text
+    def render_inline(self, text: str) -> str:
+        return text

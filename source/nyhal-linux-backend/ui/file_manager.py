@@ -342,3 +342,21 @@ class SortMode(Enum):
     TYPE = "type"
 
 EXTENSION_MAP = {}
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+# Import the existing FileType enum from this module if it exists
+import sys as _sys
+_fm = _sys.modules.get(__name__)
+FILE_TYPE_COLORS = {}
+if hasattr(_fm, 'FileType'):
+    for ft in _fm.FileType:
+        if ft.name == 'FILE':
+            FILE_TYPE_COLORS[ft] = '#90CAF9'
+        elif ft.name == 'DIRECTORY':
+            FILE_TYPE_COLORS[ft] = '#FFB74D'
+        elif ft.name == 'SYMLINK':
+            FILE_TYPE_COLORS[ft] = '#CE93D8'
+        elif ft.name == 'IMAGE':
+            FILE_TYPE_COLORS[ft] = '#81C784'
+        else:
+            FILE_TYPE_COLORS[ft] = '#BDBDBD'

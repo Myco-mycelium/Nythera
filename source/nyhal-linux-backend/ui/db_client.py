@@ -312,3 +312,30 @@ class Connection:
     pass  # backward compat stub
 
 Index = Table
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class ColumnType(_Enum):
+    SERIAL = "SERIAL"
+    VARCHAR = "VARCHAR"
+    INTEGER = "INTEGER"
+    BIGINT = "BIGINT"
+    TEXT = "TEXT"
+    BOOLEAN = "BOOLEAN"
+    TIMESTAMP = "TIMESTAMP"
+    FLOAT = "FLOAT"
+    DOUBLE = "DOUBLE"
+    DECIMAL = "DECIMAL"
+    BLOB = "BLOB"
+    JSON = "JSON"
+    UUID = "UUID"
+    DATE = "DATE"
+    TIME = "TIME"
+    BINARY = "BINARY"
+    SMALLINT = "SMALLINT"
+    MEDIUMINT = "MEDIUMINT"
+    ENUM = "ENUM"
+    SET = "SET"
+    CHAR = "CHAR"
+    VARBINARY = "VARBINARY"

@@ -426,3 +426,15 @@ class ScreenRecorder:
             "size": self.total_size,
         }
 RecordPreset = RecordingPreset
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from dataclasses import dataclass as _dataclass
+
+@_dataclass
+class Hotkey:
+    key: str = ""
+    action: str = ""
+    ctrl: bool = False
+    alt: bool = False
+    shift: bool = False
+    meta: bool = False

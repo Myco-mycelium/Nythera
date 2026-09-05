@@ -416,3 +416,37 @@ class AutoFillEntry:
         elif delta < 3600:
             return f"{delta/60:.0f}m ago"
         return f"{delta/3600:.0f}h ago"
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from dataclasses import dataclass as _dataclass, field as _field
+from typing import Dict as _Dict, List as _List
+
+@_dataclass
+class VaultEntry:
+    password: str = ""
+    strength: float = 0.0
+    entropy: float = 0.0
+    has_uppercase: bool = False
+    has_lowercase: bool = False
+    has_digit: bool = False
+    has_special: bool = False
+    length: int = 0
+    compromised: bool = False
+
+    def __post_init__(self):
+        if self.length == 0:
+            self.length = len(self.password)
+        if self.strength == 0.0 and self.password:
+            score = 0
+            if self.has_uppercase or any(c.isupper() for c in self.password): score += 1
+            if self.has_lowercase or any(c.islower() for c in self.password): score += 1
+            if self.has_digit or any(c.isdigit() for c in self.password): score += 1
+            if self.has_special or any(not c.isalnum() for c in self.password): score += 1
+            self.strength = min(1.0, score / 4.0 + min(len(self.password) / 20, 0.6))
+
+    @property
+    def strength_label(self) -> str:
+        if self.strength < 0.3: return "Weak"
+        if self.strength < 0.6: return "Fair"
+        if self.strength < 0.8: return "Strong"
+        return "Very Strong"

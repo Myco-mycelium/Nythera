@@ -308,3 +308,18 @@ class AudioDirection:
     pass  # backward compat stub
 
 AudioProfile = AudioDevice
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from dataclasses import dataclass as _dataclass, field as _field
+from typing import Dict as _Dict
+
+@_dataclass
+class AudioProfileConfig:
+    name: str = "Default"
+    volume: float = 0.8
+    bass: float = 0.5
+    treble: float = 0.5
+    balance: float = 0.0
+    enabled: bool = True
+    preset: str = "standard"
+    custom_eq: _Dict[str, float] = _field(default_factory=dict)

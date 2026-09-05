@@ -41,11 +41,11 @@ class NotificationStatus(Enum):
 
 @dataclass
 class Notification:
-    id: int = 0
     title: str = ""
     body: str = ""
     app: str = ""
     app_name: str = ""
+    id: int = 0
     category: NotificationCategory = NotificationCategory.OTHER
     priority: NotificationPriority = NotificationPriority.NORMAL
     status: NotificationStatus = NotificationStatus.NEW

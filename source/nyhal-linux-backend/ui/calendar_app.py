@@ -395,3 +395,17 @@ class ViewMode:
     pass  # backward compat stub
 
 Recurrence = EventRecurrence
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class EventColor(_Enum):
+    BLUE = "blue"
+    GREEN = "green"
+    RED = "red"
+    ORANGE = "orange"
+    PURPLE = "purple"
+    CYAN = "cyan"
+    PINK = "pink"
+    YELLOW = "yellow"
+    GRAY = "gray"

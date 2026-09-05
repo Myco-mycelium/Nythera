@@ -71,8 +71,8 @@ class Message:
 @dataclass
 class Reminder:
     """A reminder item."""
-    id: int = 0
     title: str = ""
+    id: int = 0
     message: str = ""
     remind_at: float = 0.0
     due_time: float = 0.0

@@ -450,3 +450,20 @@ class MarkdownBlock:
     pass  # backward compat stub
 
 DocumentStats = TOCEntry
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class BlockType(_Enum):
+    HEADING = "heading"
+    PARAGRAPH = "paragraph"
+    LIST = "list"
+    CODE = "code"
+    BLOCKQUOTE = "blockquote"
+    HORIZONTAL_RULE = "horizontal_rule"
+    TABLE = "table"
+    IMAGE = "image"
+    LINK = "link"
+    BOLD = "bold"
+    ITALIC = "italic"
+    INLINE_CODE = "inline_code"

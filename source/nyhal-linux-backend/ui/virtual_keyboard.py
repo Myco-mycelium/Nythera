@@ -317,3 +317,13 @@ class Key:
     modifier: bool = False
 
 KeyPress = KeyDef
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from enum import Enum as _Enum
+
+class KeyboardMode(_Enum):
+    LETTERS = "letters"
+    NUMBERS = "numbers"
+    SYMBOLS = "symbols"
+    EMOJI = "emoji"
+    HANDWRITING = "handwriting"

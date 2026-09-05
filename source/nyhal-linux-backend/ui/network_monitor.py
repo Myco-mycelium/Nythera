@@ -301,3 +301,27 @@ class InterfaceStatus:
     pass  # backward compat stub
 
 TrafficSample = BandwidthSample
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from dataclasses import dataclass as _dataclass, field as _field
+from typing import Dict as _Dict
+
+@_dataclass
+class ProtocolStats:
+    protocol: str = ""
+    packets: int = 0
+    bytes_sent: int = 0
+    bytes_received: int = 0
+    connections: int = 0
+    errors: int = 0
+    avg_latency: float = 0.0
+    last_seen: float = 0.0
+
+    @property
+    def total_bytes(self) -> int:
+        return self.bytes_sent + self.bytes_received
+
+    @property
+    def error_rate(self) -> float:
+        total = self.packets + self.errors
+        return self.errors / total if total > 0 else 0.0

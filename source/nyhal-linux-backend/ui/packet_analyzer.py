@@ -357,3 +357,16 @@ class MACAddress:
     pass  # backward compat stub
 
 IPAddress = MACAddress
+
+# ─── Backward-compat exports ────────────────────────────────────────────
+from dataclasses import dataclass as _dataclass, field as _field
+
+@_dataclass
+class CaptureFilter:
+    name: str = ""
+    bpf: str = ""
+    enabled: bool = True
+    packets_matched: int = 0
+
+    def matches(self, packet_info: dict) -> bool:
+        return self.enabled
