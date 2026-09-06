@@ -236,6 +236,20 @@ New developer tools in `sdk/nyrqis_sdk/`:
 
 Tests: 46 tests (11 scaffold + 10 CLI/hotreload + 25 production)
 
+## Compositor Event Loop (M14 follow-on)
+
+Real Wayland compositor in `ui/compositor_event_loop.py`:
+
+- Unix domain socket server for client connections
+- Wayland protocol message parsing and dispatch
+- Surface creation/destroy lifecycle
+- Output management
+- Buffer attachment handling
+- Frame callback support
+- Thread-safe client/surface tracking
+
+Tests: 8 tests (event loop, surfaces, outputs, client connections)
+
 ## References
 
 - ADR-0010: Vulkan as native graphics API
