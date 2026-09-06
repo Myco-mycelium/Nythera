@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "nyrqis-sdk"
+version = "0.1.0"
+description = "Developer tools for Nyrqis application development"
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Nyrqis Project"}
+]
+keywords = ["nyrqis", "sdk", "development", "wayland"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+nyq = "nyrqis_sdk.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nyrqis_sdk*"]
