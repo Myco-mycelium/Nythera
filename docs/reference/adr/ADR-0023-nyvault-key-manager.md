@@ -2,7 +2,7 @@
 title: NyVault Key Manager — Envelope Encryption with Rust-Held Key Custody
 document_id: ADR-0023
 version: 0.1.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-15
 updated: 2026-08-15

@@ -2,7 +2,7 @@
 title: NyVault — Storage as a Daemon-Hosted Service on the IPC Transport
 document_id: ADR-0022
 version: 0.1.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-15
 updated: 2026-08-15
