@@ -133,6 +133,99 @@ def cmd_preview(args):
     return result.returncode
 
 
+def cmd_pkg(args):
+    """Package management commands."""
+    try:
+        # Add backend to path
+        backend_dir = Path(__file__).parent.parent.parent / "source" / "nyhal-linux-backend"
+        if backend_dir.exists():
+            sys.path.insert(0, str(backend_dir))
+        
+        from ui.package_manager import PackageManager
+        pm = PackageManager()
+        
+        if args.pkg_command == "list":
+            pkgs = pm.get_installed() if args.installed else pm.get_available()
+            if args.updatable:
+                pkgs = pm.get_updatable()
+            
+            print(f"{'Package':<25} {'Version':<15} {'Status':<10}")
+            print("-" * 50)
+            for p in pkgs[:args.limit]:
+                print(f"{p.name:<25} {p.version:<15} {p.status.value:<10}")
+            print(f"\n{len(pkgs)} packages shown")
+            return 0
+        
+        elif args.pkg_command == "search":
+            results = pm.search(args.query)
+            print(f"Found {len(results)} packages matching '{args.query}':")
+            for p in results[:args.limit]:
+                print(f"  {p.status_icon} {p.name} {p.version} — {p.description[:50]}")
+            return 0
+        
+        elif args.pkg_command == "info":
+            pkg = pm.select_package(args.name)
+            if not pkg:
+                print(f"Package '{args.name}' not found", file=sys.stderr)
+                return 1
+            
+            print(f"Name: {pkg.name}")
+            print(f"Version: {pkg.version}")
+            print(f"Latest: {pkg.latest_version}")
+            print(f"Status: {pkg.status.value}")
+            print(f"Description: {pkg.description}")
+            print(f"Size: {pkg.size_display}")
+            print(f"License: {pkg.license}")
+            print(f"Dependencies: {', '.join(pkg.dependencies) or 'None'}")
+            return 0
+        
+        elif args.pkg_command == "install":
+            op = pm.install_package(args.name)
+            if op:
+                print(f"✅ Installed {args.name}")
+                return 0
+            else:
+                print(f"❌ Failed to install {args.name}", file=sys.stderr)
+                return 1
+        
+        elif args.pkg_command == "remove":
+            op = pm.remove_package(args.name)
+            if op:
+                print(f"✅ Removed {args.name}")
+                return 0
+            else:
+                print(f"❌ Failed to remove {args.name}", file=sys.stderr)
+                return 1
+        
+        elif args.pkg_command == "update":
+            if args.name:
+                op = pm.update_package(args.name)
+                if op:
+                    print(f"✅ Updated {args.name}")
+                    return 0
+                else:
+                    print(f"❌ Failed to update {args.name}", file=sys.stderr)
+                    return 1
+            else:
+                count = pm.upgrade_all()
+                print(f"✅ Updated {count} packages")
+                return 0
+        
+        elif args.pkg_command == "stats":
+            stats = pm.get_stats()
+            print(f"Total packages: {stats['total_packages']}")
+            print(f"Installed: {stats['installed']}")
+            print(f"Updatable: {stats['updatable']}")
+            print(f"Available: {stats['available']}")
+            return 0
+        
+    except ImportError as e:
+        print(f"❌ Package manager not available: {e}", file=sys.stderr)
+        return 1
+    
+    return 0
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -169,6 +262,42 @@ def main():
     list_parser.set_defaults(func=lambda args: cmd_new(argparse.Namespace(
         name="", template="app", description="", output=None, list_templates=True
     )))
+    
+    # pkg command group
+    pkg_parser = subparsers.add_parser("pkg", help="Package management")
+    pkg_subparsers = pkg_parser.add_subparsers(dest="pkg_command", help="Package operations")
+    
+    # pkg list
+    list_pkg_parser = pkg_subparsers.add_parser("list", help="List packages")
+    list_pkg_parser.add_argument("--installed", action="store_true", help="Show installed packages")
+    list_pkg_parser.add_argument("--updatable", action="store_true", help="Show updatable packages")
+    list_pkg_parser.add_argument("-n", "--limit", type=int, default=20, help="Max packages to show")
+    
+    # pkg search
+    search_parser = pkg_subparsers.add_parser("search", help="Search packages")
+    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument("-n", "--limit", type=int, default=10, help="Max results")
+    
+    # pkg info
+    info_parser = pkg_subparsers.add_parser("info", help="Show package info")
+    info_parser.add_argument("name", help="Package name")
+    
+    # pkg install
+    install_parser = pkg_subparsers.add_parser("install", help="Install a package")
+    install_parser.add_argument("name", help="Package name")
+    
+    # pkg remove
+    remove_parser = pkg_subparsers.add_parser("remove", help="Remove a package")
+    remove_parser.add_argument("name", help="Package name")
+    
+    # pkg update
+    update_parser = pkg_subparsers.add_parser("update", help="Update packages")
+    update_parser.add_argument("name", nargs="?", help="Package name (omit for all)")
+    
+    # pkg stats
+    pkg_subparsers.add_parser("stats", help="Show package statistics")
+    
+    pkg_parser.set_defaults(func=cmd_pkg)
     
     args = parser.parse_args()
     
