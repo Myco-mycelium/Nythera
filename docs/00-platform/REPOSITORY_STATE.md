@@ -459,6 +459,19 @@ Two things now, not one:
   Documentation & Governance, Hardware Compatibility, Developer
   Experience, and Production Hardening.
 
+  **2026-09-06: SDK and production hardening (M14 Phases 3 & 4).**
+  Developer SDK (`sdk/nyrqis_sdk/`) lands with: project scaffolding
+  (`scaffold.py`) supporting app, shell, and rust templates; CLI
+  (`cli.py`) with nyq command for new, build, test, preview, and pkg
+  operations; package manager integration (install, remove, update,
+  search, list, stats); hot reload (`hotreload.py`) for .nstudio file
+  watchers with SHA-256 change detection; telemetry (`telemetry.py`)
+  for opt-in crash reporting and metrics (no PII); performance
+  monitoring (`performance.py`) with Timer, MemoryTracker,
+  FrameRateMonitor, and PerformanceBudget; restore points
+  (`restore.py`) for system snapshots.  46 new tests.  Suite 2619
+  tests passing.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust

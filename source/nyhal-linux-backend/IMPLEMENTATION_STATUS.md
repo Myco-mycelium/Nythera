@@ -217,10 +217,24 @@ All Priorities 1-6 from NEXT_SESSION_PLAN v6.0 are complete:
 
 | Priority | Task | Timeline |
 |----------|------|----------|
-| 7 | Real hardware testing (AMD, NVIDIA, ARM) | Week 8-9 |
-| 8 | Wayland client compatibility (weston, GTK4, Qt6) | Week 10-12 |
-| 9 | Package manager integration | Week 13-14 |
-| 10 | Desktop environment enhancements | Week 15-17 |
+| 7 | Real hardware testing (AMD, NVIDIA, ARM) | M14 Phase 2 |
+| 8 | Wayland client compatibility (weston, GTK4, Qt6) | M14 Phase 2 |
+| 9 | Custom compositor event loop + protocol parsing | M14 follow-on |
+| 10 | GPU acceleration (GBM + DRM) production hardening | M14 follow-on |
+
+## SDK (M14 Phase 3 & 4)
+
+New developer tools in `sdk/nyrqis_sdk/`:
+
+- **Scaffolding** (`scaffold.py`): Project template generator (app, shell, rust)
+- **CLI** (`cli.py`): `nyq` command with new, build, test, preview, pkg
+- **Package Manager** (`cli.py`): install, remove, update, search, list, stats
+- **Hot Reload** (`hotreload.py`): File/directory watchers for .nstudio files
+- **Telemetry** (`telemetry.py`): Opt-in crash reporting, metrics collection
+- **Performance** (`performance.py`): Timer, MemoryTracker, FrameRateMonitor
+- **Restore Points** (`restore.py`): System snapshot and restore functionality
+
+Tests: 46 tests (11 scaffold + 10 CLI/hotreload + 25 production)
 
 ## References
 
