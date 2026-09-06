@@ -2,7 +2,7 @@
 title: NUI (.nstudio) Runtime Consumption — the UI Import Gate
 document_id: ADR-0025
 version: 0.1.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-16
 updated: 2026-08-16

@@ -2,7 +2,7 @@
 title: Journal Commit as the Default NyFS save() Mode
 document_id: ADR-0019
 version: 1.0.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-12
 updated: 2026-08-12
