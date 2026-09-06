@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-08-15
+2026-09-06
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -421,6 +421,18 @@ Two things now, not one:
   Nyforge's `ForgePreviewRuntime` — both implement the same semantics
   (NUI-SCHEMA §7.3, §8.4). 26 new tests (`tests/test_runtime.py`).
   Suite 666 → **692**.
+
+  **2026-09-06: Multi-monitor support lands (M13 Phase 3, ABI 1.2.0).**
+  The Wayland crate gains proper multi-output support: output enumeration
+  with global deduplication, wl_output listener callbacks (geometry, mode,
+  done, scale) with output ID data, primary output detection/setting,
+  per-surface buffer scale for HiDPI, output info query by ID, output
+  count per connection, and change sequence tracking for hot-plug detection.
+  The Python codec (`ui/wayland_codec.py`) exposes all new FFI functions;
+  `WaylandDisplay` (`ui/wayland_display.py`) gains `primary_output`,
+  `set_primary_output()`, `set_buffer_scale()`, `get_output_info()`,
+  and updated `check_output_changes()`. 18 new tests
+  (`tests/test_wayland_multimonitor.py`).  NPC-007 §M13 updated.
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

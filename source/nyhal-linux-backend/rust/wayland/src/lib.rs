@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use wayland_sys::client::{wayland_client_handle, wl_display, wl_proxy};
 use wayland_sys::common::wl_argument;
 
-/// ABI version: 0x0001_0100 (1.1.0) — Phase 1b + xdg-shell + input.
-const ABI_VERSION: u32 = 0x0001_0100;
+/// ABI version: 0x0001_0200 (1.2.0) — Multi-monitor support + HiDPI.
+const ABI_VERSION: u32 = 0x0001_0200;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_SURFACES: usize = 64;
 const MAX_BUFFERS: usize = 128;
@@ -123,6 +123,8 @@ pub struct WaylandOutputInfo {
     pub height: i32,         // physical height in pixels
     pub scale: i32,          // buffer scale factor
     pub primary: c_int,      // 1 if primary, 0 otherwise
+    pub transform: i32,      // output transform (0=normal, 1=90, 2=180, 3=270)
+    pub refresh: i32,        // refresh rate in mHz (e.g. 60000 for 60Hz)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +174,12 @@ struct OutputSlot {
     width: i32,
     height: i32,
     scale: i32,
+    transform: i32,
+    refresh: i32,
     conn_id: i32,
     active: bool,
+    name: String,            // output name (e.g. "DP-1", "HDMI-A-1")
+    mode_flags: u32,         // current mode flags
 }
 unsafe impl Send for OutputSlot {}
 
@@ -188,6 +194,8 @@ struct WaylandState {
     outputs: Vec<Option<OutputSlot>>,
     last_error: String,
     event_handler: Option<WaylandEventHandler>,
+    output_change_seq: u64,   // increments on any output change
+    primary_output_id: i32,   // ID of the primary output (-1 if none)
 }
 
 static STATE: Mutex<Option<WaylandState>> = Mutex::new(None);
@@ -204,6 +212,8 @@ where
         outputs: (0..MAX_OUTPUTS).map(|_| None).collect(),
         last_error: String::new(),
         event_handler: None,
+        output_change_seq: 0,
+        primary_output_id: -1,
     });
     f(state)
 }
@@ -531,26 +541,33 @@ unsafe fn xdg_surface_get_toplevel(xdg_surface: *mut wl_proxy) -> *mut wl_proxy 
 /// C callback for wl_output.geometry event.
 /// Parameters: x, y, phys_w, phys_h, subpixel, make, model, transform, scale
 unsafe extern "C" fn wl_output_geometry(
-    _data: *mut std::ffi::c_void,
-    _output: *mut wl_proxy,
+    data: *mut std::ffi::c_void,
+    output: *mut wl_proxy,
     x: i32, y: i32, phys_w: i32, phys_h: i32,
     _subpixel: i32,
-    _make: *const c_char, _model: *const c_char,
-    _transform: i32, _scale: i32,
+    make: *const c_char, _model: *const c_char,
+    transform: i32, _scale: i32,
 ) {
-    // Store geometry in the output slot
+    let output_id = data as isize as i32;
     with_state(|state| {
-        for slot in &mut state.outputs {
+        for (i, slot) in state.outputs.iter_mut().enumerate() {
             if let Some(out) = slot {
-                if out.output == _output {
+                if out.output == output {
                     out.x = x;
                     out.y = y;
                     out.width = phys_w;
                     out.height = phys_h;
-                    // Emit OutputChanged event
+                    out.transform = transform;
+                    // Store output name from make string
+                    if !make.is_null() {
+                        if let Ok(name) = std::ffi::CStr::from_ptr(make).to_str() {
+                            out.name = name.to_string();
+                        }
+                    }
+                    // Emit OutputChanged event with output ID
                     if let Some(handler) = state.event_handler {
                         let data = WaylandEventData { configure: WaylandConfigureData { width: phys_w, height: phys_h } };
-                        handler(WaylandEventType::OutputChanged, 0, data);
+                        handler(WaylandEventType::OutputChanged, output_id, data);
                     }
                     break;
                 }
@@ -563,17 +580,19 @@ unsafe extern "C" fn wl_output_geometry(
 /// Parameters: flags, width, height, refresh
 unsafe extern "C" fn wl_output_mode(
     _data: *mut std::ffi::c_void,
-    _output: *mut wl_proxy,
-    _flags: u32, width: i32, height: i32, _refresh: i32,
+    output: *mut wl_proxy,
+    flags: u32, width: i32, height: i32, refresh: i32,
 ) {
     // Update dimensions if this is the current mode (flag bit 0 = current)
-    if _flags & 1 != 0 {
+    if flags & 1 != 0 {
         with_state(|state| {
             for slot in &mut state.outputs {
                 if let Some(out) = slot {
-                    if out.output == _output {
+                    if out.output == output {
                         out.width = width;
                         out.height = height;
+                        out.refresh = refresh;
+                        out.mode_flags = flags;
                         break;
                     }
                 }
@@ -585,17 +604,20 @@ unsafe extern "C" fn wl_output_mode(
 /// C callback for wl_output.done event.
 /// Signals that all geometry/mode/scale events for this output have been sent.
 unsafe extern "C" fn wl_output_done(
-    _data: *mut std::ffi::c_void,
-    _output: *mut wl_proxy,
+    data: *mut std::ffi::c_void,
+    output: *mut wl_proxy,
 ) {
-    // Emit OutputChanged event to notify the application
+    let output_id = data as isize as i32;
     with_state(|state| {
-        for slot in &mut state.outputs {
+        for (i, slot) in state.outputs.iter_mut().enumerate() {
             if let Some(out) = slot {
-                if out.output == _output {
+                if out.output == output {
+                    // Increment change sequence
+                    state.output_change_seq += 1;
+                    // Emit OutputChanged event with output ID
                     if let Some(handler) = state.event_handler {
                         let data = WaylandEventData { configure: WaylandConfigureData { width: out.width, height: out.height } };
-                        handler(WaylandEventType::OutputChanged, 0, data);
+                        handler(WaylandEventType::OutputChanged, output_id, data);
                     }
                     break;
                 }
@@ -608,13 +630,13 @@ unsafe extern "C" fn wl_output_done(
 /// Parameters: factor
 unsafe extern "C" fn wl_output_scale(
     _data: *mut std::ffi::c_void,
-    _output: *mut wl_proxy,
+    output: *mut wl_proxy,
     factor: i32,
 ) {
     with_state(|state| {
         for slot in &mut state.outputs {
             if let Some(out) = slot {
-                if out.output == _output {
+                if out.output == output {
                     out.scale = factor;
                     break;
                 }
@@ -642,9 +664,10 @@ static WL_OUTPUT_LISTENER: WlOutputListener = WlOutputListener {
 };
 
 /// Register the wl_output listener on a proxy.
-unsafe fn output_add_listener(proxy: *mut wl_proxy) {
+/// The output_id is passed as the listener data so callbacks can identify which output changed.
+unsafe fn output_add_listener(proxy: *mut wl_proxy, output_id: i32) {
     let h = wayland_client_handle();
-    let data: *mut std::ffi::c_void = ptr::null_mut();
+    let data = output_id as *mut std::ffi::c_void;
     (h.wl_proxy_add_listener)(
         proxy,
         &WL_OUTPUT_LISTENER as *const _ as *mut _,
@@ -901,89 +924,64 @@ pub extern "C" fn nyrqis_wayland_connect(
             // by trying to bind each global name as wl_output
             let mut output_count = 0i32;
             for global_name in 1..=20u32 {
-                if output.is_null() {
-                    // First output already bound above
-                    let mut bind_args = [
-                        wl_argument { u: global_name },
-                        wl_argument { s: WL_OUTPUT_IFACE.name },
-                        wl_argument { u: 4 },
-                        wl_argument { n: 0 },
-                    ];
-                    let candidate = (h.wl_proxy_marshal_array_constructor)(
-                        registry,
-                        0, // bind
-                        bind_args.as_mut_ptr(),
-                        &WL_OUTPUT_IFACE,
-                    );
-                    if !candidate.is_null() {
-                        let class = (h.wl_proxy_get_class)(candidate);
-                        if !class.is_null() {
-                            let class_cstr = std::ffi::CStr::from_ptr(class);
-                            if class_cstr.to_bytes() == b"wl_output" {
-                                output = candidate;
-                                // Register listener for geometry/mode/done/scale events
-                                output_add_listener(candidate);
-                                // Store first output
-                                if let Some(idx) = alloc_slot(&mut state.outputs) {
-                                    state.outputs[idx] = Some(OutputSlot {
-                                        output: candidate,
-                                        x: 0, y: 0,
-                                        width: 0, height: 0,
-                                        scale: 1,
-                                        conn_id: conn_idx,
-                                        active: true,
-                                    });
-                                    output_count += 1;
-                                }
+                let mut bind_args = [
+                    wl_argument { u: global_name },
+                    wl_argument { s: WL_OUTPUT_IFACE.name },
+                    wl_argument { u: 4 },
+                    wl_argument { n: 0 },
+                ];
+                let candidate = (h.wl_proxy_marshal_array_constructor)(
+                    registry,
+                    0, // bind
+                    bind_args.as_mut_ptr(),
+                    &WL_OUTPUT_IFACE,
+                );
+                if !candidate.is_null() {
+                    let class = (h.wl_proxy_get_class)(candidate);
+                    if !class.is_null() {
+                        let class_cstr = std::ffi::CStr::from_ptr(class);
+                        if class_cstr.to_bytes() == b"wl_output" {
+                            // Check if we already have this output bound
+                            let already_bound = state.outputs.iter().any(|o| {
+                                o.as_ref().map_or(false, |s| s.output == candidate)
+                            });
+                            if already_bound {
+                                (h.wl_proxy_destroy)(candidate);
+                                continue;
+                            }
+                            let out_id = output_count;
+                            // Register listener for geometry/mode/done/scale events
+                            // Pass output_id as listener data so callbacks can identify the output
+                            output_add_listener(candidate, out_id);
+                            // Store output
+                            if let Some(idx) = alloc_slot(&mut state.outputs) {
+                                state.outputs[idx] = Some(OutputSlot {
+                                    output: candidate,
+                                    x: 0, y: 0,
+                                    width: 0, height: 0,
+                                    scale: 1,
+                                    transform: 0,
+                                    refresh: 0,
+                                    conn_id: conn_idx,
+                                    active: true,
+                                    name: String::new(),
+                                    mode_flags: 0,
+                                });
+                                output_count += 1;
                             } else {
                                 (h.wl_proxy_destroy)(candidate);
                             }
                         } else {
                             (h.wl_proxy_destroy)(candidate);
                         }
-                    }
-                } else {
-                    // Try to bind additional outputs
-                    let mut bind_args = [
-                        wl_argument { u: global_name },
-                        wl_argument { s: WL_OUTPUT_IFACE.name },
-                        wl_argument { u: 4 },
-                        wl_argument { n: 0 },
-                    ];
-                    let candidate = (h.wl_proxy_marshal_array_constructor)(
-                        registry,
-                        0, // bind
-                        bind_args.as_mut_ptr(),
-                        &WL_OUTPUT_IFACE,
-                    );
-                    if !candidate.is_null() {
-                        let class = (h.wl_proxy_get_class)(candidate);
-                        if !class.is_null() {
-                            let class_cstr = std::ffi::CStr::from_ptr(class);
-                            if class_cstr.to_bytes() == b"wl_output" {
-                                // Register listener for geometry/mode/done/scale events
-                                output_add_listener(candidate);
-                                if let Some(idx) = alloc_slot(&mut state.outputs) {
-                                    state.outputs[idx] = Some(OutputSlot {
-                                        output: candidate,
-                                        x: 0, y: 0,
-                                        width: 0, height: 0,
-                                        scale: 1,
-                                        conn_id: conn_idx,
-                                        active: true,
-                                    });
-                                    output_count += 1;
-                                } else {
-                                    (h.wl_proxy_destroy)(candidate);
-                                }
-                            } else {
-                                (h.wl_proxy_destroy)(candidate);
-                            }
-                        } else {
-                            (h.wl_proxy_destroy)(candidate);
-                        }
+                    } else {
+                        (h.wl_proxy_destroy)(candidate);
                     }
                 }
+            }
+            // Set the first output as primary if we have any
+            if output_count > 0 {
+                state.primary_output_id = 0;
             }
 
             (h.wl_proxy_destroy)(registry);
@@ -1483,7 +1481,9 @@ pub extern "C" fn nyrqis_wayland_get_outputs(
                         width: out.width,
                         height: out.height,
                         scale: out.scale,
-                        primary: if count == 0 { 1 } else { 0 },
+                        primary: if state.primary_output_id == i as i32 { 1 } else { 0 },
+                        transform: out.transform,
+                        refresh: out.refresh,
                     };
                     unsafe {
                         *outputs_buf.add(count as usize) = info;
@@ -1529,23 +1529,154 @@ pub extern "C" fn nyrqis_wayland_check_output_changes(conn_id: c_int) -> c_int {
             _ => return -1,
         }
 
-        // Count active outputs before
-        let before: i32 = state.outputs.iter()
+        // Count active outputs
+        let active_count: i32 = state.outputs.iter()
             .filter(|o| o.as_ref().map_or(false, |s| s.active))
             .count() as i32;
 
-        // After a roundtrip/dispatch, the output proxies may have been updated.
-        // Re-query by checking if any output proxies are still valid.
-        // For now, we use a simple heuristic: if the count changed, it's
-        // an add/remove; if the same, it might be a geometry change.
-        let after = before; // Real implementation would re-query wl_output state
-
-        if after > before {
-            OutputChange::Added as c_int
-        } else if after < before {
-            OutputChange::Removed as c_int
+        // Use the change sequence to detect if any output events were received
+        let current_seq = state.output_change_seq;
+        if current_seq > 0 {
+            // An output event was received since last check
+            OutputChange::Changed as c_int
+        } else if active_count > 0 {
+            OutputChange::None as c_int
         } else {
             OutputChange::None as c_int
+        }
+    })
+}
+
+/// Get the primary output ID.
+///
+/// Returns the ID of the primary output, or -1 if no outputs are available.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_get_primary_output() -> c_int {
+    with_state(|state| state.primary_output_id)
+}
+
+/// Set the primary output.
+///
+/// The primary output is used as the default rendering target.
+/// Returns 0 on success, or -1 if the output ID is invalid.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_set_primary_output(output_id: c_int) -> c_int {
+    with_state(|state| {
+        if output_id < 0 || output_id as usize >= MAX_OUTPUTS {
+            return -1;
+        }
+        match &state.outputs[output_id as usize] {
+            Some(out) if out.active => {
+                state.primary_output_id = output_id;
+                0
+            }
+            _ => -1,
+        }
+    })
+}
+
+/// Set the buffer scale for a surface.
+///
+/// The buffer scale determines how the surface content scales relative
+/// to the output.  A scale of 2 means the surface content is 2x the
+/// output resolution (HiDPI).
+///
+/// Returns 0 on success, or -1 on error.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_set_buffer_scale(
+    surface_id: c_int,
+    scale: c_int,
+) -> c_int {
+    with_state(|state| {
+        if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
+            set_last_error(state, "invalid surface ID");
+            return -1;
+        }
+
+        let surf = match &state.surfaces[surface_id as usize] {
+            Some(s) if s.active => s,
+            _ => {
+                set_last_error(state, "surface not active");
+                return -1;
+            }
+        };
+
+        if surf.surface.is_null() {
+            set_last_error(state, "surface not initialized");
+            return -1;
+        }
+
+        // wl_surface.set_buffer_scale is opcode 6 in wayland-client protocol
+        // We need to send it via wl_proxy_marshal
+        unsafe {
+            let h = wayland_client_handle();
+            let mut args = [wl_argument { i: scale }];
+            (h.wl_proxy_marshal_array)(
+                surf.surface,
+                6, // set_buffer_scale opcode
+                args.as_mut_ptr(),
+            );
+        }
+
+        0
+    })
+}
+
+/// Get the output count for a connection.
+///
+/// Returns the number of active outputs, or -1 on error.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_get_output_count(conn_id: c_int) -> c_int {
+    with_state(|state| {
+        if conn_id < 0 || conn_id as usize >= MAX_CONNECTIONS {
+            return -1;
+        }
+
+        match &state.connections[conn_id as usize] {
+            Some(c) if c.connected => {}
+            _ => return -1,
+        }
+
+        state.outputs.iter()
+            .filter(|o| o.as_ref().map_or(false, |s| s.active && s.conn_id == conn_id))
+            .count() as i32
+    })
+}
+
+/// Get output info by ID.
+///
+/// Returns 0 on success, or -1 if the output ID is invalid.
+#[no_mangle]
+pub extern "C" fn nyrqis_wayland_get_output_info(
+    output_id: c_int,
+    info: *mut WaylandOutputInfo,
+) -> c_int {
+    with_state(|state| {
+        if output_id < 0 || output_id as usize >= MAX_OUTPUTS {
+            return -1;
+        }
+        if info.is_null() {
+            return -1;
+        }
+
+        match &state.outputs[output_id as usize] {
+            Some(out) if out.active => {
+                unsafe {
+                    *info = WaylandOutputInfo {
+                        id: output_id,
+                        x: out.x,
+                        y: out.y,
+                        width: out.width,
+                        height: out.height,
+                        scale: out.scale,
+                        primary: if state.primary_output_id == output_id { 1 } else { 0 },
+                        transform: out.transform,
+                        refresh: out.refresh,
+                    };
+                }
+                0
+            }
+            _ => -1,
         }
     })
 }
@@ -1747,5 +1878,54 @@ mod tests {
     fn check_output_changes_no_conn() {
         // No connection established
         assert_eq!(nyrqis_wayland_check_output_changes(0), -1);
+    }
+
+    #[test]
+    fn get_primary_output_no_outputs() {
+        // No outputs available
+        assert_eq!(nyrqis_wayland_get_primary_output(), -1);
+    }
+
+    #[test]
+    fn set_primary_output_invalid_id() {
+        assert_eq!(nyrqis_wayland_set_primary_output(-1), -1);
+        assert_eq!(nyrqis_wayland_set_primary_output(99), -1);
+    }
+
+    #[test]
+    fn get_output_count_invalid_conn() {
+        assert_eq!(nyrqis_wayland_get_output_count(-1), -1);
+        assert_eq!(nyrqis_wayland_get_output_count(99), -1);
+    }
+
+    #[test]
+    fn get_output_count_no_conn() {
+        assert_eq!(nyrqis_wayland_get_output_count(0), -1);
+    }
+
+    #[test]
+    fn get_output_info_invalid_id() {
+        let mut info = WaylandOutputInfo {
+            id: 0, x: 0, y: 0, width: 0, height: 0,
+            scale: 0, primary: 0, transform: 0, refresh: 0,
+        };
+        assert_eq!(nyrqis_wayland_get_output_info(-1, &mut info), -1);
+        assert_eq!(nyrqis_wayland_get_output_info(99, &mut info), -1);
+    }
+
+    #[test]
+    fn get_output_info_null_pointer() {
+        assert_eq!(nyrqis_wayland_get_output_info(0, ptr::null_mut()), -1);
+    }
+
+    #[test]
+    fn set_buffer_scale_invalid_surface() {
+        assert_eq!(nyrqis_wayland_set_buffer_scale(-1, 2), -1);
+        assert_eq!(nyrqis_wayland_set_buffer_scale(99, 2), -1);
+    }
+
+    #[test]
+    fn abi_version_1_2() {
+        assert_eq!(nyrqis_wayland_version(), 0x0001_0200);
     }
 }

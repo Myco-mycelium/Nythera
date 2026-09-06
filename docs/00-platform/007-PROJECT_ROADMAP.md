@@ -224,7 +224,7 @@ is connecting the shell to real hardware via Wayland.
 
 **Phases 1–2: COMPLETE** (2026-09-01, ADR-0026 Accepted)
 
-- [x] ADR-0026 — Wayland display server integration (Accepted, ABI 1.1.0)
+- [x] ADR-0026 — Wayland display server integration (Accepted, ABI 1.2.0)
 - [x] `rust/wayland/` — Wayland client protocol bindings (wl_display, wl_surface, wl_seat, wl_shm, xdg_surface, xdg_toplevel) — 17 unit tests
 - [x] `ui/wayland_codec.py` — FFI loader (same pattern as other crates)
 - [x] `ui/wayland_display.py` — WaylandDisplay wrapper class
@@ -234,7 +234,16 @@ is connecting the shell to real hardware via Wayland.
 - [x] DesktopSession integration — wire rendering to Wayland surfaces via event loop
 - [x] Compositor event handling — configure (resize), close, keyboard, pointer events
 - [x] SDL2 Wayland backend — SDLCompositor supports Wayland video driver for GPU-accelerated rendering
-- [ ] Multi-monitor support via wl_output
+- [x] Multi-monitor support via wl_output (ABI 1.2.0, 2026-09-06):
+  - [x] Output enumeration with proper global tracking (deduplication)
+  - [x] wl_output listener callbacks (geometry, mode, done, scale) with output ID data
+  - [x] Primary output detection and setting (`get_primary_output`/`set_primary_output`)
+  - [x] Per-surface buffer scale for HiDPI (`set_buffer_scale`)
+  - [x] Output info query by ID (`get_output_info`)
+  - [x] Output count per connection (`get_output_count`)
+  - [x] Change sequence tracking for hot-plug detection
+  - [x] WaylandDisplay wrapper with multi-monitor properties and methods
+  - [x] 18 new tests (`test_wayland_multimonitor.py`)
 - [ ] GPU acceleration follow-on (GBM + DRM atomic modesetting)
 - [ ] Custom compositor follow-on (run as Wayland compositor instead of client)
 

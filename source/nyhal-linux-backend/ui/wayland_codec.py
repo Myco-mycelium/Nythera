@@ -29,7 +29,7 @@ from typing import Optional
 
 # ABI version expected by this loader — must match
 # nyrqis_wayland_version() in rust/wayland/src/lib.rs.
-NYRQIS_WAYLAND_ABI: int = 0x0001_0100  # 1.1.0 — Phase 1b + xdg-shell + input
+NYRQIS_WAYLAND_ABI: int = 0x0001_0200  # 1.2.0 — Multi-monitor support + HiDPI
 
 # ---------------------------------------------------------------------------
 # Library search and load
@@ -217,13 +217,16 @@ class WaylandOutputInfo(ctypes.Structure):
         ("height", ctypes.c_int32),
         ("scale", ctypes.c_int32),
         ("primary", ctypes.c_int),
+        ("transform", ctypes.c_int32),
+        ("refresh", ctypes.c_int32),
     ]
 
 
 def get_outputs() -> list:
     """Get the list of active outputs (monitors).
 
-    Returns a list of dicts with id, x, y, width, height, scale, primary.
+    Returns a list of dicts with id, x, y, width, height, scale, primary,
+    transform, refresh.
     """
     if WAYLAND_STUB:
         return []
@@ -244,8 +247,81 @@ def get_outputs() -> list:
             "height": info.height,
             "scale": info.scale,
             "primary": info.primary == 1,
+            "transform": info.transform,
+            "refresh": info.refresh,
         })
     return result
+
+
+def get_primary_output() -> int:
+    """Get the primary output ID.
+
+    Returns the ID of the primary output, or -1 if no outputs are available.
+    """
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_get_primary_output()
+
+
+def set_primary_output(output_id: int) -> int:
+    """Set the primary output.
+
+    The primary output is used as the default rendering target.
+    Returns 0 on success, or -1 if the output ID is invalid.
+    """
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_set_primary_output(output_id)
+
+
+def set_buffer_scale(surface_id: int, scale: int) -> int:
+    """Set the buffer scale for a surface.
+
+    The buffer scale determines how the surface content scales relative
+    to the output.  A scale of 2 means the surface content is 2x the
+    output resolution (HiDPI).
+
+    Returns 0 on success, or -1 on error.
+    """
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_set_buffer_scale(surface_id, scale)
+
+
+def get_output_count(conn_id: int) -> int:
+    """Get the output count for a connection.
+
+    Returns the number of active outputs, or -1 on error.
+    """
+    if WAYLAND_STUB:
+        return -1
+    return _lib().nyrqis_wayland_get_output_count(conn_id)
+
+
+def get_output_info(output_id: int) -> Optional[dict]:
+    """Get output info by ID.
+
+    Returns a dict with id, x, y, width, height, scale, primary,
+    transform, refresh, or None if the output ID is invalid.
+    """
+    if WAYLAND_STUB:
+        return None
+    lib = _lib()
+    info = WaylandOutputInfo()
+    result = lib.nyrqis_wayland_get_output_info(output_id, ctypes.byref(info))
+    if result < 0:
+        return None
+    return {
+        "id": info.id,
+        "x": info.x,
+        "y": info.y,
+        "width": info.width,
+        "height": info.height,
+        "scale": info.scale,
+        "primary": info.primary == 1,
+        "transform": info.transform,
+        "refresh": info.refresh,
+    }
 
 
 # Output change types (must match Rust enum OutputChange)
@@ -255,17 +331,23 @@ OUTPUT_CHANGE_REMOVED = 2
 OUTPUT_CHANGE_CHANGED = 3
 
 
-def check_output_changes() -> int:
+def check_output_changes(conn_id: int = -1) -> int:
     """Check for output changes since the last dispatch.
 
     Returns one of OUTPUT_CHANGE_NONE, _ADDED, _REMOVED, _CHANGED.
     Call this after dispatch_events() to detect hot-plug events.
+
+    Parameters
+    ----------
+    conn_id : int, optional
+        The connection ID.  If -1 (default), uses the first active connection.
     """
     if WAYLAND_STUB:
         return OUTPUT_CHANGE_NONE
     lib = _lib()
-    conn_id = _conn_id()
     if conn_id < 0:
+        # Try to find an active connection
+        # This is a fallback — callers should pass conn_id explicitly
         return OUTPUT_CHANGE_NONE
     return lib.nyrqis_wayland_check_output_changes(conn_id)
 

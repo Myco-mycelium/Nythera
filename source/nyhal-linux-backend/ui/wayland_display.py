@@ -266,11 +266,85 @@ class WaylandDisplay:
         """Get the list of active outputs (monitors).
 
         Returns a list of dicts with id, x, y, width, height, scale,
-        primary.
+        primary, transform, refresh.
         """
         if not self._connected:
             return []
         return wayland_codec.get_outputs()
+
+    @property
+    def primary_output(self) -> Optional[dict]:
+        """Get the primary output (monitor).
+
+        Returns a dict with output info, or None if no outputs are available.
+        """
+        if not self._connected:
+            return None
+        output_id = wayland_codec.get_primary_output()
+        if output_id < 0:
+            return None
+        return wayland_codec.get_output_info(output_id)
+
+    def set_primary_output(self, output_id: int) -> bool:
+        """Set the primary output.
+
+        The primary output is used as the default rendering target.
+
+        Parameters
+        ----------
+        output_id : int
+            The ID of the output to set as primary.
+
+        Returns
+        -------
+        bool
+            True on success, False if the output ID is invalid.
+        """
+        if not self._connected:
+            return False
+        result = wayland_codec.set_primary_output(output_id)
+        return result == 0
+
+    def set_buffer_scale(self, surface_id: int, scale: int) -> bool:
+        """Set the buffer scale for a surface.
+
+        The buffer scale determines how the surface content scales
+        relative to the output.  A scale of 2 means the surface content
+        is 2x the output resolution (HiDPI).
+
+        Parameters
+        ----------
+        surface_id : int
+            The surface to set the scale for.
+        scale : int
+            The buffer scale factor (1, 2, 4, etc.).
+
+        Returns
+        -------
+        bool
+            True on success, False on error.
+        """
+        if not self._connected:
+            return False
+        result = wayland_codec.set_buffer_scale(surface_id, scale)
+        return result == 0
+
+    def get_output_info(self, output_id: int) -> Optional[dict]:
+        """Get output info by ID.
+
+        Parameters
+        ----------
+        output_id : int
+            The ID of the output to query.
+
+        Returns
+        -------
+        dict or None
+            Output info dict, or None if the output ID is invalid.
+        """
+        if not self._connected:
+            return None
+        return wayland_codec.get_output_info(output_id)
 
     def check_output_changes(self) -> bool:
         """Check for output (monitor) changes since the last dispatch.
@@ -280,7 +354,7 @@ class WaylandDisplay:
         """
         if not self._connected:
             return False
-        change = wayland_codec.check_output_changes()
+        change = wayland_codec.check_output_changes(self._conn_id)
         return change != wayland_codec.OUTPUT_CHANGE_NONE
 
     # -- DRM integration ------------------------------------------------
@@ -619,11 +693,16 @@ class WaylandDisplay:
 
     def summary(self) -> dict:
         """Display summary for diagnostics."""
+        outputs = self.outputs if self._connected else []
+        primary = self.primary_output if self._connected else None
         return {
             "available": self.available,
             "connected": self._connected,
             "conn_id": self._conn_id,
             "surfaces": len(self._surfaces),
+            "outputs": len(outputs),
+            "primary_output": primary.get("id") if primary else None,
+            "output_details": outputs,
             "last_error": wayland_codec.last_error() if self.available else "",
         }
 
