@@ -79,4 +79,4 @@ without needing a separate, independently-trusted signing authority.
   profile, not a measured fact yet.
 
 ## Status
-Proposed — pending Architecture Group review.
+Accepted — implemented in `backend/container.py` (`initialize_audit_integrity`, `append_audit_event`, `verify_audit_integrity`). Hash-chained append-only audit log with SHA-256 integrity verification. Benchmark pending (NPC-002 §5.2).
