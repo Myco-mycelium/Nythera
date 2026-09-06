@@ -249,5 +249,40 @@ is connecting the shell to real hardware via Wayland.
 
 **Depends on**: ADR-0016 (FUSE), ADR-0020 (language strategy), ADR-0021 (IPC loop), ADR-0025 (NUI runtime), NPS-017 (backend contract)
 
+### M14 — Production Readiness
+
+With the display server integration complete (M13), the next milestone
+focuses on making Nyrqis ready for real users and contributors.
+
+**Phase 1: Documentation & Governance**
+- [x] Governance expansion (`NPC-010`) — RFC process, release process, deprecation policy, versioning, branching, commit conventions, ADR workflow
+- [x] Build architecture (`BUILD-001`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
+- [x] Developer onboarding (`TUT-003`) — prerequisites, first build, coding standards, repository tour, first contribution, debugging, testing
+- [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency targets, filesystem performance targets, gaming targets, AI inference targets
+- [ ] Package format specification update — update NPS-026 with implementation findings from ADR-0022/0023 (NyVault)
+
+**Phase 2: Hardware Compatibility**
+- [ ] AMD Radeon GPU testing and validation
+- [ ] NVIDIA GPU testing (Nouveau driver path)
+- [ ] ARM64 cross-compilation and testing (Raspberry Pi 4/5)
+- [ ] RISC-V 64 initial support
+- [ ] Wayland client compatibility testing (weston, GTK4, Qt6, Sway)
+
+**Phase 3: Developer Experience**
+- [ ] Package manager integration — install/update/remove applications
+- [ ] SDK scaffolding — `nyrqis new` template generator
+- [ ] Hot reload for shell designs — live preview without restart
+- [ ] Debug tooling — `nyrqis debug` with step-through, breakpoints
+- [ ] IDE integration — VS Code extension for .nstudio editing
+
+**Phase 4: Production Hardening**
+- [ ] Crash reporting and telemetry (opt-in)
+- [ ] Automatic updates with rollback
+- [ ] System restore points
+- [ ] Performance monitoring dashboard
+- [ ] Security audit by external reviewer
+
+**Depends on**: M13 (Display Server Integration), external hardware access for Phase 2
+
 ---
 **End of Document**

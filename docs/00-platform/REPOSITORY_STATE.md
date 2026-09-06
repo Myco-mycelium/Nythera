@@ -446,6 +446,19 @@ Two things now, not one:
   handling — full event loop and protocol message parsing remain as
   follow-on work.  NPC-007 §M13 updated.
 
+  **2026-09-06: Documentation gaps addressed (M14 Phase 1).**
+  Three new documents landed: governance expansion (`NPC-010`, Draft)
+  covering RFC process, release process, deprecation policy, versioning,
+  branching strategy, commit conventions, and ADR workflow; build
+  architecture (`BUILD-001`, Draft) covering toolchain, build graph,
+  cross-compilation, reproducible builds, CI stages, and artifact
+  signing; developer onboarding tutorial (`TUT-003`, Draft) covering
+  prerequisites, first build, coding standards, repository tour, first
+  contribution, debugging, testing, and documentation style.  M14
+  (Production Readiness) milestone added to NPC-007 with four phases:
+  Documentation & Governance, Hardware Compatibility, Developer
+  Experience, and Production Hardening.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust
