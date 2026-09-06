@@ -14,14 +14,11 @@ depends_on: [NFS-001, NPS-009, ADR-0020]
 
 ## Status
 
-**Proposed** — drafted for Architecture Group review. The first increment
-is **implemented and gated the same day (2026-08-16)** as the reference
-floor + Rust crate + conformance gate, mirroring the ADR-0020 migration
-pattern. Follow-on increments landed the same day: the import gate is
-exposed to operators over the IPC control plane (`nui_validate` /
-`nui_load` / `nui_current` + `nyrqisctl nui`), two more NyForge-authored
-screens (the Security Center and the Vault Workspace) join the fixtures,
-and §30 of the benchmark suite measures the floor-vs-crate A/B.
+**Accepted** — implemented 2026-08-16. The import gate is implemented in
+Rust (`rust/nyui/`) with ABI 1.0.0, the Python floor (`ui/nstudio.py`)
+remains as reference, and the conformance gate forces the floor's suite
+through the FFI. Exposed over IPC control plane (`nui_validate` / `nui_load`
+/ `nui_current`). Benchmark §30 shows crate ~2.1× faster than floor.
 
 ## Context
 

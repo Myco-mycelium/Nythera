@@ -130,3 +130,10 @@ acceptance. The flip is reversible without migration
   `_materialize_journal`, `journal_bytes`, `maybe_compact`,
   `compact_journal`, `NyFSMount(auto_compact=...)`); tests in
   `source/nyhal-linux-backend/test_backend.py`.
+
+## Status
+
+Accepted — implemented 2026-08-12, default flipped in `fuse/nyfs.py`.
+Journal commit is now the default save mode. Benchmark evidence in
+`tests/BENCHMARK_RESULTS.md` §7–§9, §12–§14. Architecture Group
+review pending.
