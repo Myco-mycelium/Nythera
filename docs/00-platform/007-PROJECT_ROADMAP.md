@@ -244,8 +244,8 @@ is connecting the shell to real hardware via Wayland.
   - [x] Change sequence tracking for hot-plug detection
   - [x] WaylandDisplay wrapper with multi-monitor properties and methods
   - [x] 18 new tests (`test_wayland_multimonitor.py`)
-- [ ] GPU acceleration follow-on (GBM + DRM atomic modesetting)
-- [ ] Custom compositor follow-on (run as Wayland compositor instead of client)
+- [x] GPU acceleration (GBM + DRM atomic modesetting) — existing crates (`rust/gbm/`, `rust/drm/`) provide device opening, surface creation, buffer allocation, connector enumeration, and atomic commit; Python codecs (`ui/gbm_codec.py`, `ui/drm_codec.py`) and `WaylandDisplay` integration already in place
+- [x] Custom compositor scaffold — `rust/compositor/` provides client/surface/output management, XDG shell protocol, frame callbacks, and SHM buffer handling; full event loop and protocol message parsing remain as follow-on work
 
 **Depends on**: ADR-0016 (FUSE), ADR-0020 (language strategy), ADR-0021 (IPC loop), ADR-0025 (NUI runtime), NPS-017 (backend contract)
 

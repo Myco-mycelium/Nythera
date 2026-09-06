@@ -434,6 +434,18 @@ Two things now, not one:
   and updated `check_output_changes()`. 18 new tests
   (`tests/test_wayland_multimonitor.py`).  NPC-007 §M13 updated.
 
+  **GPU acceleration and custom compositor infrastructure verified.**
+  The GBM crate (`rust/gbm/`, ABI 1.0.0) provides device opening,
+  surface creation, buffer locking, and buffer info query via `libgbm`
+  dlopen.  The DRM crate (`rust/drm/`, ABI 1.0.0) provides device
+  enumeration, connector detection, and atomic modesetting via DRM
+  ioctls.  Python codecs (`ui/gbm_codec.py`, `ui/drm_codec.py`) and
+  `WaylandDisplay` integration are in place.  The compositor crate
+  (`rust/compositor/`, ABI 0.1.0) provides client/surface/output
+  management, XDG shell protocol, frame callbacks, and SHM buffer
+  handling — full event loop and protocol message parsing remain as
+  follow-on work.  NPC-007 §M13 updated.
+
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR
 and is the first place the Rust crate compiles (the dev host has no Rust
