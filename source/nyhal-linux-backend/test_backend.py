@@ -37827,4 +37827,12 @@ class TestSecretInjection(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    # Watchdog: this suite has hung indefinitely on CI runners (a 6-hour
+    # run was observed before cancellation, with no output to diagnose
+    # where). Dump every thread's stack after the limit and exit —
+    # turning a silent hang into a diagnosable failure. Local runs
+    # finish in ~2.5 minutes; 60 minutes is ~24x headroom.
+    import faulthandler
+    faulthandler.enable()
+    faulthandler.dump_traceback_later(3600, exit=True)
     sys.exit(run_tests())

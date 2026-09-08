@@ -486,6 +486,7 @@ jobs:
   backend:
     name: Python backend tests
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: source/nyhal-linux-backend
@@ -495,7 +496,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pynacl
-      - run: python3 -B test_backend.py
+      # -u: stream output live (a hung test is then visible in the
+      # log); the suite itself additionally dumps all thread stacks via
+      # faulthandler after 60 minutes and exits.
+      - run: python3 -u -B test_backend.py
 
   generators:
     name: Code generator validation
