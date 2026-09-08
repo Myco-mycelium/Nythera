@@ -35589,6 +35589,40 @@ class TestFileIntegrity(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertGreaterEqual(r["files_indexed"], 0)
 
+    def test_baseline_skips_fifo_without_blocking(self):
+        """A FIFO in a watched directory must not hang the baseline.
+
+        Regression: the walker opened EVERY directory entry; a FIFO
+        opened O_RDONLY blocks until a writer appears, which hung the
+        CI backend job for a full hour when it walked /tmp. Only
+        regular files are hashed now; everything else is recorded as
+        inaccessible and the scan stays non-blocking.
+        """
+        import tempfile
+        import os as _os
+        with tempfile.TemporaryDirectory(prefix="integrity-fifo-") as tmp:
+            regular = _os.path.join(tmp, "regular.txt")
+            with open(regular, "wb") as fh:
+                fh.write(b"payload")
+            fifo = _os.path.join(tmp, "pipe.fifo")
+            _os.mkfifo(fifo)
+            m = self._mgr()
+            m.create_integrity_monitor("fifo1", paths=[tmp])
+            r = m.create_integrity_baseline("fifo1")  # must not block
+            self.assertTrue(r["ok"])
+            baseline = m._integrity_monitors["fifo1"]["baseline"]
+            self.assertIn(regular, baseline)
+            self.assertNotEqual(baseline[regular]["hash"], "inaccessible")
+            self.assertIn(fifo, baseline)
+            self.assertEqual(baseline[fifo]["hash"], "inaccessible")
+            # A swap after the baseline must not hang the scan either.
+            _os.remove(regular)
+            _os.mkfifo(regular)
+            scan = m.scan_integrity("fifo1")
+            self.assertTrue(scan["ok"])
+            types = {v["path"]: v["type"] for v in scan["violation_details"]}
+            self.assertEqual(types.get(regular), "inaccessible")
+
     def test_create_baseline_nonexistent(self):
         m=self._mgr()
         r=m.create_integrity_baseline("nope")

@@ -18,19 +18,20 @@ References:
 
 import ctypes
 import enum
+import hashlib
 import json
 import logging
 import os
 import select
 import shutil
 import signal
+import stat as stat_module
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from typing import List, Tuple
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32748,7 +32749,6 @@ class ContainerManager:
         monitor = getattr(self, '_integrity_monitors', {}).get(monitor_name)
         if not monitor:
             return {"error": f"Monitor '{monitor_name}' not found"}
-        import hashlib as _hash
         import time as _time
         import os as _os
         baseline = {}
@@ -32756,13 +32756,10 @@ class ContainerManager:
         for path in monitor["paths"]:
             if _os.path.exists(path):
                 if _os.path.isfile(path):
-                    try:
-                        with open(path, 'rb') as f:
-                            digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
-                        baseline[path] = {"hash": digest, "size": _os.path.getsize(path)}
+                    entry = self._hash_file_for_integrity(path, monitor["hash_algo"])
+                    baseline[path] = entry
+                    if entry["hash"] != "inaccessible":
                         count += 1
-                    except (PermissionError, OSError):
-                        baseline[path] = {"hash": "inaccessible", "size": 0}
                 else:
                     for root, dirs, files in _os.walk(path):
                         # Limit depth to 3 levels and total to 200 files
@@ -32772,19 +32769,63 @@ class ContainerManager:
                             continue
                         for fname in files[:20]:
                             fpath = _os.path.join(root, fname)
-                            try:
-                                with open(fpath, 'rb') as f:
-                                    digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
-                                baseline[fpath] = {"hash": digest, "size": _os.path.getsize(fpath)}
+                            entry = self._hash_file_for_integrity(fpath, monitor["hash_algo"])
+                            baseline[fpath] = entry
+                            if entry["hash"] != "inaccessible":
                                 count += 1
-                            except (PermissionError, OSError, ValueError):
-                                baseline[fpath] = {"hash": "inaccessible", "size": 0}
                         if count > 200:
                             break
         monitor["baseline"] = baseline
         monitor["baseline_count"] = count
         monitor["baseline_at"] = _time.time()
         return {"ok": True, "monitor": monitor_name, "files_indexed": count}
+
+    # Maximum bytes hashed per file for the integrity monitors: a
+    # monitor can watch attacker-writable paths (e.g. /tmp), so the
+    # hash must be bounded (no unbounded read of a huge file).
+    _INTEGRITY_MAX_FILE_BYTES = 64 * 1024 * 1024
+
+    @classmethod
+    def _hash_file_for_integrity(cls, fpath: str, hash_algo: str) -> Dict[str, Any]:
+        """Hash ONE file for the integrity monitors, without ever
+        blocking.
+
+        Only regular files are hashed (lstat — symlinks are not
+        followed, FIFOs/device nodes/sockets are recorded as
+        ``inaccessible``): opening a FIFO O_RDONLY blocks until a
+        writer appears, which hung this monitor for an hour on a CI
+        runner when it walked /tmp. The open additionally carries
+        O_NONBLOCK (defense in depth: an O_NONBLOCK open of a FIFO
+        returns immediately per open(2)), and the read is capped at
+        ``_INTEGRITY_MAX_FILE_BYTES`` so a monitor cannot be made to
+        hash gigabytes of attacker-controlled data.
+        """
+        import os as _os
+        try:
+            st = _os.lstat(fpath)
+        except OSError:
+            return {"hash": "inaccessible", "size": 0}
+        if not stat_module.S_ISREG(st.st_mode):
+            # FIFOs (open blocks), devices, sockets, symlinks: skip.
+            return {"hash": "inaccessible", "size": 0}
+        try:
+            fd = _os.open(fpath, _os.O_RDONLY | _os.O_NONBLOCK | _os.O_CLOEXEC)
+        except (PermissionError, OSError):
+            return {"hash": "inaccessible", "size": 0}
+        try:
+            h = hashlib.new(hash_algo)
+            remaining = cls._INTEGRITY_MAX_FILE_BYTES
+            with _os.fdopen(fd, 'rb', closefd=True) as f:
+                while remaining > 0:
+                    chunk = f.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    remaining -= len(chunk)
+            size = min(st.st_size, cls._INTEGRITY_MAX_FILE_BYTES)
+            return {"hash": h.hexdigest(), "size": size}
+        except (PermissionError, OSError, ValueError):
+            return {"hash": "inaccessible", "size": 0}
 
     def scan_integrity(self, monitor_name: str) -> Dict[str, Any]:
         """Scan for file integrity violations against baseline."""
@@ -32804,14 +32845,17 @@ class ContainerManager:
             if not _os.path.exists(fpath):
                 violations.append({"path": fpath, "type": "deleted", "expected_hash": expected["hash"]})
                 continue
-            try:
-                with open(fpath, 'rb') as f:
-                    digest = _hash.new(monitor["hash_algo"], f.read()).hexdigest()
-                if digest != expected["hash"]:
-                    violations.append({"path": fpath, "type": "modified",
-                                       "expected_hash": expected["hash"], "actual_hash": digest})
-            except (PermissionError, OSError, ValueError):
+            # Re-hash through the non-blocking helper (only regular
+            # files, O_NONBLOCK, bounded read) — a plain open() here can
+            # block forever on a FIFO swapped in after the baseline
+            # (same failure the baseline walk had).
+            entry = self._hash_file_for_integrity(fpath, monitor["hash_algo"])
+            digest = entry["hash"]
+            if digest == "inaccessible":
                 violations.append({"path": fpath, "type": "inaccessible"})
+            elif digest != expected["hash"]:
+                violations.append({"path": fpath, "type": "modified",
+                                   "expected_hash": expected["hash"], "actual_hash": digest})
         monitor["violations"] = violations
         monitor["last_scan"] = _time.time()
         monitor["scan_count"] += 1
