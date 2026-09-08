@@ -1724,7 +1724,9 @@ mod tests {
 
     #[test]
     fn version_returns_abi_version() {
-        assert_eq!(nyrqis_wayland_version(), 0x0001_0100);
+        // ABI 1.2.0 (0x0001_0200): multi-monitor support + HiDPI.
+        // ui/wayland_codec.py's NYRQIS_WAYLAND_ABI pins the same value.
+        assert_eq!(nyrqis_wayland_version(), 0x0001_0200);
     }
 
     #[test]

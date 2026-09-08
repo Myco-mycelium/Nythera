@@ -173,6 +173,13 @@ class TestContainerPrimitives(unittest.TestCase):
 
     def test_app_launch_creates_container(self):
         """app_launch creates a container for a known app."""
+        if not _direct_launch_supported():
+            # app_launch really spawns the container; on hosts that
+            # cannot run unprivileged user namespaces (e.g. GitHub's
+            # runners, where the kernel blocks the uid_map write) the
+            # spawn fails and raises. Skip like the other real-launch
+            # tests (see _direct_launch_supported).
+            self.skipTest("host cannot launch direct-syscall containers")
         from ui.app_compat import get_app_manager
         app_mgr = get_app_manager()
         # Manually register a test app
