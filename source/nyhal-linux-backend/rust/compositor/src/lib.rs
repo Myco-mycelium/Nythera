@@ -11,12 +11,16 @@
 //! - `wl_output` — display outputs
 //! - `wl_callback` — frame timing
 //!
-//! **FFI surface (ABI 0.1.0).** Input events are dispatched onto
+//! **FFI surface (ABI 0.2.0).** Input events are dispatched onto
 //! per-surface queues (bounded, oldest-dropped), frame callbacks
 //! record delivery timestamps, and commits bump per-surface commit
 //! counters — the client-visible state a real DRM-backed event loop
-//! would sit on top of. A real DRM device event loop remains
-//! follow-on work.
+//! would sit on top of. The `event_loop` module adds the
+//! request-processing half of that loop: it parses real Wayland
+//! wire-format requests (object table, per-object opcodes) and emits
+//! server→client events (`wl_registry.global`, `wl_callback.done`)
+//! in the same wire format the Python `wayland_protocol.py` codec
+//! speaks. A real DRM device event loop remains follow-on work.
 //!
 //! References:
 //! - ADR-0026: Wayland display-server integration
@@ -27,9 +31,10 @@ use std::sync::Mutex;
 
 pub mod wayland;
 pub mod protocols;
+pub mod event_loop;
 
-/// ABI version: 0x0000_0100 (0.1.0).
-const ABI_VERSION: u32 = 0x0000_0100;
+/// ABI version: 0x0000_0200 (0.2.0 — wire-format event loop added).
+const ABI_VERSION: u32 = 0x0000_0200;
 const MAX_CLIENTS: usize = 32;
 const MAX_SURFACES: usize = 256;
 const MAX_OUTPUTS: usize = 16;
@@ -97,6 +102,11 @@ struct InputEventRecord {
 const MAX_EVENTS_PER_SURFACE: usize = 256;
 
 static STATE: Mutex<Option<CompositorState>> = Mutex::new(None);
+
+/// Serializes tests that drive the shared global STATE through the
+/// FFI functions (see the test modules in this crate).
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn with_state<F, R>(f: F) -> R
 where
@@ -263,6 +273,24 @@ pub extern "C" fn nyrqis_compositor_destroy_surface(surface_id: c_int) -> c_int 
             0
         } else {
             -1
+        }
+    })
+}
+
+/// Mark a surface as having a pending (attached, uncommitted) buffer.
+/// Used by the event loop's `wl_surface.attach` dispatch. Returns
+/// false when the surface is unknown or inactive.
+pub(crate) fn mark_surface_pending_buffer(surface_id: u32) -> bool {
+    with_state(|state| {
+        if surface_id as usize >= MAX_SURFACES {
+            return false;
+        }
+        match &mut state.surfaces[surface_id as usize] {
+            Some(surf) if surf.active => {
+                surf.has_pending_buffer = true;
+                true
+            }
+            _ => false,
         }
     })
 }
@@ -540,7 +568,7 @@ pub extern "C" fn nyrqis_compositor_last_error(buf: *mut c_char, cap: c_int) -> 
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-fn reset_state() {
+pub(crate) fn reset_state() {
     let mut guard = STATE.lock().unwrap();
     *guard = Some(CompositorState {
         clients: (0..MAX_CLIENTS).map(|_| None).collect(),
@@ -560,13 +588,14 @@ mod tests {
     /// Serializes tests that drive the shared global STATE through the
     /// FFI functions. The default harness runs tests in parallel
     /// threads; without this, one test's reset/start can interleave
-    /// with another's multi-step sequence and flake.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// with another's multi-step sequence and flake. Uses the shared
+    /// crate-level TEST_LOCK so tests across modules serialize too.
+    use TEST_LOCK;
 
     #[test]
     fn version_returns_abi_version() {
         let _g = TEST_LOCK.lock().unwrap();
-        assert_eq!(nyrqis_compositor_version(), 0x0000_0100);
+        assert_eq!(nyrqis_compositor_version(), 0x0000_0200);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.1.0
+version: 6.2.0
 date: 2026-09-08
 ---
 
@@ -25,6 +25,29 @@ date: 2026-09-08
 | Wayland protocol | **wayland_protocol.py** (encoder/decoder for wire format) |
 | DRM backend | **drm_backend.py** (connector detection + atomic modesetting) |
 | Benchmarks | **benchmarks_full.py** + **benchmarks_software.py** (all display paths) |
+
+## Session 3 (2026-09-08) — CI green + compositor wire event loop
+
+### First Green CI on GitHub Runners
+| Item | Status |
+|------|--------|
+| rust/wayland ABI test | ✅ Fixed: asserted 0x0001_0100 after the multi-monitor bump to 0x0001_0200 (crate never compiled on the dev host — CI was the only compiler) |
+| Container conformance gate | ✅ Fixed: `test_app_launch_creates_container` did a real namespace spawn without the `_direct_launch_supported()` probe guard; GitHub-runner kernels block the uid_map write (`root map write: Operation not permitted`), so the job had never passed there. Now skips like the PID-1-init tests. |
+| Result | ✅ First green CI run in repo history (prior 568 runs red); push 6c6a48d |
+
+### Compositor Wire-Format Event Loop (ABI 0.1.0 → 0.2.0)
+| Item | Status |
+|------|--------|
+| `rust/compositor/src/event_loop.rs` | ✅ Standard Wayland wire-format request parser (object table, implicit wl_display id 1), dispatch of get_registry / bind / create_surface / attach / frame / commit into the crate state machine |
+| Server→client events | ✅ `wl_registry.global` ×5, one-shot `wl_callback.done` on commit (stamped with commit count), `wl_buffer.release` retirement |
+| FFI + Python | ✅ `handle_client_data` / `next_event` / `object_count` / `event_loop_last_error`; `ui/compositor_codec.py` ABI gate 0x0000_0200 |
+| End-to-end | ✅ Python client → 84-byte wire stream → 5 globals + frame-done; surface lands in state machine with commit_count 1 |
+| Tests | ✅ Compositor crate 37 → **47** (59 stable runs; crate-wide test lock unified) |
+
+### Codec Stub Audit (gbm/drm/egl/vulkan/wayland)
+| Item | Status |
+|------|--------|
+| Fail-closed posture | ✅ Already consistent: stub modes return honest failure sentinels (−1/False/None, version 0), `is_available()` truthful, callers fall back — no changes needed |
 
 ## Post-Plan Session (2026-09-08)
 

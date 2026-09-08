@@ -1,6 +1,6 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.25.1  
+**Version**: 0.26.0  
 **Date**: 2026-09-08  
 **Repository**: github.com/Myco-mycelium/Nythera
 
@@ -82,8 +82,9 @@ providing the hardware abstraction layer for the Nyrqis OS.
 - [x] **Weston test script** — Integration tests for weston-simple-shm
 
 ### Testing & CI
-- [x] **2622 tests passing** — Python backend suite (2619 + 3 remediation tests)
-- [x] **72 Rust tests** — 13 EGL + 12 Vulkan + 33 Compositor + 14 GBM
+- [x] **2514 tests passing** — Python backend suite (test_backend: 2503 + signing/installer/integration suites)
+- [x] **CI green on GitHub runners** — first green run in repo history (568 prior CI runs red); container conformance gate now skips honestly on runner-hosted userns-restricted kernels, wayland ABI assertion fixed
+- [x] **160 Rust tests** — 14 container + 15 seccomp + 14 syscalls + 8 keys + 10 nyfs + 11 ipc + 5 transport + 24 ipcd + 14 nyruntime + 19 nyui + 10 launcher + 27 wayland + 47 compositor
 - [x] **Full pipeline tests** — 11 integration tests covering complete pipeline
 - [x] **CI test runner** — `run_tests.sh` with --quick/--gpu/--compositor modes
 - [x] **GPU pipeline tests** — Verified on Intel HD Graphics
@@ -196,15 +197,16 @@ python3 demo/run_demo.py --output /tmp/nyrqis-demo
 ## Test Results
 
 ```
-Full suite:      2622 tests (0 failures)
-Compositor crate: 37 tests (0 failures, 12/12 stable runs)
-Quick mode:      72 tests (7/7 passed)
+Full suite:      2503 tests, test_backend (0 failures)
+Compositor crate: 47 tests (0 failures, 59 stable runs)
+All 12 other Rust crates: 113 tests (0 failures)
 ```
 
 Additional suites verified this release: `test_installer.py` (17),
 `test_package_integration.py` (11), `tests/test_package_signing.py`
 (10), `tests/test_update_signing.py` (11),
-`tests/test_live_installer_smoke.py` (6).
+`tests/test_live_installer_smoke.py` (6), compositor
+event-loop/e2e/integration (45).
 
 ## Auto-Remediation (0.25.1)
 
@@ -232,14 +234,23 @@ All remediation actions are now real implementations — no placeholders:
   `re_sign_update`; trust-store membership alone no longer verifies
   anything.
 
-## Compositor (0.25.1)
+## Compositor (0.26.0) — wire-format event loop
 
-`rust/compositor` (ABI 0.1.0) input/frame/commit stubs are now real:
-per-surface bounded input queues with a dispatch counter, frame
-timestamps, and per-surface commit counts — with introspection FFI
-(`input_queue_depth`, `total_input_dispatched`, `commit_count`,
-`last_frame_time`) exposed through `ui/compositor_codec.py`. A real
-DRM-backed event loop remains follow-on work.
+`rust/compositor` (ABI 0.2.0) adds the request-processing half of a
+real compositor event loop (`src/event_loop.rs`): standard Wayland
+wire-format request parsing (object table with implicit wl_display
+id 1), dispatch of get_registry / bind / create_surface / attach /
+frame / commit into the crate's surface state machine, and
+server→client events in the same wire format (`wl_registry.global`,
+one-shot `wl_callback.done` on commit, `wl_buffer.release`). FFI:
+`nyrqis_compositor_handle_client_data` / `next_event` /
+`object_count` / `event_loop_last_error`, wrapped in
+`ui/compositor_codec.py` (ABI gate 0x0000_0200). Verified end-to-end
+over FFI from Python. The socket/epoll host half stays in
+`ui/nyrqis_compositor.py`; DRM-backed presentation remains follow-on
+work. Codec stub audit (gbm/drm/egl/vulkan/wayland): all stub modes
+are fail-closed already — honest failure sentinels, truthful
+`is_available()`, caller-side fallbacks.
 
 ## What's Complete
 
@@ -260,7 +271,7 @@ All Priorities 1-6 from NEXT_SESSION_PLAN v6.0 are complete:
 |----------|------|----------|
 | 7 | Real hardware testing (AMD, NVIDIA, ARM) | M14 Phase 2 |
 | 8 | Wayland client compatibility (weston, GTK4, Qt6) | M14 Phase 2 |
-| 9 | Custom compositor event loop + protocol parsing | M14 follow-on |
+| 9 | Socket/epoll host half on the compositor wire event loop + DRM presentation | M14 follow-on |
 | 10 | GPU acceleration (GBM + DRM) production hardening | M14 follow-on |
 
 ## SDK (M14 Phase 3 & 4)

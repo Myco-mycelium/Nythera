@@ -5,6 +5,24 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-09-08
+
+### Changed
+
+#### CI repairs (repo's first green CI on GitHub runners)
+- **rust/wayland**: the crate's ABI was bumped to 0x0001_0200 (1.2.0) for multi-monitor support, but its unit test still asserted 0x0001_0100 — the crate had never been compiled on the dev host (no Rust toolchain), so CI was the only compiler and the job failed since 2026-09-05. Assertion updated; 27 crate tests pass.
+- **test_backend**: `test_app_launch_creates_container` performs a real namespace spawn but lacked the `_direct_launch_supported()` probe guard every other real-launch test uses. On GitHub runners the kernel blocks the uid_map write (the probe's docstring has documented this exact limitation since the guard was written), so `Rust container FFI conformance (required gate)` had never passed there — every spawn in the job failed with `root map write: Operation not permitted`. The test now skips on such hosts like the PID-1-init tests do.
+
+#### Compositor (rust/compositor, ABI 0.1.0 → 0.2.0)
+- **Wire-format event loop added** (`rust/compositor/src/event_loop.rs`): the request-processing half of a real compositor event loop. Parses client→compositor requests from the standard Wayland wire format (8-byte header: object id, `size << 16 | opcode`), maintains the object table (wl_display fixed as id 1 per the protocol, created implicitly), and dispatches `wl_display.get_registry`, `wl_registry.bind`, `wl_compositor.create_surface`, `wl_surface.attach`/`frame`/`commit` into the crate-root surface state machine. Server→client events are encoded in the same wire format: `wl_registry.global` advertisements (5 globals), one-shot `wl_callback.done` on commit (stamped with the surface's commit count), and `wl_buffer.release` retirement.
+- **New FFI**: `nyrqis_compositor_handle_client_data` (feed client bytes, returns bytes consumed or -1 on protocol error), `nyrqis_compositor_next_event` (drain the next outbound event; an oversized buffer keeps the event queued), `nyrqis_compositor_object_count`, `nyrqis_compositor_event_loop_last_error`. Exposed through `ui/compositor_codec.py` (`handle_client_data`, `next_event`, `object_count`, `event_loop_last_error`), whose ABI gate moves to 0x0000_0200.
+- **Argument decoding is positional per request** (the wire format carries no type tags): requests read `u32`/string arguments through an `ArgReader` per the protocol layout — the earlier draft's try-string-else-int heuristic misparsed `wl_registry.bind` (whose first argument is an int) and was replaced before landing.
+- End-to-end verified over FFI: a Python client sends get_registry → bind → create_surface → frame → commit (84 bytes), receives 5 globals + `wl_callback.done` (stamp = commit count 1), and the surface lands in the crate state machine with `commit_count == 1`.
+- Crate tests 37 → **47** (59 consecutive clean runs after unifying the crate-wide test lock).
+
+#### Codec stub audit (gbm/drm/egl/vulkan/wayland)
+- Audited all five GPU/display codecs' stub modes for fail-closed posture: every crate-absent call returns an honest failure sentinel (`-1`/`False`/`None`; version functions return 0), `is_available()` reports the truth, and callers (`ui/wayland_display.py`) check `< 0` and fall back (PIL). No forgeable-success paths — no changes needed; the audit outcome is recorded here.
+
 ## [0.25.1] - 2026-09-08
 
 ### Changed

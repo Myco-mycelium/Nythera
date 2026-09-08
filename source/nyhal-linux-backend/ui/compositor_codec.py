@@ -9,7 +9,7 @@ stub functions that return honest error codes. This matches the
 pattern used by ``wayland_codec.py`` and ``gbm_codec.py``.
 
 References:
-    - rust/compositor/ (crate: nyrqis-compositor, ABI 0.1.0)
+    - rust/compositor/ (crate: nyrqis-compositor, ABI 0.2.0)
     - ADR-0026: Wayland display-server integration
     - ADR-0020: Implementation languages and the platform boundary
 """
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ABI_VERSION: int = 0x0000_0100  # 0.1.0
+ABI_VERSION: int = 0x0000_0200  # 0.2.0 — wire-format event loop added
 
 # Input event types (mirrors the Rust enum)
 INPUT_KEY_PRESS: int = 1
@@ -298,3 +298,72 @@ def last_frame_time(surface_id: int) -> int:
         return 0
     cdll.nyrqis_compositor_last_frame_time.restype = ctypes.c_uint64
     return cdll.nyrqis_compositor_last_frame_time(ctypes.c_int(surface_id))
+
+
+# ---------------------------------------------------------------------------
+# Wire-format event loop (ABI 0.2.0)
+# ---------------------------------------------------------------------------
+
+def handle_client_data(client_id: int, data: bytes) -> int:
+    """Feed client bytes (wire-format Wayland requests) into the event
+    loop. Returns the number of bytes consumed, or -1 on a protocol
+    error (requests before the malformed one have been applied)."""
+    cdll = _load()
+    if cdll is None:
+        return -1
+    fn = cdll.nyrqis_compositor_handle_client_data
+    fn.restype = ctypes.c_int
+    fn.argtypes = [
+        ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t,
+    ]
+    buf = bytes(data)
+    return fn(
+        ctypes.c_uint32(client_id),
+        buf if buf else None,  # c_char_p accepts bytes directly
+        ctypes.c_size_t(len(buf)),
+    )
+
+
+def next_event(client_id: int, cap: int = 4096) -> bytes:
+    """Drain the next queued server→client event (wire format).
+
+    Returns b"" when no events are queued. Raises RuntimeError when the
+    queued event does not fit the buffer (it stays queued for a larger
+    drain).
+    """
+    cdll = _load()
+    if cdll is None:
+        return b""
+    fn = cdll.nyrqis_compositor_next_event
+    fn.restype = ctypes.c_int
+    fn.argtypes = [
+        ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t,
+    ]
+    buf = ctypes.create_string_buffer(cap)
+    n = fn(ctypes.c_uint32(client_id), buf, ctypes.c_size_t(cap))
+    if n < 0:
+        raise RuntimeError(last_error() or "event drain failed")
+    return buf.raw[:n]
+
+
+def object_count() -> int:
+    """Return the number of active objects in the event loop's object
+    table (wl_display included)."""
+    cdll = _load()
+    if cdll is None:
+        return 0
+    cdll.nyrqis_compositor_object_count.restype = ctypes.c_int
+    return cdll.nyrqis_compositor_object_count()
+
+
+def event_loop_last_error() -> str:
+    """Return the event loop's last protocol-error message ("" = none)."""
+    cdll = _load()
+    if cdll is None:
+        return "compositor crate not available"
+    buf = ctypes.create_string_buffer(256)
+    fn = cdll.nyrqis_compositor_event_loop_last_error
+    fn.restype = ctypes.c_int
+    fn.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    n = fn(buf, ctypes.c_int(256))
+    return buf.value.decode("utf-8", errors="replace") if n >= 0 else ""
