@@ -27883,6 +27883,58 @@ class TestAutoRemediation(unittest.TestCase):
         status = mgr.get_remediation_status(c)
         self.assertEqual(status['history_total'], 2)
 
+    def test_execute_remediation_throttle_no_cgroup(self):
+        """throttle action without cgroups reports a failure gracefully."""
+        from backend.container import ContainerConfig
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem-throttle", command=["echo"]))
+        mgr.configure_remediation(c, on_budget_exceeded="throttle",
+                                   cooldown_seconds=0.0)
+        result = mgr.execute_remediation(c, trigger="budget_exceeded")
+        self.assertEqual(result['action_taken'], 'throttle')
+        # No writable cpu.weight without cgroups: the action records a
+        # failure result rather than pretending it throttled.
+        self.assertIn('throttle failed', result['result'])
+
+    def test_execute_remediation_throttle_with_cgroup(self):
+        """throttle writes a reduced cpu.weight when a cgroup exists."""
+        import tempfile
+        import os
+        from backend.container import ContainerConfig, ContainerState
+        mgr = ContainerManager(use_cgroups_v2=True)
+        c = mgr.create(ContainerConfig(name="rem-throttle-cg", command=["echo"]))
+        c.state = ContainerState.RUNNING
+        c.pid = os.getpid()
+        with tempfile.TemporaryDirectory() as td:
+            c.cgroup_paths = [td]
+            cpu_weight = os.path.join(td, "cpu.weight")
+            with open(cpu_weight, "w") as f:
+                f.write("100")
+            mgr.configure_remediation(c, on_budget_exceeded="throttle",
+                                       cooldown_seconds=0.0)
+            result = mgr.execute_remediation(c, trigger="budget_exceeded")
+        self.assertEqual(result['action_taken'], 'throttle')
+        self.assertIn('CPU weight lowered', result['result'])
+        self.assertIn('75', result['result'])
+
+    def test_execute_remediation_migrate(self):
+        """migrate action checkpoints and terminates the container."""
+        from backend.container import ContainerConfig, ContainerState
+        mgr = self._manager()
+        c = mgr.create(ContainerConfig(name="rem-migrate", command=["echo"]))
+        c.state = ContainerState.RUNNING
+        c.pid = None  # not actually running: terminate() will just mark TERMINATED
+        mgr.configure_remediation(c, on_oom_risk="migrate",
+                                   cooldown_seconds=0.0)
+        result = mgr.execute_remediation(c, trigger="oom_risk")
+        self.assertEqual(result['action_taken'], 'migrate')
+        self.assertIn('container checkpointed', result['result'])
+        self.assertEqual(c.state, ContainerState.TERMINATED)
+        # Checkpoint record is retained for the restore path
+        rem = getattr(c, '_remediation', {})
+        self.assertEqual(rem.get('last_checkpoint'),
+                         rem['checkpoints'][-1]['snapshot_id'])
+
     def test_remediation_history_filtering(self):
         """get_remediation_history filters by trigger and action."""
         from backend.container import ContainerConfig

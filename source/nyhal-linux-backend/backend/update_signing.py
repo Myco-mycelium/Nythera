@@ -12,13 +12,25 @@ References:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+from .package_signing import (
+    HAS_NACL,
+    PackageSignError,
+    SigningKeypair,
+)
+
+if HAS_NACL:
+    from nacl.encoding import RawEncoder
+    from nacl.signing import SigningKey, VerifyKey
 
 logger = logging.getLogger(__name__)
 
@@ -142,18 +154,11 @@ class UpdateVerifier:
                 message=f"Checksum mismatch: expected {manifest.checksum}, got {actual_checksum}",
             )
         
-        # Verify signature
-        trust_store = self._load_trust_store()
-        trusted_keys = {k["key_id"]: k for k in trust_store.get("trusted_keys", [])}
+        # Verify signature (real Ed25519, NPS-026 §6)
+        sig_result = self._verify_manifest_signature(manifest)
+        if sig_result.status != VerificationStatus.VALID:
+            return sig_result
         
-        if manifest.key_id not in trusted_keys:
-            return VerificationResult(
-                status=VerificationStatus.UNKNOWN_KEY,
-                message=f"Unknown signing key: {manifest.key_id}",
-            )
-        
-        # In a real implementation, we would verify the Ed25519 signature here
-        # For now, we trust the signature if the key is in the trust store
         logger.info("Update signature verified for package %s", manifest.package_id)
         
         return VerificationResult(
@@ -204,6 +209,12 @@ class UpdateVerifier:
                 message="Delta update is not signed",
             )
         
+        # Verify the delta signature cryptographically before the
+        # payload checks — a forged delta must not reach patch parsing.
+        delta_trust = self._verify_manifest_signature(delta_manifest)
+        if delta_trust.status != VerificationStatus.VALID:
+            return delta_trust
+
         # Verify delta checksum
         if not os.path.exists(delta_path):
             return VerificationResult(
@@ -272,13 +283,21 @@ class UpdateVerifier:
         if "private_key" not in key_data:
             raise ValueError("Key file does not contain a private key")
         
-        # In a real implementation, we would:
-        # 1. Load the Ed25519 private key
-        # 2. Sign the manifest checksum
-        # 3. Update the manifest with the new signature
+        if not HAS_NACL:
+            raise PackageSignError("PyNaCl required for re-signing")
         
-        # For now, we just update the key_id
-        manifest.key_id = key_data.get("key_id", "unknown")
+        import base64 as _b64
+        private_key = _b64.b64decode(key_data["private_key"])
+        if len(private_key) != 32:
+            raise ValueError("Private key must be 32 bytes")
+        
+        kp = SigningKeypair.from_private_key(private_key)
+        sk = SigningKey(private_key, encoder=RawEncoder)
+        signed = sk.sign(self._signature_payload(manifest))
+        
+        manifest.signature = bytes(signed.signature)
+        manifest.key_id = key_data.get("key_id", kp.key_id)
+        manifest.timestamp = time.time()
         
         logger.info("Re-signed update for package %s with key %s",
                     manifest.package_id, manifest.key_id)
@@ -351,3 +370,81 @@ class UpdateVerifier:
             for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()
+
+    def _verify_manifest_signature(self, manifest: "UpdateManifest") -> VerificationResult:
+        """Verify a manifest's Ed25519 signature against the trust store.
+
+        Signature-only check: does NOT inspect the payload file. A key
+        being in the trust store is NOT sufficient — the signature
+        itself must verify (NPS-026 §6).
+        """
+        if manifest.signature is None:
+            return VerificationResult(
+                status=VerificationStatus.MISSING,
+                message="Update is not signed",
+            )
+
+        trust_store = self._load_trust_store()
+        trusted_keys = {k["key_id"]: k for k in trust_store.get("trusted_keys", [])}
+
+        if manifest.key_id not in trusted_keys:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN_KEY,
+                message=f"Unknown signing key: {manifest.key_id}",
+            )
+
+        if not HAS_NACL:
+            return VerificationResult(
+                status=VerificationStatus.INVALID,
+                message="PyNaCl required for signature verification",
+            )
+        if len(manifest.signature) != 64:
+            return VerificationResult(
+                status=VerificationStatus.TAMPERED,
+                message="Signature must be 64 bytes",
+            )
+
+        public_key_b64 = trusted_keys[manifest.key_id].get("public_key", "")
+        try:
+            public_key = base64.b64decode(public_key_b64)
+        except Exception:  # noqa: BLE001
+            return VerificationResult(
+                status=VerificationStatus.INVALID,
+                message=f"Trust store key {manifest.key_id} has invalid public key",
+            )
+        if len(public_key) != 32:
+            return VerificationResult(
+                status=VerificationStatus.INVALID,
+                message=f"Trust store key {manifest.key_id} has malformed public key",
+            )
+        sig_payload = self._signature_payload(manifest)
+        try:
+            vk = VerifyKey(public_key, encoder=RawEncoder)
+            vk.verify(sig_payload, manifest.signature)
+        except Exception:  # noqa: BLE001
+            return VerificationResult(
+                status=VerificationStatus.TAMPERED,
+                message="Update signature does not verify",
+            )
+
+        return VerificationResult(
+            status=VerificationStatus.VALID,
+            message="Update signature verified",
+            manifest=manifest,
+        )
+
+    @staticmethod
+    def _signature_payload(manifest: "UpdateManifest") -> bytes:
+        """Build the canonical bytes an update signature covers.
+
+        The signature covers the update identity and the payload
+        checksum — NOT the payload itself (the checksum binds them).
+        """
+        parts = [
+            manifest.package_id,
+            manifest.version_from,
+            manifest.version_to,
+            manifest.update_type.value,
+            manifest.checksum,
+        ]
+        return ":".join(parts).encode()

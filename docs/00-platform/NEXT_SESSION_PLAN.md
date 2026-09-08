@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.0.0
-date: 2026-09-02
+version: 6.1.0
+date: 2026-09-08
 ---
 
 # Next Development Session Plan
@@ -25,6 +25,38 @@ date: 2026-09-02
 | Wayland protocol | **wayland_protocol.py** (encoder/decoder for wire format) |
 | DRM backend | **drm_backend.py** (connector detection + atomic modesetting) |
 | Benchmarks | **benchmarks_full.py** + **benchmarks_software.py** (all display paths) |
+
+## Post-Plan Session (2026-09-08)
+
+### Auto-Remediation Actions Completed
+| Action | Status |
+|--------|--------|
+| `throttle` | ✅ Real: cgroups v2 cpu.weight −25% (floor 1), `nice` +5 fallback on v1, honest failure reporting |
+| `migrate` | ✅ Real: checkpoint (stats + limits snapshot, `ckpt-` id) + terminate; restore = later spawn |
+| Tests | ✅ 3 new (suite 2619 → **2622**) |
+
+### Package Signing Fail-Closed (NPS-026 §6)
+| Item | Status |
+|------|--------|
+| Full NPS-026 API restored | ✅ `SigningKeypair`/`sign_package`/`verify_package`/`PackageSignature`/`TrustStore` (a rewrite had dropped them; installer import was broken) |
+| Forgeable stubs removed | ✅ Without PyNaCl everything raises `PackageSignError` — no deterministic keys, no hash "signatures" |
+| `update_signing.py` real Ed25519 | ✅ Full/delta/rollback verify the signature itself; `re_sign_update` actually signs; forged 64-byte signature rejected (new test) |
+
+### Compositor Stubs Implemented (rust/compositor)
+| Item | Status |
+|------|--------|
+| `process_input` | ✅ Per-surface bounded queues (256, oldest-dropped) + global dispatch counter |
+| `send_frame_callback` | ✅ Records delivery timestamp per surface |
+| `commit_surface` | ✅ Per-surface commit counts; callback delivered on first commit |
+| Introspection FFI | ✅ `input_queue_depth` / `total_input_dispatched` / `commit_count` / `last_frame_time` in `ui/compositor_codec.py` |
+| Test stability | ✅ Parallel-harness interleaving fixed with a test lock; 37 tests, 12/12 clean runs |
+
+### Live Installer
+| Item | Status |
+|------|--------|
+| Completion summary bug | ✅ Dead-code condition fixed (summary now prints after install) |
+| GUI narrow-width crash | ✅ `render_user_setup` side panel clamped (PIL ValueError at <1280px) |
+| Smoke tests | ✅ New `tests/test_live_installer_smoke.py` (6 tests): all 16 steps registered, text mode completes, GUI renders all 15 screens |
 
 ## What's Been Completed This Session
 

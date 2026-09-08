@@ -258,3 +258,43 @@ def last_error() -> str:
     cdll.nyrqis_compositor_last_error.restype = ctypes.c_int
     cdll.nyrqis_compositor_last_error(buf, ctypes.c_int(256))
     return buf.value.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# Introspection (input queue depth, commit counts, frame timing)
+# ---------------------------------------------------------------------------
+
+def input_queue_depth(surface_id: int) -> int:
+    """Return the number of queued input events for a surface, or -1."""
+    cdll = _load()
+    if cdll is None:
+        return -1
+    cdll.nyrqis_compositor_input_queue_depth.restype = ctypes.c_int
+    return cdll.nyrqis_compositor_input_queue_depth(ctypes.c_int(surface_id))
+
+
+def total_input_dispatched() -> int:
+    """Return the total input events dispatched across all surfaces."""
+    cdll = _load()
+    if cdll is None:
+        return 0
+    cdll.nyrqis_compositor_total_input_dispatched.restype = ctypes.c_uint64
+    return cdll.nyrqis_compositor_total_input_dispatched()
+
+
+def commit_count(surface_id: int) -> int:
+    """Return a surface's wl_surface.commit count, or -1."""
+    cdll = _load()
+    if cdll is None:
+        return -1
+    cdll.nyrqis_compositor_commit_count.restype = ctypes.c_int
+    return cdll.nyrqis_compositor_commit_count(ctypes.c_int(surface_id))
+
+
+def last_frame_time(surface_id: int) -> int:
+    """Return the last frame-callback timestamp for a surface (0 = none)."""
+    cdll = _load()
+    if cdll is None:
+        return 0
+    cdll.nyrqis_compositor_last_frame_time.restype = ctypes.c_uint64
+    return cdll.nyrqis_compositor_last_frame_time(ctypes.c_int(surface_id))

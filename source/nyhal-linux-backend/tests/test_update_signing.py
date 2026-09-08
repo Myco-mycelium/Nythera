@@ -60,12 +60,16 @@ class TestUpdateVerifier(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp(prefix="nyrqis-update-test-")
         self.trust_store = os.path.join(self.tmpdir, "trust.json")
         
-        # Create a trust store with a test key
+        # Create a trust store with a real Ed25519 test key
+        import base64
+        from backend.package_signing import SigningKeypair
+        kp = SigningKeypair.generate()
+        self._test_kp = kp
         trust_data = {
             "trusted_keys": [
                 {
                     "key_id": "test-key-001",
-                    "public_key": "dGVzdC1wdWJsaWMta2V5",
+                    "public_key": base64.b64encode(kp.public_key).decode(),
                     "name": "Test Publisher",
                 }
             ]
@@ -77,6 +81,18 @@ class TestUpdateVerifier(unittest.TestCase):
         """Clean up temp files."""
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
+    def _sign(self, verifier, manifest):
+        """Sign a manifest with the test key (real Ed25519)."""
+        import base64
+        from nacl.encoding import RawEncoder
+        from nacl.signing import SigningKey
+        sk = SigningKey(self._test_kp.private_key, encoder=RawEncoder)
+        sig = sk.sign(verifier._signature_payload(manifest))
+        manifest.signature = bytes(sig.signature)
+        manifest.key_id = "test-key-001"
+        return manifest
 
     def test_verify_full_update_valid(self):
         """Verify a full update with valid signature."""
@@ -97,7 +113,7 @@ class TestUpdateVerifier(unittest.TestCase):
             update_type=UpdateType.FULL,
             delta_patches=[],
             checksum="",
-            signature=b"fake-signature",
+            signature=None,
             key_id="test-key-001",
         )
         
@@ -109,6 +125,7 @@ class TestUpdateVerifier(unittest.TestCase):
         manifest.checksum = sha256.hexdigest()
         
         verifier = UpdateVerifier(self.trust_store)
+        self._sign(verifier, manifest)
         result = verifier.verify_full_update(manifest, payload_path)
         
         self.assertEqual(result.status, VerificationStatus.VALID)
@@ -159,6 +176,31 @@ class TestUpdateVerifier(unittest.TestCase):
         
         self.assertEqual(result.status, VerificationStatus.TAMPERED)
 
+    def test_verify_full_update_forged_signature(self):
+        """A well-formed but forged signature is rejected (not trusted)."""
+        from backend.update_signing import (
+            UpdateVerifier, UpdateManifest, UpdateType, VerificationStatus
+        )
+        payload_path = os.path.join(self.tmpdir, "payload2.nypkg")
+        with open(payload_path, "w") as f:
+            f.write("test payload content")
+        import hashlib
+        checksum = hashlib.sha256(open(payload_path, "rb").read()).hexdigest()
+
+        manifest = UpdateManifest(
+            package_id="test-app",
+            version_from="1.0.0",
+            version_to="1.1.0",
+            update_type=UpdateType.FULL,
+            delta_patches=[],
+            checksum=checksum,
+            signature=b"\x00" * 64,  # well-formed 64 bytes, but forged
+            key_id="test-key-001",
+        )
+        verifier = UpdateVerifier(self.trust_store)
+        result = verifier.verify_full_update(manifest, payload_path)
+        self.assertEqual(result.status, VerificationStatus.TAMPERED)
+
     def test_verify_delta_update_valid(self):
         """Verify a delta update with valid patches."""
         from backend.update_signing import (
@@ -183,7 +225,7 @@ class TestUpdateVerifier(unittest.TestCase):
                 {"op": "modify", "path": "/bin/app", "hash": "def456"},
             ],
             checksum="abc123",
-            signature=b"fake-signature",
+            signature=None,
             key_id="test-key-001",
         )
         
@@ -199,6 +241,7 @@ class TestUpdateVerifier(unittest.TestCase):
         delta_manifest.checksum = sha256.hexdigest()
         
         verifier = UpdateVerifier(self.trust_store)
+        self._sign(verifier, delta_manifest)
         result = verifier.verify_delta_update(base_manifest, delta_manifest, delta_path)
         
         self.assertEqual(result.status, VerificationStatus.VALID)

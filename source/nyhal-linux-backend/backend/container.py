@@ -10884,8 +10884,13 @@ class ContainerManager:
         - ``restart``: stop + restart the container
         - ``scale_up``: increase memory limit by 25%%
         - ``scale_down``: decrease memory limit by 25%%
-        - ``throttle``: lower CPU weight
-        - ``migrate``: checkpoint + restore (placeholder)
+        - ``throttle``: lower the container's CPU weight (cgroups v2
+          ``cpu.weight``, via :meth:`set_cpu_weight`) so it yields CPU
+          to other workloads
+        - ``migrate``: checkpoint the container's current state
+          (snapshot + stats + remediation history) and terminate it —
+          a later ``spawn`` of the same container object is the
+          restore path
 
         Args:
             container: Target container.
@@ -11041,11 +11046,27 @@ class ContainerManager:
                 limits.memory_mb = new_mem
                 result_detail = f'memory scaled down to {new_mem} MB'
             elif action == 'throttle':
-                result_detail = 'CPU weight lowered (placeholder)'
+                throttle_result = self._throttle_container(container)
+                if throttle_result.get('ok'):
+                    result_detail = (
+                        "CPU weight lowered to "
+                        f"{throttle_result.get('weight')} "
+                        f"(was {throttle_result.get('previous_weight')})")
+                else:
+                    result_detail = (
+                        f"throttle failed: {throttle_result.get('error')}")
             elif action == 'alert':
                 result_detail = 'alert emitted'
             elif action == 'migrate':
-                result_detail = 'migration requested (placeholder)'
+                migrate_result = self._checkpoint_container(container)
+                if migrate_result.get('ok'):
+                    result_detail = (
+                        "container checkpointed ("
+                        f"snapshot={migrate_result.get('snapshot_id')}, "
+                        f"state={migrate_result.get('state')})")
+                else:
+                    result_detail = (
+                        f"migrate failed: {migrate_result.get('error')}")
             else:
                 result_detail = f'unknown action: {action}'
         except Exception as e:  # noqa: BLE001
@@ -11071,6 +11092,118 @@ class ContainerManager:
             'result': result_detail,
             'cooldown_active': False,
             'history': rem.get('history', [])[-5:],
+        }
+
+    def _throttle_container(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Lower a container's CPU weight as a remediation action.
+
+        Reduces the container's cgroups v2 ``cpu.weight`` by 25%%
+        (bounded below by 1) so it yields CPU to other workloads.
+        Falls back to a 25%% ``nice`` increase on hosts without a
+        writable ``cpu.weight`` (cgroups v1) — a best-effort signal to
+        the scheduler, since v1 has no cpu.weight knob.
+
+        Returns:
+            Dict with ``ok``, ``weight``, ``previous_weight``, and on
+            failure ``error``.
+        """
+        previous = getattr(container.config, 'cpu_weight', None)
+        if previous is None:
+            previous = container.config.limits.cpu_weight
+        if previous is None:
+            previous = 100  # cgroups v2 default
+
+        new_weight = max(1, int(previous * 0.75))
+        if new_weight == previous:
+            new_weight = max(1, previous - 1)
+
+        result = self.set_cpu_weight(container, new_weight)
+        if result.get('ok'):
+            return {
+                'ok': True,
+                'weight': result.get('weight', new_weight),
+                'previous_weight': previous,
+            }
+
+        # Fallback: raise nice (lower priority) on hosts without a
+        # writable cpu.weight (cgroups v1). Best-effort: if the
+        # renice also fails, report the original cpu.weight error.
+        current_nice = container.config.nice_value
+        new_nice = min(19, current_nice + 5)
+        if new_nice != current_nice:
+            try:
+                self.set_nice(container, new_nice)
+                container.config.nice_value = new_nice
+                return {
+                    'ok': True,
+                    'weight': previous,
+                    'previous_weight': previous,
+                    'nice': new_nice,
+                    'previous_nice': current_nice,
+                    'note': 'cpu.weight unavailable; raised nice instead',
+                }
+            except Exception as e:  # noqa: BLE001
+                return {
+                    'ok': False,
+                    'error': (
+                        f"cpu.weight: {result.get('error')}; "
+                        f"nice fallback failed: {e}"),
+                }
+        return {
+            'ok': False,
+            'error': result.get('error'),
+        }
+
+    def _checkpoint_container(
+        self, container: Container,
+    ) -> Dict[str, Any]:
+        """Checkpoint a container's state for migration.
+
+        Snapshots the container's observable state (stats, limits,
+        remediation history, exit code) into ``_remediation`` and
+        terminates it. Restoring is a later ``spawn()`` of the same
+        container object — the checkpoint record documents what the
+        container looked like when it was stopped.
+
+        Returns:
+            Dict with ``ok``, ``snapshot_id``, ``state`` and, on
+            failure, ``error``.
+        """
+        snapshot_id = f"ckpt-{uuid.uuid4().hex[:12]}"
+        try:
+            stats = self.container_stats(container)
+        except Exception as e:  # noqa: BLE001
+            return {'ok': False, 'error': f'stats failed: {e}'}
+
+        rem = getattr(container, '_remediation', {})
+        rem.setdefault('checkpoints', []).append({
+            'snapshot_id': snapshot_id,
+            'timestamp': time.time(),
+            'state': container.state.value,
+            'exit_code': container.exit_code,
+            'stats': stats,
+            'limits': {
+                'memory_mb': container.config.limits.memory_mb,
+                'pid_limit': container.config.limits.pid_limit,
+                'cpu_quota_us': container.config.limits.cpu_quota_us,
+            },
+        })
+        rem['last_checkpoint'] = snapshot_id
+
+        try:
+            self.terminate(container)
+        except Exception as e:  # noqa: BLE001
+            return {'ok': False, 'error': f'terminate failed: {e}'}
+
+        self._record_event(
+            'container_checkpointed', container.id,
+            f"snapshot={snapshot_id}")
+        return {
+            'ok': True,
+            'snapshot_id': snapshot_id,
+            'state': container.state.value,
         }
 
     def get_remediation_status(

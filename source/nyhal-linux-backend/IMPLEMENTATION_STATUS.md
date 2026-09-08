@@ -1,7 +1,7 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.25.0  
-**Date**: 2026-09-02  
+**Version**: 0.25.1  
+**Date**: 2026-09-08  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
@@ -82,7 +82,7 @@ providing the hardware abstraction layer for the Nyrqis OS.
 - [x] **Weston test script** — Integration tests for weston-simple-shm
 
 ### Testing & CI
-- [x] **759 tests passing** — Python + Rust
+- [x] **2622 tests passing** — Python backend suite (2619 + 3 remediation tests)
 - [x] **72 Rust tests** — 13 EGL + 12 Vulkan + 33 Compositor + 14 GBM
 - [x] **Full pipeline tests** — 11 integration tests covering complete pipeline
 - [x] **CI test runner** — `run_tests.sh` with --quick/--gpu/--compositor modes
@@ -196,9 +196,50 @@ python3 demo/run_demo.py --output /tmp/nyrqis-demo
 ## Test Results
 
 ```
-Full suite:  759 tests (0 failures, 6 skipped)
-Quick mode:  72 tests (7/7 passed)
+Full suite:      2622 tests (0 failures)
+Compositor crate: 37 tests (0 failures, 12/12 stable runs)
+Quick mode:      72 tests (7/7 passed)
 ```
+
+Additional suites verified this release: `test_installer.py` (17),
+`test_package_integration.py` (11), `tests/test_package_signing.py`
+(10), `tests/test_update_signing.py` (11),
+`tests/test_live_installer_smoke.py` (6).
+
+## Auto-Remediation (0.25.1)
+
+All remediation actions are now real implementations — no placeholders:
+
+| Action | Behavior |
+|--------|----------|
+| `alert` | Emits an alert event (unchanged) |
+| `restart` | Terminate + spawn, respects `max_restarts` (unchanged) |
+| `scale_up` | Memory limit +25% (unchanged) |
+| `scale_down` | Memory limit −25% (unchanged) |
+| `throttle` | cgroups v2 `cpu.weight` −25% (floor 1); `nice` +5 fallback on cgroups v1; failures reported honestly in history |
+| `migrate` | Checkpoint (stats + limits snapshot, `ckpt-` id) then terminate; restore = later `spawn()` |
+
+## Package Signing (0.25.1) — fail-closed
+
+- `backend/package_signing.py` carries the full NPS-026 §6 API again
+  (`SigningKeypair` / `sign_package` / `verify_package` /
+  `PackageSignature` / `TrustStore`) plus the `PackageSigner`
+  convenience class. The forgeable stub fallbacks (deterministic
+  keys, hash "signatures") are removed: without PyNaCl every
+  operation raises `PackageSignError`.
+- `backend/update_signing.py` verifies real Ed25519 signatures on
+  full/delta/rollback updates and actually signs in
+  `re_sign_update`; trust-store membership alone no longer verifies
+  anything.
+
+## Compositor (0.25.1)
+
+`rust/compositor` (ABI 0.1.0) input/frame/commit stubs are now real:
+per-surface bounded input queues with a dispatch counter, frame
+timestamps, and per-surface commit counts — with introspection FFI
+(`input_queue_depth`, `total_input_dispatched`, `commit_count`,
+`last_frame_time`) exposed through `ui/compositor_codec.py`. A real
+DRM-backed event loop remains follow-on work.
 
 ## What's Complete
 

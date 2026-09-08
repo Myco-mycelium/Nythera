@@ -5,6 +5,36 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1] - 2026-09-08
+
+### Changed
+
+#### Auto-Remediation
+- **`throttle` action implemented**: was a placeholder string; now lowers the container's cgroups v2 `cpu.weight` by 25% (floor 1) via `set_cpu_weight`, with a best-effort `nice` fallback (+5, capped at 19) on hosts without a writable `cpu.weight` (cgroups v1). Failure is reported honestly in the remediation history (`throttle failed: …`), not silently swallowed.
+- **`migrate` action implemented**: was a placeholder string; now checkpoints the container (`_checkpoint_container`: stats + limits snapshot with a `ckpt-` id recorded under `_remediation.checkpoints`) and terminates it; restore is a later `spawn()` of the same container object. Closes the last two placeholder remediation actions in `configure_remediation`.
+
+#### Package Signing (NPS-026 §6) — fail-closed, no forgeable stubs
+- **`backend/package_signing.py` restored to the full NPS-026 API** (`SigningKeypair`, `sign_package`, `verify_package`, `PackageSignature`, `TrustStore`, `PackageSignError`, `HAS_NACL`), which a prior rewrite had silently dropped — `backend/installer.py` failed to import and `test_installer.py` / `test_package_integration.py` were broken at collection. Both suites pass again (17 + 11 tests).
+- **Forgeable stub crypto removed**: the PyNaCl-absent fallback paths (deterministic keys, `sha256(b"stub-" + …)` "signatures") are gone. PyNaCl is a hard dependency (`pyproject.toml`); without it every operation raises `PackageSignError` — fail-closed per NPS-026 §6 and FIND-PACKAGE-001.
+- **`backend/update_signing.py` verifies real Ed25519**: `verify_full_update` / `verify_delta_update` / `validate_rollback` now check the signature itself (covering package_id, versions, type, checksum) against the trust store's public key — previously *any* key present in the trust store was accepted regardless of signature. `re_sign_update` actually signs instead of only swapping the key_id. Delta signature verification now runs before patch parsing (a forged delta can't reach patch handling).
+- **`tests/test_update_signing.py`** upgraded to a real Ed25519 trust-store fixture + new `test_verify_full_update_forged_signature` (a well-formed 64-byte forged signature is rejected as TAMPERED, not trusted).
+
+#### Compositor (rust/compositor, ABI 0.1.0)
+- **`nyrqis_compositor_process_input` implemented**: was a stub returning 0; now dispatches events onto per-surface bounded queues (256 events, oldest dropped) with a global dispatch counter.
+- **`nyrqis_compositor_send_frame_callback` implemented**: records the delivery timestamp on the surface (`last_frame_time`).
+- **`nyrqis_compositor_commit_surface` implemented**: bumps the surface's `commit_count` (wl_surface.commit) and delivers the frame callback on first commit.
+- **New introspection FFI**: `input_queue_depth`, `total_input_dispatched`, `commit_count`, `last_frame_time`, all exposed through `ui/compositor_codec.py`.
+- **Test-stability fix**: the compositor unit tests now serialize through a test lock — the parallel harness was interleaving multi-step FFI sequences against the shared global state (pre-existing flake, made probable by the new state-dependent tests). 12/12 clean runs.
+- Crate tests 33 → **37**.
+
+#### Live Installer
+- **`nyrqis_live_install.py`**: fixed a dead-code bug — the completion summary only printed under an inverted condition (inner `if install_done` nested inside `if not install_done`), so the post-install summary never printed in interactive mode.
+- **`ui/installer_gui.py`**: fixed a layout crash in `render_user_setup` at narrow render widths (side-panel width went negative → PIL `ValueError`); the panel is now clamped to fit.
+- **New `tests/test_live_installer_smoke.py`** (6 tests): every InstallerStep has a registered, non-stub screen; text-mode install completes; auto-advance reaches 100%; GUI renders all 15 screens.
+
+#### Tests
+- 3 new tests in `TestAutoRemediation`: throttle without cgroups (failure reported honestly), throttle with a real temp-dir cgroup (weight 100 → 75), migrate (checkpoint record + TERMINATED state). Backend suite 2619 → **2622**; installer +17, integration +11, update-signing 10 → 11, live-installer +6.
+
 ## [0.23.0] - 2026-09-02
 
 ### Added
