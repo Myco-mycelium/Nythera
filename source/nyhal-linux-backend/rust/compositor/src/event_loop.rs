@@ -293,6 +293,9 @@ const OPCODE_SURFACE_DESTROY: u16 = 0;
 const OPCODE_SURFACE_ATTACH: u16 = 1;
 const OPCODE_SURFACE_FRAME: u16 = 3;
 const OPCODE_SURFACE_COMMIT: u16 = 6;
+const OPCODE_SHM_CREATE_POOL: u16 = 0;
+const OPCODE_POOL_CREATE_BUFFER: u16 = 1;
+const OPCODE_POOL_DESTROY: u16 = 2;
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -481,6 +484,57 @@ fn dispatch_request(
             if !create_object(state, new_id, Interface::Callback, surface) {
                 return false;
             }
+            true
+        }
+        (Interface::Shm, OPCODE_SHM_CREATE_POOL) => {
+            // args: new_id u32, fd (placeholder — the fd itself is
+            // delivered out-of-band via SCM_RIGHTS on the host side),
+            // size i32. The pool object joins the table so bind →
+            // create_pool → create_buffer is a consistent protocol
+            // state machine; the fd half lives on the host.
+            let new_id = match args.read_u32() {
+                Some(v) => v,
+                None => {
+                    set_loop_error(state, "protocol error: create_pool missing new_id");
+                    return false;
+                }
+            };
+            let _fd_placeholder = args.read_u32();
+            let _size = args.read_u32();
+            if !create_object(state, new_id, Interface::ShmPool, None) {
+                return false;
+            }
+            true
+        }
+        (Interface::ShmPool, OPCODE_POOL_CREATE_BUFFER) => {
+            // args: new_id u32, offset i32, width i32, height i32,
+            // stride i32, format u32. The buffer object joins the
+            // table so wl_surface.attach(buffer) validates; pixel
+            // access is the host's SHM mapping.
+            let new_id = match args.read_u32() {
+                Some(v) => v,
+                None => {
+                    set_loop_error(state, "protocol error: create_buffer missing new_id");
+                    return false;
+                }
+            };
+            for _ in 0..4 {
+                if args.read_u32().is_none() {
+                    set_loop_error(state, "protocol error: create_buffer truncated");
+                    return false;
+                }
+            }
+            if args.read_u32().is_none() {
+                set_loop_error(state, "protocol error: create_buffer missing format");
+                return false;
+            }
+            if !create_object(state, new_id, Interface::Buffer, None) {
+                return false;
+            }
+            true
+        }
+        (Interface::ShmPool, OPCODE_POOL_DESTROY) => {
+            state.objects[obj_idx] = None;
             true
         }
         (Interface::Surface, OPCODE_SURFACE_COMMIT) => {
@@ -942,6 +996,57 @@ mod tests {
         // The release event for the (unattached) buffer never fires;
         // no callbacks remain armed.
         assert!(events.iter().all(|e| ev_header(e).0 != 5));
+        assert_eq!(crate::nyrqis_compositor_stop(), 0);
+    }
+
+    #[test]
+    fn shm_pool_and_buffer_join_table() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_state();
+        assert_eq!(crate::nyrqis_compositor_start(), 0);
+        // registry=2, shm=3, pool=4, buffer=5
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&enc_request(1, OPCODE_DISPLAY_GET_REGISTRY, &enc_u32(2)));
+        let mut bind = enc_u32(2); // name: wl_shm is global 2
+        bind.extend_from_slice(&encode_string_arg("wl_shm"));
+        bind.extend_from_slice(&enc_u32(1));
+        bind.extend_from_slice(&enc_u32(3));
+        buf.extend_from_slice(&enc_request(2, OPCODE_REGISTRY_BIND, &bind));
+        // wl_shm.create_pool(pool=4, fd placeholder, size 64)
+        let mut pool = enc_u32(4);
+        pool.extend_from_slice(&enc_u32(0)); // fd placeholder
+        pool.extend_from_slice(&enc_u32(64));
+        buf.extend_from_slice(&enc_request(3, OPCODE_SHM_CREATE_POOL, &pool));
+        // wl_shm_pool.create_buffer(buf=5, offset 0, 2x2, stride 8, format 0)
+        let mut cb = enc_u32(5);
+        cb.extend_from_slice(&enc_u32(0));
+        cb.extend_from_slice(&enc_u32(2));
+        cb.extend_from_slice(&enc_u32(2));
+        cb.extend_from_slice(&enc_u32(8));
+        cb.extend_from_slice(&enc_u32(0));
+        buf.extend_from_slice(&enc_request(4, OPCODE_POOL_CREATE_BUFFER, &cb));
+
+        let n = unsafe {
+            nyrqis_compositor_handle_client_data(7, buf.as_ptr(), buf.len())
+        };
+        assert_eq!(n, buf.len() as c_int);
+        // wl_display + registry + shm + pool + buffer.
+        assert_eq!(nyrqis_compositor_object_count(), 5);
+
+        // attach(buffer=5) now validates against the table. Bind the
+        // compositor (name 1) as object 6 first, create surface 7.
+        let mut buf2 = Vec::new();
+        let mut bind2 = enc_u32(1); // name: wl_compositor is global 1
+        bind2.extend_from_slice(&encode_string_arg("wl_compositor"));
+        bind2.extend_from_slice(&enc_u32(5));
+        bind2.extend_from_slice(&enc_u32(6));
+        buf2.extend_from_slice(&enc_request(2, OPCODE_REGISTRY_BIND, &bind2));
+        buf2.extend_from_slice(&enc_request(6, OPCODE_COMPOSITOR_CREATE_SURFACE, &enc_u32(7)));
+        buf2.extend_from_slice(&enc_request(7, OPCODE_SURFACE_ATTACH, &enc_u32(5)));
+        let n = unsafe {
+            nyrqis_compositor_handle_client_data(7, buf2.as_ptr(), buf2.len())
+        };
+        assert_eq!(n, buf2.len() as c_int);
         assert_eq!(crate::nyrqis_compositor_stop(), 0);
     }
 

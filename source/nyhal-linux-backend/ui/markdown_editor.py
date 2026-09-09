@@ -76,6 +76,16 @@ class Document:
     modified_at: float = 0.0
     word_count: int = 0
     line_count: int = 0
+    tags: List[str] = field(default_factory=list)
+    blocks: List["MarkdownBlock"] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.word_count and self.content:
+            self.word_count = len(self.content.split())
+        if not self.line_count and self.content:
+            self.line_count = self.content.count("\n") + 1
+        if not self.blocks and self.content:
+            self.blocks = parse_markdown_blocks(self.content)
 
     @property
     def modified_str(self) -> str:
@@ -84,6 +94,11 @@ class Document:
     @property
     def stats(self) -> str:
         return f"{self.word_count} words, {self.line_count} lines"
+
+    @property
+    def preview(self) -> str:
+        text = self.content.replace("#", "").replace("*", "").replace("\n", " ").strip()
+        return text[:100] + "..." if len(text) > 100 else text
 
 
 class MarkdownEditor:
@@ -297,6 +312,10 @@ class ShellModule:
         doc3.word_count = len(content3.split())
         doc3.line_count = content3.count("\n") + 1
 
+        doc1.tags = ["guide", "development", "nyrqis"]
+        doc2.tags = ["changelog", "releases"]
+        doc3.tags = ["architecture", "compositor"]
+
         self._documents = [doc1, doc2, doc3]
 
         # Generate TOC for current doc
@@ -368,6 +387,70 @@ class ShellModule:
             else:
                 lines.append("")
 
+        return lines
+
+    # ─── Spec API (test_drum_monitor_markdown) ────────────────────
+    @property
+    def _selected_doc(self) -> int:
+        return self._current_doc
+
+    @_selected_doc.setter
+    def _selected_doc(self, value: int) -> None:
+        self._current_doc = value
+
+    @property
+    def selected_doc(self) -> Optional[Document]:
+        if 0 <= self._current_doc < len(self._documents):
+            return self._documents[self._current_doc]
+        return None
+
+    @property
+    def total_documents(self) -> int:
+        return len(self._documents)
+
+    @property
+    def total_words(self) -> int:
+        return sum(d.word_count for d in self._documents)
+
+    def compute_stats(self) -> "DocumentStats":
+        """Aggregate stats over the selected document's blocks/content."""
+        doc = self.selected_doc
+        stats = DocumentStats()
+        if not doc:
+            return stats
+        content = doc.content
+        stats.words = len(content.split())
+        stats.characters = len(content)
+        stats.paragraphs = len([p for p in content.split("\n\n") if p.strip()])
+        # Reading: 200 wpm, speaking: 130 wpm
+        stats.reading_time_mins = max(1, round(stats.words / 200)) if stats.words else 0
+        stats.speaking_time_mins = max(1, round(stats.words / 130)) if stats.words else 0
+        for block in doc.blocks:
+            if block.block_type == BlockType.HEADING:
+                stats.headings += 1
+            elif block.block_type == BlockType.CODE:
+                stats.code_blocks += 1
+            elif block.block_type == BlockType.TABLE:
+                stats.tables += 1
+            elif block.block_type == BlockType.LIST:
+                stats.lists += 1
+        return stats
+
+    def render_preview(self) -> List[str]:
+        return self.preview_lines
+
+    def render_stats(self) -> List[str]:
+        s = self.compute_stats()
+        lines = ["DOCUMENT STATISTICS", "=" * 40]
+        lines.append(f"  Words:      {s.words}")
+        lines.append(f"  Characters: {s.characters}")
+        lines.append(f"  Paragraphs: {s.paragraphs}")
+        lines.append(f"  Headings:   {s.headings}")
+        lines.append(f"  Code blocks: {s.code_blocks}")
+        lines.append(f"  Tables:     {s.tables}")
+        lines.append(f"  Lists:      {s.lists}")
+        lines.append(f"  Reading time:  {s.reading_time_mins} min")
+        lines.append(f"  Speaking time: {s.speaking_time_mins} min")
         return lines
 
     def select_doc(self, idx: int):
@@ -446,10 +529,60 @@ class ReadingMode(Enum):
     PREVIEW = "preview"
 
 
+@dataclass
 class MarkdownBlock:
-    pass  # backward compat stub
+    """A parsed markdown block with its type and metadata."""
+    block_type: BlockType = None
+    content: str = ""
+    heading_level: HeadingLevel = None
+    language: str = ""
 
-DocumentStats = TOCEntry
+
+@dataclass
+class DocumentStats:
+    words: int = 0
+    characters: int = 0
+    paragraphs: int = 0
+    headings: int = 0
+    code_blocks: int = 0
+    tables: int = 0
+    lists: int = 0
+    reading_time_mins: int = 0
+    speaking_time_mins: int = 0
+
+
+def parse_markdown_blocks(content: str) -> List[MarkdownBlock]:
+    """Parse markdown text into typed blocks (spec API)."""
+    blocks: List[MarkdownBlock] = []
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("```"):
+            lang = line[3:].strip()
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            blocks.append(MarkdownBlock(BlockType.CODE, "\n".join(code_lines),
+                                        language=lang))
+        elif line.startswith("#"):
+            level = len(line) - len(line.lstrip("#"))
+            level = max(1, min(6, level))
+            blocks.append(MarkdownBlock(BlockType.HEADING, line.lstrip("# "),
+                                        heading_level=HeadingLevel(level)))
+        elif line.lstrip().startswith(("- ", "* ")) or (
+                line[:2].strip().rstrip(".").isdigit() and line.lstrip()[1:2] == "."):
+            blocks.append(MarkdownBlock(BlockType.LIST, line))
+        elif line.lstrip().startswith("|"):
+            blocks.append(MarkdownBlock(BlockType.TABLE, line))
+        elif line.lstrip().startswith(">"):
+            blocks.append(MarkdownBlock(BlockType.BLOCKQUOTE, line))
+        elif line.strip() and line.strip() != "":
+            blocks.append(MarkdownBlock(BlockType.PARAGRAPH, line))
+        i += 1
+    return blocks
 
 # ─── Backward-compat exports ────────────────────────────────────────────
 from enum import Enum as _Enum

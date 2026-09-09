@@ -42,6 +42,13 @@ class KeyDef:
     layer: int = 0
     color: str = ""
     macro_id: str = ""
+    key: str = ""  # spec-API alias for name
+
+    def __post_init__(self):
+        if self.key and not self.name:
+            self.name = self.key
+        elif self.name and not self.key:
+            self.key = self.name
 
     @property
     def display_label(self) -> str:
@@ -53,7 +60,7 @@ class KeyDef:
 
 
 @dataclass
-class KeyboardLayout:
+class KeyboardLayoutData:
     name: str
     language: str = "en"
     variant: str = "QWERTY"
@@ -100,8 +107,8 @@ class KeyMapping:
 
 class VirtualKeyboard:
     def __init__(self):
-        self.layouts: List[KeyboardLayout] = []
-        self.current_layout: Optional[KeyboardLayout] = None
+        self.layouts: List[KeyboardLayoutData] = []
+        self.current_layout: Optional[KeyboardLayoutData] = None
         self.macros: List[Macro] = []
         self.mappings: List[KeyMapping] = []
         self.active_layer: int = 0
@@ -198,7 +205,7 @@ class VirtualKeyboard:
                 KeyDef(name="Menu", label="Menu", scancode=127),
                 KeyDef(name="CtrlRight", label="Ctrl", scancode=29)]
 
-        qwerty = KeyboardLayout(
+        qwerty = KeyboardLayoutData(
             name="QWERTY (US)", language="en", variant="QWERTY",
             rows=[row0, row1, row2, row3, row4, row5],
             description="Standard US QWERTY layout")
@@ -307,7 +314,7 @@ class VirtualKeyboard:
             "pressed": len(self.pressed_keys),
         }
 
-    # --- backward-compat properties ---
+    # --- spec-API state and behavior (test_converter_stopwatch_keyboard) ---
     @property
     def input_text(self) -> str:
         return getattr(self, '_input_text', '')
@@ -322,11 +329,15 @@ class VirtualKeyboard:
 
     @property
     def layout(self):
-        return self.current_layout
+        return getattr(self, '_spec_layout', KeyboardLayout.QWERTY)
 
     @property
     def caps_lock(self) -> bool:
         return getattr(self, '_caps_lock', False)
+
+    @property
+    def _caps_lock_state(self) -> bool:
+        return self.caps_lock
 
     @property
     def shift_active(self) -> bool:
@@ -334,7 +345,21 @@ class VirtualKeyboard:
 
     @property
     def current_keys(self) -> list:
-        return self.pressed_keys
+        """Keys of the current layout/mode (spec API)."""
+        rows = LAYOUTS.get(self.layout.value if hasattr(self.layout, "value") else str(self.layout),
+                           LAYOUTS["qwerty"])["rows"]
+        if self.mode == KeyboardMode.NUMBERS:
+            return [Key(c) for c in "1234567890"]
+        if self.mode == KeyboardMode.SYMBOLS:
+            return [Key(c) for c in "!@#$%^&*()"]
+        if self.mode == KeyboardMode.EMOJI:
+            return [Key(e, emoji=e) for e in self.emoji_palette]
+        keys = []
+        for row in rows:
+            for label in row:
+                label = label.upper() if (self.shift_active or self.caps_lock) else label
+                keys.append(Key(label))
+        return keys
 
     @property
     def predictions(self) -> list:
@@ -345,58 +370,131 @@ class VirtualKeyboard:
         return getattr(self, '_recent_emojis', [])
 
     @property
+    def emoji_palette(self) -> list:
+        return ["😀", "😂", "🙂", "😍", "🤔", "👍", "🎉", "❤️", "🔥", "✨"]
+
+    @property
     def _cursor_pos(self):
-        return getattr(self, '__cursor_pos', len(self.input_text))
+        return getattr(self, '_kb_cursor_pos', len(self.input_text))
+
+    @_cursor_pos.setter
+    def _cursor_pos(self, value: int):
+        self._kb_cursor_pos = max(0, value)
 
     @property
     def _key_history(self):
-        return getattr(self, '__key_history', [])
+        return getattr(self, '_kb_key_history', [])
 
-    # --- backward-compat methods ---
+    # --- spec-API methods ---
+    def press_key(self, key):
+        """Press a Key (spec API) or a key name string (legacy)."""
+        if isinstance(key, str):
+            return self._legacy_press_key(key)
+        label = key.display
+        self._kb_key_history = getattr(self, '_kb_key_history', []) + [label]
+        # Function keys
+        if key.is_function:
+            if label == "⌫":
+                self._backspace()
+                return label
+            if label == "⏎":
+                self._insert_text("\n")
+                return label
+            if label == "123":
+                self._mode = KeyboardMode.NUMBERS
+                return label
+            if label == "ABC":
+                self._mode = KeyboardMode.LETTERS
+                return label
+            self._insert_text(label)
+            return label
+        # Modifier: shift
+        if key.is_modifier and label == "⇧":
+            self._shift_active = not self.shift_active
+            return label
+        # Emoji keys
+        if key.emoji:
+            self._insert_text(key.emoji)
+            self._recent_emojis = [key.emoji] + [e for e in self.recent_emojis if e != key.emoji]
+            return key.emoji
+        # Letter casing with shift/caps
+        if self.caps_lock and len(label) == 1:
+            label = label.upper()
+        elif self.shift_active and len(label) == 1:
+            label = label.upper()
+            self._shift_active = False
+        self._insert_text(label)
+        return label
+
+    def _legacy_press_key(self, key_name: str) -> bool:
+        """Legacy press-by-name path (macros/mappings)."""
+        if key_name in self.pressed_keys:
+            return False
+        self.pressed_keys.append(key_name)
+        if self.macro_recording:
+            self.recorded_keys.append(key_name)
+        return True
+
+    def _insert_text(self, text: str):
+        pos = self._cursor_pos
+        self._input_text = self.input_text[:pos] + text + self.input_text[pos:]
+        self._kb_cursor_pos = pos + len(text)
+
+    def _backspace(self):
+        pos = self._cursor_pos
+        if pos > 0:
+            self._input_text = self.input_text[:pos - 1] + self.input_text[pos:]
+            self._kb_cursor_pos = pos - 1
+
+    def release_key(self, key_name: str) -> bool:
+        if key_name in self.pressed_keys:
+            self.pressed_keys.remove(key_name)
+            return True
+        return False
+
     def set_mode(self, mode) -> bool:
         self._mode = mode
         return True
 
-    def set_layout(self, layout_name: str) -> bool:
-        for layout in self.layouts:
-            if layout.name == layout_name:
-                self.current_layout = layout
+    def set_layout(self, layout) -> bool:
+        """Accept a KeyboardLayout enum member or a layout name string."""
+        if isinstance(layout, _SpecKeyboardLayout):
+            self._spec_layout = layout
+            return True
+        for l in self.layouts:
+            if l.name == layout:
+                self.current_layout = l
                 return True
         return False
 
-    def cycle_mode(self) -> str:
-        modes = [KeyboardMode.LETTERS, KeyboardMode.NUMBERS, KeyboardMode.SYMBOLS]
-        if not hasattr(self, '_mode_idx'):
-            self._mode_idx = 0
-        self._mode_idx = (self._mode_idx + 1) % len(modes)
-        self._mode = modes[self._mode_idx]
-        return self._mode.value
+    def cycle_layout(self):
+        members = list(_SpecKeyboardLayout)
+        current = self.layout
+        idx = members.index(current) if current in members else 0
+        self._spec_layout = members[(idx + 1) % len(members)]
+        return self._spec_layout
 
-    def cycle_layout(self) -> str:
-        if not self.layouts:
-            return ""
-        idx = 0
-        if self.current_layout:
-            for i, l in enumerate(self.layouts):
-                if l.name == self.current_layout.name:
-                    idx = i
-                    break
-        next_idx = (idx + 1) % len(self.layouts)
-        self.current_layout = self.layouts[next_idx]
-        return self.current_layout.name
+    def cycle_mode(self):
+        modes = [KeyboardMode.LETTERS, KeyboardMode.NUMBERS, KeyboardMode.SYMBOLS]
+        current = self.mode
+        idx = modes.index(current) if current in modes else 0
+        self._mode = modes[(idx + 1) % len(modes)]
+        return self._mode
 
     def set_input_text(self, text: str):
         self._input_text = text
+        self._kb_cursor_pos = len(text)
 
     def clear_input(self):
         self._input_text = ""
+        self._kb_cursor_pos = 0
 
     def move_cursor(self, delta: int):
         pos = self._cursor_pos + delta
-        self.__cursor_pos = max(0, min(len(self.input_text), pos))
+        self._kb_cursor_pos = max(0, min(len(self.input_text), pos))
 
     def toggle_caps_lock(self) -> bool:
-        self._caps_lock = not self._caps_lock
+        self._caps_lock = not getattr(self, '_caps_lock', False)
         return self._caps_lock
 
     def toggle_high_contrast(self) -> bool:
@@ -412,7 +510,25 @@ class VirtualKeyboard:
         return self._sticky_keys
 
     def _update_predictions(self):
-        self._predictions = getattr(self, '_predictions', [])
+        text = self.input_text
+        if not text:
+            self._predictions = []
+            return
+        prefix = text.split(" ")[-1].lower()
+        corpus = ["the", "that", "then", "there", "this", "they",
+                  "hello", "help", "heart", "world", "work", "nyrqis"]
+        self._predictions = [w for w in corpus if w.startswith(prefix)][:3] if prefix else []
+
+    def render(self) -> list:
+        lines = ["VIRTUAL KEYBOARD", "=" * 40]
+        lines.append(f"Layout: {self.layout.value if hasattr(self.layout, 'value') else self.layout}  "
+                     f"Mode: {self.mode.value}")
+        lines.append(f"Input: {self.input_text}")
+        lines.append("")
+        rows = LAYOUTS["qwerty"]["rows"]
+        for row in rows:
+            lines.append("  " + " ".join(f"{k:^5}" for k in row))
+        return lines
 
 
 @dataclass
@@ -422,8 +538,47 @@ class Key:
     label: str = ""
     width: int = 1
     modifier: bool = False
+    # Spec-API fields
+    is_function: bool = False
+    is_modifier: bool = False
+    emoji: str = ""
 
-KeyPress = KeyDef
+    def __post_init__(self):
+        # Accept is_modifier as the primary modifier flag
+        if self.is_modifier:
+            self.modifier = True
+        if not self.label:
+            self.label = self.name
+        if not self.name:
+            self.name = self.label
+
+    @property
+    def display(self) -> str:
+        """The visible label for this key."""
+        return self.label
+
+    @property
+    def physical_width(self) -> int:
+        return self.width
+
+
+# Spec-API layout enum (distinct from the dataclass KeyboardLayout above)
+from enum import Enum as _SpecEnum
+class KeyboardLayout(_SpecEnum):
+    QWERTY = "qwerty"
+    DVORAK = "dvorak"
+    COLEMAK = "colemak"
+
+_SpecKeyboardLayout = KeyboardLayout
+KeyboardLayoutDataAlias = KeyboardLayoutData
+
+
+class KeyPress:
+    """A recorded key press (spec API)."""
+
+    def __init__(self, key: str = "", timestamp: float = 0.0):
+        self.key = key
+        self.timestamp = timestamp if timestamp > 0 else time.time()
 
 # ─── Backward-compat exports ────────────────────────────────────────────
 from enum import Enum as _Enum

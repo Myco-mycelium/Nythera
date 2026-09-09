@@ -43,6 +43,7 @@ class CompositorConfig:
     # GPU
     render_node: str = "/dev/dri/renderD128"
     use_gbm: bool = True
+    use_drm: bool = True
     use_egl: bool = True
     use_vulkan: bool = False
     
@@ -77,6 +78,10 @@ class NyrqisCompositor:
         # loop (engine "rust") or falls back to the Python protocol path
         # (engine "stub") when the cdylib is absent.
         self._host = None
+        # Presentation pipeline: composites committed client surfaces
+        # and presents them (DRM scanout when available, software
+        # capture otherwise).
+        self._presentation = None
         
         # Signal handlers
         self._original_sigint = None
@@ -130,6 +135,11 @@ class NyrqisCompositor:
         
         logger.info("Stopping Nyrqis compositor (rendered %d frames)", self._frame_count)
         
+        # Clean up presentation pipeline (releases client SHM maps)
+        if self._presentation is not None:
+            self._presentation.cleanup()
+            self._presentation = None
+        
         # Clean up render pipeline
         if self._render_pipeline:
             self._render_pipeline.cleanup()
@@ -176,6 +186,11 @@ class NyrqisCompositor:
         ships the crate's response events back to the socket; when it
         is not, the Python dispatch inside WaylandSocketServer remains
         the fallback (fail-closed, no forged success).
+
+        Also wires the presentation pipeline: client SHM buffers
+        (received over SCM_RIGHTS) are registered on commit and
+        composited to the output (DRM when attached, software
+        otherwise).
         """
         try:
             from ui.compositor_host import CompositorHost
@@ -184,8 +199,15 @@ class NyrqisCompositor:
             logger.warning("Compositor host half unavailable: %s", exc)
             return
 
+        self._init_presentation()
         self._host = CompositorHost()
         engine = self._host.engine
+
+        if self._presentation is not None:
+            self._host.on_surface_buffer = (
+                self._presentation.store.register
+            )
+
         if engine != "rust":
             logger.info(
                 "Compositor host half in stub mode (Python protocol path)"
@@ -197,11 +219,51 @@ class NyrqisCompositor:
                 self._socket_server.set_data_callback(
                     self._make_data_handler()
                 )
+            if hasattr(self._socket_server, "set_fd_callback"):
+                self._socket_server.set_fd_callback(
+                    self._host.on_client_fd
+                )
             if hasattr(self._socket_server, "set_disconnect_callback"):
                 self._socket_server.set_disconnect_callback(
                     self._host.on_client_disconnected
                 )
             logger.info("Compositor host half wired (engine: rust)")
+
+    def _init_presentation(self):
+        """Create the presentation pipeline for surface→display output."""
+        try:
+            from ui.compositor_presentation import PresentationPipeline
+
+            self._presentation = PresentationPipeline(
+                self.config.width, self.config.height
+            )
+            # Attach DRM when configured and available (real scanout);
+            # otherwise the software capture path is used (headless,
+            # CI, tests). Attach failure is honest, not a silent swap.
+            if self.config.use_drm:
+                try:
+                    from ui.drm_backend import DRMBackend
+
+                    drm = DRMBackend()
+                    if drm.open():
+                        if self._presentation.attach_drm(drm):
+                            logger.info("DRM presentation attached")
+                        else:
+                            drm.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("DRM presentation unavailable: %s", exc)
+        except ImportError as exc:
+            logger.warning("Presentation pipeline unavailable: %s", exc)
+
+    def present_committed(self, committed) -> bool:
+        """Composite and present the given committed surfaces.
+
+        ``committed`` is a list of (client_id, surface_id) pairs in
+        z-order. Returns True when a frame was presented.
+        """
+        if self._presentation is None:
+            return False
+        return self._presentation.present(committed)
 
     def _make_data_handler(self):
         """Build the client-data handler: feed the crate, then flush
@@ -351,6 +413,10 @@ class NyrqisCompositor:
                 comp.commit_surface(surface.id)
         except ImportError:
             pass
+
+        # Present the committed surface (compositor + DRM/software).
+        if self._presentation is not None and self._host is not None:
+            self.present_committed([(surface.client_id, surface.id)])
     
     def _setup_signals(self):
         """Set up signal handlers for clean shutdown."""
@@ -397,6 +463,10 @@ class NyrqisCompositor:
         host_stats = self.get_host_stats()
         if host_stats:
             stats["host"] = host_stats
+        
+        # Presentation (composite + present) counters
+        if self._presentation is not None:
+            stats["presentation"] = self._presentation.get_stats()
         
         return stats
     

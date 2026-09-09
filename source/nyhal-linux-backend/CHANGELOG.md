@@ -5,6 +5,35 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-09-09
+
+### Added
+
+#### Compositor presentation (M14 Priority 9 — surfaces to display)
+- **`ui/compositor_presentation.py`**: the presentation half of the compositor. Committed client surfaces (SHM pixel buffers shared over the Wayland socket via memfd + SCM_RIGHTS) are mapped and alpha-blended onto an output-sized framebuffer in z-order (integer math, no PIL dependency), then presented through `DRMBackend` (DRM/KMS `DRM_IOCTL_MODE_SETCRTC`) when a DRM device is available; otherwise the frame is stored for inspection (headless/software fallback). Fail-closed: nothing presents a frame the compositor never produced.
+- **wl_shm in the wire event loop (rust/compositor, ABI 0x0000_0200 → 0x0000_0300)**: `wl_shm.create_pool`, `wl_shm_pool.create_buffer`, and `wl_shm_pool.destroy` are parsed and dispatched — pool/buffer objects join the object table and buffers bind to surfaces through `wl_surface.attach`. Crate tests 48 → **49** (a wire-level test joins registry → bind → create_pool → create_buffer → create_surface → attach).
+- **SCM_RIGHTS fd receipt (`ui/wayland_socket.py`)**: the socket now reads with `recvmsg` so out-of-band file descriptors — how Wayland clients share wl_shm pools — are received alongside bytes; a zero-byte read with ancillary fds is correctly not treated as a disconnect, and received fds are delivered to the host half via a `set_fd_callback` hook (`ui/compositor_host.py`).
+- **Wired into `NyrqisCompositor`** (`ui/nyrqis_compositor.py`): host half + presentation start automatically; `get_stats()` reports presentation counters (frames composited, presented, fallback-stored).
+- **New `tests/test_compositor_presentation.py`** (32 tests): SHM capture, z-order alpha blending, DRM present vs. software fallback, fd plumbing, fail-closed paths.
+
+#### Package repository (NPS-026 §7)
+- **`backend/package_repo.py`**: a package repository is a directory of published `.nypkg` payloads, delta payloads, and a single **signed index** that a client verifies *before* downloading anything. The index entry binds package id, version, checksum, and publisher key; the trust model is fail-closed and shared with package_signing/delta_update — verification requires a trusted key AND a valid Ed25519 signature over the canonical index bytes; a tampered or untrusted index is an error, never a warning. Entry tamper checks bind content checksums.
+- **`nyrqisctl_repo.py`**: operator CLI — `publish-package`, `publish-delta`, `list`, `find`, `find-delta`, `verify-entry`, `remove`.
+- **New `tests/test_package_repo.py`** (21 tests): publish/list/find/verify flows, tamper rejection, trust-model fail-closed paths.
+
+#### UI applications completed to spec
+- Sixteen desktop-app modules were finished to their tracked spec suites — **250 previously-failing tests now green; the full pytest suite stands at 6133 passing, 35 skips**: `db_client` (real CSV/JSON/Markdown export, FK lookup, table stats), `vm_manager` + `notes_app` + `process_manager` (CRUD, folders/tags/search, history, kill semantics), `packet_analyzer` + `network_monitor` (capture lifecycle, protocol stats, per-interface sparklines), `virtual_keyboard` (multi-layout keymaps, modifiers, history), `calendar_app` (view modes, event CRUD), `markdown_editor` (block parser, DocumentStats, tags), `password_manager` (generator kwargs, strength scoring, autofill), `screen_recorder` (recording lifecycle, presets), `disk_health` (SMART scoring; `health_status` is a str-subclass enum), plus `audio_mixer`/`font_manager` fixes (missing `@property`, pixel-buffer `render` + `render_lines` compat).
+- Cross-suite spec conflicts resolved by adopting the newest convention (packet direction icons with VS16, FontManager pixel-buffer `render`) and updating the two stale assertions in older test files.
+
+### Fixed
+
+- **Compositor restart leaked resource slots (rust/compositor)**: `nyrqis_compositor_start` reset only the wire event loop's object table, not the crate's client/surface/output/input-queue tables. In a long-lived process (the test suite is exactly that — every `CDLL` handle shares one global state) outputs accumulated across start/stop cycles until `MAX_OUTPUTS` (16) was exhausted and `add_output` failed. `start` now tears down all previous-session resources, matching the documented "fresh protocol session" semantics.
+- **`ui/audio_mixer.py`**: `AudioDevice.volume_bar` was defined without `@property` (returned a bound method instead of the rendered bar).
+
+### Changed
+
+- `run_tests.sh`: compositor modes now include `tests.test_compositor_presentation`; full mode runs `tests.test_package_repo`.
+
 ## [0.27.0] - 2026-09-09
 
 ### Added

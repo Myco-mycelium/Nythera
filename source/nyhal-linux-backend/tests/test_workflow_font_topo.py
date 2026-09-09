@@ -137,7 +137,7 @@ class TestFontManager(unittest.TestCase):
         self.assertNotEqual(f.installed, old)
 
     def test_render(self):
-        lines = self.fm.render()
+        lines = self.fm.render_lines()
         self.assertGreater(len(lines), 0)
         self.assertTrue(any("FONT MANAGER" in l for l in lines))
 

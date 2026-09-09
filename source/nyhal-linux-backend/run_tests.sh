@@ -114,6 +114,7 @@ elif [ "$COMPOSITOR" = true ]; then
     run_test "Compositor Integration" "tests.test_compositor_integration"
     run_test "Compositor E2E" "tests.test_compositor_e2e"
     run_test "Compositor Host Half" "tests.test_compositor_host"
+    run_test "Compositor Presentation" "tests.test_compositor_presentation"
     run_test "Wayland Client" "tests.test_wayland_client"
     run_test "Full Pipeline" "tests.test_full_pipeline"
 else
@@ -130,7 +131,11 @@ else
     run_test "Compositor Integration" "tests.test_compositor_integration"
     run_test "Compositor E2E" "tests.test_compositor_e2e"
     run_test "Compositor Host Half" "tests.test_compositor_host"
+    run_test "Compositor Presentation" "tests.test_compositor_presentation"
     run_test "Wayland Client" "tests.test_wayland_client"
+    
+    # Package repository tests
+    run_test "Package Repo" "tests.test_package_repo"
     
     # Pipeline tests
     run_test "Render Pipeline" "tests.test_render_pipeline"

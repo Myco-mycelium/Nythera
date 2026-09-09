@@ -148,8 +148,13 @@ class LatencyProbe:
         return "█" * filled + "░" * (20 - filled)
 
 
-@dataclass
+@dataclass(init=False)
 class NetworkInterface:
+    """A network interface.
+
+    Supports both the dataclass keyword form and the spec positional form:
+    NetworkInterface(name, type, status, mac, ip, netmask, speed, **metrics)
+    """
     name: str = ""
     ip_address: str = ""
     mac_address: str = ""
@@ -165,6 +170,57 @@ class NetworkInterface:
     is_wireless: bool = False
     ssid: str = ""
     signal_strength: int = 0
+    # Spec-API fields
+    iface_type: Optional["InterfaceType"] = None
+    status: Optional["InterfaceStatus"] = None
+    rx_rate_bps: float = 0.0
+    tx_rate_bps: float = 0.0
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    connected_since: float = 0.0
+
+    _FIELDS = ("name", "ip_address", "mac_address", "netmask", "gateway",
+               "dns", "speed_mbps", "rx_total", "tx_total", "rx_rate",
+               "tx_rate", "is_up", "is_wireless", "ssid", "signal_strength",
+               "iface_type", "status", "rx_rate_bps", "tx_rate_bps",
+               "rx_bytes", "tx_bytes", "connected_since")
+
+    def __init__(self, *args, **kwargs):
+        values = {f: kwargs.pop(f) for f in self._FIELDS if f in kwargs}
+        if args:
+            names = ("name", "iface_type", "status", "mac_address", "ip_address",
+                     "netmask", "speed_mbps")
+            for name, value in zip(names, args):
+                values.setdefault(name, value)
+        import dataclasses as _dc
+        defaults = {}
+        for f in self._FIELDS:
+            if f in values:
+                continue
+            fd = self.__dataclass_fields__[f]
+            if fd.default is not _dc.MISSING:
+                defaults[f] = fd.default
+            elif fd.default_factory is not _dc.MISSING:
+                defaults[f] = fd.default_factory()
+            else:
+                defaults[f] = None
+        for f in self._FIELDS:
+            setattr(self, f, values.get(f, defaults.get(f)))
+        # Sync alias fields
+        if self.rx_rate_bps and not self.rx_rate:
+            self.rx_rate = self.rx_rate_bps
+        if self.tx_rate_bps and not self.tx_rate:
+            self.tx_rate = self.tx_rate_bps
+        if self.rx_bytes and not self.rx_total:
+            self.rx_total = self.rx_bytes
+        if self.tx_bytes and not self.tx_total:
+            self.tx_total = self.tx_bytes
+        if self.status is not None and hasattr(self.status, "name"):
+            self.is_up = self.status.name == "UP"
+        if self.iface_type is not None and hasattr(self.iface_type, "name"):
+            self.is_wireless = self.iface_type.name == "WIFI"
+        if kwargs:
+            raise TypeError(f"NetworkInterface got unexpected kwargs: {list(kwargs)}")
 
     @property
     def status_icon(self) -> str:
@@ -178,6 +234,50 @@ class NetworkInterface:
             return f"{self.rx_total / (1024 * 1024):.1f} MB"
         return f"{self.rx_total / (1024 * 1024 * 1024):.2f} GB"
 
+    @property
+    def total_rx_display(self) -> str:
+        return self.rx_total_display
+
+    @property
+    def total_tx_display(self) -> str:
+        total = self.tx_bytes or self.tx_total
+        if total < 1024 * 1024:
+            return f"{total / 1024:.1f} KB"
+        elif total < 1024 * 1024 * 1024:
+            return f"{total / (1024 * 1024):.1f} MB"
+        return f"{total / (1024 * 1024 * 1024):.2f} GB"
+
+    @property
+    def rx_rate_display(self) -> str:
+        rate = self.rx_rate_bps or self.rx_rate
+        if rate >= 1e9:
+            return f"{rate / 1e9:.1f} Gbps"
+        if rate >= 1e6:
+            return f"{rate / 1e6:.1f} Mbps"
+        return f"{rate / 1e3:.1f} Kbps"
+
+    @property
+    def tx_rate_display(self) -> str:
+        rate = self.tx_rate_bps or self.tx_rate
+        if rate >= 1e9:
+            return f"{rate / 1e9:.1f} Gbps"
+        if rate >= 1e6:
+            return f"{rate / 1e6:.1f} Mbps"
+        return f"{rate / 1e3:.1f} Kbps"
+
+    @property
+    def uptime_display(self) -> str:
+        if not self.connected_since:
+            return "—"
+        secs = max(0, time.time() - self.connected_since)
+        if secs < 60:
+            return f"{secs:.0f}s"
+        if secs < 3600:
+            return f"{secs / 60:.0f}m"
+        if secs < 86400:
+            return f"{secs / 3600:.1f}h"
+        return f"{secs / 86400:.1f}d"
+
 
 class NetworkMonitor:
     def __init__(self):
@@ -187,6 +287,7 @@ class NetworkMonitor:
         self.bandwidth_history: List[BandwidthSample] = []
         self.total_rx: int = 0
         self.total_tx: int = 0
+        self._selected_iface: int = 0
         self._create_sample_data()
 
     def _create_sample_data(self):
@@ -202,6 +303,18 @@ class NetworkMonitor:
                              speed_mbps=300, rx_total=15000000000, tx_total=3200000000,
                              rx_rate=5000000, tx_rate=800000, is_up=True,
                              is_wireless=True, ssid="Nyrqis-5G", signal_strength=85),
+            NetworkInterface(name="lo", ip_address="127.0.0.1",
+                             mac_address="", netmask="255.0.0.0",
+                             speed_mbps=0, rx_total=850000000, tx_total=850000000,
+                             rx_rate=120000, tx_rate=120000, is_up=True),
+            NetworkInterface(name="docker0", ip_address="172.17.0.1",
+                             mac_address="02:42:8c:d1:aa:0f", netmask="255.255.0.0",
+                             speed_mbps=1000, rx_total=4200000000, tx_total=3100000000,
+                             rx_rate=850000, tx_rate=420000, is_up=True),
+            NetworkInterface(name="tailscale0", ip_address="100.64.0.12",
+                             mac_address="", netmask="255.255.255.255",
+                             speed_mbps=100, rx_total=980000000, tx_total=1240000000,
+                             rx_rate=250000, tx_rate=180000, is_up=True),
         ]
 
         now = time.time()
@@ -288,6 +401,129 @@ class NetworkMonitor:
             "total_tx_gb": round(self.total_tx / (1024 ** 3), 2),
         }
 
+    # ─── Spec API (test_network_midi_encrypt) ─────────────────────
+    @property
+    def _interfaces(self) -> List[NetworkInterface]:
+        return self.interfaces
+
+    @_interfaces.setter
+    def _interfaces(self, value: List[NetworkInterface]) -> None:
+        self.interfaces = value
+
+    @property
+    def _selected_interface(self) -> int:
+        return self._selected_iface
+
+    @_selected_interface.setter
+    def _selected_interface(self, value: int) -> None:
+        self._selected_iface = value
+
+    @property
+    def selected_interface(self) -> Optional[NetworkInterface]:
+        if 0 <= self._selected_iface < len(self.interfaces):
+            return self.interfaces[self._selected_iface]
+        return None
+
+    @property
+    def total_interfaces(self) -> int:
+        return len(self.interfaces)
+
+    @property
+    def up_interfaces(self) -> int:
+        return sum(1 for i in self.interfaces if i.is_up)
+
+    @property
+    def total_connections(self) -> int:
+        return len(self.connections)
+
+    @property
+    def total_rx_display(self) -> str:
+        total = self.total_rx or sum(i.rx_total for i in self.interfaces)
+        if total < 1024 ** 3:
+            return f"{total / (1024 * 1024):.1f} MB"
+        return f"{total / (1024 ** 3):.2f} GB"
+
+    @property
+    def total_tx_display(self) -> str:
+        total = self.total_tx or sum(i.tx_total for i in self.interfaces)
+        if total < 1024 ** 3:
+            return f"{total / (1024 * 1024):.1f} MB"
+        return f"{total / (1024 ** 3):.2f} GB"
+
+    def select_interface(self, idx: int) -> None:
+        if 0 <= idx < len(self.interfaces):
+            self._selected_iface = idx
+
+    _SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+    def get_sparkline(self, iface_name: str, rx: bool = True,
+                      width: int = 32) -> str:
+        """Sparkline of an interface's rate history; ░ fill when unknown."""
+        iface = next((i for i in self.interfaces if i.name == iface_name), None)
+        if iface is None:
+            return "░" * width
+        values = []
+        for s in self.bandwidth_history:
+            values.append(s.rx_rate_bps if rx else s.tx_rate_bps)
+        if not values:
+            return "░" * width
+        lo, hi = min(values), max(values)
+        rng = (hi - lo) or 1.0
+        # Sample to the requested width
+        step = len(values) / width
+        chars = []
+        for i in range(width):
+            v = values[min(int(i * step), len(values) - 1)]
+            idx = int((v - lo) / rng * (len(self._SPARK_CHARS) - 1))
+            chars.append(self._SPARK_CHARS[idx])
+        return "".join(chars)
+
+    def render(self) -> List[str]:
+        lines = ["NETWORK MONITOR", "=" * 50]
+        lines.append(f"  Interfaces: {self.up_interfaces}/{self.total_interfaces} up  "
+                     f"Connections: {self.total_connections}")
+        lines.append(f"  RX {self.total_rx_display}  TX {self.total_tx_display}")
+        lines.append("")
+        for i, iface in enumerate(self.interfaces):
+            marker = ">" if i == self._selected_iface else " "
+            lines.append(f" {marker}{iface.status_icon} {iface.name:<12} {iface.ip_address:<16} "
+                         f"{iface.rx_rate_display:>12} {iface.tx_rate_display:>12}")
+        return lines
+
+    def render_connections(self) -> List[str]:
+        lines = ["CONNECTIONS", "=" * 50]
+        for c in self.connections[:10]:
+            lines.append(f"  {c.state_icon} {c.local_display} → {c.remote_display} "
+                         f"{c.rx_display} {c.tx_display}")
+        return lines
+
+    def render_protocols(self) -> List[str]:
+        lines = ["PROTOCOL BREAKDOWN", "=" * 50]
+        by_proto: Dict[str, int] = {}
+        for c in self.connections:
+            key = c.protocol.value if hasattr(c.protocol, "value") else str(c.protocol)
+            by_proto[key] = by_proto.get(key, 0) + 1
+        for proto, count in sorted(by_proto.items(), key=lambda kv: -kv[1]):
+            bar = "█" * count + "░" * max(0, 10 - count)
+            lines.append(f"  {proto:<8} {bar} {count}")
+        lines.append("")
+        lines.append(f"  Probes: {len(self.probes)} hosts monitored")
+        return lines
+
+    def render_interface_detail(self) -> List[str]:
+        iface = self.selected_interface
+        if not iface:
+            return ["No interface selected"]
+        lines = [f"INTERFACE — {iface.name}", "=" * 50]
+        lines.append(f"  IP: {iface.ip_address}  MAC: {iface.mac_address or '—'}")
+        lines.append(f"  Speed: {iface.speed_mbps} Mbps  State: {'up' if iface.is_up else 'down'}")
+        lines.append(f"  RX total: {iface.rx_total_display}  TX total: {iface.total_tx_display}")
+        lines.append(f"  RX rate: {iface.rx_rate_display}  TX rate: {iface.tx_rate_display}")
+        if iface.is_wireless:
+            lines.append(f"  SSID: {iface.ssid}  Signal: {iface.signal_strength}%")
+        lines.append(f"  Uptime: {iface.uptime_display}")
+        return lines
+
 
 class InterfaceType(Enum):
     ETHERNET = "ethernet"
@@ -297,8 +533,13 @@ class InterfaceType(Enum):
     TUNNEL = "tunnel"
 
 
-class InterfaceStatus:
-    pass  # backward compat stub
+from enum import Enum as _InterfaceStatusEnum
+
+
+class InterfaceStatus(_InterfaceStatusEnum):
+    UP = "up"
+    DOWN = "down"
+    UNKNOWN = "unknown"
 
 TrafficSample = BandwidthSample
 

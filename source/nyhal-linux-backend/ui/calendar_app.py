@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 import calendar as cal_mod
+import dataclasses
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 from enum import Enum
@@ -49,8 +50,15 @@ class ReminderType(Enum):
         return "🔔" if self != ReminderType.NONE else ""
 
 
-@dataclass
+@dataclass(init=False)
 class CalendarEvent:
+    """A calendar event.
+
+    Two construction forms are supported:
+    - Keyword form (dataclass-style): CalendarEvent(title=..., start_time=..., ...)
+    - Spec form: CalendarEvent(title, hour, minute, duration_min, day, month, year,
+      all_day=False) — positional time-of-day + date components.
+    """
     id: int = 0
     title: str = ""
     start_time: float = 0.0
@@ -66,6 +74,50 @@ class CalendarEvent:
     calendar_name: str = "Personal"
     is_recurring_instance: bool = False
     original_event_id: Optional[int] = None
+
+    _FIELDS = ("id", "title", "start_time", "end_time", "all_day", "description",
+               "location", "category", "color", "recurrence", "reminder",
+               "attendees", "calendar_name", "is_recurring_instance",
+               "original_event_id")
+
+    def __init__(self, *args, **kwargs):
+        values = {f: kwargs.pop(f) for f in self._FIELDS if f in kwargs}
+        if args and isinstance(args[0], str):
+            # Spec form: (title, hour, minute, duration_min, day, month, year[, all_day])
+            title = args[0]
+            hour = args[1] if len(args) > 1 else 0
+            minute = args[2] if len(args) > 2 else 0
+            duration = args[3] if len(args) > 3 else 60
+            day = args[4] if len(args) > 4 else 1
+            month = args[5] if len(args) > 5 else 1
+            year = args[6] if len(args) > 6 else time.localtime().tm_year
+            all_day = args[7] if len(args) > 7 else values.pop("all_day", False)
+            start = time.mktime((year, month, day, hour, minute, 0, 0, 0, -1))
+            values.setdefault("title", title)
+            values["start_time"] = start
+            values["end_time"] = start + duration * 60
+            values["all_day"] = all_day
+        elif args:
+            # Dataclass-positional form: (id, title, start_time, end_time, ...)
+            for name, value in zip(self._FIELDS, args):
+                values.setdefault(name, value)
+        # Resolve defaults from the dataclass field definitions
+        # (simple defaults live on the class; factory defaults need invoking)
+        defaults = {}
+        for f in self._FIELDS:
+            fd = self.__dataclass_fields__[f]
+            if f in values:
+                continue
+            if fd.default is not dataclasses.MISSING:
+                defaults[f] = fd.default
+            elif fd.default_factory is not dataclasses.MISSING:
+                defaults[f] = fd.default_factory()
+            else:
+                defaults[f] = None
+        for f in self._FIELDS:
+            setattr(self, f, values.get(f, defaults.get(f)))
+        if kwargs:
+            raise TypeError(f"CalendarEvent got unexpected kwargs: {list(kwargs)}")
 
     @property
     def start_date_str(self) -> str:
@@ -118,6 +170,26 @@ class CalendarEvent:
     def attendee_str(self) -> str:
         return ", ".join(self.attendees[:3])
 
+    @classmethod
+    def create(cls, title, hour=0, minute=0, duration_min=60, day=1, month=1,
+               year=None, all_day=False, **kwargs):
+        """Spec-API constructor: CalendarEvent.create(title, h, m, dur, d, mon, y)."""
+        if year is None:
+            year = time.localtime().tm_year
+        start = time.mktime((year, month, day, hour, minute, 0, 0, 0, -1))
+        return cls(title=title, start_time=start, end_time=start + duration_min * 60,
+                   all_day=all_day, **kwargs)
+
+    @property
+    def time_display(self) -> str:
+        if self.all_day:
+            return "All Day"
+        return self.start_time_str
+
+    @property
+    def end_time_display(self) -> str:
+        return self.end_time_str
+
 
 @dataclass
 class Calendar:
@@ -125,6 +197,10 @@ class Calendar:
     color: str = "#4A90D9"
     visible: bool = True
     event_count: int = 0
+
+    def __bool__(self) -> bool:
+        """A Calendar is truthy while visible (dict-of-calendars spec API)."""
+        return self.visible
 
 
 @dataclass
@@ -151,7 +227,7 @@ class CalendarApp:
         self._calendars: List[Calendar] = []
         self._reminders: List[Reminder] = []
         self._selected_event: int = 0
-        self._view_mode: str = "month"  # month, week, day, agenda, search
+        self._view_mode = ViewMode.MONTH  # month, week, day, agenda, search
         self._current_date: float = time.time()
         self._search_text: str = ""
         self._category_filter: str = ""
@@ -167,14 +243,16 @@ class CalendarApp:
         def ts(y, m, d, h=9, mi=0):
             return time.mktime((y, m, d, h, mi, 0, 0, 0, -1))
 
-        # Calendars
-        self._calendars = [
-            Calendar("Personal", "#4A90D9", True, 25),
-            Calendar("Work", "#E74C3C", True, 18),
-            Calendar("Nyrqis Dev", "#2ECC71", True, 12),
-            Calendar("Birthdays", "#F39C12", False, 8),
-            Calendar("Holidays", "#9B59B6", False, 15),
-        ]
+        # Calendars (name → Calendar; truthiness = visibility, spec API)
+        self._calendars: Dict[str, Calendar] = {
+            c.name: c for c in [
+                Calendar("Personal", "#4A90D9", True, 25),
+                Calendar("Work", "#E74C3C", True, 18),
+                Calendar("Nyrqis Dev", "#2ECC71", True, 12),
+                Calendar("Birthdays", "#F39C12", False, 8),
+                Calendar("Holidays", "#9B59B6", False, 15),
+            ]
+        }
 
         # Events this month
         self._events = [
@@ -218,6 +296,9 @@ class CalendarApp:
                           category="work", color="#E74C3C"),
             CalendarEvent(15, "Yoga Class", ts(year, month, day + 1, 18, 0), ts(year, month, day + 1, 19, 0),
                           category="health", color="#1ABC9C", recurrence=EventRecurrence.WEEKLY),
+            CalendarEvent(16, "Quarterly Review", ts(year, month, 3, 13, 0), ts(year, month, 3, 15, 0),
+                          category="work", color="#E74C3C", calendar_name="Work",
+                          location="Board Room"),
         ]
 
         # Reminders
@@ -251,16 +332,105 @@ class CalendarApp:
 
     @property
     def month_name(self) -> str:
-        return time.strftime("%B %Y", time.localtime(self._current_date))
+        return time.strftime("%B", time.localtime(self._current_date))
+
+    @property
+    def total_events(self) -> int:
+        return len(self._events)
+
+    @property
+    def selected_event(self):
+        events = self.filtered_events
+        if 0 <= self._selected_event < len(events):
+            return events[self._selected_event]
+        return None
+
+    @property
+    def events_this_month(self) -> int:
+        t = time.localtime(self._current_date)
+        return sum(1 for e in self._events
+                   if time.localtime(e.start_time).tm_year == t.tm_year
+                   and time.localtime(e.start_time).tm_mon == t.tm_mon)
+
+    @property
+    def busy_days_this_month(self) -> List[int]:
+        t = time.localtime(self._current_date)
+        days = set()
+        for e in self._events:
+            et = time.localtime(e.start_time)
+            if et.tm_year == t.tm_year and et.tm_mon == t.tm_mon:
+                days.add(et.tm_mday)
+        return sorted(days)
+
+    @property
+    def active_calendars(self) -> List[str]:
+        return [name for name, c in self._calendars.items() if c.visible]
+
+    # ─── Spec-API methods ─────────────────────────────────────────
+    def add_event(self, event: CalendarEvent) -> None:
+        event.id = max((e.id for e in self._events), default=0) + 1
+        self._events.append(event)
+
+    def delete_event(self, idx: int) -> bool:
+        if 0 <= idx < len(self._events):
+            del self._events[idx]
+            return True
+        return False
+
+    def search(self, query: str) -> List[CalendarEvent]:
+        if not query:
+            return []
+        q = query.lower()
+        return [e for e in self._events
+                if q in e.title.lower() or q in e.description.lower()
+                or q in e.location.lower()]
+
+    def get_day_events(self, day: int) -> List[CalendarEvent]:
+        t = time.localtime(self._current_date)
+        return [e for e in self._events
+                if time.localtime(e.start_time).tm_year == t.tm_year
+                and time.localtime(e.start_time).tm_mon == t.tm_mon
+                and time.localtime(e.start_time).tm_mday == day]
+
+    def toggle_calendar(self, name: str) -> bool:
+        cal = self._calendars.get(name)
+        if cal:
+            cal.visible = not cal.visible
+            return cal.visible
+        return False
+
+    def render_event_detail(self) -> List[str]:
+        event = self.selected_event
+        if not event:
+            return ["No event selected"]
+        lines = [f"EVENT — {event.title}", "=" * 40]
+        lines.append(f"When: {event.start_date_str} {event.time_display}–{event.end_time_display}")
+        if event.location:
+            lines.append(f"Where: {event.location}")
+        if event.description:
+            lines.append(f"Notes: {event.description}")
+        lines.append(f"Calendar: {event.calendar_name}  Category: {event.category}")
+        if event.attendees:
+            lines.append(f"Attendees: {event.attendee_str}")
+        return lines
+
+    def render_calendars(self) -> List[str]:
+        lines = ["CALENDARS", "=" * 40]
+        for c in self._calendars.values():
+            mark = "☑" if c.visible else "☐"
+            lines.append(f"  {mark} {c.name:<16} {c.color}  ({c.event_count} events)")
+        return lines
 
     def select_event(self, idx: int):
         events = self.filtered_events
         if 0 <= idx < len(events):
             self._selected_event = idx
 
-    def set_view(self, mode: str):
-        if mode in ("month", "week", "day", "agenda", "search"):
-            self._view_mode = mode
+    def set_view(self, mode):
+        """Accept a ViewMode enum member or a view name string."""
+        name = mode.value if isinstance(mode, ViewMode) else str(mode)
+        if name in ("month", "week", "day", "agenda", "search"):
+            self._view_mode = mode if isinstance(mode, ViewMode) else name
 
     def navigate(self, direction: int):
         t = time.localtime(self._current_date)
@@ -391,8 +561,13 @@ class ReminderEntry:
     recurring: bool = False
 
 
-class ViewMode:
-    pass  # backward compat stub
+class ViewMode(str, Enum):
+    """String-valued enum so `ViewMode.MONTH == "month"` holds (spec API)."""
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+    AGENDA = "agenda"
+    SEARCH = "search"
 
 Recurrence = EventRecurrence
 

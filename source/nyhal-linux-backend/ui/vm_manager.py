@@ -73,7 +73,7 @@ class DiskFormat(_Enum):
 
 @dataclass
 class VirtualMachine:
-    name: str
+    name: str = ""
     # Accept both VMState and VMStatus for backward compat
     _state: object = VMState.STOPPED
     os_type: VMOSType = VMOSType.LINUX
@@ -170,6 +170,8 @@ class VirtualMachine:
     @property
     def uptime_str(self) -> str:
         secs = self.uptime_s or self.uptime_seconds
+        if secs <= 0:
+            return "down"
         if secs < 60:
             return f"{secs:.0f}s"
         elif secs < 3600:
@@ -202,7 +204,7 @@ class VirtualMachine:
     @property
     def os_icon(self) -> str:
         icons = {
-            VMOSType.LINUX: "\U0001f427", VMOSType.WINDOWS: "\U0001faa7",
+            VMOSType.LINUX: "\U0001f427", VMOSType.WINDOWS: "\U0001fa9f",
             VMOSType.MACOS: "\U0001f34e", VMOSType.BSD: "\U0001f608",
             VMOSType.OTHER: "\u2753",
         }
@@ -325,6 +327,33 @@ class VMStorage:
     size_gb: int = 0
     format: str = "qcow2"
     path: str = ""
+    # Backward-compat aliases (spec tests construct VMStorage(disk_gb=..., used_gb=...))
+    disk_gb: int = 0
+    used_gb: float = 0.0
+
+    @property
+    def usage_pct(self) -> float:
+        total = self.size_gb or self.disk_gb
+        used = self.used_gb
+        if total <= 0:
+            return 0.0
+        return (used / total) * 100.0
+
+    @property
+    def usage_bar(self) -> str:
+        filled = int(self.usage_pct / 5)
+        filled = max(0, min(20, filled))
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def free_gb(self) -> float:
+        total = self.size_gb or self.disk_gb
+        return max(0.0, total - self.used_gb)
+
+    @property
+    def display_size(self) -> str:
+        total = self.size_gb or self.disk_gb
+        return f"{total} GB"
 
 
 class VMNetwork:
@@ -419,35 +448,27 @@ class VMManager:
         ]
 
     # ─── Backward-compat index-based operations ───────────────────────
-    def start_vm(self, vm_id) -> bool:
-        """Accept name (str) or index (int)."""
+    def _resolve_vm(self, vm_id) -> Optional[VirtualMachine]:
+        """Resolve a VM by name (str), index (int), or the selection."""
+        if vm_id is None:
+            vm_id = self._selected_vm
         if isinstance(vm_id, int):
             if 0 <= vm_id < len(self.vms):
-                vm = self.vms[vm_id]
-                if vm.state in (VMState.STOPPED, VMState.SAVED):
-                    vm.state = VMState.RUNNING
-                    vm.uptime_s = 0
-                    return True
-            return False
-        # String name
-        vm = next((v for v in self.vms if v.name == vm_id), None)
+                return self.vms[vm_id]
+            return None
+        return next((v for v in self.vms if v.name == vm_id), None)
+
+    def start_vm(self, vm_id=None) -> bool:
+        """Accept name (str), index (int), or nothing (uses selection)."""
+        vm = self._resolve_vm(vm_id)
         if vm and vm.state in (VMState.STOPPED, VMState.SAVED):
             vm.state = VMState.RUNNING
             vm.uptime_s = 0
             return True
         return False
 
-    def stop_vm(self, vm_id, force: bool = False) -> bool:
-        if isinstance(vm_id, int):
-            if 0 <= vm_id < len(self.vms):
-                vm = self.vms[vm_id]
-                if vm.state == VMState.RUNNING:
-                    vm.state = VMState.STOPPED
-                    vm.cpu_usage = 0
-                    vm.ram_usage_gb = 0
-                    return True
-            return False
-        vm = next((v for v in self.vms if v.name == vm_id), None)
+    def stop_vm(self, vm_id=None, force: bool = False) -> bool:
+        vm = self._resolve_vm(vm_id)
         if vm and vm.state == VMState.RUNNING:
             vm.state = VMState.STOPPED
             vm.cpu_usage = 0
@@ -497,8 +518,9 @@ class VMManager:
             actual_template = template
 
         if actual_template:
+            vm_name = vm_name or kwargs.pop("name", None) or kwargs.pop("vm_name", None) or f"vm-{len(self.vms) + 1}"
             vm = VirtualMachine(
-                name=vm_name or f"vm-{len(self.vms) + 1}",
+                name=vm_name,
                 os_type=actual_template.os_type, os_name=actual_template.os_name,
                 cpu_cores=actual_template.cpu_cores, ram_gb=actual_template.ram_gb,
                 disk_gb=actual_template.disk_gb, **kwargs)
@@ -623,7 +645,65 @@ class VMManager:
     def total_vm_disk(self) -> float:
         return sum(v.disk_gb for v in self.vms)
 
-    # ─── Render methods ───────────────────────────────────────────────
+    # ─── Backward-compat aliases ───────────────────────────────────
+    @property
+    def _vms(self) -> List[VirtualMachine]:
+        return self.vms
+
+    @_vms.setter
+    def _vms(self, value: List[VirtualMachine]) -> None:
+        self.vms = value
+
+    @property
+    def _templates(self) -> List[VMTemplate]:
+        return self.templates
+
+    @property
+    def _snapshots(self) -> List[VMSnapshot]:
+        return self.snapshots
+
+    # ─── Render methods ────────────────────────────────────────────
+    def render(self) -> List[str]:
+        """Render the current view (dispatch on view_mode)."""
+        if self.view_mode == "console":
+            return self.render_console()
+        if self.view_mode == "templates":
+            return self.render_templates()
+        if self.view_mode == "network":
+            return self.render_network()
+        if self.view_mode == "stats":
+            return self.render_stats()
+        if self.view_mode == "storage":
+            return self.render_storage()
+        if self.view_mode == "details":
+            return self.render_details()
+        return self.render_list()
+
+    def render_templates(self) -> List[str]:
+        lines = ["Templates", "=" * 40]
+        for t in self.templates:
+            lines.append(f"  {t.name} — {t.os_name}: {t.specs}")
+            if t.description:
+                lines.append(f"    {t.description}")
+        return lines
+
+    def render_network(self) -> List[str]:
+        lines = ["Network", "=" * 40]
+        for vm in self.vms:
+            if vm.is_running:
+                lines.append(f"  {vm.name}: {vm.ip_address or 'no address'} {vm.network_display}")
+        return lines
+
+    def render_stats(self) -> List[str]:
+        stats = self.get_stats()
+        lines = ["Resource Usage", "=" * 40]
+        lines.append(f"  VMs: {stats['total_vms']} ({stats['running']} running, "
+                     f"{stats['stopped']} stopped)")
+        lines.append(f"  CPU: {stats['used_cpu']:.1f} / {stats['total_cpu']} cores")
+        lines.append(f"  RAM: {stats['used_ram_gb']:.1f} / {stats['total_ram_gb']:.1f} GB")
+        lines.append(f"  Snapshots: {stats['snapshots']}  Templates: {stats['templates']}")
+        return lines
+
     def render_list(self) -> List[str]:
         lines = ["VM MANAGER - List View", "=" * 40]
         for i, vm in enumerate(self.vms):

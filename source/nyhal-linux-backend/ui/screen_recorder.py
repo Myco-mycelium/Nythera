@@ -46,11 +46,43 @@ RecordArea = RecordingArea
 RecordStatus = RecordingStatus
 
 
-class RecordingPreset(Enum):
-    SCREENCAST = "screencast"
-    GAMING = "gaming"
-    PRESENTATION = "presentation"
-    CUSTOM = "custom"
+@dataclass
+class RecordingPreset:
+    """Recording preset (dataclass; named presets available as class attrs).
+
+    Supports both the enum-style members (RecordingPreset.SCREENCAST) and
+    the spec constructor form: RecordingPreset(bitrate=..., encoder=...).
+    """
+    name: str = "Custom"
+    resolution: str = "1920x1080"
+    fps: int = 30
+    bitrate: int = 8000
+    encoder: str = "h264"
+    audio_bitrate: int = 192
+
+    SCREENCAST = None  # replaced below
+
+    @property
+    def estimated_size_mb_per_min(self) -> float:
+        # bitrate kbps → MB/min: kbps * 60 s / 8 / 1024
+        return self.bitrate * 60 / 8 / 1024
+
+    @property
+    def encoder_icon(self) -> str:
+        return {"h264": "🎥", "h265": "🎬", "vp9": "🌐", "av1": "✨"}.get(
+            str(self.encoder).lower(), "🎥")
+
+    def __eq__(self, other):
+        return isinstance(other, RecordingPreset) and self.__dict__ == other.__dict__
+
+    def __hash__(self):
+        return hash(tuple(sorted(self.__dict__.items())))
+
+
+RecordingPreset.SCREENCAST = RecordingPreset(name="Screencast", bitrate=8000, encoder="h264")
+RecordingPreset.GAMING = RecordingPreset(name="Gaming", bitrate=25000, encoder="h265")
+RecordingPreset.PRESENTATION = RecordingPreset(name="Presentation", bitrate=5000, encoder="h264")
+RecordingPreset.CUSTOM = RecordingPreset(name="Custom", bitrate=10000, encoder="h265")
 
 
 class OverlayType(Enum):
@@ -74,6 +106,23 @@ class RecordingSession:
     fps: int = 30
     timestamp: float = 0.0
 
+    def __init__(self, name: str = "", filename: str = "", duration_s: float = 0.0,
+                 file_size: int = 0, codec: RecordingCodec = RecordingCodec.H264,
+                 area: RecordingArea = RecordingArea.FULLSCREEN, fps: int = 30,
+                 timestamp: float = 0.0, file_size_mb: float = 0.0, **kwargs):
+        if file_size_mb and not file_size:
+            file_size = int(file_size_mb * 1024 * 1024)
+        self.name = name
+        self.filename = filename
+        self.duration_s = duration_s
+        self.file_size = file_size
+        self.codec = codec
+        self.area = area
+        self.fps = fps
+        self.timestamp = timestamp if timestamp else time.time()
+        if kwargs:
+            raise TypeError(f"RecordingSession got unexpected kwargs: {list(kwargs)}")
+
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
@@ -95,6 +144,30 @@ class RecordingSession:
         elif self.file_size < 1024 * 1024:
             return f"{self.file_size / 1024:.1f} KB"
         return f"{self.file_size / (1024*1024):.1f} MB"
+
+    # Spec-API alias: file_size_mb constructor arg + display helpers
+    @classmethod
+    def create(cls, name="", duration_s=0.0, file_size_mb=0.0, **kwargs):
+        return cls(name=name, duration_s=duration_s,
+                   file_size=int(file_size_mb * 1024 * 1024), **kwargs)
+
+    @property
+    def duration_str(self) -> str:
+        secs = int(self.duration_s)
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h{m:02d}m"
+        if m:
+            return f"{m}m{s:02d}s"
+        return f"{s}s"
+
+    @property
+    def size_str(self) -> str:
+        mb = self.file_size / (1024 * 1024)
+        if mb >= 1024:
+            return f"{mb / 1024:.1f} GB"
+        return f"{mb:.0f} MB"
 
 
 @dataclass
@@ -338,8 +411,11 @@ class ScreenRecorder:
         return None
 
     def pause_recording(self):
+        """Toggle pause: RECORDING → PAUSED → RECORDING (spec API)."""
         if self._status == RecordingStatus.RECORDING:
             self._status = RecordingStatus.PAUSED
+        elif self._status == RecordingStatus.PAUSED:
+            self._status = RecordingStatus.RECORDING
 
     def resume_recording(self):
         if self._status == RecordingStatus.PAUSED:
@@ -375,8 +451,17 @@ class ScreenRecorder:
             self._current_overlays.append(overlay)
 
     def render(self) -> List[str]:
+        mode = getattr(self, "view_mode", "control")
+        if mode == "presets":
+            return self._render_presets()
+        if mode == "history":
+            return self._render_history()
+        if mode == "audio":
+            return self._render_audio()
+        if mode == "settings":
+            return self._render_settings()
         lines = [
-            f"── SCREEN RECORDER ──",
+            f"SCREEN RECORDER",
             f"Status: {self._status.value}",
             f"Format: {self._current_format.value} | FPS: {self._current_fps}",
             f"Area: {self._current_area.value}",
@@ -401,6 +486,59 @@ class ScreenRecorder:
             f"Size: {s.file_size_display}",
             f"Codec: {s.codec.value} | FPS: {s.fps}",
         ]
+
+    # ─── Spec API (test_calendar_recorder_kanban) ──────────────────
+    @property
+    def _state(self):
+        """RecordingState alias for _status (spec API)."""
+        return RecordingState(self._status.value)
+
+    @_state.setter
+    def _state(self, value) -> None:
+        self._status = RecordingStatus(value.value if hasattr(value, "value") else value)
+
+    @property
+    def recording_time_str(self) -> str:
+        """Elapsed recording time as HH:MM:SS."""
+        if not self._rec_start:
+            return "00:00:00"
+        secs = int(time.time() - self._rec_start)
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    @property
+    def total_recorded_s(self) -> float:
+        return sum(s.duration_s for s in self._sessions)
+
+    def set_view(self, mode: str) -> None:
+        self.view_mode = mode
+
+    def _render_presets(self) -> List[str]:
+        lines = ["── Presets ──", ""]
+        for i, p in enumerate(self._presets):
+            label = getattr(p, "name", getattr(p, "value", str(p)))
+            lines.append(f"  {'▸' if i == self._selected_index else ' '} {label}")
+        return lines
+
+    def _render_history(self) -> List[str]:
+        lines = ["── History ──", ""]
+        for s in self._sessions:
+            lines.append(f"  {s.name} — {s.duration_str} ({s.size_str})")
+        return lines
+
+    def _render_audio(self) -> List[str]:
+        lines = ["── Audio ──", ""]
+        lines.append(f"  Desktop audio:  [{'█' * 8 + '░' * 12}]")
+        lines.append(f"  Microphone:     [{'█' * 6 + '░' * 14}]")
+        return lines
+
+    def _render_settings(self) -> List[str]:
+        lines = ["── Hotkeys / Settings ──", ""]
+        lines.append("  Start/Stop: Ctrl+Alt+R")
+        lines.append("  Pause:      Ctrl+Alt+P")
+        lines.append("  Screenshot: Ctrl+Alt+S")
+        return lines
 
     # ─── Legacy API ──────────────────────────────────────────────────
 
@@ -449,6 +587,12 @@ class AudioDevice:
     channels: int = 2
     is_input: bool = False
     is_default: bool = False
+    volume: int = 80
+
+    @property
+    def volume_bar(self) -> str:
+        filled = int(max(0, min(100, self.volume)) / 5)
+        return "█" * filled + "░" * (20 - filled)
 
 
 from enum import Enum as _CaptureMode
@@ -480,6 +624,7 @@ class QualityPreset(_QualityPreset):
 
 # Backward-compat aliases
 RecordingState = RecordingStatus
+_RecordingState = RecordingState
 
 from enum import Enum as _AudioSource
 class AudioSource(_AudioSource):

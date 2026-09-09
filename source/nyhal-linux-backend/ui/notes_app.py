@@ -13,6 +13,7 @@ Features:
 
 from __future__ import annotations
 
+import copy
 import time
 import re
 from dataclasses import dataclass, field
@@ -59,6 +60,29 @@ class Note:
     source_url: str = ""
     links_to: List[int] = field(default_factory=list)
     linked_from: List[int] = field(default_factory=list)
+    folder: str = "Notes"
+    color: "NoteColor" = None  # NoteColor enum, defined at module bottom
+    modified: Optional[float] = None  # alias for modified_at (spec API)
+    created: Optional[float] = None   # alias for created_at (spec API)
+
+    def __post_init__(self):
+        # Alias fields: modified/created → modified_at/created_at
+        if self.modified is not None:
+            self.modified_at = self.modified
+        if self.created is not None:
+            self.created_at = self.created
+        # Compute word_count from content when not carried over
+        if not self.word_count and self.content:
+            self.word_count = len(self.content.split())
+
+    @property
+    def note_id(self) -> str:
+        """Stable 8-character string id (spec API)."""
+        return f"{self.id:08d}"
+
+    @property
+    def time_ago(self) -> str:
+        return self.age_str
 
     @property
     def modified_str(self) -> str:
@@ -148,11 +172,17 @@ class NotesApp:
         self._daily_notes: List[DailyNote] = []
         self._links: List[NoteLink] = []
         self._selected_note: int = 0
-        self._view_mode: str = "editor"  # editor, preview, links, tags, graph, daily
+        self._view_mode: str = "editor"  # editor, preview, links, tags, graph, daily, list
         self._search_text: str = ""
         self._filter_tag: str = ""
         self._filter_type: Optional[NoteType] = None
+        self._filter_color = None
         self._show_linked: bool = True
+        self._folders: List[Folder] = [
+            Folder(name="Notes"), Folder(name="Archive"), Folder(name="Trash"),
+        ]
+        self.current_folder: str = "Notes"
+        self._sort_mode = SortMode.DATE
         self._create_samples()
 
     def _create_samples(self):
@@ -355,6 +385,34 @@ GitHub Actions runs on every push:
 """,
                  NoteType.PROJECT, ["testing", "architecture"], now - 86400 * 7, now - 86400 * 3, False, False, 65, "Buffy",
                  links_to=[4], linked_from=[]),
+
+            Note(7, "Welcome to Nyrqis Notes",
+                 """# Welcome to Nyrqis Notes
+
+This Zettelkasten-style notebook keeps every idea linked.
+
+## Getting Started
+
+- Press [E] to edit, [P] to preview markdown
+- Link notes with [[Note Title]] syntax
+- Tag notes to filter the list
+
+Everyone starts here — welcome aboard!
+""",
+                 NoteType.FLEETING, ["welcome", "meta"], now - 3600, now - 600, True, True, 55, "Buffy",
+                 links_to=[4], linked_from=[]),
+
+            Note(8, "Field Journal",
+                 """# Field Journal
+
+Observations from the morning hike.
+
+- Found a huge mushroom on the north trail
+- Two woodpeckers near the creek
+- Sketches pending
+""",
+                 NoteType.LITERATURE, ["journal"], now - 86400 * 2, now - 86400, False, False, 32, "Grace",
+                 links_to=[], linked_from=[]),
         ]
 
         # Links
@@ -382,10 +440,269 @@ GitHub Actions runs on every push:
             result = [n for n in result if self._filter_tag in n.tags]
         if self._filter_type:
             result = [n for n in result if n.note_type == self._filter_type]
+        if self._filter_color is not None:
+            result = [n for n in result if getattr(n, "color", None) == self._filter_color]
         if self._search_text:
             q = self._search_text.lower()
             result = [n for n in result if q in n.title.lower() or q in n.content.lower() or q in " ".join(n.tags).lower()]
         return result
+
+    @property
+    def total_notes(self) -> int:
+        return len(self._notes)
+
+    @property
+    def total_characters(self) -> int:
+        return sum(len(n.content) for n in self._notes)
+
+    @property
+    def all_tags(self) -> List[str]:
+        tags: Set[str] = set()
+        for n in self._notes:
+            tags.update(n.tags)
+        return sorted(tags)
+
+    @property
+    def pinned_notes(self) -> List[Note]:
+        return [n for n in self._notes if n.pinned]
+
+    @property
+    def notes_by_folder(self) -> Dict[str, List[Note]]:
+        by: Dict[str, List[Note]] = {}
+        for n in self._notes:
+            by.setdefault(getattr(n, "folder", "Notes"), []).append(n)
+        return by
+
+    @property
+    def folders(self) -> List[Folder]:
+        return self._folders
+
+    @property
+    def sort_mode(self):
+        return self._sort_mode
+
+    # ─── CRUD (spec API) ──────────────────────────────────────────
+    def create_note(self, title: str, content: str = "", folder: str = "Notes",
+                    tags: Optional[List[str]] = None, **kwargs) -> Note:
+        now = time.time()
+        note = Note(
+            id=max((n.id for n in self._notes), default=0) + 1,
+            title=title, content=content,
+            note_type=kwargs.get("note_type", NoteType.FLEETING),
+            tags=list(tags or []), created_at=now, modified_at=now,
+            folder=folder,
+        )
+        self._notes.append(note)
+        return note
+
+    def get_note(self, note_id) -> Optional[Note]:
+        """Find a note by int id or 8-char string note_id."""
+        if isinstance(note_id, str) and note_id.isdigit():
+            note_id = int(note_id)
+        return next((n for n in self._notes if n.id == note_id), None)
+
+    def delete_note(self, note_id) -> bool:
+        """Move a note to the Trash folder (soft delete)."""
+        note = self.get_note(note_id)
+        if note:
+            note.folder = "Trash"
+            return True
+        return False
+
+    def permanently_delete(self, note_id) -> bool:
+        note = self.get_note(note_id)
+        if not note:
+            return False
+        self._notes = [n for n in self._notes if n is not note]
+        return True
+
+    def restore_note(self, note_id: int) -> bool:
+        note = self.get_note(note_id)
+        if note and note.folder == "Trash":
+            note.folder = "Notes"
+            return True
+        return False
+
+    def archive_note(self, note_id: int) -> bool:
+        note = self.get_note(note_id)
+        if note:
+            note.folder = "Archive"
+            return True
+        return False
+
+    def unarchive_note(self, note_id: int) -> bool:
+        note = self.get_note(note_id)
+        if note and note.folder == "Archive":
+            note.folder = "Notes"
+            return True
+        return False
+
+    def duplicate_note(self, note_id: int) -> Optional[Note]:
+        note = self.get_note(note_id)
+        if not note:
+            return None
+        dup = copy.copy(note)
+        dup.tags = list(note.tags)
+        dup.links_to = list(note.links_to)
+        dup.linked_from = list(note.linked_from)
+        dup.id = max((n.id for n in self._notes), default=0) + 1
+        dup.title = f"{note.title} (copy)"
+        self._notes.append(dup)
+        return dup
+
+    def toggle_pin(self, note_id: int) -> bool:
+        note = self.get_note(note_id)
+        if note:
+            note.pinned = not note.pinned
+            return True
+        return False
+
+    def add_tag(self, note_id: int, tag: str) -> bool:
+        note = self.get_note(note_id)
+        if note and tag not in note.tags:
+            note.tags.append(tag)
+            return True
+        return False
+
+    def remove_tag(self, note_id: int, tag: str) -> bool:
+        note = self.get_note(note_id)
+        if note and tag in note.tags:
+            note.tags.remove(tag)
+            return True
+        return False
+
+    def set_note_color(self, note_id: int, color) -> bool:
+        note = self.get_note(note_id)
+        if note:
+            note.color = color
+            return True
+        return False
+
+    def export_note(self, note_id: int) -> str:
+        note = self.get_note(note_id)
+        if not note:
+            return ""
+        return f"# {note.title}\n\n{note.content}\n"
+
+    def export_all(self) -> Dict[str, str]:
+        return {n.title: self.export_note(n.id) for n in self._notes}
+
+    def search(self, query: str) -> List[Note]:
+        if not query:
+            return []
+        q = query.lower()
+        return [n for n in self._notes
+                if q in n.title.lower() or q in n.content.lower()
+                or any(q in t.lower() for t in n.tags)]
+
+    # ─── Folders ──────────────────────────────────────────────────
+    def create_folder(self, name: str, color: str = "") -> Folder:
+        folder = Folder(name=name, color=color)
+        self._folders.append(folder)
+        return folder
+
+    def delete_folder(self, name: str) -> bool:
+        if name in ("Notes", "Archive", "Trash"):
+            return False
+        before = len(self._folders)
+        self._folders = [f for f in self._folders if f.name != name]
+        return len(self._folders) < before
+
+    def get_notes_in_folder(self, folder: str) -> List[Note]:
+        return [n for n in self._notes if getattr(n, "folder", "Notes") == folder]
+
+    def folder_note_count(self, folder: str) -> int:
+        return len(self.get_notes_in_folder(folder))
+
+    # ─── Sorting / filtering ──────────────────────────────────────
+    def set_sort_mode(self, mode) -> None:
+        self._sort_mode = mode
+
+    def cycle_sort_mode(self):
+        modes = list(SortMode)
+        idx = modes.index(self._sort_mode) if self._sort_mode in modes else 0
+        self._sort_mode = modes[(idx + 1) % len(modes)]
+        return self._sort_mode
+
+    def set_filter_tag(self, tag: str) -> None:
+        self._filter_tag = tag
+
+    def set_filter_color(self, color) -> None:
+        self._filter_color = color
+
+    # ─── Editor open/close (spec API) ─────────────────────────────
+    def open_note(self, note_id: int) -> bool:
+        note = self.get_note(note_id)
+        if not note:
+            return False
+        self._view_mode = "edit"
+        self._edit_note_id = note_id
+        for i, n in enumerate(self.filtered_notes):
+            if n is note:
+                self._selected_note = i
+                break
+        return True
+
+    def close_editor(self) -> bool:
+        self._view_mode = "list"
+        return True
+
+    def select(self, idx: int) -> int:
+        self._selected_note = max(0, idx)
+        return self._selected_note
+
+    @property
+    def view_mode(self) -> str:
+        return self._view_mode
+
+    @view_mode.setter
+    def view_mode(self, value: str) -> None:
+        self._view_mode = value
+
+    def select_up(self) -> int:
+        if self._selected_note > 0:
+            self._selected_note -= 1
+        return self._selected_note
+
+    def select_down(self) -> int:
+        notes = self.filtered_notes
+        if self._selected_note < len(notes) - 1:
+            self._selected_note += 1
+        return self._selected_note
+
+    @property
+    def selected_index(self) -> int:
+        return self._selected_note
+
+    def handle_key(self, key: str) -> str:
+        """Minimal key handler: Ctrl+n new note, Escape closes the editor."""
+        if key in ("Ctrl+n", "ctrl+n", "N"):
+            note = self.create_note("Untitled")
+            self.open_note(note.id)
+            return "new"
+        if key == "Escape":
+            if self._view_mode == "edit":
+                self.close_editor()
+                return "close_editor"
+            return ""
+        return ""
+
+    def render_list(self) -> List[str]:
+        lines = ["NOTES", "=" * 40]
+        for i, n in enumerate(self.filtered_notes):
+            marker = " > " if i == self._selected_note else "   "
+            pin = "📌" if n.pinned else " "
+            lines.append(f"{marker}{pin}{n.title} {n.note_type.icon}")
+        lines.append(f"\n{len(self._notes)} notes, {self.total_words} words")
+        return lines
+
+    def render_editor(self) -> List[str]:
+        note = self.get_note(getattr(self, "_edit_note_id", 0)) or self.selected_note
+        if not note:
+            return ["No note open"]
+        lines = [f"Editing: {note.title}", "=" * 40, ""]
+        lines.extend(f"  {line}" for line in note.content.split("\n"))
+        return lines
 
     @property
     def selected_note(self) -> Optional[Note]:
@@ -456,7 +773,6 @@ GitHub Actions runs on every push:
             for tag in self._tags:
                 parent = f" ({tag.parent})" if tag.parent else ""
                 lines.append(f"  🏷 {tag.display}{parent}  {tag.note_count} notes")
-
         elif self._view_mode == "links":
             lines.append("  ── Linked References ──")
             for link in self._links:
@@ -488,44 +804,120 @@ class Folder:
     notes: list = field(default_factory=list)
     color: str = ""
 
-NoteEditor = Note
+
+class NoteEditor:
+    """Cursor-based plain-text editor over a Note's content.
+
+    Operates on a Note in place (note.content) or, when constructed
+    with plain text, on its own buffer.
+    """
+
+    def __init__(self, note=None, text: str = ""):
+        self.note = note
+        self._text = text if note is None else note.content
+        self._cursor = len(self._text)
+        self._undo_stack: List[str] = []
+        self._redo_stack: List[str] = []
+        self._clean_text = self._text
+
+    @property
+    def content(self) -> str:
+        return self.note.content if self.note is not None else self._text
+
+    def _set_content(self, value: str) -> None:
+        if self.note is not None:
+            self.note.content = value
+        else:
+            self._text = value
+
+    def insert(self, text: str) -> int:
+        c = self.content
+        self._undo_stack.append(c)
+        self._redo_stack.clear()
+        self._set_content(c[:self._cursor] + text + c[self._cursor:])
+        self._cursor += len(text)
+        return self._cursor
+
+    def delete_backward(self, count: int = 1) -> str:
+        c = self.content
+        start = max(0, self._cursor - count)
+        deleted = c[start:self._cursor]
+        self._undo_stack.append(c)
+        self._redo_stack.clear()
+        self._set_content(c[:start] + c[self._cursor:])
+        self._cursor = start
+        return deleted
+
+    def delete_forward(self, count: int = 1) -> str:
+        c = self.content
+        end = min(len(c), self._cursor + count)
+        deleted = c[self._cursor:end]
+        self._undo_stack.append(c)
+        self._redo_stack.clear()
+        self._set_content(c[:self._cursor] + c[end:])
+        return deleted
+
+    def move_cursor(self, pos: int) -> int:
+        self._cursor = max(0, min(pos, len(self.content)))
+        return self._cursor
+
+    def move_to_start(self) -> int:
+        self._cursor = 0
+        return self._cursor
+
+    def move_to_end(self) -> int:
+        self._cursor = len(self.content)
+        return self._cursor
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append(self.content)
+        self._set_content(self._undo_stack.pop())
+        self._cursor = len(self.content)
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(self.content)
+        self._set_content(self._redo_stack.pop())
+        self._cursor = len(self.content)
+        return True
+
+    @property
+    def is_dirty(self) -> bool:
+        return self.content != self._clean_text
+
+    def mark_clean(self) -> None:
+        self._clean_text = self.content
+
+    @property
+    def line_col(self):
+        before = self.content[:self._cursor]
+        line = before.count("\n") + 1
+        col = self._cursor - (before.rfind("\n") + 1)
+        return (line, col)
 
 # ─── Backward-compat exports ────────────────────────────────────────────
 class MarkdownRenderer:
-    """Renders markdown text to styled output."""
+    """Renders markdown text to terminal-friendly plain output.
+
+    Bold/emphasis markers are intentionally preserved (terminals have no
+    <strong>); headers are flattened to their text and list items get a
+    proper bullet.
+    """
     def __init__(self, text: str = ""):
         self.text = text
     def render(self, text: str = None) -> str:
         t = text if text is not None else self.text
-        import re
-        result = t
-        # Headers
-        result = re.sub(r'^######\s+(.+)$', r'<h6>\1</h6>', result, flags=re.MULTILINE)
-        result = re.sub(r'^#####\s+(.+)$', r'<h5>\1</h5>', result, flags=re.MULTILINE)
-        result = re.sub(r'^####\s+(.+)$', r'<h4>\1</h4>', result, flags=re.MULTILINE)
-        result = re.sub(r'^###\s+(.+)$', r'<h3>\1</h3>', result, flags=re.MULTILINE)
-        result = re.sub(r'^##\s+(.+)$', r'<h2>\1</h2>', result, flags=re.MULTILINE)
-        result = re.sub(r'^#\s+(.+)$', r'<h1>\1</h1>', result, flags=re.MULTILINE)
-        # Bold
-        result = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', result)
-        # Italic
-        result = re.sub(r'\*(.+?)\*', r'<em>\1</em>', result)
-        # Code blocks
-        result = re.sub(r'```(\w*)\n(.*?)```', r'<pre><code>\2</code></pre>', result, flags=re.DOTALL)
-        # Inline code
-        result = re.sub(r'`(.+?)`', r'<code>\1</code>', result)
-        # Links
-        result = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', result)
-        # Images
-        result = re.sub(r'!\[(.+?)\]\((.+?)\)', r'<img src="\2" alt="\1">', result)
-        # Lists
-        result = re.sub(r'^[-*]\s+(.+)$', r'<li>\1</li>', result, flags=re.MULTILINE)
-        # Blockquotes
-        result = re.sub(r'^>\s+(.+)$', r'<blockquote>\1</blockquote>', result, flags=re.MULTILINE)
+        result = t or ""
+        # Lists → bullets
+        result = re.sub(r'^[-*]\s+(.+)$', r'• \1', result, flags=re.MULTILINE)
+        # Headers → plain text
+        result = re.sub(r'^#{1,6}\s+(.+)$', r'\1', result, flags=re.MULTILINE)
         # Horizontal rules
-        result = re.sub(r'^---+$', r'<hr>', result, flags=re.MULTILINE)
-        # Line breaks
-        result = result.replace('\n', '<br>')
+        result = re.sub(r'^---+\s*$', '─' * 40, result, flags=re.MULTILINE)
         return result
     def render_inline(self, text: str) -> str:
         return text

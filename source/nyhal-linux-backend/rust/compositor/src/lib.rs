@@ -33,8 +33,9 @@ pub mod wayland;
 pub mod protocols;
 pub mod event_loop;
 
-/// ABI version: 0x0000_0200 (0.2.0 — wire-format event loop added).
-const ABI_VERSION: u32 = 0x0000_0200;
+/// ABI version: 0x0000_0300 (0.3.0 — wl_shm pool/buffer objects in the
+/// wire loop, wl_display.sync served).
+const ABI_VERSION: u32 = 0x0000_0300;
 const MAX_CLIENTS: usize = 32;
 const MAX_SURFACES: usize = 256;
 const MAX_OUTPUTS: usize = 16;
@@ -152,6 +153,9 @@ pub extern "C" fn nyrqis_compositor_version() -> u32 {
 /// A successful start begins a fresh protocol session: the wire event
 /// loop's object table and outbound queues are reset so a restart (or
 /// a re-connecting client) never collides with stale object ids.
+/// Resources from the previous session (clients, surfaces, outputs,
+/// queued input) are torn down as well so repeated start/stop cycles
+/// never leak slots.
 /// Returns 0 on success, -1 on failure.
 #[no_mangle]
 pub extern "C" fn nyrqis_compositor_start() -> c_int {
@@ -160,6 +164,11 @@ pub extern "C" fn nyrqis_compositor_start() -> c_int {
             set_last_error(state, "compositor already running");
             return -1;
         }
+        state.clients = (0..MAX_CLIENTS).map(|_| None).collect();
+        state.surfaces = (0..MAX_SURFACES).map(|_| None).collect();
+        state.outputs = (0..MAX_OUTPUTS).map(|_| None).collect();
+        state.input_queues = (0..MAX_SURFACES).map(|_| Vec::new()).collect();
+        state.total_input_dispatched = 0;
         state.running = true;
         0
     });
@@ -612,7 +621,7 @@ mod tests {
     #[test]
     fn version_returns_abi_version() {
         let _g = TEST_LOCK.lock().unwrap();
-        assert_eq!(nyrqis_compositor_version(), 0x0000_0200);
+        assert_eq!(nyrqis_compositor_version(), 0x0000_0300);
     }
 
     #[test]

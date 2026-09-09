@@ -42,6 +42,20 @@ class SMARTAttribute:
             return 100.0
         return (self.value / 100) * 100
 
+    @property
+    def status(self) -> str:
+        """OK / WARN / FAIL based on value vs threshold."""
+        if self.failed or (self.threshold and self.value <= self.threshold):
+            return "FAIL"
+        if self.threshold and self.value <= self.threshold * 1.2:
+            return "WARN"
+        return "OK"
+
+    @property
+    def bar(self) -> str:
+        filled = int(max(0, min(100, self.health_pct)) / 5)
+        return "█" * filled + "░" * (20 - filled)
+
 
 @dataclass
 class TemperatureRecord:
@@ -78,16 +92,45 @@ class DiskHealth:
     uncorrectable_errors: int = 0
     reallocated_sectors: int = 0
     pending_sectors: int = 0
+    # Spec-API aliases/fields
+    health_score: float = 0.0
+    wear_level_pct: float = 0.0
+    benchmark: Optional["BenchmarkResult"] = None
+
+    def __post_init__(self):
+        if not self.health_score:
+            self.health_score = self.health_percent
+        if not self.wear_level_pct:
+            self.wear_level_pct = self.percentage_used
 
     @property
-    def health_status(self) -> str:
+    def attributes(self) -> List[SMARTAttribute]:
+        """Alias for smart_attributes (spec API)."""
+        return self.smart_attributes
+
+    @attributes.setter
+    def attributes(self, value: List[SMARTAttribute]) -> None:
+        self.smart_attributes = value
+
+    @property
+    def wear_bar(self) -> str:
+        filled = int(max(0, min(100, self.wear_level_pct)) / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def lifespan_pct(self) -> float:
+        return max(0.0, 100.0 - self.wear_level_pct)
+
+    @property
+    def health_status(self):
+        """HealthStatus enum member (spec API)."""
         if self.health_percent > 90:
-            return "🟢 Excellent"
+            return HealthStatus.EXCELLENT
         elif self.health_percent > 70:
-            return "🟡 Good"
+            return HealthStatus.GOOD
         elif self.health_percent > 50:
-            return "🟠 Fair"
-        return "🔴 Poor"
+            return HealthStatus.FAIR
+        return HealthStatus.POOR
 
     @property
     def temp_status(self) -> str:
@@ -158,7 +201,19 @@ class DiskHealthMonitor:
         self.poll_interval_s: int = 30
         self.temp_warning_c: float = 55.0
         self.temp_critical_c: float = 70.0
+        # Spec-API state
+        self._view_mode: str = "overview"
+        self._selected_disk: int = 0
         self._create_sample_data()
+        # Attach sample benchmarks
+        for disk in self.disks:
+            disk.benchmark = BenchmarkResult(
+                disk_name=disk.device,
+                read_speed_mbps=3500.0 if disk.disk_type == DiskType.NVME else 550.0,
+                write_speed_mbps=3000.0 if disk.disk_type == DiskType.NVME else 520.0,
+                random_4k_iops=90000.0 if disk.disk_type == DiskType.NVME else 95000.0,
+                latency_ms=0.03 if disk.disk_type == DiskType.NVME else 0.4,
+            )
 
     def _create_sample_data(self):
         now = time.time()
@@ -263,6 +318,96 @@ class DiskHealthMonitor:
             "alerts": len(self.alerts),
         }
 
+    # ─── Spec API (test_network_disk_scheduler) ───────────────────
+    @property
+    def view_mode(self) -> str:
+        return self._view_mode
+
+    @view_mode.setter
+    def view_mode(self, value: str) -> None:
+        self._view_mode = value
+
+    @property
+    def selected_disk(self) -> int:
+        return self._selected_disk
+
+    @property
+    def total_alerts(self) -> int:
+        return len(self.alerts)
+
+    def set_view(self, mode: str) -> None:
+        self._view_mode = mode
+
+    def select_disk_down(self) -> int:
+        if self._selected_disk < len(self.disks) - 1:
+            self._selected_disk += 1
+        return self._selected_disk
+
+    def select_disk_up(self) -> int:
+        if self._selected_disk > 0:
+            self._selected_disk -= 1
+        return self._selected_disk
+
+    def handle_key(self, key: str) -> str:
+        if key == "Enter":
+            self._view_mode = "smart"
+            return "smart"
+        if key == "Escape":
+            self._view_mode = "overview"
+            return "overview"
+        return ""
+
+    def _selected(self) -> DiskHealth:
+        if 0 <= self._selected_disk < len(self.disks):
+            return self.disks[self._selected_disk]
+        return self.disks[0] if self.disks else None
+
+    def render_overview(self) -> List[str]:
+        lines = ["DISK HEALTH — Overview", "=" * 50]
+        for i, d in enumerate(self.disks):
+            marker = ">" if i == self._selected_disk else " "
+            lines.append(f" {marker}{d.device:<16} {d.model:<26} {d.health_bar} {d.health_percent}%")
+        lines.append("")
+        lines.append(f"  Capacity: {self.get_total_capacity() / 1000:.1f} TB  "
+                     f"Alerts: {len(self.alerts)}")
+        return lines
+
+    def render_smart(self) -> List[str]:
+        disk = self._selected()
+        lines = [f"SMART — {disk.device} ({disk.model})", "=" * 50]
+        for a in disk.attributes:
+            lines.append(f"  {a.id:>4} {a.name:<32} {a.value:>4} {a.bar} {a.status}")
+        return lines
+
+    def render_benchmark(self) -> List[str]:
+        disk = self._selected()
+        lines = [f"BENCHMARK — {disk.device}", "=" * 50]
+        bm = disk.benchmark
+        if bm:
+            lines.append(f"  Read:  {bm.read_speed_str}")
+            lines.append(f"  Write: {bm.write_speed_str}")
+            lines.append(f"  4K IOPS: {bm.random_4k_iops:.0f}  Latency: {bm.latency_ms:.2f} ms")
+        else:
+            lines.append("  No benchmark data")
+        return lines
+
+    def render_temperature(self) -> List[str]:
+        disk = self._selected()
+        lines = [f"TEMPERATURE — {disk.device}", "=" * 50]
+        for rec in disk.temperature_history:
+            ts = time.strftime("%m-%d %H:%M", time.localtime(rec.timestamp))
+            lines.append(f"  {ts}  {rec.temperature_c:5.1f} °C")
+        return lines
+
+    def render_alerts(self) -> List[str]:
+        lines = ["ALERTS", "=" * 50]
+        if not self.alerts:
+            lines.append("  No alerts")
+        for a in self.alerts:
+            lines.append(f"  {a.severity_icon} {a.device}: {a.temperature_c:.1f} °C "
+                         f"(threshold {a.threshold:.0f})")
+        return lines
+
 
 @dataclass
 class TemperatureReading:
@@ -270,7 +415,32 @@ class TemperatureReading:
     temperature_c: float = 0.0
     disk: str = ""
 
-BenchmarkResult = SMARTAttribute
+
+@dataclass
+class BenchmarkResult:
+    disk_name: str = ""
+    read_speed_mbps: float = 0.0
+    write_speed_mbps: float = 0.0
+    random_4k_iops: float = 0.0
+    latency_ms: float = 0.0
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+    @property
+    def read_speed_str(self) -> str:
+        if self.read_speed_mbps >= 1000:
+            return f"{self.read_speed_mbps / 1000:.1f} GB/s"
+        return f"{self.read_speed_mbps:.0f} MB/s"
+
+    @property
+    def write_speed_str(self) -> str:
+        if self.write_speed_mbps >= 1000:
+            return f"{self.write_speed_mbps / 1000:.1f} GB/s"
+        return f"{self.write_speed_mbps:.0f} MB/s"
+
 
 class AlertSeverity(Enum):
     INFO = "info"
@@ -297,10 +467,15 @@ class DiskAlert:
 
 
 from enum import Enum as _HealthStatus
-class HealthStatus(_HealthStatus):
-    HEALTHY = "healthy"
-    WARNING = "warning"
-    CRITICAL = "critical"
-    FAILED = "failed"
-    UNKNOWN = "unknown"
-    DEGRADED = "degraded"
+class HealthStatus(str, _HealthStatus):
+    """Health status; str-valued so emoji containment checks work."""
+    EXCELLENT = "🟢 Excellent"
+    GOOD = "🟡 Good"
+    FAIR = "🟠 Fair"
+    POOR = "🔴 Poor"
+    HEALTHY = "🟢 healthy"
+    WARNING = "🟡 warning"
+    CRITICAL = "🟠 critical"
+    FAILED = "🔴 failed"
+    UNKNOWN = "❓ unknown"
+    DEGRADED = "🟠 degraded"

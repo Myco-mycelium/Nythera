@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ABI_VERSION: int = 0x0000_0200  # 0.2.0 — wire-format event loop added
+ABI_VERSION: int = 0x0000_0300  # 0.3.0 — wl_shm pool/buffer objects in the wire loop
 
 # Input event types (mirrors the Rust enum)
 INPUT_KEY_PRESS: int = 1

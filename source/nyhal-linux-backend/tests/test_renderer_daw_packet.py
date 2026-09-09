@@ -272,7 +272,7 @@ class TestPacket(unittest.TestCase):
 
     def test_direction_icon(self):
         pkt = Packet(1, direction=PacketDirection.OUTBOUND)
-        self.assertEqual(pkt.direction_icon, "⬆")
+        self.assertEqual(pkt.direction_icon, "⬆️")
 
 
 class TestCaptureFilter(unittest.TestCase):

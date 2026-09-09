@@ -471,15 +471,32 @@ class DatabaseClient:
                 Column("username", "varchar(64)", False),
                 Column("email", "varchar(255)", False),
             ], row_count=125000, size_bytes=15360000),
+            Table("sessions", columns=[
+                Column("id", "bigint", False, True),
+                Column("user_id", "bigint", False, False,
+                       foreign_key="users.id"),
+                Column("token", "varchar(128)", False),
+            ], row_count=450000, size_bytes=46080000),
         ]
         self.saved_queries = [
             SavedQuery(name="Active Users", query="SELECT id, username FROM users LIMIT 100;"),
         ]
 
     def execute_query(self, query: str) -> QueryResult:
-        result = QueryResult(query=query, status=QueryStatus.SUCCESS, row_count=random.randint(1, 50))
-        result.columns = ["id", "value"]
-        result.rows = [{"id": i, "value": i * 10} for i in range(result.row_count)]
+        q = (query or "").strip().upper()
+        if q.startswith("SELECT") or q.startswith("WITH") or q.startswith("SHOW") or q.startswith("EXPLAIN"):
+            # SELECT-style query: return generated sample rows.
+            result = QueryResult(query=query, status=QueryStatus.SUCCESS,
+                                 row_count=random.randint(1, 50))
+            result.columns = ["id", "value"]
+            result.rows = [{"id": i, "value": i * 10}
+                           for i in range(result.row_count)]
+        else:
+            # DML/DDL: count affected rows (mock — one row per statement).
+            result = QueryResult(query=query, status=QueryStatus.SUCCESS,
+                                 row_count=0)
+            result.affected_rows = 1
+        result.execution_time_ms = random.uniform(0.1, 5.0)
         self.query_result = result
         self.query_history.append(result)
         return result
@@ -489,8 +506,75 @@ class DatabaseClient:
             return [t for t in self.tables if t.name == table_name]
         return self.tables
 
+    def get_foreign_keys(self, table_name: str) -> List[Tuple[str, str, str]]:
+        """Return [(column, ref_table, ref_column), ...] for a table."""
+        fks: List[Tuple[str, str, str]] = []
+        for t in self.tables:
+            if t.name != table_name:
+                continue
+            for c in t.columns:
+                if c.is_foreign_key or c.foreign_key:
+                    ref_table = c.references_table
+                    ref_column = c.references_column
+                    if c.foreign_key and not ref_table:
+                        parts = c.foreign_key.split(".")
+                        if len(parts) == 2:
+                            ref_table, ref_column = parts
+                    fks.append((c.name, ref_table, ref_column))
+        return fks
+
+    def get_table_stats(self) -> Dict[str, Any]:
+        """Summary stats across the known tables."""
+        return {
+            "tables": len(self.tables),
+            "total_rows": sum(t.row_count for t in self.tables),
+            "total_size_bytes": sum(t.size_bytes for t in self.tables),
+        }
+
     def export_data(self, format_type: ExportFormat, data: List[Dict], filename: str = "") -> str:
-        return f"[Export as {format_type.value}]"
+        fmt = format_type.value if isinstance(format_type, ExportFormat) else str(format_type)
+        if not data:
+            return ""
+        headers = list(data[0].keys())
+        if fmt == "csv":
+            lines = [",".join(headers)]
+            for row in data:
+                lines.append(",".join(
+                    json.dumps(v) if isinstance(v, str) and ("," in v or '"' in v or "\\n" in v)
+                    else str(v) for v in (row.get(h) for h in headers)))
+            return "\\n".join(lines)
+        if fmt == "json":
+            return json.dumps(data, indent=2)
+        if fmt == "markdown":
+            lines = ["| " + " | ".join(headers) + " |",
+                     "| " + " | ".join("---" for _ in headers) + " |"]
+            for row in data:
+                lines.append("| " + " | ".join(str(row.get(h)) for h in headers) + " |")
+            return "\\n".join(lines)
+        if fmt == "sql":
+            table = filename or "exported_table"
+            lines = []
+            for row in data:
+                cols = ", ".join(headers)
+                vals = ", ".join(
+                    repr(v) if not isinstance(v, str) else "'" + v.replace("'", "''") + "'"
+                    for v in (row.get(h) for h in headers))
+                lines.append(f"INSERT INTO {table} ({cols}) VALUES ({vals});")
+            return "\\n".join(lines)
+        if fmt == "xml":
+            lines = ["<?xml version=\"1.0\"?>", "<rows>"]
+            for row in data:
+                lines.append("  <row>")
+                for h in headers:
+                    lines.append(f"    <{h}>{row.get(h)}</{h}>")
+                lines.append("  </row>")
+            lines.append("</rows>")
+            return "\\n".join(lines)
+        # excel and unknown formats: TSV fallback (excel-compatible)
+        lines = ["\\t".join(headers)]
+        for row in data:
+            lines.append("\\t".join(str(row.get(h)) for h in headers))
+        return "\\n".join(lines)
 
     def save_query(self, name: str, query: str, **kwargs) -> SavedQuery:
         sq = SavedQuery(name=name, query=query, **kwargs)

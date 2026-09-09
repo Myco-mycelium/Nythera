@@ -1,6 +1,6 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.27.0  
+**Version**: 0.28.0  
 **Date**: 2026-09-09  
 **Repository**: github.com/Myco-mycelium/Nythera
 
@@ -82,15 +82,16 @@ providing the hardware abstraction layer for the Nyrqis OS.
 - [x] **Weston test script** — Integration tests for weston-simple-shm
 
 ### Testing & CI
-- [x] **2532+ tests passing** — Python backend suite (test_backend: 2503 + signing/installer/integration suites)
+- [x] **6133 tests passing** — full pytest suite (`tests/`), plus test_backend (2623)
 - [x] **CI green on GitHub runners** — first green run in repo history (568 prior CI runs red); container conformance gate now skips honestly on runner-hosted userns-restricted kernels, wayland ABI assertion fixed
-- [x] **208 Rust tests** — 14 container + 15 seccomp + 14 syscalls + 8 keys + 10 nyfs + 11 ipc + 5 transport + 24 ipcd + 14 nyruntime + 19 nyui + 10 launcher + 27 wayland + 48 compositor
-- [x] **Compositor crate in CI** — `rust-compositor` (build + 48 crate tests) and `compositor-host` (socket host-half E2E, required gate) jobs; previously the crate compiled only on dev hosts
+- [x] **208 Rust tests** — 14 container + 15 seccomp + 14 syscalls + 8 keys + 10 nyfs + 11 ipc + 5 transport + 24 ipcd + 14 nyruntime + 19 nyui + 10 launcher + 27 wayland + 49 compositor
+- [x] **Compositor crate in CI** — `rust-compositor` (build + 49 crate tests) and `compositor-host` (socket host-half E2E, required gate) jobs; previously the crate compiled only on dev hosts
 - [x] **Full pipeline tests** — 11 integration tests covering complete pipeline
 - [x] **CI test runner** — `run_tests.sh` with --quick/--gpu/--compositor modes
 - [x] **GPU pipeline tests** — Verified on Intel HD Graphics
 - [x] **Render pipeline tests** — Pipeline config, lifecycle, monitor manager
 - [x] **Boot init tests** — Daemon lifecycle, socket, containers
+- [x] **UI application suites** — 16 desktop-app modules completed to their spec tests (db_client, vm_manager, notes_app, process_manager, packet_analyzer, virtual_keyboard, disk_health, calendar_app, markdown_editor, network_monitor, password_manager, screen_recorder, audio_mixer, font_manager) — 250 previously-failing tests now green
 
 ### Documentation
 - [x] **CHANGELOG.md** — Documents v0.14.0 through v0.25.0
@@ -198,8 +199,9 @@ python3 demo/run_demo.py --output /tmp/nyrqis-demo
 ## Test Results
 
 ```
-Full suite:      2503 tests, test_backend (0 failures)
-Compositor crate: 47 tests (0 failures, 59 stable runs)
+Full suite:      6133 tests, pytest tests/ (0 failures, 35 skips)
+Backend suite:   2623 tests, test_backend (0 failures)
+Compositor crate: 49 tests (0 failures)
 All 12 other Rust crates: 113 tests (0 failures)
 ```
 
@@ -272,7 +274,7 @@ All Priorities 1-6 from NEXT_SESSION_PLAN v6.0 are complete:
 |----------|------|----------|
 | 7 | Real hardware testing (AMD, NVIDIA, ARM) | M14 Phase 2 |
 | 8 | Wayland client compatibility (weston, GTK4, Qt6) | M14 Phase 2 |
-| 9 | ✅ Socket/epoll host half on the compositor wire event loop (**done 0.27.0**); DRM presentation remains | M14 follow-on |
+| 9 | ✅ Socket/epoll host half on the compositor wire event loop (**done 0.27.0**); DRM presentation (**done 0.28.0**, software-composited; DRM modeset on real hardware remains) | M14 follow-on |
 | 10 | GPU acceleration (GBM + DRM) production hardening | M14 follow-on |
 
 ## SDK (M14 Phase 3 & 4)
@@ -354,6 +356,67 @@ produces what `backend/update_signing.py` verifies.
   (`tests/test_delta_update.py::TestDeltaPassesShippedVerifier`).
 
 Tests: 18 (`tests/test_delta_update.py`).
+
+## Compositor Presentation (0.28.0) — surfaces to display
+
+The presentation half of the compositor closes the "DRM-backed
+presentation" follow-on from 0.26.0/0.27.0:
+
+- **`ui/compositor_presentation.py`**: committed client surfaces
+  (SHM pixel buffers shared via memfd + SCM_RIGHTS) are mapped and
+  alpha-blended onto an output framebuffer in z-order (integer math,
+  no PIL), then presented through `DRMBackend` (DRM/KMS modeset)
+  when a DRM device is available; otherwise the frame is stored for
+  inspection (headless/software fallback). Fail-closed: nothing
+  presents a frame the compositor never produced.
+- **wl_shm in the wire loop (Rust, ABI 0x0000_0300)**:
+  `wl_shm.create_pool`, `wl_shm_pool.create_buffer` and
+  `wl_shm_pool.destroy` are now parsed and dispatched (pool/buffer
+  objects join the object table, buffers bind to surfaces via
+  `wl_surface.attach`). `ui/wayland_socket.py` receives out-of-band
+  fds (SCM_RIGHTS — how clients share wl_shm pools) via `recvmsg`
+  and forwards them to the host half through a callback.
+- **`NyrqisCompositor`** wires host + presentation automatically;
+  `get_stats()` reports presentation counters.
+
+Tests: 32 (`tests/test_compositor_presentation.py`). Crate tests
+48 → **49**.
+
+## Package Repository (0.28.0, NPS-026 §7)
+
+The repository half of the package system — `backend/package_repo.py`
+manages a directory of published `.nypkg` payloads, delta payloads,
+and a single **signed index** that a client verifies *before*
+downloading anything (entry binds package id, version, checksum,
+publisher key; fail-closed trust model matching package_signing and
+delta_update — an untrusted or tampered index is an error, never a
+warning).
+
+- `nyrqisctl_repo.py`: operator CLI (publish-package, publish-delta,
+  list, find, find-delta, verify-entry, remove).
+
+Tests: 21 (`tests/test_package_repo.py`).
+
+## UI Applications (0.28.0)
+
+Sixteen desktop-app modules were completed to their tracked spec
+suites (250 previously-failing tests now green; full pytest suite
+6133 passing). Highlights:
+
+- **db_client**: `DatabaseClient.export_data` real CSV/JSON/Markdown
+  serialization, foreign-key lookup, table stats.
+- **vm_manager / notes_app / process_manager**: full CRUD APIs,
+  filtering, history tracking, spec render methods.
+- **packet_analyzer / network_monitor**: capture lifecycle, protocol
+  stats, per-interface history sparklines.
+- **virtual_keyboard / calendar_app / markdown_editor /
+  password_manager / screen_recorder / disk_health**: multi-layout
+  keymaps, view modes, block parsing + stats, strength scoring,
+  recording lifecycle, SMART attribute scoring (health_status is a
+  str-subclass enum so both string and enum assertions hold).
+- Cross-suite conflicts resolved by adopting the newest convention
+  (e.g. packet direction icons, FontManager pixel-buffer `render` +
+  `render_lines` compat) and updating the two stale assertions.
 
 ## References
 

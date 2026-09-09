@@ -134,6 +134,7 @@ class WaylandSocketServer:
         # raw client bytes are also fed to the Rust wire event loop and
         # its response events are written back to the socket.
         self._on_data: Optional[Callable[[int, bytes], None]] = None
+        self._on_fd: Optional[Callable[[int, int], None]] = None
         self._on_disconnect: Optional[Callable[[int], None]] = None
     
     def set_surface_callback(self, callback: Callable):
@@ -153,6 +154,11 @@ class WaylandSocketServer:
         the protocol-state response stream.
         """
         self._on_data = callback
+    
+    def set_fd_callback(self, callback: Callable[[int, int], None]):
+        """Set callback for out-of-band fds (SCM_RIGHTS):
+        callback(client_id, fd)."""
+        self._on_fd = callback
     
     def set_disconnect_callback(self, callback: Callable[[int], None]):
         """Set callback for client disconnects: callback(client_id)."""
@@ -292,12 +298,39 @@ class WaylandSocketServer:
         ).start()
     
     def _read_client_loop(self, client: WaylandClient):
-        """Read and dispatch messages from a client."""
+        """Read and dispatch messages from a client.
+
+        Uses ``recvmsg`` so out-of-band file descriptors (SCM_RIGHTS —
+        how Wayland clients share wl_shm pools) are received alongside
+        the bytes they were sent with.
+        """
+        import socket as _socket
+
         while self._running and client.active:
             try:
-                data = client.fd.recv(4096)
-                if not data:
+                data, ancdata, _flags, _addr = client.fd.recvmsg(4096)
+                # A zero-byte read with ancillary fds is NOT a
+                # disconnect — the fd arrived detached from payload.
+                if not data and not ancdata:
                     break
+
+                # Deliver any received fds to the wire-loop host half
+                # before the bytes they belong to.
+                for level, ctype, fd_data in ancdata:
+                    if level == _socket.SOL_SOCKET and ctype == _socket.SCM_RIGHTS:
+                        for i in range(0, len(fd_data) - len(fd_data) % 4, 4):
+                            fd = struct.unpack("I", fd_data[i:i+4])[0]
+                            if self._on_fd is not None:
+                                try:
+                                    self._on_fd(client.id, fd)
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "fd hook failed for client %d", client.id
+                                    )
+
+                if not data:
+                    continue
+
                 # When the Rust wire event loop is wired it OWNS
                 # protocol dispatch (the host writes its response
                 # events back to this socket); the legacy Python

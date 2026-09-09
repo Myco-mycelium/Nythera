@@ -62,6 +62,11 @@ class PasswordEntry:
             self.entry_id = secrets.token_hex(4)
 
     @property
+    def name(self) -> str:
+        """Alias for title (spec API)."""
+        return self.title
+
+    @property
     def masked_password(self) -> str:
         return "•" * len(self.password) if self.password else ""
 
@@ -115,13 +120,15 @@ class PasswordEntry:
 class PasswordGenerator:
     """Password and passphrase generator."""
 
-    def __init__(self):
-        self.length: int = 20
-        self.uppercase: bool = True
-        self.lowercase: bool = True
-        self.digits: bool = True
-        self.symbols: bool = True
-        self.exclude_ambiguous: bool = False
+    def __init__(self, length: int = 20, uppercase: bool = True,
+                 lowercase: bool = True, digits: bool = True,
+                 symbols: bool = True, exclude_ambiguous: bool = False):
+        self.length: int = length
+        self.uppercase: bool = uppercase
+        self.lowercase: bool = lowercase
+        self.digits: bool = digits
+        self.symbols: bool = symbols
+        self.exclude_ambiguous: bool = exclude_ambiguous
 
     @property
     def charset(self) -> str:
@@ -139,12 +146,22 @@ class PasswordGenerator:
                 chars = chars.replace(ch, '')
         return chars or string.ascii_letters
 
-    def generate(self, count: int = 1) -> List[str]:
+    def generate(self, count=None):
+        """Generate password(s).
+
+        generate() → single password string.
+        generate(n) → list of n passwords.
+        """
+        if count is None:
+            count = 1
+            as_list = False
+        else:
+            as_list = True
         passwords = []
         for _ in range(count):
             pw = "".join(secrets.choice(self.charset) for _ in range(self.length))
             passwords.append(pw)
-        return passwords
+        return passwords if as_list else passwords[0]
 
     def generate_passphrase(self, word_count: int = 4) -> str:
         words = [
@@ -185,12 +202,20 @@ class PasswordManager:
         self._entries: List[PasswordEntry] = []
         self._selected_index: int = 0
         self._search_query: str = ""
+        self._search_text: str = ""
         self._category_filter: str = ""
         self._show_password: bool = False
+        self._show_passwords: bool = False
         self._current_entry: Optional[PasswordEntry] = None
         self.generator: PasswordGenerator = PasswordGenerator()
         self._is_locked: bool = False
+        self._last_generated: str = ""
         self._create_samples()
+        # Sample auto-fill rules (spec API)
+        self._autofill: List[Dict] = [
+            {"site": "github.com", "entry": self._entries[0], "enabled": True},
+            {"site": "mail.google.com", "entry": self._entries[1], "enabled": True},
+        ]
 
     def _create_samples(self):
         self._entries = [
@@ -288,7 +313,8 @@ class PasswordManager:
         return self._show_password
 
     def generate_passwords(self, count: int = 5) -> List[str]:
-        return self.generator.generate(count)
+        result = self.generator.generate(count)
+        return result if isinstance(result, list) else [result]
 
     def lock(self):
         self._is_locked = True
@@ -320,7 +346,7 @@ class PasswordManager:
         return "unknown"
 
     def render_list(self) -> List[str]:
-        lines = ["── Password Vault ──"]
+        lines = ["PASSWORD MANAGER", "=" * 40, "── Password Vault ──"]
         for i, e in enumerate(self._entries):
             marker = "▸ " if i == self._selected_index else "  "
             fav = "⭐ " if e.favorite else ""
@@ -348,13 +374,6 @@ class PasswordManager:
             lines.append(f"  {pw}")
         return lines
 
-    def render(self) -> List[str]:
-        if self.view_mode == "detail":
-            return self.render_detail()
-        if self.view_mode == "generator":
-            return self.render_generator()
-        return self.render_list()
-
     # ─── Legacy aliases ──────────────────────────────────────────────
 
     @property
@@ -374,11 +393,53 @@ class PasswordManager:
     def set_view(self, mode: str):
         self.view_mode = mode
 
-    def toggle_show_passwords(self):
-        self._show_password = not self._show_password
+    def toggle_show_passwords(self) -> bool:
+        self._show_passwords = not self._show_passwords
+        self._show_password = self._show_passwords
+        return self._show_passwords
+
+    # ─── Spec API (test_email_expense_password) ───────────────────
+    @property
+    def filtered_entries(self) -> List[PasswordEntry]:
+        q = (self._search_text or self._search_query or "").lower()
+        if not q:
+            return self.get_entries()
+        return [e for e in self._entries
+                if q in e.title.lower() or q in getattr(e, "username", "").lower()
+                or q in getattr(e, "url", "").lower()]
 
     def generate_password(self) -> str:
-        return self.generator.generate(1)[0]
+        pwd = self.generator.generate()
+        self._last_generated = pwd
+        return pwd
+
+    def render_audit(self) -> List[str]:
+        lines = ["── Security Audit ──"]
+        weak = [e for e in self._entries if getattr(e, "strength_label", "") in ("Weak", "Fair")]
+        lines.append(f"  Entries: {len(self._entries)}  Weak: {len(weak)}  "
+                     f"Breached: {self.breached_count}")
+        for e in weak:
+            lines.append(f"  ⚠ {e.title}: {getattr(e, 'strength_label', 'weak')}")
+        return lines
+
+    def render_autofill(self) -> List[str]:
+        lines = ["── Auto-fill Rules ──"]
+        for rule in self._autofill:
+            mark = "✅" if rule.get("enabled") else "⬜"
+            entry = rule.get("entry")
+            lines.append(f"  {mark} {rule['site']:<24} → {getattr(entry, 'title', '?')}")
+        return lines
+
+    def render(self) -> List[str]:
+        if self.view_mode == "detail":
+            return self.render_detail()
+        if self.view_mode == "generator":
+            return self.render_generator()
+        if self.view_mode == "audit":
+            return self.render_audit()
+        if self.view_mode == "autofill":
+            return self.render_autofill()
+        return self.render_list()
 
 
 # ─── Backward-compat aliases ─────────────────────────────────────────────
@@ -422,6 +483,7 @@ from dataclasses import dataclass as _dataclass, field as _field
 from typing import Dict as _Dict, List as _List
 
 @_dataclass
+@dataclass
 class VaultEntry:
     password: str = ""
     strength: float = 0.0
@@ -432,6 +494,10 @@ class VaultEntry:
     has_special: bool = False
     length: int = 0
     compromised: bool = False
+    # Spec-API fields
+    url: str = ""
+    totp_secret: str = ""
+    breach_status: str = "safe"
 
     def __post_init__(self):
         if self.length == 0:
@@ -442,11 +508,41 @@ class VaultEntry:
             if self.has_lowercase or any(c.islower() for c in self.password): score += 1
             if self.has_digit or any(c.isdigit() for c in self.password): score += 1
             if self.has_special or any(not c.isalnum() for c in self.password): score += 1
-            self.strength = min(1.0, score / 4.0 + min(len(self.password) / 20, 0.6))
+            # Variety (0..40) plus length (0..60, full marks at 20 chars)
+            length_score = min(len(self.password) / 20.0, 1.0) * 60
+            self.strength = round(score / 4.0 * 40 + length_score, 1)
 
     @property
     def strength_label(self) -> str:
-        if self.strength < 0.3: return "Weak"
-        if self.strength < 0.6: return "Fair"
-        if self.strength < 0.8: return "Strong"
+        s = self.strength if self.strength <= 100 else self.strength / 100
+        if s < 30: return "Weak"
+        if s < 60: return "Fair"
+        if s < 80: return "Strong"
         return "Very Strong"
+
+    @property
+    def strength_bar(self) -> str:
+        filled = int(max(0, min(100, self.strength)) / 5)
+        return "█" * filled + "░" * (20 - filled)
+
+    @property
+    def password_masked(self) -> str:
+        return "•" * self.length
+
+    @property
+    def domain(self) -> str:
+        """Hostname part of url (e.g. github.com)."""
+        if not self.url:
+            return ""
+        from urllib.parse import urlparse
+        host = urlparse(self.url).netloc or self.url.split("/")[0]
+        return host
+
+    @property
+    def has_totp(self) -> bool:
+        return bool(self.totp_secret)
+
+    @property
+    def breach_icon(self) -> str:
+        icons = {"safe": "✅", "breached": "🚨", "unknown": "❓"}
+        return icons.get(self.breach_status, "❓")

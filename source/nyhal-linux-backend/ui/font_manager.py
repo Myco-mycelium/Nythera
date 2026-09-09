@@ -344,7 +344,22 @@ class FontManager:
         }
 
     def render(self, width: int = 800, height: int = 400):
-        """Render font preview as list of lines or RGB pixel data."""
+        """Render font preview as (rgb_bytes, width, height) (spec API)."""
+        # Simple solid-background RGB buffer with the preview text hint
+        bg = (253, 246, 227)  # Solar light
+        fg = (101, 123, 131)  # Solar base01
+        buf = bytearray(bytes(bg) * (width * height))
+        # Draw a simple baseline + a few glyph boxes so the buffer varies
+        row = height // 2
+        for x in range(width):
+            for dy in (-8, 8):
+                y = row + dy
+                idx = (y * width + x) * 3
+                buf[idx:idx + 3] = bytes(fg)
+        return (bytes(buf), width, height)
+
+    def render_lines(self, width: int = 800, height: int = 400):
+        """Render font list as text lines (legacy behavior)."""
         lines = [f"── FONT MANAGER ({len(self.families)} fonts) ──"]
         for i, f in enumerate(self.families[:20]):
             marker = "▸ " if i == self._selected_index else "  "

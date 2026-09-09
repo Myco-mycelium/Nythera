@@ -59,7 +59,16 @@ Nyforge (design) → .nstudio → Nyrqis (validate + load + run + render) → sh
 ### 📦 Deployment
 - Dockerfile + docker-compose.yml
 - GitHub Actions CI (generators + backend + Rust crates)
-- 1069 tests, all green
+- 1069 platform tests, all green
+
+### 🖥️ Linux Backend (source/nyhal-linux-backend)
+The OS backend is complete to its tracked spec suites:
+- **6133 pytest tests + 2623 backend-runner tests passing**, 208 Rust crate tests across 13 crates
+- Wayland compositor: wire-format event loop (Rust), socket host half, wl_shm pool/buffer objects, SCM_RIGHTS fd passing, and SHM-surface presentation (alpha-composited output, DRM/KMS present with headless fallback)
+- Package system: Ed25519 signing, delta update generation + verification, and a signed package repository with operator CLI (`nyrqisctl repo`)
+- 16 desktop applications completed to spec (db, VMs, notes, processes, packet/network analysis, keyboard, calendar, markdown, passwords, screen recorder, disk health, and more)
+
+See `source/nyhal-linux-backend/IMPLEMENTATION_STATUS.md` for the full status.
 
 ## Quick Start
 

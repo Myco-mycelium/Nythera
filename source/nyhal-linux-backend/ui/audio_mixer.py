@@ -64,6 +64,8 @@ class AudioDevice:
     @property
     def active(self) -> bool:
         return self.state == AudioDeviceState.ACTIVE
+
+    @property
     def volume_bar(self) -> str:
         filled = int(self.volume / 5)
         return "█" * filled + "░" * (20 - filled)
