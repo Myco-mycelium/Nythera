@@ -382,6 +382,18 @@ presentation" follow-on from 0.26.0/0.27.0:
 Tests: 32 (`tests/test_compositor_presentation.py`). Crate tests
 48 → **49**.
 
+**Hardware-verified (Intel dev host)**: `verify_presentation.py`
+(read-only DRM probe + real-SHM composite byte-check + DRM-path
+posture) passes on `/dev/dri/card1` — 2 CRTCs / 3 connectors / 3
+encoders discovered, connector 64 (CRTC 47) enumerated with 5 real
+modes, composite output byte-exact, and SETCRTC without DRM master
+refused by the kernel with honest software fallback. This verification
+exposed that `ui/drm_backend.py` previously spoke no real DRM UAPI
+(immutable ioctl buffers → EFAULT on every real host; a `fb_id=0`
+SETCRTC would disable scanout) — it now implements the real
+two-call query protocol, dumb-buffer ADDFB2 presentation, and correct
+ioctl numbers per `include/uapi/drm/drm_mode.h`.
+
 ## Package Repository (0.28.0, NPS-026 §7)
 
 The repository half of the package system — `backend/package_repo.py`

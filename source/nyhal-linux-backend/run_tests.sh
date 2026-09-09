@@ -108,6 +108,14 @@ elif [ "$GPU" = true ]; then
     run_test "Vulkan Hardware" "tests.test_gpu_pipeline.TestVulkanRealHardware"
     run_test "DRM Hardware" "tests.test_gpu_pipeline.TestDRMRealHardware"
     run_test "Compositor Hardware" "tests.test_gpu_pipeline.TestCompositorRealHardware"
+    if python3 verify_presentation.py >/dev/null 2>&1; then
+        echo "PASS: Compositor Presentation (hardware verification)"
+        TOTAL=$((TOTAL + 1))
+    else
+        echo "FAIL: Compositor Presentation (hardware verification)"
+        FAILED=$((FAILED + 1))
+        TOTAL=$((TOTAL + 1))
+    fi
 elif [ "$COMPOSITOR" = true ]; then
     echo "Running compositor tests..."
     echo ""
