@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-06
+2026-09-09
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -471,6 +471,44 @@ Two things now, not one:
   FrameRateMonitor, and PerformanceBudget; restore points
   (`restore.py`) for system snapshots.  46 new tests.  Suite 2619
   tests passing.
+
+  **2026-09-09: the compositor wire event loop gets its host half
+  (M14 follow-on, backend 0.27.0).**
+  `ui/compositor_host.py` bridges the socket transport
+  (`ui/wayland_socket.py`) to the Rust wire-format event loop
+  (`rust/compositor`, ABI 0.2.0) through the FFI loader: client bytes
+  are fed to the crate on message boundaries (partial messages
+  reassembled across `recv()` calls), the crate parses the protocol
+  and maintains the object table, and its response events are drained
+  back onto the socket. When wired, the wire loop owns dispatch (the
+  legacy Python dispatch double-responded and is skipped); without the
+  crate the Python path remains the fallback and the host fabricates
+  nothing (fail-closed). Two protocol-state fixes landed in the crate:
+  `nyrqis_compositor_start`/`stop` now reset the object table + queues
+  (a restart previously collided with stale object ids), and
+  `wl_display.sync` is served. `NyrqisCompositor` wires the bridge
+  automatically and reports host-half counters in `get_stats()`.
+  End-to-end verified over a real Unix domain socket: get_registry →
+  bind → create_surface → frame → commit returns 5 globals + a
+  frame-done stamp. Tests: `tests/test_compositor_host.py` (8). CI
+  gains `rust-compositor` (the crate had never been compiled in CI —
+  its 48 tests ran only on dev hosts) and the required
+  `compositor-host` gate.
+
+  **2026-09-09: delta update generation (NPS-026 §6 generation
+  half, backend 0.27.0).**
+  `backend/delta_update.py` produces what `backend/update_signing.py`
+  verifies: `diff_packages` diffs two payload directories into
+  deterministic add/modify/remove ops (`.nypkg` layout normalized),
+  `create_delta_update` emits a canonical-checksum document optionally
+  signed with Ed25519 (the same payload form the shipped verifier
+  checks), and `apply_delta_update` verifies the signature BEFORE any
+  filesystem mutation with a per-op path-traversal guard and a
+  fail-closed refusal of unsigned deltas when a trust store is
+  supplied. Cross-verified in both directions:
+  `TestDeltaPassesShippedVerifier` proves a generated delta passes
+  `UpdateVerifier.verify_delta_update` unmodified and a tampered op
+  list fails it. Tests: `tests/test_delta_update.py` (18).
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

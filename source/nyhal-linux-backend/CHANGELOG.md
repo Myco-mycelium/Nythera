@@ -5,6 +5,26 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-09-09
+
+### Added
+
+#### Compositor socket host half (M14 follow-on — the documented Priority 9 gap)
+- **`ui/compositor_host.py`** (`CompositorHost`): the host side of the Wayland wire event loop, closing the "socket/epoll host half stays on the host side" follow-on recorded since the 0.2.0 wire loop landed. The transport (`WaylandSocketServer`: accept/read/write over a real Unix domain socket) now feeds every client's bytes through the Rust crate's wire-format event loop (`compositor_codec.handle_client_data`) and drains the crate's response events (`next_event`) back onto the socket — protocol parsing, the object table, and surface dispatch all run in the crate; Python owns only the socket.
+- **Partial-message reassembly**: bytes are fed to the crate only on message boundaries (the host parses the 8-byte header's size field and holds back incomplete tails), so `recv()` fragmentation never reaches the parser as a truncated request.
+- **Single-dispatch ownership**: when the wire loop is wired, the legacy Python dispatch inside `WaylandSocketServer` is skipped — it previously ran in parallel and double-responded (its hand-built registry globals are not wire-correct). With no crate, the Python path remains the fallback (fail-closed; the host fabricates no events in stub mode).
+- **Session-scoped protocol state (Rust)**: `nyrqis_compositor_start`/`stop` now reset the event loop's object table and outbound queues. Previously the table persisted across sessions, so a compositor restart (or a second test) collided with stale object ids — a re-connecting client's `get_registry(new_id=2)` failed with "already in use". Also added `wl_display.sync` (opcode 0 → one-shot `wl_callback.done`), which every real client sends at startup. Crate tests 47 → **48**.
+- **Wired into `NyrqisCompositor`**: the integrated compositor starts a crate session and bridges the socket automatically (engine "rust"); `get_stats()` reports host-half counters (engine, bytes in/out, events drained, protocol errors). The crate cdylib ships prebuilt for dev hosts; the engine degrades honestly to "stub" when absent.
+- **New `tests/test_compositor_host.py`** (8 tests): full client handshake over a real socket (get_registry → bind → create_surface → frame → commit ⇒ 5 globals + frame-done on the wire), partial-message reassembly across sends, per-client isolation, disconnect cleanup, stub-mode fail-closed behavior, flush retention on writer failure. New CI job `compositor-host` (required gate) builds the crate and runs the suite; new CI job `rust-compositor` builds + unit-tests the crate, which **CI had never compiled** — the crate's 48 tests ran only on dev hosts until now.
+
+#### Delta update generation (M14 Priority 9 — NPS-026 §6 generation half)
+- **`backend/delta_update.py`**: `update_signing.py` verified full/delta/rollback updates but nothing produced them. New module: `diff_packages` (add/modify/remove ops between two payload directories, `.nypkg` layout normalized, deterministic order), `create_delta_update` (document with canonical checksum; optional Ed25519 signing with the same `package_id:version_from:version_to:delta:checksum` payload `UpdateVerifier._signature_payload` verifies), `delta_payload_bytes`/`save_delta_update`/`load_delta_update`, and `apply_delta_update` (signature verified BEFORE any filesystem mutation; path-traversal guard on every op; unsigned deltas refused when a trust store is supplied — fail-closed, no forgeable stubs).
+- **Cross-verified against the shipped verifier**: `tests/test_delta_update.py` (18 tests) includes `TestDeltaPassesShippedVerifier` — a generated delta passes `UpdateVerifier.verify_delta_update` unmodified, and a tampered op list fails it. The two halves of NPS-026 §6 now close on each other, not just on their own fixtures.
+
+### Changed
+
+- `run_tests.sh` `--compositor` and full modes now include `tests.test_compositor_host`.
+
 ## [0.26.0] - 2026-09-08
 
 ### Changed

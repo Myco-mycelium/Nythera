@@ -149,32 +149,46 @@ pub extern "C" fn nyrqis_compositor_version() -> u32 {
 
 /// Start the compositor event loop.
 ///
+/// A successful start begins a fresh protocol session: the wire event
+/// loop's object table and outbound queues are reset so a restart (or
+/// a re-connecting client) never collides with stale object ids.
 /// Returns 0 on success, -1 on failure.
 #[no_mangle]
 pub extern "C" fn nyrqis_compositor_start() -> c_int {
-    with_state(|state| {
+    let r = with_state(|state| {
         if state.running {
             set_last_error(state, "compositor already running");
             return -1;
         }
         state.running = true;
         0
-    })
+    });
+    if r == 0 {
+        crate::event_loop::reset_event_loop_state();
+    }
+    r
 }
 
 /// Stop the compositor event loop.
 ///
+/// A successful stop ends the protocol session: queued outbound events
+/// and the object table are dropped (a client re-connecting to a
+/// restarted compositor re-registers from scratch).
 /// Returns 0 on success, -1 on failure.
 #[no_mangle]
 pub extern "C" fn nyrqis_compositor_stop() -> c_int {
-    with_state(|state| {
+    let r = with_state(|state| {
         if !state.running {
             set_last_error(state, "compositor not running");
             return -1;
         }
         state.running = false;
         0
-    })
+    });
+    if r == 0 {
+        crate::event_loop::reset_event_loop_state();
+    }
+    r
 }
 
 /// Check if the compositor is running.
@@ -579,6 +593,9 @@ pub(crate) fn reset_state() {
         last_error: String::new(),
         running: false,
     });
+    // Also reset the wire-format event loop's object table + outbound
+    // queues so tests start from a clean protocol state.
+    crate::event_loop::reset_event_loop_state();
 }
 
 #[cfg(test)]

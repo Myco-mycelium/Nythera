@@ -286,6 +286,7 @@ fn encode_u32_arg(v: u32) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 const OPCODE_DISPLAY_GET_REGISTRY: u16 = 1;
+const OPCODE_DISPLAY_SYNC: u16 = 0;
 const OPCODE_REGISTRY_BIND: u16 = 0;
 const OPCODE_COMPOSITOR_CREATE_SURFACE: u16 = 0;
 const OPCODE_SURFACE_DESTROY: u16 = 0;
@@ -317,6 +318,28 @@ fn dispatch_request(
     let interface = state.objects[obj_idx].as_ref().unwrap().interface;
     let mut args = ArgReader::new(&req.payload);
     match (interface, req.opcode) {
+        (Interface::Display, OPCODE_DISPLAY_SYNC) => {
+            // arg: new_id for the wl_callback object. One-shot done
+            // event on the callback (payload: callback data u32 —
+            // the event carries no payload; the object id is the
+            // callback).
+            let new_id = match args.read_u32() {
+                Some(v) => v,
+                None => {
+                    set_loop_error(state, "protocol error: sync missing callback id");
+                    return false;
+                }
+            };
+            if !create_object(state, new_id, Interface::Callback, None) {
+                return false;
+            }
+            // wl_callback.done (opcode 0) with no payload; the callback
+            // object retires immediately (one-shot, event already
+            // queued) — mirrors the commit-path delivery.
+            queue_event(state, client_id, encode_event(new_id, 0, &[]));
+            retire_object(state, new_id);
+            true
+        }
         (Interface::Display, OPCODE_DISPLAY_GET_REGISTRY) => {
             // arg: new_id for the wl_registry object
             let new_id = match args.read_u32() {
@@ -567,6 +590,13 @@ fn queue_event(state: &mut EventLoopState, client_id: u32, event: Vec<u8>) {
     queue.push(event);
 }
 
+/// Retire an object by id (its slot becomes reusable).
+fn retire_object(state: &mut EventLoopState, object_id: u32) {
+    if let Some(idx) = find_object(state, object_id) {
+        state.objects[idx] = None;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FFI exports
 // ---------------------------------------------------------------------------
@@ -701,9 +731,13 @@ pub unsafe extern "C" fn nyrqis_compositor_event_loop_last_error(
     n as c_int
 }
 
-/// Test-only: drop all event-loop state (objects + queues).
-#[cfg(test)]
-fn reset_event_loop_state() {
+/// Drop all event-loop state (objects + queues).
+///
+/// Called by the crate-root `nyrqis_compositor_start` so every
+/// compositor session begins with a clean object table — otherwise a
+/// restart would collide with stale object ids (e.g. a re-connected
+/// client's get_registry(new_id=2) failing with "already in use").
+pub(crate) fn reset_event_loop_state() {
     let mut guard = EVENT_LOOP_STATE.lock().unwrap();
     *guard = None;
 }
@@ -908,6 +942,29 @@ mod tests {
         // The release event for the (unattached) buffer never fires;
         // no callbacks remain armed.
         assert!(events.iter().all(|e| ev_header(e).0 != 5));
+        assert_eq!(crate::nyrqis_compositor_stop(), 0);
+    }
+
+    #[test]
+    fn sync_delivers_done_event() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_state();
+        reset_event_loop_state();
+        assert_eq!(crate::nyrqis_compositor_start(), 0);
+        // wl_display.sync(new_id=7)
+        let req = enc_request(1, OPCODE_DISPLAY_SYNC, &enc_u32(7));
+        let n = unsafe {
+            nyrqis_compositor_handle_client_data(5, req.as_ptr(), req.len())
+        };
+        assert_eq!(n, req.len() as c_int);
+        let events = unsafe { drain_events(5) };
+        // Exactly one event: wl_callback.done on object 7.
+        assert_eq!(events.len(), 1);
+        let (object_id, opcode) = ev_header(&events[0]);
+        assert_eq!(object_id, 7);
+        assert_eq!(opcode, 0);
+        // The callback object retires after delivery (one-shot).
+        assert_eq!(nyrqis_compositor_object_count(), 1);
         assert_eq!(crate::nyrqis_compositor_stop(), 0);
     }
 

@@ -1,7 +1,7 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.26.0  
-**Date**: 2026-09-08  
+**Version**: 0.27.0  
+**Date**: 2026-09-09  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview
@@ -82,9 +82,10 @@ providing the hardware abstraction layer for the Nyrqis OS.
 - [x] **Weston test script** — Integration tests for weston-simple-shm
 
 ### Testing & CI
-- [x] **2514 tests passing** — Python backend suite (test_backend: 2503 + signing/installer/integration suites)
+- [x] **2532+ tests passing** — Python backend suite (test_backend: 2503 + signing/installer/integration suites)
 - [x] **CI green on GitHub runners** — first green run in repo history (568 prior CI runs red); container conformance gate now skips honestly on runner-hosted userns-restricted kernels, wayland ABI assertion fixed
-- [x] **160 Rust tests** — 14 container + 15 seccomp + 14 syscalls + 8 keys + 10 nyfs + 11 ipc + 5 transport + 24 ipcd + 14 nyruntime + 19 nyui + 10 launcher + 27 wayland + 47 compositor
+- [x] **208 Rust tests** — 14 container + 15 seccomp + 14 syscalls + 8 keys + 10 nyfs + 11 ipc + 5 transport + 24 ipcd + 14 nyruntime + 19 nyui + 10 launcher + 27 wayland + 48 compositor
+- [x] **Compositor crate in CI** — `rust-compositor` (build + 48 crate tests) and `compositor-host` (socket host-half E2E, required gate) jobs; previously the crate compiled only on dev hosts
 - [x] **Full pipeline tests** — 11 integration tests covering complete pipeline
 - [x] **CI test runner** — `run_tests.sh` with --quick/--gpu/--compositor modes
 - [x] **GPU pipeline tests** — Verified on Intel HD Graphics
@@ -271,7 +272,7 @@ All Priorities 1-6 from NEXT_SESSION_PLAN v6.0 are complete:
 |----------|------|----------|
 | 7 | Real hardware testing (AMD, NVIDIA, ARM) | M14 Phase 2 |
 | 8 | Wayland client compatibility (weston, GTK4, Qt6) | M14 Phase 2 |
-| 9 | Socket/epoll host half on the compositor wire event loop + DRM presentation | M14 follow-on |
+| 9 | ✅ Socket/epoll host half on the compositor wire event loop (**done 0.27.0**); DRM presentation remains | M14 follow-on |
 | 10 | GPU acceleration (GBM + DRM) production hardening | M14 follow-on |
 
 ## SDK (M14 Phase 3 & 4)
@@ -301,6 +302,58 @@ Real Wayland compositor in `ui/compositor_event_loop.py`:
 - Thread-safe client/surface tracking
 
 Tests: 8 tests (event loop, surfaces, outputs, client connections)
+
+## Compositor Socket Host Half (0.27.0)
+
+The "socket/epoll host half" follow-on from the 0.26.0 wire-format
+event loop is closed. `ui/compositor_host.py` (`CompositorHost`)
+bridges the transport (`ui/wayland_socket.py`) to the Rust wire event
+loop (`rust/compositor`, ABI 0.2.0) through `ui/compositor_codec.py`:
+
+- Client bytes are fed to the crate on message boundaries (partial
+  messages reassembled across `recv()` calls — never a truncated
+  request).
+- The crate parses the wire format, maintains the object table, and
+  dispatches into its surface state machine; its response events
+  (5 `wl_registry.global` advertisements, `wl_callback.done` on
+  commit, `wl_buffer.release`) are drained and written back to the
+  client socket.
+- When wired, the wire loop owns protocol dispatch (the legacy Python
+  dispatch is skipped — it double-responded). Without the crate the
+  Python path remains the fallback; the host fabricates nothing in
+  stub mode (fail-closed).
+- `nyrqis_compositor_start`/`stop` now reset the crate's protocol
+  state (previously a restart collided with stale object ids) and
+  `wl_display.sync` is served (one-shot `wl_callback.done`).
+- `NyrqisCompositor` wires this automatically; `get_stats()` carries
+  host-half counters (engine, bytes in/out, events drained, protocol
+  errors).
+
+Verified end-to-end over a real Unix domain socket: client handshake
+(get_registry → bind → create_surface → frame → commit) returns 5
+globals + a frame-done stamp. Tests: `tests/test_compositor_host.py`
+(8). CI: `rust-compositor` (crate build + tests) and `compositor-host`
+(required gate) — the crate had never been compiled in CI before.
+
+## Delta Update Generation (0.27.0, NPS-026 §6)
+
+The generation half of package updates: `backend/delta_update.py`
+produces what `backend/update_signing.py` verifies.
+
+- `diff_packages`: add/modify/remove ops between two payload
+  directories (deterministic order, `.nypkg` layout normalized,
+  manifest/integrity metadata excluded).
+- `create_delta_update`: canonical-checksum document, optionally
+  signed with Ed25519 using the same payload form the shipped
+  verifier checks.
+- `apply_delta_update`: signature verified BEFORE any filesystem
+  mutation; per-op path-traversal guard; unsigned deltas refused when
+  a trust store is supplied (fail-closed).
+- Cross-verified: a generated delta passes `UpdateVerifier
+  .verify_delta_update` unmodified; a tampered op list fails it
+  (`tests/test_delta_update.py::TestDeltaPassesShippedVerifier`).
+
+Tests: 18 (`tests/test_delta_update.py`).
 
 ## References
 

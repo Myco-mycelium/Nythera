@@ -483,6 +483,33 @@ jobs:
       - name: cdylib artifact present
         run: test -s target/release/libnyrqis_wayland.so
 
+  rust-compositor:
+    name: Rust compositor crate (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: source/nyhal-linux-backend/rust/compositor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: cargo test
+      - name: cdylib artifact present
+        run: test -s target/release/libnyrqis_compositor.so
+
+  compositor-host:
+    name: Compositor socket host half (required gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the compositor crate
+        working-directory: source/nyhal-linux-backend/rust/compositor
+        run: cargo build --release
+      - name: End-to-end socket handshake through the wire event loop
+        working-directory: source/nyhal-linux-backend
+        run: python3 -B -m unittest tests.test_compositor_host
+
   backend:
     name: Python backend tests
     runs-on: ubuntu-latest

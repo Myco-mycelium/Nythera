@@ -130,6 +130,11 @@ class WaylandSocketServer:
         self._on_surface_created: Optional[Callable] = None
         self._on_surface_destroyed: Optional[Callable] = None
         self._on_buffer_attached: Optional[Callable] = None
+        # Wire-event-loop hooks (see ui/compositor_host.py): when set,
+        # raw client bytes are also fed to the Rust wire event loop and
+        # its response events are written back to the socket.
+        self._on_data: Optional[Callable[[int, bytes], None]] = None
+        self._on_disconnect: Optional[Callable[[int], None]] = None
     
     def set_surface_callback(self, callback: Callable):
         """Set callback for surface creation events."""
@@ -138,6 +143,37 @@ class WaylandSocketServer:
     def set_buffer_callback(self, callback: Callable):
         """Set callback for buffer attachment events."""
         self._on_buffer_attached = callback
+    
+    def set_data_callback(self, callback: Callable[[int, bytes], None]):
+        """Set callback receiving raw client bytes: callback(client_id, data).
+
+        Used by the compositor host half to feed the Rust wire event
+        loop. The Python dispatch below still runs (it owns the
+        coarse-grained host-side surface table); the wire loop owns
+        the protocol-state response stream.
+        """
+        self._on_data = callback
+    
+    def set_disconnect_callback(self, callback: Callable[[int], None]):
+        """Set callback for client disconnects: callback(client_id)."""
+        self._on_disconnect = callback
+    
+    def send_to_client(self, client_id: int, data: bytes) -> bool:
+        """Write raw bytes to a connected client's socket.
+
+        Returns True when the bytes were queued for send. Unknown or
+        disconnected client ids return False (the caller keeps the
+        bytes queued).
+        """
+        with self._lock:
+            client = self._clients.get(client_id)
+        if client is None or not client.active:
+            return False
+        try:
+            client.fd.sendall(data)
+            return True
+        except OSError:
+            return False
     
     def start(self) -> bool:
         """Start the socket server.
@@ -262,6 +298,17 @@ class WaylandSocketServer:
                 data = client.fd.recv(4096)
                 if not data:
                     break
+                # When the Rust wire event loop is wired it OWNS
+                # protocol dispatch (the host writes its response
+                # events back to this socket); the legacy Python
+                # dispatch below would double-respond (its registry
+                # globals are not wire-correct), so it is skipped.
+                if self._on_data is not None:
+                    try:
+                        self._on_data(client.id, data)
+                    except Exception:  # noqa: BLE001 — never kill the reader
+                        logger.debug("wire-loop feed failed for client %d", client.id)
+                    continue
                 self._dispatch_message(client, data)
             except (ConnectionResetError, BrokenPipeError):
                 break
@@ -451,6 +498,14 @@ class WaylandSocketServer:
             client.fd.close()
         except OSError:
             pass
+        
+        # Notify the wire-event-loop host half so per-client protocol
+        # state (partial buffers, pending events) is released.
+        if self._on_disconnect is not None:
+            try:
+                self._on_disconnect(client.id)
+            except Exception:  # noqa: BLE001
+                logger.debug("disconnect hook failed for client %d", client.id)
         
         logger.info("Client disconnected: id=%d", client.id)
     

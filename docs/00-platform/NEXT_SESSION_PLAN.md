@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.2.0
-date: 2026-09-08
+version: 6.3.0
+date: 2026-09-09
 ---
 
 # Next Development Session Plan
@@ -10,7 +10,7 @@ date: 2026-09-08
 
 | Metric | Value |
 |--------|-------|
-| Total tests | **2,700+** (Python + Rust) |
+| Total tests | **2,758+** (Python + Rust: 2,532 Python + 208 Rust + 26 host/delta) |
 | Rust crates | **18** (all built and verified) |
 | Python codecs | **8** (wayland, gbm, drm, egl, vulkan, nstudio, compositor, shm) |
 | GPU pipelines | **4** verified on real hardware (GBM, DRM, EGL, Vulkan) |
@@ -177,6 +177,27 @@ date: 2026-09-08
 - [x] SHM buffer operations baseline
 - [x] SDL2 headless rendering (via sdl2_codec.py)
 
+## Session 4 (2026-09-09) — Socket host half + delta generation
+
+### Compositor Socket Host Half (M14 follow-on closed)
+| Item | Status |
+|------|--------|
+| `ui/compositor_host.py` (`CompositorHost`) | ✅ Bridges `WaylandSocketServer` bytes ↔ Rust wire event loop via `compositor_codec`; drains response events back to the socket |
+| Partial-message reassembly | ✅ Feeds the crate on message boundaries only — `recv()` fragmentation never becomes a truncated request |
+| Single-dispatch ownership | ✅ Wire loop owns protocol dispatch when wired; legacy Python dispatch skipped (it double-responded); stub mode fabricates nothing (fail-closed) |
+| Session-scoped protocol state (Rust) | ✅ `start`/`stop` reset the object table + queues — a restart no longer collides with stale object ids; `wl_display.sync` served |
+| `NyrqisCompositor` wiring | ✅ Automatic bridge + `get_stats()` host counters (engine, bytes in/out, events, protocol errors) |
+| Tests | ✅ `tests/test_compositor_host.py` (8): real-socket handshake, reassembly, per-client isolation, disconnect cleanup, stub fallback; CI `compositor-host` required gate |
+| CI gap closed | ✅ `rust-compositor` job added — the 48-test crate had **never been compiled in CI** |
+
+### Delta Update Generation (NPS-026 §6 generation half)
+| Item | Status |
+|------|--------|
+| `backend/delta_update.py` | ✅ `diff_packages` (add/modify/remove, deterministic, `.nypkg`-normalized) + `create_delta_update` (canonical checksum, optional Ed25519) |
+| `apply_delta_update` | ✅ Signature verified BEFORE filesystem mutation; per-op path-traversal guard; unsigned refused when a trust store is supplied |
+| Cross-verified with the shipped verifier | ✅ Generated deltas pass `UpdateVerifier.verify_delta_update` unmodified; tampered op lists fail (`TestDeltaPassesShippedVerifier`) |
+| Tests | ✅ `tests/test_delta_update.py` (18) |
+
 ## Next Priorities
 
 ### Priority 7: Real Hardware Testing (Week 1)
@@ -224,7 +245,7 @@ date: 2026-09-08
 
 | Metric | Target | Current |
 |--------|--------|---------|
-| Tests passing | 2,800+ | 2,700+ |
+| Tests passing | 2,800+ | 2,758+ |
 | GPU rendering | GBM/EGL/DRM/Vulkan path working on real hardware | ✅ Verified |
 | Packaging | pip install + systemd | ✅ Implemented |
 | Boot-to-desktop | nyrqis_init.py works end-to-end | ✅ Verified |

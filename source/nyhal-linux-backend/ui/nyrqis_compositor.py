@@ -73,6 +73,10 @@ class NyrqisCompositor:
         self._running = False
         self._frame_count = 0
         self._start_time = 0.0
+        # Socket host half: bridges client bytes to the Rust wire event
+        # loop (engine "rust") or falls back to the Python protocol path
+        # (engine "stub") when the cdylib is absent.
+        self._host = None
         
         # Signal handlers
         self._original_sigint = None
@@ -105,6 +109,10 @@ class NyrqisCompositor:
             logger.error("Failed to start compositor")
             self._stop_socket_server()
             return False
+        
+        # Step 2b: Wire the socket host half to the Rust wire event
+        # loop (client bytes → crate → response events → socket).
+        self._wire_host_half()
         
         # Step 3: Initialize render pipeline (if not headless)
         if not self.config.headless:
@@ -160,6 +168,66 @@ class NyrqisCompositor:
         self._frame_count += 1
         return True
     
+    def _wire_host_half(self):
+        """Bridge socket bytes to the Rust wire event loop.
+
+        When the compositor codec is available the host feeds every
+        client's bytes through the crate's wire-format event loop and
+        ships the crate's response events back to the socket; when it
+        is not, the Python dispatch inside WaylandSocketServer remains
+        the fallback (fail-closed, no forged success).
+        """
+        try:
+            from ui.compositor_host import CompositorHost
+            from ui import compositor_codec as comp
+        except ImportError as exc:
+            logger.warning("Compositor host half unavailable: %s", exc)
+            return
+
+        self._host = CompositorHost()
+        engine = self._host.engine
+        if engine != "rust":
+            logger.info(
+                "Compositor host half in stub mode (Python protocol path)"
+            )
+            return
+
+        if self._socket_server is not None:
+            if hasattr(self._socket_server, "set_data_callback"):
+                self._socket_server.set_data_callback(
+                    self._make_data_handler()
+                )
+            if hasattr(self._socket_server, "set_disconnect_callback"):
+                self._socket_server.set_disconnect_callback(
+                    self._host.on_client_disconnected
+                )
+            logger.info("Compositor host half wired (engine: rust)")
+
+    def _make_data_handler(self):
+        """Build the client-data handler: feed the crate, then flush
+        its response events straight back to the client socket."""
+        def _handle(client_id: int, data: bytes) -> None:
+            self._host.on_client_data(client_id, data)
+            self._host.flush_pending(
+                lambda cid, payload: self._socket_server.send_to_client(
+                    cid, payload
+                )
+            )
+        return _handle
+
+    def get_host_stats(self) -> dict:
+        """Stats from the socket host half (None fields when absent)."""
+        if self._host is None:
+            return {}
+        stats = self._host.get_stats()
+        return {
+            "engine": stats.engine,
+            "bytes_from_clients": stats.bytes_from_clients,
+            "bytes_to_clients": stats.bytes_to_clients,
+            "events_drained": stats.events_drained,
+            "protocol_errors": stats.protocol_errors,
+        }
+
     def _start_socket_server(self) -> bool:
         """Start the Wayland socket server."""
         try:
@@ -324,6 +392,11 @@ class NyrqisCompositor:
             stats["clients"] = self._socket_server.get_client_count()
             stats["surfaces"] = self._socket_server.get_surface_count()
             stats["outputs"] = self._socket_server.get_output_count()
+        
+        # Host-half (wire event loop) counters
+        host_stats = self.get_host_stats()
+        if host_stats:
+            stats["host"] = host_stats
         
         return stats
     
