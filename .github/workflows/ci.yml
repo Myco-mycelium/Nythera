@@ -522,7 +522,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pynacl
+      # zstandard is a real dependency of the NyFS compression tests
+      # (ADR-0007): without it NyFSBlock.compress() stores data
+      # uncompressed (the documented fallback) and the >30% ratio
+      # guarantee cannot hold.
+      - run: pip install pynacl zstandard
       # -u: stream output live (a hung test is then visible in the
       # log); the suite itself additionally dumps all thread stacks via
       # faulthandler after 60 minutes and exits.
