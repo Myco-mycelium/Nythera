@@ -53,6 +53,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Spec adoption**: NPS-010 §7.1.1 (v1.3.0) normatively requires
   per-sender fairness; operator how-to
   (`docs/how-to/tune-endpoint-rate-limits.md`).
+- **Control-plane audit trail**: endpoint limiter retunes are recorded
+  (bounded, in-memory) with the operator's `--reason`, surfaced via
+  `get_control_audit` / `nyrqisctl ep-limits audit`, and persisted
+  across daemon restarts through the daemon state file
+  (`audit_saver`/`audit_loader` on `ControlService`; restore failures
+  degrade to an empty trail).
+- **Admission metrics**: every endpoint keeps a bounded admission
+  sample ring; `get_endpoint_rate_limit_metrics` /
+  `nyrqisctl ep-limits metrics [endpoint] [--window S]` reports
+  counts, rates, and the rejection ratio over a trailing window (live
+  watching; resets on restart).
+- **§32e dynamic-shares adversarial data** (BENCHMARK_RESULTS):
+  guarantee holds under dynamic shares; abuser's absolute take rises
+  ~3.8× at low occupancy → static stays the default, dynamic opt-in,
+  with the recommendation now data-backed.
+- **Post-signoff readiness**: the library default posture is a named
+  constant pair (`LIBRARY_DEFAULT_*` vs `ACCEPTED_PROPOSED_*`) with a
+  readiness test — the AG-accepted flip is a one-line change enforced
+  by the gate (ADR-0009 review package §6/§7).
 
 ### Fixed
 

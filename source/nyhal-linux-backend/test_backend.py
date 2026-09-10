@@ -10956,6 +10956,28 @@ class TestIPCSemantics(unittest.TestCase):
         self.assertEqual(ep.rate_limit.fair_shares, 8)
         self.assertEqual(ep.rate_limit.sender_burst, 64)
 
+    def test_default_flip_readiness(self):
+        """Post-signoff gate: the LIBRARY default posture must be one
+        of the two known constants, and if it has been flipped to the
+        accepted proposal, the docstring/ADR story must match. When the
+        AG accepts (review package §6), flip LIBRARY_DEFAULT_* to
+        ACCEPTED_PROPOSED_* in ipc/core.py — this test then verifies
+        the flip is complete and consistent instead of guessing."""
+        import ipc.core as core
+        valid = {(core.LIBRARY_DEFAULT_BUCKET_SIZE,
+                  core.LIBRARY_DEFAULT_TOKENS_PER_SECOND),
+                 (core.ACCEPTED_PROPOSED_BUCKET_SIZE,
+                  core.ACCEPTED_PROPOSED_TOKENS_PER_SECOND)}
+        self.assertIn(
+            (core.LIBRARY_DEFAULT_BUCKET_SIZE,
+             core.LIBRARY_DEFAULT_TOKENS_PER_SECOND), valid)
+        # Explicit construction still wins over any constant.
+        mgr = core.IPCManager(default_bucket_size=777,
+                              default_tokens_per_second=55.0)
+        ep = mgr.create_endpoint("c1")
+        self.assertEqual(ep.rate_limit.bucket_size, 777)
+        self.assertEqual(ep.rate_limit.tokens_per_second, 55.0)
+
     def test_rate_limit_sweep_throughput(self):
         """Sweep different bucket configs and verify throughput bounds."""
         configs = [
@@ -12881,6 +12903,34 @@ class TestOperatorCli(unittest.TestCase):
         args = parser.parse_args(["ep-limits", "audit"])
         self.assertEqual(nyrqisctl.build_payload(args.command, args),
                          {"service": "control", "op": "get_control_audit"})
+        # Metrics: all endpoints and one endpoint, window override.
+        args = parser.parse_args(["ep-limits", "metrics"])
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control",
+                          "op": "get_endpoint_rate_limit_metrics",
+                          "window_s": 60.0})
+        args = parser.parse_args(
+            ["ep-limits", "metrics", "ep-svc", "--window", "120"])
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control",
+                          "op": "get_endpoint_rate_limit_metrics",
+                          "window_s": 120.0,
+                          "endpoint_id": "ep-svc"})
+        text = nyrqisctl.format_human("ep-limits-metrics", {
+            "ok": True, "endpoint_id": "ep-svc",
+            "metrics": {"window_s": 60.0, "total": 12, "admitted": 8,
+                        "rejected": 4, "admitted_per_s": 8.0,
+                        "rejected_per_s": 4.0,
+                        "rejection_ratio": 0.3333}})
+        self.assertIn("ep-svc: admitted 8/12", text)
+        self.assertIn("rejection 33.33%", text)
+        text = nyrqisctl.format_human("ep-limits-metrics", {
+            "ok": True, "endpoint_id": "ep-fresh",
+            "metrics": {"window_s": 60.0, "total": 0, "admitted": 0,
+                        "rejected": 0, "admitted_per_s": 0.0,
+                        "rejected_per_s": 0.0,
+                        "rejection_ratio": None}})
+        self.assertIn("rejection -", text)
 
     def test_cli_format_human_endpoint_limits(self):
         listed = nyrqisctl.format_human("ep-limits-list", {
@@ -13745,6 +13795,108 @@ class TestControlService(unittest.TestCase):
             client.close()
             stop.set()
             server.close()
+
+    def test_endpoint_rate_limit_metrics(self):
+        """Admission metrics: live samples aggregate into rates and a
+        rejection ratio; empty endpoints report None ratio."""
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            ep = server.manager.endpoints["ep-svc"]
+            from ipc.core import IPCMessage, IPCMessageType
+            def make_msg(sender):
+                return IPCMessage(
+                    message_type=IPCMessageType.SEND,
+                    sender_id=sender, receiver_id="c-svc", payload=b"x")
+            # 8 admitted + 4 rejected directly through send_message.
+            for i in range(8):
+                ep.send_message(make_msg("flood"))
+            bucket = ep.rate_limit
+            for i in range(4):
+                while bucket.try_consume(sender_id="flood"):
+                    pass  # drain the sender's share so sends get refused
+                ep.send_message(make_msg("flood"))
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "endpoint_id": "ep-svc", "window_s": 60}).encode())
+            self.assertTrue(resp["ok"], resp)
+            m = resp["metrics"]
+            self.assertEqual(m["total"], 12)
+            self.assertEqual(m["admitted"], 8)
+            self.assertEqual(m["rejected"], 4)
+            self.assertAlmostEqual(m["rejection_ratio"], 4 / 12, places=3)
+            # All-endpoints variant + unknown endpoint + bad window.
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "window_s": 60}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertIn("endpoints", resp)
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "endpoint_id": "nope"}).encode())
+            self.assertFalse(resp["ok"])
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "window_s": 0}).encode())
+            self.assertFalse(resp["ok"])
+            # A fresh endpoint with no samples: ratio None, no NaN.
+            server.manager.create_endpoint("container-fresh", "ep-fresh")
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "endpoint_id": "ep-fresh"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertIsNone(resp["metrics"]["rejection_ratio"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_control_audit_persists_across_restart(self):
+        """The audit trail rides the saver/loader callables: appending
+        invokes the saver; a rebuilt ControlService (the daemon restart
+        shape) restores the persisted entries; a broken loader
+        degrades to an empty trail."""
+        from ipc.control import ControlService
+        import threading as th
+        saved = {}
+
+        def saver(trail):
+            saved["trail"] = trail
+
+        def loader():
+            return saved.get("trail")
+
+        def make_control():
+            c = ControlService(self._FakeManager(), operator_id="op",
+                               audit_saver=saver, audit_loader=loader)
+            return c
+
+        first = make_control()
+        first._record_audit(
+            "configure_endpoint_rate_limit",
+            {"endpoint_id": "ep-svc", "rate": 4000.0,
+             "reason": "sizing"},
+            {"ok": True})
+        self.assertEqual(len(saved["trail"]), 1)
+
+        # Restart shape: a new instance restores what the saver kept.
+        second = make_control()
+        self.assertEqual(len(second._audit_trail), 1)
+        self.assertEqual(second._audit_trail[0]["request"]["reason"],
+                         "sizing")
+
+        # A broken loader must not break construction.
+        def bad_loader():
+            raise RuntimeError("disk on fire")
+        c = ControlService(self._FakeManager(), operator_id="op",
+                           audit_loader=bad_loader)
+        self.assertEqual(c._audit_trail, [])
 
     def test_operator_container_list_and_kill(self):
         fake = self._FakeManager()

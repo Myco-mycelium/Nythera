@@ -27,12 +27,26 @@ import queue
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 
 from . import ipc_codec  # ADR-0020 priority #4 FFI loader (wire codec)
 
 logger = logging.getLogger(__name__)
+
+# The ADR-0009 default-parameter postures. The LIBRARY defaults (used
+# whenever code builds an IPCManager/IPCEndpoint without arguments) are
+# the conservative, under-review values; the DAEMON (nyrqis_backend,
+# systemd unit) already ships the AG-proposed input-class envelope.
+# When Architecture Group acceptance lands (ADR-0009 review package
+# §6), flip LIBRARY_DEFAULT_* to ACCEPTED_PROPOSED_* — the
+# test_default_flip_readiness gate then enforces the alignment so the
+# two cannot silently diverge.
+LIBRARY_DEFAULT_BUCKET_SIZE = 200
+LIBRARY_DEFAULT_TOKENS_PER_SECOND = 500.0
+ACCEPTED_PROPOSED_BUCKET_SIZE = 256
+ACCEPTED_PROPOSED_TOKENS_PER_SECOND = 2000.0
 
 
 class IPCMessageType(enum.Enum):
@@ -337,9 +351,46 @@ class IPCEndpoint:
         self.created_at = time.time()
         self.message_count = 0
         self.lock = threading.Lock()
+        # Store-and-forward admission samples (ADR-0009 ops story):
+        # ring of (ts, admitted) for the metrics op — bounded, in
+        # memory, oldest dropped. Granularity is per send_message call;
+        # consumers aggregate into rates/rejection ratios.
+        self._admission_samples: deque = deque(maxlen=_ADMISSION_SAMPLE_MAX)
     
     def __repr__(self) -> str:
         return f"IPCEndpoint(id={self.endpoint_id}, container={self.container_id})"
+
+    def _admit_sample(self, admitted: bool, ts: float) -> None:
+        self._admission_samples.append((ts, admitted))
+
+    def admission_metrics(self, window_s: float = 60.0) -> Dict[str, Any]:
+        """Admission metrics over the trailing ``window_s`` (clamped to
+        what the sample ring retains): total/admitted/rejected counts,
+        rates per second, and the rejection ratio. Zero samples → zero
+        rates, ratio None ("no data"), never NaN."""
+        cutoff = time.time() - max(window_s, 0.0)
+        with self.lock:
+            recent = [
+                (ts, ok) for (ts, ok) in self._admission_samples
+                if ts >= cutoff
+            ]
+        total = len(recent)
+        admitted = sum(1 for _, ok in recent if ok)
+        rejected = total - admitted
+        return {
+            "window_s": window_s,
+            "retained_s": (
+                min(window_s, _ADMISSION_SAMPLE_MAX / max(total / window_s,
+                                                          1e-9))
+                if total else 0.0),
+            "total": total,
+            "admitted": admitted,
+            "rejected": rejected,
+            "admitted_per_s": round(admitted / window_s, 2),
+            "rejected_per_s": round(rejected / window_s, 2),
+            "rejection_ratio": (
+                round(rejected / total, 4) if total else None),
+        }
     
     def send_message(self, message: IPCMessage) -> bool:
         """Enqueue a message for this endpoint.
@@ -359,11 +410,14 @@ class IPCEndpoint:
         sender = getattr(message, "sender_id", None)
         if not self.rate_limit.try_consume(sender_id=sender):
             logger.warning(f"IPC rate limit exceeded for endpoint {self.endpoint_id}")
+            with self.lock:
+                self._admit_sample(False, time.time())
             return False
         
         with self.lock:
             self.message_queue.put(message)
             self.message_count += 1
+            self._admit_sample(True, time.time())
         
         logger.debug(f"Enqueued message {message.message_id[:8]} to {self.endpoint_id}")
         return True
@@ -393,6 +447,9 @@ class IPCEndpoint:
         return self.message_queue.qsize()
 
 
+_ADMISSION_SAMPLE_MAX = 4096
+
+
 class IPCManager:
     """Manages IPC endpoints and message routing for all containers.
     
@@ -400,8 +457,8 @@ class IPCManager:
     """
     
     def __init__(self, capability_manager=None,
-                 default_bucket_size: int = 200,
-                 default_tokens_per_second: float = 500.0,
+                 default_bucket_size: Optional[int] = None,
+                 default_tokens_per_second: Optional[float] = None,
                  default_fair_shares: int = 8,
                  default_sender_burst: int = 64):
         """Initialize the IPC manager.
@@ -433,6 +490,10 @@ class IPCManager:
         self.pending_calls: Dict[str, threading.Event] = {}  # message_id -> event
         self.call_replies: Dict[str, IPCMessage] = {}  # message_id -> reply
         self.lock = threading.Lock()
+        if default_bucket_size is None:
+            default_bucket_size = LIBRARY_DEFAULT_BUCKET_SIZE
+        if default_tokens_per_second is None:
+            default_tokens_per_second = LIBRARY_DEFAULT_TOKENS_PER_SECOND
         self.default_bucket_size = default_bucket_size
         self.default_tokens_per_second = default_tokens_per_second
         self.default_fair_shares = max(default_fair_shares, 1)

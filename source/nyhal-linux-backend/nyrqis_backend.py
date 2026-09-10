@@ -310,7 +310,15 @@ class StatusServiceHost:
         )
         self.control = ControlService(
             self.container_manager, self.capability_manager,
-            state_saver=self._save_state)
+            state_saver=self._save_state,
+            # The control-plane audit trail rides the daemon state
+            # file: restored on start (best effort), rewritten on each
+            # retune. The previous daemon's trail is NOT carried into
+            # recovery reporting — it is control-plane history, kept
+            # separate from the container manifest on purpose.
+            audit_saver=self._save_audit_trail,
+            audit_loader=self._load_audit_trail,
+        )
         # NyVault (ADR-0022): capability-gated named volumes backed by
         # NyFS roots under ``vault_dir`` (None disables NyFS backing —
         # metadata-only registry). ADR-0023: with ``vault_key_file`` +
@@ -650,6 +658,39 @@ class StatusServiceHost:
             "recovery": self._recovery,
             "containers": DaemonStateFile.manifest(known),
         })
+
+    def _save_audit_trail(self, trail) -> None:
+        """Re-persist the state file with the control plane's audit
+        trail attached (best effort; the trail rides the same atomic
+        write as the manifest — a failed save keeps the in-memory
+        trail authoritative)."""
+        if self.state is None:
+            return
+        try:
+            known = list(self.container_manager.containers.values())
+        except Exception:  # noqa: BLE001 - state is best effort
+            known = []
+        self.state.save({
+            "daemon_pid": os.getpid(),
+            "backend_version": self.service.backend_version,
+            "socket_path": self.socket_path,
+            "started_at": self._started_at,
+            "recovery": self._recovery,
+            "containers": DaemonStateFile.manifest(known),
+            "control_audit": list(trail),
+        })
+
+    def _load_audit_trail(self):
+        """The persisted control-plane audit trail (or None) from the
+        state file — the loader half of the control service's audit
+        persistence."""
+        if self.state is None:
+            return None
+        prev = self.state.load()
+        if not isinstance(prev, dict):
+            return None
+        trail = prev.get("control_audit")
+        return trail if isinstance(trail, list) else None
 
     def stop(self) -> None:
         """Persist the final state, signal the serve loops, let them

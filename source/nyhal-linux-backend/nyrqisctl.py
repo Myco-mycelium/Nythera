@@ -57,7 +57,7 @@ STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
 # Endpoint IPC rate-limiter ops (ADR-0009 §32b fairness knobs).
 ENDPOINT_LIMIT_COMMANDS = ("ep-limits-list", "ep-limits-get", "ep-limits-set",
-                           "ep-limits-audit")
+                           "ep-limits-audit", "ep-limits-metrics")
 NUI_COMMANDS = ("nui-validate", "nui-load", "nui-current")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
@@ -125,6 +125,15 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return payload
     if command == "ep-limits-audit":
         return {"service": "control", "op": "get_control_audit"}
+    if command == "ep-limits-metrics":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "get_endpoint_rate_limit_metrics",
+            "window_s": float(args.window),
+        }
+        if getattr(args, "endpoint_id", None):
+            payload["endpoint_id"] = args.endpoint_id
+        return payload
     if command == "containers-run":
         return {
             "service": "control",
@@ -5047,6 +5056,19 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} PiB"
 
 
+def _metrics_lines(endpoint_id: str, m: Dict[str, Any]) -> str:
+    """One endpoint's admission metrics as aligned human text."""
+    ratio = m.get("rejection_ratio")
+    ratio_s = "-" if ratio is None else f"{ratio * 100:.2f}%"
+    return (
+        f"{endpoint_id}: admitted {m.get('admitted', 0)}/"
+        f"{m.get('total', 0)} "
+        f"({m.get('admitted_per_s', 0)}/s, rejected "
+        f"{m.get('rejected_per_s', 0)}/s, rejection {ratio_s}) "
+        f"over {m.get('window_s', 0)}s"
+    )
+
+
 def format_human(command: str, resp: Dict[str, Any]) -> str:
     """Render a successful reply (``ok: true``) for the operator."""
     if command in NUI_COMMANDS:
@@ -5152,6 +5174,15 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join([
             "endpoint\tcontainer\tkind\trate\tburst\tshares\tper-sender",
         ] + rows)
+    if command == "ep-limits-metrics":
+        if resp.get("endpoint_id"):
+            m = resp.get("metrics") or {}
+            return _metrics_lines(resp["endpoint_id"], m)
+        lines = [f"window: {resp.get('window_s')}s"]
+        for e in resp.get("endpoints") or []:
+            lines.append(_metrics_lines(
+                e.get("endpoint_id"), e.get("metrics") or {}))
+        return "\n".join(lines)
     if command == "ep-limits-audit":
         trail = resp.get("trail") or []
         if not trail:
@@ -9620,6 +9651,15 @@ def build_parser() -> argparse.ArgumentParser:
     epl_a = ep_sub.add_parser(
         "audit", help="Show the control-plane audit trail (retunes)")
     epl_a.set_defaults(command="ep-limits-audit")
+
+    epl_m = ep_sub.add_parser(
+        "metrics",
+        help="Admission metrics (rates, rejection ratio) per endpoint")
+    epl_m.add_argument("endpoint_id", nargs="?", default=None,
+                       help="One endpoint (default: all endpoints)")
+    epl_m.add_argument("--window", type=float, default=60.0,
+                       help="Trailing window in seconds (default: 60)")
+    epl_m.set_defaults(command="ep-limits-metrics")
 
     clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")
     clo.add_argument("container_id")

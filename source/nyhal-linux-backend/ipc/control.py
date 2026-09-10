@@ -38,6 +38,10 @@ Operations (JSON request → JSON reply over CALL/REPLY):
 - ``{"service": "control", "op": "get_control_audit"}`` — the bounded
   in-memory trail of mutating control ops (endpoint limiter retunes,
   with the operator's ``reason`` when given).
+- ``{"service": "control", "op": "get_endpoint_rate_limit_metrics",
+   "endpoint_id": str (optional), "window_s": float}`` — per-endpoint
+  admission metrics (counts, rates, rejection ratio) over the trailing
+  window, from the endpoint's bounded sample ring.
 
 References:
 - NPS-010 §5: capability assignment/revocation at container lifecycle
@@ -80,7 +84,9 @@ class ControlService:
     def __init__(self, container_manager,
                  capability_manager: Optional[Any] = None,
                  operator_id: Optional[str] = None,
-                 state_saver: Optional[Any] = None) -> None:
+                 state_saver: Optional[Any] = None,
+                 audit_saver: Optional[Any] = None,
+                 audit_loader: Optional[Any] = None) -> None:
         self.container_manager = container_manager
         self.capability_manager = capability_manager
         # None → synced from the server on attach, so the operator gate
@@ -91,9 +97,32 @@ class ControlService:
         self.state_saver = state_saver
         self._server = None
         # Bounded in-memory trail of mutating control ops (see
-        # _CONTROL_AUDIT_MAX); surfaced by get_control_audit.
+        # _CONTROL_AUDIT_MAX); surfaced by get_control_audit and
+        # persisted across daemon restarts via ``audit_saver``/
+        # ``audit_loader`` (callables the host wires to the state
+        # file; best effort, like every persistence path here).
         self._audit_trail: List[Dict[str, Any]] = []
         self._audit_lock = threading.Lock()
+        self.audit_saver = audit_saver
+        self.audit_loader = audit_loader
+        self._restore_audit()
+
+    def _restore_audit(self) -> None:
+        """Seed the trail from persistence (called at construction; a
+        loader failure degrades to an empty trail, never an error)."""
+        loader = self.audit_loader
+        if loader is None:
+            return
+        try:
+            trail = loader()
+        except Exception as exc:  # noqa: BLE001 - best effort
+            logger.warning("ipc: control audit trail restore failed (%s)",
+                           exc)
+            return
+        if isinstance(trail, list):
+            self._audit_trail = [
+                e for e in trail if isinstance(e, dict)
+            ][-_CONTROL_AUDIT_MAX:]
 
     def attach(self, server) -> "ControlService":
         """Give the service the server to reply through (the router
@@ -1393,6 +1422,9 @@ class ControlService:
                                   msg.message_id, request)
             elif op == "get_control_audit":
                 self._get_control_audit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_endpoint_rate_limit_metrics":
+                self._get_endpoint_rate_limit_metrics(server, sender_path,
                                   msg.message_id, request)
             elif op == "create_feature_flag":
                 self._create_feature_flag(server, sender_path,
@@ -8614,6 +8646,16 @@ class ControlService:
             self._audit_trail.append(entry)
             if len(self._audit_trail) > _CONTROL_AUDIT_MAX:
                 del self._audit_trail[:-_CONTROL_AUDIT_MAX]
+            trail = list(self._audit_trail)
+        # Persist OUTSIDE the lock: the saver (state file) can be slow,
+        # and a failure degrades to an in-memory-only trail.
+        saver = self.audit_saver
+        if saver is not None:
+            try:
+                saver(trail)
+            except Exception as exc:  # noqa: BLE001 - best effort
+                logger.warning("ipc: control audit persist failed (%s)",
+                               exc)
 
     @staticmethod
     def _endpoint_limit_snapshot(limiter) -> Dict[str, Any]:
@@ -8788,6 +8830,53 @@ class ControlService:
             "ok": True,
             "trail": trail,
             "truncated": len(trail) >= _CONTROL_AUDIT_MAX,
+        })
+
+    def _get_endpoint_rate_limit_metrics(self, server, sender_path,
+                                         call_id, request) -> None:
+        """Admission metrics for one endpoint (or all, when no
+        endpoint_id is given): counts/rates/rejection ratio over the
+        trailing window — the store-and-forward data an operator
+        graphs to spot flooding or undersizing."""
+        manager = getattr(self._server, "manager", None)
+        if manager is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "no IPC manager attached"})
+            return
+        window_s = request.get("window_s", 60.0)
+        try:
+            window_s = float(window_s)
+        except (TypeError, ValueError):
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "window_s must be a number"})
+            return
+        if window_s <= 0:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "window_s must be > 0"})
+            return
+        endpoint_id = request.get("endpoint_id")
+        endpoints = getattr(manager, "endpoints", {})
+        if endpoint_id:
+            endpoint = endpoints.get(endpoint_id)
+            if endpoint is None:
+                self._reply(server, sender_path, call_id,
+                            {"ok": False,
+                             "error": f"endpoint not found: {endpoint_id}"})
+                return
+            self._reply(server, sender_path, call_id, {
+                "ok": True,
+                "endpoint_id": endpoint_id,
+                "metrics": endpoint.admission_metrics(window_s),
+            })
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "window_s": window_s,
+            "endpoints": [
+                {"endpoint_id": eid,
+                 "metrics": ep.admission_metrics(window_s)}
+                for eid, ep in sorted(endpoints.items())
+            ],
         })
 
     # ------------------------------------------------------------------

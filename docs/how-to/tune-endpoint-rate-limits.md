@@ -114,10 +114,32 @@ nyrqisctl ep-limits set ep-svc --no-dynamic-shares
 
 `ep-limits list/get` shows live occupancy (`active_senders`) and the
 current effective `per-sender` share. Dynamic shares are **not** the
-default: the §32c adversarial guarantee was measured for static
-shares, and the dynamic behavior still needs its own adversarial
-re-benchmark (ADR-0009 review package §5.1) before it ships on
-generally.
+default: §32e measured that the guarantee holds but an abuser's
+absolute take rises ~3.8× at low occupancy — static stays default
+until the Architecture Group decides otherwise (review package §5.1).
+
+## Watch admission metrics
+
+Every endpoint keeps a bounded ring of admission samples; the metrics
+op aggregates the trailing window:
+
+```bash
+nyrqisctl ep-limits metrics                    # all endpoints, 60 s
+nyrqisctl ep-limits metrics ep-svc --window 300  # one endpoint, 5 min
+```
+
+```
+ep-svc: admitted 2000/2012 (33.3/s, rejected 0.2/s, rejection 0.60%) over 60.0s
+```
+
+- `rejection` creeping up under normal load → the envelope is
+  undersized for the sender count; apply the sizing rule.
+- `rejection` high for ONE endpoint while others are quiet → look at
+  who is sending (the fair bucket already confines any flooder to its
+  share).
+- Samples are in-memory only (last ~4096 admissions) and reset on
+  daemon restart — the metrics are for live watching, the audit trail
+  for history.
 
 ## References
 
