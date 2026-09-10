@@ -24,9 +24,14 @@ published here, and every change to the project is reflected in it.
 
 ## Status
 
-- Milestones 9–11 complete; Milestone 12 (security threat model) phases
-  1–6 done, Phase 7 (Package Trust Model) is the last planned phase.
-- Linux Backend: 64/64 tests passing; default-deny seccomp posture
-  implemented and verified end-to-end.
+- Milestones 9–12 complete (the security threat model finished with the
+  Package Trust Model, `NPS-027`); M13 display-server integration and
+  M14 phases landed in the Linux Backend; M15 (GPU Acceleration &
+  Production Readiness) is planned.
+- Linux Backend: **v0.28.0** — 6,133 Python tests passing (+35 skipped)
+  and 275 tests across 18 Rust crates; default-deny seccomp posture
+  implemented and verified end-to-end; compositor presentation and the
+  signed package repository shipped; DRM backend verified on real
+  Intel GPU hardware.
 - Documentation: MkDocs Material, strict build clean, deployed to
   GitHub Pages on every push to `main`.

@@ -5,7 +5,7 @@ version: 0.1.0
 status: In Progress
 classification: Technical
 created: 2026-07-15
-updated: 2026-08-15
+updated: 2026-09-10
 ai_assisted: true
 ---
 
@@ -15,6 +15,31 @@ ai_assisted: true
 > project name *Nythera*. On 2026-08-12 the project was renamed to *Nyrqis*
 > (CR-0035 — see `docs/00-platform/REBRAND_NOTICE.md`). Entries below dated
 > before that date refer to the same project under its former name.
+
+## Session Summary — 2026-09-10 (v0.28.0, 6,133 tests)
+
+Released as **v0.28.0** (tag + GitHub release). Full detail in
+`source/nyhal-linux-backend/CHANGELOG.md` §0.28.0; the highlights:
+
+- **16 UI applications brought to their test specifications**, taking the
+  Python suite from 2,532 to 6,133 passing tests (35 skipped).
+- **Compositor presentation half** (`ui/compositor_presentation.py`):
+  DRM detection, DRMBackend attach, honest software fallback, frame
+  lifecycle stats — with an end-to-end test suite.
+- **Package repository** (`backend/package_repo.py` + `nyrqisctl_repo.py`):
+  signed index, publish/verify/download.
+- **Rust compositor restart fix**: `start` tears down previous-session
+  clients/surfaces/outputs (outputs previously accumulated until
+  MAX_OUTPUTS exhausted in any long-lived process).
+- **DRM backend rewritten to the real kernel UAPI**: two-call query
+  protocol with pointer arrays, correct ioctl numbers per `drm_mode.h`,
+  dumb-buffer → ADDFB2 → SETCRTC presentation, honest failure without
+  DRM master. The previous implementation's query ioctls could never
+  succeed against a real kernel (immutable ioctl buffers → EFAULT).
+- **On-host hardware verification** (`verify_presentation.py`, wired into
+  `run_tests.sh --gpu`): real Intel GPU (`/dev/dri/card1`) — 2 CRTCs,
+  3 connectors, 3 encoders, byte-exact composite output, honest EPERM
+  fallback without DRM master.
 
 ## Session Summary — 2026-08-18 (25 features, 1069 tests)
 

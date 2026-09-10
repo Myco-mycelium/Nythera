@@ -5,13 +5,14 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-09
+2026-09-10
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
 pass, response to external review), plus an externally-contributed,
 independently-verified Linux Backend implementation
-(`source/nyhal-linux-backend/`, 64/64 tests passing). Milestone 12 — the
+(`source/nyhal-linux-backend/`, v0.28.0 — 6,133 Python tests passing +
+35 skipped, 275 tests across 18 Rust crates). Milestone 12 — the
 phased security threat model — is **complete**: Phases 1–7 are done
 (`NPS-018` methodology, `NPS-019` attack surface enumeration, `NPS-020`
 STRIDE analysis, `NPS-021` privilege/escalation analysis, `NPS-022`
@@ -509,6 +510,38 @@ Two things now, not one:
   `TestDeltaPassesShippedVerifier` proves a generated delta passes
   `UpdateVerifier.verify_delta_update` unmodified and a tampered op
   list fails it. Tests: `tests/test_delta_update.py` (18).
+
+  **2026-09-10: the display half of the compositor lands, the package
+  repository ships, and the DRM backend is rewritten to the real
+  kernel UAPI (backend 0.28.0, tagged + released).**
+  Sixteen UI applications were brought up to their test specifications
+  (packet analyzer, virtual keyboard, disk health, calendar, markdown
+  editor, network monitor, password manager, screen recorder, audio
+  mixer, font manager, and their test groups), taking the Python suite
+  from 2,532 to 6,133 passing tests. `ui/compositor_presentation.py`
+  completes the presentation half: DRM device detection, DRMBackend
+  attach, honest software fallback, and frame lifecycle statistics.
+  `backend/package_repo.py` + `nyrqisctl_repo.py` ship the package
+  repository (signed index, publish/verify/download). A long-lived-
+  process bug in the Rust compositor was fixed: `start` now tears down
+  previous-session clients/surfaces/outputs (outputs previously
+  accumulated until MAX_OUTPUTS was exhausted, breaking `add_output`
+  after 16 start/stop cycles). Hardware verification
+  (`verify_presentation.py`, `run_tests.sh --gpu`) then exposed that
+  `ui/drm_backend.py` spoke no real DRM UAPI: query ioctls passed
+  immutable buffers the kernel cannot write into (EFAULT →
+  `detect_connectors()` silently returned `[]` on every real machine),
+  several ioctl numbers encoded wrong struct sizes, and `set_mode
+  (fb_id=0)` would have disabled scanout rather than present. The
+  module was rewritten to the real kernel UAPI (two-call query
+  protocol with pointer arrays, correct ioctl numbers per
+  `drm_mode.h`, dumb-buffer → ADDFB2 → SETCRTC presentation, honest
+  failure without DRM master) and verified on real Intel hardware
+  (`/dev/dri/card1`): 2 CRTCs, 3 connectors, 3 encoders, connector 64
+  (CRTC 47) enumerated with 5 real modes, byte-exact composite output,
+  kernel EPERM without DRM master handled with honest software
+  fallback. Version first-party packaging aligned (`pyproject.toml`
+  0.28.0).
 
 ## Build System
 Started 2026-08-12. CI (`.github/workflows/ci.yml`) runs on every push/PR

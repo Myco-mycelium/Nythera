@@ -33,16 +33,13 @@ M15 focuses on GPU-accelerated rendering and production hardening.
 
 | Suite | Tests |
 |-------|-------|
-| Python backend | 2,500 |
+| Python backend | 6,168 (6,133 passing + 35 skipped, v0.28.0) |
 | Package signing | 31 |
 | Package installer | 17 |
 | Package integration | 11 |
 | SDL2 Wayland | 21 |
-| GBM crate | 14 |
-| DRM crate | 7 |
-| Wayland crate | 19 |
-| Other Rust crates | 66 |
-| **Total** | **2,686** |
+| Rust crates (18) | 275 |
+| **Total** | **6,523** |
 
 ## Milestone Goals
 

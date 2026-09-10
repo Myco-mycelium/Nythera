@@ -64,10 +64,11 @@ resolved: a Requirements Database
 external review's own top priority, and a proposed NPS domain-renumbering
 scheme formally **rejected** via `ADR-0017` rather than silently adopted.
 
-Milestone 12 (the security threat model) is in progress, built in
-explicit phases — Phases 1–6 are complete: methodology, attack surface
+Milestone 12 (the security threat model) is complete, built in
+explicit phases — all seven phases landed: methodology, attack surface
 enumeration, STRIDE analysis, privilege/escalation analysis, container
-escape analysis, secure boot, and AI. Phase 4 was the first phase
+escape analysis, secure boot, AI, and the package trust model
+(`NPS-027`). Phase 4 was the first phase
 analyzed against real code rather than a hypothetical, and found the
 threat model's most severe issue: the Linux Backend's capability
 enforcement covers exactly one operation class (IPC send/call), leaving
@@ -94,6 +95,14 @@ architecture, performance budgets, and developer onboarding remain
 logged in priority order. See
 [`REPOSITORY_STATE.md`](docs/00-platform/REPOSITORY_STATE.md) and
 [`NPC-007 Project Roadmap`](docs/00-platform/007-PROJECT_ROADMAP.md).
+
+The Linux Backend (`source/nyhal-linux-backend/`) continues active
+development and is at **v0.28.0**: 6,133 Python tests passing (plus 275
+across 18 Rust crates), the compositor's presentation half and the
+signed package repository landed, the DRM backend rewritten to the real
+kernel UAPI, and all of it verified on real Intel GPU hardware — see
+`source/nyhal-linux-backend/IMPLEMENTATION_STATUS.md` and the
+[`v0.28.0 release`](https://github.com/Myco-mycelium/Nythera/releases/tag/v0.28.0).
 
 All subsystems in [`NPC-008 Subsystem Owners`](docs/00-platform/SUBSYSTEM_OWNERS.md)
 are currently unassigned pending contributors.

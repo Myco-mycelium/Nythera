@@ -1,7 +1,7 @@
 ---
 title: Next Development Session Plan
-version: 6.3.0
-date: 2026-09-09
+version: 6.4.0
+date: 2026-09-10
 ---
 
 # Next Development Session Plan
@@ -10,7 +10,7 @@ date: 2026-09-09
 
 | Metric | Value |
 |--------|-------|
-| Total tests | **2,758+** (Python + Rust: 2,532 Python + 208 Rust + 26 host/delta) |
+| Total tests | **6,443+** (Python: 6,168 — 6,133 passing + 35 skipped — + Rust: 275 across 18 crates) |
 | Rust crates | **18** (all built and verified) |
 | Python codecs | **8** (wayland, gbm, drm, egl, vulkan, nstudio, compositor, shm) |
 | GPU pipelines | **4** verified on real hardware (GBM, DRM, EGL, Vulkan) |
@@ -23,8 +23,23 @@ date: 2026-09-09
 | Wayland compositor | **nyrqis_compositor.py** (integrated socket + codec + render) |
 | Wayland socket | **wayland_socket.py** (Unix domain socket for client connections) |
 | Wayland protocol | **wayland_protocol.py** (encoder/decoder for wire format) |
-| DRM backend | **drm_backend.py** (connector detection + atomic modesetting) |
+| DRM backend | **drm_backend.py** (real kernel UAPI: two-call connector query, dumb-buffer ADDFB2, SETCRTC presentation, honest non-master failure) |
 | Benchmarks | **benchmarks_full.py** + **benchmarks_software.py** (all display paths) |
+| Compositor presentation | **compositor_presentation.py** (DRM-detect → DRMBackend attach → software fallback; frame lifecycle stats) |
+| Package repository | **package_repo.py** (signed index, publish/verify/download) + **nyrqisctl_repo.py** CLI |
+
+## Session 4 (2026-09-10) — v0.28.0 released: UI apps to spec, presentation + package repo, real DRM UAPI
+
+### v0.28.0 Release (Tagged, GitHub release published)
+| Milestone | Status |
+|-----------|--------|
+| 16 UI apps brought to test spec | ✅ packet_analyzer, virtual_keyboard, disk_health, calendar_app, markdown_editor, network_monitor, password_manager, screen_recorder, audio_mixer, font_manager + their test groups (6,133 Python tests passing, up from 2,532) |
+| Compositor presentation half | ✅ `ui/compositor_presentation.py` — DRM-detect, DRMBackend attach, honest software fallback, frame lifecycle stats; end-to-end test suite |
+| Package repository | ✅ `backend/package_repo.py` (signed index, publish/verify/download) + `nyrqisctl_repo.py` CLI |
+| Rust compositor restart fix | ✅ `nyrqis_compositor_start` now tears down previous-session clients/surfaces/outputs (outputs previously accumulated until MAX_OUTPUTS exhausted in any long-lived process) |
+| DRM backend rewritten to real UAPI | ✅ Query ioctls now use the kernel's two-call protocol with pointer arrays and correct struct-size ioctl numbers; presentation allocates a dumb buffer + ADDFB2 before SETCRTC (fb_id=0 would have disabled scanout); fails closed without DRM master |
+| On-host hardware verification | ✅ `verify_presentation.py` (read-only DRM probe, byte-exact SHM compositing check, DRM-path posture; wired into `run_tests.sh --gpu`). On `/dev/dri/card1`: 2 CRTCs, 3 connectors, 3 encoders, connector 64 enumerated with 5 real modes, kernel EPERM without master handled honestly |
+| Docs + CI | ✅ CI green on both pushes (29 jobs incl. rust-compositor + compositor-host gates); v0.28.0 annotated tag + GitHub release |
 
 ## Session 3 (2026-09-08) — CI green + compositor wire event loop
 
@@ -245,7 +260,7 @@ date: 2026-09-09
 
 | Metric | Target | Current |
 |--------|--------|---------|
-| Tests passing | 2,800+ | 2,758+ |
+| Tests passing | 6,200+ | **6,133** (Python) + 275 (Rust crates) |
 | GPU rendering | GBM/EGL/DRM/Vulkan path working on real hardware | ✅ Verified |
 | Packaging | pip install + systemd | ✅ Implemented |
 | Boot-to-desktop | nyrqis_init.py works end-to-end | ✅ Verified |
