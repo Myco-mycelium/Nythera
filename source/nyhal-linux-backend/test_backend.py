@@ -13453,6 +13453,98 @@ class TestControlService(unittest.TestCase):
             stop.set()
             server.close()
 
+    def test_endpoint_rate_limit_ops(self):
+        """The operator can inspect and retune endpoint limiters,
+        including the ADR-0009 §32b fairness knobs."""
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            # List: _serve's manager created ep-svc with the fair default.
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "list_endpoint_rate_limits"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            eps = {e["endpoint_id"]: e for e in resp["endpoints"]}
+            self.assertIn("ep-svc", eps)
+            self.assertEqual(eps["ep-svc"]["limiter"]["kind"],
+                             "FairTokenBucket")
+            self.assertEqual(eps["ep-svc"]["limiter"]["fair_shares"], 8)
+            self.assertAlmostEqual(
+                eps["ep-svc"]["limiter"]["per_sender_share"],
+                eps["ep-svc"]["limiter"]["tokens_per_second"] / 8)
+
+            # Get one endpoint.
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "get_endpoint_rate_limit",
+                "endpoint_id": "ep-svc"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["container_id"], "container-svc")
+            self.assertEqual(resp["limiter"]["sender_burst"], 64)
+
+            # Retune fairness knobs in place.
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "fair_shares": 16,
+                "sender_burst": 32}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["limiter"]["fair_shares"], 16)
+            self.assertEqual(resp["limiter"]["sender_burst"], 32)
+
+            # The change landed on the live endpoint object.
+            ep = server.manager.endpoints["ep-svc"]
+            self.assertEqual(ep.rate_limit.fair_shares, 16)
+            self.assertEqual(ep.rate_limit.sender_burst, 32)
+
+            # Envelope update re-creates the limiter (fairness kept).
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "rate": 4000.0,
+                "bucket_size": 512}).encode())
+            self.assertTrue(resp["ok"], resp)
+            self.assertEqual(resp["limiter"]["tokens_per_second"], 4000.0)
+            self.assertEqual(resp["limiter"]["bucket_size"], 512)
+            self.assertEqual(ep.rate_limit.bucket_size, 512)
+            self.assertEqual(ep.rate_limit.fair_shares, 16)
+
+            # Unknown endpoint and invalid values are errors, not crashes.
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "get_endpoint_rate_limit",
+                "endpoint_id": "nope"}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("not found", resp["error"])
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "rate": 0}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("positive", resp["error"])
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_endpoint_rate_limit_ops_are_operator_only(self):
+        """A container cannot drive the endpoint limiter ops: the
+        control plane's operator gate runs before the op."""
+        fake = self._FakeManager()
+        server, stop = self._serve(
+            fake, pid_registry={os.getpid(): "container-A"},
+            trusted_uids={os.getuid()})
+        client = IPCClient("container-A", self.cli_path).bind()
+        try:
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "fair_shares": 4}).encode())
+            self.assertFalse(resp["ok"])
+            self.assertIn("operator-only", resp["error"])
+            ep = server.manager.endpoints["ep-svc"]
+            self.assertEqual(ep.rate_limit.fair_shares, 8)  # unchanged
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
     def test_operator_container_list_and_kill(self):
         fake = self._FakeManager()
         fake.create(mock.Mock())  # pre-populate the manager with ctr-1

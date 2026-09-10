@@ -26,6 +26,15 @@ Operations (JSON request → JSON reply over CALL/REPLY):
   containers with their state and pid.
 - ``{"service": "control", "op": "container_kill",
    "container_id": str}`` — terminate.
+- ``{"service": "control", "op": "configure_endpoint_rate_limit",
+   "endpoint_id": str, "rate": float, "bucket_size": int,
+   "fair_shares": int, "sender_burst": int}`` — retune an endpoint's
+  rate limiter, including the per-sender fairness knobs (ADR-0009
+  §32b); fields omitted are left unchanged.
+- ``{"service": "control", "op": "get_endpoint_rate_limit",
+   "endpoint_id": str}`` — inspect one endpoint's limiter.
+- ``{"service": "control", "op": "list_endpoint_rate_limits"}`` —
+  every endpoint's limiter summary.
 
 References:
 - NPS-010 §5: capability assignment/revocation at container lifecycle
@@ -37,6 +46,7 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
+from .core import FairTokenBucket
 from .transport import DEFAULT_OPERATOR_ID  # the server is the auth boundary
 
 logger = logging.getLogger(__name__)
@@ -1355,6 +1365,15 @@ class ControlService:
                                   msg.message_id, request)
             elif op == "delete_rate_limit":
                 self._delete_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "configure_endpoint_rate_limit":
+                self._configure_endpoint_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_endpoint_rate_limit":
+                self._get_endpoint_rate_limit(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "list_endpoint_rate_limits":
+                self._list_endpoint_rate_limits(server, sender_path,
                                   msg.message_id, request)
             elif op == "create_feature_flag":
                 self._create_feature_flag(server, sender_path,
@@ -8555,6 +8574,151 @@ class ControlService:
             return
         result = self.container_manager.delete_rate_limit(c, request.get('name', 'default'))
         self._reply(server, sender_path, call_id, {"ok": True, **result})
+
+    # -- IPC endpoint rate limiting (ADR-0009 §32b fairness) ----------
+
+    @staticmethod
+    def _endpoint_limit_snapshot(limiter) -> Dict[str, Any]:
+        """The operator-visible description of an endpoint limiter."""
+        snap: Dict[str, Any] = {
+            "kind": type(limiter).__name__,
+            "bucket_size": int(getattr(limiter, "bucket_size", 0)),
+            "tokens_per_second": float(getattr(limiter, "tokens_per_second", 0.0)),
+        }
+        if isinstance(limiter, FairTokenBucket):
+            snap["fair_shares"] = limiter.fair_shares
+            snap["sender_burst"] = limiter.sender_burst
+            snap["per_sender_share"] = (
+                limiter.tokens_per_second / max(limiter.fair_shares, 1))
+        return snap
+
+    def _configure_endpoint_rate_limit(self, server, sender_path, call_id,
+                                       request) -> None:
+        """Retune an endpoint's limiter in place, including the fairness
+        knobs. Only fields present in the request change; the endpoint's
+        queue and counters are untouched. A partial envelope update
+        re-creates the limiter (envelope + fairness are one budget); a
+        fairness-only update retunes in place.
+        """
+        manager = getattr(self._server, "manager", None)
+        if manager is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "no IPC manager attached"})
+            return
+        endpoint_id = request.get("endpoint_id")
+        if not endpoint_id:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "endpoint_id required"})
+            return
+        endpoints = getattr(manager, "endpoints", {})
+        endpoint = endpoints.get(endpoint_id)
+        if endpoint is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False,
+                         "error": f"endpoint not found: {endpoint_id}"})
+            return
+        current = endpoint.rate_limit
+        has_envelope_field = (
+            "rate" in request or "bucket_size" in request
+            or "tokens_per_second" in request)
+        if has_envelope_field:
+            new_rate = float(request.get(
+                "rate", request.get("tokens_per_second",
+                                     current.tokens_per_second)))
+            new_size = int(request.get("bucket_size", current.bucket_size))
+            if new_rate <= 0 or new_size <= 0:
+                self._reply(server, sender_path, call_id,
+                            {"ok": False,
+                             "error": "rate and bucket_size must be positive"})
+                return
+            fair = current.fair_shares if isinstance(current, FairTokenBucket) \
+                else max(int(request.get("fair_shares", 8)), 1)
+            burst = current.sender_burst if isinstance(current, FairTokenBucket) \
+                else int(request.get("sender_burst", 64))
+            fair = max(int(request.get("fair_shares", fair)), 1)
+            burst = int(request.get("sender_burst", burst))
+            new_limiter = FairTokenBucket(
+                bucket_size=new_size,
+                tokens_per_second=new_rate,
+                fair_shares=fair,
+                sender_burst=burst,
+            )
+        else:
+            if not isinstance(current, FairTokenBucket):
+                self._reply(server, sender_path, call_id,
+                            {"ok": False,
+                             "error": ("endpoint limiter is "
+                                       f"{type(current).__name__}; pass rate "
+                                       "or bucket_size to replace it with a "
+                                       "FairTokenBucket")})
+                return
+            fair = max(int(request.get("fair_shares",
+                                       current.fair_shares)), 1)
+            burst = int(request.get("sender_burst",
+                                    current.sender_burst))
+            if burst < 0:
+                self._reply(server, sender_path, call_id,
+                            {"ok": False,
+                             "error": "sender_burst must be >= 0"})
+                return
+            new_limiter = FairTokenBucket(
+                bucket_size=current.bucket_size,
+                tokens_per_second=current.tokens_per_second,
+                fair_shares=fair,
+                sender_burst=burst,
+            )
+        endpoint.rate_limit = new_limiter
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "endpoint_id": endpoint_id,
+            "limiter": self._endpoint_limit_snapshot(new_limiter),
+        })
+
+    def _get_endpoint_rate_limit(self, server, sender_path, call_id,
+                                 request) -> None:
+        manager = getattr(self._server, "manager", None)
+        if manager is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "no IPC manager attached"})
+            return
+        endpoint_id = request.get("endpoint_id")
+        if not endpoint_id:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "endpoint_id required"})
+            return
+        endpoint = getattr(manager, "endpoints", {}).get(endpoint_id)
+        if endpoint is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False,
+                         "error": f"endpoint not found: {endpoint_id}"})
+            return
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "endpoint_id": endpoint_id,
+            "container_id": endpoint.container_id,
+            "message_count": endpoint.message_count,
+            "limiter": self._endpoint_limit_snapshot(endpoint.rate_limit),
+        })
+
+    def _list_endpoint_rate_limits(self, server, sender_path, call_id,
+                                   request) -> None:
+        manager = getattr(self._server, "manager", None)
+        if manager is None:
+            self._reply(server, sender_path, call_id,
+                        {"ok": False, "error": "no IPC manager attached"})
+            return
+        entries = []
+        for eid in sorted(getattr(manager, "endpoints", {})):
+            endpoint = manager.endpoints[eid]
+            entries.append({
+                "endpoint_id": eid,
+                "container_id": endpoint.container_id,
+                "limiter": self._endpoint_limit_snapshot(endpoint.rate_limit),
+            })
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "endpoints": entries,
+        })
 
     # ------------------------------------------------------------------
     # Feature flag handlers

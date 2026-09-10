@@ -1,7 +1,7 @@
 ---
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
-version: 1.2.0
+version: 1.3.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-12
@@ -113,7 +113,31 @@ scaled to workload class — ~1,000/s for input/audio endpoints, ~20,000/s
 a mechanism change in NPS-010 §7.1, not a parameter choice, and the
 adversarial data above is the argument for it.
 
+## Implementation Note (2026-09-10)
+
+The per-sender fairness the benchmark section above calls for is now
+**implemented in the Linux backend** (`source/nyhal-linux-backend/ipc/core.py`):
+
+- `FairTokenBucket` keeps the endpoint's shared envelope (bucket_size /
+  tokens_per_second, unchanged meaning) and additionally confines each
+  distinct sender to a per-sender sub-bucket refilled at
+  `tokens_per_second / fair_shares` with `sender_burst` burst — one
+  sender's sustained intake can never exceed its share, so the §32b
+  starvation mode (250 Hz client throttled 96% under flood) is closed
+  by construction; regression tests pin the behavior.
+- New endpoints get a fair bucket **by default**
+  (`IPCManager(default_fair_shares=8, default_sender_burst=64)`;
+  sizing rule: envelope ≥ expected senders × per-sender demand).
+- The operator can inspect and retune the knobs on a live endpoint via
+  the control plane (`configure_endpoint_rate_limit`,
+  `get_endpoint_rate_limit`, `list_endpoint_rate_limits`).
+
+The NPS-010 §7.1 wording still needs to adopt this mechanism, and the
+ADR itself remains `Proposed` pending Architecture Group review.
+
 ## Status
 Proposed — sweep + adversarial data collected (2026-09-10, §32);
-parameter recommendation above ready for Architecture Group review. The
-fairness mechanism is a separate NPS-010 §7.1 change.
+parameter recommendation above ready for Architecture Group review.
+The fairness mechanism is implemented in the Linux backend
+(Implementation Note above); spec-side adoption in NPS-010 §7.1 is the
+remaining step.

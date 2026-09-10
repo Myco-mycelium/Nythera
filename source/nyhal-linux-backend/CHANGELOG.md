@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-sender-fair IPC rate limiting** (`ipc/core.FairTokenBucket`,
+  ADR-0009 §32b): the shared endpoint token bucket let one flooding
+  container starve a legitimate 250 Hz client to ~9 admitted/s while
+  the flood still passed ~1,025/s (BENCHMARK_RESULTS §32b).
+  FairTokenBucket keeps the endpoint's shared envelope but confines
+  each sender to a per-sender share (`tokens_per_second / fair_shares`,
+  plus `sender_burst` spike absorption); `IPCEndpoint.send_message`
+  meters by the message's `sender_id`. New endpoints get a fair bucket
+  by default (`IPCManager(default_fair_shares=8,
+  default_sender_burst=64)`; sizing rule: envelope ≥ senders ×
+  per-sender demand). Regression tests pin flood bounding, envelope
+  cap, shared-pool compatibility, and bounded sender-table growth.
+- **Endpoint limiter control-plane ops** (`ipc/control.py`,
+  operator-only): `configure_endpoint_rate_limit` (retune
+  `rate`/`bucket_size`/`fair_shares`/`sender_burst` on a live
+  endpoint), `get_endpoint_rate_limit`, `list_endpoint_rate_limits` —
+  the operator knob for the fairness default.
+
 ### Fixed
 
 - **Vulkan FFI slot leak** (`rust/vulkan`): the three destroy functions
