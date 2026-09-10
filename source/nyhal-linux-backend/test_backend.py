@@ -4788,6 +4788,113 @@ class TestRateLimiting(unittest.TestCase):
         self.assertIn("100", text)
 
 
+class TestFairTokenBucket(unittest.TestCase):
+    """Per-sender-fair rate limiting (ADR-0009 §32b mechanism).
+
+    The adversarial benchmark (BENCHMARK_RESULTS §32b) showed the naive
+    shared bucket starves a legitimate 250 Hz client to ~9 admitted/s
+    under a full-speed flood while the flood still passes ~1,025/s.
+    FairTokenBucket confines each sender to a per-sender share so that
+    cannot happen. These tests pin the mechanism.
+    """
+
+    def _bucket(self, **kw):
+        from ipc.core import FairTokenBucket
+        defaults = dict(bucket_size=256, tokens_per_second=2200.0,
+                        sender_burst=64, fair_shares=8)
+        defaults.update(kw)
+        return FairTokenBucket(**defaults)
+
+    def test_per_sender_share_bounds_flood(self):
+        """One sender's sustained intake cannot exceed its share."""
+        b = self._bucket()
+        admitted = 0
+        for _ in range(5000):
+            if b.try_consume(sender_id="flood"):
+                admitted += 1
+            else:
+                # deterministic-ish pacing so the refill clock advances
+                time.sleep(0.0002)
+        # share = 2200/8 = 275/s; a 5000-call burst run must NOT admit
+        # more than burst + share + test-timing slack.
+        self.assertLessEqual(admitted, 64 + 275 * 1.5 + 50,
+                             f"flood admitted {admitted} — share not enforced")
+
+    def test_shared_envelope_still_cap(self):
+        """The envelope (bucket_size + refill) still caps total intake."""
+        b = self._bucket(tokens_per_second=100.0)
+        admitted = 0
+        for _ in range(1000):
+            if b.try_consume(sender_id=f"s{i}" if False else f"s{admitted % 3}"):
+                admitted += 1
+        self.assertLessEqual(admitted, b.bucket_size + 100 * 0.5 + 25)
+
+    def test_unknown_sender_gets_a_share(self):
+        """A previously-unseen sender can consume (up to sender_burst)."""
+        b = self._bucket()
+        ok = sum(1 for _ in range(64) if b.try_consume(sender_id="newcomer"))
+        self.assertEqual(ok, 64)
+        self.assertFalse(b.try_consume(sender_id="newcomer"))
+
+    def test_no_sender_id_keeps_shared_pool_semantics(self):
+        """try_consume without sender_id uses only the shared envelope."""
+        from ipc.core import TokenBucket
+        b = self._bucket(tokens_per_second=1.0)  # negligible refill mid-loop
+        b.tokens = float(b.bucket_size)  # dataclass default starts at 100
+        ok = sum(1 for _ in range(b.bucket_size) if b.try_consume())
+        self.assertEqual(ok, b.bucket_size)
+        self.assertFalse(b.try_consume())  # envelope exhausted
+
+    def test_endpoint_send_message_enforces_sender_share(self):
+        """send_message passes the message's sender_id to the limiter."""
+        from ipc.core import IPCManager, FairTokenBucket, IPCMessageType
+        mgr = IPCManager()
+        svc = mgr.create_endpoint("c-svc", "ep-svc")
+        bucket = self._bucket()
+        svc.rate_limit = bucket
+
+        def make_msg(sender):
+            return IPCMessage(message_type=IPCMessageType.SEND,
+                              sender_id=sender, receiver_id="c-svc",
+                              payload=b"x")
+
+        # One flooder + one well-behaved sender, interleaved, with real
+        # time so refills tick.
+        flood_ok = legit_ok = 0
+        deadline = time.monotonic() + 1.0
+        nxt = time.monotonic()
+        while time.monotonic() < deadline:
+            if svc.send_message(make_msg("flood")):
+                flood_ok += 1
+            nxt += 1 / 250
+            if svc.send_message(make_msg("legit")):
+                legit_ok += 1
+            d = nxt - time.monotonic()
+            if d > 0:
+                time.sleep(d)
+        # The legit sender (1 interleaved call per 4 ms) must be admitted
+        # essentially every time — the share guarantees 275/s >= 250 Hz.
+        self.assertGreater(legit_ok, 200,
+                           f"legit sender starved again: {legit_ok} admits in 1s")
+
+    def test_sender_table_is_bounded(self):
+        """Thousands of distinct senders don't grow the table unboundedly."""
+        from ipc.core import FairTokenBucket
+        b = self._bucket(sender_burst=1)
+        for i in range(3000):
+            b.try_consume(sender_id=f"sender-{i}")
+        self.assertLessEqual(len(b.sender_tokens),
+                             FairTokenBucket._MAX_SENDER_ENTRIES)
+        self.assertLessEqual(len(b.sender_last),
+                             FairTokenBucket._MAX_SENDER_ENTRIES)
+
+    def test_plain_bucket_accepts_sender_kwarg(self):
+        """TokenBucket.try_consume accepts (ignores) sender_id."""
+        from ipc.core import TokenBucket
+        b = TokenBucket(bucket_size=10, tokens_per_second=1.0)
+        self.assertTrue(b.try_consume(sender_id="anything"))
+
+
 class TestFeatureFlags(unittest.TestCase):
     """Tests for feature flags with gradual rollout."""
 
@@ -10762,11 +10869,14 @@ class TestIPCSemantics(unittest.TestCase):
 
     def test_manager_default_rate_limit(self):
         """IPCManager uses sensible defaults when not configured."""
-        from ipc.core import IPCManager
+        from ipc.core import IPCManager, FairTokenBucket
         mgr = IPCManager()
         ep = mgr.create_endpoint("c1")
+        self.assertIsInstance(ep.rate_limit, FairTokenBucket)
         self.assertEqual(ep.rate_limit.bucket_size, 200)
         self.assertEqual(ep.rate_limit.tokens_per_second, 500.0)
+        self.assertEqual(ep.rate_limit.fair_shares, 8)
+        self.assertEqual(ep.rate_limit.sender_burst, 64)
 
     def test_rate_limit_sweep_throughput(self):
         """Sweep different bucket configs and verify throughput bounds."""

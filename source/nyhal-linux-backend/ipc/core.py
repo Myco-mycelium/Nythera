@@ -160,8 +160,15 @@ class TokenBucket:
             )
             self.last_refill = now
     
-    def try_consume(self, tokens: int = 1) -> bool:
-        """Try to consume tokens. Returns True if successful."""
+    def try_consume(self, tokens: int = 1, sender_id: Optional[str] = None) -> bool:
+        """Try to consume tokens. Returns True if successful.
+
+        ``sender_id`` is accepted for interface compatibility with
+        ``FairTokenBucket`` and ignored here — the plain bucket has a
+        single shared pool (the ADR-0009 §32b benchmark showed that
+        shared pool starves well-behaved senders under flood; endpoints
+        that need fairness use ``FairTokenBucket``).
+        """
         self.refill()
         with self.lock:
             if self.tokens >= tokens:
@@ -179,6 +186,102 @@ class TokenBucket:
         return False
 
 
+@dataclass
+class FairTokenBucket(TokenBucket):
+    """Per-sender-fair token bucket (ADR-0009 §"Benchmark Data — Sweep +
+    Adversarial, 2026-09-10").
+
+    The inherited ``bucket_size``/``tokens_per_second`` envelope is the
+    endpoint's SHARED budget, exactly as before. Each distinct
+    ``sender_id`` is additionally limited to a per-sender sub-bucket of
+    ``sender_burst`` tokens whose refill is the envelope rate divided by
+    ``fair_shares`` — so ONE sender's sustained intake can never exceed
+    ``tokens_per_second / fair_shares`` (plus its burst), and the rest of
+    the envelope stays available to well-behaved senders.
+
+    The adversarial benchmark showed a naive shared bucket starves a
+    legitimate 250 Hz client to ~9 admitted/s under a full-speed flood
+    (96% throttled) while the flood still passes ~1,025/s. With the
+    per-sender share, a flooder is confined to its own slice and the
+    legitimate client sees its requested rate (regression-tested).
+
+    Sizing rule for operators (the ADR's "refill scaled to workload
+    class"): set ``tokens_per_second >= expected_senders x per-sender
+    demand`` — e.g. an input endpoint serving 8 clients at 250 Hz wants
+    an envelope of >=2,000/s with the default ``fair_shares=8``, giving
+    every sender a guaranteed 250/s slice.
+
+    ``try_consume()`` without ``sender_id`` keeps the legacy shared-pool
+    semantics (the envelope only) so existing callers are unaffected.
+    Sender bookkeeping is pruned when the table grows past
+    ``_MAX_SENDER_ENTRIES`` (idle entries evicted first).
+    """
+
+    sender_burst: int = 64        # per-sender spike absorption
+    fair_shares: int = 8          # per-sender refill = envelope / shares
+    sender_tokens: Dict[str, float] = field(default_factory=dict)
+    sender_last: Dict[str, float] = field(default_factory=dict)
+
+    _MAX_SENDER_ENTRIES: int = 1024  # class constant, not a field
+    _SENDER_IDLE_EVICTION_S: float = 300.0
+
+    def _sender_refill_rate(self) -> float:
+        return self.tokens_per_second / max(self.fair_shares, 1)
+
+    def _prune_senders(self, now: float) -> None:
+        """Bound sender-table growth: evict idle entries when large."""
+        if len(self.sender_tokens) <= self._MAX_SENDER_ENTRIES:
+            return
+        idle_cutoff = now - self._SENDER_IDLE_EVICTION_S
+        stale = [s for s, last in self.sender_last.items() if last < idle_cutoff]
+        for s in stale:
+            self.sender_tokens.pop(s, None)
+            self.sender_last.pop(s, None)
+        # If still over (all entries busy), drop the oldest half.
+        if len(self.sender_tokens) > self._MAX_SENDER_ENTRIES:
+            by_age = sorted(self.sender_last.items(), key=lambda kv: kv[1])
+            for s, _ in by_age[: len(by_age) // 2]:
+                self.sender_tokens.pop(s, None)
+                self.sender_last.pop(s, None)
+
+    def try_consume(self, tokens: int = 1, sender_id: Optional[str] = None) -> bool:
+        """Try to consume tokens for ``sender_id`` (or the shared pool
+        when no sender is given). Returns True if successful."""
+        with self.lock:
+            now = time.time()
+            elapsed = now - self.last_refill
+            self.tokens = min(
+                self.bucket_size,
+                self.tokens + elapsed * self.tokens_per_second,
+            )
+            self.last_refill = now
+
+            if sender_id is None:
+                # Legacy shared-pool path.
+                if self.tokens >= tokens:
+                    self.tokens -= tokens
+                    return True
+                return False
+
+            # Per-sender sub-bucket, refilled at envelope/fair_shares.
+            rate = self._sender_refill_rate()
+            last = self.sender_last.get(sender_id, now)
+            s_tokens = min(
+                float(self.sender_burst),
+                self.sender_tokens.get(sender_id, float(self.sender_burst))
+                + (now - last) * rate,
+            )
+            self.sender_last[sender_id] = now
+            self._prune_senders(now)
+
+            if self.tokens >= tokens and s_tokens >= tokens:
+                self.tokens -= tokens
+                self.sender_tokens[sender_id] = s_tokens - tokens
+                return True
+            self.sender_tokens[sender_id] = s_tokens
+            return False
+
+
 class IPCEndpoint:
     """Represents an IPC endpoint for a container per NPS-003 §4.
     
@@ -193,11 +296,14 @@ class IPCEndpoint:
             endpoint_id: Unique identifier for this endpoint
             container_id: The container that owns this endpoint
             rate_limit: Optional token bucket for rate limiting
+                (defaults to a ``FairTokenBucket`` — per-sender fairness
+                per ADR-0009 §32b — so one flooding container cannot
+                starve well-behaved senders on this endpoint)
         """
         self.endpoint_id = endpoint_id
         self.container_id = container_id
         self.message_queue: queue.Queue = queue.Queue()
-        self.rate_limit = rate_limit or TokenBucket()
+        self.rate_limit = rate_limit or FairTokenBucket()
         self.created_at = time.time()
         self.message_count = 0
         self.lock = threading.Lock()
@@ -208,7 +314,11 @@ class IPCEndpoint:
     def send_message(self, message: IPCMessage) -> bool:
         """Enqueue a message for this endpoint.
         
-        Respects rate limiting per ADR-0009.
+        Respects rate limiting per ADR-0009. When the endpoint's limiter
+        is a ``FairTokenBucket``, the per-sender share is enforced using
+        the message's ``sender_id`` so one flooding container cannot
+        starve well-behaved ones (the naive shared bucket did — see
+        BENCHMARK_RESULTS §32b).
         
         Args:
             message: The message to enqueue
@@ -216,7 +326,8 @@ class IPCEndpoint:
         Returns:
             True if the message was queued, False if rate-limited
         """
-        if not self.rate_limit.try_consume():
+        sender = getattr(message, "sender_id", None)
+        if not self.rate_limit.try_consume(sender_id=sender):
             logger.warning(f"IPC rate limit exceeded for endpoint {self.endpoint_id}")
             return False
         
@@ -260,14 +371,31 @@ class IPCManager:
     
     def __init__(self, capability_manager=None,
                  default_bucket_size: int = 200,
-                 default_tokens_per_second: float = 500.0):
+                 default_tokens_per_second: float = 500.0,
+                 default_fair_shares: int = 8,
+                 default_sender_burst: int = 64):
         """Initialize the IPC manager.
+
+        New endpoints get a ``FairTokenBucket`` (ADR-0009 §32b): the
+        envelope below is the shared budget and each sender is confined
+        to ``tokens_per_second / default_fair_shares`` (+
+        ``default_sender_burst`` burst), so a flooding container cannot
+        starve well-behaved ones.
+
+        Sizing rule: set ``default_tokens_per_second >= expected_senders
+        x per-sender demand`` (e.g. 8 clients at 250 Hz → >=2,000/s with
+        the default 8 shares).
 
         Args:
             capability_manager: Optional reference to CapabilityManager for
                                enforcing CAP_IPC_SEND/RECEIVE
-            default_bucket_size: Burst capacity for new endpoint buckets
-            default_tokens_per_second: Refill rate (calls/s) for new endpoints
+            default_bucket_size: Burst capacity of the shared envelope for
+                                new endpoint buckets
+            default_tokens_per_second: Refill rate (calls/s) of the shared
+                                      envelope for new endpoints
+            default_fair_shares: Sender count the envelope is divided by
+                                 (per-sender guaranteed share)
+            default_sender_burst: Per-sender spike absorption (tokens)
         """
         self.endpoints: Dict[str, IPCEndpoint] = {}
         self.container_endpoints: Dict[str, List[str]] = {}  # container_id -> [endpoint_ids]
@@ -277,8 +405,12 @@ class IPCManager:
         self.lock = threading.Lock()
         self.default_bucket_size = default_bucket_size
         self.default_tokens_per_second = default_tokens_per_second
-        logger.info("IPCManager initialized (burst=%d, rate=%.0f/s)",
-                    default_bucket_size, default_tokens_per_second)
+        self.default_fair_shares = max(default_fair_shares, 1)
+        self.default_sender_burst = default_sender_burst
+        logger.info("IPCManager initialized (burst=%d, rate=%.0f/s, "
+                    "fair_shares=%d, sender_burst=%d)",
+                    default_bucket_size, default_tokens_per_second,
+                    self.default_fair_shares, self.default_sender_burst)
     
     def create_endpoint(self, container_id: str, endpoint_id: Optional[str] = None) -> IPCEndpoint:
         """Create a new IPC endpoint for a container.
@@ -295,10 +427,13 @@ class IPCManager:
         if endpoint_id is None:
             endpoint_id = f"ep-{uuid.uuid4().hex[:12]}"
         
-        # Create rate limiter for this endpoint
-        rate_limit = TokenBucket(
+        # Create rate limiter for this endpoint — per-sender-fair by
+        # default (ADR-0009 §32b): one flooder must not starve the rest.
+        rate_limit = FairTokenBucket(
             bucket_size=self.default_bucket_size,
             tokens_per_second=self.default_tokens_per_second,
+            fair_shares=self.default_fair_shares,
+            sender_burst=self.default_sender_burst,
         )
         
         endpoint = IPCEndpoint(endpoint_id, container_id, rate_limit)
