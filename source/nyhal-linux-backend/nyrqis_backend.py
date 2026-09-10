@@ -255,8 +255,8 @@ class StatusServiceHost:
             vault_key_file: Optional[str] = None,
             vault_passphrase: Optional[str] = None,
             commit_interval: float = 5.0,
-            ipc_rate: float = 500.0,
-            ipc_bucket_size: int = 200,
+            ipc_rate: float = 2000.0,
+            ipc_bucket_size: int = 256,
             ipc_fair_shares: int = 8,
             ipc_sender_burst: int = 64) -> None:
         if not socket_path:
@@ -954,15 +954,16 @@ Examples:
              "close/unmount (default: 5.0; 0 = fsync/close only)"
     )
     serve_parser.add_argument(
-        "--ipc-rate", type=float, default=500.0,
+        "--ipc-rate", type=float, default=2000.0,
         help="Default IPC endpoint envelope refill rate in tokens/s "
-             "(ADR-0009; size it: rate >= senders x per-sender demand, "
-             "e.g. 8 clients x 250 Hz -> 2000; default: 500)"
+             "(ADR-0009 proposed review default — sized for 8 clients x "
+             "250 Hz, BENCHMARK_RESULTS §32d; apply the sizing rule "
+             "rate >= senders x per-sender demand before changing)"
     )
     serve_parser.add_argument(
-        "--ipc-bucket-size", type=int, default=200,
+        "--ipc-bucket-size", type=int, default=256,
         help="Default IPC endpoint envelope burst capacity in tokens "
-             "(default: 200)"
+             "(default: 256)"
     )
     serve_parser.add_argument(
         "--ipc-fair-shares", type=int, default=8,

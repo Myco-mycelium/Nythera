@@ -30,7 +30,7 @@ only.
 | ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted | 2026-07-13 | — |
 | ADR-0007 | Adopt Zstandard as the default compression codec | Proposed | 2026-07-12 | — |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted | 2026-07-13 | — |
-| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed | 2026-07-12 | — |
+| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — review package ready | 2026-07-12 | — |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted | 2026-07-13 | — |
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted | 2026-07-13 | — |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted | 2026-07-13 | — |
@@ -77,6 +77,7 @@ only.
 | 1.16.0  | 2026-08-15 | Add ADR-0021 (NyRuntime direction — IPC serving loop behind the FFI boundary); ADR-0021 **Accepted** — close gate met |
 | 1.17.0  | 2026-08-15 | Add ADR-0022 (NyVault storage service) and ADR-0023 (NyVault key manager) |
 | 1.18.0  | 2026-08-16 | Add ADR-0024 (streaming data plane — chunked framing for large CALL payloads) |
+| 1.19.0  | 2026-09-10 | ADR-0009 v1.3.1: Implementation Note — per-sender fairness implemented (`FairTokenBucket`, fair-by-default endpoints, operator control-plane ops, dynamic-shares opt-in), §32b–d benchmark record complete, review package published (`ADR-0009-review-package.md`) |
 
 ---
 **End of Document**

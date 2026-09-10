@@ -1,7 +1,7 @@
 ---
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
-version: 1.3.0
+version: 1.3.1
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-12
@@ -131,6 +131,13 @@ The per-sender fairness the benchmark section above calls for is now
 - The operator can inspect and retune the knobs on a live endpoint via
   the control plane (`configure_endpoint_rate_limit`,
   `get_endpoint_rate_limit`, `list_endpoint_rate_limits`).
+- **Dynamic shares** are available as an opt-in
+  (`FairTokenBucket(dynamic_shares=True)`): `fair_shares` then means
+  "shares at full occupancy" and the effective per-sender refill is
+  the envelope divided by the live sender count — a lone sender may
+  use the whole envelope, the full-occupancy guarantee is unchanged.
+  Not yet the default (pending adversarial re-benchmark; review
+  package §5.1).
 
 The NPS-010 §7.1 wording still needs to adopt this mechanism, and the
 ADR itself remains `Proposed` pending Architecture Group review.

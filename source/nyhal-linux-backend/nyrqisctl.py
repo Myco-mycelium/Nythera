@@ -30,6 +30,7 @@ failed (``ok: false``), 2 on usage errors.
 """
 
 import argparse
+from argparse import BooleanOptionalAction
 import base64
 import json
 import logging
@@ -116,6 +117,8 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             payload["fair_shares"] = int(args.fair_shares)
         if args.sender_burst is not None:
             payload["sender_burst"] = int(args.sender_burst)
+        if args.dynamic_shares is not None:
+            payload["dynamic_shares"] = bool(args.dynamic_shares)
         return payload
     if command == "containers-run":
         return {
@@ -9578,6 +9581,11 @@ def build_parser() -> argparse.ArgumentParser:
     epl_s.add_argument(
         "--sender-burst", type=int, default=None,
         help="Per-sender spike absorption (tokens)")
+    epl_s.add_argument(
+        "--dynamic-shares", default=None, action=BooleanOptionalAction,
+        help="Shares track the live sender count: a lone sender may "
+             "use the whole envelope (opt-in; not the benchmarked "
+             "default)")
     epl_s.set_defaults(command="ep-limits-set")
 
     clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")

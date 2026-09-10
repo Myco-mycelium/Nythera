@@ -74,12 +74,22 @@ senders × per-sender demand**.
 1. **Static vs. dynamic `fair_shares`.** Static shares make a lone
    sender share-capped (~62.5/s on the default envelope — §32d.1).
    Options:
-   - (a) Accept static shares + the sizing rule (what is shipped; the
-     §32c/§32d guarantees are then exact).
-   - (b) Direct a dynamic-shares refinement: `fair_shares` tracks the
-     active-sender count so a lone sender can use the whole envelope;
-     costs a mechanism revision and re-benchmark (§32c would need
-     re-running — burst absorption changes under dynamic shares).
+   - (a) Accept static shares + the sizing rule (the §32c/§32d
+     guarantees are then exact).
+   - (b) Dynamic shares: `fair_shares` means "shares at full
+     occupancy"; the effective per-sender refill is the envelope
+     divided by the live active-sender count, so a lone sender may use
+     the whole envelope while the full-occupancy guarantee is
+     unchanged. **Implemented as an opt-in**
+     (`FairTokenBucket(dynamic_shares=True)`, retunable per endpoint
+     via `configure_endpoint_rate_limit ... "dynamic_shares": true`;
+     occupancy is reported as `active_senders` in the limiter
+     snapshot). NOT yet the default: dynamic behavior needs its own
+     adversarial re-benchmark before it can back the §32c guarantee —
+     the Group decides whether it ships on, per class.
+
+   Both options preserve the NPS-010 §7.1.1 fairness requirement at
+   full occupancy; they differ only in under-occupied behavior.
 2. **Input-class envelope**: confirm 2,000/s (8 × 250 Hz) against
    multi-seat console data when M15 hardware-matrix runs land.
 3. **Bulk path parameters** are informational: bulk traffic is already

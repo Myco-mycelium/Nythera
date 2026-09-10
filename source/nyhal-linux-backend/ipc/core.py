@@ -213,12 +213,24 @@ class FairTokenBucket(TokenBucket):
 
     ``try_consume()`` without ``sender_id`` keeps the legacy shared-pool
     semantics (the envelope only) so existing callers are unaffected.
+
+    ``dynamic_shares=True`` lifts the lone-sender cap (ADR-0009 review
+    package §5.1): ``fair_shares`` then means "shares at full
+    occupancy" and the effective per-sender refill is the envelope
+    divided by ``max(active senders, 1)`` — a lone sender may use the
+    whole envelope, and at ``fair_shares``+ active senders the share is
+    exactly the static ``envelope/fair_shares`` (the §32d guarantee is
+    unchanged under full occupancy). Envelope admission still applies
+    per consume, so N senders with N < fair_shares are bounded by the
+    envelope and their own bursts.
+
     Sender bookkeeping is pruned when the table grows past
     ``_MAX_SENDER_ENTRIES`` (idle entries evicted first).
     """
 
     sender_burst: int = 64        # per-sender spike absorption
     fair_shares: int = 8          # per-sender refill = envelope / shares
+    dynamic_shares: bool = False  # effective shares = max(active, fair_shares)
     sender_tokens: Dict[str, float] = field(default_factory=dict)
     sender_last: Dict[str, float] = field(default_factory=dict)
 
@@ -226,12 +238,30 @@ class FairTokenBucket(TokenBucket):
     _SENDER_IDLE_EVICTION_S: float = 300.0
 
     def _sender_refill_rate(self) -> float:
-        return self.tokens_per_second / max(self.fair_shares, 1)
+        if not self.dynamic_shares:
+            return self.tokens_per_second / max(self.fair_shares, 1)
+        # dynamic_shares: shares shrink to the active-sender count (>= 1)
+        # when the endpoint is under-occupied, so a lone sender can use
+        # the whole envelope; at >= fair_shares active senders the
+        # per-sender share is exactly the static envelope/fair_shares.
+        return self.tokens_per_second / max(len(self.sender_tokens), 1)
+
+    def active_senders(self) -> int:
+        """Distinct senders currently tracked (the dynamic-shares
+        denominator); operators see it as ``active_senders`` in the
+        control-plane snapshot."""
+        with self.lock:
+            return len(self.sender_tokens)
 
     def _prune_senders(self, now: float) -> None:
         """Bound sender-table growth: evict idle entries when large."""
         if len(self.sender_tokens) <= self._MAX_SENDER_ENTRIES:
             return
+        # dynamic_shares note: eviction only trims the TABLE; refill
+        # rates already follow the live count via _sender_refill_rate,
+        # so evicting an idle sender cannot inflate another's share
+        # beyond the live occupancy (the evicted entry is, by
+        # definition, not part of it).
         idle_cutoff = now - self._SENDER_IDLE_EVICTION_S
         stale = [s for s, last in self.sender_last.items() if last < idle_cutoff]
         for s in stale:

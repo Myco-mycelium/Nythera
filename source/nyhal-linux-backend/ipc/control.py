@@ -8590,6 +8590,14 @@ class ControlService:
             snap["sender_burst"] = limiter.sender_burst
             snap["per_sender_share"] = (
                 limiter.tokens_per_second / max(limiter.fair_shares, 1))
+            snap["active_senders"] = len(limiter.sender_tokens)
+            snap["dynamic_shares"] = limiter.dynamic_shares
+            if limiter.dynamic_shares:
+                # What a sender's share refills at RIGHT NOW (occupancy-
+                # dependent under dynamic shares).
+                snap["per_sender_share"] = (
+                    limiter.tokens_per_second
+                    / max(len(limiter.sender_tokens), 1))
         return snap
 
     def _configure_endpoint_rate_limit(self, server, sender_path, call_id,
@@ -8637,11 +8645,16 @@ class ControlService:
                 else int(request.get("sender_burst", 64))
             fair = max(int(request.get("fair_shares", fair)), 1)
             burst = int(request.get("sender_burst", burst))
+            dynamic = bool(request.get(
+                "dynamic_shares",
+                current.dynamic_shares
+                if isinstance(current, FairTokenBucket) else False))
             new_limiter = FairTokenBucket(
                 bucket_size=new_size,
                 tokens_per_second=new_rate,
                 fair_shares=fair,
                 sender_burst=burst,
+                dynamic_shares=dynamic,
             )
         else:
             if not isinstance(current, FairTokenBucket):
@@ -8656,6 +8669,8 @@ class ControlService:
                                        current.fair_shares)), 1)
             burst = int(request.get("sender_burst",
                                     current.sender_burst))
+            dynamic = bool(request.get("dynamic_shares",
+                                       current.dynamic_shares))
             if burst < 0:
                 self._reply(server, sender_path, call_id,
                             {"ok": False,
@@ -8666,6 +8681,7 @@ class ControlService:
                 tokens_per_second=current.tokens_per_second,
                 fair_shares=fair,
                 sender_burst=burst,
+                dynamic_shares=dynamic,
             )
         endpoint.rate_limit = new_limiter
         self._reply(server, sender_path, call_id, {

@@ -23,9 +23,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cap, shared-pool compatibility, and bounded sender-table growth.
 - **Endpoint limiter control-plane ops** (`ipc/control.py`,
   operator-only): `configure_endpoint_rate_limit` (retune
-  `rate`/`bucket_size`/`fair_shares`/`sender_burst` on a live
-  endpoint), `get_endpoint_rate_limit`, `list_endpoint_rate_limits` —
-  the operator knob for the fairness default.
+  `rate`/`bucket_size`/`fair_shares`/`sender_burst`/`dynamic_shares`
+  on a live endpoint), `get_endpoint_rate_limit`,
+  `list_endpoint_rate_limits`; CLI: `nyrqisctl ep-limits
+  list|get|set` (with `--[no-]dynamic-shares`). The limiter snapshot
+  reports live occupancy (`active_senders`) and the effective
+  per-sender share.
+- **Dynamic shares** (`FairTokenBucket.dynamic_shares`, opt-in):
+  `fair_shares` means "shares at full occupancy" — the effective
+  per-sender refill is the envelope divided by the live sender count,
+  so a lone sender may use the whole envelope while the §32d
+  full-occupancy guarantee is unchanged (ADR-0009 review package
+  §5.1). Not yet the default; needs its own adversarial re-benchmark
+  before shipping on generally.
+- **`nyrqisctl ep-limits list|get|set`** and daemon startup knobs
+  (`--ipc-rate/--ipc-bucket-size/--ipc-fair-shares/--ipc-sender-burst`,
+  threaded through `StatusServiceHost` → `IPCManager`); the packaged
+  systemd unit ships the AG-proposed input-class envelope (2,000/s,
+  burst 256, 8 shares → 250/s guaranteed per sender).
+- **ADR-0009 review package** (`docs/reference/adr/ADR-0009-review-package.md`):
+  benchmark record §32a–d, implementation status, proposed defaults,
+  and the sign-off checklist for the Architecture Group.
+- **Fair-bucket defaults data** (`tests/benchmark_bucket.py
+  --fair-sweep`, BENCHMARK_RESULTS §32d): lone-sender static-shares
+  cost (126/s on the old default envelope), guaranteed share delivered
+  (8 × 250 Hz senders all meet rate on a sized envelope), and flat
+  equal starvation when undersized — the defaults proposal and the
+  static-vs-dynamic question for review.
+- **Spec adoption**: NPS-010 §7.1.1 (v1.3.0) normatively requires
+  per-sender fairness; operator how-to
+  (`docs/how-to/tune-endpoint-rate-limits.md`).
 
 ### Fixed
 

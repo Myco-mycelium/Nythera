@@ -75,7 +75,7 @@ index.
 | NPS-007 | Windows Compatibility Runtime | runtime | Accepted |
 | NPS-008 | Android Compatibility Runtime | runtime | Accepted |
 | NPS-009 | Adaptive UI Shell | runtime | Accepted |
-| NPS-010 | Container Runtime | security | Draft — blocked on ADR-0009 (§7.1) |
+| NPS-010 | Container Runtime | security | Draft — blocked on ADR-0009 (§7.1); §7.1.1 fairness adopted |
 | NPS-011 | Capability Registry | security | Accepted |
 | NPS-012 | Controller and Input Subsystem | gaming | Accepted |
 | NPS-013 | GPU Feature Support | gaming | Accepted |
@@ -159,6 +159,7 @@ change process.
 | 1.19.0  | 2026-08-12 | Milestone 11 docs backlog: add NPS-025 (Object Registry) and NPS-026 (Package Format, incl. digital signatures closing FIND-PACKAGE-001); add API-001 (Public API) and ABI-001 (Binary Compatibility); add first Tutorials and How-To guides; refresh category/reference index placeholders |
 | 1.20.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): NPS-003 §6.1 latency and ADR-0009 token-bucket statuses updated to reflect data collected — gates not declared met |
 | 1.21.0  | 2026-08-12 | Add NPS-027 (Threat Model Phase 7 — Package Trust Model, completing Milestone 12); ADR-0007 status reflects first-pass Zstd data collected |
+| 1.22.0  | 2026-09-10 | NPS-010 v1.3.0: §7.1.1 (new) normatively requires per-sender fairness in the endpoint token bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed; ADR-0009 review package published |
 
 ---
 **End of Document**

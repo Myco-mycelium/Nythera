@@ -92,10 +92,32 @@ ep-svc     container-svc  FairTokenBucket  2000/s  256    8       250/s
   confines the flooder to its share; raise the envelope only if
   legitimate senders are ALSO being throttled.
 - Long-running lone-client endpoints (e.g. one game engine per
-  endpoint): either size `rate` to that client's real demand, or note
-  the static-shares limitation — a lone sender gets
-  `sender_burst + rate/fair_shares`, not the whole envelope
-  (§32d.1). Dynamic shares are an open ADR question.
+  endpoint): either size `rate` to that client's real demand, or opt
+  in to **dynamic shares** — see below.
+
+## Dynamic shares (opt-in)
+
+With static shares (the default), a lone sender gets
+`sender_burst + rate/fair_shares`, not the whole envelope (§32d.1).
+`dynamic_shares=true` makes `fair_shares` mean "shares at full
+occupancy": the effective per-sender refill is the envelope divided by
+the **live sender count**, so a lone sender can use the whole envelope
+while N coexisting senders (N ≥ fair_shares) keep the exact static
+guarantee.
+
+```bash
+# Opt in on one endpoint
+nyrqisctl ep-limits set ep-svc --dynamic-shares
+# ... and back off again
+nyrqisctl ep-limits set ep-svc --no-dynamic-shares
+```
+
+`ep-limits list/get` shows live occupancy (`active_senders`) and the
+current effective `per-sender` share. Dynamic shares are **not** the
+default: the §32c adversarial guarantee was measured for static
+shares, and the dynamic behavior still needs its own adversarial
+re-benchmark (ADR-0009 review package §5.1) before it ships on
+generally.
 
 ## References
 

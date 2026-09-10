@@ -4894,6 +4894,84 @@ class TestFairTokenBucket(unittest.TestCase):
         b = TokenBucket(bucket_size=10, tokens_per_second=1.0)
         self.assertTrue(b.try_consume(sender_id="anything"))
 
+    def test_dynamic_shares_lone_sender_uses_envelope(self):
+        """dynamic_shares: a lone sender may draw the whole envelope
+        (the §32d.1 static-shares cap is lifted)."""
+        b = self._bucket(tokens_per_second=2000.0, fair_shares=8,
+                         sender_burst=64)
+        b.dynamic_shares = True
+        admitted = 0
+        deadline = time.monotonic() + 1.5  # full-speed; envelope-limited
+        while time.monotonic() < deadline:
+            if b.try_consume(sender_id="solo"):
+                admitted += 1
+            else:
+                time.sleep(0.0002)
+        # 1.5 s against a 2,000/s envelope: a dynamic lone sender
+        # clears the envelope (burst + refill ≈ 3,064 admits max, so
+        # ≥70% is a conservative floor); a STATIC sender would be
+        # pinned at ~250/s + burst ≈ 440 in the same window.
+        self.assertGreater(admitted, 2000,
+                           f"lone dynamic sender admitted only {admitted} "
+                           "in 1.5 s — envelope not drawn")
+
+    def test_dynamic_shares_lone_sender_outperforms_static(self):
+        """Same workload, same bucket: dynamic admits strictly more
+        than the static share cap."""
+        from ipc.core import FairTokenBucket
+        results = {}
+        for dynamic in (False, True):
+            b = FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                                fair_shares=8, sender_burst=64,
+                                dynamic_shares=dynamic)
+            admitted = 0
+            for _ in range(2000):
+                if b.try_consume(sender_id="solo"):
+                    admitted += 1
+                else:
+                    time.sleep(0.0002)
+            results[dynamic] = admitted
+        self.assertGreater(results[True], results[False] * 2,
+                           f"dynamic {results[True]} vs static "
+                           f"{results[False]} — cap not lifted")
+
+    def test_dynamic_shares_keeps_full_occupancy_guarantee(self):
+        """With >= fair_shares senders active, a dynamic bucket behaves
+        like the static one: per-sender refill == envelope/shares, so
+        one sender's sustained intake stays confined."""
+        b = self._bucket(tokens_per_second=2000.0, fair_shares=8,
+                         sender_burst=64)
+        b.dynamic_shares = True
+        # Occupy the table to (and beyond) fair_shares.
+        for i in range(8):
+            b.try_consume(sender_id=f"bg-{i}")
+        admitted = 0
+        for _ in range(5000):
+            if b.try_consume(sender_id="flood"):
+                admitted += 1
+            else:
+                time.sleep(0.0002)
+        # Share = 2000/8 = 250/s + burst; the flood must NOT exceed it
+        # by much even though every bg sender is idle-but-tracked.
+        self.assertLessEqual(admitted, 64 + 250 * 1.5 + 50,
+                             f"flood admitted {admitted} at full occupancy")
+
+    def test_control_snapshot_reports_active_senders(self):
+        """The endpoint-limiter snapshot exposes live occupancy and the
+        dynamic-shares flag."""
+        from ipc.control import ControlService
+        from ipc.core import FairTokenBucket
+        svc = ControlService.__new__(ControlService)
+        lim = FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                              fair_shares=8, sender_burst=64,
+                              dynamic_shares=True)
+        lim.try_consume(sender_id="a")
+        lim.try_consume(sender_id="b")
+        snap = ControlService._endpoint_limit_snapshot(lim)
+        self.assertEqual(snap["active_senders"], 2)
+        self.assertTrue(snap["dynamic_shares"])
+        self.assertAlmostEqual(snap["per_sender_share"], 1000.0)  # 2000/2
+
 
 class TestFeatureFlags(unittest.TestCase):
     """Tests for feature flags with gradual rollout."""
@@ -11830,7 +11908,7 @@ class TestStatusServiceHost(unittest.TestCase):
             health_socket_path=None, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
             commit_interval=5.0,
-            ipc_rate=500.0, ipc_bucket_size=200,
+            ipc_rate=2000.0, ipc_bucket_size=256,
             ipc_fair_shares=8, ipc_sender_burst=64)
         Host.return_value.serve_until_signal.assert_called_once()
 
@@ -11853,7 +11931,7 @@ class TestStatusServiceHost(unittest.TestCase):
             health_socket_path=health, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
             commit_interval=5.0,
-            ipc_rate=500.0, ipc_bucket_size=200,
+            ipc_rate=2000.0, ipc_bucket_size=256,
             ipc_fair_shares=8, ipc_sender_burst=64)
         Host.return_value.serve_until_signal.assert_called_once()
 
@@ -12780,6 +12858,19 @@ class TestOperatorCli(unittest.TestCase):
         # Omitted fields are not sent — the daemon leaves them as-is.
         self.assertNotIn("bucket_size",
                          nyrqisctl.build_payload(args.command, args))
+        # Dynamic shares is tri-state: absent / on / off.
+        self.assertNotIn("dynamic_shares",
+                         nyrqisctl.build_payload(args.command, args))
+        args = parser.parse_args(
+            ["ep-limits", "set", "ep-svc", "--dynamic-shares"])
+        self.assertIs(
+            nyrqisctl.build_payload(args.command, args)["dynamic_shares"],
+            True)
+        args = parser.parse_args(
+            ["ep-limits", "set", "ep-svc", "--no-dynamic-shares"])
+        self.assertIs(
+            nyrqisctl.build_payload(args.command, args)["dynamic_shares"],
+            False)
 
     def test_cli_format_human_endpoint_limits(self):
         listed = nyrqisctl.format_human("ep-limits-list", {
