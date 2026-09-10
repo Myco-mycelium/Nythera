@@ -54,6 +54,8 @@ DEFAULT_TIMEOUT_S = 30.0
 # (when configured) the dedicated health socket (ADR-0021).
 STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
+# Endpoint IPC rate-limiter ops (ADR-0009 §32b fairness knobs).
+ENDPOINT_LIMIT_COMMANDS = ("ep-limits-list", "ep-limits-get", "ep-limits-set")
 NUI_COMMANDS = ("nui-validate", "nui-load", "nui-current")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
@@ -92,6 +94,29 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
         return {"op": command}
     if command == "containers-list":
         return {"service": "control", "op": "container_list"}
+    if command == "ep-limits-list":
+        return {"service": "control", "op": "list_endpoint_rate_limits"}
+    if command == "ep-limits-get":
+        return {
+            "service": "control",
+            "op": "get_endpoint_rate_limit",
+            "endpoint_id": args.endpoint_id,
+        }
+    if command == "ep-limits-set":
+        payload: Dict[str, Any] = {
+            "service": "control",
+            "op": "configure_endpoint_rate_limit",
+            "endpoint_id": args.endpoint_id,
+        }
+        if args.rate is not None:
+            payload["rate"] = float(args.rate)
+        if args.bucket_size is not None:
+            payload["bucket_size"] = int(args.bucket_size)
+        if args.fair_shares is not None:
+            payload["fair_shares"] = int(args.fair_shares)
+        if args.sender_burst is not None:
+            payload["sender_burst"] = int(args.sender_burst)
+        return payload
     if command == "containers-run":
         return {
             "service": "control",
@@ -5100,6 +5125,42 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         rows = [f"{c.get('id')}\t{c.get('state')}\t{c.get('pid')}"
                 for c in containers]
         return "\n".join(["id\tstate\tpid"] + rows)
+    if command == "ep-limits-list":
+        eps = resp.get("endpoints") or []
+        if not eps:
+            return "no endpoints"
+        rows = []
+        for e in eps:
+            lim = e.get("limiter") or {}
+            share = lim.get("per_sender_share")
+            share_s = (
+                f"{share:.0f}/s"
+                if isinstance(share, (int, float)) else "-")
+            rows.append(
+                f"{e.get('endpoint_id')}\t{e.get('container_id')}\t"
+                f"{lim.get('kind', '-')}\t{lim.get('tokens_per_second', 0):.0f}/s\t"
+                f"{lim.get('bucket_size', 0)}\t"
+                f"{lim.get('fair_shares', '-')}\t{share_s}")
+        return "\n".join([
+            "endpoint\tcontainer\tkind\trate\tburst\tshares\tper-sender",
+        ] + rows)
+    if command in ("ep-limits-get", "ep-limits-set"):
+        lim = resp.get("limiter") or {}
+        lines = [
+            f"endpoint:      {resp.get('endpoint_id')}",
+            f"kind:          {lim.get('kind')}",
+            f"rate:          {lim.get('tokens_per_second', 0):.0f}/s",
+            f"burst:         {lim.get('bucket_size', 0)}",
+        ]
+        if "fair_shares" in lim:
+            lines += [
+                f"fair shares:   {lim.get('fair_shares')}",
+                f"sender burst:  {lim.get('sender_burst')}",
+                f"per-sender:    {lim.get('per_sender_share', 0):.0f}/s",
+            ]
+        if resp.get("message_count") is not None:
+            lines.append(f"messages:      {resp.get('message_count')}")
+        return "\n".join(lines)
     if command == "containers-run":
         return (
             f"container {resp.get('container_id')} started "
@@ -9224,6 +9285,7 @@ def run(command: str, args: argparse.Namespace) -> int:
         # with container traffic on the main service socket).
         target = args.health_socket
     elif (command in CONTROL_COMMANDS
+          or command in ENDPOINT_LIMIT_COMMANDS
           or command in VAULT_COMMANDS
           or command in NUI_COMMANDS
           or command in APP_COMMANDS) and args.health_socket:
@@ -9485,6 +9547,38 @@ def build_parser() -> argparse.ArgumentParser:
     cs = csub.add_parser("stats", help="Show live resource stats for a container")
     cs.add_argument("container_id")
     cs.set_defaults(command="containers-stats")
+
+    # -- endpoint IPC rate limiters (ADR-0009 §32b fairness) ----------
+    epl = sub.add_parser(
+        "ep-limits", help="Inspect and tune endpoint IPC rate limiters")
+    ep_sub = epl.add_subparsers(dest="ep_cmd", required=True)
+
+    epl_l = ep_sub.add_parser(
+        "list", help="List every endpoint's rate limiter")
+    epl_l.set_defaults(command="ep-limits-list")
+
+    epl_g = ep_sub.add_parser(
+        "get", help="Show one endpoint's rate limiter")
+    epl_g.add_argument("endpoint_id")
+    epl_g.set_defaults(command="ep-limits-get")
+
+    epl_s = ep_sub.add_parser(
+        "set", help="Retune an endpoint's limiter (omitted fields stay)")
+    epl_s.add_argument("endpoint_id")
+    epl_s.add_argument(
+        "--rate", type=float, default=None,
+        help="Shared envelope refill rate (tokens/s)")
+    epl_s.add_argument(
+        "--bucket-size", type=int, default=None,
+        help="Shared envelope burst capacity (tokens)")
+    epl_s.add_argument(
+        "--fair-shares", type=int, default=None,
+        help="Sender count the envelope is divided by "
+             "(per-sender guaranteed share)")
+    epl_s.add_argument(
+        "--sender-burst", type=int, default=None,
+        help="Per-sender spike absorption (tokens)")
+    epl_s.set_defaults(command="ep-limits-set")
 
     clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")
     clo.add_argument("container_id")

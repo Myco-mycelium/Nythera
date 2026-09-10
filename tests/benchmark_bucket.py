@@ -153,7 +153,10 @@ def sweep() -> list:
     rows.append(("floor (unthrottled)", 0, floor, floor_result["throttled"]))
 
     # Manager-default row: NO bucket replacement — measure the endpoint
-    # exactly as create_endpoint builds it (burst=200, 500/s today).
+    # exactly as create_endpoint builds it (FairTokenBucket with the
+    # 200 / 500/s envelope and fair-by-default shares since the §32b
+    # fairness landing; a single client can still use the whole
+    # envelope, so this row's shape is unchanged for one sender).
     mgr = IPCManager()
     svc = mgr.create_endpoint("container-svc", "ep-svc")
     cli = mgr.create_endpoint("container-cli", "ep-cli")
@@ -187,7 +190,9 @@ def sweep() -> list:
     return rows
 
 
-def adversarial(duration_s: float = 3.0, legit_rate_hz: float = 250.0) -> dict:
+def adversarial(duration_s: float = 3.0, legit_rate_hz: float = 250.0,
+                fair: bool = False, rate: float = 1000.0,
+                fair_shares: int = 8) -> dict:
     """Flood vs legitimate client sharing ONE limiter on the endpoint.
 
     The limiter protects the SERVICE endpoint (as NPS-010 §7.1 intends:
@@ -202,9 +207,19 @@ def adversarial(duration_s: float = 3.0, legit_rate_hz: float = 250.0) -> dict:
     a naive shared bucket will NOT do that, and quantifying the
     interference is exactly the data ADR-0009 needs to decide between
     shared buckets and per-sender fairness).
+
+    With ``fair=True`` the endpoint limiter is a ``FairTokenBucket``
+    with the SAME envelope (256 / ``rate``) but per-sender shares
+    (``fair_shares``, sender_burst=64) — the §32b mechanism, measured
+    on the identical scenario for an apples-to-apples comparison.
     """
     mgr = IPCManager()
-    bucket = TokenBucket(bucket_size=256, tokens_per_second=1000.0)
+    if fair:
+        from ipc.core import FairTokenBucket
+        bucket = FairTokenBucket(bucket_size=256, tokens_per_second=rate,
+                                 fair_shares=fair_shares, sender_burst=64)
+    else:
+        bucket = TokenBucket(bucket_size=256, tokens_per_second=rate)
     svc = mgr.create_endpoint("container-svc", "ep-svc")
     svc.rate_limit = bucket
     flood_ep = mgr.create_endpoint("container-flood", "ep-flood")
@@ -259,7 +274,9 @@ def adversarial(duration_s: float = 3.0, legit_rate_hz: float = 250.0) -> dict:
     return {
         "duration_s": duration_s,
         "legit_requested_hz": legit_rate_hz,
-        "bucket": {"size": 256, "rate": 1000},
+        "fair": fair,
+        "bucket": {"size": 256, "rate": rate,
+                   "fair_shares": fair_shares if fair else None},
         "flood_admitted_per_s": round(counts["flood_ok"] / duration_s, 1),
         "flood_throttled_per_s": round(counts["flood_thr"] / duration_s, 1),
         "legit_admitted_per_s": round(counts["legit_ok"] / duration_s, 1),
@@ -291,6 +308,15 @@ def main():
     if args.adversarial or both:
         print("\nadversarial interference (shared endpoint bucket):")
         result = adversarial()
+        for k, v in result.items():
+            print(f"  {k}: {v}")
+        print("\nadversarial interference (FairTokenBucket, same envelope):")
+        result = adversarial(fair=True)
+        for k, v in result.items():
+            print(f"  {k}: {v}")
+        print("\nadversarial interference (FairTokenBucket, envelope "
+              "sized to demand: 8 shares x 250 Hz = 2,000/s):")
+        result = adversarial(fair=True, rate=2000.0)
         for k, v in result.items():
             print(f"  {k}: {v}")
 

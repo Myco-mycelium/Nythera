@@ -1,14 +1,14 @@
 ---
 title: Container Runtime
 document_id: NPS-010
-version: 1.2.0
+version: 1.3.0
 status: Draft
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-09-10
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0009, NPS-002, NPS-003]
@@ -114,6 +114,18 @@ request non-default bucket parameters, but any increase above the platform
 default **MUST** be justified by a specific capability grant that legitimately
 requires it (e.g. a bulk-transfer-heavy capability), evaluated in §4.2.
 
+7.1.1. The endpoint's token bucket **MUST** enforce **per-sender
+fairness**: a sender's sustained intake **MUST NOT** exceed its share of
+the endpoint's envelope — in the Linux backend, `FairTokenBucket`
+confines each sender to `tokens_per_second / fair_shares` (plus a
+bounded `sender_burst`) under the shared envelope, and endpoints are
+fair **by default** (ADR-0009 §32b: a shared-only bucket starved a
+legitimate 250 Hz client to ~9 admitted/s under a full-speed flood).
+The bucket **MUST** still cap total intake at the shared envelope.
+Endpoint limiter parameters (including `fair_shares`/`sender_burst`)
+**MAY** be retuned by the operator at runtime through the control
+plane.
+
 7.2. Containers **SHOULD** also be assignable CPU-time and memory limits,
 enforced by the scheduler and memory manager (NPS-001 §3), to prevent a
 single container from starving others — this extends the same "container
@@ -142,14 +154,18 @@ administrator questions.
 ## 9. Open Questions *(Informative)*
 
 - **Status note (Milestone 9 review; benchmark status updated
-  2026-08-12):** §7.1 of this document normatively requires the
-  ADR-0009 token-bucket mechanism. First-pass benchmark data now exists
-  (`tests/BENCHMARK_RESULTS.md`): the default bucket sustains only ~99.5
-  calls/s on a client→endpoint path and throttles ~18.9k calls/s at full
-  speed, so the default parameters are demonstrably too low for
-  high-frequency legitimate traffic — a finding recorded in ADR-0009,
-  which remains `Proposed` pending the parameter sweep and Architecture
-  Group review. The container lifecycle, capability assignment, and
+  2026-08-12; §7.1.1 fairness adopted 2026-09-10):** §7.1 of this
+  document normatively requires the ADR-0009 token-bucket mechanism.
+  First-pass benchmark data now exists (`tests/BENCHMARK_RESULTS.md`):
+  the default bucket sustains only ~99.5 calls/s on a client→endpoint
+  path and throttles ~18.9k calls/s at full speed, so the default
+  parameters are demonstrably too low for high-frequency legitimate
+  traffic — a finding recorded in ADR-0009, which remains `Proposed`
+  pending the parameter sweep and Architecture Group review. The
+  §32b adversarial finding (shared-bucket starvation) is closed at the
+  mechanism level: §7.1.1 now requires per-sender fairness, implemented
+  in the Linux backend as `FairTokenBucket` with fair-by-default
+  endpoints. The container lifecycle, capability assignment, and
   revocation sections (§4–§6, §8) are not themselves blocked, but this
   document is kept `Draft` as a whole rather than partially accepted,
   consistent with NPC-001 §5's rule that acceptance applies to a
@@ -169,6 +185,7 @@ administrator questions.
 | 1.0.1   | 2026-07-13 | Clarify Draft status is a transitive dependency on ADR-0009 §7.1, not an issue in this document's own content (Milestone 9 review) |
 | 1.1.0   | 2026-07-13 | §4.2: require atomic validity-check-and-grant, closing FIND-CAPABILITY-001. §8.1: require tamper-evident (hash-chained) audit log per new ADR-0018, closing FIND-CAPABILITY-002. Both from threat model Phase 3 (NPS-021). |
 | 1.2.0   | 2026-08-12 | §9 status note: record first-pass ADR-0009 benchmark data (tests/BENCHMARK_RESULTS.md); default bucket shown to throttle this workload shape; ADR-0009 remains Proposed |
+| 1.3.0   | 2026-09-10 | §7.1.1 (new): normatively require per-sender fairness in the endpoint bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed |
 
 ---
 **End of Document**

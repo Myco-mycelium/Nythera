@@ -1323,6 +1323,66 @@ review.
 No gate declared met; ADR-0009's default parameters now have complete
 data and the fairness-mechanism gap is newly recorded.
 
+### 32c. Adversarial interference with FairTokenBucket (2026-09-10,
+post-implementation)
+
+`python3 tests/benchmark_bucket.py --adversarial` now runs the §32b
+scenario THREE ways — same flood, same 250 Hz legitimate client, same
+256-burst envelope; the limiter differs. The mechanism recommended by
+§32b (per-sender fairness) is implemented as `ipc/core.FairTokenBucket`
+and endpoints are fair **by default** (ADR-0009 Implementation Note,
+NPS-010 §7.1.1).
+
+Shared bucket (unchanged from §32b — reproduced same-session):
+
+| metric | value |
+|--------|-------|
+| flood admitted / s | 1,030.3 |
+| legitimate (250 Hz) admitted / s | **3.3** |
+| legitimate meets request | **NO** |
+
+FairTokenBucket, SAME undersized envelope (256 / 1,000/s, shares=8 →
+125/s per sender):
+
+| metric | value |
+|--------|-------|
+| flood admitted / s | 146.3 |
+| legitimate (250 Hz) admitted / s | 146.3 |
+| legitimate meets request | NO |
+
+**Finding: fairness equalizes starvation, it does not create
+capacity.** Against the same envelope, the flooder drops 1,030 → 146
+admits/s (confined to its share — the §32b starvation weapon is gone)
+and both senders are admitted identically (~125/s steady state each,
+plus burst absorption). The 250 Hz legitimate client is still
+under-provisioned because the envelope is: 8 shares × 250 Hz needs a
+≥2,000/s envelope — precisely the ADR's sizing rule ("refill scaled to
+workload class"; envelope ≥ senders × per-sender demand).
+
+FairTokenBucket, envelope sized to demand (256 / 2,000/s, shares=8 →
+250/s per sender):
+
+| metric | value |
+|--------|-------|
+| flood admitted / s | 271.3 |
+| legitimate (250 Hz) admitted / s | **250.0** |
+| legitimate throttled / s | **0.0** |
+| legitimate meets request | **YES** |
+
+**Finding: with the envelope sized per the rule, the legitimate client
+gets every requested call through (0 throttled) while the flood stays
+confined to its own share.** This is the complete §32b → §32c argument:
+the mechanism closes the starvation mode, and the operator sizing rule
+(e.g. `nyrqisctl ep-limits set <ep> --rate 2000 --fair-shares 8`)
+delivers the guaranteed per-sender rate. Regressing to a shared bucket
+at the same envelope would still starve the 250 Hz client (§32b row
+one) — the fairness dimension is doing real work, not the envelope
+size alone (a shared 2,000/s bucket would STILL pass the flood first;
+only the refill split protects the legit client).
+
+No gate declared met. The mechanism is adopted in NPS-010 §7.1.1;
+default parameter values remain pending Architecture Group review.
+
 ## 33. ADR-0013 Tuning Data — EEVDF Scheduling Simulation (2026-09-10)
 
 `python3 tests/benchmark_adr0013.py` — a discrete-event EEVDF

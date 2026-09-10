@@ -12734,6 +12734,55 @@ class TestOperatorCli(unittest.TestCase):
         self.assertEqual(args.command, "containers-run")
         self.assertEqual(args.run_command, ["/bin/sleep", "30"])
 
+    def test_cli_endpoint_limit_commands(self):
+        """ep-limits list/get/set mirror the control-plane ops."""
+        parser = nyrqisctl.build_parser()
+        args = parser.parse_args(["ep-limits", "list"])
+        self.assertEqual(args.command, "ep-limits-list")
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control",
+                          "op": "list_endpoint_rate_limits"})
+        args = parser.parse_args(["ep-limits", "get", "ep-svc"])
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control",
+                          "op": "get_endpoint_rate_limit",
+                          "endpoint_id": "ep-svc"})
+        args = parser.parse_args([
+            "ep-limits", "set", "ep-svc", "--rate", "4000",
+            "--fair-shares", "16"])
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control",
+                          "op": "configure_endpoint_rate_limit",
+                          "endpoint_id": "ep-svc",
+                          "rate": 4000.0, "fair_shares": 16})
+        # Omitted fields are not sent — the daemon leaves them as-is.
+        self.assertNotIn("bucket_size",
+                         nyrqisctl.build_payload(args.command, args))
+
+    def test_cli_format_human_endpoint_limits(self):
+        listed = nyrqisctl.format_human("ep-limits-list", {
+            "ok": True, "endpoints": [
+                {"endpoint_id": "ep-svc", "container_id": "container-svc",
+                 "limiter": {"kind": "FairTokenBucket",
+                             "tokens_per_second": 500.0,
+                             "bucket_size": 200, "fair_shares": 8,
+                             "per_sender_share": 62.5}}]})
+        self.assertIn("ep-svc\tcontainer-svc\tFairTokenBucket", listed)
+        self.assertIn("500/s", listed)
+        self.assertIn("62/s", listed)
+        got = nyrqisctl.format_human("ep-limits-get", {
+            "ok": True, "endpoint_id": "ep-svc",
+            "message_count": 3,
+            "limiter": {"kind": "FairTokenBucket",
+                        "tokens_per_second": 500.0,
+                        "bucket_size": 200, "fair_shares": 8,
+                        "sender_burst": 64,
+                        "per_sender_share": 62.5}})
+        self.assertIn("endpoint:      ep-svc", got)
+        self.assertIn("fair shares:   8", got)
+        self.assertIn("per-sender:    62/s", got)
+        self.assertIn("messages:      3", got)
+
     def test_cli_call_daemon_missing_socket_returns_none(self):
         self.assertIsNone(nyrqisctl.call_daemon(
             os.path.join(self.tmp, "none.sock"), {"op": "ping"},
