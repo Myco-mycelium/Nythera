@@ -63,7 +63,7 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
 - [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, close-out data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §31): real-asset level sweep (ratio flat ~1.07 at every level on already-compressed data), real LZ4 fast path (2.7× zstd-1 compression at equal ratio), concurrent scaling (2.2× at 8 threads); default-level decision pending Architecture Group review with the data now complete
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, sweep + adversarial data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §32): steady-state throughput ≈ refill rate (burst only shapes spike absorption), shipped default ≈ 4.5% of path capacity, and a shared bucket demonstrably starves a legitimate 250 Hz client under flood — the identified per-sender fairness mechanism is now implemented in the Linux backend (`FairTokenBucket`, fair-by-default endpoints, operator control-plane knobs); NPS-010 §7.1 spec adoption and Architecture Group review pending
+- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, review package ready (`docs/reference/adr/ADR-0009-review-package.md`): sweep + adversarial + fair-bucket defaults data complete (2026-09-10, `tests/BENCHMARK_RESULTS.md` §32a–d); the per-sender fairness mechanism is implemented in the Linux backend (`FairTokenBucket`, fair-by-default endpoints, operator control-plane knobs) and adopted normatively in NPS-010 §7.1.1; §32d proposes review defaults (input-class envelope 2,000/s, shares=8 → 250/s guaranteed per sender) and surfaces the one open mechanism question (static vs. dynamic `fair_shares`) — Architecture Group sign-off pending
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
@@ -608,6 +608,14 @@ measurements:
    requested while the flood still passes ~1,025/s) — the quantitative
    case for per-sender fairness as a mechanism change in NPS-010 §7.1.
    ADR-0009 review package ready.
+   **Fair-bucket defaults data + spec adoption collected 2026-09-10**
+   (§32c–d, `ADR-0009-review-package.md`): the fairness mechanism is
+   implemented (`FairTokenBucket`) and normative (NPS-010 §7.1.1);
+   sized to demand, every sender meets its rate under a flood while
+   the flooder is confined to its share — and the honest cost of
+   static shares is measured (a lone sender is capped at
+   `sender_burst + envelope/shares`), leaving static-vs-dynamic shares
+   as the one open mechanism question for the review.
 3. ~~Benchmark Zstd compression levels, install size vs. load time
    (unblocks ADR-0007, then NPS-005).~~ **First-pass data collected
    2026-08-12** — level sweep on a synthetic corpus (overall ratio 2.54

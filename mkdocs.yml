@@ -51,6 +51,7 @@ nav:
       - Operate the NyVault Storage Service: how-to/operate-the-vault.md
       - Verify the Docs Dependency Graph: how-to/check-dependency-cycles.md
       - Choose an Implementation Language: how-to/choose-an-implementation-language.md
+      - Tune Endpoint IPC Rate Limits: how-to/tune-endpoint-rate-limits.md
   - Reference:
       - ADRs:
           - Index: reference/adr/README.md
@@ -63,6 +64,7 @@ nav:
           - ADR-0007 Compression codec: reference/adr/ADR-0007-compression-codec.md
           - ADR-0008 Android runtime approach: reference/adr/ADR-0008-android-runtime-approach.md
           - ADR-0009 IPC rate limiting: reference/adr/ADR-0009-ipc-rate-limiting.md
+          - ADR-0009 Review Package: reference/adr/ADR-0009-review-package.md
           - ADR-0010 Vulkan graphics foundation: reference/adr/ADR-0010-vulkan-graphics-foundation.md
           - ADR-0011 AI assistant containerization: reference/adr/ADR-0011-ai-assistant-containerization.md
           - ADR-0012 NyHAL pluggable kernel backend: reference/adr/ADR-0012-nyhal-pluggable-kernel-backend.md

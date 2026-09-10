@@ -185,6 +185,7 @@ python3 nyrqisctl.py app terminate --app-id "android:com.example.myapp"
 | `nyrqisctl.py containers run` | Start a new container |
 | `nyrqisctl.py containers list` | List running containers |
 | `nyrqisctl.py containers kill` | Terminate a container |
+| `nyrqisctl.py ep-limits list/get/set` | Inspect and tune endpoint IPC rate limiters (see [Tune Endpoint IPC Rate Limits](../how-to/tune-endpoint-rate-limits.md)) |
 | `nyrqisctl.py vault init` | Initialize an encrypted vault key |
 | `nyrqisctl.py vault create` | Create a named volume |
 | `nyrqisctl.py vault write/read` | Store and retrieve data |

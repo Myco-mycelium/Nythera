@@ -254,7 +254,11 @@ class StatusServiceHost:
             vault_dir: Optional[str] = None,
             vault_key_file: Optional[str] = None,
             vault_passphrase: Optional[str] = None,
-            commit_interval: float = 5.0) -> None:
+            commit_interval: float = 5.0,
+            ipc_rate: float = 500.0,
+            ipc_bucket_size: int = 200,
+            ipc_fair_shares: int = 8,
+            ipc_sender_burst: int = 64) -> None:
         if not socket_path:
             raise ValueError("socket_path is required")
         self.socket_path = socket_path
@@ -276,7 +280,12 @@ class StatusServiceHost:
         self.state = DaemonStateFile(state_file) if state_file else None
         self._recovery: Optional[dict] = None
         self._started_at = time.time()
-        self.ipc_manager = IPCManager()
+        self.ipc_manager = IPCManager(
+            default_bucket_size=ipc_bucket_size,
+            default_tokens_per_second=ipc_rate,
+            default_fair_shares=ipc_fair_shares,
+            default_sender_burst=ipc_sender_burst,
+        )
         self.ipc_manager.create_endpoint("container-svc", "ep-svc")
         self.ipc_registry = ContainerIpcRegistry()
         self.capability_manager = CapabilityManager()
@@ -696,6 +705,10 @@ def cmd_service_serve(args) -> int:
         vault_passphrase=args.vault_passphrase
         or os.environ.get("NYRQIS_VAULT_PASSPHRASE") or None,
         commit_interval=args.commit_interval,
+        ipc_rate=args.ipc_rate,
+        ipc_bucket_size=args.ipc_bucket_size,
+        ipc_fair_shares=args.ipc_fair_shares,
+        ipc_sender_burst=args.ipc_sender_burst,
     )
     host.serve_until_signal()
     return 0
@@ -939,6 +952,27 @@ Examples:
              "commit): the passthrough's dirty volumes are persisted at "
              "the first operation after this interval, at fsync, and at "
              "close/unmount (default: 5.0; 0 = fsync/close only)"
+    )
+    serve_parser.add_argument(
+        "--ipc-rate", type=float, default=500.0,
+        help="Default IPC endpoint envelope refill rate in tokens/s "
+             "(ADR-0009; size it: rate >= senders x per-sender demand, "
+             "e.g. 8 clients x 250 Hz -> 2000; default: 500)"
+    )
+    serve_parser.add_argument(
+        "--ipc-bucket-size", type=int, default=200,
+        help="Default IPC endpoint envelope burst capacity in tokens "
+             "(default: 200)"
+    )
+    serve_parser.add_argument(
+        "--ipc-fair-shares", type=int, default=8,
+        help="Sender count the envelope is divided by — the "
+             "per-sender guaranteed share is rate/shares (ADR-0009 "
+             "§7.1.1 fairness; default: 8)"
+    )
+    serve_parser.add_argument(
+        "--ipc-sender-burst", type=int, default=64,
+        help="Per-sender spike absorption in tokens (default: 64)"
     )
     serve_parser.set_defaults(func=cmd_service_serve)
 

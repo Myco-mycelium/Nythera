@@ -11610,6 +11610,24 @@ class TestStatusServiceHost(unittest.TestCase):
         return nyrqis_backend.StatusServiceHost(
             socket_path=self.sock, backend_version="9.9.9")
 
+    def test_host_threads_ipc_envelope_knobs(self):
+        """The daemon startup knobs size the fair bucket that endpoints
+        actually get (ADR-0009 sizing rule, ops-visible)."""
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            ipc_rate=2000.0, ipc_bucket_size=256,
+            ipc_fair_shares=8, ipc_sender_burst=64)
+        try:
+            ep = host.ipc_manager.endpoints["ep-svc"]
+            from ipc.core import FairTokenBucket
+            self.assertIsInstance(ep.rate_limit, FairTokenBucket)
+            self.assertEqual(ep.rate_limit.tokens_per_second, 2000.0)
+            self.assertEqual(ep.rate_limit.bucket_size, 256)
+            self.assertEqual(ep.rate_limit.fair_shares, 8)
+            self.assertEqual(ep.rate_limit.sender_burst, 64)
+        finally:
+            host.stop()
+
     def test_host_serves_status_service(self):
         host = self._host()
         host.start()
@@ -11811,7 +11829,9 @@ class TestStatusServiceHost(unittest.TestCase):
             state_file="/run/nyrqis/daemon-state.json",
             health_socket_path=None, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
-            commit_interval=5.0)
+            commit_interval=5.0,
+            ipc_rate=500.0, ipc_bucket_size=200,
+            ipc_fair_shares=8, ipc_sender_burst=64)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_cli_service_serve_wires_health_socket(self):
@@ -11832,7 +11852,9 @@ class TestStatusServiceHost(unittest.TestCase):
             state_file="/run/nyrqis/daemon-state.json",
             health_socket_path=health, vault_dir="/var/lib/nyrqis/vault",
             vault_key_file=None, vault_passphrase=None,
-            commit_interval=5.0)
+            commit_interval=5.0,
+            ipc_rate=500.0, ipc_bucket_size=200,
+            ipc_fair_shares=8, ipc_sender_burst=64)
         Host.return_value.serve_until_signal.assert_called_once()
 
     def test_host_health_socket_serves_ping(self):

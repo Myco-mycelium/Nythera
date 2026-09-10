@@ -285,6 +285,123 @@ def adversarial(duration_s: float = 3.0, legit_rate_hz: float = 250.0,
     }
 
 
+def _drive_n_senders(bucket, n: int, per_sender_hz: float,
+                     window_s: float = 2.0) -> dict:
+    """Drive ``n`` paced clients against one endpoint whose limiter is
+    ``bucket``; report per-sender admission rates.
+
+    This is the guaranteed-share instrument: with a FairTokenBucket and
+    the envelope sized to demand (rate >= n * per_sender_hz), every
+    sender should meet its requested rate. With a shared bucket, any
+    interference at all shows up as unequal admission. Payload and path
+    are the same in-process CALL/REPLY shape as the sweep.
+    """
+    from ipc.core import FairTokenBucket
+    mgr = IPCManager()
+    svc = mgr.create_endpoint("container-svc", "ep-svc")
+    svc.rate_limit = bucket
+    for i in range(n):
+        mgr.create_endpoint(f"container-{i}", f"ep-cli-{i}")
+    payload = b"x" * PAYLOAD
+    stop = threading.Event()
+
+    def responder():
+        while not stop.is_set():
+            msg = mgr.receive(svc.endpoint_id, timeout_s=0.1)
+            if msg is not None and msg.message_type.value == "call":
+                mgr.reply(msg.message_id, b"r" * PAYLOAD)
+
+    threading.Thread(target=responder, daemon=True).start()
+
+    counts = [0] * n
+
+    def sender(i: int):
+        interval = 1.0 / per_sender_hz
+        next_t = time.monotonic()
+        while not stop.is_set():
+            next_t += interval
+            if mgr.call(f"container-{i}", svc.endpoint_id, payload,
+                        timeout_s=0.5) is not None:
+                counts[i] += 1
+            delay = next_t - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+
+    threads = [threading.Thread(target=sender, args=(i,), daemon=True)
+               for i in range(n)]
+    for t in threads:
+        t.start()
+    time.sleep(window_s)
+    stop.set()
+    for t in threads:
+        t.join(timeout=1.0)
+    stop.set()
+    per_s = [c / window_s for c in counts]
+    return {
+        "n": n,
+        "requested_per_sender": per_sender_hz,
+        "min_admitted": round(min(per_s), 1),
+        "max_admitted": round(max(per_s), 1),
+        "all_meet_request": min(per_s) >= per_sender_hz * 0.99,
+    }
+
+
+def fair_sweep() -> dict:
+    """Fair-bucket default-parameter data (BENCHMARK_RESULTS §32d).
+
+    Three measurements the defaults decision needs:
+
+    1. LONE-SENDER COST — a single full-speed client on the manager
+       default fair bucket (500/s envelope, shares=8) is share-capped
+       at ~62.5/s (static shares spread the envelope over 8 whether or
+       not 8 senders exist). Measured for the shipped default and for
+       the proposed 2,000/s envelope.
+    2. GUARANTEED SHARE — 8 concurrent senders paced at 250 Hz each on
+       a 2,000/s / shares=8 bucket: every sender must meet its rate.
+    3. Same 8-sender workload on the SHIPPED default envelope (500/s):
+       documents what undersizing looks like under fairness (equal
+       starvation, no single victim).
+    """
+    from ipc.core import FairTokenBucket
+    out = {}
+    lone_default = _drive_against_bucket(
+        FairTokenBucket(bucket_size=200, tokens_per_second=500.0,
+                        fair_shares=8, sender_burst=64),
+        WINDOW_S, pre_drain=False)
+    out["lone_sender_shipped_default"] = {
+        "envelope": "200 / 500/s, shares=8",
+        "sustained": round(lone_default["sustained"], 1)}
+    lone_proposed = _drive_against_bucket(
+        FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                        fair_shares=8, sender_burst=64),
+        WINDOW_S, pre_drain=False)
+    out["lone_sender_proposed_envelope"] = {
+        "envelope": "256 / 2,000/s, shares=8",
+        "sustained": round(lone_proposed["sustained"], 1)}
+    out["eight_senders_sized"] = _drive_n_senders(
+        FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                        fair_shares=8, sender_burst=64),
+        n=8, per_sender_hz=250.0)
+    out["eight_senders_undersized"] = _drive_n_senders(
+        FairTokenBucket(bucket_size=200, tokens_per_second=500.0,
+                        fair_shares=8, sender_burst=64),
+        n=8, per_sender_hz=250.0)
+    return out
+
+
+def _print_fair_sweep(data: dict) -> None:
+    for key in ("lone_sender_shipped_default",
+                "lone_sender_proposed_envelope"):
+        d = data[key]
+        print(f"  {key}: {d['sustained']} calls/s "
+              f"({d['envelope']})")
+    for key in ("eight_senders_sized", "eight_senders_undersized"):
+        d = data[key]
+        print(f"  {key}: per-sender {d['min_admitted']}–"
+              f"{d['max_admitted']}/s of {d['requested_per_sender']} "
+              f"requested → meets request: {d['all_meet_request']}")
+
+
 def _print_sweep(rows):
     print("| burst | refill/s | sustained calls/s | throttled/s | % of floor |")
     print("|-------|---------:|------------------:|------------:|-----------:|")
@@ -299,8 +416,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sweep", action="store_true", help="parameter sweep only")
     parser.add_argument("--adversarial", action="store_true", help="interference test only")
+    parser.add_argument("--fair-sweep", action="store_true",
+                        help="fair-bucket default-parameter data (§32d)")
     args = parser.parse_args()
-    both = not args.sweep and not args.adversarial
+    both = not args.sweep and not args.adversarial and not args.fair_sweep
 
     if args.sweep or both:
         rows = sweep()
@@ -319,6 +438,9 @@ def main():
         result = adversarial(fair=True, rate=2000.0)
         for k, v in result.items():
             print(f"  {k}: {v}")
+    if args.fair_sweep or both:
+        print("\nfair-bucket default-parameter data (§32d):")
+        _print_fair_sweep(fair_sweep())
 
 
 if __name__ == "__main__":

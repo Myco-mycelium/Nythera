@@ -1383,6 +1383,61 @@ only the refill split protects the legit client).
 No gate declared met. The mechanism is adopted in NPS-010 §7.1.1;
 default parameter values remain pending Architecture Group review.
 
+### 32d. Fair-bucket default-parameter proposal (2026-09-10)
+
+`python3 tests/benchmark_bucket.py --fair-sweep` (`fair_sweep()`) —
+the data the ADR's default-parameters decision still needed. Three
+instruments, same in-process CALL/REPLY path as §32a:
+
+**1. Lone-sender cost of static shares** (one full-speed client; per
+sender the fair bucket admits `sender_burst` + `envelope/fair_shares`
+in the first second, then `envelope/fair_shares` sustained):
+
+| envelope | sustained calls/s, lone sender |
+|----------|-------------------------------:|
+| shipped default 200 / 500/s, shares=8 | 126.0 (= 64 burst + 62.5 share) |
+| proposed 256 / 2,000/s, shares=8 | 313.0 (= 64 burst + 250 share) |
+
+**Finding (the honest cost):** static `fair_shares=8` caps a LONE
+sender at `envelope/8` regardless of how many senders exist — the
+shipped 500/s envelope yields only ~62.5/s sustained to a single
+client. This is the price of the §32c guarantee; the ADR's sizing rule
+(envelope ≥ senders × per-sender demand) is therefore mandatory, not
+optional, under static shares. A dynamic-shares refinement (shares
+track active senders, so a lone sender can use the whole envelope) is
+identified below as the mechanism-level alternative for review.
+
+**2. Guaranteed share delivered** (8 concurrent senders paced at
+250 Hz each, envelope 256 / 2,000/s, shares=8 — sized exactly per the
+rule): per-sender admission **250.5–250.5/s**, every sender meets its
+requested rate. The share is a hard guarantee under contention.
+
+**3. Undersizing under fairness** (same 8 × 250 Hz demand on the
+shipped 500/s envelope — 4× oversubscribed): per-sender admission
+**22.5–94.5/s**, nobody meets 250 Hz. Contrast with §32b: the naive
+shared bucket produced a 1,030 vs 9 asymmetry (one abuser, one victim);
+the fair bucket produces a flat ~equal starvation — the limiter no
+longer amplifies mis-sizing into an attack, but it cannot conjure
+capacity the envelope does not have.
+
+**Proposed defaults for ADR-0009 review** (per-workload-class, per the
+ADR's own "refill scaled to workload class"):
+
+| endpoint class | envelope (burst / rate) | fair_shares | per-sender share |
+|---|---|---|---|
+| input/audio (NPS-012 §6: 8 clients × 250 Hz) | 256 / 2,000/s | 8 | 250/s |
+| bulk paths (NPS-006 §5 load) | ≥20,000/s or unlimited-by-grant (§3.1 shared-memory path) | n/a | n/a |
+| background chatter / default | 200 / 500/s (current ship) | 8 | 62.5/s |
+
+Review package: `docs/reference/adr/ADR-0009-review-package.md`.
+Open items for the Architecture Group: (a) accept static shares + the
+sizing rule, or direct a dynamic-shares refinement; (b) confirm the
+input-class envelope (2,000/s) against multi-seat console data; (c)
+the bulk-path parameter is informational — bulk traffic is REQUIRED to
+the shared-memory path by this ADR's Consequences.
+
+No gate declared met — defaults are a proposal, decided at review.
+
 ## 33. ADR-0013 Tuning Data — EEVDF Scheduling Simulation (2026-09-10)
 
 `python3 tests/benchmark_adr0013.py` — a discrete-event EEVDF

@@ -11,6 +11,8 @@ ExecStart=/usr/bin/python3 -m nyrqis_backend service serve \
     --health-socket /run/nyrqis/health.sock \
     --state-file /run/nyrqis/daemon-state.json \
     --vault-dir /var/lib/nyrqis/vault \
+    --ipc-rate 2000 --ipc-bucket-size 256 \
+    --ipc-fair-shares 8 --ipc-sender-burst 64 \
     --syslog
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -39,6 +41,14 @@ LogsDirectory=nyrqis
 
 # File descriptor limits
 LimitNOFILE=65536
+
+# IPC endpoint rate limiting (ADR-0009): the flags above size the
+# fair token bucket — envelope 2,000 tokens/s with 8 shares gives each
+# sender a guaranteed 250/s (the input-class workload, 8 clients x
+# 250 Hz). Apply the sizing rule before changing: envelope >= expected
+# senders x per-sender demand. Retune live with:
+#   nyrqisctl ep-limits set <endpoint> --rate ... --fair-shares ...
+# (docs/how-to/tune-endpoint-rate-limits.md)
 
 [Install]
 WantedBy=multi-user.target
