@@ -88,6 +88,37 @@ workloads, or does it require falling back to a kernel module (ADR-0016
 first; this benchmark determines whether that decision holds or needs
 revisiting, not whether to attempt it at all.
 
+## 5. EEVDF Scheduler Tuning (blocks ADR-0013's tuning parameters)
+
+**Question:** what default request/slice size, weight curve, and
+real-time admission reserve should the EEVDF-derived scheduler
+(ADR-0013) ship with?
+
+**Method (added 2026-09-10):** a discrete-event simulation of the
+EEVDF model (`python3 tests/benchmark_adr0013.py` — single run queue,
+request-granularity virtual deadlines `vruntime + len/weight`, RT
+always preempts, NO admission control so the RT data shows why the
+reserve is needed):
+
+1. **Request-size sweep** — one interactive task (10 ms period,
+   variable request) among 3 continuous background hogs; interactive
+   latency p50/p95/max vs the request size it submits.
+2. **Weight curves** — CFS exponential vs linear vs the Linux 6.6
+   table: latency isolation at nice -5/0/+5 and share accuracy of two
+   competing hogs at a nominal 10:1 weight ratio.
+3. **RT admission** — periodic RT tasks (20 ms period, 4 ms compute)
+   at 0–100% total utilization with one interactive fair-class task:
+   RT deadline misses and fair-class latency at each load level.
+
+**Honesty note:** a simulation is the right instrument for RELATIVE
+parameter choice (A vs B under identical load), not for absolute
+latency prediction; the ADR's revisit clause (real container/IPC load
+patterns) applies to any default chosen from this data.
+
+**Pass/fail gate:** none — the parameter defaults are an Architecture
+Group decision (NPC-002 §5.2); this section exists so the decision has
+data.
+
 ## Status
 
 **2026-08-12 update (consolidated runner + re-run after per-block CoW):**

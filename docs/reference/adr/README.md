@@ -13,13 +13,13 @@ directory; this index tracks status only.
 | [ADR-0004](ADR-0004-containerized-execution.md) | Containerized execution model for all application classes | Accepted |
 | [ADR-0005](ADR-0005-windows-compat-layer.md) | Windows compatibility via translation layer, not full emulation | Accepted |
 | [ADR-0006](ADR-0006-hybrid-microkernel.md) | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
-| [ADR-0007](ADR-0007-compression-codec.md) | Adopt Zstandard as the default compression codec | Proposed — benchmark-blocked |
+| [ADR-0007](ADR-0007-compression-codec.md) | Adopt Zstandard as the default compression codec | Proposed — benchmark data complete, review pending |
 | [ADR-0008](ADR-0008-android-runtime-approach.md) | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
-| [ADR-0009](ADR-0009-ipc-rate-limiting.md) | Per-container token-bucket rate limiting for IPC | Proposed — benchmark-blocked |
+| [ADR-0009](ADR-0009-ipc-rate-limiting.md) | Per-container token-bucket rate limiting for IPC | Proposed — sweep + adversarial data complete, review pending |
 | [ADR-0010](ADR-0010-vulkan-graphics-foundation.md) | Adopt Vulkan as the native graphics API foundation | Accepted |
 | [ADR-0011](ADR-0011-ai-assistant-containerization.md) | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | [ADR-0012](ADR-0012-nyhal-pluggable-kernel-backend.md) | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
-| [ADR-0013](ADR-0013-scheduler-algorithm.md) | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning-blocked |
+| [ADR-0013](ADR-0013-scheduler-algorithm.md) | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning data collected, review pending |
 | [ADR-0014](ADR-0014-secure-boot-key-management.md) | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
 | [ADR-0015](ADR-0015-shared-arm-translation.md) | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | [ADR-0016](ADR-0016-nyfs-linux-backend-fuse.md) | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |

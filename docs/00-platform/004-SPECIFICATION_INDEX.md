@@ -44,13 +44,13 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0004 | Containerized execution model for all application classes | Accepted |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted |
 | ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted |
-| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — first-pass data collected |
+| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed — benchmark data complete, review pending |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted |
-| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — first-pass data collected |
+| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — sweep + adversarial data complete, review pending |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted |
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted |
-| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning-blocked |
+| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning data collected, review pending |
 | ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed |
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |

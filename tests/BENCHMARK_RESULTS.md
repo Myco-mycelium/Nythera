@@ -1174,13 +1174,239 @@ on the crate behind the byte-identical conformance gate (ADR-0025
 No gate declared met — this is evidence the Architecture Group
 reviews with ADR-0025.
 
+## 31. ADR-0007 Close-Out — Real-Asset Zstd Sweep, LZ4 Fast Path, Concurrent Load (2026-09-10)
+
+`python3 tests/benchmark_adr0007.py` — the three remaining §2 blockers
+collected in one script. **Real-asset corpus**: 265 files / 8,388,599
+bytes deterministically sampled from `/usr/share` (fonts, locale
+catalogs, man pages, mime, zoneinfo, applications — the §12 method).
+**LZ4**: `lz4.frame` (the package became available on this host; the
+§2/§11 zlib approximation is retired). **Concurrent**: 1/2/4/8 threads
+compressing independent chunks of the real corpus at zstd-3.
+
+### 31a. Real-asset corpus level sweep
+
+| Level | overall ratio | compress MB/s | decompress MB/s |
+|-------|--------------:|---------------:|----------------:|
+| 1     | 1.07 | 408 | 2,336 |
+| 3     | 1.07 | 353 | 2,618 |
+| 5     | 1.08 | 226 | 2,617 |
+| 7     | 1.08 | 171 | 2,667 |
+| 9     | 1.08 | 151 | 2,682 |
+| 11    | 1.08 | 71  | 2,354 |
+| 13    | 1.08 | 20  | 2,542 |
+| 15    | 1.08 | 14  | 2,004 |
+| 17    | 1.09 | 11  | 2,202 |
+| 19    | 1.09 | 6   | 1,770 |
+| 22    | 1.09 | 6   | 1,760 |
+
+**Finding: on real, already-compressed data the ratio is flat (~1.07–
+1.09) at every level** — levels ≥7 buy ≤2% ratio for 60× less
+compression throughput (408 → 6 MB/s). Combined with §2's synthetic
+knee at levels 3–7 and §12's end-to-end 1.29 : 1, the level choice now
+has complete data: **the ratio argument for any level above 3 is
+closed** — the default-level decision is a pure cost/response trade
+for Architecture Group review, and the data says a low default (1–3)
+with the LZ4 fast path (below) covers the workload envelope.
+
+### 31b. LZ4 fast path vs zstd
+
+| corpus | codec | level | ratio | compress MB/s | decompress MB/s |
+|--------|-------|------:|------:|--------------:|----------------:|
+| real /usr/share | zstd | 1 | 1.07 | 532 | 2,532 |
+| real /usr/share | zstd | 3 | 1.07 | 354 | 2,711 |
+| real /usr/share | lz4 | fast (0) | 1.06 | 1,458 | 2,932 |
+| real /usr/share | lz4 | default (2) | 1.06 | 1,470 | 2,791 |
+| real /usr/share | lz4 | max (16) | 1.06 | 32 | 2,907 |
+| synthetic §2 | zstd | 1 | 2.54 | 324 | 879 |
+| synthetic §2 | zstd | 3 | 2.54 | 254 | 876 |
+| synthetic §2 | lz4 | fast (0) | 3.08 | 4,151 | 3,938 |
+| synthetic §2 | lz4 | default (2) | 3.08 | 4,120 | 3,938 |
+| synthetic §2 | lz4 | max (16) | 3.14 | 48 | 3,957 |
+
+**Finding: the ADR-0007 fast-path premise holds, asymmetrically.** On
+real data LZ4-fast is ~2.7× zstd-1's compression speed at ~equal ratio
+(1.06 vs 1.07) — on this shape the "fast path" costs nothing in ratio
+and saves ~2.7× compute. On the synthetic text-like corpus LZ4 is
+~12–16× faster than zstd AND ~20% better ratio (3.08 vs 2.54 — LZ4's
+parser wins on this repeating pattern); the honest caveat stands that
+this synthetic shape flatters LZ4. The fast-path override is worth
+having; the default stays zstd for the mid-range robustness the §2
+sweep documented.
+
+### 31c. Concurrent compression scaling (zstd-3, real corpus)
+
+| threads | aggregate MB/s | per-thread MB/s | scaling vs 1 |
+|--------:|---------------:|----------------:|-------------:|
+| 1 | 382 | 398 | 1.00× |
+| 2 | 628 | 394 | 1.64× |
+| 4 | 771 | 250 | 2.02× |
+| 8 | 833 | 259 | 2.18× |
+
+**Finding: zstandard partially releases the GIL** — aggregate
+throughput scales to ~2.2× at 8 threads (then plateaus; per-thread
+throughput halves, consistent with GIL hand-off plus some shared
+deallocation contention). Daemon-side concurrent commits get real but
+sub-linear parallel compression; commit-critical paths should not
+count on linear scaling.
+
+No gate declared met — the default-level decision itself belongs to
+Architecture Group review (NPS-005 §3), now with complete data.
+
+## 32. ADR-0009 Close-Out — Token-Bucket Parameter Sweep + Adversarial Interference (2026-09-10)
+
+`python3 tests/benchmark_bucket.py` — the remaining §3 items. One
+methodology fix discovered en route: `IPCManager.call` consults the
+RECEIVER endpoint's bucket, and `create_endpoint` builds buckets from
+the manager defaults — **which are burst=200 / 500 refill-per-second,
+not the 100/50 the §2 writeup documented** (the code default had
+drifted; §2's finding stands a fortiori — the shipped default is
+better than documented and still far under this path's capacity).
+
+### 32a. Sweep (receiver-side bucket, burst pre-drained, 1 s steady state)
+
+| burst | refill/s | sustained calls/s | % of floor |
+|------:|---------:|------------------:|-----------:|
+| manager default (200, 500/s) | 500 | 600 | 4.5% |
+| 32 | 50 | 81 | 0.6% |
+| 32 | 100 | 131 | 1.0% |
+| 32 | 500 | 531 | 4.0% |
+| 32 | 1,000 | 1,031 | 7.7% |
+| 32 | 5,000 | 5,031 | 37.7% |
+| 32 | 20,000 | 12,423 | 93.0% |
+| 100 | 50 | 100 | 0.7% |
+| 100 | 100 | 199 | 1.5% |
+| 100 | 500 | 599 | 4.5% |
+| 100 | 1,000 | 1,099 | 8.2% |
+| 100 | 5,000 | 5,090 | 38.1% |
+| 100 | 20,000 | 13,563 | 101.6% |
+| 256 | 20,000 | 12,933 | 96.9% |
+| 1024 | 5,000 | 5,103 | 38.2% |
+| 1024 | 20,000 | 13,605 | 101.9% |
+
+(Floor: 13,351 calls/s unthrottled on the same path. Full grid in the
+script output.)
+
+**Findings:** (1) **steady-state rate ≈ refill rate at every burst
+capacity** — burst size only shapes absorption of spikes, so the §2
+"100 burst" framing was solving the wrong knob; the parameter that
+decides throughput is refill/s. (2) The shipped default (500/s) caps a
+path at ~4.5% of its unthrottled capacity — input/audio (NPS-012 §6:
+hundreds of events/s) fit, but any multiplexed or bulk path does not.
+(3) Refill ≥ ~20,000/s reaches the floor — the "effectively unlimited"
+regime where the limiter stops being the bottleneck.
+
+### 32b. Adversarial interference (shared endpoint bucket 256/1,000, 3 s)
+
+| metric | value |
+|--------|-------|
+| flood admitted / s | 1,024.7 |
+| flood throttled / s | 20,449.7 |
+| legitimate (250 Hz requested) admitted / s | **9.0** |
+| legitimate throttled / s | 241.3 |
+| legitimate meets request | **NO** |
+
+**Finding: a naive shared bucket starves the legitimate client.** A
+full-speed flood drains the bucket continuously; the 250 Hz legitimate
+client's requests arrive mostly into an empty bucket and ~96% are
+throttled, while the flood still gets ~1,025 calls/s through. This is
+the quantitative case for ADR-0009's missing fairness dimension:
+**per-sender (or per-flow) sub-limits within the endpoint budget**, so
+one abusive container cannot convert the shared limiter into a DoS
+weapon against well-behaved ones. The parameter recommendation for the
+ADR: default refill scaled to workload class (input/audio ≈ 1,000/s,
+bulk ≈ 20,000/s or unlimited-by-grant), burst kept modest (≤256) for
+spike absorption, plus per-sender fairness — the last is a mechanism
+change (NPS-010 §7.1), not a parameter choice, and needs its own
+review.
+
+No gate declared met; ADR-0009's default parameters now have complete
+data and the fairness-mechanism gap is newly recorded.
+
+## 33. ADR-0013 Tuning Data — EEVDF Scheduling Simulation (2026-09-10)
+
+`python3 tests/benchmark_adr0013.py` — a discrete-event EEVDF
+simulation (single run queue, request-granularity deadlines, RT always
+preempts; the model deliberately implements NO admission control so
+the RT table IS the argument for the reserve). **This is a simulation,
+not hardware numbers** — the right instrument for RELATIVE parameter
+choice, per the docstring's honesty notes; the ADR's revisit clause
+(real container/IPC load patterns) still applies to any default
+chosen from it.
+
+### 33a. Interactive request-size sweep (1 interactive + 3 equal-weight hogs, 2 s sim)
+
+| interactive request | p50 | p95 | max | overruns | requests |
+|--------------------:|----:|----:|----:|---------:|---------:|
+| 0.75 ms | 750 | 750 | 750 | 0 | 200 |
+| 1.5 ms | 1,500 | 1,500 | 1,500 | 0 | 200 |
+| 3 ms | 3,000 | 13,000 | 21,000 | 34 | 166 |
+| 6 ms | 6,000 | 54,000 | 54,000 | 117 | 83 |
+| 12 ms | 58,000 | 64,000 | 64,000 | 159 | 41 |
+
+**Finding: in EEVDF, interactive latency is governed by the request
+length the interactive task itself submits, not by a global time-slice
+knob** — at ≤1.5 ms requests, latency equals request length exactly
+(zero overruns) even under 3 background hogs; at 12 ms requests the
+interactive task misses 80% of its periods. The tuning consequence:
+**input/audio classes must be specified to submit small requests**
+(NPS-012 §6.1 shape), and the scheduler's remaining default to pick is
+the background hog's request length (6–12 ms is the Linux-like range;
+smaller only adds context-switch overhead). There is no separate
+"interactive boost" to tune — weight + request size ARE the knobs.
+
+### 33b. Weight curves — isolation and share accuracy
+
+Isolation (nice -5/0/+5 interactive task among 3 hogs, 1.5 ms
+requests): p50 identical (1,500 µs) across every curve and nice
+value — with equal request sizes, deadlines order fairly regardless of
+weight; **weight shows up in the tail**: nice +5 on the CFS/Linux
+curve → p95 33 ms / max 36 ms; the linear curve → p95 50.5 ms / max
+51 ms. Share accuracy (two hogs, nominal 10:1):
+
+| curve | measured share | expected |
+|-------|---------------:|---------:|
+| CFS exponential (1024/1.25^nice) | 0.920 | 0.903 |
+| linear | 0.980 | 0.973 |
+| Linux 6.6 table | 0.920 | 0.909 |
+
+**Finding: all three curves are accurate (within 1–2%) and the
+CFS-family curves isolate the tail ~35% better than linear at high
+nice.** The Linux-6.6 table is the recommended default (known
+properties, best tail behavior, zero invention to debug).
+
+### 33c. RT load vs fair-class cost (NO admission control)
+
+| RT utilization | RT misses | fair p50 | fair p95 | fair max |
+|---------------:|----------:|---------:|---------:|---------:|
+| 0% | 0 | 1,500 | 1,500 | 1,500 |
+| 20% | 0 | 5,500 | 5,500 | 5,500 |
+| 40% | 0 | 9,500 | 9,500 | 9,500 |
+| 60% | 0 | 13,500 | 13,500 | 13,500 |
+| 80% | 0 | 17,500 | 37,500 | 57,000 |
+| 100% | 0 | **STARVED** | - | - |
+
+**Finding: the reserve is not optional.** RT load taxes the fair class
+roughly linearly (p50 ≈ 1.5 ms + 12 ms × RT-utilization); past ~60%
+the tail explodes (57 ms max at 80%) and at 100% the fair class is
+completely starved with zero RT misses — RT itself never misses, it
+just destroys everything below. The admission limit must cap total RT
+bandwidth well below saturation (the util/sched-utilizability bound
+for the periodic tasks simulated: admission ≤ ~60–70% leaves fair
+class tail ≤ ~15 ms). The reserve value and the grant mechanics are
+NPS-010 §7.2's decision; this is the data it needs.
+
+No gate declared met — ADR-0013 stays `Proposed` with its tuning
+parameters now backed by quantified simulation data for Architecture
+Group review.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
 |--------------|--------|
 | §1 IPC round-trip latency | First-pass data collected (in-process only; real transport + load variants pending) |
-| §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12) — the real-corpus number does not meet the plan's compression expectations, no gate declared met**; codec comparison zstd-3 vs zlib-6 collected (§11; LZ4 approximated with zlib — python-lz4 unavailable on this host); concurrent-load CPU measurement pending) |
-| §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); sweep + adversarial test pending |
+| §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12)**; **§2 close-out data collected 2026-09-10 (§31)** — real-asset sweep (ratio flat ~1.07 at every level on already-compressed data; ≥7 buys ≤2% for 60× compute), real LZ4 fast path (2.7× zstd-1 at equal ratio on real data; the zlib approximation is retired), concurrent scaling (2.2× at 8 threads — GIL partially released); the level-choice data is now complete; no gate declared met |
+| §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); **sweep + adversarial interference collected 2026-09-10 (§32)** — steady state ≈ refill rate (burst only shapes spike absorption), shipped default 500/s ≈ 4.5% of path capacity, shared bucket starves a 250 Hz legitimate client under flood (per-sender fairness identified as the missing mechanism); no gate declared met |
 | §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the

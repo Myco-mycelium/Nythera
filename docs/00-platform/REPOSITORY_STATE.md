@@ -61,13 +61,13 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0004 Containerized execution model — Accepted
 - [x] ADR-0005 Windows compatibility translation layer — Accepted
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
-- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, first-pass level-sweep data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md` §2) plus an end-to-end NyFS compression ratio of 6.42 : 1 on a synthetic corpus (2026-08-12, §7, `--nyfs-persist`); default-level decision pending Architecture Group review
+- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, close-out data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §31): real-asset level sweep (ratio flat ~1.07 at every level on already-compressed data), real LZ4 fast path (2.7× zstd-1 compression at equal ratio), concurrent scaling (2.2× at 8 threads); default-level decision pending Architecture Group review with the data now complete
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, first-pass bucket-parameter data collected (2026-08-12, `tests/BENCHMARK_RESULTS.md`); parameter sweep + Architecture Group review pending
+- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, sweep + adversarial data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §32): steady-state throughput ≈ refill rate (burst only shapes spike absorption), shipped default ≈ 4.5% of path capacity, and a shared bucket demonstrably starves a legitimate 250 Hz client under flood — per-sender fairness identified as the missing mechanism (an NPS-010 §7.1 mechanism change, not a parameter choice); Architecture Group review pending
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
-- [ ] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Proposed**, algorithm family decided, tuning parameters blocked on benchmark data
+- [ ] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Proposed**, tuning data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §33, discrete-event simulation): interactive latency governed by the task's own request size (≤1.5 ms → zero overruns under hogs), Linux-6.6 weight table recommended (best tail isolation, share accuracy within 1–2%), RT reserve shown non-optional (100% RT utilization starves the fair class with zero RT misses); defaults pending Architecture Group review
 - [ ] ADR-0014 UEFI Secure Boot with user-enrollable keys — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 - [ ] ADR-0015 Shared dynamic binary translation for ARM/x86 — **Proposed**, approach decided; performance validation blocked on benchmark data
 - [ ] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Proposed**, initial strategy decided; kernel-module fallback blocked on FUSE-overhead benchmark data
@@ -596,16 +596,46 @@ measurements:
    default bucket (100 burst, 50/s refill) sustains only ~99.5 calls/s
    on a client→endpoint path and throttles ~18.9k calls/s at full speed;
    the defaults are demonstrably too low for this workload shape.
-   Parameter sweep, adversarial test, and Architecture Group review
-   still pending.
+   **Sweep + adversarial interference collected 2026-09-10**
+   (`tests/BENCHMARK_RESULTS.md` §32, `tests/benchmark_bucket.py`):
+   steady-state throughput ≈ refill rate at every burst capacity (burst
+   only shapes spike absorption — refill is the knob that decides
+   throughput); the SHIPPED manager default (burst 200, 500/s) caps a
+   path at ~4.5% of its unthrottled capacity (13.3k calls/s floor);
+   refill ≥ ~20k/s reaches the "not the bottleneck" regime; and the
+   adversarial run shows a naive shared bucket STARVES a legitimate
+   250 Hz client under a full-speed flood (9 admitted/s vs 250
+   requested while the flood still passes ~1,025/s) — the quantitative
+   case for per-sender fairness as a mechanism change in NPS-010 §7.1.
+   ADR-0009 review package ready.
 3. ~~Benchmark Zstd compression levels, install size vs. load time
    (unblocks ADR-0007, then NPS-005).~~ **First-pass data collected
    2026-08-12** — level sweep on a synthetic corpus (overall ratio 2.54
-   at levels 1–5 vs 3.17 at ≥7; compression 0.6–3.5 GB/s); a real asset
-   corpus, the LZ4 fast-path comparison, and concurrent-load CPU
-   measurement remain, and the default-level decision belongs to
-   Architecture Group review.
-4. Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning (unblocks ADR-0013 in full; algorithm family is already decided).
+   at levels 1–5 vs 3.17 at ≥7; compression 0.6–3.5 GB/s). **Close-out
+   data collected 2026-09-10** (`tests/BENCHMARK_RESULTS.md` §31,
+   `tests/benchmark_adr0007.py`): real-asset level sweep (ratio flat
+   ~1.07 at every level on already-compressed /usr/share data — levels
+   ≥7 buy ≤2% ratio for 60× less compression throughput), the real LZ4
+   fast path (lz4.frame now available; ~2.7× zstd-1 compression speed
+   at equal ratio on real data — the §2 zlib approximation is retired),
+   and concurrent scaling (2.2× aggregate at 8 threads — zstandard
+   partially releases the GIL). The level-choice data is now complete;
+   the default-level decision belongs to Architecture Group review.
+4. ~~Benchmark EEVDF time-slice/weight-curve/real-time-admission tuning~~
+   **Data collected 2026-09-10** (`tests/BENCHMARK_RESULTS.md` §33,
+   `tests/benchmark_adr0013.py` — discrete-event EEVDF simulation, the
+   relative-choice instrument; BENCHMARK_PLAN §5 documents the method):
+   interactive latency is governed by the request size the interactive
+   task itself submits (≤1.5 ms requests → zero overruns under 3
+   background hogs; 12 ms → 80% of periods missed) — there is no
+   separate "interactive boost" knob to tune; the Linux 6.6 weight
+   table is the recommended curve (tail isolation ~35% better than
+   linear at high nice, share accuracy within 1–2% on all curves); and
+   with NO admission control, 100% RT utilization starves the fair
+   class completely with zero RT misses — the reserve is not optional
+   (admission ≤ ~60–70% keeps the fair tail ≤ ~15 ms in the model).
+   ADR-0013's review package is ready; the defaults themselves are an
+   Architecture Group decision.
 5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
 6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016;
    determines whether the FUSE decision holds or needs a kernel-module

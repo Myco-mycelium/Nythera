@@ -5,6 +5,41 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Vulkan FFI slot leak** (`rust/vulkan`): the three destroy functions
+  (`nyrqis_vulkan_destroy_instance`/`_device`/`_swapchain`) marked slots
+  `active = false` but left `Some(..)` in the table, while `alloc_slot`
+  only reuses `None` slots — after `MAX_INSTANCES` (4) create/destroy
+  cycles in any long-lived process, every subsequent `create_instance`
+  failed with "too many instances". (Found by the new vendor-conformance
+  suite in the full-suite run: `test_boot_integration`'s boot-render
+  import chain exhausted the table.) Destroy now `take()`s the slot;
+  crate tests 12 green; verified 6 full create/destroy cycles reuse all
+  4 slots.
+
+### Added
+
+- **DRM driver identification** (`ui/drm_backend.query_driver`):
+  `DRM_IOCTL_VERSION` with the native 64-byte `drm_version` layout —
+  identifies the driver under test (e.g. `i915 1.6.0 "Intel
+  Graphics"`); the vendor-identification primitive the M15 Phase 2
+  hardware matrix is built on.
+- **Vendor-agnostic GPU conformance suite**
+  (`tests/test_gpu_vendor_conformance.py`, 9 tests): the full
+  GBM/EGL/Vulkan/DRM pipeline exercised through the shipped codecs with
+  identical assertions regardless of which vendor's driver answers, plus
+  a driver-matrix row report — the instrument M15 Phase 2 runs unchanged
+  on AMD/NVIDIA hosts.
+- **Benchmark close-out scripts**: `tests/benchmark_adr0007.py` (real-
+  asset zstd sweep, real LZ4 fast path, concurrent compression),
+  `tests/benchmark_bucket.py` (token-bucket sweep +
+  adversarial interference), `tests/benchmark_adr0013.py` (EEVDF tuning
+  simulation) — data and findings in `tests/BENCHMARK_RESULTS.md`
+  §31–33; review packages for ADR-0007/0009/0013.
+
 ## [0.28.0] - 2026-09-09
 
 ### Added

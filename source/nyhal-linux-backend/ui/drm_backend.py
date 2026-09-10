@@ -116,6 +116,53 @@ _CONNECTOR_TYPE_NAMES = {
 # Sanity caps so a corrupt kernel response can't balloon allocations.
 _MAX_OBJECTS = 4096
 
+# drm_version (drm.h): 3×int + 3×(size_t + pointer). On 64-bit Linux the
+# size_t group aligns to 8: ints at 0/4/8, pad, then 16/24/32/40/48/56 =
+# 64 bytes total.
+DRM_IOCTL_VERSION = 0xC0406400  # IOWR('d', 0x00, struct drm_version)
+
+
+def query_driver(fd: int) -> Optional[dict]:
+    """Identify the DRM driver behind *fd* via DRM_IOCTL_VERSION.
+
+    Returns {name, date, desc, major, minor, patchlevel} or None. This is
+    the vendor-identification primitive the M15 Phase 2 hardware matrix
+    is built on (which driver am I actually testing against?).
+    """
+    if fd < 0:
+        return None
+    buf = bytearray(64)
+    name_buf = bytearray(64)
+    date_buf = bytearray(64)
+    desc_buf = bytearray(256)
+    # Field offsets are the kernel's NATIVE layout — ints at 0/4/8, a
+    # 4-byte pad, then each (size_t len, ptr) pair at 16/24, 32/40, 48/56.
+    # (A '<3i6Q' pack would place the lengths at 12/20/28 — contiguous,
+    # unpadded — and the kernel would read our pointers as lengths,
+    # EFAULTing on copy_to_user.)
+    struct.pack_into("<3i", buf, 0, 0, 0, 0)  # major/minor/patchlevel
+    struct.pack_into("<Q", buf, 16, len(name_buf))
+    struct.pack_into("<Q", buf, 24, _addr(name_buf))
+    struct.pack_into("<Q", buf, 32, len(date_buf))
+    struct.pack_into("<Q", buf, 40, _addr(date_buf))
+    struct.pack_into("<Q", buf, 48, len(desc_buf))
+    struct.pack_into("<Q", buf, 56, _addr(desc_buf))
+    try:
+        fcntl.ioctl(fd, DRM_IOCTL_VERSION, buf, True)
+    except OSError as exc:
+        logger.debug("DRM_IOCTL_VERSION failed on fd %d: %s", fd, exc)
+        return None
+    major, minor, patch = struct.unpack_from("<3i", buf, 0)
+    name_len, = struct.unpack_from("<Q", buf, 16)
+    date_len, = struct.unpack_from("<Q", buf, 32)
+    desc_len, = struct.unpack_from("<Q", buf, 48)
+    return {
+        "name": bytes(name_buf[:name_len]).decode("utf-8", "replace"),
+        "date": bytes(date_buf[:date_len]).decode("utf-8", "replace"),
+        "desc": bytes(desc_buf[:desc_len]).decode("utf-8", "replace"),
+        "major": major, "minor": minor, "patchlevel": patch,
+    }
+
 
 def _addr(buf) -> int:
     """User-space address of a writable Python buffer (for the kernel

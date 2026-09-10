@@ -1,6 +1,6 @@
 ---
 title: Next Development Session Plan
-version: 6.4.0
+version: 6.5.0
 date: 2026-09-10
 ---
 
@@ -27,6 +27,19 @@ date: 2026-09-10
 | Benchmarks | **benchmarks_full.py** + **benchmarks_software.py** (all display paths) |
 | Compositor presentation | **compositor_presentation.py** (DRM-detect → DRMBackend attach → software fallback; frame lifecycle stats) |
 | Package repository | **package_repo.py** (signed index, publish/verify/download) + **nyrqisctl_repo.py** CLI |
+
+## Session 5 (2026-09-10, later) — benchmark close-outs unblock 3 held ADRs; version-drift gate; vendor-agnostic GPU conformance
+
+| Item | Status |
+|------|--------|
+| Version-drift CI gate | ✅ `tools/check_version_drift.py` — pyproject version must equal the newest CHANGELOG release (the 0.22.0-through-4-releases drift can't recur); new `version-drift` CI job |
+| ADR-0007 close-out data | ✅ `tests/benchmark_adr0007.py` — real-asset zstd sweep (ratio flat ~1.07 at every level), real LZ4 fast path (2.7× zstd-1 at equal ratio; zlib approximation retired), concurrent scaling (2.2× @ 8 threads). BENCHMARK_RESULTS §31 |
+| ADR-0009 close-out data | ✅ `tests/benchmark_bucket.py` — sweep (steady state ≈ refill; shipped default = 4.5% of capacity) + adversarial (shared bucket starves a 250 Hz client under flood → per-sender fairness is the missing mechanism). BENCHMARK_RESULTS §32 |
+| ADR-0013 tuning data | ✅ `tests/benchmark_adr0013.py` — EEVDF discrete-event simulation: request size (not a slice knob) governs interactive latency, Linux-6.6 weight table recommended, RT reserve shown non-optional (100% RT starves fair class). BENCHMARK_RESULTS §33; BENCHMARK_PLAN §5 method |
+| Vulkan FFI slot-leak fix | ✅ Found by the new conformance harness via test_boot_integration: the crate's destroy functions left `Some(..)` in the slot tables while `alloc_slot` only reuses `None` — 4 create/destroy cycles exhausted instances forever. All three destroys now `take()` the slot; crate tests 12 green |
+| DRM driver identification | ✅ `query_driver()` (DRM_IOCTL_VERSION, native 64-byte layout) — identifies i915 1.6.0 "Intel Graphics" on this host; the vendor-matrix primitive |
+| Vendor-agnostic GPU conformance | ✅ `tests/test_gpu_vendor_conformance.py` (9 tests) — identical assertions regardless of driver + matrix-row report; the suite AMD/NVIDIA hosts will run unchanged (M15 Phase 2 instrument; no AMD/NVIDIA hardware on this host, honestly skipped) |
+| Suite | ✅ 6,139 passed + 38 skipped |
 
 ## Session 4 (2026-09-10) — v0.28.0 released: UI apps to spec, presentation + package repo, real DRM UAPI
 

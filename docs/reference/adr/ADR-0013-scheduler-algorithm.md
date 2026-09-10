@@ -1,11 +1,11 @@
 ---
 title: Adopt an EEVDF-Derived Scheduler with a Real-Time Priority Class
 document_id: ADR-0013
-version: 1.0.0
+version: 1.1.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-09-10
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, NPS-001, NPS-002]
 ---
@@ -67,6 +67,36 @@ delivery per NPS-012 §6.1, audio, and frame pacing per NPS-002 §6.2).
   patterns (NPS-003's IPC-heavy design is somewhat different from a
   typical Linux workload EEVDF was tuned against).
 
+## Tuning Data (2026-09-10)
+
+A discrete-event EEVDF simulation (`tests/benchmark_adr0013.py`,
+methodology in `tests/BENCHMARK_PLAN.md` §5, results in
+`tests/BENCHMARK_RESULTS.md` §33) produced the parameter data this ADR
+deferred. **A simulation is the right instrument for relative parameter
+choice, not absolute latency prediction** — the revisit clause above
+still applies to any default chosen from it. Findings:
+
+- **Interactive latency is governed by the request size the
+  interactive task itself submits, not by a global time-slice knob**:
+  ≤1.5 ms requests complete in exactly their own length with zero
+  period overruns under 3 background hogs; 12 ms requests miss 80% of
+  periods. There is no separate "interactive boost" to tune — weight +
+  request size are the knobs. Consequence: input/audio classes must be
+  specified to submit small requests (NPS-012 §6.1 shape); the
+  background default sits in the 6–12 ms Linux-like range.
+- **Weight curves**: all three candidates (CFS exponential, linear,
+  Linux 6.6 table) hit nominal shares within 1–2%; the Linux 6.6 table
+  isolates the latency tail ~35% better than linear at high nice and is
+  the recommended default (known properties, zero invention to debug).
+- **The real-time reserve is not optional**: with NO admission control,
+  fair-class latency grows ~linearly with RT utilization (p50 ≈ 1.5 ms
+  + 12 ms × util), the tail explodes past ~60% (57 ms max at 80%), and
+  at 100% the fair class is completely starved while RT itself never
+  misses. Admission must cap total RT bandwidth (≤ ~60–70% in the model
+  keeps the fair tail ≤ ~15 ms); the reserve value and grant mechanics
+  are NPS-010 §7.2's decision.
+
 ## Status
-Proposed — algorithm family decided; tuning parameters remain pending
-benchmark data per NPC-002 §5.2.
+Proposed — algorithm family decided; tuning parameters now backed by
+quantified simulation data (2026-09-10); defaults pending Architecture
+Group review per NPC-002 §5.2.

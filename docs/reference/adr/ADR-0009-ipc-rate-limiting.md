@@ -1,11 +1,11 @@
 ---
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
-version: 1.1.0
+version: 1.2.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-12
-updated: 2026-08-12
+updated: 2026-09-10
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-002, NPS-003]
 ---
@@ -85,6 +85,35 @@ adversarial-flooding sweep are still needed before concrete defaults are
 proposed; this ADR stays `Proposed` pending that sweep and Architecture
 Group review.
 
+## Benchmark Data — Sweep + Adversarial (2026-09-10)
+
+Close-out measurements (`tests/benchmark_bucket.py`, results in
+`tests/BENCHMARK_RESULTS.md` §32):
+
+- **Methodology correction**: `IPCManager.call` consults the RECEIVER
+  endpoint's bucket, and `create_endpoint` builds buckets from the
+  manager defaults — which ship as **burst=200 / 500 tokens-per-second**
+  (not the 100/50 the 2026-08-12 writeup documented; the code default
+  had drifted upward).
+- **Sweep** (receiver-side bucket, burst pre-drained, steady state):
+  sustained throughput ≈ refill rate at every burst capacity (32/100/
+  256/1024) — burst shapes spike absorption only; refill/s is the knob
+  that decides throughput. The shipped default caps a path at ~4.5% of
+  its unthrottled capacity (13.3k calls/s floor on the in-process path);
+  refill ≥ ~20,000/s reaches the "not the bottleneck" regime.
+- **Adversarial** (shared endpoint bucket 256/1,000): a full-speed flood
+  still passes ~1,025 calls/s while a legitimate 250 Hz client sharing
+  the bucket gets **9 calls/s through (96% throttled)** — a naive shared
+  bucket converts the limiter into a starvation weapon.
+
+**Parameter recommendation this data supports** (for review): refill
+scaled to workload class — ~1,000/s for input/audio endpoints, ~20,000/s
+(or unlimited-by-grant) for bulk paths; burst ≤256 for spike absorption;
+**plus per-sender (or per-flow) fairness within the endpoint budget** —
+a mechanism change in NPS-010 §7.1, not a parameter choice, and the
+adversarial data above is the argument for it.
+
 ## Status
-Proposed — first-pass benchmark data collected (2026-08-12); parameter
-sweep and Architecture Group review pending.
+Proposed — sweep + adversarial data collected (2026-09-10, §32);
+parameter recommendation above ready for Architecture Group review. The
+fairness mechanism is a separate NPS-010 §7.1 change.

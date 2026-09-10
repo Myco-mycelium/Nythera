@@ -375,7 +375,11 @@ pub extern "C" fn nyrqis_vulkan_destroy_instance(instance_id: c_int) -> c_int {
         if instance_id < 0 || instance_id as usize >= MAX_INSTANCES {
             return -1;
         }
-        if let Some(inst) = &mut state.instances[instance_id as usize] {
+        // TAKE the slot: destroying must free it for alloc_slot() to
+        // reuse. (Marking active=false while leaving Some(..) in place
+        // permanently exhausted the table after MAX_INSTANCES
+        // create/destroy cycles in any long-lived process.)
+        if let Some(mut inst) = state.instances[instance_id as usize].take() {
             // Real Vulkan: call vkDestroyInstance
             #[cfg(not(test))]
             unsafe {
@@ -458,7 +462,9 @@ pub extern "C" fn nyrqis_vulkan_destroy_device(device_id: c_int) -> c_int {
         if device_id < 0 || device_id as usize >= MAX_DEVICES {
             return -1;
         }
-        if let Some(dev) = &mut state.devices[device_id as usize] {
+        // TAKE the slot (see destroy_instance: Some(..) remnants would
+        // permanently exhaust the device table).
+        if let Some(mut dev) = state.devices[device_id as usize].take() {
             // Real Vulkan: call vkDestroyDevice
             #[cfg(not(test))]
             unsafe {
@@ -533,7 +539,11 @@ pub extern "C" fn nyrqis_vulkan_destroy_swapchain(swapchain_id: c_int) -> c_int 
         if swapchain_id < 0 || swapchain_id as usize >= MAX_SWAPCHAINS {
             return -1;
         }
-        if let Some(sc) = &mut state.swapchains[swapchain_id as usize] {
+        // TAKE the slot (see destroy_instance: Some(..) remnants would
+        // permanently exhaust the swapchain table). The device lookup
+        // must happen through the taken slot's own device_id before
+        // anything is cleared.
+        if let Some(mut sc) = state.swapchains[swapchain_id as usize].take() {
             // Real Vulkan: call vkDestroySwapchainKHR
             #[cfg(not(test))]
             unsafe {

@@ -34,7 +34,7 @@ only.
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted | 2026-07-13 | — |
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted | 2026-07-13 | — |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted | 2026-07-13 | — |
-| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed | 2026-07-13 | — |
+| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning data collected 2026-09-10, review pending | 2026-07-13 | — |
 | ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed | 2026-07-13 | — |
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed | 2026-07-13 | — |
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed | 2026-07-13 | — |

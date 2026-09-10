@@ -1,11 +1,11 @@
 ---
 title: Adopt Zstandard as the Default Compression Codec
 document_id: ADR-0007
-version: 1.0.0
+version: 1.1.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-09-10
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0002]
 ---
@@ -68,5 +68,36 @@ ship Oodle-compressed assets, without becoming the platform default.
   discussion, is out of scope for this ADR and deferred to a future
   hardware-support NPS once specific hardware targets are chosen.
 
+## Benchmark Data (2026-09-10, close-out)
+
+The three remaining benchmark blockers are collected
+(`tests/benchmark_adr0007.py`, results in `tests/BENCHMARK_RESULTS.md`
+§31; joins the 2026-08-12 synthetic sweep §2, the end-to-end NyFS
+ratios §7/§12, and the zstd-vs-zlib codec comparison §11):
+
+- **Real-asset level sweep** (265 files / 8.4 MB deterministic
+  `/usr/share` sample): overall ratio is flat (~1.07–1.09) at every
+  level 1–22 — on already-compressed real data, levels ≥7 buy ≤2% ratio
+  for 60× less compression throughput (408 → 6 MB/s). Combined with §2's
+  synthetic knee (ratio flatlines above level ~7), the ratio argument
+  for any level above 3 is closed.
+- **Real LZ4 fast path** (`lz4.frame`, now available — the §11 zlib
+  approximation is retired): ~2.7× zstd-1's compression throughput at
+  equal ratio (1.06 vs 1.07) on the real corpus, and ~12–16× on the
+  synthetic text-like corpus (where LZ4's parser is also ~20% better;
+  that shape flatters LZ4 — honest caveat). The fast-path override the
+  decision names is worth having; the Zstd default keeps the mid-range
+  robustness §2 documented.
+- **Concurrent compression** (zstd-3, real corpus, 1/2/4/8 threads):
+  aggregate throughput scales to ~2.2× at 8 threads — zstandard
+  partially releases the GIL; concurrent daemon commits get real but
+  sub-linear parallel compression.
+
+The level-choice data is now complete. The default level (data supports
+a low default, 1–3) remains an Architecture Group decision per NPS-005
+§3.
+
 ## Status
-Proposed — pending benchmark data and Architecture Group review.
+Proposed — benchmark data complete (2026-08-12 first pass + 2026-09-10
+close-out); pending Architecture Group review for the default-level
+choice.
