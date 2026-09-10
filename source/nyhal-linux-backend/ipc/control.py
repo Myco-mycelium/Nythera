@@ -35,6 +35,9 @@ Operations (JSON request → JSON reply over CALL/REPLY):
    "endpoint_id": str}`` — inspect one endpoint's limiter.
 - ``{"service": "control", "op": "list_endpoint_rate_limits"}`` —
   every endpoint's limiter summary.
+- ``{"service": "control", "op": "get_control_audit"}`` — the bounded
+  in-memory trail of mutating control ops (endpoint limiter retunes,
+  with the operator's ``reason`` when given).
 
 References:
 - NPS-010 §5: capability assignment/revocation at container lifecycle
@@ -44,10 +47,19 @@ References:
 
 import json
 import logging
-from typing import Any, Dict, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional
 
 from .core import FairTokenBucket
 from .transport import DEFAULT_OPERATOR_ID  # the server is the auth boundary
+
+# The daemon-level trail of operator control-plane mutations. In-memory
+# (per-process, bounded) — distinct from the per-container hash-chained
+# audit log (ADR-0018) which is the tamper-evident record of CAPABILITY
+# history; this one answers "who changed the shared knobs, when, and
+# why" across a daemon's lifetime.
+_CONTROL_AUDIT_MAX = 512
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +90,10 @@ class ControlService:
         # mutating op so the daemon's state file tracks the manifest.
         self.state_saver = state_saver
         self._server = None
+        # Bounded in-memory trail of mutating control ops (see
+        # _CONTROL_AUDIT_MAX); surfaced by get_control_audit.
+        self._audit_trail: List[Dict[str, Any]] = []
+        self._audit_lock = threading.Lock()
 
     def attach(self, server) -> "ControlService":
         """Give the service the server to reply through (the router
@@ -1374,6 +1390,9 @@ class ControlService:
                                   msg.message_id, request)
             elif op == "list_endpoint_rate_limits":
                 self._list_endpoint_rate_limits(server, sender_path,
+                                  msg.message_id, request)
+            elif op == "get_control_audit":
+                self._get_control_audit(server, sender_path,
                                   msg.message_id, request)
             elif op == "create_feature_flag":
                 self._create_feature_flag(server, sender_path,
@@ -8577,6 +8596,25 @@ class ControlService:
 
     # -- IPC endpoint rate limiting (ADR-0009 §32b fairness) ----------
 
+    def _record_audit(self, op: str, request: Dict[str, Any],
+                      outcome: Dict[str, Any]) -> None:
+        """Append one bounded-trail entry for a mutating op."""
+        entry = {
+            "ts": time.time(),
+            "op": op,
+            "request": {
+                k: v for k, v in request.items()
+                if k in ("endpoint_id", "rate", "bucket_size",
+                         "fair_shares", "sender_burst", "dynamic_shares",
+                         "reason")
+            },
+            "outcome": outcome,
+        }
+        with self._audit_lock:
+            self._audit_trail.append(entry)
+            if len(self._audit_trail) > _CONTROL_AUDIT_MAX:
+                del self._audit_trail[:-_CONTROL_AUDIT_MAX]
+
     @staticmethod
     def _endpoint_limit_snapshot(limiter) -> Dict[str, Any]:
         """The operator-visible description of an endpoint limiter."""
@@ -8684,11 +8722,15 @@ class ControlService:
                 dynamic_shares=dynamic,
             )
         endpoint.rate_limit = new_limiter
-        self._reply(server, sender_path, call_id, {
-            "ok": True,
+        outcome = {
             "endpoint_id": endpoint_id,
             "limiter": self._endpoint_limit_snapshot(new_limiter),
-        })
+        }
+        # The knobs are shared state: every retune lands in the audit
+        # trail, with the operator's --reason when one was given.
+        self._record_audit("configure_endpoint_rate_limit", request,
+                           outcome)
+        self._reply(server, sender_path, call_id, {"ok": True, **outcome})
 
     def _get_endpoint_rate_limit(self, server, sender_path, call_id,
                                  request) -> None:
@@ -8734,6 +8776,18 @@ class ControlService:
         self._reply(server, sender_path, call_id, {
             "ok": True,
             "endpoints": entries,
+        })
+
+    def _get_control_audit(self, server, sender_path, call_id,
+                           request) -> None:
+        """The bounded in-memory trail of mutating control ops
+        (endpoint limiter retunes; later ops may join)."""
+        with self._audit_lock:
+            trail = list(self._audit_trail)
+        self._reply(server, sender_path, call_id, {
+            "ok": True,
+            "trail": trail,
+            "truncated": len(trail) >= _CONTROL_AUDIT_MAX,
         })
 
     # ------------------------------------------------------------------

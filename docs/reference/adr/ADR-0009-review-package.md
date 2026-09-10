@@ -84,9 +84,14 @@ senders × per-sender demand**.
      (`FairTokenBucket(dynamic_shares=True)`, retunable per endpoint
      via `configure_endpoint_rate_limit ... "dynamic_shares": true`;
      occupancy is reported as `active_senders` in the limiter
-     snapshot). NOT yet the default: dynamic behavior needs its own
-     adversarial re-benchmark before it can back the §32c guarantee —
-     the Group decides whether it ships on, per class.
+     snapshot). NOT the default: the §32e adversarial re-check shows
+     the guarantee HOLDS under dynamic shares (legit client fully
+     protected), but an abuser's absolute take rises ~3.8× while
+     occupancy is low (~1,022/s vs 271/s on the sized envelope) —
+     so making dynamic the default is a policy decision, not a
+     benchmark one. Recommended posture: static default, dynamic
+     opt-in per endpoint for known-good, bursty, low-occupancy
+     workloads (what is shipped).
 
    Both options preserve the NPS-010 §7.1.1 fairness requirement at
    full occupancy; they differ only in under-occupied behavior.
@@ -103,3 +108,46 @@ senders × per-sender demand**.
 - [ ] Static/dynamic shares decided (§5.1)
 - [ ] ADR-0009 → `Accepted`; NPS-010 → `Accepted` (transitive block clears)
 - [ ] NPS-011 `CAP-IPC-HIGH-THROUGHPUT` wording reconciled with §7.1.1 if needed
+
+## 7. Draft sign-off request (for the Architecture Group agenda)
+
+> **Subject: Review request — ADR-0009 (IPC rate limiting) close-out;
+> NPS-010 §7.1.1 adoption; default parameters proposal**
+>
+> ADR-0009's review package is complete
+> (`docs/reference/adr/ADR-0009-review-package.md`, this document).
+> The benchmark record is closed (BENCHMARK_RESULTS §2, §32a–e) and
+> the mechanism is implemented, regression-tested, and live in the
+> Linux backend. Three decisions are requested:
+>
+> **1. Mechanism (§3).** Endpoint token buckets with per-sender
+> fairness — adopted normatively as NPS-010 §7.1.1 (v1.3.0),
+> implemented as `FairTokenBucket` with fair-by-default endpoints.
+> The §32b starvation mode (shared bucket throttled a legitimate
+> 250 Hz client 96% under flood) is closed by construction and by
+> measurement (§32c: legit client 250.0/s, 0 throttled, flood
+> confined).
+>
+> **2. Default parameters (§4).** Per workload class, per the ADR's
+> own "refill scaled to workload class": input/audio 2,000/s envelope,
+> 8 shares, burst 256 (→ 250/s guaranteed per sender — §32d.2 shows
+> the guarantee delivered under contention); bulk stays on the
+> shared-memory path; everything else keeps the 500/s envelope. The
+> packaged daemon and systemd unit already ship the input-class
+> envelope; the `IPCManager` library default stays 200/500 pending
+> your acceptance. The sizing rule (envelope ≥ senders × per-sender
+> demand) is mandatory under static shares (§32d.1 lone-sender cap).
+>
+> **3. Static vs. dynamic shares (§5.1, §32e).** Recommended: static
+> default (adversarial-optimal — an abuser's absolute take is
+> minimized), dynamic as an opt-in per endpoint for known-good
+> low-occupancy workloads. §32e shows the fairness guarantee holds
+> under dynamic shares but an abuser's absolute take rises ~3.8× at
+> low occupancy — making dynamic the default is a policy call, not a
+> benchmark one.
+>
+> On acceptance: ADR-0009 → `Accepted`, NPS-010 → `Accepted` (the
+> transitive §7.1 block clears), `IPCManager` defaults align with the
+> accepted table, and NPS-011's `CAP-IPC-HIGH-THROUGHPUT` wording is
+> reconciled. Instruments are re-runnable:
+> `tests/benchmark_bucket.py --sweep | --adversarial | --fair-sweep`.

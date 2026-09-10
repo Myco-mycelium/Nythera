@@ -1438,6 +1438,39 @@ the shared-memory path by this ADR's Consequences.
 
 No gate declared met — defaults are a proposal, decided at review.
 
+### 32e. Dynamic shares under adversarial load (2026-09-10)
+
+`python3 tests/benchmark_bucket.py --fair-sweep` (second adversarial
+block) re-runs the §32c sized-envelope scenario (256 / 2,000/s) with
+`FairTokenBucket(dynamic_shares=True)` — the review package §5.1(b)
+option, where the per-sender refill follows the LIVE sender count:
+
+| metric | static shares (§32c) | dynamic shares (§32e) |
+|--------|---------------------:|----------------------:|
+| flood admitted / s | 271.3 | **1,021.7** |
+| legitimate (250 Hz) admitted / s | 250.0 | 250.3 |
+| legitimate throttled / s | 0.0 | 0.0 |
+| legitimate meets request | YES | **YES** |
+
+**Finding: the guarantee is occupancy-robust in both modes; what
+changes is the abuser's absolute take.** With only flood + legitimate
+live, dynamic shares split the envelope two ways (~1,000/s each), so
+the flooder draws ~3.8× more absolute throughput than under static
+shares — bounded by the envelope, not by `envelope/fair_shares`. The
+legitimate client is fully protected either way, and the extra take
+disappears as real senders join (at 8 live senders both modes give
+250/s per sender). Static shares minimize an abuser's absolute
+take; dynamic shares maximize utilization on under-occupied endpoints.
+
+**Recommendation for review (§5.1):** keep **static as the default**
+(shipped) — the adversarial-optimal posture; offer dynamic per
+endpoint for known-good, low-occupancy, bursty workloads (e.g. a
+single game engine that intermittently needs the full envelope).
+Dynamic could only become the DEFAULT after a policy decision that
+the larger abuser take is acceptable — not a benchmark question.
+
+No gate declared met.
+
 ## 33. ADR-0013 Tuning Data — EEVDF Scheduling Simulation (2026-09-10)
 
 `python3 tests/benchmark_adr0013.py` — a discrete-event EEVDF

@@ -56,7 +56,8 @@ DEFAULT_TIMEOUT_S = 30.0
 STATUS_COMMANDS = ("ping", "status", "health")
 CONTROL_COMMANDS = ("containers-list", "containers-run", "containers-kill")
 # Endpoint IPC rate-limiter ops (ADR-0009 §32b fairness knobs).
-ENDPOINT_LIMIT_COMMANDS = ("ep-limits-list", "ep-limits-get", "ep-limits-set")
+ENDPOINT_LIMIT_COMMANDS = ("ep-limits-list", "ep-limits-get", "ep-limits-set",
+                           "ep-limits-audit")
 NUI_COMMANDS = ("nui-validate", "nui-load", "nui-current")
 VAULT_COMMANDS = (
     "vault-volume-create", "vault-volume-open", "vault-volume-list",
@@ -119,7 +120,11 @@ def build_payload(command: str, args: argparse.Namespace) -> Dict[str, Any]:
             payload["sender_burst"] = int(args.sender_burst)
         if args.dynamic_shares is not None:
             payload["dynamic_shares"] = bool(args.dynamic_shares)
+        if getattr(args, "reason", ""):
+            payload["reason"] = args.reason
         return payload
+    if command == "ep-limits-audit":
+        return {"service": "control", "op": "get_control_audit"}
     if command == "containers-run":
         return {
             "service": "control",
@@ -5147,6 +5152,26 @@ def format_human(command: str, resp: Dict[str, Any]) -> str:
         return "\n".join([
             "endpoint\tcontainer\tkind\trate\tburst\tshares\tper-sender",
         ] + rows)
+    if command == "ep-limits-audit":
+        trail = resp.get("trail") or []
+        if not trail:
+            return "no retunes recorded since daemon start"
+        rows = []
+        for e in trail:
+            req = e.get("request") or {}
+            changes = ", ".join(
+                f"{k}={v}" for k, v in req.items()
+                if k not in ("endpoint_id", "reason"))
+            reason = req.get("reason") or "-"
+            ts = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(e.get("ts", 0)))
+            rows.append(
+                f"{ts}\t{req.get('endpoint_id', '-')}\t"
+                f"{changes or '-'}\t{reason}")
+        head = "time\tendpoint\tchange\treason"
+        if resp.get("truncated"):
+            head += "  (trail truncated)"
+        return "\n".join([head] + rows)
     if command in ("ep-limits-get", "ep-limits-set"):
         lim = resp.get("limiter") or {}
         lines = [
@@ -9586,7 +9611,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Shares track the live sender count: a lone sender may "
              "use the whole envelope (opt-in; not the benchmarked "
              "default)")
+    epl_s.add_argument(
+        "--reason", default="",
+        help="Why this retune (recorded in the control-plane audit "
+             "trail; recommended for shared endpoints)")
     epl_s.set_defaults(command="ep-limits-set")
+
+    epl_a = ep_sub.add_parser(
+        "audit", help="Show the control-plane audit trail (retunes)")
+    epl_a.set_defaults(command="ep-limits-audit")
 
     clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")
     clo.add_argument("container_id")

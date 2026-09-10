@@ -12871,6 +12871,16 @@ class TestOperatorCli(unittest.TestCase):
         self.assertIs(
             nyrqisctl.build_payload(args.command, args)["dynamic_shares"],
             False)
+        # --reason rides the payload; audit fetches the trail.
+        args = parser.parse_args(
+            ["ep-limits", "set", "ep-svc", "--rate", "4000",
+             "--reason", "sizing per §32d"])
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args)["reason"],
+            "sizing per §32d")
+        args = parser.parse_args(["ep-limits", "audit"])
+        self.assertEqual(nyrqisctl.build_payload(args.command, args),
+                         {"service": "control", "op": "get_control_audit"})
 
     def test_cli_format_human_endpoint_limits(self):
         listed = nyrqisctl.format_human("ep-limits-list", {
@@ -13680,6 +13690,29 @@ class TestControlService(unittest.TestCase):
                 "endpoint_id": "ep-svc", "rate": 0}).encode())
             self.assertFalse(resp["ok"])
             self.assertIn("positive", resp["error"])
+
+            # The audit trail records the retunes (with reason), in
+            # order, and only successful ones.
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "get_control_audit"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            trail = resp["trail"]
+            self.assertEqual(len(trail), 2)  # the two successful retunes
+            self.assertEqual(trail[0]["request"]["endpoint_id"], "ep-svc")
+            self.assertEqual(trail[0]["request"]["fair_shares"], 16)
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "rate": 8000.0,
+                "reason": "streaming party mode"}).encode())
+            self.assertTrue(resp["ok"], resp)
+            resp = self._call(client, json.dumps({
+                "service": "control", "op": "get_control_audit"}).encode())
+            trail = resp["trail"]
+            self.assertEqual(len(trail), 3)
+            self.assertEqual(trail[2]["request"].get("reason"),
+                             "streaming party mode")
+            self.assertEqual(trail[2]["request"]["rate"], 8000.0)
         finally:
             client.close()
             stop.set()
@@ -13702,6 +13735,12 @@ class TestControlService(unittest.TestCase):
             self.assertIn("operator-only", resp["error"])
             ep = server.manager.endpoints["ep-svc"]
             self.assertEqual(ep.rate_limit.fair_shares, 8)  # unchanged
+            # A refused op leaves no audit entry.
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "configure_endpoint_rate_limit",
+                "endpoint_id": "ep-svc", "fair_shares": 4}).encode())
+            self.assertFalse(resp["ok"])
         finally:
             client.close()
             stop.set()
