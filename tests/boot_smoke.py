@@ -54,6 +54,9 @@ DEAD_PATTERNS = (
     "gave up waiting for root device",
     "(initramfs)",
     "entering emergency mode",
+    "can't execute '/sbin/init'",
+    "target filesystem doesn't have requested",
+    "no init found",
 )
 
 
@@ -67,6 +70,29 @@ def _emit_annotation(message):
     """
     flat = " ".join(message.split())[:600]
     print(f"::error::boot smoke: {flat}", flush=True)
+
+
+def _emit_full_log(text, summary):
+    """Chunk the WHOLE serial log into ::error:: annotations.
+
+    The serial-log artifact needs auth to download and job logs are not
+    in the static job page — annotations are the only failure channel
+    readable without credentials. GitHub caps error annotations at 10
+    per step; with ~950 usable chars per annotation that carries a
+    ~9 KB log, which has covered every real boot so far. The first
+    chunk is the diagnosis summary, the rest are numbered log segments
+    so the boot narrative can be reconstructed in order.
+    """
+    _emit_annotation(summary)
+    compact = " ".join(text.split())
+    chunk_size = 950
+    max_chunks = 9  # 1 summary + 9 log chunks = 10 error annotations
+    total = len(compact)
+    for i in range(min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)):
+        piece = compact[i * chunk_size:(i + 1) * chunk_size]
+        print(f"::error::boot smoke: log[{i + 1}/"
+              f"{min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)}] "
+              f"{piece}", flush=True)
 
 
 def _extract_live_kernel(iso, dest_dir):
@@ -201,13 +227,16 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
             print("[boot-smoke] ---- serial log tail ----")
             print(tail)
             print("[boot-smoke] -----------------------------")
-            # And surface it as a check annotation: that is the one
+            # And surface it as check annotations: that is the one
             # failure channel readable via the API without credentials.
-            _emit_annotation(
+            # The FULL log goes out in chunks — six opaque rounds made
+            # this channel the diagnosis bottleneck.
+            _emit_full_log(
+                text,
                 f"markers ready={saw_ready} pong_ok={saw_pong_ok} "
                 f"pong_fail={saw_pong_fail}; "
                 f"dead_pattern={dead_hit!r}; "
-                f"tail: {tail[-400:]}")
+                f"full serial log follows in chunks")
 
         if saw_ready and saw_pong_ok:
             print("[boot-smoke] PASS: the demo session reached the serial "
