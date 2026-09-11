@@ -123,10 +123,12 @@ else
     log "assembling a minimal rootfs with debootstrap (this takes a while)"
     SUITE="${NYRQIS_LIVE_SUITE:-bookworm}"
     MIRROR="${NYRQIS_LIVE_MIRROR:-http://deb.debian.org/debian}"
-    # live-boot is what processes `boot=live` from the initramfs; without
-    # it the kernel would drop to an initramfs shell after unpacking.
+    # live-boot is what processes `boot=live` from the initramfs; the
+    # initramfs SCRIPTS live in live-boot-initramfs-tools (a split
+    # package minbase can skip via Recommends — six CI rounds burned
+    # on the resulting script-less initrd).
     debootstrap --variant=minbase \
-        --include=systemd,sudo,linux-image-amd64,live-boot \
+        --include=systemd,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
 fi
 [[ -d "$ROOTFS_SRC" ]] || die "rootfs tree not found after acquisition"
@@ -234,6 +236,14 @@ EOF
     chmod 0755 "$ROOTFS_SRC/etc/initramfs-tools/hooks/zz-nyrqis-live-modules"
 
     if chroot "$ROOTFS_SRC" sh -c 'command -v mkinitramfs' >/dev/null 2>&1; then
+        # Self-heal the scripts package first: without it mkinitramfs
+        # "succeeds" and produces a script-less initrd that cannot boot.
+        if [[ ! -e "$ROOTFS_SRC/usr/share/initramfs-tools/scripts/live" ]]; then
+            log "live-boot initramfs scripts missing — installing live-boot-initramfs-tools"
+            chroot "$ROOTFS_SRC" sh -c \
+                'apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq live-boot-initramfs-tools' \
+                2>/dev/null || true
+        fi
         log "regenerating the initramfs with live-boot scripts + modules"
         if chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
             "$(basename "$KERNEL" | sed 's/^vmlinuz-//')"; then
