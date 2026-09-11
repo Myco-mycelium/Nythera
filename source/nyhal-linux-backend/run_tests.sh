@@ -166,6 +166,9 @@ else
     # Package repository tests
     run_test "Package Repo" "tests.test_package_repo"
     
+    # Design-language adoption (ui/hig token bridge + surfaces)
+    run_test "Design Language" "tests.test_design_language"
+    
     # Pipeline tests
     run_test "Render Pipeline" "tests.test_render_pipeline"
     run_test "Full Pipeline" "tests.test_full_pipeline"

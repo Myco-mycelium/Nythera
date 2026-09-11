@@ -19,6 +19,59 @@ from typing import Dict, Tuple
 
 
 # ---------------------------------------------------------------------------
+# Nyrqis design-language tokens (docs/reference/design-language.md)
+# ---------------------------------------------------------------------------
+# The Python bridge of the same vocabulary `.nstudio` documents carry in
+# their `designTokens` section and `ui/compositor.DESIGN_TOKENS` defaults.
+# Python-rendered surfaces (settings, TUI apps, quick panels) read these
+# so every renderer shares one spec. HIGColor/spacing constants above are
+# the Apple system palette; the tokens below are Nyrqis brand values.
+
+# 4-pt spacing grid (mirrors designTokens.space / DESIGN_TOKENS["space"])
+SPACE_XS = 4
+SPACE_SM = 8
+SPACE_MD = 12
+SPACE_LG = 16
+SPACE_XL = 24
+
+# Corner radii (mirrors designTokens.radius; py surfaces round to the
+# nearest pixel the renderer supports — nothing sharper than 8)
+RADIUS_SM = 8
+RADIUS_MD = 12
+RADIUS_LG = 16
+
+# Minimum interactive target and minimum gap (mirrors target.min/gap)
+TARGET_MIN = 44
+TARGET_GAP = 8
+
+# Surface treatment: bar/raised opacity for surfaces that composite over
+# other content, plus the hairline guardrail color for translucent edges.
+SURFACE_BAR_OPACITY = 0.85
+SURFACE_RAISED_OPACITY = 0.92
+SURFACE_HAIRLINE = (255, 255, 255, 20)  # rgba(255,255,255,.08)
+
+# Motion (mirrors designTokens.motion; NUI easing enum-compatible names).
+# Exits faster than entrances; menus open from their anchor.
+MOTION_MICRO = (100, "ease-out")
+MOTION_ENTER = (200, "ease-out")
+MOTION_EXIT = (120, "ease-in")
+MOTION_MOVE = (250, "ease-in-out")
+MOTION_EMPHASIS = (300, "ease-in-out")
+
+# Accent-as-action: exactly one accent, on interactive elements only.
+# Eclipse is the dark default; Solar the light companion (the .nstudio
+# reference shell carries the same hex values).
+ACCENT_ECLIPSE = (124, 184, 255)   # #7CB8FF
+ACCENT_SOLAR = (46, 111, 219)      # #2E6FDB
+SURFACE_BASE_ECLIPSE = (16, 20, 24)      # #101418
+SURFACE_BASE_SOLAR = (244, 242, 237)     # #F4F2ED
+TEXT_PRIMARY_ECLIPSE = (236, 241, 247)   # #ECF1F7
+TEXT_PRIMARY_SOLAR = (27, 32, 39)        # #1B2027
+TEXT_SECONDARY_ECLIPSE = (154, 167, 180) # #9AA7B4
+TEXT_SECONDARY_SOLAR = (90, 102, 115)    # #5A6673
+
+
+# ---------------------------------------------------------------------------
 # Typography — SF Pro font system (iOS 17+ defaults)
 # ---------------------------------------------------------------------------
 

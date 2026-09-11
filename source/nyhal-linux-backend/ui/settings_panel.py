@@ -19,6 +19,20 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ui.hig import (
+    ACCENT_ECLIPSE,
+    ACCENT_SOLAR,
+    SPACE_LG,
+    SPACE_XL,
+    SURFACE_BASE_ECLIPSE,
+    SURFACE_BASE_SOLAR,
+    TARGET_MIN,
+    TEXT_PRIMARY_ECLIPSE,
+    TEXT_PRIMARY_SOLAR,
+    TEXT_SECONDARY_ECLIPSE,
+    TEXT_SECONDARY_SOLAR,
+)
+
 
 # ---------------------------------------------------------------------------
 # Theme definitions
@@ -42,22 +56,25 @@ class Theme:
 # Built-in themes
 THEME_ECLIPSE = Theme(
     name="Eclipse",
-    bg=(24, 24, 32),
-    surface=(35, 35, 48),
-    accent=(80, 140, 255),
-    text=(200, 200, 220),
-    text_dim=(120, 120, 140),
-    border=(60, 60, 80),
+    # Nyrqis design-language tokens (ui/hig.py — the Python bridge of
+    # the .nstudio designTokens vocabulary): base surface, one accent,
+    # two-step text hierarchy.
+    bg=SURFACE_BASE_ECLIPSE,
+    surface=(28, 33, 40),
+    accent=ACCENT_ECLIPSE,
+    text=TEXT_PRIMARY_ECLIPSE,
+    text_dim=TEXT_SECONDARY_ECLIPSE,
+    border=(52, 60, 70),
 )
 
 THEME_SOLAR = Theme(
     name="Solar",
-    bg=(0, 43, 54),
-    surface=(7, 54, 66),
-    accent=(38, 139, 210),
-    text=(131, 148, 150),
-    text_dim=(101, 123, 131),
-    border=(88, 110, 117),
+    bg=SURFACE_BASE_SOLAR,
+    surface=(255, 255, 255),
+    accent=ACCENT_SOLAR,
+    text=TEXT_PRIMARY_SOLAR,
+    text_dim=TEXT_SECONDARY_SOLAR,
+    border=(210, 206, 198),
 )
 
 THEME_DRACULA = Theme(
@@ -101,11 +118,14 @@ class SettingsPanel:
     """
     
     # Layout constants
-    PADDING = 20
+    # Layout constants snap to the design language's 4-pt grid
+    # (ui.hig SPACE_*) and give every interactive row the 44-px minimum
+    # target with >= 8 px separation.
+    PADDING = SPACE_XL
     SECTION_HEIGHT = 180
     SLIDER_HEIGHT = 36
-    TOGGLE_HEIGHT = 36
-    THEME_ITEM_HEIGHT = 40
+    TOGGLE_HEIGHT = TARGET_MIN
+    THEME_ITEM_HEIGHT = TARGET_MIN
     
     def __init__(self, width: int = 400, height: int = 700):
         self._width = width
@@ -339,16 +359,16 @@ class SettingsPanel:
             fill_rect(handle_x, sy + 19, 8, 1, theme.text)
         
         def draw_toggle(tx: int, ty: int, toggle: Toggle) -> None:
-            """Draw a toggle switch."""
+            """Draw a toggle switch (44-px-row-friendly 44x24 track)."""
             # Track
-            track_w = 40
-            track_h = 20
+            track_w = 44
+            track_h = 24
             track_color = theme.accent if toggle.enabled else theme.border
             fill_rect(tx, ty + 4, track_w, track_h, track_color)
             
             # Handle
-            handle_x = tx + (track_w - 16) if toggle.enabled else tx
-            fill_rect(handle_x + 2, ty + 6, 16, 16, theme.text)
+            handle_x = tx + (track_w - 18) if toggle.enabled else tx
+            fill_rect(handle_x + 2, ty + 7, 18, 18, theme.text)
         
         # === Header ===
         fill_rect(0, 0, w, 60, theme.surface)
@@ -408,31 +428,31 @@ class SettingsPanel:
         
         cy += self.SECTION_HEIGHT
         
-        # === Theme Section ===
-        fill_rect(0, cy, w, 160, theme.surface)
-        fill_rect(0, cy + 159, w, 1, theme.border)
+        # === Theme Section === (184 = 44 header zone + 3x44 rows, 4-pt grid)
+        fill_rect(0, cy, w, 184, theme.surface)
+        fill_rect(0, cy + 183, w, 1, theme.border)
         
         draw_text(self.PADDING, cy + 12, "Theme", theme.text)
         draw_text(w - self.PADDING - 80, cy + 12, "[T] cycle", theme.text_dim)
         
         for i, t in enumerate(BUILTIN_THEMES):
-            item_y = cy + 40 + i * self.THEME_ITEM_HEIGHT
+            item_y = cy + 44 + i * self.THEME_ITEM_HEIGHT
             
-            # Selection indicator
+            # Selection indicator (36 px strip inside the 44-px row)
             if i == self._selected_theme:
-                fill_rect(self.PADDING, item_y, w - self.PADDING * 2, 32, theme.accent)
+                fill_rect(self.PADDING, item_y, w - self.PADDING * 2, 36, theme.accent)
             
             # Theme preview colors
             preview_x = self.PADDING + 4
-            fill_rect(preview_x, item_y + 8, 16, 16, t.bg)
-            fill_rect(preview_x + 18, item_y + 8, 16, 16, t.surface)
-            fill_rect(preview_x + 36, item_y + 8, 16, 16, t.accent)
+            fill_rect(preview_x, item_y + 8, 20, 20, t.bg)
+            fill_rect(preview_x + 22, item_y + 8, 20, 20, t.surface)
+            fill_rect(preview_x + 44, item_y + 8, 20, 20, t.accent)
             
             # Theme name
             name_color = theme.text if i == self._selected_theme else theme.text_dim
             draw_text(preview_x + 60, item_y + 10, t.name, name_color)
         
-        cy += 160
+        cy += 184
         
         # === Toggles Section ===
         fill_rect(0, cy, w, len(self._toggles) * self.TOGGLE_HEIGHT + 50, theme.bg)

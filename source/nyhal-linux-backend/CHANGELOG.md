@@ -50,6 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     lossless round-trips — and §31a times via aggregate best-of-3 to
     shed runner jitter (per-file-min method rejected: it measured one
     small file, 8x instead of the record's 59x).
+- **Design-language rollout phase 2.3a (form-heavy surfaces)**:
+  `ui/hig.py` now carries the Nyrqis token vocabulary as the Python
+  bridge of the `.nstudio` `designTokens` section (4-pt space grid,
+  radius bounds, 44-px targets, motion pairs with exits faster than
+  entrances, one-accent brand values, surface opacities + hairline) —
+  same values as `ui/compositor.DESIGN_TOKENS` and the reference
+  shell, pinned by a cross-module agreement test. The settings panel
+  adopts them: builtin Eclipse/Solar themes retuned to the brand
+  base/accent/text tokens (Dracula untouched as a user theme; the
+  generic `Theme` dataclass default unchanged), toggle and theme-item
+  rows lifted to the 44-px target with the theme band re-flowed to
+  184 px on the 4-pt grid, and the toggle track redrawn at 44x24.
+  New `tests/test_design_language.py` (registered in `run_tests.sh`)
+  pins the bridge values, target compliance, and the panel adoption.
 
 ## [0.29.0] - 2026-09-11
 
