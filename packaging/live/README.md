@@ -85,6 +85,12 @@ and asserts the daemon answers ping (the serial handshake in
 ISO and the serial log as artifacts — download both from the Actions
 run page; no local build required.
 
+The smoke boots **directly via the ISO's kernel and initrd** (extracted
+at run time with `xorriso` or `isoinfo`) with `NYRQIS_BOOT_SMOKE=1` on
+a hand-built kernel command line — the outcome never depends on
+bootloader menu selection, and the ISO's GRUB default stays the
+graphical demo for humans.
+
 Run the boot smoke yourself (needs `qemu-system-x86`):
 
 ```bash

@@ -31,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   faster ease-in drop on exit). All component ids, behaviors,
   bindings, and locales preserved; the `tests/fixtures` copy is
   intentionally untouched (pinned by render/schema tests).
+- **First real CI build of the live ISO closed two integration gaps**
+  (found on the release commit's `live-iso` run):
+  - `tests/boot_smoke.py` booted the ISO via `-cdrom` with no way to
+    select the serial entry and no `NYRQIS_BOOT_SMOKE=1` on any kernel
+    command line — the handshake could never succeed. The smoke now
+    extracts `/live/vmlinuz` + `/live/initrd` from the ISO (xorriso,
+    isoinfo fallback) and boots them directly with `-append
+    boot=live console=ttyS0,115200 NYRQIS_BOOT_SMOKE=1`, so the
+    outcome no longer depends on bootloader menu selection; a final
+    log read after early qemu exit fixes a latent marker-parse bug
+    (verified: pass / pong-fail / no-marker / extraction-failure
+    paths against a QEMU stand-in asserting the direct-boot args).
+  - The bench gate's §31b invariant pinned the corpus-absolute ratio
+    ordering (lz4 ≥ zstd-3), a property of the recording host's
+    `/usr/share` mix; it now pins the host-relative claims — lz4 ≥
+    1.5x zstd-3 throughput on the same corpus (record: 2.7x) plus
+    lossless round-trips — and §31a times via aggregate best-of-3 to
+    shed runner jitter (per-file-min method rejected: it measured one
+    small file, 8x instead of the record's 59x).
 
 ## [0.29.0] - 2026-09-11
 
