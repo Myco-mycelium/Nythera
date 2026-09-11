@@ -88,11 +88,18 @@ def _emit_full_log(text, summary):
     chunk_size = 950
     max_chunks = 9  # 1 summary + 9 log chunks = 10 error annotations
     total = len(compact)
-    for i in range(min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)):
-        piece = compact[i * chunk_size:(i + 1) * chunk_size]
-        print(f"::error::boot smoke: log[{i + 1}/"
-              f"{min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)}] "
-              f"{piece}", flush=True)
+    n = min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)
+    if total <= n * chunk_size:
+        start = 0
+    else:
+        # Over budget: the INTERESTING part of a boot log is the END —
+        # panics, mountroot failures, and rescue shells all sit there.
+        # Head gets one chunk for context (kernel version, cmdline);
+        # the rest goes to the tail.
+        start = total - (n - 1) * chunk_size
+    for i in range(n):
+        piece = compact[start + i * chunk_size:start + (i + 1) * chunk_size]
+        print(f"::error::boot smoke: log[{i + 1}/{n}] {piece}", flush=True)
 
 
 def _extract_live_kernel(iso, dest_dir):

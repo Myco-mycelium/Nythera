@@ -202,23 +202,36 @@ INITRD="$(ls "$ROOTFS_SRC"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || 
 [[ -n "$KERNEL" && -n "$INITRD" ]] || \
     die "no kernel/initrd under $ROOTFS_SRC/boot — build the rootfs with linux-image-amd64"
 
-# Live initramfs hooks: squashfs + overlay modules must be present for
-# the live-boot pivot. mkinitramfs INSIDE the rootfs (skipped under
-# --skip-chroot; a properly built rootfs tarball already ships a
-# live-boot-capable initrd — Debian regenerates it on package install).
+# Live initramfs hooks: the live pivot needs live-boot's SCRIPTS and the
+# FILESYSTEM MODULES (squashfs, iso9660, loop, overlay). mkinitramfs
+# INSIDE the rootfs (skipped under --skip-chroot; a properly built
+# rootfs tarball already ships a live-boot-capable initrd).
 #
-# VERIFIED, not assumed: boot=live is a no-op without live-boot's
-# initramfs scripts, and the failure mode ("run-init: can't execute
-# /sbin/init" → initramfs shell) only shows up AT BOOT — a live CI run
-# burned four rounds on exactly this. So: regenerate, then refuse to
-# ship any initrd that cannot boot live.
-live_initrd_ok() {
-    chroot "$ROOTFS_SRC" lsinitramfs "/boot/$(basename "$1")" 2>/dev/null \
-        | grep -qE '(^|/)scripts/live$'
-}
+# VERIFIED, not assumed: a missing piece shows up only AT BOOT as
+# "run-init: can't execute /sbin/init" → initramfs shell (six CI rounds
+# burned on variants of exactly this). So: force the modules via a
+# hook, regenerate, then refuse to ship any initrd missing any piece.
 if ! $SKIP_CHROOT; then
+    # Force the live-critical modules into every generated initramfs
+    # (MODULES=most does not guarantee filesystem modules).
+    mkdir -p "$ROOTFS_SRC/etc/initramfs-tools/hooks"
+    cat > "$ROOTFS_SRC/etc/initramfs-tools/hooks/zz-nyrqis-live-modules" <<'EOF'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+. /usr/share/initramfs-tools/hook-functions
+force_load squashfs
+force_load iso9660
+force_load loop
+force_load overlay
+EOF
+    chmod 0755 "$ROOTFS_SRC/etc/initramfs-tools/hooks/zz-nyrqis-live-modules"
+
     if chroot "$ROOTFS_SRC" sh -c 'command -v mkinitramfs' >/dev/null 2>&1; then
-        log "regenerating the initramfs with the live-boot modules"
+        log "regenerating the initramfs with live-boot scripts + modules"
         if chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
             "$(basename "$KERNEL" | sed 's/^vmlinuz-//')"; then
             INITRD="$ROOTFS_SRC/boot/initrd.img-nyrqis-live"
@@ -226,14 +239,23 @@ if ! $SKIP_CHROOT; then
             log "WARNING: mkinitramfs failed; verifying the stock initrd instead"
         fi
     fi
-    if ! live_initrd_ok "$INITRD"; then
-        die "initrd $(basename "$INITRD") has NO live-boot support (scripts/live missing).
-  boot=live is a no-op without it and the image cannot boot.
+
+    MISSING=""
+    listing="$(chroot "$ROOTFS_SRC" lsinitramfs "/boot/$(basename "$INITRD")" 2>/dev/null)"
+    echo "$listing" | grep -qE '(^|/)scripts/live$' \
+        || MISSING="$MISSING scripts/live"
+    for mod in squashfs iso9660 loop overlay; do
+        echo "$listing" | grep -qE "/${mod}\.ko(\.xz|\.zst)?$" \
+            || MISSING="$MISSING $mod.ko"
+    done
+    if [ -n "$MISSING" ]; then
+        die "initrd $(basename "$INITRD") cannot boot live — missing:$MISSING
+  boot=live is a no-op without live-boot's scripts, and mountroot fails
+  into the initramfs shell without squashfs/iso9660/loop/overlay.
   Fix: install live-boot + live-boot-initramfs-tools in the rootfs and
-  ensure mkinitramfs succeeds (it was either skipped, failed, or the
-  stock initrd predates the live-boot package install)."
+  ensure mkinitramfs succeeds with the zz-nyrqis-live-modules hook."
     fi
-    log "initrd verified: live-boot scripts present ($(basename "$INITRD"))"
+    log "initrd verified: live-boot scripts + squashfs/iso9660/loop/overlay present"
 fi
 
 # ---------------------------------------------------------------- squashfs + ISO
