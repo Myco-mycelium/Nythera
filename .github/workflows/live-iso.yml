@@ -11,6 +11,7 @@ on:
       - "packaging/live/**"
       - "source/nyhal-linux-backend/**"
       - ".github/workflows/live-iso.yml"
+      - "tests/boot_smoke.py"   # the smoke's driver: its changes re-exercise the boot
   workflow_dispatch:
   schedule:
     # Weekly refresh so the shipped image tracks main.
