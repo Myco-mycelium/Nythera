@@ -4,7 +4,25 @@
     "name": "Nyrqis Desktop Shell",
     "id": "example-nyrqis-desktop-shell",
     "created": "2026-08-17T00:00:00+00:00",
-    "updated": "2026-08-17T00:00:00+00:00"
+    "updated": "2026-09-11T00:00:00+00:00"
+  },
+  "designTokens": {
+    "$comment": "Nyrqis Design Language v1 (docs/reference/design-language.md). Same vocabulary as the default-shell reference implementation.",
+    "space": { "xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24 },
+    "radius": { "sm": 8, "md": 12, "lg": 16, "full": "height/2" },
+    "surface": {
+      "bar": { "opacity": 0.85, "blur": true, "hairline": "rgba(255,255,255,.08)" },
+      "raised": { "opacity": 0.92, "blur": true },
+      "dialog": { "opacity": 1.0, "shadow": "0 8px 24px rgba(0,0,0,.35)" }
+    },
+    "motion": {
+      "micro": { "duration": 100, "easing": "ease-out" },
+      "enter": { "duration": 200, "easing": "ease-out" },
+      "exit": { "duration": 120, "easing": "ease-in" },
+      "move": { "duration": 250, "easing": "ease-in-out" },
+      "emphasis": { "duration": 300, "easing": "ease-in-out" }
+    },
+    "target": { "min": 44, "gap": 8 }
   },
   "themes": {
     "active": "Eclipse",
@@ -26,11 +44,38 @@
     ]
   },
   "animations": [
-    { "id": "start_menu_fade", "target": "start_menu", "property": "opacity",
-      "duration": 200, "easing": "ease-out",
+    {
+      "id": "start_menu_rise",
+      "target": "start_menu",
+      "property": "y",
+      "duration": 200,
+      "easing": "ease-out",
+      "keyframes": [
+        { "offset": 0.0, "value": 484 },
+        { "offset": 1.0, "value": 468 }
+      ]
+    },
+    {
+      "id": "start_menu_drop",
+      "target": "start_menu",
+      "property": "opacity",
+      "duration": 120,
+      "easing": "ease-in",
+      "keyframes": [
+        { "offset": 0.0, "value": 1.0 },
+        { "offset": 1.0, "value": 0.0 }
+      ]
+    },
+    {
+      "id": "start_menu_fade",
+      "target": "start_menu",
+      "property": "opacity",
+      "duration": 200,
+      "easing": "ease-out",
       "keyframes": [ { "offset": 0.0, "value": 0.0 },
                        { "offset": 0.6, "value": 0.75 },
-                       { "offset": 1.0, "value": 1.0 } ] }
+                       { "offset": 1.0, "value": 1.0 } ]
+    }
   ],
   "locales": {
     "active": "en",
@@ -67,6 +112,24 @@
         "target": "System",
         "name": "Nyrqis.Animation.Play",
         "arguments": { "animation": "start_menu_fade" }
+      }
+    },
+    {
+      "id": "behavior_start_open_arc",
+      "condition": { "state": "startMenuOpen", "operator": "equals", "value": true },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_rise" }
+      }
+    },
+    {
+      "id": "behavior_start_close",
+      "condition": { "state": "startMenuOpen", "operator": "equals", "value": false },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_drop" }
       }
     },
     {
@@ -212,7 +275,7 @@
             "id": "desktop",
             "type": "DesktopSurface",
             "properties": { "wallpaper": "$asset:wallpaper", "accent": "Primary", "iconSize": 96 },
-            "layout": { "x": 0, "y": 0, "width": 1440, "height": 820 },
+            "layout": { "x": 0, "y": 0, "width": 1440, "height": 844 },
             "events": {},
             "children": [
               {
@@ -243,7 +306,7 @@
                 "id": "dock",
                 "type": "Dock",
                 "properties": { "position": "bottom", "pinnedApps": ["Files", "Vault", "Settings", "Media"], "runningApps": ["Terminal"], "autoHide": false, "iconSize": 48, "magnify": true },
-                "layout": { "x": 520, "y": 700, "width": 400, "height": 64 },
+                "layout": { "x": 520, "y": 772, "width": 400, "height": 64 },
                 "events": { "appClicked": "behavior_launch_terminal" },
                 "children": []
               }
@@ -285,7 +348,7 @@
               "runningApps": ["Terminal"],
               "showClock": true,
               "showTray": true
-            },            "layout": { "x": 0, "y": 0, "width": 1440, "height": 80, "anchorLeft": true, "anchorRight": true, "anchorBottom": true, "minWidth": 1200, "maxWidth": 1600, "maxHeight": 96 },
+            },            "layout": { "x": 0, "y": 0, "width": 1440, "height": 56, "anchorLeft": true, "anchorRight": true, "anchorBottom": true, "minWidth": 1200, "maxWidth": 1600, "maxHeight": 96 },
 
 
             "events": {},
@@ -294,7 +357,7 @@
                 "id": "btn_start",
                 "componentRef": "TaskbarButton",
                 "overrides": { "text": "Start" },
-                "layout": { "x": 8, "y": 16, "width": 96, "height": 48 },
+                "layout": { "x": 8, "y": 4, "width": 96, "height": 48 },
                 "events": { "clicked": "behavior_start_toggle" },
                 "children": []
               },
@@ -302,7 +365,7 @@
                 "id": "btn_search",
                 "componentRef": "TaskbarButton",
                 "overrides": { "text": "$localize:search.label" },
-                "layout": { "x": 112, "y": 16, "width": 96, "height": 48 },
+                "layout": { "x": 112, "y": 4, "width": 96, "height": 48 },
                 "events": { "clicked": "behavior_launcher_open" },
                 "children": []
               },
@@ -310,7 +373,7 @@
                 "id": "pinned_apps",
                 "type": "List",
                 "properties": { "items": ["Files", "Vault", "Settings", "Media"], "selectedIndex": -1, "multiple": false },
-                "layout": { "x": 216, "y": 16, "width": 320, "height": 48 },
+                "layout": { "x": 216, "y": 4, "width": 320, "height": 48 },
                 "events": {},
                 "children": []
               },
@@ -318,7 +381,7 @@
                 "id": "ws_switcher",
                 "type": "WorkspaceSwitcher",
                 "properties": { "workspaces": 3, "currentWorkspace": 1 },
-                "layout": { "x": 976, "y": 16, "width": 120, "height": 48 },
+                "layout": { "x": 976, "y": 4, "width": 120, "height": 48 },
                 "events": {},
                 "children": []
               },
@@ -326,7 +389,7 @@
                 "id": "clock",
                 "type": "Clock",
                 "properties": { "format": "24h", "showSeconds": false },
-                "layout": { "x": 1216, "y": 16, "width": 80, "height": 48 },
+                "layout": { "x": 1216, "y": 4, "width": 80, "height": 48 },
                 "events": {},
                 "children": []
               },
@@ -334,7 +397,7 @@
                 "id": "tray",
                 "type": "SystemTray",
                 "properties": { "icons": ["Network", "Volume", "Battery"], "visible": true },
-                "layout": { "x": 1304, "y": 16, "width": 128, "height": 48 },
+                "layout": { "x": 1304, "y": 4, "width": 128, "height": 48 },
                 "events": {},
                 "children": []
               }
@@ -344,7 +407,7 @@
             "id": "start_menu",
             "type": "StartMenu",
             "properties": { "open": false, "pinnedApps": ["Files", "Vault", "Settings", "Media"], "recommendedApps": ["Calculator", "Notes"] },
-            "layout": { "x": 16, "y": 452, "width": 432, "height": 368 },
+            "layout": { "x": 16, "y": 468, "width": 432, "height": 368 },
             "events": {},
             "children": [
               {
@@ -436,14 +499,14 @@
             "id": "qs",
             "type": "QuickSettings",
             "properties": { "open": false, "toggles": ["Wi-Fi", "Bluetooth", "Do not disturb"] },
-            "layout": { "x": 1040, "y": 452, "width": 384, "height": 368 },
+            "layout": { "x": 1040, "y": 468, "width": 384, "height": 368 },
             "events": {},
             "children": [
               {
                 "id": "toggle_wifi",
                 "type": "Toggle",
                 "properties": { "value": true, "label": "Wi-Fi", "accessibility": { "label": "Wi-Fi toggle" } },
-                "layout": { "x": 16, "y": 16, "width": 352, "height": 40 },
+                "layout": { "x": 16, "y": 16, "width": 352, "height": 44 },
                 "events": {},
                 "children": []
               },
@@ -451,7 +514,7 @@
                 "id": "toggle_dnd",
                 "type": "Toggle",
                 "properties": { "value": false, "label": "Do not disturb", "accessibility": { "label": "Do not disturb toggle" } },
-                "layout": { "x": 16, "y": 64, "width": 352, "height": 40 },
+                "layout": { "x": 16, "y": 68, "width": 352, "height": 44 },
                 "events": { "changed": "behavior_dnd_on" },
                 "children": []
               },
@@ -459,7 +522,7 @@
                 "id": "slider_volume",
                 "type": "Slider",
                 "properties": { "value": 60, "min": 0, "max": 100, "accessibility": { "label": "Volume control" } },
-                "layout": { "x": 16, "y": 112, "width": 352, "height": 24 },
+                "layout": { "x": 16, "y": 120, "width": 352, "height": 24 },
                 "events": { "changed": "behavior_quiet_notify" },
                 "children": []
               },
@@ -467,7 +530,7 @@
                 "id": "btn_eclipse",
                 "type": "Button",
                 "properties": { "text": "Eclipse", "accessibility": { "label": "Switch to Eclipse theme" } },
-                "layout": { "x": 16, "y": 160, "width": 160, "height": 40 },
+                "layout": { "x": 16, "y": 152, "width": 160, "height": 44 },
                 "events": { "clicked": "behavior_theme_eclipse" },
                 "children": []
               },
@@ -475,7 +538,7 @@
                 "id": "btn_solar",
                 "type": "Button",
                 "properties": { "text": "Solar", "accessibility": { "label": "Switch to Solar theme" } },
-                "layout": { "x": 192, "y": 160, "width": 160, "height": 40 },
+                "layout": { "x": 192, "y": 152, "width": 160, "height": 44 },
                 "events": { "clicked": "behavior_theme_solar" },
                 "children": []
               }

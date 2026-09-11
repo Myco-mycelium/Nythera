@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through). Documents without tokens render pixel-identically to
   before; theme key sets are unchanged. New tests pin opt-in
   behavior, radius merging, and cross-document token isolation.
+- **Desktop shell restyled to the design language** (phase 2.2,
+  `shell/defaults/desktop.nstudio`): the shipped 30-component desktop
+  now carries the same `designTokens` vocabulary as the reference
+  shell — the taskbar renders with 0.85 alpha-blended translucency,
+  buttons/window frames take the radius tokens, and quick-settings
+  controls are re-flowed to the 44-px target minimum under a 56-px
+  bar. Start-menu motion is paired per the spec (fade+rise on enter,
+  faster ease-in drop on exit). All component ids, behaviors,
+  bindings, and locales preserved; the `tests/fixtures` copy is
+  intentionally untouched (pinned by render/schema tests).
 
 ## [0.29.0] - 2026-09-11
 
