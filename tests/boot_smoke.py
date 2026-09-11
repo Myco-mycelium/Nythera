@@ -40,7 +40,9 @@ MARKER_READY = "NYRQIS_BOOT_SMOKE_READY=1"
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
 
-KERNEL_CMDLINE = "boot=live console=ttyS0,115200 NYRQIS_BOOT_SMOKE=1"
+KERNEL_CMDLINE = ("boot=live console=ttyS0,115200 "
+                  "systemd.unit=multi-user.target "
+                  "NYRQIS_BOOT_SMOKE=1")
 
 
 def _extract_live_kernel(iso, dest_dir):
@@ -146,6 +148,19 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
         # ALWAYS print the tail on failure — with --keep-logs (CI) the
         # log path is useless without the run's log to read it from.
         if not (saw_ready and saw_pong_ok):
+            # Cheap classification so the job log names the failure mode.
+            lowered = tail.lower()
+            if "kernel panic" in lowered or "run-init" in lowered:
+                print("[boot-smoke] diagnosis: the KERNEL panicked — "
+                      "initrd/medium mismatch (live-boot could not set "
+                      "up the root)")
+            elif "reached target" not in lowered and saw_ready is False:
+                print("[boot-smoke] diagnosis: userspace never reported "
+                      "progress within the budget — likely just TCG-slow "
+                      "(raise --timeout) or getty never started")
+            elif saw_ready and not (saw_pong_ok or saw_pong_fail):
+                print("[boot-smoke] diagnosis: session ran but no PONG "
+                      "line — the smoke branch's ping loop was cut off")
             print("[boot-smoke] ---- serial log tail ----")
             print(tail)
             print("[boot-smoke] -----------------------------")
@@ -184,8 +199,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("iso", help="path to the live ISO")
     parser.add_argument("--qemu", default="qemu-system-x86_64")
-    parser.add_argument("--timeout", type=float, default=300.0,
-                        help="boot budget in seconds (default: 300)")
+    parser.add_argument("--timeout", type=float, default=780.0,
+                        help="boot budget in seconds (default: 780 — a "
+                             "TCG-slowed full userspace boot needs it)")
     parser.add_argument("--keep-logs", action="store_true",
                         help="keep the serial log (prints its path instead "
                              "of the tail)")

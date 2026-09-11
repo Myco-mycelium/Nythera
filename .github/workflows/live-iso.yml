@@ -71,11 +71,13 @@ jobs:
       - name: Boot smoke (headless QEMU, serial handshake)
         # Boots the ISO with the demo session on the serial console and
         # asserts the daemon answers ping (tests/boot_smoke.py). TCG on
-        # the 2-core runner: generous budget.
+        # the 2-core runner boots full userspace 5-15x slower than KVM:
+        # 780 s budget + multi-user.target on the kernel cmdline, and
+        # the step failure always carries the serial-log tail inline.
         run: |
           sudo apt-get install -y --no-install-recommends qemu-system-x86
           python3 tests/boot_smoke.py dist/nyrqis-live.iso \
-            --timeout 600 --keep-logs
+            --timeout 780 --keep-logs
         timeout-minutes: 15
 
       - name: Upload boot-smoke serial log
