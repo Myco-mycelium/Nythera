@@ -147,6 +147,7 @@ install -D "$SCRIPT_DIR/overlay/etc/systemd/system/serial-getty@ttyS0.service.d/
 install -D "$SCRIPT_DIR/overlay/usr/local/bin/nyrqis-demo" \
     "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
+
 write_demo_user_records() {
     # The live image needs the account, not shadow-utils: write the
     # records directly (used when useradd is unavailable in the rootfs,
@@ -175,6 +176,21 @@ else
     chroot "$ROOTFS_SRC" sh -c 'echo "demo ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/demo'
     chroot "$ROOTFS_SRC" systemctl enable getty@tty1 2>/dev/null || true
 fi
+
+# The demo SESSION: the autologin getty drop-ins only log the user in —
+# without a profile hook the login stops at a bare bash prompt and
+# neither the banner nor the boot-smoke markers ever run. The profile
+# execs the demo session on every autologin console (tty1 and ttyS0).
+cat > "$ROOTFS_SRC/home/demo/.bash_profile" <<'EOF'
+# The live demo session owns every autologin console.
+if [ -x /usr/local/bin/nyrqis-demo ]; then
+    exec /usr/local/bin/nyrqis-demo
+fi
+EOF
+chown 1000:1000 "$ROOTFS_SRC/home/demo/.bash_profile" 2>/dev/null \
+    || chroot "$ROOTFS_SRC" chown demo:demo /home/demo/.bash_profile \
+    || true
+
 # hostname + os-release flavor
 echo "nyrqis-live" > "$ROOTFS_SRC/etc/hostname"
 sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Nyrqis Live (demo)"/' \

@@ -64,6 +64,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   184 px on the 4-pt grid, and the toggle track redrawn at 44x24.
   New `tests/test_design_language.py` (registered in `run_tests.sh`)
   pins the bridge values, target compliance, and the panel adoption.
+- **Second real-CI round closed the remaining integration gaps** (the
+  fix-commit runs failed in the same two steps, which pinpointed the
+  residual defects):
+  - The live image's autologin console stopped at a bare bash shell —
+    no banner, no boot-smoke markers. `build-live-iso.sh` now writes
+    the demo user's `.bash_profile` exec'ing `nyrqis-demo`, so the
+    session starts on every autologin console (tty1 + ttyS0).
+    `nyrqis-demo`'s smoke branch polls the ping for up to 30 s (a
+    fixed 3 s sleep cannot budget a TCG-slowed runner) and always
+    lands `…READY=1` so driver diagnosis stays reliable; the driver
+    prints the serial-log tail on EVERY failure, even `--keep-logs`.
+  - The bench gate's §31a bounds were still corpus-absolute (flat
+    < 5%, ≥ 20x — both properties of the recording host's file mix;
+    the deterministic synthetic corpus legitimately shows a 25% gain
+    at level 22 and 11–13x speed). The gate now pins the
+    corpus-independent engine mechanics — ratio monotonic in level,
+    level 22 within the same storage class (≤ 1.35x), level 3 in a
+    decisively faster class (≥ 5x) on the deterministic corpus — plus
+    the real-asset storage-class claim (≤ 1.5x, host-sampled). The
+    record's flatness figure stays a record observation, not a gate.
 
 ## [0.29.0] - 2026-09-11
 

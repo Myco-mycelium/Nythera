@@ -30,14 +30,24 @@ missing() { printf '  %s✗ MISSING:%s %s\n' "$R" "$N" "$*"; }
 # Headless/serial boot smoke: when the kernel command line carries
 # NYRQIS_BOOT_SMOKE=1, start the daemon, write the ready marker, and let
 # the smoke driver assert on the serial log; no interactive session.
+# The ping polls for up to 30 s (TCG-slowed runners boot far slower than
+# a fixed sleep can guess) and never aborts early — READY must land even
+# when the daemon fails, so the driver's diagnosis is reliable.
 if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     echo "== nyrqis boot smoke =="
     python3 "$BACKEND" service serve --socket "$SOCK" \
         --state-file /tmp/nyrqis-daemon-state.json \
         --vault-dir /tmp/nyrqis-vault \
         >"$LOG" 2>&1 &
-    sleep 3
-    if python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+    pong=0
+    for _ in $(seq 1 30); do
+        if python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+            pong=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$pong" = 1 ]; then
         echo "NYRQIS_BOOT_SMOKE_PONG=1"
     else
         echo "NYRQIS_BOOT_SMOKE_PONG=0"

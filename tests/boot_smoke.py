@@ -143,7 +143,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
             tail = "(no serial log written)"
         if keep_logs:
             print(f"[boot-smoke] serial log kept: {serial_log}")
-        else:
+        # ALWAYS print the tail on failure — with --keep-logs (CI) the
+        # log path is useless without the run's log to read it from.
+        if not (saw_ready and saw_pong_ok):
             print("[boot-smoke] ---- serial log tail ----")
             print(tail)
             print("[boot-smoke] -----------------------------")
