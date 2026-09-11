@@ -228,6 +228,11 @@ class NstudioDocument:
     behaviors: List[NstudioBehavior]
     bindings: List[NstudioBinding]
     screens: List[NstudioScreen]
+    # Design-language tokens (docs/reference/design-language.md): the
+    # machine-readable spacing/radius/surface/motion vocabulary a
+    # document opts into. Tolerated-but-unparsed by older loaders; the
+    # compositor merges these over its defaults when rendering.
+    design_tokens: Dict[str, Any] = field(default_factory=dict)
     reusable_components: List[NstudioComponent] = field(default_factory=list)
 
     # ---- helpers ----------------------------------------------------------
@@ -558,6 +563,7 @@ def _from_dict(raw: Dict[str, Any]) -> NstudioDocument:
         reusable_components=[
             _parse_component(c) for c in raw.get("components") or []],
         screens=[_parse_screen(s) for s in raw.get("screens") or []],
+        design_tokens=raw.get("designTokens") or {},
     )
 
     issues = _validate(doc)

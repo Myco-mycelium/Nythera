@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Compositor design-token layer** (phase 2.1 of the design-language
+  rollout, `ui/compositor.py` + `ui/nstudio.py`): `.nstudio` documents
+  can now carry a `designTokens` section (spacing/radius/surface/
+  motion vocabulary per `docs/reference/design-language.md`) that the
+  loader preserves (`NstudioDocument.design_tokens`) and the
+  compositor merges over its defaults at render time. Application is
+  opt-in and bounded: corner radii apply to buttons and window
+  frames, and `surface.translucency` (0–1) drives real alpha-blended
+  taskbar translucency (crop-blend-paste; pixels behind the bar show
+  through). Documents without tokens render pixel-identically to
+  before; theme key sets are unchanged. New tests pin opt-in
+  behavior, radius merging, and cross-document token isolation.
+
 ## [0.29.0] - 2026-09-11
 
 ### Added

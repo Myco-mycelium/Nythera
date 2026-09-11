@@ -28,6 +28,14 @@ date: 2026-09-10
 | Compositor presentation | **compositor_presentation.py** (DRM-detect → DRMBackend attach → software fallback; frame lifecycle stats) |
 | Package repository | **package_repo.py** (signed index, publish/verify/download) + **nyrqisctl_repo.py** CLI |
 
+## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
+
+| Item | Status |
+|------|--------|
+| Release 0.29.0 | ✅ Committed, tagged `v0.29.0`, pushed (main + tag); `live-iso` CI kicked off on the push |
+| Phase 2.1 — compositor token layer | ✅ `NstudioDocument.design_tokens` (loader preserves `designTokens`; older loaders tolerate it) + `DESIGN_TOKENS` defaults in `ui/compositor`; merge at render time is **opt-in** — no tokens → pixel-identical render; radius applies to buttons/window frames, `surface.translucency` drives real alpha-blended taskbar translucency (crop-blend-paste); THEMES key sets unchanged (pinned by tests). 3 new tests (opt-in, radius merge, cross-document isolation); 27/27 compositor, 12/12 suites |
+| Next: phase 2.2 | `desktop.nstudio` restyle (30 components; `tests/fixtures/nstudio/desktop.nstudio` copy stays untouched — pinned by schema tests) |
+
 ## Session 6 (2026-09-11) — ADR rot gates; live-demo ISO; design language; ep-limits loop-dispatch fix
 
 | Item | Status |

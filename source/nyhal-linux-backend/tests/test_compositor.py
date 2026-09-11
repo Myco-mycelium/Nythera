@@ -267,6 +267,108 @@ class TestCompositorRender(unittest.TestCase):
         self.assertEqual(px, (20, 20, 40))
 
 
+class TestCompositorDesignTokens(unittest.TestCase):
+    """Design-language tokens (docs/reference/design-language.md):
+    opt-in via a document's designTokens section; documents without
+    tokens render exactly as before (pixel-compatible default)."""
+
+    def _taskbar_doc(self, tokens=None):
+        taskbar = NstudioComponent(
+            id="tb", type="Taskbar",
+            layout={"x": 0, "y": 560, "width": 1440, "height": 80},
+        )
+        screen = NstudioScreen(
+            id="s",
+            size={"width": 1440, "height": 640},
+            root=NstudioComponent(
+                id="root", type="Window",
+                layout={"x": 0, "y": 0, "width": 1440, "height": 640},
+                children=[taskbar],
+            ),
+        )
+        doc = _make_doc(screens=[screen])
+        doc.design_tokens = tokens or {}
+        return doc
+
+    def test_alpha_over_math(self):
+        from ui.compositor import _alpha_over
+        # 50% chrome over white wallpaper: channels land midway.
+        r = _alpha_over((255, 255, 255, 255), (40, 40, 40), 0.5)
+        self.assertEqual(r, (148, 148, 148))
+        # alpha 0 keeps the base, alpha 1 takes the top.
+        self.assertEqual(
+            _alpha_over((10, 20, 30, 255), (200, 200, 200), 0.0),
+            (10, 20, 30))
+        self.assertEqual(
+            _alpha_over((10, 20, 30, 255), (200, 200, 200), 1.0),
+            (200, 200, 200))
+
+    def test_taskbar_translucency_is_opt_in(self):
+        bar = THEMES["Eclipse"]["surface_overlay"]
+        bg = THEMES["Eclipse"]["background"]
+        # Without tokens: opaque (the pre-tokens pixel).
+        img = Compositor().render_screen(self._taskbar_doc())
+        self.assertEqual(img.getpixel((720, 580)), bar)
+        # With bar opacity 0.5: a real blend of wallpaper under chrome.
+        doc = self._taskbar_doc({"surface": {"bar": {"opacity": 0.5}}})
+        img = Compositor().render_screen(doc)
+        px = img.getpixel((720, 580))
+        self.assertNotEqual(px, bar)
+        for got, expected in zip(px, _expected_blend(bg, bar, 0.5)):
+            self.assertAlmostEqual(got, expected, delta=2)
+
+    def test_tokens_do_not_leak_between_documents(self):
+        doc_tok = self._taskbar_doc({"surface": {"bar": {"opacity": 0.5}}})
+        doc_plain = self._taskbar_doc()
+        comp = Compositor()
+        comp.render_screen(doc_tok)
+        img = comp.render_screen(doc_plain)  # same compositor instance
+        self.assertEqual(img.getpixel((720, 580)),
+                         THEMES["Eclipse"]["surface_overlay"])
+
+    def test_radius_tokens_apply_to_buttons(self):
+        btn = NstudioComponent(
+            id="btn", type="Button",
+            layout={"x": 10, "y": 10, "width": 120, "height": 36},
+            properties={"text": "OK"},
+        )
+        screen = _make_screen("s", 400, 300, root_children=[btn])
+        doc = _make_doc(screens=[screen])
+        # The screen root is a Window: its fill (surface_overlay) is what
+        # shows through outside the button's rounded corner.
+        under = THEMES["Eclipse"]["surface_overlay"]
+        # Default radius.sm=8: the (1,1)-offset corner pixel is outside
+        # the rounded corner → the Window fill beneath.
+        img = Compositor().render_screen(doc)
+        self.assertEqual(img.getpixel((11, 11)), under)
+        # radius.sm=2: the same pixel is inside → button fill.
+        doc.design_tokens = {"radius": {"sm": 2}}
+        img = Compositor().render_screen(doc)
+        self.assertEqual(img.getpixel((11, 11)),
+                         THEMES["Eclipse"]["button_bg"])
+
+    def test_loader_parses_design_tokens(self):
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "shell", "defaults",
+            "default-shell.nstudio")
+        if not os.path.exists(path):
+            self.skipTest("default-shell.nstudio not found")
+        doc = nstudio_load(path)
+        self.assertEqual(doc.design_tokens["motion"]["enter"]["duration"], 200)
+        self.assertEqual(doc.design_tokens["radius"]["lg"], 16)
+        # And the compositor picks them up (surface.bar opt-in recorded).
+        comp = Compositor()
+        comp.render_screen(doc)
+        self.assertEqual(
+            comp.tokens["surface"]["bar"]["opacity"], 0.85)
+
+
+def _expected_blend(base, top, alpha):
+    """Mirror of the renderer's alpha-over, for test expectations."""
+    return tuple(round(t * (1.0 - alpha) + c * alpha)
+                 for t, c in zip(base, top))
+
+
 class TestCompositorSave(unittest.TestCase):
     """Compositor can save images to files."""
 

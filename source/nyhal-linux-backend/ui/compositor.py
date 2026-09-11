@@ -93,6 +93,47 @@ THEMES = {
 }
 
 
+# ---- Design-language tokens (docs/reference/design-language.md) ---------
+
+# The token vocabulary every renderer understands. A document's
+# ``designTokens`` section merges over these defaults (depth-1 merge per
+# group); a renderer that lacks a capability degrades to the nearest
+# supported effect — tokens record intent, renderers stay honest.
+DESIGN_TOKENS = {
+    "space": {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24},
+    "radius": {"sm": 8, "md": 12, "lg": 16, "full": 999},
+    "motion": {},          # timing — the PIL renderer is static
+    "surface": {
+        # "bar"/"raised" opacity 0–1: the PIL renderer alpha-blends the
+        # chrome over the already-painted wallpaper (real translucency).
+        # Defaults are 1.0 (opaque) so documents WITHOUT a designTokens
+        # section render exactly as before; translucency is opt-in via
+        # the document's tokens (the shipped reference shell opts in).
+        "bar": {"opacity": 1.0},
+        "raised": {"opacity": 1.0},
+    },
+    "target": {"min": 44, "gap": 8},
+}
+
+
+def _merge_tokens(base: Dict[str, Any], override: Any) -> Dict[str, Any]:
+    """Depth-1 merge of a designTokens group (``None`` clears to defaults)."""
+    merged = dict(base)
+    if isinstance(override, dict):
+        for key, value in override.items():
+            merged[key] = dict(value) if isinstance(value, dict) else value
+    return merged
+
+
+def _alpha_over(base_rgba, top_rgb, alpha):
+    """Composite ``top_rgb`` at ``alpha`` over ``base_rgba`` (alpha-over)."""
+    a = max(0.0, min(float(alpha), 1.0))
+    return tuple(
+        int(round(t * (1.0 - a) + c * a))
+        for t, c in zip(base_rgba[:3], top_rgb)
+    )
+
+
 class Compositor:
     """Renders a NUI document to a PIL Image.
 
@@ -102,6 +143,11 @@ class Compositor:
         The theme to use ("Eclipse" or "Solar").
     scale : float
         Rendering scale factor (1.0 = native, 2.0 = retina).
+
+    Design-language tokens (docs/reference/design-language.md) come from
+    the module-level ``DESIGN_TOKENS``; a document's ``designTokens``
+    section (tolerated by the loader) merges over them per render.
+    Documents without tokens render exactly as before.
     """
 
     # Class-level font cache: keyed by (family_path, size) to avoid
@@ -115,6 +161,10 @@ class Compositor:
     ) -> None:
         self.theme_name = theme_name
         self.theme = THEMES.get(theme_name, THEMES["Eclipse"])
+        # Active token set: module defaults until render_screen merges a
+        # document's designTokens (per-render, keeps the compositor
+        # stateless between documents).
+        self.tokens = DESIGN_TOKENS
         self.scale = scale
 
     @classmethod
@@ -149,6 +199,17 @@ class Compositor:
                 break
         if screen is None:
             raise ValueError(f"Screen '{screen_id}' not found")
+
+        # Merge the document's designTokens over the module defaults
+        # (depth-1 per group; absent/None groups keep the defaults).
+        doc_tokens = getattr(document, "design_tokens", None)
+        self.tokens = DESIGN_TOKENS
+        if isinstance(doc_tokens, dict) and doc_tokens:
+            for group in ("space", "radius", "motion", "surface", "target"):
+                if group in doc_tokens:
+                    self.tokens = dict(self.tokens)
+                    self.tokens[group] = _merge_tokens(
+                        DESIGN_TOKENS.get(group, {}), doc_tokens[group])
 
         Image, ImageDraw, ImageFont = _pil()
         # Create the image
@@ -317,12 +378,34 @@ class Compositor:
         draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface"])
 
     def _render_taskbar(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
-        """Render a Taskbar with app buttons, clock, and system tray."""
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface_overlay"])
+        """Render a Taskbar with app buttons, clock, and system tray.
+
+        Design language: ``surface.bar`` opacity blends the chrome over
+        the wallpaper (real alpha-over, opt-in via designTokens); the
+        start control is sized to the ``target.min`` hit-height token."""
+        bar_rgb = self.theme["surface_overlay"]
+        opacity = (self.tokens.get("surface", {}).get("bar", {}) or {}).get(
+            "opacity", 1.0)
+        if opacity < 1.0 and y + h <= img.height and x + w <= img.width:
+            Image, ImageDraw, _ = _pil()
+            region = img.crop((x, y, x + w, y + h)).convert("RGBA")
+            blended = Image.new("RGB", (w, h))
+            px = region.load()
+            bl = blended.load()
+            for j in range(h):
+                for i in range(w):
+                    bl[i, j] = _alpha_over(px[i, j], bar_rgb, opacity)
+            img.paste(blended, (x, y))
+            draw = ImageDraw.Draw(img)
+        else:
+            draw.rectangle([x, y, x+w, y+h], fill=bar_rgb)
         draw.line([x, y, x+w, y], fill=self.theme["border"], width=1)
-        # Start button area
+        # Start button area — hit height respects target.min where the
+        # bar can afford it (small bars degrade honestly).
+        target_min = int(self.tokens.get("target", {}).get("min", 44))
+        pad = max(4, min((h - target_min) // 2, 12)) if h >= target_min else 4
         draw.rounded_rectangle(
-            [x+4, y+4, x+48, y+h-4], radius=6,
+            [x+4, y+pad, x+48, y+h-pad], radius=6,
             fill=self.theme["accent"])
         draw.text((x+16, y+8), "N", fill=(255,255,255), font=ft)
         # Running app indicators (dots)
@@ -348,16 +431,43 @@ class Compositor:
                   fill=self.theme["text_primary"], font=fs)
 
     def _render_start_menu(self, img, draw, x, y, w, h, props, comp, font, fs, ft, doc):
-        """Render a StartMenu."""
-        draw.rectangle([x, y, x+w, y+h], fill=self.theme["surface_elevated"])
-        draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
+        """Render a StartMenu.
+
+        Design language: ``surface.raised`` opacity (opt-in blend, same
+        mechanism as the taskbar) and ``radius.lg`` corners."""
+        menu_rgb = self.theme["surface_elevated"]
+        opacity = (self.tokens.get("surface", {}).get("raised", {}) or {}).get(
+            "opacity", 1.0)
+        radius = int(self.tokens.get("radius", {}).get("lg", 16))
+        if opacity < 1.0 and y + h <= img.height and x + w <= img.width:
+            Image, ImageDraw, _ = _pil()
+            region = img.crop((x, y, x + w, y + h)).convert("RGBA")
+            blended = Image.new("RGB", (w, h))
+            px = region.load()
+            bl = blended.load()
+            for j in range(h):
+                for i in range(w):
+                    bl[i, j] = _alpha_over(px[i, j], menu_rgb, opacity)
+            # Rounded mask so the blend doesn't paint sharp corners.
+            mask = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [0, 0, w - 1, h - 1], radius=radius, fill=255)
+            img.paste(blended, (x, y), mask)
+            draw = ImageDraw.Draw(img)
+            draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
+                                   outline=self.theme["border"], width=1)
+        else:
+            draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
+                                   fill=menu_rgb,
+                                   outline=self.theme["border"], width=1)
         # Header
         draw.text((x+16, y+16), "Start Menu", fill=self.theme["text_primary"], font=ft)
 
     def _render_button(self, img, draw, x, y, w, h, props, font, fs):
-        """Render a Button."""
+        """Render a Button (``radius.sm`` from the design tokens)."""
         text = props.get("text", "Button")
-        draw.rounded_rectangle([x, y, x+w, y+h], radius=4,
+        radius = int(self.tokens.get("radius", {}).get("sm", 8))
+        draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
                                fill=self.theme["button_bg"])
         bbox = draw.textbbox((0, 0), text, font=fs)
         tw = bbox[2] - bbox[0]
@@ -373,8 +483,9 @@ class Compositor:
         draw.text((x, y), text, fill=self.theme["text_primary"], font=f)
 
     def _render_input(self, img, draw, x, y, w, h, props, font, fs):
-        """Render an Input."""
-        draw.rounded_rectangle([x, y, x+w, y+h], radius=4,
+        """Render an Input (``radius.sm`` from the design tokens)."""
+        radius = int(self.tokens.get("radius", {}).get("sm", 8))
+        draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
                                fill=self.theme["input_bg"],
                                outline=self.theme["input_border"])
         placeholder = props.get("placeholder", "")
