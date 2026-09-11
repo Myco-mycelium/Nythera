@@ -206,14 +206,34 @@ INITRD="$(ls "$ROOTFS_SRC"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || 
 # the live-boot pivot. mkinitramfs INSIDE the rootfs (skipped under
 # --skip-chroot; a properly built rootfs tarball already ships a
 # live-boot-capable initrd — Debian regenerates it on package install).
+#
+# VERIFIED, not assumed: boot=live is a no-op without live-boot's
+# initramfs scripts, and the failure mode ("run-init: can't execute
+# /sbin/init" → initramfs shell) only shows up AT BOOT — a live CI run
+# burned four rounds on exactly this. So: regenerate, then refuse to
+# ship any initrd that cannot boot live.
+live_initrd_ok() {
+    chroot "$ROOTFS_SRC" lsinitramfs "/boot/$(basename "$1")" 2>/dev/null \
+        | grep -qE '(^|/)scripts/live$'
+}
 if ! $SKIP_CHROOT; then
     if chroot "$ROOTFS_SRC" sh -c 'command -v mkinitramfs' >/dev/null 2>&1; then
         log "regenerating the initramfs with the live-boot modules"
-        chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
-            "$(basename "$KERNEL" | sed 's/^vmlinuz-//')" || \
-            log "WARNING: mkinitramfs failed; shipping the stock initrd (live-boot may be limited to loop-mounted ISOs)"
-        [[ -f "$ROOTFS_SRC/boot/initrd.img-nyrqis-live" ]] && INITRD="$ROOTFS_SRC/boot/initrd.img-nyrqis-live"
+        if chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
+            "$(basename "$KERNEL" | sed 's/^vmlinuz-//')"; then
+            INITRD="$ROOTFS_SRC/boot/initrd.img-nyrqis-live"
+        else
+            log "WARNING: mkinitramfs failed; verifying the stock initrd instead"
+        fi
     fi
+    if ! live_initrd_ok "$INITRD"; then
+        die "initrd $(basename "$INITRD") has NO live-boot support (scripts/live missing).
+  boot=live is a no-op without it and the image cannot boot.
+  Fix: install live-boot + live-boot-initramfs-tools in the rootfs and
+  ensure mkinitramfs succeeds (it was either skipped, failed, or the
+  stock initrd predates the live-boot package install)."
+    fi
+    log "initrd verified: live-boot scripts present ($(basename "$INITRD"))"
 fi
 
 # ---------------------------------------------------------------- squashfs + ISO
