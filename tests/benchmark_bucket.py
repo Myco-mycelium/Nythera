@@ -54,7 +54,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "source" / "nyhal-linux-backend"))
 
-from ipc.core import IPCManager, TokenBucket  # noqa: E402
+from ipc.core import (  # noqa: E402
+    IPCManager, TokenBucket,
+    LIBRARY_DEFAULT_BUCKET_SIZE, LIBRARY_DEFAULT_TOKENS_PER_SECOND,
+)
 
 WINDOW_S = 1.0
 PAYLOAD = 64
@@ -180,7 +183,10 @@ def sweep() -> list:
             ok += 1
     stop.set()
     thread.join(timeout=1.0)
-    rows.append(("manager default (200, 500/s)", 500, ok / WINDOW_S, thr / WINDOW_S))
+    rows.append((f"manager default ({LIBRARY_DEFAULT_BUCKET_SIZE}, "
+                 f"{LIBRARY_DEFAULT_TOKENS_PER_SECOND:.0f}/s)",
+                 LIBRARY_DEFAULT_TOKENS_PER_SECOND,
+                 ok / WINDOW_S, thr / WINDOW_S))
 
     for burst in BURSTS:
         for rate in RATES:

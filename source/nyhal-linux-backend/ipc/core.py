@@ -35,16 +35,16 @@ from . import ipc_codec  # ADR-0020 priority #4 FFI loader (wire codec)
 
 logger = logging.getLogger(__name__)
 
-# The ADR-0009 default-parameter postures. The LIBRARY defaults (used
-# whenever code builds an IPCManager/IPCEndpoint without arguments) are
-# the conservative, under-review values; the DAEMON (nyrqis_backend,
-# systemd unit) already ships the AG-proposed input-class envelope.
-# When Architecture Group acceptance lands (ADR-0009 review package
-# §6), flip LIBRARY_DEFAULT_* to ACCEPTED_PROPOSED_* — the
-# test_default_flip_readiness gate then enforces the alignment so the
-# two cannot silently diverge.
-LIBRARY_DEFAULT_BUCKET_SIZE = 200
-LIBRARY_DEFAULT_TOKENS_PER_SECOND = 500.0
+# The ADR-0009 default-parameter postures. LIBRARY_DEFAULT_* is what
+# code gets when it builds an IPCManager/IPCEndpoint without arguments;
+# ACCEPTED_PROPOSED_* is the AG-proposed input-class envelope
+# (BENCHMARK_RESULTS §32d). The library posture was FLIPPED to the
+# proposed envelope (2026-09-10, review package §7 action 4) so
+# library consumers match the daemon/systemd behavior; the ADR status
+# flip itself (Proposed → Accepted) remains the Architecture Group's
+# call — test_default_flip_readiness enforces this file's consistency.
+LIBRARY_DEFAULT_BUCKET_SIZE = 256
+LIBRARY_DEFAULT_TOKENS_PER_SECOND = 2000.0
 ACCEPTED_PROPOSED_BUCKET_SIZE = 256
 ACCEPTED_PROPOSED_TOKENS_PER_SECOND = 2000.0
 

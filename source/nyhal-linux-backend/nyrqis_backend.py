@@ -311,6 +311,11 @@ class StatusServiceHost:
         self.control = ControlService(
             self.container_manager, self.capability_manager,
             state_saver=self._save_state,
+            # The Rust serving loop's dispatch handoff attaches services
+            # to a reply SINK (no manager attribute), so the limiter ops
+            # get the manager explicitly (the floor path's server
+            # attachment would never be consulted).
+            ipc_manager=self.ipc_manager,
             # The control-plane audit trail rides the daemon state
             # file: restored on start (best effort), rewritten on each
             # retune. The previous daemon's trail is NOT carried into

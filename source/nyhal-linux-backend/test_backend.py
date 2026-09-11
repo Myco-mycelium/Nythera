@@ -10946,13 +10946,18 @@ class TestIPCSemantics(unittest.TestCase):
         self.assertEqual(ep.rate_limit.tokens_per_second, 1000.0)
 
     def test_manager_default_rate_limit(self):
-        """IPCManager uses sensible defaults when not configured."""
-        from ipc.core import IPCManager, FairTokenBucket
+        """IPCManager's zero-argument posture matches the named
+        constants (single source of truth for the library default)."""
+        from ipc.core import (IPCManager, FairTokenBucket,
+                              LIBRARY_DEFAULT_BUCKET_SIZE,
+                              LIBRARY_DEFAULT_TOKENS_PER_SECOND)
         mgr = IPCManager()
         ep = mgr.create_endpoint("c1")
         self.assertIsInstance(ep.rate_limit, FairTokenBucket)
-        self.assertEqual(ep.rate_limit.bucket_size, 200)
-        self.assertEqual(ep.rate_limit.tokens_per_second, 500.0)
+        self.assertEqual(ep.rate_limit.bucket_size,
+                         LIBRARY_DEFAULT_BUCKET_SIZE)
+        self.assertEqual(ep.rate_limit.tokens_per_second,
+                         LIBRARY_DEFAULT_TOKENS_PER_SECOND)
         self.assertEqual(ep.rate_limit.fair_shares, 8)
         self.assertEqual(ep.rate_limit.sender_burst, 64)
 
@@ -12931,6 +12936,16 @@ class TestOperatorCli(unittest.TestCase):
                         "rejected_per_s": 0.0,
                         "rejection_ratio": None}})
         self.assertIn("rejection -", text)
+        # --watch is a polling flag: the payload is unchanged, so the
+        # watched render path exercises the identical op.
+        args = parser.parse_args(
+            ["ep-limits", "metrics", "ep-svc", "--watch", "1"])
+        self.assertEqual(args.watch, 1.0)
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args)["window_s"], 60.0)
+        self.assertEqual(
+            nyrqisctl.build_payload(args.command, args)["endpoint_id"],
+            "ep-svc")
 
     def test_cli_format_human_endpoint_limits(self):
         listed = nyrqisctl.format_human("ep-limits-list", {
@@ -12985,6 +13000,27 @@ class TestOperatorCli(unittest.TestCase):
         finally:
             host.stop()
         self.assertFalse(os.path.exists(self.sock))
+
+    def test_cli_ep_limits_against_daemon(self):
+        """The limiter ops work against a REAL daemon host, not just
+        the floor test harness: the loop-dispatch handoff attaches
+        services to a reply sink (no manager), so the ops must resolve
+        the manager explicitly (regression: 'no IPC manager attached').
+        Exercised through the CLI exactly as an operator would."""
+        host = self._host()
+        host.start()
+        try:
+            rc, out, err = self._cli("ep-limits", "list")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("ep-svc", out)
+            rc, out, err = self._cli("ep-limits", "get", "ep-svc")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("FairTokenBucket", out)
+            rc, out, err = self._cli("ep-limits", "metrics")
+            self.assertEqual(rc, 0, (out, err))
+            self.assertIn("ep-svc", out)
+        finally:
+            host.stop()
 
     def test_cli_containers_list_against_daemon(self):
         host = self._host()
@@ -13763,6 +13799,68 @@ class TestControlService(unittest.TestCase):
             self.assertEqual(trail[2]["request"].get("reason"),
                              "streaming party mode")
             self.assertEqual(trail[2]["request"]["rate"], 8000.0)
+        finally:
+            client.close()
+            stop.set()
+            server.close()
+
+    def test_endpoint_rate_limit_ops_resolve_ipc_manager(self):
+        """The limiter ops resolve the manager explicitly when one is
+        attached (the loop-dispatch wiring), and via the attached
+        server otherwise (the floor wiring) — with NEITHER, they fail
+        honestly with 'no IPC manager attached'."""
+        from ipc.control import ControlService
+
+        class _Sink:
+            """Reply sink shaped like the dispatch handoff's: services
+            reply into it, replies are collected (no manager attr)."""
+
+            def __init__(self):
+                self.replies = []
+                self.operator_id = DEFAULT_OPERATOR_ID
+                self.endpoint = type("_E", (), {"path": "loop-dispatch"})()
+
+            def reply(self, sender_path, call_id, payload):
+                self.replies.append((call_id, json.loads(payload)))
+                return True
+
+        fake = self._FakeManager()
+        server, stop = self._serve(fake, trusted_uids={os.getuid()})
+        client = IPCClient(DEFAULT_OPERATOR_ID, self.cli_path).bind()
+        try:
+            # Floor wiring: the op works through the attached server.
+            resp = self._call(client, json.dumps({
+                "service": "control",
+                "op": "get_endpoint_rate_limit_metrics",
+                "window_s": 60}).encode())
+            self.assertTrue(resp["ok"], resp)
+
+            # Loop-dispatch wiring: the service sees a reply SINK with
+            # no manager attribute; the explicit attachment must win.
+            router = (server.on_call.__self__
+                      if getattr(server, "on_call", None) else None)
+            self.assertIsNotNone(router, "router not attached to server")
+            svc = router._handlers["control"]
+            self.assertIs(svc._ipc_manager_or_none(), server.manager)
+            sink = _Sink()
+            svc._server = sink
+            svc._ipc_manager = server.manager
+            svc._get_endpoint_rate_limit(
+                sink, "sender-path", "call-1", {"endpoint_id": "ep-svc"})
+            (call_id, body), = sink.replies
+            self.assertEqual(call_id, "call-1")
+            self.assertTrue(body["ok"], body)
+            self.assertEqual(body["endpoint_id"], "ep-svc")
+
+            # Neither attachment: the honest failure, not a crash.
+            detached = ControlService(fake, operator_id=DEFAULT_OPERATOR_ID)
+            detached._server = sink
+            sink.replies.clear()
+            detached._get_endpoint_rate_limit_metrics(
+                sink, "sender-path", "call-2", {"window_s": 60})
+            (_, body), = sink.replies
+            self.assertFalse(body["ok"])
+            self.assertIn("no IPC manager attached", body["error"])
         finally:
             client.close()
             stop.set()

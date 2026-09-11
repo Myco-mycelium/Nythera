@@ -52,6 +52,7 @@ nav:
       - Verify the Docs Dependency Graph: how-to/check-dependency-cycles.md
       - Choose an Implementation Language: how-to/choose-an-implementation-language.md
       - Tune Endpoint IPC Rate Limits: how-to/tune-endpoint-rate-limits.md
+      - Boot the Live Demo ISO: how-to/boot-the-live-demo.md
   - Reference:
       - ADRs:
           - Index: reference/adr/README.md
@@ -131,6 +132,8 @@ nav:
       - Package Format:
           - Index: reference/package-format/README.md
           - NPS-026 Package Format: reference/package-format/NPS-026-package-format.md
+      - Design Language: reference/design-language.md
+      - Live Demo ISO: how-to/boot-the-live-demo.md
   - Explanation:
       - Core Architecture:
           - Why a Hybrid Microkernel: explanation/architecture/why-hybrid-microkernel.md

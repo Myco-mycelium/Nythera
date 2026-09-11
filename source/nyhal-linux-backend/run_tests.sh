@@ -95,6 +95,16 @@ if [ "$QUICK" = true ]; then
     echo ""
     run_test "Boot Init" "tests.test_boot_init"
     run_test "Update Signing" "tests.test_update_signing"
+    # Benchmark rot gates: the ADR records must keep describing the
+    # mechanism (ADR-0009 §32, ADR-0007 §31, ADR-0013 §33).
+    if python3 tools/benchmark_gate.py --quiet >/dev/null 2>&1; then
+        echo -e "Benchmark rot gates (ADR-0009/0007/0013)... ${GREEN}OK${NC}"
+        PASSED=$((PASSED + 1))
+    else
+        echo -e "Benchmark rot gates (ADR-0009/0007/0013)... ${RED}FAILED${NC} (record vs mechanism drift)"
+        FAILED=$((FAILED + 1))
+    fi
+    TOTAL=$((TOTAL + 1))
     run_test "Wayland Protocol" "tests.test_compositor_integration.TestWaylandProtocol"
     run_test "Wayland Socket" "tests.test_compositor_integration.TestWaylandSocket"
     run_test "Multi-Monitor" "tests.test_render_pipeline.TestMultiMonitor"
@@ -132,6 +142,16 @@ else
     # Core tests
     run_test "Boot Init" "tests.test_boot_init"
     run_test "Update Signing" "tests.test_update_signing"
+    # Benchmark rot gates: the ADR records must keep describing the
+    # mechanism (ADR-0009 §32, ADR-0007 §31, ADR-0013 §33).
+    if python3 tools/benchmark_gate.py --quiet >/dev/null 2>&1; then
+        echo -e "Benchmark rot gates (ADR-0009/0007/0013)... ${GREEN}OK${NC}"
+        PASSED=$((PASSED + 1))
+    else
+        echo -e "Benchmark rot gates (ADR-0009/0007/0013)... ${RED}FAILED${NC} (record vs mechanism drift)"
+        FAILED=$((FAILED + 1))
+    fi
+    TOTAL=$((TOTAL + 1))
     
     # GPU tests (may skip on systems without hardware)
     run_test "GPU Pipeline" "tests.test_gpu_pipeline"

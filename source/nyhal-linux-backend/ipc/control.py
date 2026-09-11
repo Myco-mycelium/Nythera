@@ -86,7 +86,8 @@ class ControlService:
                  operator_id: Optional[str] = None,
                  state_saver: Optional[Any] = None,
                  audit_saver: Optional[Any] = None,
-                 audit_loader: Optional[Any] = None) -> None:
+                 audit_loader: Optional[Any] = None,
+                 ipc_manager: Optional[Any] = None) -> None:
         self.container_manager = container_manager
         self.capability_manager = capability_manager
         # None → synced from the server on attach, so the operator gate
@@ -96,6 +97,13 @@ class ControlService:
         # mutating op so the daemon's state file tracks the manifest.
         self.state_saver = state_saver
         self._server = None
+        # The endpoint limiter ops resolve the IPC manager through
+        # _ipc_manager_or_none(): the explicit attachment wins (the
+        # daemon host wires it — the Rust serving loop's dispatch
+        # handoff attaches services to a REPLY SINK, which carries no
+        # manager), falling back to the attached server's manager (the
+        # floor IPCDatagramServer path, and every test harness).
+        self._ipc_manager = ipc_manager
         # Bounded in-memory trail of mutating control ops (see
         # _CONTROL_AUDIT_MAX); surfaced by get_control_audit and
         # persisted across daemon restarts via ``audit_saver``/
@@ -8680,6 +8688,14 @@ class ControlService:
                     / max(len(limiter.sender_tokens), 1))
         return snap
 
+    def _ipc_manager_or_none(self) -> Optional[Any]:
+        """The manager the endpoint limiter ops operate on: the explicit
+        attachment (loop-dispatch wiring) or the attached server's
+        manager (floor IPCDatagramServer wiring)."""
+        if self._ipc_manager is not None:
+            return self._ipc_manager
+        return getattr(self._server, "manager", None)
+
     def _configure_endpoint_rate_limit(self, server, sender_path, call_id,
                                        request) -> None:
         """Retune an endpoint's limiter in place, including the fairness
@@ -8688,7 +8704,7 @@ class ControlService:
         re-creates the limiter (envelope + fairness are one budget); a
         fairness-only update retunes in place.
         """
-        manager = getattr(self._server, "manager", None)
+        manager = self._ipc_manager_or_none()
         if manager is None:
             self._reply(server, sender_path, call_id,
                         {"ok": False, "error": "no IPC manager attached"})
@@ -8776,7 +8792,7 @@ class ControlService:
 
     def _get_endpoint_rate_limit(self, server, sender_path, call_id,
                                  request) -> None:
-        manager = getattr(self._server, "manager", None)
+        manager = self._ipc_manager_or_none()
         if manager is None:
             self._reply(server, sender_path, call_id,
                         {"ok": False, "error": "no IPC manager attached"})
@@ -8802,7 +8818,7 @@ class ControlService:
 
     def _list_endpoint_rate_limits(self, server, sender_path, call_id,
                                    request) -> None:
-        manager = getattr(self._server, "manager", None)
+        manager = self._ipc_manager_or_none()
         if manager is None:
             self._reply(server, sender_path, call_id,
                         {"ok": False, "error": "no IPC manager attached"})
@@ -8838,7 +8854,7 @@ class ControlService:
         endpoint_id is given): counts/rates/rejection ratio over the
         trailing window — the store-and-forward data an operator
         graphs to spot flooding or undersizing."""
-        manager = getattr(self._server, "manager", None)
+        manager = self._ipc_manager_or_none()
         if manager is None:
             self._reply(server, sender_path, call_id,
                         {"ok": False, "error": "no IPC manager attached"})

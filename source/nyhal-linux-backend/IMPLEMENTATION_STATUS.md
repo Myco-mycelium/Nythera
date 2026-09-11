@@ -1,7 +1,7 @@
 # Nyrqis Linux Backend — Implementation Status
 
-**Version**: 0.28.0  
-**Date**: 2026-09-09  
+**Version**: 0.29.0  
+**Date**: 2026-09-11  
 **Repository**: github.com/Myco-mycelium/Nythera
 
 ## Overview

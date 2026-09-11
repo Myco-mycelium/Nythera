@@ -1,0 +1,105 @@
+name: live-iso
+
+# Builds the Nyrqis live-demo ISO (packaging/live/README.md) and uploads
+# it as a run artifact — the "click and open the live demo" deliverable,
+# no local build required.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/live/**"
+      - "source/nyhal-linux-backend/**"
+      - ".github/workflows/live-iso.yml"
+  workflow_dispatch:
+  schedule:
+    # Weekly refresh so the shipped image tracks main.
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build live demo ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ISO toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap squashfs-tools genisoimage xorriso \
+            grub-pc-bin grub-efi-amd64-bin mtools isolinux \
+            qemu-utils
+
+      - name: Assemble the rootfs (debootstrap)
+        run: |
+          sudo debootstrap --variant=minbase \
+            --include=systemd,sudo,linux-image-amd64,live-boot \
+            bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
+          # Python + the demo probe's module checks live in the rootfs.
+          sudo chroot /srv/nyrqis-rootfs apt-get update
+          sudo chroot /srv/nyrqis-rootfs apt-get install -y --no-install-recommends \
+            python3 python3-zstandard python3-nacl bash
+          sudo chroot /srv/nyrqis-rootfs apt-get clean
+          # /dev/kvm, /dev/dri etc. are NOT probed at build time — the
+          # banner probes the booting machine, not the builder.
+
+      - name: Build the ISO
+        run: |
+          sudo packaging/live/build-live-iso.sh \
+            --rootfs /srv/nyrqis-rootfs \
+            -o dist/nyrqis-live.iso
+          # Keep the rootfs tarball as a secondary artifact so a rebuild
+          # does not re-run debootstrap (build-live-iso.sh accepts it).
+          sudo tar -cf dist/nyrqis-rootfs.tar -C /srv nyrqis-rootfs
+        timeout-minutes: 60
+
+      - name: Smoke-check the ISO structure
+        run: |
+          test -f dist/nyrqis-live.iso
+          # xorriso is installed: verify the hybrid layout + payload.
+          xorriso -indev dist/nyrqis-live.iso -find /live -name 'vmlinuz' | grep -q vmlinuz
+          xorriso -indev dist/nyrqis-live.iso -find /boot/grub -name 'grub.cfg' | grep -q grub.cfg
+          xorriso -indev dist/nyrqis-live.iso -report_el_torito as_mkisofs | grep -qi efi \
+            || echo "WARNING: no EFI boot entry found (BIOS-only build?)"
+          du -h dist/nyrqis-live.iso
+
+      - name: Boot smoke (headless QEMU, serial handshake)
+        # Boots the ISO with the demo session on the serial console and
+        # asserts the daemon answers ping (tests/boot_smoke.py). TCG on
+        # the 2-core runner: generous budget.
+        run: |
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          python3 tests/boot_smoke.py dist/nyrqis-live.iso \
+            --timeout 600 --keep-logs
+        timeout-minutes: 15
+
+      - name: Upload boot-smoke serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-serial-log
+          path: /tmp/nyrqis-boot-smoke-*/serial.log
+          if-no-files-found: ignore
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyrqis-live-iso
+          path: dist/nyrqis-live.iso
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload rootfs cache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyrqis-live-rootfs
+          path: dist/nyrqis-rootfs.tar
+          compression-level: 6
+          retention-days: 7
+          if-no-files-found: ignore

@@ -4,18 +4,59 @@
     "name": "Nyrqis Desktop",
     "id": "nyrqis-default-shell",
     "created": "2026-09-02T00:00:00+00:00",
-    "updated": "2026-09-02T00:00:00+00:00"
+    "updated": "2026-09-11T00:00:00+00:00"
+  },
+  "designTokens": {
+    "$comment": "Nyrqis Design Language v1 (docs/reference/design-language.md). Tokens record intent; renderers without a token degrade to the nearest supported effect.",
+    "space": { "xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24 },
+    "radius": { "sm": 8, "md": 12, "lg": 16, "full": "height/2" },
+    "surface": {
+      "bar": { "opacity": 0.85, "blur": true, "hairline": "rgba(255,255,255,.08)" },
+      "raised": { "opacity": 0.92, "blur": true },
+      "dialog": { "opacity": 1.0, "shadow": "0 8px 24px rgba(0,0,0,.35)" }
+    },
+    "type": {
+      "family": "Roboto Flex, SF Pro, system-ui, sans-serif",
+      "title": { "size": 22, "weight": 500, "tracking": -0.25 },
+      "body": { "size": 15, "weight": 400 },
+      "label": { "size": 13, "weight": 500, "tracking": 0.1 }
+    },
+    "motion": {
+      "micro": { "duration": 100, "easing": "ease-out" },
+      "enter": { "duration": 200, "easing": "ease-out" },
+      "exit": { "duration": 120, "easing": "ease-in" },
+      "move": { "duration": 250, "easing": "ease-in-out" },
+      "emphasis": { "duration": 300, "easing": "ease-in-out" }
+    },
+    "target": { "min": 44, "gap": 8 }
   },
   "themes": {
     "active": "Eclipse",
-    "overrides": {}
+    "overrides": {
+      "Eclipse": {
+        "accent": "#7CB8FF",
+        "surface.base": "#101418",
+        "surface.bar": "rgba(16,20,24,0.85)",
+        "surface.raised": "rgba(24,29,35,0.92)",
+        "text.primary": "#ECF1F7",
+        "text.secondary": "#9AA7B4"
+      },
+      "Solar": {
+        "accent": "#2E6FDB",
+        "surface.base": "#F4F2ED",
+        "surface.bar": "rgba(244,242,237,0.85)",
+        "surface.raised": "rgba(255,255,255,0.92)",
+        "text.primary": "#1B2027",
+        "text.secondary": "#5A6673"
+      }
+    }
   },
   "components": [
     {
       "id": "TaskbarButton",
       "type": "Button",
-      "properties": { "text": "Nyrqis", "icon": "NyrqisMark", "enabled": true },
-      "layout": { "x": 0, "y": 0, "width": 96, "height": 48 },
+      "properties": { "text": "Nyrqis", "icon": "NyrqisMark", "enabled": true, "tooltip": "Start" },
+      "layout": { "x": 0, "y": 0, "width": 88, "height": 44 },
       "events": {},
       "children": []
     }
@@ -36,6 +77,28 @@
         { "offset": 0.0, "value": 0.0 },
         { "offset": 1.0, "value": 1.0 }
       ]
+    },
+    {
+      "id": "start_menu_rise",
+      "target": "start_menu",
+      "property": "y",
+      "duration": 200,
+      "easing": "ease-out",
+      "keyframes": [
+        { "offset": 0.0, "value": 480 },
+        { "offset": 1.0, "value": 456 }
+      ]
+    },
+    {
+      "id": "start_menu_drop",
+      "target": "start_menu",
+      "property": "opacity",
+      "duration": 120,
+      "easing": "ease-in",
+      "keyframes": [
+        { "offset": 0.0, "value": 1.0 },
+        { "offset": 1.0, "value": 0.0 }
+      ]
     }
   ],
   "locales": {
@@ -43,7 +106,9 @@
     "tables": {
       "en": {
         "search.label": "Search",
-        "start.label": "Start"
+        "search.placeholder": "Search apps, files, settings...",
+        "start.label": "Start",
+        "start.tooltip": "Start"
       }
     }
   },
@@ -66,6 +131,24 @@
         "name": "Nyrqis.Animation.Play",
         "arguments": { "animation": "start_menu_fade" }
       }
+    },
+    {
+      "id": "behavior_start_open_arc",
+      "condition": { "state": "startMenuOpen", "operator": "equals", "value": true },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_rise" }
+      }
+    },
+    {
+      "id": "behavior_start_close",
+      "condition": { "state": "startMenuOpen", "operator": "equals", "value": false },
+      "action": {
+        "target": "System",
+        "name": "Nyrqis.Animation.Play",
+        "arguments": { "animation": "start_menu_drop" }
+      }
     }
   ],
   "bindings": [],
@@ -77,7 +160,10 @@
       "root": {
         "id": "desktop_root",
         "type": "DesktopSurface",
-        "properties": {},
+        "properties": {
+          "wallpaper": "assets/wallpaper.png",
+          "accent": "#7CB8FF"
+        },
         "layout": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
         "children": [
           {
@@ -88,13 +174,16 @@
               "alignment": "center",
               "showClock": true,
               "showTray": true,
+              "showSearch": true,
+              "showTaskView": true,
+              "autoHide": false,
               "pinnedApps": []
             },
             "layout": {
               "x": 0,
-              "y": 1040,
+              "y": 1032,
               "width": 1920,
-              "height": 40,
+              "height": 48,
               "anchorLeft": true,
               "anchorRight": true,
               "anchorBottom": true
@@ -103,15 +192,15 @@
               {
                 "id": "start_button",
                 "type": "Button",
-                "properties": { "text": "Nyrqis", "enabled": true },
-                "layout": { "x": 8, "y": 4, "width": 80, "height": 32 },
+                "properties": { "text": "Nyrqis", "icon": "NyrqisMark", "enabled": true, "tooltip": "Start" },
+                "layout": { "x": 8, "y": 2, "width": 88, "height": 44 },
                 "children": []
               },
               {
                 "id": "clock_display",
                 "type": "Clock",
                 "properties": { "format": "24h", "showSeconds": false },
-                "layout": { "x": 1800, "y": 4, "width": 100, "height": 32 },
+                "layout": { "x": 1784, "y": 2, "width": 128, "height": 44 },
                 "children": []
               }
             ]
@@ -119,15 +208,22 @@
           {
             "id": "start_menu",
             "type": "StartMenu",
-            "properties": { "visible": false },
-            "layout": { "x": 0, "y": 700, "width": 400, "height": 340 },
+            "properties": {
+              "visible": false,
+              "searchPlaceholder": "Search apps, files, settings...",
+              "showPinned": true,
+              "showRecent": true,
+              "showCategories": true,
+              "pinnedApps": []
+            },
+            "layout": { "x": 24, "y": 456, "width": 480, "height": 560 },
             "children": []
           },
           {
             "id": "search_bar",
             "type": "Search",
             "properties": { "placeholder": "Search apps, files, settings..." },
-            "layout": { "x": 500, "y": 100, "width": 920, "height": 48 },
+            "layout": { "x": 500, "y": 96, "width": 920, "height": 48 },
             "children": []
           }
         ]

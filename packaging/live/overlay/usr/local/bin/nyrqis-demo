@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# nyrqis-demo — the live image's console session for the `demo` user.
+#
+# 1. greets with quickstart instructions,
+# 2. starts the backend daemon (as the demo user, unprivileged — the
+#    backend's design posture: user namespaces, no root),
+# 3. attempts the desktop session (nyrqis_init) and reports honestly if
+#    the hardware/software can't present,
+# 4. probes the machine for the demo-relevant capabilities and prints
+#    exactly what is MISSING — the "see what is missing" ask.
+#
+# Everything here degrades honestly; the banner is the product.
+set -u
+
+OPT=/opt/nyrqis/nyhal-linux-backend
+BACKEND="$OPT/nyrqis_backend.py"
+CTL="$OPT/nyrqisctl.py"
+SOCK=/tmp/nyrqis-status.sock
+LOG=/tmp/nyrqis-daemon.log
+
+G=$'\e[1;32m'; B=$'\e[1;34m'; Y=$'\e[1;33m'; R=$'\e[1;31m'; D=$'\e[2m'; N=$'\e[0m'
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+section() { printf '\n%s== %s ==%s\n' "$B" "$*" "$N"; }
+ok()      { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
+warn()    { printf '  %s•%s %s\n' "$Y" "$N" "$*"; }
+missing() { printf '  %s✗ MISSING:%s %s\n' "$R" "$N" "$*"; }
+
+# Headless/serial boot smoke: when the kernel command line carries
+# NYRQIS_BOOT_SMOKE=1, start the daemon, write the ready marker, and let
+# the smoke driver assert on the serial log; no interactive session.
+if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
+    echo "== nyrqis boot smoke =="
+    python3 "$BACKEND" service serve --socket "$SOCK" \
+        --state-file /tmp/nyrqis-daemon-state.json \
+        --vault-dir /tmp/nyrqis-vault \
+        >"$LOG" 2>&1 &
+    sleep 3
+    if python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+        echo "NYRQIS_BOOT_SMOKE_PONG=1"
+    else
+        echo "NYRQIS_BOOT_SMOKE_PONG=0"
+        tail -5 "$LOG" 2>/dev/null
+    fi
+    echo "NYRQIS_BOOT_SMOKE_READY=1"
+    exec sleep infinity
+fi
+
+clear
+cat <<BANNER
+${G}
+  ███╗   ██╗██╗   ██╗██████╗  ██████╗ ██╗███████╗
+  ████╗  ██║╚██╗ ██╔╝██╔══██╗██╔═══██╗██║██╔════╝
+  ██╔██╗ ██║ ╚████╔╝ ██████╔╝██║   ██║██║███████╗
+  ██║╚██╗██║  ╚██╔╝  ██╔══██╗██║   ██║██║╚════██║
+  ██║ ╚████║   ██║   ██║  ██║╚██████╔╝██║███████║
+  ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝╚══════╝${N}
+        live demo — navigate, explore, report gaps
+
+  Quickstart
+    ${B}ep-limits${N}   operator IPC limiter commands (try: ep-limits list)
+    ${B}containers${N}  spawn/kill capability-scoped containers
+    ${B}vault${N}       NyVault storage volumes
+    ${B}status${N}      daemon status / health
+
+  This banner reruns anytime with:  ${B}nyrqis-demo${N}
+BANNER
+
+# ---------------------------------------------------------------- daemon
+section "Backend daemon"
+if [[ ! -f "$BACKEND" ]]; then
+    missing "backend tree at $OPT — the image build failed to install it"
+else
+    python3 "$BACKEND" service serve --socket "$SOCK" \
+        --state-file /tmp/nyrqis-daemon-state.json \
+        --vault-dir /tmp/nyrqis-vault \
+        --ipc-rate 2000 --ipc-bucket-size 256 \
+        --ipc-fair-shares 8 --ipc-sender-burst 64 \
+        >"$LOG" 2>&1 &
+    sleep 2
+    if kill -0 "$!" 2>/dev/null && python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+        ok "daemon serving on $SOCK (log: $LOG)"
+        python3 "$CTL" --socket "$SOCK" ep-limits list 2>/dev/null | sed 's/^/    /'
+    else
+        missing "daemon did not come up — see $LOG"
+        tail -5 "$LOG" 2>/dev/null | sed 's/^/      /'
+    fi
+fi
+
+# ---------------------------------------------------------------- desktop
+section "Desktop session"
+if [[ ! -f "$OPT/nyrqis_init.py" ]]; then
+    missing "desktop tree (nyrqis_init.py not present)"
+else
+    # Best effort: present only if a DRM master can be taken; the
+    # backend fails closed otherwise (software fallback stores frames
+    # for inspection instead of scanout).
+    if python3 "$OPT/ui/drm_backend.py" probe >/dev/null 2>&1 \
+       || [[ -w /dev/dri/card0 ]] || [[ -w /dev/dri/card1 ]]; then
+        ok "DRM device available — attempting the desktop session"
+        (cd "$OPT" && timeout 8 python3 nyrqis_init.py >/tmp/nyrqis-desktop.log 2>&1) \
+            && ok "desktop session started (log: /tmp/nyrqis-desktop.log)" \
+            || warn "desktop did not stay up (expected on some VMs) — see /tmp/nyrqis-desktop.log"
+    else
+        warn "no usable DRM device — the compositor will fall back to software frames"
+        warn "desktop autostart skipped; try:  cd $OPT && python3 nyrqis_init.py"
+    fi
+fi
+
+# ---------------------------------------------------------------- probe
+section "Capability probe — what this machine is missing"
+have systemctl   && ok "systemd present"                  || missing "systemd (live-boot session management degraded)"
+have python3     && ok "python3 present"                  || missing "python3 (backend cannot run)"
+[[ -d /sys/class/drm ]] && ok "kernel DRM subsystem"      || missing "kernel DRM (/sys/class/dri) — no GPU presentation path"
+ls /dev/dri/card* >/dev/null 2>&1 && ok "DRM render node(s): $(ls /dev/dri/ | tr '\n' ' ')" \
+                                                 || missing "/dev/dri nodes — no KMS driver bound (VMs: add virtio-gpu)"
+have fusermount3 && ok "FUSE 3 (NyFS mounts possible)"    || missing "fusermount3 — NyFS vault mounts disabled"
+have qemu-img    && ok "qemu-img (disk images)"           || :
+[[ -e /dev/kvm ]] && ok "KVM (container accel)"           || warn "/dev/kvm absent — fine, containers use user namespaces"
+sysctl -n kernel.unprivileged_userns_clone 2>/dev/null | grep -q 1 \
+    && ok "unprivileged user namespaces enabled"          || warn "user namespaces may be restricted (containers: check sysctl kernel.unprivileged_userns_clone)"
+have zstd && ok "zstd tooling"                            || warn "zstd CLI absent (library support is what the backend uses)"
+python3 -c "import zstandard" 2>/dev/null && ok "zstandard python module" \
+                                                          || missing "python zstandard module — compression falls back to stored blocks"
+python3 -c "import nacl"       2>/dev/null && ok "PyNaCl (package signing)" \
+                                                          || missing "PyNaCl — package signing/verification refuses to run (fail-closed)"
+python3 -c "import lz4.frame"  2>/dev/null && ok "lz4 fast path" \
+                                                          || warn "python lz4 module absent — LZ4 fast-path override unavailable"
+[[ -d "$OPT/rust/ipc/target/release" ]] && ok "Rust IPC crate prebuilt" \
+                                                          || warn "Rust serving-loop crate absent — Python floor serves (slower, same behavior)"
+have nyrqisctl  && ok "nyrqisctl on PATH"                 || warn "nyrqisctl not on PATH — use: python3 $CTL"
+# Boot-smoke handshake markers (the CI driver greps the serial log).
+[[ -f /tmp/nyrqis-boot-smoke-ready ]] && ok "boot smoke: ready marker seen" \
+                                          || :  # marker absent outside the smoke entry
+have nyrqis-backend && ok "entry points installed"        || warn "entry points not installed — scripts run from $OPT directly"
+
+section "Try this"
+cat <<TRY
+    python3 $CTL --socket $SOCK ep-limits list
+    python3 $CTL --socket $SOCK ep-limits metrics --watch 1
+    python3 $CTL --socket $SOCK containers list
+    python3 $CTL --socket $SOCK vault status
+    cd $OPT && python3 -m unittest test_backend.TestOperatorCli -v
+TRY
+
+printf '\n%sThe demo is yours — everything above degrades honestly; what printed%s\n' "$D" "$N"
+printf '%sMISSING is exactly what the next release needs on this hardware.%s\n\n' "$D" "$N"
+exec bash -l

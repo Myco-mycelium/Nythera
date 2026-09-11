@@ -28,6 +28,28 @@ date: 2026-09-10
 | Compositor presentation | **compositor_presentation.py** (DRM-detect → DRMBackend attach → software fallback; frame lifecycle stats) |
 | Package repository | **package_repo.py** (signed index, publish/verify/download) + **nyrqisctl_repo.py** CLI |
 
+## Session 6 (2026-09-11) — ADR rot gates; live-demo ISO; design language; ep-limits loop-dispatch fix
+
+| Item | Status |
+|------|--------|
+| Benchmark rot gates, all three close-out records | ✅ `tools/benchmark_gate.py` grew ADR-0007 (§31: ratio-curve flat, LZ4 fast-path premise, lossless round-trips) and ADR-0013 (§33: exact EEVDF re-derivation — request-size law, 10:1 share accuracy, RT-starvation row) alongside the existing ADR-0009 checks; 10 invariants, `--only adrNNNN` selector; CI benchmarks job + `run_tests.sh` |
+| Real-daemon ep-limits bug found + fixed | ✅ The limiter ops resolved the manager off the attached server, but the Rust serving loop's dispatch handoff attaches services to a reply SINK — every `ep-limits` op failed on the packaged daemon while all unit tests (floor path) passed. `ControlService` takes an explicit `ipc_manager`; regression tests pin the sink wiring + a CLI-against-real-daemon e2e |
+| `ep-limits metrics --watch` verified e2e | ✅ First real-daemon exercise: banner renders, Ctrl-C exits 0 |
+| Design language | ✅ `docs/reference/design-language.md` (HIG structure + Material feel: tokens, motion vocabulary mapped to the NUI easing enum, 44 px targets, the Android-feel boundary); `shell/defaults/default-shell.nstudio` restyled as the reference implementation (designTokens, theme overrides, contract-valid properties only, paired enter/exit menu motion) |
+| Live-demo ISO | ✅ `packaging/live/` — `build-live-iso.sh` (debootstrap/tarball/tree → zstd squashfs → hybrid UEFI+BIOS ISO), autologin `demo` user, `nyrqis-demo` session (daemon up, desktop attempt, capability probe printing exactly what the booted machine is missing); `live-iso` CI workflow builds + smoke-checks + publishes the artifact |
+| Boot smoke (headless QEMU) | ✅ `tests/boot_smoke.py` — serial-console handshake (`NYRQIS_BOOT_SMOKE_PONG=1` = daemon answers ping); wired into CI with serial-log upload; pass/pong-fail/no-marker paths verified against a simulated QEMU. **Unverified: the first real chrooted build + boot (no sudo/xorriso/KVM on the dev host) — CI closes it** |
+| Suite | ✅ 2,633 backend tests OK (full), 12/12 run_tests.sh suites |
+
+### Carry-forward: design-language rollout (phase 2)
+
+The spec + reference shell are done; the rest of the surface area is
+not. Phased so each phase ships green independently:
+
+1. **Compositor theme layer** — carry the tokens (spacing/radius/elevation/accent-as-action) into `ui/compositor`'s Eclipse/Solar renderers so `.nstudio` designs get token-driven polish for free; degrade per the renderer-honesty rule.
+2. **`desktop.nstudio` (full shell)** — restyle the 30-component desktop: Dock + AppGrid + Launcher + window chrome to the §2/§4 tokens; note the tests/fixtures copy is pinned by schema tests and stays untouched.
+3. **The 16 finished apps** — sweep per the spec §7 adoption checklist, grouped: form-heavy (settings, calendar, contacts-like) → list/table (package, process, network) → media/creative (paint, recorder, model viewer). Each group lands with its suite green.
+4. **Contract additions where the language needs new properties** (e.g. `cornerRadius` on Button) — a deliberate `nui-api-v1.json` registry bump with back-compat notes, NOT ad-hoc properties; that is its own review.
+
 ## Session 5 (2026-09-10, later) — benchmark close-outs unblock 3 held ADRs; version-drift gate; vendor-agnostic GPU conformance
 
 | Item | Status |

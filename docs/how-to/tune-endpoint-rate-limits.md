@@ -126,6 +126,7 @@ op aggregates the trailing window:
 ```bash
 nyrqisctl ep-limits metrics                    # all endpoints, 60 s
 nyrqisctl ep-limits metrics ep-svc --window 300  # one endpoint, 5 min
+nyrqisctl ep-limits metrics --watch 1          # poll every second
 ```
 
 ```
@@ -140,6 +141,9 @@ ep-svc: admitted 2000/2012 (33.3/s, rejected 0.2/s, rejection 0.60%) over 60.0s
 - Samples are in-memory only (last ~4096 admissions) and reset on
   daemon restart — the metrics are for live watching, the audit trail
   for history.
+- `--watch INTERVAL` re-renders continuously (clears a terminal
+  between frames; safe to pipe; Ctrl-C stops). The trailing window is
+  independent of the poll interval — poll fast, window wide.
 
 ## References
 

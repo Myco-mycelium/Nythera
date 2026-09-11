@@ -132,11 +132,14 @@ senders × per-sender demand**.
 > own "refill scaled to workload class": input/audio 2,000/s envelope,
 > 8 shares, burst 256 (→ 250/s guaranteed per sender — §32d.2 shows
 > the guarantee delivered under contention); bulk stays on the
-> shared-memory path; everything else keeps the 500/s envelope. The
-> packaged daemon and systemd unit already ship the input-class
-> envelope; the `IPCManager` library default stays 200/500 pending
-> your acceptance. The sizing rule (envelope ≥ senders × per-sender
-> demand) is mandatory under static shares (§32d.1 lone-sender cap).
+> shared-memory path. The sizing rule (envelope ≥ senders ×
+> per-sender demand) is mandatory under static shares (§32d.1
+> lone-sender cap). **Implementation note:** the daemon, its systemd
+> unit, and (as of this request) the `IPCManager` library default all
+> already ship the proposed envelope — library consumers and the
+> packaged daemon behave identically; the constants keep both
+> postures named and the readiness test enforces consistency. What
+> remains YOURS is the ADR **status** flip itself.
 >
 > **3. Static vs. dynamic shares (§5.1, §32e).** Recommended: static
 > default (adversarial-optimal — an abuser's absolute take is
@@ -147,7 +150,10 @@ senders × per-sender demand**.
 > benchmark one.
 >
 > On acceptance: ADR-0009 → `Accepted`, NPS-010 → `Accepted` (the
-> transitive §7.1 block clears), `IPCManager` defaults align with the
-> accepted table, and NPS-011's `CAP-IPC-HIGH-THROUGHPUT` wording is
-> reconciled. Instruments are re-runnable:
-> `tests/benchmark_bucket.py --sweep | --adversarial | --fair-sweep`.
+> transitive §7.1 block clears), and NPS-011's
+> `CAP-IPC-HIGH-THROUGHPUT` wording is reconciled. The parameter side
+> is already aligned end-to-end (library, daemon, unit); only the
+> recorded status change remains. Instruments are re-runnable
+> (`tests/benchmark_bucket.py --sweep | --adversarial | --fair-sweep`)
+> and CI now enforces the load-bearing invariants continuously
+> (`tools/benchmark_gate.py`) so the record cannot silently rot.

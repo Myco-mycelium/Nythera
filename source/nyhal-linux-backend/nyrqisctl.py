@@ -9476,6 +9476,31 @@ def run(command: str, args: argparse.Namespace) -> int:
             return 0
         finally:
             client.close()
+    if command == "ep-limits-metrics" and getattr(args, "watch", None):
+        # Continuous polling mode: render the metrics block every
+        # interval until Ctrl-C. Terminal-capable output clears the
+        # screen between frames; a pipe just gets repeated blocks.
+        interval = max(float(args.watch), 0.2)
+        is_tty = sys.stdout.isatty()
+        try:
+            while True:
+                resp = call_daemon(target, build_payload(command, args),
+                                   timeout_s=args.timeout)
+                if is_tty:
+                    sys.stdout.write("\x1b[2J\x1b[H")  # clear + home
+                if resp is None:
+                    print(f"error: no reply from the daemon at {target} "
+                          "(is it running?)", file=sys.stderr)
+                elif not resp.get("ok"):
+                    print(f"error: {resp.get('error', 'operation failed')}",
+                          file=sys.stderr)
+                elif args.json:
+                    print(json.dumps(resp, indent=2, sort_keys=True))
+                else:
+                    print(format_human(command, resp))
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            return 0
     payload = build_payload(command, args)
     resp = call_daemon(target, payload, timeout_s=args.timeout)
     if resp is None:
@@ -9659,6 +9684,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="One endpoint (default: all endpoints)")
     epl_m.add_argument("--window", type=float, default=60.0,
                        help="Trailing window in seconds (default: 60)")
+    epl_m.add_argument("--watch", type=float, default=None, metavar="INTERVAL_S",
+                       help="Poll continuously every INTERVAL_S seconds "
+                            "(e.g. --watch 1); Ctrl-C to stop")
     epl_m.set_defaults(command="ep-limits-metrics")
 
     clo = csub.add_parser("logs", help="Show captured stdout/stderr for a container")

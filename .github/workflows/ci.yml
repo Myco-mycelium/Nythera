@@ -574,11 +574,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install Pillow pysdl2 pysdl2-dll pynacl numpy watchdog pyyaml
+      - run: pip install Pillow pysdl2 pysdl2-dll pynacl numpy watchdog pyyaml zstandard lz4
       - name: Run benchmarks
         run: python3 tests/benchmarks_all.py --repeat 3
       - name: Run benchmarks (JSON)
         run: python3 tests/benchmarks_all.py --repeat 3 --json > /tmp/benchmarks.json
+      - name: Benchmark rot gates (ADR-0009/0007/0013)
+        run: python3 source/nyhal-linux-backend/tools/benchmark_gate.py
+      - name: ADR-0009 full benchmark record (artifact context)
+        run: python3 tests/benchmark_bucket.py --fair-sweep || true
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:

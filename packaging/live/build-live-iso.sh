@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# build-live-iso.sh — assemble the Nyrqis live-demo ISO.
+#
+# Produces a bootable (UEFI + BIOS, VM + real hardware) ISO that boots a
+# minimal rootfs with the Nyrqis backend + desktop tree at /opt/nyrqis,
+# autologs in as the `demo` user on tty1, starts the daemon, attempts the
+# desktop session, and prints a guided demo banner including a LIVE
+# capability probe ("what's missing" on this machine).
+#
+# Rootfs acquisition (choose one; the script probes in this order):
+#   1. --rootfs DIR       a pre-built rootfs tree (CI: built by the
+#                         nyrqis-live-rootfs.yml workflow)
+#   2. --rootfs-tar T.tar a pre-built rootfs tarball
+#   3. debootstrap        assemble a minimal Debian/Ubuntu rootfs from
+#                         scratch (needs debootstrap + network + root)
+#
+# Image assembly uses ONLY: mksquashfs, genisoimage (or xorriso),
+# grub-mkrescue-compatible /usr/lib/grub files, and isolinux bins — all
+# present on a standard dev host (see packaging/live/README.md).
+#
+# Usage:
+#   sudo packaging/live/build-live-iso.sh \
+#       --rootfs /srv/nyrqis-rootfs \
+#       --output dist/nyrqis-live-$(git describe --tags).iso
+#
+# Exit codes: 0 = ISO built; 1 = preconditions missing (they are printed).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BACKEND_DIR="$REPO_ROOT/source/nyhal-linux-backend"
+
+ROOTFS=""
+ROOTFS_TAR=""
+OUTPUT="dist/nyrqis-live.iso"
+VOLUME_ID="NYRQIS_LIVE"
+WORKDIR=""
+SKIP_CHROOT=false
+KEEP_WORKDIR=false
+
+log() { printf '\e[1;34m[build-live-iso]\e[0m %s\n' "$*"; }
+die() { printf '\e[1;31m[build-live-iso] ERROR:\e[0m %s\n' "$*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rootfs)       ROOTFS="$2"; shift 2 ;;
+        --rootfs-tar)   ROOTFS_TAR="$2"; shift 2 ;;
+        --output|-o)    OUTPUT="$2"; shift 2 ;;
+        --volume-id)    VOLUME_ID="$2"; shift 2 ;;
+        --workdir)      WORKDIR="$2"; shift 2 ;;
+        --skip-chroot)  SKIP_CHROOT=true; shift ;;
+        --keep-workdir) KEEP_WORKDIR=true; shift ;;
+        --help|-h)
+            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+            echo ""
+            echo "Dev flags:"
+            echo "  --skip-chroot   do not chroot into the rootfs (demo user is"
+            echo "                  written directly; initramfs is not regenerated)"
+            echo "  --keep-workdir  keep the staging directory for inspection"
+            exit 0 ;;
+        *) die "unknown argument: $1 (see --help)" ;;
+    esac
+done
+
+# ---------------------------------------------------------------- preconditions
+need() { command -v "$1" >/dev/null 2>&1 || MISSING+=("$1"); }
+MISSING=()
+need mksquashfs
+need genisoimage || need mkisofs || need xorriso
+if [[ -z "$ROOTFS" && -z "$ROOTFS_TAR" ]]; then
+    need debootstrap
+fi
+if ((${#MISSING[@]})); then
+    log "missing tools: ${MISSING[*]}"
+    log "on Debian/Ubuntu:  sudo apt-get install -y squashfs-tools \\"
+    log "    genisoimage xorriso debootstrap"
+    exit 1
+fi
+
+if [[ $EUID -ne 0 ]]; then
+    $SKIP_CHROOT || die "run as root (chroot + squashfs ownership), or pass --skip-chroot for an unprivileged pipeline check"
+    log "unprivileged --skip-chroot build: file ownership in the image follows this user (fine for a pipeline check; CI builds as root)"
+fi
+[[ -d "$BACKEND_DIR" ]] || die "backend tree not found at $BACKEND_DIR"
+
+WORKDIR="${WORKDIR:-$(mktemp -d /tmp/nyrqis-live.XXXXXX)}"
+ISO_ROOT="$WORKDIR/iso"
+LIVE_DIR="$ISO_ROOT/live"
+mkdir -p "$LIVE_DIR"
+
+cleanup() { [[ -n "${ROOTFS_SRC:-}" && -d "$ROOTFS_SRC" ]] && \
+    [[ "$ROOTFS_SRC" == "$WORKDIR"* ]] && rm -rf "$ROOTFS_SRC"; \
+    $KEEP_WORKDIR || rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+
+# isolinux boot binaries, needed by every BIOS-path ISO build.
+copy_isolinux_bins() {
+    local iso_root="$1" bin ld
+    bin="$(ls /usr/lib/ISOLINUX/isolinux.bin \
+             /usr/lib/syslinux/modules/bios/isolinux.bin 2>/dev/null | head -1 || true)"
+    [[ -n "$bin" ]] || return 1
+    cp "$bin" "$iso_root/isolinux/isolinux.bin"
+    ld="$(dirname "$bin")/ldlinux.c32"
+    [[ -f "$ld" ]] && cp "$ld" "$iso_root/isolinux/"
+    return 0
+}
+
+# ---------------------------------------------------------------- rootfs
+if [[ -n "$ROOTFS_TAR" ]]; then
+    ROOTFS_SRC="$WORKDIR/rootfs"
+    mkdir -p "$ROOTFS_SRC"
+    log "extracting rootfs tarball: $ROOTFS_TAR"
+    tar -xpf "$ROOTFS_TAR" -C "$ROOTFS_SRC"
+elif [[ -n "$ROOTFS" ]]; then
+    ROOTFS_SRC="$ROOTFS"
+else
+    ROOTFS_SRC="$WORKDIR/rootfs"
+    mkdir -p "$ROOTFS_SRC"
+    log "assembling a minimal rootfs with debootstrap (this takes a while)"
+    SUITE="${NYRQIS_LIVE_SUITE:-bookworm}"
+    MIRROR="${NYRQIS_LIVE_MIRROR:-http://deb.debian.org/debian}"
+    # live-boot is what processes `boot=live` from the initramfs; without
+    # it the kernel would drop to an initramfs shell after unpacking.
+    debootstrap --variant=minbase \
+        --include=systemd,sudo,linux-image-amd64,live-boot \
+        "$SUITE" "$ROOTFS_SRC" "$MIRROR"
+fi
+[[ -d "$ROOTFS_SRC" ]] || die "rootfs tree not found after acquisition"
+
+# ---------------------------------------------------------------- Nyrqis tree
+log "installing the Nyrqis backend + desktop tree into /opt/nyrqis"
+OPT="$ROOTFS_SRC/opt/nyrqis"
+mkdir -p "$OPT"
+cp -a "$BACKEND_DIR" "$OPT/nyhal-linux-backend"
+# The Rust FFI crates are optional at runtime (honest fallbacks); keep the
+# prebuilt cdylibs if they exist, drop the build caches to save image size.
+rm -rf "$OPT/nyhal-linux-backend"/{.git,__pycache__,rust/*/target,.pytest_cache}
+find "$OPT" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+# Live overlay: autologin getty, demo session, demo banner.
+log "applying the live overlay (autologin, demo session, banner)"
+install -D "$SCRIPT_DIR/overlay/etc/systemd/system/getty@tty1.service.d/autologin.conf" \
+    "$ROOTFS_SRC/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+install -D "$SCRIPT_DIR/overlay/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
+    "$ROOTFS_SRC/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf"
+install -D "$SCRIPT_DIR/overlay/usr/local/bin/nyrqis-demo" \
+    "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
+chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
+write_demo_user_records() {
+    # The live image needs the account, not shadow-utils: write the
+    # records directly (used when useradd is unavailable in the rootfs,
+    # and by --skip-chroot).
+    grep -q '^demo:' "$ROOTFS_SRC/etc/passwd" 2>/dev/null || \
+        echo 'demo:x:1000:1000:demo,,,:/home/demo:/bin/bash' >> "$ROOTFS_SRC/etc/passwd"
+    grep -q '^demo:' "$ROOTFS_SRC/etc/group" 2>/dev/null || \
+        echo 'demo:x:1000:' >> "$ROOTFS_SRC/etc/group"
+    grep -q '^demo:' "$ROOTFS_SRC/etc/shadow" 2>/dev/null || \
+        echo 'demo:!:19000:0:99999:7:::' >> "$ROOTFS_SRC/etc/shadow" 2>/dev/null || true
+    mkdir -p "$ROOTFS_SRC/home/demo" "$ROOTFS_SRC/etc/sudoers.d"
+    chown 1000:1000 "$ROOTFS_SRC/home/demo" 2>/dev/null || true
+}
+
+if $SKIP_CHROOT; then
+    log "--skip-chroot: writing the demo user records directly"
+    write_demo_user_records
+else
+    # demo user (uid 1000, passwordless sudo, autologged on tty1). Prefer
+    # useradd; a hand-built rootfs tarball may lack shadow-utils.
+    if chroot "$ROOTFS_SRC" sh -c 'command -v useradd' >/dev/null 2>&1; then
+        chroot "$ROOTFS_SRC" useradd -m -u 1000 -s /bin/bash demo
+    else
+        write_demo_user_records
+    fi
+    chroot "$ROOTFS_SRC" sh -c 'echo "demo ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/demo'
+    chroot "$ROOTFS_SRC" systemctl enable getty@tty1 2>/dev/null || true
+fi
+# hostname + os-release flavor
+echo "nyrqis-live" > "$ROOTFS_SRC/etc/hostname"
+sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Nyrqis Live (demo)"/' \
+    "$ROOTFS_SRC/etc/os-release" 2>/dev/null || true
+
+# Kernel + initrd from the rootfs (installed by debootstrap/tarball).
+KERNEL="$(ls "$ROOTFS_SRC"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)"
+INITRD="$(ls "$ROOTFS_SRC"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)"
+[[ -n "$KERNEL" && -n "$INITRD" ]] || \
+    die "no kernel/initrd under $ROOTFS_SRC/boot — build the rootfs with linux-image-amd64"
+
+# Live initramfs hooks: squashfs + overlay modules must be present for
+# the live-boot pivot. mkinitramfs INSIDE the rootfs (skipped under
+# --skip-chroot; a properly built rootfs tarball already ships a
+# live-boot-capable initrd — Debian regenerates it on package install).
+if ! $SKIP_CHROOT; then
+    if chroot "$ROOTFS_SRC" sh -c 'command -v mkinitramfs' >/dev/null 2>&1; then
+        log "regenerating the initramfs with the live-boot modules"
+        chroot "$ROOTFS_SRC" mkinitramfs -o /boot/initrd.img-nyrqis-live \
+            "$(basename "$KERNEL" | sed 's/^vmlinuz-//')" || \
+            log "WARNING: mkinitramfs failed; shipping the stock initrd (live-boot may be limited to loop-mounted ISOs)"
+        [[ -f "$ROOTFS_SRC/boot/initrd.img-nyrqis-live" ]] && INITRD="$ROOTFS_SRC/boot/initrd.img-nyrqis-live"
+    fi
+fi
+
+# ---------------------------------------------------------------- squashfs + ISO
+log "building the squashfs rootfs image"
+mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
+    -comp zstd -Xcompression-level 15 -noappend -wildcards \
+    -e "boot/vmlinuz-*" "boot/initrd.img-*" \
+    >/dev/null   # progress is noise in logs; the ISO is the artifact
+cp "$KERNEL"  "$LIVE_DIR/vmlinuz"
+cp "$INITRD"  "$LIVE_DIR/initrd"
+
+log "writing boot configuration (GRUB for UEFI+BIOS, isolinux for legacy)"
+export VOLUME_ID
+mkdir -p "$ISO_ROOT/boot/grub" "$ISO_ROOT/isolinux"
+sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/grub.cfg.tpl"  > "$ISO_ROOT/boot/grub/grub.cfg"
+sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/isolinux.cfg.tpl" > "$ISO_ROOT/isolinux/isolinux.cfg"
+
+mkdir -p "$(dirname "$OUTPUT")"
+# grub-mkrescue produces the hybrid (UEFI + BIOS) image when the grub
+# bins AND xorriso are installed; every BIOS fallback path needs the
+# isolinux binaries staged first.
+HYBRID=false
+if grub-mkrescue --version >/dev/null 2>&1 && \
+   [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] && \
+   command -v xorriso >/dev/null 2>&1; then
+    HYBRID=true
+fi
+if ! $HYBRID; then
+    copy_isolinux_bins "$ISO_ROOT" || \
+        die "isolinux.bin not found (apt-get install isolinux xorriso grub-pc-bin grub-efi-amd64-bin for the hybrid image)"
+fi
+if $HYBRID; then
+    log "building hybrid ISO with grub-mkrescue (UEFI + BIOS)"
+    grub-mkrescue -o "$OUTPUT" "$ISO_ROOT" \
+        -- -volid "$VOLUME_ID" -joliet on
+else
+    log "xorriso or grub bins missing; building BIOS-only isolinux ISO"
+    genisoimage -rational-rock -joliet -volid "$VOLUME_ID" \
+        -b isolinux/isolinux.bin -c isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -o "$OUTPUT" "$ISO_ROOT"
+fi
+
+log "ISO built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
+log "boot it with:   qemu-system-x86_64 -m 4G -enable-kvm -cdrom $OUTPUT"
+log "or write to USB: sudo dd if=$OUTPUT of=/dev/sdX bs=4M status=progress conv=fsync"

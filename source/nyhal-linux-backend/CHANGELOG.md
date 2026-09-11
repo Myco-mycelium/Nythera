@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-11
+
 ### Added
 
 - **Per-sender-fair IPC rate limiting** (`ipc/core.FairTokenBucket`,
@@ -68,13 +70,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guarantee holds under dynamic shares; abuser's absolute take rises
   ~3.8× at low occupancy → static stays the default, dynamic opt-in,
   with the recommendation now data-backed.
-- **Post-signoff readiness**: the library default posture is a named
-  constant pair (`LIBRARY_DEFAULT_*` vs `ACCEPTED_PROPOSED_*`) with a
-  readiness test — the AG-accepted flip is a one-line change enforced
-  by the gate (ADR-0009 review package §6/§7).
+- **Post-signoff readiness, executed**: the library default posture is
+  flipped to the AG-proposed envelope — `LIBRARY_DEFAULT_*` now equals
+  `ACCEPTED_PROPOSED_*` (256 / 2,000/s), so library consumers match
+  the daemon and systemd unit; the ADR **status** flip (Proposed →
+  Accepted) remains the Architecture Group's recorded decision
+  (readiness test updated accordingly).
+- **Benchmark rot gate** (`tools/benchmark_gate.py`, wired into CI and
+  `run_tests.sh`): re-derives the load-bearing invariants of all three
+  close-out records and fails when a record no longer describes the
+  mechanism — ADR-0009 (§32: shared-pool ≈ refill, per-sender share
+  bound, envelope cap, dynamic full-occupancy bound, dynamic
+  lone-sender lift), ADR-0007 (§31: real-corpus ratio curve flat —
+  level 22 gains <5% over level 3 while level 3 is ≥20× faster — and
+  the LZ4 fast-path ratio premise with lossless round-trips at every
+  swept level), and ADR-0013 (§33: interactive latency equals the
+  task's own request size exactly, 10:1 share accuracy within 2% on
+  every weight curve, and the decisive no-admission-control RT row —
+  zero RT misses while the fair class starves completely). The
+  compression checks degrade to an explicit skip (exit 0) when the
+  codec deps are absent; `--only adr0009|adr0007|adr0013` runs one
+  record's checks.
+- **`ep-limits metrics --watch INTERVAL`**: continuous polling render
+  of admission metrics (clears the terminal between frames; Ctrl-C to
+  stop) for live flood/undersizing watching.
+- **Design language** (`docs/reference/design-language.md`): Apple-HIG
+  structure (clarity/deference/depth) with Material feel (motion
+  tokens, elevation, 44 px targets) as the normative UI vocabulary;
+  the default shell (`shell/defaults/default-shell.nstudio`) restyled
+  as the reference implementation — design tokens, theme overrides,
+  contract-valid taskbar/menu restyle, paired enter/exit menu motion.
+- **Live-demo ISO** (`packaging/live/`, CI workflow `live-iso`):
+  `build-live-iso.sh` assembles a hybrid (UEFI + BIOS, VM + USB)
+  bootable image — squashfs rootfs with the full backend/desktop tree
+  at `/opt/nyrqis`, autologin `demo` user, and a `nyrqis-demo` session
+  that starts the daemon, attempts the desktop, and prints a
+  capability probe listing exactly what the booted machine is missing.
+  Unverified locally (no passwordless sudo / xorriso on the dev host):
+  the chrooted build path and the ISO's first real boot; the
+  unprivileged pipeline (staging → squashfs → templates → honest
+  precondition failure) is verified, and CI builds, **boot-smokes in
+  headless QEMU** (`tests/boot_smoke.py`: serial-console handshake —
+  the demo session writes `NYRQIS_BOOT_SMOKE_READY` and asserts
+  `NYRQIS_BOOT_SMOKE_PONG=1`, the daemon's ping reply; serial log
+  uploaded for diagnosis), and publishes the ISO on every `main`
+  push. The smoke driver's pass/pong-fail/no-marker paths are verified
+  against a simulated QEMU.
 
 ### Fixed
 
+- **`ep-limits` ops answered "no IPC manager attached" on the real
+  daemon** (`ipc/control.py`, `nyrqis_backend.py`): the endpoint
+  limiter ops resolved the IPC manager off the attached server, but
+  the Rust serving loop's dispatch handoff (ADR-0021) attaches
+  services to a reply SINK — no manager attribute — so on the packaged
+  daemon (Rust loop present) every `ep-limits list|get|set|metrics`
+  call failed while every unit test (floor `IPCDatagramServer` path)
+  passed. `ControlService` now takes an explicit `ipc_manager`
+  attachment (wired by `StatusServiceHost`), falling back to the
+  server's manager under the floor wiring; regression tests pin the
+  sink wiring directly and drive `ep-limits` through the CLI against
+  a real daemon host. (Found by the first end-to-end `--watch` run.)
 - **Vulkan FFI slot leak** (`rust/vulkan`): the three destroy functions
   (`nyrqis_vulkan_destroy_instance`/`_device`/`_swapchain`) marked slots
   `active = false` but left `Some(..)` in the table, while `alloc_slot`
