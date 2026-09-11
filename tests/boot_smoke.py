@@ -44,6 +44,30 @@ KERNEL_CMDLINE = ("boot=live console=ttyS0,115200 "
                   "systemd.unit=multi-user.target "
                   "NYRQIS_BOOT_SMOKE=1")
 
+# Console patterns that mean the boot is DEAD (no marker can ever
+# arrive): fail fast instead of burning the whole budget. The prompt
+# form covers the initramfs emergency/rescue shell — usually live-boot
+# failing to find the medium.
+DEAD_PATTERNS = (
+    "kernel panic",
+    "unable to find a medium containing a live file system",
+    "gave up waiting for root device",
+    "(initramfs)",
+    "entering emergency mode",
+)
+
+
+def _emit_annotation(message):
+    """Surface the failure through a GitHub check annotation.
+
+    ``::error::`` lines in a step log become annotations on the run,
+    readable via the API by tooling that cannot fetch job logs or
+    artifacts (unauthenticated). Whitespace collapses; the cap keeps us
+    inside annotation size limits.
+    """
+    flat = " ".join(message.split())[:600]
+    print(f"::error::boot smoke: {flat}", flush=True)
+
 
 def _extract_live_kernel(iso, dest_dir):
     """Extract /live/vmlinuz + /live/initrd from the ISO into dest_dir.
@@ -117,6 +141,7 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
 
         deadline = time.monotonic() + timeout_s
         saw_ready = saw_pong_ok = saw_pong_fail = False
+        dead_hit = None
         while time.monotonic() < deadline:
             # Read first: the markers must be parsed even when qemu exits
             # right after writing them (the early-exit check below would
@@ -130,6 +155,15 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
             saw_pong_ok = saw_pong_ok or MARKER_PONG_OK in text
             saw_pong_fail = saw_pong_fail or MARKER_PONG_FAIL in text
             if saw_ready and (saw_pong_ok or saw_pong_fail):
+                break
+            if dead_hit is None:
+                for pattern in DEAD_PATTERNS:
+                    if pattern in text.lower():
+                        dead_hit = pattern
+                        break
+            if dead_hit is not None:
+                print(f"[boot-smoke] dead boot pattern: {dead_hit!r} "
+                      "— failing fast (no marker can arrive)")
                 break
             if proc.poll() is not None:
                 print(f"[boot-smoke] qemu exited early: rc={proc.returncode}")
@@ -154,6 +188,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
                 print("[boot-smoke] diagnosis: the KERNEL panicked — "
                       "initrd/medium mismatch (live-boot could not set "
                       "up the root)")
+            elif dead_hit is not None:
+                print(f"[boot-smoke] diagnosis: dead boot pattern "
+                      f"{dead_hit!r} — see the tail below")
             elif "reached target" not in lowered and saw_ready is False:
                 print("[boot-smoke] diagnosis: userspace never reported "
                       "progress within the budget — likely just TCG-slow "
@@ -164,6 +201,13 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
             print("[boot-smoke] ---- serial log tail ----")
             print(tail)
             print("[boot-smoke] -----------------------------")
+            # And surface it as a check annotation: that is the one
+            # failure channel readable via the API without credentials.
+            _emit_annotation(
+                f"markers ready={saw_ready} pong_ok={saw_pong_ok} "
+                f"pong_fail={saw_pong_fail}; "
+                f"dead_pattern={dead_hit!r}; "
+                f"tail: {tail[-400:]}")
 
         if saw_ready and saw_pong_ok:
             print("[boot-smoke] PASS: the demo session reached the serial "
