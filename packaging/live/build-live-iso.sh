@@ -40,7 +40,10 @@ SKIP_CHROOT=false
 KEEP_WORKDIR=false
 
 log() { printf '\e[1;34m[build-live-iso]\e[0m %s\n' "$*"; }
-die() { printf '\e[1;31m[build-live-iso] ERROR:\e[0m %s\n' "$*" >&2; exit 1; }
+# die() is the CI failure surface: emit an ::error:: so the message
+# lands in a check annotation (readable via the API without
+# credentials — job logs are not).
+die() { printf '\e[1;31m[build-live-iso] ERROR:\e[0m %s\n' "$*" >&2; printf '::error::build-live-iso: %s\n' "$(printf '%s' "$*" | tr '\n' ' ')" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -244,9 +247,16 @@ EOF
     listing="$(chroot "$ROOTFS_SRC" lsinitramfs "/boot/$(basename "$INITRD")" 2>/dev/null)"
     echo "$listing" | grep -qE '(^|/)scripts/live$' \
         || MISSING="$MISSING scripts/live"
-    for mod in squashfs iso9660 loop overlay; do
-        echo "$listing" | grep -qE "/${mod}\.ko(\.xz|\.zst)?$" \
-            || MISSING="$MISSING $mod.ko"
+    # A module passes if its .ko is IN the initrd OR it is BUILT INTO
+    # the kernel (=y in the shipped config — no .ko exists to find; the
+    # kernel itself carries it, which is fine for the live mount).
+    KCONFIG="$ROOTFS_SRC/boot/config-$(basename "$KERNEL" | sed 's/^vmlinuz-//')"
+    for pair in "squashfs:CONFIG_SQUASHFS" "iso9660:CONFIG_ISO9660_FS" \
+                "loop:CONFIG_BLK_DEV_LOOP" "overlay:CONFIG_OVERLAY_FS"; do
+        mod="${pair%%:*}"; sym="${pair#*:}"
+        echo "$listing" | grep -qE "/${mod}\.ko(\.xz|\.zst)?$" && continue
+        grep -qE "^${sym}=y" "$KCONFIG" 2>/dev/null && continue
+        MISSING="$MISSING $mod.ko"
     done
     if [ -n "$MISSING" ]; then
         die "initrd $(basename "$INITRD") cannot boot live — missing:$MISSING
