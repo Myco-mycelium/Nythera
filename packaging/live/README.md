@@ -89,7 +89,12 @@ The smoke boots **directly via the ISO's kernel and initrd** (extracted
 at run time with `xorriso` or `isoinfo`) with `NYRQIS_BOOT_SMOKE=1` on
 a hand-built kernel command line — the outcome never depends on
 bootloader menu selection, and the ISO's GRUB default stays the
-graphical demo for humans.
+graphical demo for humans. The smoke targets `multi-user.target` and
+budgets 780 s (a TCG-slowed runner boots full userspace 5–15× slower
+than KVM); dead boots (kernel panic, missing live medium, initramfs
+rescue shell) fail fast, and every failure emits a `::error::`
+annotation carrying markers + the serial tail — readable through the
+API without credentials — plus the uploaded serial-log artifact.
 
 Run the boot smoke yourself (needs `qemu-system-x86`):
 
