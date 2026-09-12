@@ -48,7 +48,8 @@ date: 2026-09-10
 | **Release 0.29.3** | ✅ Tagged `v0.29.3` on `39ee537`; ISO auto-attached again ([v0.29.3 release](https://github.com/Myco-mycelium/Nythera/releases/tag/v0.29.3), 241.5 MB). Boot-smoke serial log now proves the wrappers on the real image: `NYRQIS_BOOT_SMOKE_NYRQISCTL=1` alongside `PONG=1`/`READY=1` |
 | Pill-variant shell | ✅ `shell/variants/desktop-pill.nstudio` — every Button a 64-px pill, generated as a pure restyle (structure-identity pinned), gate-validated, rendered on both themes; 6 new tests (`test_shell_pill_variant`) |
 | Live-image entry points | ✅ Build now writes thin PATH wrappers (`nyrqisctl`, `nyrqis-backend`, `nyrqis-session`, `nyrqis-run`, `nyrqis-init`) — closes the probe's PATH/entry-point advisories; proven on the real image by the boot-smoke marker |
-| Next plan cycle | Design-language phase 2 closed; candidates: (a) real-hardware probe results → MISSING work items, (b) dock pill experiment as an alternate `.nstudio` theme variant, (c) Nyforge consuming `versionHistory` for its Inspector version picker |
+| Next plan cycle | Design-language phase 2 closed; candidates: (a) real-hardware probe results → MISSING work items, (b) ~~dock pill experiment~~ ✅ done (`desktop-pill.nstudio`), (c) ~~Nyforge consuming `versionHistory`~~ ✅ groundwork done: `VERSION_HISTORY` exposed + loader-validated (Nyforge wires the Inspector picker on top) |
+| NYRQIS name expansion | ✅ *Nexus for Your Resilient Quantum-ready Integrated System* — canonical in NPC-006 v1.3.0 + printed under the live-demo banner |
 
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 

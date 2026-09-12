@@ -29,6 +29,7 @@ factual; design rationale belongs in `docs/explanation/`, not here.
 | **NPC** | Nyrqis Platform Constitution document — normative governance document. |
 | **NPS** | Nyrqis Proposal for Specification — a technical specification document. |
 | **NTM** | Nyrqis Manifest — the foundational, timeless philosophy document (NTM-000). |
+| **NYRQIS** | Nexus for Your Resilient Quantum-ready Integrated System — the platform's name (backronym); see NTM-000. |
 | **NyFS** | Working name for Nyrqis's proposed copy-on-write filesystem (see ADR-0002). |
 | **.nygi** | Working extension for a Nyrqis Game Image — a compressed, mountable game/application disk image (see ADR-0003). |
 | **Overlay** | A writable copy-on-write layer paired with a read-only image, used for saves, mods, and installer writes. |
@@ -53,6 +54,7 @@ factual; design rationale belongs in `docs/explanation/`, not here.
 | 1.0.0   | 2026-07-12 | Initial glossary at bootstrap |
 | 1.1.0   | 2026-08-12 | Add terms in canonical use since bootstrap: Backend, NyCore, NyHAL, NyKernel, NyRuntime, NySDK, .nypkg, Object Registry, REQ |
 | 1.2.0   | 2026-08-13 | Add Platform Boundary and Platform-Critical Execution Path (ADR-0020 v2.0.0 terminology) |
+| 1.3.0   | 2026-09-12 | Add the NYRQIS name expansion (Nexus for Your Resilient Quantum-ready Integrated System) |
 
 ---
 **End of Document**

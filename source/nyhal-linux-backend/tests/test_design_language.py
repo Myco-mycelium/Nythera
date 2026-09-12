@@ -166,5 +166,58 @@ class TestMediaGroupContrastAssessment(unittest.TestCase):
         self.assertEqual(DESIGN_TOKENS["radius"]["control"], 4)
 
 
+class TestRegistryVersionHistory(unittest.TestCase):
+    """Registry 1.1's versionHistory — the machine-readable contract-
+    change log consumers like Nyforge's Inspector read. The loader
+    validates every entry's shape at import (fail-closed, like the
+    component tables) and exposes it as ``VERSION_HISTORY``."""
+
+    def test_history_exposed_and_well_formed(self):
+        from ui.nstudio import VERSION_HISTORY
+        self.assertTrue(VERSION_HISTORY, "registry 1.1 ships a history")
+        versions = {e["registryVersion"] for e in VERSION_HISTORY}
+        self.assertIn("1.1", versions)
+        for entry in VERSION_HISTORY:
+            self.assertIsInstance(entry["registryVersion"], str)
+            self.assertIsInstance(entry["change"], str)
+            self.assertIsInstance(entry["breaking"], bool)
+
+    def test_newest_entry_records_cornerRadius_as_additive(self):
+        from ui.nstudio import VERSION_HISTORY
+        entry = next(e for e in VERSION_HISTORY
+                     if e["registryVersion"] == "1.1")
+        self.assertFalse(entry["breaking"])
+        self.assertIn("cornerRadius", entry["change"])
+
+    def test_malformed_history_fails_registry_import(self):
+        # The validator runs inside _load_registry; feed it a broken
+        # registry through a temp file and a patched module path.
+        import json
+        import tempfile
+        from ui import nstudio
+        import importlib
+        import os
+        reg = json.load(open(os.path.join(
+            os.path.dirname(os.path.abspath(nstudio.__file__)),
+            "contracts", "nui-api-v1.json")))
+        broken = dict(reg)
+        broken["versionHistory"] = [
+            {"registryVersion": "1.1"}]  # no change/breaking
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(broken, fh)
+            old = nstudio._REGISTRY_PATH
+            nstudio._REGISTRY_PATH = path
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    nstudio._load_registry()
+                self.assertIn("versionHistory", str(ctx.exception))
+            finally:
+                nstudio._REGISTRY_PATH = old
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()

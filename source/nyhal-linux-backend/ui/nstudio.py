@@ -66,13 +66,15 @@ _REGISTRY_PATH = os.path.join(
 
 def _load_registry() -> Tuple[
         Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]],
-        Dict[str, Tuple[str, ...]]]:
+        Dict[str, Tuple[str, ...]],
+        List[Dict[str, Any]]]:
     """Load the component and system-action tables from the registry.
 
-    Returns ``(COMPONENT_CONTRACTS, SYSTEM_ACTIONS)`` with the historical
-    shapes — ``type -> (category, properties, events, instance-actions)``
-    and ``name -> argument-names`` — so the rest of this module is
-    unchanged.
+    Returns ``(COMPONENT_CONTRACTS, SYSTEM_ACTIONS, VERSION_HISTORY)`` —
+    the two historical tables (``type -> (category, properties, events,
+    instance-actions)`` and ``name -> argument-names``) plus the raw
+    ``versionHistory`` entries (possibly empty; consumers like Nyforge's
+    Inspector read them for version pickers).
     """
     try:
         with open(_REGISTRY_PATH, "r", encoding="utf-8") as handle:
@@ -111,14 +113,55 @@ def _load_registry() -> Tuple[
                 "Nyrqis API Registry: a system-action entry is missing its 'name'")
         system_actions[name] = tuple(str(a) for a in entry.get("arguments") or [])
 
-    return components, system_actions
+    # versionHistory (registry 1.1): the machine-readable contract-change
+    # log consumers like Nyforge's Inspector read for their version
+    # pickers. Present or absent, each entry MUST be well-formed — a
+    # malformed entry is a registry authoring bug and fails import, the
+    # same posture as the component tables themselves.
+    history = registry.get("versionHistory")
+    if history is not None:
+        if not isinstance(history, list) or not history:
+            raise RuntimeError(
+                "Nyrqis API Registry: 'versionHistory' must be a non-empty "
+                "list of entries")
+        seen_versions = set()
+        for entry in history:
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    "Nyrqis API Registry: versionHistory entries must be "
+                    "objects")
+            version = entry.get("registryVersion")
+            if not version or not isinstance(version, str):
+                raise RuntimeError(
+                    "Nyrqis API Registry: a versionHistory entry is missing "
+                    "its string 'registryVersion'")
+            if version in seen_versions:
+                raise RuntimeError(
+                    f"Nyrqis API Registry: duplicate versionHistory entry "
+                    f"for registryVersion '{version}'")
+            seen_versions.add(version)
+            change = entry.get("change")
+            if not change or not isinstance(change, str):
+                raise RuntimeError(
+                    f"Nyrqis API Registry: versionHistory '{version}' is "
+                    f"missing its 'change' description")
+            if "breaking" not in entry or not isinstance(
+                    entry["breaking"], bool):
+                raise RuntimeError(
+                    f"Nyrqis API Registry: versionHistory '{version}' must "
+                    f"declare boolean 'breaking'")
+
+    return components, system_actions, history
 
 
 # type -> (category, properties, events, instance-actions)
 COMPONENT_CONTRACTS: Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]]
 # System actions: name -> allowed argument names
 SYSTEM_ACTIONS: Dict[str, Tuple[str, ...]]
-COMPONENT_CONTRACTS, SYSTEM_ACTIONS = _load_registry()
+# The registry's contract-change log, newest meaning per versionHistory
+# order (validated well-formed at import; possibly empty).
+VERSION_HISTORY: List[Dict[str, Any]]
+COMPONENT_CONTRACTS, SYSTEM_ACTIONS, VERSION_HISTORY = _load_registry()
 
 
 # ---------------------------------------------------------------------------
@@ -1323,8 +1366,7 @@ def _validate_binding(binding: NstudioBinding, doc: NstudioDocument,
 
 
 __all__ = [
-    "NSTUDIO_SCHEMA_VERSION", "SUPPORTED_SCHEMA_VERSIONS",
-    "COMPONENT_CONTRACTS", "SYSTEM_ACTIONS",
+    "NSTUDIO_SCHEMA_VERSION", "SUPPORTED_SCHEMA_VERSIONS",        "COMPONENT_CONTRACTS", "SYSTEM_ACTIONS", "VERSION_HISTORY",
     "NstudioError", "NstudioVersionError", "NstudioValidationError",
     "NstudioComponent", "NstudioScreen", "NstudioBehavior", "NstudioBinding",
     "NstudioAnimation", "NstudioDocument", "loads", "load", "resolve_text",

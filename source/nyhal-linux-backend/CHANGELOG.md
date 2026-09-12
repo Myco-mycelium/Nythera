@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`versionHistory` is now a validated, consumable contract**: the
+  registry loader hard-fails on malformed entries (missing/duplicate
+  `registryVersion`, missing `change`, non-boolean `breaking` — the
+  same fail-closed posture as the component tables) and exposes the
+  validated log as ``ui.nstudio.VERSION_HISTORY`` for consumers like
+  Nyforge's Inspector version picker. Three new design-language tests
+  pin the exposure, the 1.1 cornerRadius entry, and the rejection
+  path.
+- **The NYRQIS name expansion is canonical**: *Nexus for Your
+  Resilient Quantum-ready Integrated System* — recorded in the
+  platform glossary (NPC-006 v1.3.0) and printed under the live demo's
+  ASCII banner.
+
 ## [0.29.3] - 2026-09-12
 
 ### Added
