@@ -34,7 +34,19 @@ missing() { printf '  %s✗ MISSING:%s %s\n' "$R" "$N" "$*"; }
 # a fixed sleep can guess) and never aborts early — READY must land even
 # when the daemon fails, so the driver's diagnosis is reliable.
 if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
+    # Only the SERIAL session runs the smoke handshake: the driver
+    # reads ttyS0, and tty1's VGA output is invisible to it. Both
+    # consoles autologin and would otherwise race for the daemon
+    # socket — the loser dies on EADDRINUSE and its PONG=0 is the one
+    # the driver sees (CI round 18 exactly).
+    case "$(tty 2>/dev/null)" in
+        /dev/ttyS0|/dev/console) : ;;
+        *) exec bash -l ;;
+    esac
     echo "== nyrqis boot smoke =="
+    # A previous session's crashed daemon leaves a bound-but-unlistened
+    # socket file; bind() on it fails with EADDRINUSE forever.
+    rm -f "$SOCK"
     python3 "$BACKEND" service serve --socket "$SOCK" \
         --state-file /tmp/nyrqis-daemon-state.json \
         --vault-dir /tmp/nyrqis-vault \

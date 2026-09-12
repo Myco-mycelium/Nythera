@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The live demo boots end-to-end in CI** (round 18's serial log:
+  systemd multi-user, autologin as demo, daemon handshake markers
+  printed). The residual smoke failure was a console race: BOTH
+  autologin consoles (tty1 + ttyS0) ran the smoke branch, the tty1
+  daemon won the socket, the serial session's daemon died with
+  EADDRINUSE and its PONG=0 was the one the driver saw. The smoke now
+  runs only on the serial console (tty1 gets a plain shell — its VGA
+  output is invisible to the serial driver anyway) and clears stale
+  socket files before starting the daemon.
 - **Compositor design-token layer** (phase 2.1 of the design-language
   rollout, `ui/compositor.py` + `ui/nstudio.py`): `.nstudio` documents
   can now carry a `designTokens` section (spacing/radius/surface/
