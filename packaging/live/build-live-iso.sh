@@ -378,33 +378,47 @@ log "squashfs verified: init + /etc present"
 # name matches; the target may not exist in the image). Extract the node
 # and resolve it for real: a regular file passes, a symlink passes only
 # if its target is IN the image, anything else fails the build.
-# NOTE: -f -d DIR extracts to DIR/<archive-path> (sbin/init — the
+# NOTE 1: -f -d DIR extracts to DIR/<archive-path> (sbin/init — the
 # squashfs-root/ prefix seen in -ls output is display-only), and target
 # existence is a SUFFIX match on the listing (entries print as
 # squashfs-root/usr/...; the prefix must not break the match).
+# NOTE 2: usr-merge trees keep the REAL init at usr/sbin/init with /sbin
+# a symlink to usr/sbin — there is no sbin/init archive ENTRY, and
+# unsquashfs extracts nothing for that path (a plain-disk [[ -e ]]
+# traversal is NOT what the archive contains). Probe both paths; the
+# kernel's run-init resolves through the merged /sbin the same way.
 PIVOT_PROBE="$(mktemp -d)"
-if unsquashfs -f -d "$PIVOT_PROBE" "$LIVE_DIR/filesystem.squashfs" \
-        'sbin/init' >/dev/null 2>&1; then
-    INIT_NODE="$PIVOT_PROBE/sbin/init"
-    if [[ -f "$INIT_NODE" ]]; then
-        log "squashfs pivot init resolves (regular file)"
-    elif [[ -L "$INIT_NODE" ]]; then
-        target="$(readlink "$INIT_NODE")"
-        target="${target#/}"
-        if grep -qE "${target}([[:space:]]|$)" <<<"$SQUASH_LISTING"; then
-            log "squashfs pivot init resolves (/sbin/init -> ${target})"
-        else
-            die "/sbin/init is a DANGLING symlink (target ${target} not in the
+INIT_NODE=""
+for cand in sbin/init usr/sbin/init; do
+    if unsquashfs -f -d "$PIVOT_PROBE" "$LIVE_DIR/filesystem.squashfs" \
+            "$cand" >/dev/null 2>&1 \
+        && [[ -e "$PIVOT_PROBE/$cand" || -L "$PIVOT_PROBE/$cand" ]]; then
+        INIT_NODE="$PIVOT_PROBE/$cand"
+        break
+    fi
+done
+if [[ -z "$INIT_NODE" ]]; then
+    die "cannot extract /sbin/init (nor usr/sbin/init) from
+  filesystem.squashfs — the live pivot would die with run-init.
+  usr-merge trees keep the init at usr/sbin/init; if NEITHER path
+  exists, the systemd-sysv package (which ships /sbin/init) is
+  missing from the rootfs."
+fi
+if [[ -f "$INIT_NODE" ]]; then
+    log "squashfs pivot init resolves (${INIT_NODE#$PIVOT_PROBE/})"
+elif [[ -L "$INIT_NODE" ]]; then
+    target="$(readlink "$INIT_NODE")"
+    target="${target#/}"
+    if grep -qE "${target}([[:space:]]|$)" <<<"$SQUASH_LISTING"; then
+        log "squashfs pivot init resolves (${INIT_NODE#$PIVOT_PROBE/} -> ${target})"
+    else
+        die "/sbin/init is a DANGLING symlink (target ${target} not in the
   image) — the live pivot dies with run-init. The build repairs
   \$ROOTFS_SRC/sbin/init; if this fires, the repair did not land."
-        fi
-    else
-        die "/sbin/init in the squashfs is neither a file nor a symlink —
-  the live pivot cannot exec it."
     fi
 else
-    die "cannot extract /sbin/init from filesystem.squashfs — the live
-  pivot would die with run-init."
+    die "$(basename "$INIT_NODE") in the squashfs is neither a file nor a
+  symlink — the live pivot cannot exec it."
 fi
 rm -rf "$PIVOT_PROBE"
 

@@ -149,6 +149,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     initramfs-tools redirect ALL init output into the VM's
     ``/run/initramfs/initramfs.debug`` (invisible on serial); the
     smoke now uses ``debug=y`` which traces to the console.
+  - The pivot-init probe then false-died on usr-merge trees: the
+    archive keeps the real init at ``usr/sbin/init`` (``/sbin`` is a
+    symlink, so there is no ``sbin/init`` ENTRY to extract), and the
+    probe mislabeled the empty extraction as "neither a file nor a
+    symlink". It now probes both archive paths and verifies through
+    the symlink target (validated against a reproduced usrmerge
+    image).
 
 ## [0.29.0] - 2026-09-11
 
