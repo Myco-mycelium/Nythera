@@ -153,6 +153,23 @@ install -D "$SCRIPT_DIR/overlay/usr/local/bin/nyrqis-demo" \
     "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 
+# Console entry points (pyproject [project.scripts]): thin wrappers on
+# PATH so the demo session and operators use the same commands as an
+# installed system. pip install is deliberately avoided — minbase has
+# no packaging stack and the tree is already staged at $OPT.
+log "installing console entry-point wrappers on PATH"
+for entry in \
+    nyrqisctl:nyrqisctl.py \
+    nyrqis-backend:nyrqis_backend.py \
+    nyrqis-session:nyrqis_session.py \
+    nyrqis-run:nyrqis_run.py \
+    nyrqis-init:nyrqis_init.py; do
+    name="${entry%%:*}"; script="${entry#*:}"
+    printf '#!/bin/sh\nexec python3 %s/%s "$@"\n' "$OPT" "$script" \
+        > "$ROOTFS_SRC/usr/local/bin/$name"
+    chmod 0755 "$ROOTFS_SRC/usr/local/bin/$name"
+done
+
 # Byte-compile the shipped tree with the ROOTFS's OWN interpreter —
 # the builder's python may be newer (PEP 701 allows nested same-quote
 # f-strings; bookworm's 3.11 does not), and a syntax error must cost a

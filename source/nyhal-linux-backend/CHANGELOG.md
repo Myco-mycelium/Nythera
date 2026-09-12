@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The live image installs the console entry points on PATH**
+  (`nyrqisctl`, `nyrqis-backend`, `nyrqis-session`, `nyrqis-run`,
+  `nyrqis-init` as thin wrappers over `/opt/nyrqis`): the demo session
+  and operators get the same commands as an installed system, closing
+  the probe's "nyrqisctl not on PATH / entry points not installed"
+  advisories. Deliberately no pip — minbase has no packaging stack and
+  the tree is already staged.
+
 ## [0.29.2] - 2026-09-12
 
 ### Highlights

@@ -44,6 +44,9 @@ date: 2026-09-10
 | cornerRadius visual validation | ✅ Six-variant render strip: 0 = pixel-identical to default (30/30 corner-fill px), 4 squarer (36), 16 rounder (8), 64 clamps to 20 (1), junk → default (30) — semantics confirmed visually + numerically |
 | NUI contract 1.0 → 1.1 | ✅ Phase-2 item 4 closed: `Button.cornerRadius` added registry-first (`versionHistory` + back-compat notes added to `nui-api-v1.json`); compositor honors per-instance override (0 = `radius.sm`, clamped); gate enforced per-type in Python + Rust; stale fixture registry copy re-synced with drift-guard test |
 | Next: nui contract review | (closed — future property bumps follow the same versionHistory pattern) |
+| cornerRadius real-shell experiment | ✅ Pill corners (64) injected on the desktop theme-switch buttons: gate-validated, compositor renders, 600 px delta confined exactly to btn_eclipse/btn_solar (x 16–352, y 160–200). **Recommendation: keep cornerRadius per-instance; do NOT restyle default-shell buttons** — the stock `radius.sm=8` matches the §2.2 token table and the dock/app-grid language; pills stay a designer's opt-in via Nyforge |
+| Live-image entry points | ✅ Build now writes thin PATH wrappers (`nyrqisctl`, `nyrqis-backend`, `nyrqis-session`, `nyrqis-run`, `nyrqis-init`) — closes the probe's PATH/entry-point advisories (rides the next release tag) |
+| Next plan cycle | Design-language phase 2 closed; candidates: (a) real-hardware probe results → MISSING work items, (b) dock pill experiment as an alternate `.nstudio` theme variant, (c) Nyforge consuming `versionHistory` for its Inspector version picker |
 
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 
