@@ -84,6 +84,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     decisively faster class (≥ 5x) on the deterministic corpus — plus
     the real-asset storage-class claim (≤ 1.5x, host-sampled). The
     record's flatness figure stays a record observation, not a gate.
+  - The build's initrd live-capability guard rejected **good**
+    initrds: `echo "$listing" | grep -q …` under `set -o pipefail`
+    returns 141 when grep matches late in a large listing (grep exits
+    early, the writer gets SIGPIPE), so a successful check read as a
+    miss and the build died with "missing: scripts/live …" even though
+    the hook had run (`live-boot: core filesystems …` in the log).
+    The guard now greps the captured listing via here-strings (no
+    pipe), keeps the builtin (=y) module acceptance, and its die
+    message points at the check itself when mkinitramfs ran clean.
 
 ## [0.29.0] - 2026-09-11
 

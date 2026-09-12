@@ -255,7 +255,12 @@ EOF
 
     MISSING=""
     listing="$(chroot "$ROOTFS_SRC" lsinitramfs "/boot/$(basename "$INITRD")" 2>/dev/null)"
-    echo "$listing" | grep -qE '(^|/)scripts/live$' \
+    # NOTE: grep the LISTING via here-strings, never `echo | grep -q`:
+    # under `set -o pipefail`, grep -q's early exit on a match SIGPIPEs
+    # the writer and the pipeline returns 141 — a SUCCESSFUL match would
+    # be treated as a miss and good initrds would be rejected (that is
+    # exactly what rounds 8-9 of CI did). A here-string has no pipe.
+    grep -qE '(^|/)scripts/live$' <<<"$listing" \
         || MISSING="$MISSING scripts/live"
     # A module passes if its .ko is IN the initrd OR it is BUILT INTO
     # the kernel (=y in the shipped config — no .ko exists to find; the
@@ -264,7 +269,7 @@ EOF
     for pair in "squashfs:CONFIG_SQUASHFS" "iso9660:CONFIG_ISO9660_FS" \
                 "loop:CONFIG_BLK_DEV_LOOP" "overlay:CONFIG_OVERLAY_FS"; do
         mod="${pair%%:*}"; sym="${pair#*:}"
-        echo "$listing" | grep -qE "/${mod}\.ko(\.xz|\.zst)?$" && continue
+        grep -qE "/${mod}\.ko(\.xz|\.zst)?$" <<<"$listing" && continue
         grep -qE "^${sym}=y" "$KCONFIG" 2>/dev/null && continue
         MISSING="$MISSING $mod.ko"
     done
@@ -273,7 +278,9 @@ EOF
   boot=live is a no-op without live-boot's scripts, and mountroot fails
   into the initramfs shell without squashfs/iso9660/loop/overlay.
   Fix: install live-boot + live-boot-initramfs-tools in the rootfs and
-  ensure mkinitramfs succeeds with the zz-nyrqis-live-modules hook."
+  ensure mkinitramfs succeeds with the zz-nyrqis-live-modules hook.
+  (If mkinitramfs already ran clean, suspect the check itself: run
+  lsinitramfs on the initrd and grep for scripts/live manually.)"
     fi
     log "initrd verified: live-boot scripts + squashfs/iso9660/loop/overlay present"
 fi
