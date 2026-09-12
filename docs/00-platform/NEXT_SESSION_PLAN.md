@@ -38,7 +38,9 @@ date: 2026-09-10
 | Phase 2.3b — list/table group | ✅ Compositor List + MenuItem renderers tokenized (row pitch = `space.xl`, default 24 px, pixel-identical token-less) + selection contract (`selectedIndex`/`selected` accent highlight, radius.sm, contrast text, label position fixed). Package/process/network panels inherit. 4 new compositor tests (`b01cd27`) |
 | Boot-smoke diagnostic capability | Full serial-log chunked `::error::` annotations (9×950 chars, tail-preserving) — CI failures are now self-describing via the API without auth; this is what cracked rounds 11-18 |
 | Phase 2.3c — media/creative group + §7 closure | ✅ Assessment: the group's colors are DATA (paint palette = drawing colors, album art, calendar categories rendered as text metadata) — §7 binds chrome, which is already tokenized (2.1–2.3b). Landed: `Slider` reads `radius.sm` (pixel-identical via PIL clamp), `ProgressBar` gains `radius.control` (default 4 = historical); assessment pinned as tests incl. accents-never-in-palettes |
-| Next: release 0.29.1 | Tag bundling the ISO chain (rounds 1–18 gates), 2.3b/c, f-string fix, flake fix |
+| **Release 0.29.1** | ✅ Tagged `v0.29.1` on `68ca9c4`: ci #454 ✅ + live-iso #25 ✅, ISO **published as a permanent release asset** ([nyrqis-live.iso](https://github.com/Myco-mycelium/Nythera/releases/download/v0.29.1/nyrqis-live.iso), 253,177,856 B, unauthenticated-download verified) on the [release page](https://github.com/Myco-mycelium/Nythera/releases/tag/v0.29.1) |
+| Pivot-diag false-MISSING fix | ✅ The v0.29.1 green run's serial log printed `MISSING: /root/sbin/init` on a successful boot: plain `-e` resolves usr-merge's absolute symlink against the initramfs root. Hook now resolves chains vs `rootmnt` (8-hop cap); verified vs usr-merge/dangling/loop layouts; fresh CI log shows `PRESENT` ×3 + `PONG=1`/`READY=1` (`0eedc66`, live-iso #26) |
+| Next: nui contract review | Phase-2 item 4: `cornerRadius` on Button as a deliberate `nui-api-v1.json` registry bump with back-compat notes |
 
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 
