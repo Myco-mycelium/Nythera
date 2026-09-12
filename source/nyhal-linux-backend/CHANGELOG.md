@@ -124,6 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     land in the serial log — the union-mount failure (medium found,
     squashfs loop-mounted, yet /root empty) is the next diagnosis
     target and the trace will carry the exact failing command.
+  - **The Rust compositor CI flake is fixed**: three tests seeded the
+    shared ``STATE`` with ``running: true`` via a ``fresh_running_state``
+    helper and never restored it, so ``start_stop_lifecycle`` failed
+    with "already running" whenever one of them ran first — and its
+    panic poisoned the shared ``TEST_LOCK``, cascading into four
+    unrelated tests. Start-expecting tests now reset first, and all
+    lock acquisitions go through a poison-tolerant helper (a panicking
+    test fails itself, not the suite). Verified order-independent
+    across 1/2/4/8 test threads.
   - **The empty-``/root`` mystery is closed**: the pivot diagnostic
     showed the overlay union FULLY populated (bin, etc, usr/bin/sh all
     present) with exactly one node missing — ``/sbin/init``. Debian

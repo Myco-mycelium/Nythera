@@ -803,7 +803,6 @@ pub(crate) fn reset_event_loop_state() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TEST_LOCK;
     use crate::reset_state;
 
     /// Minimal request encoder matching the wire format (and
@@ -870,7 +869,7 @@ mod tests {
 
     #[test]
     fn registry_globals_advertised() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);
@@ -898,7 +897,7 @@ mod tests {
 
     #[test]
     fn create_surface_and_commit_through_wire() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);
@@ -937,7 +936,7 @@ mod tests {
 
     #[test]
     fn frame_callback_delivered_on_commit() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);
@@ -1001,7 +1000,7 @@ mod tests {
 
     #[test]
     fn shm_pool_and_buffer_join_table() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);
         // registry=2, shm=3, pool=4, buffer=5
@@ -1052,7 +1051,7 @@ mod tests {
 
     #[test]
     fn sync_delivers_done_event() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);
@@ -1075,7 +1074,7 @@ mod tests {
 
     #[test]
     fn unknown_object_is_protocol_error() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         // Object 99 does not exist.
@@ -1095,7 +1094,7 @@ mod tests {
 
     #[test]
     fn truncated_tail_is_protocol_error() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         let full = enc_request(1, OPCODE_DISPLAY_GET_REGISTRY, &enc_u32(2));
@@ -1107,7 +1106,7 @@ mod tests {
 
     #[test]
     fn bind_unknown_interface_rejected() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         let mut buf = Vec::new();
@@ -1127,7 +1126,7 @@ mod tests {
 
     #[test]
     fn event_too_small_buffer_restores_event() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         reset_event_loop_state();
         assert_eq!(crate::nyrqis_compositor_start(), 0);

@@ -109,6 +109,16 @@ static STATE: Mutex<Option<CompositorState>> = Mutex::new(None);
 #[cfg(test)]
 pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Poison-tolerant acquisition of ``TEST_LOCK``: a panicking test must
+/// fail itself, not cascade into every later test's lock acquisition
+/// (a plain ``.unwrap()`` turns one failure into five). The CI flake
+/// (start_stop_lifecycle saw "already running" then poisoned the lock
+/// for four unrelated tests) is exactly this cascade.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn with_state<F, R>(f: F) -> R
 where
     F: FnOnce(&mut CompositorState) -> R,
@@ -616,17 +626,20 @@ mod tests {
     /// threads; without this, one test's reset/start can interleave
     /// with another's multi-step sequence and flake. Uses the shared
     /// crate-level TEST_LOCK so tests across modules serialize too.
-    use TEST_LOCK;
 
     #[test]
     fn version_returns_abi_version() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         assert_eq!(nyrqis_compositor_version(), 0x0000_0300);
     }
 
     #[test]
     fn start_stop_lifecycle() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
+        // Direct-state tests (fresh_running_state) may have left
+        // running=true behind; a start()==0 expectation needs a clean
+        // slate regardless of test execution order.
+        reset_state();
         assert_eq!(nyrqis_compositor_start(), 0);
         assert_eq!(nyrqis_compositor_is_running(), 1);
         assert_eq!(nyrqis_compositor_stop(), 0);
@@ -635,7 +648,8 @@ mod tests {
 
     #[test]
     fn start_twice_fails() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
+        reset_state();
         assert_eq!(nyrqis_compositor_start(), 0);
         assert_eq!(nyrqis_compositor_start(), -1);
         assert_eq!(nyrqis_compositor_stop(), 0);
@@ -643,7 +657,7 @@ mod tests {
 
     #[test]
     fn add_output() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         let id = nyrqis_compositor_add_output(1920, 1080, std::ptr::null(), 0);
         assert!(id >= 0);
@@ -652,7 +666,7 @@ mod tests {
 
     #[test]
     fn create_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         let id = nyrqis_compositor_create_surface(0, 800, 600);
         assert!(id >= 0);
@@ -661,7 +675,7 @@ mod tests {
 
     #[test]
     fn destroy_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         let id = nyrqis_compositor_create_surface(0, 800, 600);
         assert!(id >= 0);
@@ -671,14 +685,14 @@ mod tests {
 
     #[test]
     fn destroy_surface_invalid_id() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(nyrqis_compositor_destroy_surface(-1), -1);
     }
 
     #[test]
     fn last_error_returns_message() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         let mut buf = [0u8; 64];
         let n = nyrqis_compositor_last_error(buf.as_mut_ptr() as *mut c_char, 64);
@@ -687,7 +701,7 @@ mod tests {
 
     #[test]
     fn process_input_fails_when_not_running() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         // Compositor is not running after reset
         assert_eq!(nyrqis_compositor_is_running(), 0);
@@ -697,7 +711,7 @@ mod tests {
 
     #[test]
     fn process_input_fails_for_invalid_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(nyrqis_compositor_start(), 0);
         assert_eq!(nyrqis_compositor_process_input(
@@ -707,21 +721,21 @@ mod tests {
 
     #[test]
     fn send_frame_callback_invalid_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(nyrqis_compositor_send_frame_callback(-1, 0), -1);
     }
 
     #[test]
     fn commit_surface_invalid_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(nyrqis_compositor_commit_surface(-1), -1);
     }
 
     #[test]
     fn commit_surface_valid() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         let id = nyrqis_compositor_create_surface(0, 800, 600);
         assert!(id >= 0);
@@ -736,7 +750,7 @@ mod tests {
     // exports call, while holding the lock for the whole body.
     #[test]
     fn input_dispatch_queue_and_bounds() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let mut guard = STATE.lock().unwrap();
         let state = guard.get_or_insert_with(|| CompositorState {
             clients: (0..MAX_CLIENTS).map(|_| None).collect(),
@@ -834,7 +848,7 @@ mod tests {
 
     #[test]
     fn frame_callback_records_timestamp() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let mut guard = fresh_running_state();
         let id = make_surface(&mut guard, 100, 100);
 
@@ -853,7 +867,7 @@ mod tests {
 
     #[test]
     fn commit_increments_commit_count() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         let mut guard = fresh_running_state();
         let id = make_surface(&mut guard, 100, 100);
 
@@ -875,7 +889,7 @@ mod tests {
 
     #[test]
     fn queries_fail_for_invalid_surface() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = crate::test_lock();
         reset_state();
         assert_eq!(nyrqis_compositor_input_queue_depth(-1), -1);
         assert_eq!(nyrqis_compositor_commit_count(-1), -1);
