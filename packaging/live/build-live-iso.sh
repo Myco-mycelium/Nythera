@@ -128,7 +128,7 @@ else
     # package minbase can skip via Recommends — six CI rounds burned
     # on the resulting script-less initrd).
     debootstrap --variant=minbase \
-        --include=systemd,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools \
+        --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
 fi
 [[ -d "$ROOTFS_SRC" ]] || die "rootfs tree not found after acquisition"
@@ -322,6 +322,30 @@ EOF
     log "initrd verified: live-boot scripts + squashfs/iso9660/loop/overlay present"
 fi
 
+# ---------------------------------------------------------------- pivot init
+# The live pivot execs /sbin/init INSIDE the merged tree. Debian's
+# usr-merge means /sbin may be a symlink to /usr/sbin, and a rootfs
+# where that symlink is absent/dangling leaves /sbin/init unresolvable
+# — the pivot dies with "can't execute '/sbin/init'" even though the
+# tree LOOKS complete (bin/, etc/, usr/bin/sh all present; diagnosed
+# via the init-bottom pivot probe). Guarantee the path, verified.
+if [[ -e "$ROOTFS_SRC/sbin/init" ]]; then
+    log "rootfs /sbin/init present"
+else
+    log "rootfs /sbin/init missing — repairing to the real systemd binary"
+    SYSTEMD_BIN="$(ls "$ROOTFS_SRC"/usr/lib/systemd/systemd \
+                      "$ROOTFS_SRC"/lib/systemd/systemd 2>/dev/null | head -1 || true)"
+    [[ -n "$SYSTEMD_BIN" ]] || \
+        die "no systemd binary in the rootfs — install systemd (debootstrap --include)"
+    if [[ ! -d "$ROOTFS_SRC/sbin" && ! -L "$ROOTFS_SRC/sbin" ]]; then
+        mkdir -p "$ROOTFS_SRC/sbin"
+    fi
+    ln -sf /usr/lib/systemd/systemd "$ROOTFS_SRC/sbin/init"
+    log "created /sbin/init -> /usr/lib/systemd/systemd"
+fi
+[[ -e "$ROOTFS_SRC/sbin/init" ]] || \
+    die "/sbin/init repair failed — the live pivot cannot exec an init"
+
 # ---------------------------------------------------------------- squashfs + ISO
 log "building the squashfs rootfs image"
 mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
@@ -349,6 +373,40 @@ if ! grep -qE 'etc([[:space:]]|$)' <<<"$SQUASH_LISTING"; then
   Listing head: $(echo "$SQUASH_LISTING" | head -3 | tr '\n' ' ')"
 fi
 log "squashfs verified: init + /etc present"
+
+# The listing above cannot see a DANGLING /sbin/init symlink (the entry
+# name matches; the target may not exist in the image). Extract the node
+# and resolve it for real: a regular file passes, a symlink passes only
+# if its target is IN the image, anything else fails the build.
+# NOTE: -f -d DIR extracts to DIR/<archive-path> (sbin/init — the
+# squashfs-root/ prefix seen in -ls output is display-only), and target
+# existence is a SUFFIX match on the listing (entries print as
+# squashfs-root/usr/...; the prefix must not break the match).
+PIVOT_PROBE="$(mktemp -d)"
+if unsquashfs -f -d "$PIVOT_PROBE" "$LIVE_DIR/filesystem.squashfs" \
+        'sbin/init' >/dev/null 2>&1; then
+    INIT_NODE="$PIVOT_PROBE/sbin/init"
+    if [[ -f "$INIT_NODE" ]]; then
+        log "squashfs pivot init resolves (regular file)"
+    elif [[ -L "$INIT_NODE" ]]; then
+        target="$(readlink "$INIT_NODE")"
+        target="${target#/}"
+        if grep -qE "${target}([[:space:]]|$)" <<<"$SQUASH_LISTING"; then
+            log "squashfs pivot init resolves (/sbin/init -> ${target})"
+        else
+            die "/sbin/init is a DANGLING symlink (target ${target} not in the
+  image) — the live pivot dies with run-init. The build repairs
+  \$ROOTFS_SRC/sbin/init; if this fires, the repair did not land."
+        fi
+    else
+        die "/sbin/init in the squashfs is neither a file nor a symlink —
+  the live pivot cannot exec it."
+    fi
+else
+    die "cannot extract /sbin/init from filesystem.squashfs — the live
+  pivot would die with run-init."
+fi
+rm -rf "$PIVOT_PROBE"
 
 # Same contract for the initramfs: it must at minimum unpack to a
 # tree with an /init (a truncated/corrupt initrd otherwise costs a

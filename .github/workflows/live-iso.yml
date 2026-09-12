@@ -39,7 +39,7 @@ jobs:
       - name: Assemble the rootfs (debootstrap)
         run: |
           sudo debootstrap --variant=minbase \
-            --include=systemd,sudo,linux-image-amd64,live-boot \
+            --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot \
             bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
           # Python + the demo probe's module checks live in the rootfs.
           sudo chroot /srv/nyrqis-rootfs apt-get update

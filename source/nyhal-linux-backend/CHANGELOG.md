@@ -124,6 +124,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     land in the serial log — the union-mount failure (medium found,
     squashfs loop-mounted, yet /root empty) is the next diagnosis
     target and the trace will carry the exact failing command.
+  - **The empty-``/root`` mystery is closed**: the pivot diagnostic
+    showed the overlay union FULLY populated (bin, etc, usr/bin/sh all
+    present) with exactly one node missing — ``/sbin/init``. Debian
+    ships that path via ``systemd-sysv`` (not ``systemd``), which
+    ``--variant=minbase --include=systemd`` can legitimately skip;
+    usr-merge then leaves ``/sbin`` absent, so the pivot dies with
+    "run-init: can't execute '/sbin/init'" while the tree looks
+    complete. Both debootstrap invocations now include
+    ``systemd-sysv``, the build repairs a missing ``/sbin/init`` to
+    the real systemd binary, and the finished squashfs is probed for
+    the node: regular file passes, symlink passes only if its target
+    resolves inside the image (dangling = build death, not a boot
+    round burned). Also: plain ``debug`` on the kernel cmdline makes
+    initramfs-tools redirect ALL init output into the VM's
+    ``/run/initramfs/initramfs.debug`` (invisible on serial); the
+    smoke now uses ``debug=y`` which traces to the console.
 
 ## [0.29.0] - 2026-09-11
 
