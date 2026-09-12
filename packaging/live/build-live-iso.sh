@@ -272,11 +272,28 @@ case "$1" in
     prereqs) prereqs; exit 0 ;;
 esac
 # Best-effort only: this must never break the boot.
+# exists_in_root PATH-under-rootmnt — symlink-aware existence check
+# relative to the NEW root: plain -e resolves absolute symlink targets
+# against the initramfs root, false-MISSING usr-merge /sbin/init.
+exists_in_root() {
+    p="$1"
+    [ -e "$p" ] || [ -L "$p" ] || return 1
+    n=0
+    while [ -L "$p" ]; do
+        n=$((n + 1)); [ "$n" -gt 8 ] && return 1   # symlink loop = absent
+        link=$(readlink "$p")
+        case "$link" in
+            /*) p="${rootmnt:-/root}${link}" ;;
+            *)  p="${p%/*}/${link}" ;;
+        esac
+    done
+    [ -e "$p" ]
+}
 echo "[nyrqis-diag] pivot target state (rootmnt=$rootmnt):"
 ls "${rootmnt:-/root}" 2>&1 | head -20 | sed 's/^/[nyrqis-diag]   /'
 for d in "${rootmnt:-/root}/sbin/init" "${rootmnt:-/root}/etc" \
          "${rootmnt:-/root}/usr/bin/sh"; do
-    if [ -e "$d" ]; then
+    if exists_in_root "$d"; then
         echo "[nyrqis-diag] PRESENT: $d"
     else
         echo "[nyrqis-diag] MISSING: $d"

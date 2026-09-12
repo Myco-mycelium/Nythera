@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pivot diagnostic false-MISSINGed healthy usr-merge trees**
+  (caught in the v0.29.1 green run's serial log):
+  `init-bottom/zz-nyrqis-pivot-diag` tested `/root/usr/sbin/init` with
+  plain `-e`, whose absolute symlink target (`/lib/systemd/systemd`)
+  resolves against the initramfs root — not the new root — so a boot
+  that succeeded read as "MISSING /root/sbin/init". The check now
+  resolves symlink chains relative to `rootmnt` (the view `run-init`
+  pivots into), with a depth cap so a broken image reports MISSING
+  instead of hanging the boot.
+
 ## [0.29.1] - 2026-09-12
 
 ### Highlights
