@@ -19431,7 +19431,7 @@ class ContainerManager:
                     # For containers, check port on localhost
                     result = sock.connect_ex(("127.0.0.1", hc["port"]))
                     healthy = (result == 0)
-                    detail = f"Port {hc["port"]}: {'open' if healthy else 'closed'}"
+                    detail = f"Port {hc['port']}: {'open' if healthy else 'closed'}"
                 except Exception as e:
                     detail = f"TCP error: {e}"
                 finally:

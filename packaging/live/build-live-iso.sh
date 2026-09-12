@@ -153,6 +153,29 @@ install -D "$SCRIPT_DIR/overlay/usr/local/bin/nyrqis-demo" \
     "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 
+# Byte-compile the shipped tree with the ROOTFS's OWN interpreter —
+# the builder's python may be newer (PEP 701 allows nested same-quote
+# f-strings; bookworm's 3.11 does not), and a syntax error must cost a
+# build failure here, not a dead demo session after a full CI boot
+# round (backend/container.py had exactly such a line).
+if [[ -x "$ROOTFS_SRC/usr/bin/python3" ]]; then
+    log "byte-compiling /opt/nyrqis with the image's python3 (3.11 syntax contract)"
+    if ! chroot "$ROOTFS_SRC" /usr/bin/python3 - \
+            <<'PYEOF' >&2
+import compileall, sys
+ok = compileall.compile_dir('/opt/nyrqis', quiet=2, force=True)
+sys.exit(0 if ok else 1)
+PYEOF
+    then
+        die "the shipped tree does not compile under the image's python3
+  (bookworm = 3.11; the build host may be 3.12+, which accepts syntax
+  the image rejects — e.g. f-string nested same quotes). Fix the
+  syntax error printed above."
+    fi
+else
+    log "WARNING: rootfs has no /usr/bin/python3 — cannot pre-compile; demo modules will compile at first import"
+fi
+
 write_demo_user_records() {
     # The live image needs the account, not shadow-utils: write the
     # records directly (used when useradd is unavailable in the rootfs,

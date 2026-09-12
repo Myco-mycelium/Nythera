@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`backend/container.py` f-string syntax error** (found by the
+  live-ISO boot smoke, not a test): one health-check detail line used
+  nested double quotes inside an f-string — legal on the build host's
+  Python 3.12 (PEP 701) but a SyntaxError on the live image's 3.11,
+  killing the demo session at import. The build now byte-compiles
+  ``/opt/nyrqis`` with the image's own interpreter so a syntax version
+  mismatch fails the build with the offending line, not the boot.
+
 ### Added
 
 - **Compositor design-token layer** (phase 2.1 of the design-language
