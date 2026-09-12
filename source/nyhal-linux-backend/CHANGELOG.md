@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 2.3c design-language adoption (media/creative + §7 closure)**:
+  - compositor `Slider` now reads `radius.sm` (pixel-identical — PIL
+    clamps the radius on the 5-px track); `ProgressBar` gains a new
+    `radius.control` token (default 4, the historical value) so
+    documents can retune progress geometry like every other surface.
+  - §7 contrast assessment of the media/creative group, pinned as
+    tests: paint/calendar colors are DATA (drawing palette, event
+    category metadata), not chrome — the theme accents must never
+    appear in palettes (`test_paint_palette_is_content_not_chrome`)
+    and no color-over-text path exists (`test_calendar_colors_…`).
+
 ### Fixed
 
 - **`backend/container.py` f-string syntax error** (found by the

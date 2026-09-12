@@ -37,7 +37,8 @@ date: 2026-09-10
 | Rust compositor flake | ✅ `fresh_running_state()` left `running=true` in shared STATE → order-dependent `start()==-1`, and the panic poisoned TEST_LOCK (cascade of 4). Fixed: reset before start-expectations + poison-tolerant `crate::test_lock()`. Green across 1/2/4/8 threads (`af5a45b`) |
 | Phase 2.3b — list/table group | ✅ Compositor List + MenuItem renderers tokenized (row pitch = `space.xl`, default 24 px, pixel-identical token-less) + selection contract (`selectedIndex`/`selected` accent highlight, radius.sm, contrast text, label position fixed). Package/process/network panels inherit. 4 new compositor tests (`b01cd27`) |
 | Boot-smoke diagnostic capability | Full serial-log chunked `::error::` annotations (9×950 chars, tail-preserving) — CI failures are now self-describing via the API without auth; this is what cracked rounds 11-18 |
-| Next: phase 2.3c | media/creative group (paint, image editor, music player, recorder) + §7 contrast assessment of calendar/password category colors |
+| Phase 2.3c — media/creative group + §7 closure | ✅ Assessment: the group's colors are DATA (paint palette = drawing colors, album art, calendar categories rendered as text metadata) — §7 binds chrome, which is already tokenized (2.1–2.3b). Landed: `Slider` reads `radius.sm` (pixel-identical via PIL clamp), `ProgressBar` gains `radius.control` (default 4 = historical); assessment pinned as tests incl. accents-never-in-palettes |
+| Next: release 0.29.1 | Tag bundling the ISO chain (rounds 1–18 gates), 2.3b/c, f-string fix, flake fix |
 
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 

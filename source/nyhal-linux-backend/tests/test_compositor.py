@@ -438,6 +438,43 @@ class TestCompositorDesignTokens(unittest.TestCase):
         self.assertFalse(self._region_has(
             img2, (11, 11, 205, 80), THEMES["Eclipse"]["accent"]))
 
+    def _bar_doc(self, comp_type, tokens=None, props=None, h=16):
+        comp = NstudioComponent(
+            id="bar", type=comp_type,
+            layout={"x": 10, "y": 10, "width": 200, "height": h},
+            properties=props if props is not None else {"value": 75},
+        )
+        screen = _make_screen("s", 400, 300, root_children=[comp])
+        doc = _make_doc(screens=[screen])
+        doc.design_tokens = tokens or {}
+        return doc
+
+    def test_slider_radius_pixel_compatible(self):
+        # Any radius >= half the 5 px track height clamps to the same
+        # pill: token-less (r=8 from radius.sm) must equal the
+        # historical r=2 render.
+        from PIL import ImageChops
+        base = Compositor().render_screen(self._bar_doc("Slider", h=20))
+        r8 = Compositor().render_screen(
+            self._bar_doc("Slider", tokens={"radius": {"sm": 8}}, h=20))
+        self.assertIsNone(ImageChops.difference(base, r8).getbbox())
+        # A sub-clamp radius IS a real change (squared track ends).
+        r0 = Compositor().render_screen(
+            self._bar_doc("Slider", tokens={"radius": {"sm": 0}}, h=20))
+        self.assertIsNotNone(ImageChops.difference(base, r0).getbbox())
+
+    def test_progress_radius_control_token(self):
+        # Default = the historical r=4 corner; radius.control retunes it.
+        acc = THEMES["Eclipse"]["progress_fill"]
+        base = Compositor().render_screen(self._bar_doc("ProgressBar"))
+        # r=4 on a 16 px bar: at y=10 (top row) the fill's left corner
+        # leaves x=10..12 empty (corner probe: x=13 first filled).
+        self.assertFalse(self._region_has(base, (10, 10, 13, 11), acc))
+        # radius.control=0 → square corners: x=10 IS filled at y=10.
+        sharp = Compositor().render_screen(
+            self._bar_doc("ProgressBar", tokens={"radius": {"control": 0}}))
+        self.assertTrue(self._region_has(sharp, (10, 10, 12, 11), acc))
+
 
 def _expected_blend(base, top, alpha):
     """Mirror of the renderer's alpha-over, for test expectations."""

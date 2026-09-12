@@ -101,7 +101,11 @@ THEMES = {
 # supported effect — tokens record intent, renderers stay honest.
 DESIGN_TOKENS = {
     "space": {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24},
-    "radius": {"sm": 8, "md": 12, "lg": 16, "full": 999},
+    "radius": {"sm": 8, "md": 12, "lg": 16, "full": 999,
+                # Controls with built-in chrome (progress fills): the
+                # historical hard-coded 4 px. Not in the §3 vocabulary
+                # list, but documents may retune it like any radius key.
+                "control": 4},
     "motion": {},          # timing — the PIL renderer is static
     "surface": {
         # "bar"/"raised" opacity 0–1: the PIL renderer alpha-blends the
@@ -504,27 +508,31 @@ class Compositor:
             draw.text((x+48, y+2), label, fill=self.theme["text_primary"], font=fs)
 
     def _render_slider(self, img, draw, x, y, w, h, props, font, fs):
-        """Render a Slider."""
+        """Render a Slider (``radius.sm`` track — clamped to the 5 px
+        track height it renders identically to the historical r=2)."""
         value = props.get("value", 50)
         min_val = props.get("min", 0)
         max_val = props.get("max", 100)
         track_y = y + h // 2
-        draw.rounded_rectangle([x, track_y-2, x+w, track_y+2], radius=2,
+        radius = int(self.tokens.get("radius", {}).get("sm", 8))
+        draw.rounded_rectangle([x, track_y-2, x+w, track_y+2], radius=radius,
                                fill=self.theme["slider_track"])
         fill_w = int(w * (value - min_val) / (max_val - min_val)) if max_val > min_val else 0
-        draw.rounded_rectangle([x, track_y-2, x+fill_w, track_y+2], radius=2,
+        draw.rounded_rectangle([x, track_y-2, x+fill_w, track_y+2], radius=radius,
                                fill=self.theme["slider_fill"])
 
     def _render_progress(self, img, draw, x, y, w, h, props, font, fs):
-        """Render a ProgressBar."""
+        """Render a ProgressBar (``radius.control``, default 4 px = the
+        historical hard-coded value)."""
         value = props.get("value", 60)
         min_val = props.get("min", 0)
         max_val = props.get("max", 100)
-        draw.rounded_rectangle([x, y, x+w, y+h], radius=4,
+        radius = int(self.tokens.get("radius", {}).get("control", 4))
+        draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
                                fill=self.theme["progress_bg"])
         fill_w = int(w * (value - min_val) / (max_val - min_val)) if max_val > min_val else 0
         if fill_w > 0:
-            draw.rounded_rectangle([x, y, x+fill_w, y+h], radius=4,
+            draw.rounded_rectangle([x, y, x+fill_w, y+h], radius=radius,
                                    fill=self.theme["progress_fill"])
 
     def _render_image_placeholder(self, img, draw, x, y, w, h, fs):

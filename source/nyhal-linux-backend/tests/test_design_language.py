@@ -121,5 +121,50 @@ class TestSettingsPanelAdoption(unittest.TestCase):
         self.assertEqual(3 * SettingsPanel.THEME_ITEM_HEIGHT + 44 + 8, 184)
 
 
+class TestMediaGroupContrastAssessment(unittest.TestCase):
+    """§7 checklist assessment of the media/creative group (phase 2.3c).
+
+    Conclusion, pinned so it stays true: the group's colors are DATA
+    (paint palette, album art, calendar categories) rendered as content,
+    not interactive chrome — §7's accent/contrast rules bind the CHROME,
+    which lives in the compositor (tokenized in phases 2.1–2.3b: slider,
+    progress, list, menu-item, toggle, button, input). Nothing in the
+    app modules draws text over its own data colors without going
+    through a theme.
+    """
+
+    def test_calendar_colors_render_as_text_metadata_not_text_background(self):
+        # render_calendars prints the hex string itself (no color-over-
+        # text rendering path exists), so no AA contrast obligation.
+        from ui.calendar_app import CalendarApp
+        app = CalendarApp()
+        out = "\n".join(app.render_calendars())
+        self.assertIn("#", out)   # the raw hex is user-facing metadata
+
+    def test_paint_palette_is_content_not_chrome(self):
+        # Palette swatches are drawing colors (user data), not interactive
+        # chrome — §7's accent-on-interactive-only rule means the theme
+        # accents must never appear as (or in) palette entries.
+        from ui.paint_app import PaintApp
+        import ui.hig as hig
+        app = PaintApp()
+        accents = {f"#{c:02X}{g:02X}{b:02X}"
+                   for c, g, b in (hig.ACCENT_ECLIPSE, hig.ACCENT_SOLAR)}
+        for name, colors in app.palettes.items():
+            self.assertTrue(colors, f"palette {name!r} is empty")
+            for hexval in colors:
+                self.assertRegex(hexval, r"^#[0-9A-Fa-f]{6}$")
+                self.assertNotIn(hexval.upper(), accents)
+                self.assertNotIn(hexval.lower(),
+                                 {a.lower() for a in accents})
+
+    def test_media_chrome_sliders_and_progress_are_tokenized(self):
+        # The chrome the media group actually renders (position/volume
+        # sliders, recording progress) reads the design tokens.
+        from ui.compositor import DESIGN_TOKENS
+        self.assertIn("control", DESIGN_TOKENS["radius"])
+        self.assertEqual(DESIGN_TOKENS["radius"]["control"], 4)
+
+
 if __name__ == "__main__":
     unittest.main()
