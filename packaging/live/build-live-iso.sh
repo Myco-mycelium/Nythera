@@ -302,16 +302,20 @@ mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
 # the image must carry an init and /etc, or the live pivot fails with
 # "run-init: can't execute '/sbin/init'" and an empty /root.
 SQUASH_LISTING="$(unsquashfs -ls "$LIVE_DIR/filesystem.squashfs" 2>/dev/null || true)"
-if ! grep -qE 'sbin/init|lib/systemd/systemd' <<<"$SQUASH_LISTING"; then
+# Listing lines look like "drwxr-xr-x root/root 62 2025-01-01 squashfs-root/etc"
+# (mode size date <name with the destination prefix, NO leading slash) on
+# squashfs-tools 4.x — match on name ENDINGS, not anchored starts.
+if ! grep -qE '(sbin/init|systemd/systemd)([[:space:]]|$)' <<<"$SQUASH_LISTING"; then
     die "filesystem.squashfs has no /sbin/init (nor systemd) — the live
   pivot will die with 'run-init: can't execute /sbin/init'. Check the
   debootstrap --include list (systemd) and what mksquashfs snapshotted
-  (\$ROOTFS_SRC)."
+  (\$ROOTFS_SRC). Listing head: $(echo "$SQUASH_LISTING" | head -3 | tr '\n' ' ')"
 fi
-if ! grep -qE '(^|[[:space:]])/?etc([[:space:]]|$)' <<<"$SQUASH_LISTING"; then
+if ! grep -qE 'etc([[:space:]]|$)' <<<"$SQUASH_LISTING"; then
     die "filesystem.squashfs has no /etc — the live pivot will fail
   writing network config into /root/etc. Check what mksquashfs
-  snapshotted (\$ROOTFS_SRC must be the debootstrap tree root)."
+  snapshotted (\$ROOTFS_SRC must be the debootstrap tree root).
+  Listing head: $(echo "$SQUASH_LISTING" | head -3 | tr '\n' ' ')"
 fi
 log "squashfs verified: init + /etc present"
 

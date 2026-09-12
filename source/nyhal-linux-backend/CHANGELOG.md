@@ -113,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (``force_load iso9660`` → ``isofs.ko``) were rejected with
     "missing: iso9660.ko". Both spellings are accepted now, paired
     with their CONFIG symbols.
+  - The new squashfs content gate matched the WRONG listing format:
+    ``unsquashfs -ls`` prints paths with the destination prefix and
+    no leading slash (``squashfs-root/etc``), so an anchored ``/etc``
+    pattern false-negatived and killed a good build with "no /etc".
+    The gate now matches name endings (validated positive + negative
+    against locally built images), and its die message carries the
+    listing head for self-diagnosis. The boot smoke adds ``debug``
+    to the kernel cmdline so live-boot's mountroot set -x traces
+    land in the serial log — the union-mount failure (medium found,
+    squashfs loop-mounted, yet /root empty) is the next diagnosis
+    target and the trace will carry the exact failing command.
 
 ## [0.29.0] - 2026-09-11
 
