@@ -7,30 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.29.1] - 2026-09-12
 
-- **Phase 2.3c design-language adoption (media/creative + §7 closure)**:
-  - compositor `Slider` now reads `radius.sm` (pixel-identical — PIL
-    clamps the radius on the 5-px track); `ProgressBar` gains a new
-    `radius.control` token (default 4, the historical value) so
-    documents can retune progress geometry like every other surface.
-  - §7 contrast assessment of the media/creative group, pinned as
-    tests: paint/calendar colors are DATA (drawing palette, event
-    category metadata), not chrome — the theme accents must never
-    appear in palettes (`test_paint_palette_is_content_not_chrome`)
-    and no color-over-text path exists (`test_calendar_colors_…`).
+### Highlights
 
-### Fixed
-
-- **`backend/container.py` f-string syntax error** (found by the
-  live-ISO boot smoke, not a test): one health-check detail line used
-  nested double quotes inside an f-string — legal on the build host's
-  Python 3.12 (PEP 701) but a SyntaxError on the live image's 3.11,
-  killing the demo session at import. The build now byte-compiles
-  ``/opt/nyrqis`` with the image's own interpreter so a syntax version
-  mismatch fails the build with the offending line, not the boot.
+- **The live demo ISO is real and CI-built**: every `live-iso` run now
+  produces a boot-smoked, artifact-attached ISO (UEFI + BIOS) that
+  boots to an autologged demo session with a guided banner and a live
+  capability probe. Built through an eighteen-round failure chain that
+  left permanent gates in the build (see Fixed).
+- **Design-language phase 2.3 complete** (b: list/table; c:
+  media/creative + §7 assessment) — the compositor's interactive
+  chrome is token-driven end to end.
 
 ### Added
+
+- **Phase 2.3c — media/creative + §7 closure**: compositor `Slider`
+  reads `radius.sm` (pixel-identical — PIL clamps the radius on the
+  5-px track); `ProgressBar` gains the `radius.control` token
+  (default 4, the historical value). §7 contrast assessment of the
+  media/creative group pinned as tests: palette/calendar colors are
+  DATA (never the theme accents); no color-over-text path exists.
 
 - **The live demo boots end-to-end in CI** (round 18's serial log:
   systemd multi-user, autologin as demo, daemon handshake markers
@@ -188,6 +185,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     symlink". It now probes both archive paths and verifies through
     the symlink target (validated against a reproduced usrmerge
     image).
+
+### Fixed
+
+- **`backend/container.py` f-string syntax error** (found by the
+  live-ISO boot smoke, not a test): one health-check detail line used
+  nested double quotes inside an f-string — legal on the build host's
+  Python 3.12 (PEP 701) but a SyntaxError on the live image's 3.11,
+  killing the demo session at import. The build now byte-compiles
+  ``/opt/nyrqis`` with the image's own interpreter so a syntax version
+  mismatch fails the build with the offending line, not the boot.
 
 ## [0.29.0] - 2026-09-11
 
