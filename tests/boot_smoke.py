@@ -40,10 +40,12 @@ MARKER_READY = "NYRQIS_BOOT_SMOKE_READY=1"
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
 
-# `debug` makes live-boot's mountroot trace every command (set -x) to
-# the console — when the union/pivot fails, the serial log carries the
-# exact command and error instead of a bare "can't execute /sbin/init".
-KERNEL_CMDLINE = ("boot=live debug console=ttyS0,115200 "
+# `debug=y` (the debug=* form) makes initramfs-tools AND live-boot
+# trace every command to the CONSOLE — the plain `debug` token would
+# redirect all init output to /run/initramfs/initramfs.debug inside
+# the VM (invisible on serial). See initramfs-tools /init case arms:
+# "debug) log_output=/run/..." vs "debug=*) set -x" (no redirect).
+KERNEL_CMDLINE = ("boot=live debug=y console=ttyS0,115200 "
                   "systemd.unit=multi-user.target "
                   "NYRQIS_BOOT_SMOKE=1")
 

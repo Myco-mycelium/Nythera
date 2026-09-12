@@ -235,6 +235,37 @@ force_load overlay
 EOF
     chmod 0755 "$ROOTFS_SRC/etc/initramfs-tools/hooks/zz-nyrqis-live-modules"
 
+    # init-bottom diagnostic: BEFORE the pivot, print the union state
+    # to the console — /root contents, the live mounts, and whether an
+    # init exists in the tree we are about to pivot into. Serial-visible
+    # on both success (harmless banner) and failure (the evidence).
+    mkdir -p "$ROOTFS_SRC/etc/initramfs-tools/scripts/init-bottom"
+    cat > "$ROOTFS_SRC/etc/initramfs-tools/scripts/init-bottom/zz-nyrqis-pivot-diag" <<'EOF'
+#!/bin/sh
+# Nyrqis live-build diagnostic: show the pivot state before run-init.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+# Best-effort only: this must never break the boot.
+echo "[nyrqis-diag] pivot target state (rootmnt=$rootmnt):"
+ls "${rootmnt:-/root}" 2>&1 | head -20 | sed 's/^/[nyrqis-diag]   /'
+for d in "${rootmnt:-/root}/sbin/init" "${rootmnt:-/root}/etc" \
+         "${rootmnt:-/root}/usr/bin/sh"; do
+    if [ -e "$d" ]; then
+        echo "[nyrqis-diag] PRESENT: $d"
+    else
+        echo "[nyrqis-diag] MISSING: $d"
+    fi
+done
+echo "[nyrqis-diag] live mounts:"
+grep -E 'overlay|live|squashfs|iso9660' /proc/mounts 2>/dev/null \
+    | head -10 | sed 's/^/[nyrqis-diag]   /'
+echo "[nyrqis-diag] end pivot diagnostics"
+EOF
+    chmod 0755 "$ROOTFS_SRC/etc/initramfs-tools/scripts/init-bottom/zz-nyrqis-pivot-diag"
+
     if chroot "$ROOTFS_SRC" sh -c 'command -v mkinitramfs' >/dev/null 2>&1; then
         # Self-heal the scripts package first: without it mkinitramfs
         # "succeeds" and produces a script-less initrd that cannot boot.
