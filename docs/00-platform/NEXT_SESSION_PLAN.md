@@ -28,6 +28,17 @@ date: 2026-09-10
 | Compositor presentation | **compositor_presentation.py** (DRM-detect → DRMBackend attach → software fallback; frame lifecycle stats) |
 | Package repository | **package_repo.py** (signed index, publish/verify/download) + **nyrqisctl_repo.py** CLI |
 
+## Session 8 (2026-09-12) — LIVE ISO GREEN: the click-and-open demo ships; design-language phase 2.3b
+
+| Item | Status |
+|------|--------|
+| **live-iso CI green** | ✅ Run 34691487383 on `97d0366`: build ✅, structure ✅, **boot smoke PASS** (`ready=True pong_ok=True pong_fail=False`), ISO artifact **241 MB** attached (expires 2026-10-12). The demo boots to systemd multi-user, autologs in as demo, the daemon answers ping on the serial console |
+| The ten-round debugging chain | Each failure taught the diagnostic layer something: (1) guard `echo|grep -q` SIGPIPEd under pipefail → killed good initrds; (2) modprobe name `iso9660` ships as `isofs.ko` → guard accepted both spellings; (3) `unsquashfs -ls` prints `squashfs-root/` prefixes → content gate matched endings; (4) plain `debug` redirects init output into the VM → `debug=y` traces to console; (5) init-bottom pivot diagnostic proved the union populated except **`/sbin/init`** → root cause: `systemd-sysv` skipped by minbase (debootstrap includes fixed + build-time repair); (6) usr-merge keeps init at `usr/sbin/init` (no sbin/init ENTRY) → probe tries both; (7) PEP 701 f-string (3.12 host legal, 3.11 image SyntaxError) → build byte-compiles the tree with the image's own python; (8) tty1/serial console race for the daemon socket → smoke gates on the console. All gates stay in the build: they now prevent regressions |
+| Rust compositor flake | ✅ `fresh_running_state()` left `running=true` in shared STATE → order-dependent `start()==-1`, and the panic poisoned TEST_LOCK (cascade of 4). Fixed: reset before start-expectations + poison-tolerant `crate::test_lock()`. Green across 1/2/4/8 threads (`af5a45b`) |
+| Phase 2.3b — list/table group | ✅ Compositor List + MenuItem renderers tokenized (row pitch = `space.xl`, default 24 px, pixel-identical token-less) + selection contract (`selectedIndex`/`selected` accent highlight, radius.sm, contrast text, label position fixed). Package/process/network panels inherit. 4 new compositor tests (`b01cd27`) |
+| Boot-smoke diagnostic capability | Full serial-log chunked `::error::` annotations (9×950 chars, tail-preserving) — CI failures are now self-describing via the API without auth; this is what cracked rounds 11-18 |
+| Next: phase 2.3c | media/creative group (paint, image editor, music player, recorder) + §7 contrast assessment of calendar/password category colors |
+
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 
 | Item | Status |
