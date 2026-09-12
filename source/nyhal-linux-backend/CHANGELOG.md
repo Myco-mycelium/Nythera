@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-09-12
+
+### Highlights
+
+- **`nyrqis-demo --probe-only`** — the live demo's capability probe
+  ("what this machine is missing") runs on any machine, no boot
+  required; exits 1 when anything reads MISSING so scripts can gate
+  on it.
+- **Every release now ships its own ISO**: the `live-iso` workflow
+  triggers on `v*` tags, creates the release page if needed, and
+  attaches the boot-smoked image as a permanent asset.
+
 ### Added
 
 - **NUI contract bump 1.0 → 1.1: `Button.cornerRadius`** — a

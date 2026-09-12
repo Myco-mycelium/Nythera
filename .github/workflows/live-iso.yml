@@ -107,6 +107,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The release page may not exist yet for a fresh tag — create
+          # it (from the tag, with generated notes) before uploading.
+          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --title "Nyrqis ${GITHUB_REF_NAME}" \
+                 --generate-notes
           gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live.iso \
             --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
