@@ -12,13 +12,15 @@ on:
       - "source/nyhal-linux-backend/**"
       - ".github/workflows/live-iso.yml"
       - "tests/boot_smoke.py"   # the smoke's driver: its changes re-exercise the boot
+    tags:
+      - "v*"                    # release tags: the ISO ships WITH the release
   workflow_dispatch:
   schedule:
     # Weekly refresh so the shipped image tracks main.
     - cron: "0 3 * * 1"
 
 permissions:
-  contents: read
+  contents: write   # release upload needs contents:write on tag builds
 
 jobs:
   build:
@@ -97,6 +99,18 @@ jobs:
           compression-level: 0
           retention-days: 30
           if-no-files-found: error
+
+      - name: Attach the ISO to the release (tag builds only)
+        # Every v* tag ships its own boot-smoked image as a permanent
+        # release asset — no manual artifact download/re-upload step.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live.iso \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name'
 
       - name: Upload rootfs cache artifact
         uses: actions/upload-artifact@v4

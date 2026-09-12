@@ -1,7 +1,15 @@
 {
-  "registryVersion": "1.0",
-  "nuiSchemaVersion": "0.4.0",
+  "registryVersion": "1.1",
+  "nuiSchemaVersion": "1.0.0",
   "purpose": "The Nyrqis API Registry — the single machine-readable source of truth for the NUI component vocabulary, per NFS-006 (Nyforge) / the platform ADR-0025 pipeline. The Nyrqis NUI import gate (ui/nstudio.py, rust/nyui) and Nyforge's palette/Inspector/Behaviors contract tables all derive from this file. Add a component or action HERE first; never edit a consumer's tables by hand. registryVersion majors on breaking contract changes, alongside the NUI schema version.",
+  "versionHistory": [
+    {
+      "registryVersion": "1.1",
+      "date": "2026-09-12",
+      "change": "Added optional Button property 'cornerRadius' (number, px, 0-64, default 0). Back-compat: purely additive — older consumers keep ignoring unknown property metadata fields (Python loader keeps names only; Rust PropertyDefinition is not deny_unknown_fields), and 0 means 'use radius.sm from designTokens', so existing documents render identically. Import gate note: property NAMES are enforced per component by the gate, so documents may only use cornerRadius on registry versions >= 1.1.",
+      "breaking": false
+    }
+  ],
   "components": [
     {
       "type": "Text",
@@ -150,6 +158,17 @@
           "required": false,
           "type": "string",
           "default": ""
+        },
+        {
+          "name": "cornerRadius",
+          "bindable": true,
+          "required": false,
+          "type": "number",
+          "default": 0,
+          "min": 0,
+          "max": 64,
+          "units": "px",
+          "description": "Per-instance corner radius override; 0 = use radius.sm from the document's designTokens (the default). Clamped to [0, max(0, min(w,h)/2)] at render time."
         }
       ],
       "events": [

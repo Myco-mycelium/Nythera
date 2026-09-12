@@ -1274,6 +1274,34 @@ mod tests {
     }
 
     #[test]
+    fn button_cornerRadius_in_contract_registry_1_1() {
+        // Registry 1.1: cornerRadius is an optional Button property; the
+        // embedded registry must accept it in the Rust gate too.
+        let text = VALID_SHELL
+            .replace(
+                "\"properties\": { \"value\": false, \"label\": \"Do not disturb\" }",
+                "\"properties\": { \"text\": \"Do not disturb\", \"cornerRadius\": 16 }",
+            )
+            .replace("\"type\": \"Toggle\"", "\"type\": \"Button\"")
+            .replace("\"changed\": \"behavior_refresh\"", "\"clicked\": \"behavior_refresh\"")
+            .replace("\"property\": \"value\", \"state\": \"doNotDisturb\"",
+                     "\"property\": \"text\", \"state\": \"doNotDisturb\"");
+        let res = validate(&text);
+        assert!(res.is_ok(), "registry 1.1 must accept Button cornerRadius: {res:?}");
+    }
+
+    #[test]
+    fn cornerRadius_still_rejected_on_non_button() {
+        let text = VALID_SHELL.replace(
+            "\"value\": false, \"label\": \"Do not disturb\"",
+            "\"value\": false, \"label\": \"Do not disturb\", \"cornerRadius\": 16",
+        );
+        let err = validate(&text).unwrap_err();
+        assert!(err.contains(
+            "property 'cornerRadius' not in the 'Toggle' contract"), "{err}");
+    }
+
+    #[test]
     fn rejects_unknown_event() {
         let text = VALID_SHELL.replace("\"changed\": \"behavior_refresh\"", "\"hovered\": \"behavior_refresh\"");
         let err = validate(&text).unwrap_err();

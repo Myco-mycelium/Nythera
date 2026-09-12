@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **NUI contract bump 1.0 → 1.1: `Button.cornerRadius`** — a
+  deliberate registry-first review (`nui-api-v1.json` now carries a
+  `versionHistory` with back-compat notes): the optional property
+  overrides the `radius.sm` token per instance (0/negative/junk =
+  token default, so pre-1.1 documents render pixel-identically;
+  positive values clamp to `min(64, min(w,h)/2)`). The Python import
+  gate accepts it on Button only (unknown properties are still
+  rejected — contract enforcement is per-type), the Rust nyui crate's
+  embedded registry parses the new fields (no
+  `deny_unknown_fields`), and new tests pin the chain end-to-end in
+  both languages. Also: the stale fixture copy of the registry
+  (`tests/fixtures/nstudio/nui-api-v1.json`, drifted to
+  `nuiSchemaVersion` 0.4.0) is re-synced to the canonical file and a
+  byte-equality test prevents future drift.
+
 ### Fixed
 
 - **The pivot diagnostic false-MISSINGed healthy usr-merge trees**

@@ -185,6 +185,8 @@ the tokens record intent; the renderer's honesty notes record capability.
 
 - [ ] Spacing snaps to the 4-pt grid; `space.*` tokens, no ad-hoc gaps
 - [ ] Corner radii use `radius.*`; nothing sharper than 8 px, nothing rounder than `radius.full`
+- [ ] Per-instance corner overrides go through the Button `cornerRadius` property (registry 1.1): 0 = `radius.sm` default, positive values clamp to the inscribed maximum, and the geometry still comes from the document's `designTokens` unless overridden
+- [ ] All properties used exist in the component's NUI contract (`ui/contracts/nui-api-v1.json`)
 - [ ] Every interactive element ≥ 44 × 44 px with ≥ 8 px separation
 - [ ] Translucent surfaces carry the hairline guardrail and an AA-contrast fallback
 - [ ] Accent appears on interactive elements only

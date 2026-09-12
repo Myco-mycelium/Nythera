@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the PIL-based NUI compositor (ui/compositor.py)."""
 
+import json
 import os
 import sys
 import tempfile
@@ -14,6 +15,8 @@ from ui.nstudio import (
     NstudioDocument,
     NstudioScreen,
     NstudioComponent,
+    loads as nstudio_loads,
+    NstudioValidationError,
     load as nstudio_load,
 )
 
@@ -480,6 +483,156 @@ def _expected_blend(base, top, alpha):
     """Mirror of the renderer's alpha-over, for test expectations."""
     return tuple(round(t * (1.0 - alpha) + c * alpha)
                  for t, c in zip(base, top))
+
+
+class TestButtonCornerRadiusContract(unittest.TestCase):
+    """Registry 1.1: ``cornerRadius`` on Button (nui-api-v1.json
+    versionHistory 1.1) — a deliberate, additive contract bump.
+
+    Pins the whole chain: the registry metadata itself, the import
+    gate's per-type enforcement, and the renderer's override semantics
+    (positive override applies, clamped to the inscribed maximum;
+    0/absent/junk = the ``radius.sm`` token default, pixel-compatible
+    with every pre-1.1 document).
+    """
+
+    def _button_doc(self, props, comp_type="Button"):
+        btn = NstudioComponent(
+            id="btn", type=comp_type,
+            layout={"x": 10, "y": 10, "width": 120, "height": 40},
+            properties=dict(props),
+        )
+        screen = _make_screen("s", 400, 300, root_children=[btn])
+        return _make_doc(screens=[screen])
+
+    def _button_raw(self, props, comp_type="Button"):
+        """The same minimal document as raw JSON-able dict (for the
+        import-gate tests, which exercise the loader itself)."""
+        return {
+            "version": "1.0.0",
+            "project": {},
+            "themes": {"active": "Eclipse", "overrides": {}},
+            "states": {}, "stateScopes": {},
+            "locales": {"active": "en", "tables": {"en": {}}},
+            "resources": {}, "animations": [], "behaviors": [],
+            "bindings": [],
+            "screens": [{
+                "id": "s",
+                "size": {"width": 400, "height": 300},
+                "root": {"id": "root", "type": "Window",
+                         "layout": {"x": 0, "y": 0,
+                                    "width": 400, "height": 300},
+                         "properties": {"title": "t"},
+                         "children": [{
+                             "id": "btn", "type": comp_type,
+                             "layout": {"x": 10, "y": 10,
+                                        "width": 120, "height": 40},
+                             "properties": dict(props), "children": []}]}},
+            ],
+        }
+
+    def _corner_inside_fill(self, props, px=2, py=2):
+        """Is pixel (px,py) — relative to the button's top-left corner —
+        the button fill color? Probes empirically pinned against PIL's
+        rounded_rectangle: (2,2) is INSIDE for r <= 4, OUTSIDE for
+        r >= 8; (1,6) is inside at r=8, outside at r >= 16."""
+        comp = Compositor()
+        img = comp.render_screen(self._button_doc(props))
+        return img.getpixel((10 + px, 10 + py)) == comp.theme["button_bg"]
+
+    def test_registry_is_1_1_and_declares_cornerRadius(self):
+        import json
+        reg = json.load(open(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            os.pardir, "ui", "contracts", "nui-api-v1.json")))
+        self.assertEqual(reg["registryVersion"], "1.1")
+        self.assertTrue(any(
+            h.get("registryVersion") == "1.1" and not h.get("breaking")
+            for h in reg.get("versionHistory", [])),
+            "registry 1.1 must carry a non-breaking versionHistory entry")
+        btn = next(c for c in reg["components"] if c["type"] == "Button")
+        cr = next(p for p in btn["properties"] if p["name"] == "cornerRadius")
+        self.assertEqual(cr["type"], "number")
+        self.assertEqual(cr["default"], 0)
+        self.assertEqual(cr["min"], 0)
+        self.assertEqual(cr["max"], 64)
+        self.assertEqual(cr["units"], "px")
+
+    def test_fixture_registry_copy_matches_canonical(self):
+        # The fixture copy must never drift again (it silently rotted to
+        # 0.4.0 while the canonical registry moved to 1.0.0).
+        with open(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                os.pardir, "ui", "contracts", "nui-api-v1.json")) as fh:
+            canonical = fh.read()
+        with open(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "fixtures", "nstudio", "nui-api-v1.json")) as fh:
+            fixture = fh.read()
+        self.assertEqual(canonical, fixture)
+
+    # ---- import gate -------------------------------------------------------
+
+    def test_gate_accepts_cornerRadius_on_button(self):
+        doc = nstudio_loads(json.dumps(self._button_raw(
+            {"text": "Hi", "cornerRadius": 12})))
+        btn = next(c for c in doc.screens[0].root.children
+                   if c.id == "btn")
+        self.assertEqual(btn.properties["cornerRadius"], 12)
+
+    def test_gate_still_rejects_unknown_properties(self):
+        with self.assertRaises(NstudioValidationError):
+            nstudio_loads(json.dumps(self._button_raw(
+                {"text": "Hi", "frobnicate": 1})))
+
+    def test_gate_rejects_cornerRadius_on_non_button(self):
+        with self.assertRaises(NstudioValidationError):
+            nstudio_loads(json.dumps(self._button_raw(
+                {"text": "x", "cornerRadius": 12}, comp_type="Text")))
+
+    # ---- renderer ----------------------------------------------------------
+
+    def test_zero_or_absent_override_is_token_default(self):
+        # 0 means "use radius.sm" — pixel-identical to no property at all.
+        self.assertEqual(
+            self._corner_inside_fill({"text": "B"}),
+            self._corner_inside_fill({"text": "B", "cornerRadius": 0}))
+
+    def test_default_radius_rounds_the_corner(self):
+        # radius.sm = 8: (2,2) lies outside the fill (empirically pinned).
+        self.assertFalse(self._corner_inside_fill({"text": "B"}))
+
+    def test_squarer_override_keeps_corner_inside(self):
+        # cornerRadius=4 (less round than the 8 default): (2,2) inside.
+        self.assertTrue(self._corner_inside_fill(
+            {"text": "B", "cornerRadius": 4}))
+
+    def test_override_geometry_differs_from_default(self):
+        # (2,2): outside under r=8 (default), inside under r=4.
+        self.assertNotEqual(
+            self._corner_inside_fill({"text": "B"}),
+            self._corner_inside_fill({"text": "B", "cornerRadius": 4}))
+
+    def test_roundier_override_pushes_corner_out(self):
+        # (1,6): inside at r=8 (default), outside at r>=16 — the override
+        # makes the button rounder than any default the tokens give.
+        self.assertTrue(self._corner_inside_fill({"text": "B"}, px=1, py=6))
+        self.assertFalse(self._corner_inside_fill(
+            {"text": "B", "cornerRadius": 16}, px=1, py=6))
+
+    def test_junk_override_renders_default(self):
+        self.assertEqual(
+            self._corner_inside_fill({"text": "B"}),
+            self._corner_inside_fill({"text": "B", "cornerRadius": "round"}))
+
+    def test_override_clamps_to_half_min_side(self):
+        # 120x40 button: inscribed max is 20; 64 clamps to 20 (PIL would
+        # otherwise draw an invalid shape). (1,6): outside under r=20,
+        # inside under the default — different geometry, no crash.
+        self.assertNotEqual(
+            self._corner_inside_fill({"text": "B"}, px=1, py=6),
+            self._corner_inside_fill({"text": "B", "cornerRadius": 64},
+                                     px=1, py=6))
 
 
 class TestCompositorSave(unittest.TestCase):

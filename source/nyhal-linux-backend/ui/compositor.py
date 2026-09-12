@@ -468,9 +468,20 @@ class Compositor:
         draw.text((x+16, y+16), "Start Menu", fill=self.theme["text_primary"], font=ft)
 
     def _render_button(self, img, draw, x, y, w, h, props, font, fs):
-        """Render a Button (``radius.sm`` from the design tokens)."""
+        """Render a Button (``radius.sm`` from the design tokens, or the
+        per-instance ``cornerRadius`` override; 0 = token default).
+        Registry 1.1: ``cornerRadius`` is an optional Button property
+        (nui-api-v1.json versionHistory 1.1)."""
         text = props.get("text", "Button")
         radius = int(self.tokens.get("radius", {}).get("sm", 8))
+        override = props.get("cornerRadius")
+        if override:
+            try:
+                req = int(override)
+            except (TypeError, ValueError):
+                req = 0
+            if req > 0:  # only positive overrides; 0/negative/junk = default
+                radius = min(req, 64, min(w, h) // 2)
         draw.rounded_rectangle([x, y, x+w, y+h], radius=radius,
                                fill=self.theme["button_bg"])
         bbox = draw.textbbox((0, 0), text, font=fs)
