@@ -619,16 +619,49 @@ class Compositor:
         draw.rectangle([x, y, x+w, y+h], outline=self.theme["border"], width=1)
 
     def _render_menu_item(self, img, draw, x, y, w, h, props, fs):
-        """Render a MenuItem."""
+        """Render a MenuItem (selection highlight from ``space`` tokens)."""
         label = props.get("label", props.get("text", "Item"))
-        draw.text((x+8, y+6), label, fill=self.theme["text_primary"], font=fs)
+        selected = props.get("selected", False)
+        if selected:
+            # Full-bleed accent row, radius.sm corner: the label KEEPS its
+            # position (x+8) so selection never shifts text; contrast text
+            # comes from the surface the menu sits on.
+            radius = int(self.tokens.get("radius", {}).get("sm", 8))
+            draw.rounded_rectangle(
+                [x, y, x + w - 1, y + h - 1], radius=radius,
+                fill=self.theme["accent"])
+            draw.text((x + 8, y + 6), label,
+                      fill=self.theme["surface_elevated"], font=fs)
+        else:
+            draw.text((x + 8, y + 6), label,
+                      fill=self.theme["text_primary"], font=fs)
 
     def _render_list(self, img, draw, x, y, w, h, props, comp, font, fs, doc):
-        """Render a List."""
+        """Render a List (row pitch + selection from ``space`` tokens).
+
+        Row pitch defaults to ``space.xl`` (24 px) — the historical
+        constant — so token-less documents render pixel-identically.
+        Documents may retune it via ``designTokens.space.xl``; the
+        ``selectedIndex`` highlight is accent-on-interactive with a
+        ``radius.sm`` corner per the design-language §7 checklist.
+        """
         items = props.get("items", [])
+        pitch = int(self.tokens.get("space", {}).get("xl", 24))
+        radius = int(self.tokens.get("radius", {}).get("sm", 8))
+        selected = props.get("selectedIndex", -1)
         for i, item in enumerate(items[:10]):
-            iy = y + i * 24
-            draw.text((x+8, iy+4), str(item), fill=self.theme["text_primary"], font=fs)
+            iy = y + i * pitch
+            if i == selected:
+                # Full-bleed accent row (radius.sm), 1 px separation from
+                # the next row; the item text KEEPS its exact position.
+                draw.rounded_rectangle(
+                    [x, iy, x + w - 1, iy + pitch - 1],
+                    radius=radius, fill=self.theme["accent"])
+                draw.text((x + 8, iy + 4), str(item),
+                          fill=self.theme["surface_elevated"], font=fs)
+            else:
+                draw.text((x + 8, iy + 4), str(item),
+                          fill=self.theme["text_primary"], font=fs)
 
     def _render_tree_view(self, img, draw, x, y, w, h, props, fs):
         """Render a TreeView."""

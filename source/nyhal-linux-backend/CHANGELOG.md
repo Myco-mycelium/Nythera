@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   184 px on the 4-pt grid, and the toggle track redrawn at 44x24.
   New `tests/test_design_language.py` (registered in `run_tests.sh`)
   pins the bridge values, target compliance, and the panel adoption.
+- **List/table renderer family tokenized + selection highlight**
+  (phase 2.3b of the design-language rollout, `ui/compositor.py`):
+  the List and MenuItem renderers now read their geometry from the
+  ``space``/``radius`` tokens (row pitch defaults to ``space.xl`` =
+  24 px — the historical constant — so token-less documents render
+  pixel-identically), and both honor the interactive-selection
+  contract from the §7 checklist: ``selectedIndex``/``selected``
+  draws the accent highlight (``radius.sm`` corner) with
+  contrast text from ``surface_elevated``, keeping the label's
+  position fixed so selection never shifts text. This lifts every
+  list/table surface (package, process, network panels) at the
+  compositor layer without touching app modules. Four new compositor
+  tests pin default-pitch identity, token-driven pitch, accent
+  highlight geometry, and contrast text.
 - **Second real-CI round closed the remaining integration gaps** (the
   fix-commit runs failed in the same two steps, which pinpointed the
   residual defects):

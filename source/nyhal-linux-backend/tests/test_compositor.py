@@ -362,6 +362,82 @@ class TestCompositorDesignTokens(unittest.TestCase):
         self.assertEqual(
             comp.tokens["surface"]["bar"]["opacity"], 0.85)
 
+    def _list_doc(self, tokens=None, props=None):
+        """A Window + List of three items, selectable via tokens/props."""
+        lst = NstudioComponent(
+            id="lst", type="List",
+            layout={"x": 10, "y": 10, "width": 200, "height": 72},
+            properties=props if props is not None else {"items": ["a", "b", "c"]},
+        )
+        screen = _make_screen("s", 400, 300, root_children=[lst])
+        doc = _make_doc(screens=[screen])
+        doc.design_tokens = tokens or {}
+        return doc
+
+    def _region_has(self, img, box, color):
+        """True if any pixel in ``(x0, y0, x1, y1)`` equals ``color``.
+
+        Region scans rather than single-pixel probes: glyph coverage is
+        sparse (a one-character item is ~10 anti-aliased pixels), so a
+        point sample can land on a gap.
+        """
+        x0, y0, x1, y1 = box
+        return any(img.getpixel((x, y)) == color
+                   for y in range(y0, y1) for x in range(x0, x1))
+
+    def test_list_default_row_pitch_is_pixel_identical(self):
+        # Token-less: rows at the historical 24 px pitch, no selection.
+        img = Compositor().render_screen(self._list_doc())
+        tp = THEMES["Eclipse"]["text_primary"]
+        for row_y in (10, 34, 58):   # y + i * 24
+            self.assertTrue(
+                self._region_has(img, (12, row_y + 3, 60, row_y + 13), tp),
+                f"no row text near y={row_y}")
+
+    def test_list_row_pitch_follows_space_token(self):
+        # space.xl=12: rows land at y = 10, 22, 34 — not 10, 34, 58.
+        doc = self._list_doc(tokens={"space": {"xl": 12}})
+        img = Compositor().render_screen(doc)
+        tp = THEMES["Eclipse"]["text_primary"]
+        for row_y in (10, 22, 34):
+            self.assertTrue(
+                self._region_has(img, (12, row_y + 3, 60, row_y + 13), tp),
+                f"no row text near y={row_y}")
+        # The historical third row (y=58) no longer carries text.
+        self.assertFalse(
+            self._region_has(img, (12, 58 + 3, 60, 58 + 13), tp))
+
+    def test_list_selection_highlight_uses_accent(self):
+        doc = self._list_doc(props={"items": ["a", "b", "c"],
+                                    "selectedIndex": 1})
+        img = Compositor().render_screen(doc)
+        acc = THEMES["Eclipse"]["accent"]
+        # Row 1 spans y = 34..57 at the 24-px pitch: solid accent fill.
+        self.assertTrue(
+            self._region_has(img, (12, 36, 100, 56), acc))
+        self.assertTrue(
+            self._region_has(img, (150, 36, 200, 56), acc))
+        # Rows 0/2 keep plain (non-accent) text.
+        tp = THEMES["Eclipse"]["text_primary"]
+        self.assertTrue(
+            self._region_has(img, (12, 13, 60, 23), tp))
+        self.assertTrue(
+            self._region_has(img, (12, 61, 60, 71), tp))
+
+    def test_list_selection_contrast_text(self):
+        # Selected row text draws in surface_elevated (contrast on accent).
+        img = Compositor().render_screen(self._list_doc(
+            props={"items": ["a", "b", "c"], "selectedIndex": 0}))
+        self.assertTrue(self._region_has(
+            img, (12, 13, 60, 23), THEMES["Eclipse"]["surface_elevated"]))
+        # Without a selection, the same row keeps text_primary — and no
+        # accent bar is drawn anywhere in the list area.
+        img2 = Compositor().render_screen(self._list_doc())
+        self.assertTrue(self._region_has(
+            img2, (12, 13, 60, 23), THEMES["Eclipse"]["text_primary"]))
+        self.assertFalse(self._region_has(
+            img2, (11, 11, 205, 80), THEMES["Eclipse"]["accent"]))
+
 
 def _expected_blend(base, top, alpha):
     """Mirror of the renderer's alpha-over, for test expectations."""
