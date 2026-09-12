@@ -40,7 +40,10 @@ MARKER_READY = "NYRQIS_BOOT_SMOKE_READY=1"
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
 
-KERNEL_CMDLINE = ("boot=live console=ttyS0,115200 "
+# `debug` makes live-boot's mountroot trace every command (set -x) to
+# the console — when the union/pivot fails, the serial log carries the
+# exact command and error instead of a bare "can't execute /sbin/init".
+KERNEL_CMDLINE = ("boot=live debug console=ttyS0,115200 "
                   "systemd.unit=multi-user.target "
                   "NYRQIS_BOOT_SMOKE=1")
 

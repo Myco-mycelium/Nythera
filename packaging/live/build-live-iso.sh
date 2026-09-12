@@ -297,6 +297,33 @@ mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
     -comp zstd -Xcompression-level 15 -noappend -wildcards \
     -e "boot/vmlinuz-*" "boot/initrd.img-*" \
     >/dev/null   # progress is noise in logs; the ISO is the artifact
+
+# VERIFIED, not assumed (a dead init costs a full CI boot round to find):
+# the image must carry an init and /etc, or the live pivot fails with
+# "run-init: can't execute '/sbin/init'" and an empty /root.
+SQUASH_LISTING="$(unsquashfs -ls "$LIVE_DIR/filesystem.squashfs" 2>/dev/null || true)"
+if ! grep -qE 'sbin/init|lib/systemd/systemd' <<<"$SQUASH_LISTING"; then
+    die "filesystem.squashfs has no /sbin/init (nor systemd) — the live
+  pivot will die with 'run-init: can't execute /sbin/init'. Check the
+  debootstrap --include list (systemd) and what mksquashfs snapshotted
+  (\$ROOTFS_SRC)."
+fi
+if ! grep -qE '(^|[[:space:]])/?etc([[:space:]]|$)' <<<"$SQUASH_LISTING"; then
+    die "filesystem.squashfs has no /etc — the live pivot will fail
+  writing network config into /root/etc. Check what mksquashfs
+  snapshotted (\$ROOTFS_SRC must be the debootstrap tree root)."
+fi
+log "squashfs verified: init + /etc present"
+
+# Same contract for the initramfs: it must at minimum unpack to a
+# tree with an /init (a truncated/corrupt initrd otherwise costs a
+# full CI boot round to discover).
+if command -v cpio >/dev/null 2>&1; then
+    ITRD_HEAD="$(gzip -dc "$INITRD" 2>/dev/null | cpio -it 2>/dev/null | head -5 || true)"
+    if ! grep -q '^init$' <<<"$ITRD_HEAD" && [[ "$(wc -l <<<"$ITRD_HEAD")" -lt 3 ]]; then
+        log "WARNING: cannot list the initramfs (first entries: $(echo "$ITRD_HEAD" | head -3 | tr '\n' ' ')) — concatenated-cpio layout or unexpected format; NOT failing the build"
+    fi
+fi
 cp "$KERNEL"  "$LIVE_DIR/vmlinuz"
 cp "$INITRD"  "$LIVE_DIR/initrd"
 
