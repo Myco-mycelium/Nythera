@@ -265,11 +265,17 @@ EOF
     # A module passes if its .ko is IN the initrd OR it is BUILT INTO
     # the kernel (=y in the shipped config — no .ko exists to find; the
     # kernel itself carries it, which is fine for the live mount).
+    # Pairs are modname:file-stem:CONFIG-symbol — the module NAME and
+    # its FILE basename can differ (modprobe name "iso9660" ships as
+    # fs/isofs/isofs.ko), so both spellings are accepted in the listing.
     KCONFIG="$ROOTFS_SRC/boot/config-$(basename "$KERNEL" | sed 's/^vmlinuz-//')"
-    for pair in "squashfs:CONFIG_SQUASHFS" "iso9660:CONFIG_ISO9660_FS" \
-                "loop:CONFIG_BLK_DEV_LOOP" "overlay:CONFIG_OVERLAY_FS"; do
-        mod="${pair%%:*}"; sym="${pair#*:}"
-        grep -qE "/${mod}\.ko(\.xz|\.zst)?$" <<<"$listing" && continue
+    for pair in "squashfs:squashfs:CONFIG_SQUASHFS" \
+                "iso9660:isofs:CONFIG_ISO9660_FS" \
+                "loop:loop:CONFIG_BLK_DEV_LOOP" \
+                "overlay:overlay:CONFIG_OVERLAY_FS"; do
+        mod="${pair%%:*}"; rest="${pair#*:}"
+        file="${rest%%:*}"; sym="${rest#*:}"
+        grep -qE "/(${mod}|${file})\.ko(\.xz|\.zst)?$" <<<"$listing" && continue
         grep -qE "^${sym}=y" "$KCONFIG" 2>/dev/null && continue
         MISSING="$MISSING $mod.ko"
     done

@@ -93,6 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The guard now greps the captured listing via here-strings (no
     pipe), keeps the builtin (=y) module acceptance, and its die
     message points at the check itself when mkinitramfs ran clean.
+  - The guard also required the module FILE to be named after the
+    module NAME; the ISO 9660 driver's modprobe name is ``iso9660``
+    but the kernel ships it as ``fs/isofs/isofs.ko``, so good initrds
+    (``force_load iso9660`` → ``isofs.ko``) were rejected with
+    "missing: iso9660.ko". Both spellings are accepted now, paired
+    with their CONFIG symbols.
 
 ## [0.29.0] - 2026-09-11
 
