@@ -95,6 +95,15 @@ if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
         echo "NYRQIS_BOOT_SMOKE_PONG=0"
         tail -5 "$LOG" 2>/dev/null
     fi
+    # Entry-point wrappers on PATH (the build writes them): proves the
+    # installed-system commands exist in the image, visible in the
+    # boot-smoke serial log.
+    if command -v nyrqisctl >/dev/null 2>&1 \
+       && command -v nyrqis-backend >/dev/null 2>&1; then
+        echo "NYRQIS_BOOT_SMOKE_NYRQISCTL=1"
+    else
+        echo "NYRQIS_BOOT_SMOKE_NYRQISCTL=0"
+    fi
     echo "NYRQIS_BOOT_SMOKE_READY=1"
     exec sleep infinity
 fi

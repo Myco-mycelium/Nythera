@@ -39,6 +39,9 @@ import time
 MARKER_READY = "NYRQIS_BOOT_SMOKE_READY=1"
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
+# Entry-point wrappers on PATH inside the image (informational: printed
+# in the verdict, never gates pass/fail by itself).
+MARKER_NYRQISCTL = "NYRQIS_BOOT_SMOKE_NYRQISCTL="
 
 # `debug=y` (the debug=* form) makes initramfs-tools AND live-boot
 # trace every command to the CONSOLE — the plain `debug` token would
@@ -210,6 +213,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
 
         print(f"[boot-smoke] markers: ready={saw_ready} "
               f"pong_ok={saw_pong_ok} pong_fail={saw_pong_fail}")
+        if MARKER_NYRQISCTL in text:
+            print(f"[boot-smoke] nyrqisctl-on-PATH: "
+                  f"{text.split(MARKER_NYRQISCTL)[1].splitlines()[0][0]}")
         try:
             with open(serial_log, "r", errors="replace") as fh:
                 tail = fh.read()[-2000:]

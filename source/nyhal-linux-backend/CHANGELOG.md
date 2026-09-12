@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-09-12
+
 ### Added
 
 - **The live image installs the console entry points on PATH**
@@ -15,7 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and operators get the same commands as an installed system, closing
   the probe's "nyrqisctl not on PATH / entry points not installed"
   advisories. Deliberately no pip — minbase has no packaging stack and
-  the tree is already staged.
+  the tree is already staged. The boot smoke prints
+  `NYRQIS_BOOT_SMOKE_NYRQISCTL=1` in the serial log as proof on the
+  real image.
+- **Pill-variant shell document** (`shell/variants/desktop-pill.nstudio`):
+  the reference design for the registry-1.1 `Button.cornerRadius`
+  contract — every Button is a 64-px pill, generated from the stock
+  desktop shell as a pure restyle (structure-identity pinned by test),
+  gate-validated and rendered on both brand themes.
 
 ## [0.29.2] - 2026-09-12
 
