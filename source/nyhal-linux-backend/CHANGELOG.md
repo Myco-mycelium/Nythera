@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Rust/FFI parity for the version preflight**: the nyui crate now
+  exposes the same ``inspect_version`` classification as the Python
+  bridge (``inspect_version_report`` JSON via a two-call out-buffer
+  FFI, ``nstudio_codec.inspect_version_rust``), differential-tested
+  against Python on the shared verdict keys. The differential suite
+  caught a real divergence on its first run — Rust sorted
+  ``notYetInRegistry`` lexicographically (``1.10`` < ``1.2``) and kept
+  duplicates, where Python uses the dotted-numeric total order and
+  dedupes — fixed Rust-side to mirror the Python contract exactly.
+  Skips cleanly when the crate is unavailable; 9 new tests (6,278 OK,
+  Rust 26/26).
+
 ## [0.29.7] - 2026-09-13
 
 ### Added

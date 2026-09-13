@@ -226,6 +226,63 @@ def validate(text: str) -> None:
     raise RuntimeError(f"nyrqis_nyui validate returned {status}: {_last_error(lib)}")
 
 
+def inspect_version_rust(text: str) -> dict:
+    """Run the Rust half of ``inspect_version`` over a document and
+    return the report dict.
+
+    Differential counterpart to ``NyforgeBridge.inspect_version``: the
+    classification logic lives in both engines and must agree (the
+    stale-cdylib incident is why — engines that silently disagree are
+    worse than either alone). Raises ``BackendUnavailable`` when the
+    crate isn't loadable; ``NstudioValidationError`` on malformed JSON.
+    The report mirrors the Python one minus ``changesSinceOldestRequirement``
+    (the change-span entries come from the same validated log on the
+    Python side).
+    """
+    import json as _json
+
+    lib = _load()
+    if lib is None:
+        raise BackendUnavailable("Rust nyui crate not available")
+
+    try:
+        inspect_fn = lib.nyrqis_nyui_inspect_version
+    except AttributeError:
+        raise BackendUnavailable(
+            "nyrqis_nyui lacks nyrqis_nyui_inspect_version — rebuild "
+            "rust/nyui")
+    inspect_fn.restype = ctypes.c_int32
+    inspect_fn.argtypes = [
+        ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
+
+    payload = text.encode("utf-8")
+    # Call 1: size the report; call 2: fetch it. Negative statuses map
+    # like validate() (malformed JSON = validation class, same floor
+    # hierarchy); a positive value from the sizing call is the needed
+    # capacity, not an error.
+    needed = inspect_fn(payload, len(payload), None, 0)
+    if needed == RUST_ERR_MALFORMED_JSON:
+        raise nstudio.NstudioValidationError(
+            _last_error(lib) or "malformed JSON")
+    if needed < 0:
+        raise RuntimeError(
+            "nyrqis_nyui inspect_version sizing failed: "
+            + (_last_error(lib) or str(needed)))
+    buf = ctypes.create_string_buffer(needed)
+    written = inspect_fn(payload, len(payload), buf, needed)
+    if written == RUST_ERR_MALFORMED_JSON:
+        raise nstudio.NstudioValidationError(
+            _last_error(lib) or "malformed JSON")
+    if written < 0:
+        raise RuntimeError(
+            "nyrqis_nyui inspect_version failed: "
+            + (_last_error(lib) or str(written)))
+    try:
+        return _json.loads(buf.value.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError) as exc:
+        raise RuntimeError(f"unparseable inspect report from the crate: {exc}")
+
+
 def force_reload() -> None:
     """Forget the cached handle (tests that shuffle NYRQIS_RUST_LIB)."""
     global _RUST_LIB, _RUST_LIB_CHECKED
@@ -235,5 +292,5 @@ def force_reload() -> None:
 
 __all__ = [
     "MIN_RUST_ABI_VERSION", "BackendUnavailable",
-    "available", "validate", "force_reload",
+    "available", "validate", "inspect_version_rust", "force_reload",
 ]

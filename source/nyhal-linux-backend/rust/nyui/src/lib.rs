@@ -1223,6 +1223,160 @@ pub unsafe extern "C" fn nyrqis_nyui_validate(json_ptr: *const c_char, json_len:
     }
 }
 
+/// Preflight a document's contract situation (the FFI half of the
+/// Python ``inspect_version``): parse the JSON, classify every
+/// ``requiresRegistry`` entry against the embedded registry's
+/// ``versionHistory``, and serialize the report as a JSON object:
+/// ``{"ok":true,"documentSchemaVersion":…,"schemaSupported":…,
+/// "docHeaderVersions":[…],"notYetInRegistry":[…],
+/// "unknownDocRequirements":[…],"anyDropped":…}`` (the change-span
+/// entries are Python-side — they come from the same validated log).
+///
+/// Call once with ``out_ptr = null`` to get the required capacity
+/// (including the NUL), then again with a buffer of that size. Returns
+/// the number of bytes written (excluding the NUL), or a negative
+/// status code (reason via ``nyrqis_nyui_last_error``).
+///
+/// # Safety
+/// ``json_ptr`` must point to ``json_len`` readable bytes; ``out_ptr``
+/// either null (sizing call) or to ``out_cap`` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn nyrqis_nyui_inspect_version(
+    json_ptr: *const c_char,
+    json_len: usize,
+    out_ptr: *mut c_char,
+    out_cap: usize,
+) -> i32 {
+    if json_ptr.is_null() {
+        set_last_error("null input pointer");
+        return ERR_INTERNAL;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(json_ptr as *const u8, json_len) };
+    let text = match std::str::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => {
+            set_last_error("input is not valid UTF-8");
+            return ERR_INVALID_UTF8;
+        }
+    };
+    let raw: Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(format!("malformed JSON: {e}"));
+            return ERR_MALFORMED_JSON;
+        }
+    };
+    let report = inspect_version_value(&raw);
+    let serialized = serde_json::to_string(&report)
+        .unwrap_or_else(|_| "{\"ok\":false}".to_string());
+    let bytes = serialized.as_bytes();
+    let needed = bytes.len() + 1; // NUL
+    if out_ptr.is_null() || out_cap < needed {
+        // Sizing call or buffer too small: report the requirement.
+        set_last_error(&format!("output buffer needs {needed} bytes"));
+        return needed as i32;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr as *mut u8, bytes.len());
+        *out_ptr.add(bytes.len()) = 0;
+    }
+    bytes.len() as i32
+}
+
+/// The Python-parity core of ``inspect_version`` over an already-parsed
+/// document. Loss classification mirrors ``ui.nyforge_bridge``:
+/// known versions resolve through history order; unknown ones are
+/// "cleanly newer" (dotted-numeric compare vs the shipped registry,
+/// named in ``notYetInRegistry``) or junk (``unknownDocRequirements``).
+fn inspect_version_value(raw: &Value) -> Value {
+    use serde_json::json;
+
+    let doc_version = raw.get("version").and_then(|v| v.as_str());
+    let requirements: Vec<String> = raw
+        .get("requiresRegistry")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|r| match r {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string().trim_matches('"').to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let reg = registry();
+    let shipped_key = _registry_version_key(&reg.registry_version);
+    let known_idx: Vec<(String, usize)> = reg
+        .version_history
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.registry_version.clone(), i))
+        .collect();
+
+    let mut not_yet: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for req in &requirements {
+        match known_idx.iter().find(|(v, _)| v == req) {
+            Some((_, i)) => {
+                if *i >= reg.version_history.len() {
+                    not_yet.push(req.clone());
+                }
+            }
+            None => {
+                let key = _registry_version_key(req);
+                if let (Some(k), Some(s)) = (key, shipped_key.as_ref()) {
+                    if &k > s {
+                        not_yet.push(req.clone());
+                        continue;
+                    }
+                }
+                unknown.push(req.clone());
+            }
+        }
+    }
+    // Total order mirroring the Python bridge exactly: history position
+    // first (unknown requirements sort after known ones), dotted-numeric
+    // key as tiebreaker — never lexicographic "1.10" < "1.2". The
+    // differential suite (tests/test_inspect_differential.py) pins this.
+    let sort_key = |r: &str| -> (i64, Vec<u64>) {
+        let idx = known_idx
+            .iter()
+            .find(|(v, _)| v == r)
+            .map(|(_, i)| *i as i64)
+            .unwrap_or(-1);
+        (idx, _registry_version_key(r).unwrap_or_default())
+    };
+    not_yet.sort_by_key(|r| sort_key(r));
+    not_yet.dedup();
+    unknown.sort();
+    unknown.dedup();
+
+    json!({
+        "ok": true,
+        "documentSchemaVersion": doc_version,
+        "schemaSupported": doc_version == Some(reg.nui_schema_version.as_str()),
+        "docHeaderVersions": requirements,
+        "notYetInRegistry": not_yet,
+        "unknownDocRequirements": unknown,
+        "anyDropped": !(not_yet.is_empty() && unknown.is_empty()),
+    })
+}
+
+/// Dotted-numeric registry version key for cross-version comparison
+/// ("1.10" > "1.9"); ``None`` when not dotted-numeric. Mirrors the
+/// Python ``_registry_version_key``.
+fn _registry_version_key(version: &str) -> Option<Vec<u64>> {
+    if version.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.iter().any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    Some(parts.iter().map(|p| p.parse::<u64>().unwrap()).collect())
+}
+
 /// Copy the last error message into a caller-supplied buffer. Returns the
 /// number of bytes written (excluding the NUL terminator), or `-1` if the
 /// buffer is too small (the message is truncated to fit, still NUL
@@ -1252,6 +1406,7 @@ pub unsafe extern "C" fn nyrqis_nyui_last_error(buf: *mut c_char, cap: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const VALID_SHELL: &str = r#"{
       "version": "1.0.0",
@@ -1289,6 +1444,53 @@ mod tests {
     #[test]
     fn valid_document_passes() {
         assert!(validate(VALID_SHELL).is_ok());
+    }
+
+    #[test]
+    fn inspect_version_classifies_like_python() {
+        // The differential contract: honored, nameable-future, and
+        // junk requirements classify exactly as the Python
+        // inspect_version does.
+        let doc: Value = serde_json::from_str(
+            r#"{ "version": "1.0.0", "requiresRegistry": ["1.1", "1.2", "1,1"] }"#,
+        )
+        .unwrap();
+        let report = inspect_version_value(&doc);
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["schemaSupported"], true);
+        assert_eq!(report["notYetInRegistry"], json!(["1.2"]));
+        assert_eq!(report["unknownDocRequirements"], json!(["1,1"]));
+        assert_eq!(report["anyDropped"], true);
+    }
+
+    #[test]
+    fn inspect_version_honored_document_has_no_drops() {
+        let doc: Value = serde_json::from_str(
+            r#"{ "version": "1.0.0", "requiresRegistry": ["1.0", "1.1"] }"#,
+        )
+        .unwrap();
+        let report = inspect_version_value(&doc);
+        assert_eq!(report["anyDropped"], false);
+        assert_eq!(report["notYetInRegistry"], json!([]));
+        assert_eq!(report["unknownDocRequirements"], json!([]));
+    }
+
+    #[test]
+    fn inspect_version_future_only_doc_still_drops() {
+        let doc: Value = serde_json::from_str(
+            r#"{ "version": "1.0.0", "requiresRegistry": ["1.2"] }"#,
+        )
+        .unwrap();
+        let report = inspect_version_value(&doc);
+        assert_eq!(report["anyDropped"], true);
+        assert_eq!(report["notYetInRegistry"], json!(["1.2"]));
+    }
+
+    #[test]
+    fn registry_version_key_is_numeric_not_lexicographic() {
+        assert!(_registry_version_key("1.10").unwrap() > _registry_version_key("1.9").unwrap());
+        assert!(_registry_version_key("1,1").is_none());
+        assert!(_registry_version_key("").is_none());
     }
 
     #[test]
