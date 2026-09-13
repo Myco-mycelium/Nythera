@@ -99,6 +99,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+  py311-syntax:
+    name: Shipped tree compiles under Python 3.11
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The live image's build gate byte-compiles the shipped tree with
+      # the image's OWN interpreter (bookworm = 3.11). A 3.12-only
+      # nested-quote f-string (PEP 701) once reached that gate and cost
+      # three tag-build roundtrips to diagnose; this job catches the
+      # class at unit-test time instead. The build gate stays
+      # authoritative — it compiles with the image's interpreter.
+      - run: python -m compileall -q source/nyhal-linux-backend
+
       - name: pyproject version must match the newest CHANGELOG release
         run: python3 tools/check_version_drift.py
 

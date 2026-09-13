@@ -299,12 +299,17 @@ class NyforgeBridge:
         any_dropped = bool(not_yet or unknown)
 
         # Renderable context: what this build's log knows that the
-        # document's requirements cover — the baseline through the
-        # newest known requirement, or the full log when the document
-        # reaches beyond it (the user sees what their build DOES have).
+        # document's requirements cover. When the document reaches
+        # beyond this build, show the FULL log — the user deciding
+        # whether to open it sees the whole contract lineage their
+        # newer build would extend, not a truncated tail.
         known_idxs = [order[r] for r in requirements if r in order]
-        top = max(known_idxs) if known_idxs else -1
-        span = list(VERSION_HISTORY[:top + 1])
+        if not_yet:
+            span = list(VERSION_HISTORY)
+        elif known_idxs:
+            span = list(VERSION_HISTORY[:max(known_idxs) + 1])
+        else:
+            span = []
 
         return {
             "ok": True,

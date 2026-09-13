@@ -122,11 +122,23 @@ class TestInspectVersionLosses(unittest.TestCase):
         # Deterministic, history-ordered — never set-iteration order.
         self.assertEqual(report["notYetInRegistry"], ["1.2", "1.10"])
         self.assertEqual(report["unknownDocRequirements"], [])
-        # The document reaches beyond this build: the span shows what
-        # this build's log DOES have.
+        # The document reaches beyond this build: the FULL log is the
+        # renderable context (what this build DOES have — never a
+        # truncated tail with no decision context).
         self.assertEqual(
             [e["registryVersion"] for e in report["changesSinceOldestRequirement"]],
-            ["1.0"])
+            ["1.0", "1.1"])
+
+    def test_future_only_document_gets_full_change_context(self):
+        # A document authored ONLY against a newer registry must still
+        # see this build's whole contract lineage — telling the user
+        # "would drop" with zero context is not actionable.
+        report = _bridge().inspect_version(
+            text=_stock_text(requiresRegistry=["1.2"]))
+        self.assertTrue(report["anyDropped"])
+        self.assertEqual(
+            [e["registryVersion"] for e in report["changesSinceOldestRequirement"]],
+            ["1.0", "1.1"])
 
 
 class TestInspectVersionFailures(unittest.TestCase):
