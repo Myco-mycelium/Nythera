@@ -40,6 +40,41 @@ from ui.desktop_session import DesktopSession
 from ui.nyforge_bridge import NyforgeBridge
 
 
+def build_side_panel(nstudio_path: str, output_path: str,
+                     theme: str = "Eclipse") -> Dict[str, Any]:
+    """Render the document preview + Inspector side panel to a PNG.
+
+    The editor's companion: the picture Nyforge is about to present,
+    beside the contract verdict from ``inspect_version``. Returns a
+    small dict summary (paths + verdict), suitable for --json output.
+    """
+    from ui.inspector_panel import compose_inspector_view
+    from ui.nyforge_bridge import NyforgeBridge as _Bridge
+
+    inspector = _Bridge(None)
+    report = inspector.inspect_version(path=nstudio_path)
+
+    preview = None
+    if report.get("ok"):
+        try:
+            from ui.nstudio import load
+            session = DesktopSession(load(nstudio_path))
+            preview = session.live_render()
+        except Exception:
+            preview = None
+
+    img = compose_inspector_view(preview, report, theme=theme)
+    img.save(output_path)
+    return {
+        "panel": output_path,
+        "verdict": ("WOULD DROP features" if report.get("anyDropped")
+                    else ("fully honored by this build"
+                          if report.get("ok") else "error")),
+        "preview_rendered": preview is not None,
+        "panel_size": list(img.size),
+    }
+
+
 def make_session_from_nstudio(path: str) -> tuple:
     """Create a DesktopSession from an .nstudio file.
 
@@ -79,6 +114,18 @@ def main():
         help="Render to PNG and exit",
     )
     parser.add_argument(
+        "--side-panel", "-s",
+        metavar="OUTPUT.png",
+        help="Render the document preview + Inspector side panel "
+             "(verdict panel beside the preview) and exit",
+    )
+    parser.add_argument(
+        "--theme",
+        metavar="NAME",
+        default="Eclipse",
+        help="Side-panel theme (Eclipse/Solar)",
+    )
+    parser.add_argument(
         "--inspect",
         action="store_true",
         help="Report the document's contract/version situation against "
@@ -105,6 +152,23 @@ def main():
     if not os.path.exists(args.nstudio):
         print(f"Error: file not found: {args.nstudio}", file=sys.stderr)
         sys.exit(1)
+
+    # Inspector side panel: preview + verdict beside it, one PNG.
+    if args.side_panel:
+        try:
+            summary = build_side_panel(args.nstudio, args.side_panel,
+                                       theme=args.theme)
+        except Exception as exc:
+            print(f"Error: side panel failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"Side panel: {summary['panel']} "
+                  f"({summary['panel_size'][0]}x{summary['panel_size'][1]})")
+            print(f"Preview rendered: {summary['preview_rendered']}")
+            print(f"Verdict: {summary['verdict']}")
+        return
 
     # Inspector preflight: report the document's version situation
     # without opening it.
@@ -173,8 +237,21 @@ def main():
     if args.watch:
         print(f"Hot-reload enabled (interval={args.interval}s)")
 
+        # In watch mode the side panel becomes a live companion: every
+        # accepted reload re-renders the verdict next to the new
+        # preview. Rejections leave the last good panel on disk (the
+        # session is still running it).
+        side_panel_png = args.side_panel
+
         def on_reload(event, data):
             print(f"[reload] {event}: {json.dumps(data, indent=2)}")
+            if side_panel_png and event == "reload":
+                try:
+                    build_side_panel(args.nstudio, side_panel_png,
+                                     theme=args.theme)
+                except Exception as exc:
+                    print(f"[side-panel] re-render failed: {exc}",
+                          file=sys.stderr)
 
         bridge.enable_hot_reload(
             interval=args.interval,

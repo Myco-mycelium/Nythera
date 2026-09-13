@@ -166,6 +166,29 @@ def render_inspector_panel(report: Dict[str, Any],
     return img
 
 
+def compose_inspector_view(preview: Optional[Image.Image],
+                           report: Dict[str, Any],
+                           theme: str = "Eclipse",
+                           gap: int = 24) -> Image.Image:
+    """Compose the side-panel view: document preview + Inspector panel.
+
+    The preview sits on the left, the verdict panel on the right — the
+    "read the contract before you trust the picture" pairing. A
+    ``None`` preview (document did not import) degrades honestly to the
+    panel alone: there is nothing to preview, and the panel says why.
+    """
+    panel_img = render_inspector_panel(report, theme=theme)
+    if preview is None:
+        return panel_img
+    palette = THEMES.get(theme) or THEMES["Eclipse"]
+    width = preview.width + gap + PANEL_WIDTH
+    height = max(preview.height, panel_img.height)
+    canvas = Image.new("RGBA", (width, height), palette["background"])
+    canvas.paste(preview, (0, 0))
+    canvas.paste(panel_img, (preview.width + gap, 0))
+    return canvas
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI: ``python3 -m ui.inspector_panel <document.nstudio>``."""
     from ui.nyforge_bridge import NyforgeBridge

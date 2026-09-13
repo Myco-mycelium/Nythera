@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **In-editor Inspector side panel**: ``nyforge_live --side-panel
+  out.png`` renders the document preview with the Inspector verdict
+  panel beside it — read the contract next to the picture. A document
+  that fails to import degrades honestly to the verdict panel alone;
+  in ``--watch`` mode the panel re-renders on every accepted reload
+  (rejections leave the last good panel, matching the session). 7 new
+  tests (6,285 OK).
 - **Rust/FFI parity for the version preflight**: the nyui crate now
   exposes the same ``inspect_version`` classification as the Python
   bridge (``inspect_version_report`` JSON via a two-call out-buffer

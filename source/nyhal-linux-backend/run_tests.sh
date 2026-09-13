@@ -172,6 +172,7 @@ else
     run_test "Nyforge Inspector Preflight" "tests.test_nyforge_inspect"
     run_test "Inspector Panel" "tests.test_inspector_panel"
     run_test "Inspector Differential (Rust==Python)" "tests.test_inspect_differential"
+    run_test "Inspector Side Panel" "tests.test_inspector_side_panel"
     
     # Pipeline tests
     run_test "Render Pipeline" "tests.test_render_pipeline"
