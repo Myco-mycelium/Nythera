@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.5] - 2026-09-13
+
 ### Added
 
 - **Safe hot-reload**: `NyforgeBridge.refresh()` preflights the edited
