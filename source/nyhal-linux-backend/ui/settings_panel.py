@@ -106,6 +106,11 @@ class Toggle:
 # Settings panel
 # ---------------------------------------------------------------------------
 
+# Shell variants the panel can request (mirrors
+# nyrqis_init.KNOWN_SHELL_VARIANTS; file stem = variant name).
+SHELL_VARIANTS = ("stock", "pill")
+
+
 class SettingsPanel:
     """Visual settings panel component.
     
@@ -135,6 +140,15 @@ class SettingsPanel:
         self._volume: int = 75
         self._brightness: int = 100
         self._selected_theme: int = 0  # Index into BUILTIN_THEMES
+        # Shell variant (design-language: the registry-1.1 pill shell
+        # et al). ``_active_variant`` is what is running;
+        # ``_swap_requested`` is the picker's pending request, consumed
+        # once by the session (a NyforgeBridge.swap_document call) —
+        # the panel never swaps by itself, it only reports the result
+        # handed back through apply_swap_result().
+        self._active_variant: str = "stock"
+        self._swap_requested: Optional[str] = None
+        self._swap_status: str = ""
         self._toggles: List[Toggle] = [
             Toggle("WiFi", True, "📶"),
             Toggle("Bluetooth", False, "🔵"),
@@ -194,6 +208,63 @@ class SettingsPanel:
         self._selected_theme = (self._selected_theme + 1) % len(BUILTIN_THEMES)
         return self.selected_theme
     
+    # -- Shell variant -----------------------------------------------------
+
+    @property
+    def active_variant(self) -> str:
+        return self._active_variant
+
+    @property
+    def swap_requested(self) -> Optional[str]:
+        return self._swap_requested
+
+    @property
+    def swap_status(self) -> str:
+        return self._swap_status
+
+    def select_variant(self, name: str) -> bool:
+        """Request a shell-variant swap. Unknown names are ignored —
+        the picker never sends a request the resolver would reject."""
+        if name in SHELL_VARIANTS and name != self._active_variant:
+            self._swap_requested = name
+            return True
+        return False
+
+    def consume_variant_request(self) -> Optional[str]:
+        """Return (and clear) the pending variant request. The session
+        calls this, performs the swap, and reports back via
+        ``apply_swap_result``."""
+        request = self._swap_requested
+        self._swap_requested = None
+        return request
+
+    def apply_swap_result(self, result: dict) -> None:
+        """Record the outcome of a ``NyforgeBridge.swap_document`` call:
+        the active variant, or the honest rejection reason."""
+        if result.get("ok"):
+            import os as _os
+            stem = _os.path.basename(
+                str(_os.path.basename(result.get("doc_path", ""))
+                    or "").rsplit(".", 1)[0])
+            self._active_variant = stem or self._active_variant
+            self._swap_status = "%s active" % self._active_variant
+        else:
+            self._swap_status = "rejected: %s" % str(
+                result.get("error", "unknown"))[:32]
+
+    def cycle_variant(self) -> str:
+        """Keyboard path ([V]): request the next variant. Cycling back
+        onto the running variant cancels a pending swap — the natural
+        meaning of "cycle to what is already active"."""
+        current = self._swap_requested or self._active_variant
+        idx = SHELL_VARIANTS.index(current) if current in SHELL_VARIANTS else 0
+        nxt = SHELL_VARIANTS[(idx + 1) % len(SHELL_VARIANTS)]
+        if nxt == self._active_variant:
+            self._swap_requested = None
+        else:
+            self.select_variant(nxt)
+        return nxt
+
     def toggle_setting(self, index: int) -> bool:
         if 0 <= index < len(self._toggles):
             self._toggles[index].enabled = not self._toggles[index].enabled
@@ -224,6 +295,9 @@ class SettingsPanel:
         elif key == "t" or key == "T":
             self.cycle_theme()
             return "theme"
+        elif key == "v" or key == "V":
+            self.cycle_variant()
+            return "variant"
         elif key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
             idx = int(key) - 1
             if idx < len(self._toggles):
@@ -454,6 +528,42 @@ class SettingsPanel:
         
         cy += 184
         
+        # === Shell Variant Section === (84 = 44 header zone + 44 row)
+        fill_rect(0, cy, w, 84, theme.surface)
+        fill_rect(0, cy + 83, w, 1, theme.border)
+        
+        draw_text(self.PADDING, cy + 12, "Shell Variant", theme.text)
+        draw_text(w - self.PADDING - 80, cy + 12, "[V] cycle", theme.text_dim)
+        
+        for i, name in enumerate(SHELL_VARIANTS):
+            item_y = cy + 44 + i * self.THEME_ITEM_HEIGHT
+            active = name == self._active_variant
+            pending = name == self._swap_requested
+            
+            # Selection strip: active variant, or accent-dimmed while a
+            # swap into it is pending.
+            if active or pending:
+                fill_rect(self.PADDING, item_y, w - self.PADDING * 2, 36,
+                          theme.accent if active else theme.border)
+            
+            name_color = (theme.text if active else theme.text_dim)
+            draw_text(self.PADDING + 4, item_y + 10, name, name_color)
+            
+            status_x = w - self.PADDING - 90
+            if pending:
+                draw_text(status_x, item_y + 10, "pending swap…",
+                          theme.warning)
+            elif active:
+                draw_text(status_x, item_y + 10, "active", theme.accent)
+        
+        # Swap outcome line (honest rejection reasons land here).
+        if self._swap_status:
+            draw_text(self.PADDING, cy + 44 + len(SHELL_VARIANTS)
+                      * self.THEME_ITEM_HEIGHT + 2, self._swap_status,
+                      theme.text_dim)
+        
+        cy += 84
+        
         # === Toggles Section ===
         fill_rect(0, cy, w, len(self._toggles) * self.TOGGLE_HEIGHT + 50, theme.bg)
         fill_rect(0, cy + len(self._toggles) * self.TOGGLE_HEIGHT + 49, w, 1, theme.border)
@@ -483,6 +593,8 @@ class SettingsPanel:
         draw_text(self.PADDING, cy + 58, f"Host: {self._hostname}", theme.text_dim)
         draw_text(self.PADDING, cy + 74, f"Kernel: {self._kernel}", theme.text_dim)
         draw_text(self.PADDING, cy + 90, f"Theme: {theme.name}", theme.text_dim)
+        draw_text(self.PADDING, cy + 106,
+                  f"Shell: {self._active_variant}", theme.text_dim)
         
         return pixels, w, h
     

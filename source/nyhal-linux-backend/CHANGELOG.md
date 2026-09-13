@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Shell-variant picker in the settings panel**: a "Shell Variant"
+  section ([V] to cycle) requests a swap via a request/consume/report
+  protocol the session drives — the panel never swaps by itself, it
+  only records the outcome handed back through ``apply_swap_result``
+  ("pill active" or the honest rejection reason; the active variant
+  never changes on a rejected swap). Cycling back onto the running
+  variant cancels a pending swap; unknown names are unrequestable by
+  construction.
+
 ## [0.29.6] - 2026-09-13
 
 ### Added

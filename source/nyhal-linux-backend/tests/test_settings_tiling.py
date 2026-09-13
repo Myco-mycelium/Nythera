@@ -72,6 +72,60 @@ class TestSettingsPanel(unittest.TestCase):
     def test_creation(self):
         self.assertIsNotNone(self.panel)
 
+    def test_variant_picker_request_and_consume(self):
+        """The picker requests a variant; the session consumes the
+        request exactly once."""
+        self.assertEqual(self.panel.active_variant, "stock")
+        self.assertTrue(self.panel.select_variant("pill"))
+        self.assertEqual(self.panel.swap_requested, "pill")
+        self.assertEqual(self.panel.consume_variant_request(), "pill")
+        self.assertIsNone(self.panel.swap_requested)
+        self.assertIsNone(self.panel.consume_variant_request())
+
+    def test_variant_picker_ignores_unknown_and_same(self):
+        """Unknown names and the running variant are never requested —
+        the picker cannot send what the resolver would reject."""
+        self.assertFalse(self.panel.select_variant("bogus"))
+        self.assertFalse(self.panel.select_variant("stock"))
+        self.assertIsNone(self.panel.swap_requested)
+
+    def test_variant_swap_result_success_and_rejection(self):
+        """apply_swap_result records the active variant or the honest
+        rejection; the active variant only changes on success."""
+        self.panel.apply_swap_result({
+            "ok": True,
+            "doc_path": "/opt/nyrqis/shell/variants/pill.nstudio",
+        })
+        self.assertEqual(self.panel.active_variant, "pill")
+        self.assertIn("pill", self.panel.swap_status)
+
+        self.panel.apply_swap_result({
+            "ok": False,
+            "error": "swap rejected — session kept: screen entries "
+                     "must be objects",
+        })
+        self.assertEqual(self.panel.active_variant, "pill",
+                         "a rejected swap must not change the variant")
+        self.assertIn("rejected", self.panel.swap_status)
+
+    def test_variant_cycle_and_render(self):
+        """[V] cycles through the variants and the panel still renders
+        with the Shell Variant section present. Cycling back onto the
+        running variant cancels the pending swap."""
+        nxt = self.panel.cycle_variant()
+        self.assertEqual(nxt, "pill")
+        self.assertEqual(self.panel.swap_requested, "pill")
+        self.assertEqual(self.panel.handle_key("v"), "variant")
+        # Cycled back onto the active variant → pending swap cancelled.
+        self.assertIsNone(self.panel.swap_requested)
+
+        # And a fresh cycle starts a new request.
+        self.assertEqual(self.panel.cycle_variant(), "pill")
+
+        pixels, w, h = self.panel.render()
+        self.assertGreater(len(pixels), 0)
+        self.assertGreaterEqual(h, 700)
+
     def test_volume_default(self):
         self.assertEqual(self.panel.volume, 75)
 
