@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.7] - 2026-09-13
+
 ### Added
 
 - **The variant choice persists across boots**: the daemon already
