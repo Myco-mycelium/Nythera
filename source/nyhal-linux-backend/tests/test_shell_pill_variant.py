@@ -80,6 +80,7 @@ class TestPillVariantShell(unittest.TestCase):
         def strip_allowed(raw, is_pill):
             raw = json.loads(json.dumps(raw))
             raw.pop("project", None)
+            raw.pop("requiresRegistry", None)
 
             def walk(node):
                 if isinstance(node, dict):

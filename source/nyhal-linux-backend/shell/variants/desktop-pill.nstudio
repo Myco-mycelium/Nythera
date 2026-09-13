@@ -1,5 +1,8 @@
 {
   "version": "1.0.0",
+  "requiresRegistry": [
+    "1.1"
+  ],
   "project": {
     "name": "Nyrqis Desktop Shell (Pill Variant)",
     "id": "example-nyrqis-desktop-shell-pill",

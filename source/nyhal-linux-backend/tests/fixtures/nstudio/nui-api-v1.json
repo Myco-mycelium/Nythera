@@ -4,6 +4,12 @@
   "purpose": "The Nyrqis API Registry — the single machine-readable source of truth for the NUI component vocabulary, per NFS-006 (Nyforge) / the platform ADR-0025 pipeline. The Nyrqis NUI import gate (ui/nstudio.py, rust/nyui) and Nyforge's palette/Inspector/Behaviors contract tables all derive from this file. Add a component or action HERE first; never edit a consumer's tables by hand. registryVersion majors on breaking contract changes, alongside the NUI schema version.",
   "versionHistory": [
     {
+      "registryVersion": "1.0",
+      "date": "2026-08-24",
+      "change": "Baseline: the initial published component vocabulary (Text, Button, Toggle, Slider, ProgressBar, Calendar, and the shell components) plus system actions, per NFS-006. Every later entry in this log is an incremental delta on this baseline.",
+      "breaking": false
+    },
+    {
       "registryVersion": "1.1",
       "date": "2026-09-12",
       "change": "Added optional Button property 'cornerRadius' (number, px, 0-64, default 0). Back-compat: purely additive — older consumers keep ignoring unknown property metadata fields (Python loader keeps names only; Rust PropertyDefinition is not deny_unknown_fields), and 0 means 'use radius.sm from designTokens', so existing documents render identically. Import gate note: property NAMES are enforced per component by the gate, so documents may only use cornerRadius on registry versions >= 1.1.",

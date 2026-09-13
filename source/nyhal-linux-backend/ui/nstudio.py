@@ -73,8 +73,8 @@ def _load_registry() -> Tuple[
     Returns ``(COMPONENT_CONTRACTS, SYSTEM_ACTIONS, VERSION_HISTORY)`` —
     the two historical tables (``type -> (category, properties, events,
     instance-actions)`` and ``name -> argument-names``) plus the raw
-    ``versionHistory`` entries (possibly empty; consumers like Nyforge's
-    Inspector read them for version pickers).
+    ``versionHistory`` entries (validated well-formed; consumers like
+    Nyforge's Inspector read them for version pickers).
     """
     try:
         with open(_REGISTRY_PATH, "r", encoding="utf-8") as handle:
@@ -150,6 +150,15 @@ def _load_registry() -> Tuple[
                 raise RuntimeError(
                     f"Nyrqis API Registry: versionHistory '{version}' must "
                     f"declare boolean 'breaking'")
+        # The log's newest entry must describe the registry that ships it:
+        # a top-level registryVersion nobody logs is a drift bug (an
+        # author bumped the header but not the history, or vice versa).
+        if history[-1]["registryVersion"] != str(
+                registry.get("registryVersion", "")):
+            raise RuntimeError(
+                "Nyrqis API Registry: newest versionHistory entry "
+                f"('{history[-1]['registryVersion']}') must match the "
+                f"registry's registryVersion ('{registry.get("registryVersion", "")}')")
 
     return components, system_actions, history
 
@@ -158,8 +167,9 @@ def _load_registry() -> Tuple[
 COMPONENT_CONTRACTS: Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]]
 # System actions: name -> allowed argument names
 SYSTEM_ACTIONS: Dict[str, Tuple[str, ...]]
-# The registry's contract-change log, newest meaning per versionHistory
-# order (validated well-formed at import; possibly empty).
+# The registry's contract-change log (baseline 1.0 onward), oldest first
+# and validated well-formed at import; the newest entry matches the
+# registry's own registryVersion.
 VERSION_HISTORY: List[Dict[str, Any]]
 COMPONENT_CONTRACTS, SYSTEM_ACTIONS, VERSION_HISTORY = _load_registry()
 

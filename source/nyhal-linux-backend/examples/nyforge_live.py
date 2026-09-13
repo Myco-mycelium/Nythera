@@ -79,6 +79,12 @@ def main():
         help="Render to PNG and exit",
     )
     parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Report the document's contract/version situation against "
+             "the registry versionHistory (Inspector preflight) and exit",
+    )
+    parser.add_argument(
         "--json", "-j",
         action="store_true",
         help="Output summary as JSON",
@@ -99,6 +105,34 @@ def main():
     if not os.path.exists(args.nstudio):
         print(f"Error: file not found: {args.nstudio}", file=sys.stderr)
         sys.exit(1)
+
+    # Inspector preflight: report the document's version situation
+    # without opening it.
+    if args.inspect:
+        bridge = NyforgeBridge(None)
+        report = bridge.inspect_version(path=args.nstudio)
+        if not report.get("ok"):
+            print(f"Error: {report.get('error', 'unknown')}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Document schema version: "
+              f"{report['documentSchemaVersion']} "
+              f"(supported: {report['schemaSupported']})")
+        print(f"Registry requirements: "
+              f"{report['docHeaderVersions'] or '(none declared)'}")
+        if report["changesSinceOldestRequirement"]:
+            print("Contract changes covered:")
+            for entry in report["changesSinceOldestRequirement"]:
+                print(f"  {entry['registryVersion']}: {entry['change']}")
+        if report["notYetInRegistry"]:
+            print(f"Requires a newer registry than this build: "
+                  f"{report['notYetInRegistry']}")
+        if report["unknownDocRequirements"]:
+            print(f"Unrecognized requirements (review): "
+                  f"{report['unknownDocRequirements']}")
+        verdict = "WOULD DROP features" if report["anyDropped"] \
+            else "fully honored by this build"
+        print(f"Verdict: {verdict}")
+        return
 
     # Load and bridge
     print(f"Loading {args.nstudio}...")

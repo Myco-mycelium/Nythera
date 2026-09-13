@@ -50,6 +50,9 @@ date: 2026-09-10
 | Live-image entry points | ✅ Build now writes thin PATH wrappers (`nyrqisctl`, `nyrqis-backend`, `nyrqis-session`, `nyrqis-run`, `nyrqis-init`) — closes the probe's PATH/entry-point advisories; proven on the real image by the boot-smoke marker |
 | Next plan cycle | Design-language phase 2 closed; candidates: (a) real-hardware probe results → MISSING work items, (b) ~~dock pill experiment~~ ✅ done (`desktop-pill.nstudio`), (c) ~~Nyforge consuming `versionHistory`~~ ✅ groundwork done: `VERSION_HISTORY` exposed + loader-validated (Nyforge wires the Inspector picker on top) |
 | NYRQIS name expansion | ✅ *Nexus for Your Resilient Quantum-ready Integrated System* — canonical in NPC-006 v1.3.0 + printed under the live-demo banner |
+| **Release 0.29.4** | ✅ Tagged `v0.29.4` (`b990607`); ISO auto-attached ([v0.29.4 release](https://github.com/Myco-mycelium/Nythera/releases/tag/v0.29.4)) — ships the full-name banner + validated `versionHistory` |
+| Nyforge Inspector preflight | ✅ `NyforgeBridge.inspect_version` reports a document's contract situation against `versionHistory` WITHOUT importing: schema support, `requiresRegistry` header, renderable change span, honest `anyDropped` verdict; losses classified (`notYetInRegistry` nameable incl. cleanly-newer unknowns via dotted-numeric compare, junk → `unknownDocRequirements`); exposed as `nyforge_live --inspect`; 14 new tests + Rust `VersionHistoryEntry` consistency (22/22) |
+| Registry log baseline | ✅ `versionHistory` gained the 1.0 entry; loader enforces newest-entry == `registryVersion` (both drift polarities pinned, fail-closed); doc-header contract: documents may declare `requiresRegistry` — pill variant ships `["1.1"]` |
 
 ## Session 7 (2026-09-11) — release 0.29.0; design-language rollout phase 2.1 (compositor tokens)
 

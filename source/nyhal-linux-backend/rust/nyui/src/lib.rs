@@ -118,6 +118,19 @@ struct SystemAction {
     arguments: Vec<String>,
 }
 
+/// The Nyrqis API Registry — one versionHistory entry (registry 1.1):
+/// the machine-readable contract-change log consumers like Nyforge's
+/// Inspector read for version pickers.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionHistoryEntry {
+    registry_version: String,
+    #[allow(dead_code)]
+    change: String,
+    #[allow(dead_code)]
+    breaking: bool,
+}
+
 /// The Nyrqis API Registry, embedded at compile time.
 ///
 /// The registry file (``ui/contracts/nui-api-v1.json``, one directory up
@@ -137,6 +150,9 @@ struct Registry {
     purpose: String,
     components: Vec<ComponentContract>,
     system_actions: Vec<SystemAction>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    version_history: Vec<VersionHistoryEntry>,
 }
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
@@ -1257,6 +1273,30 @@ mod tests {
     #[test]
     fn valid_document_passes() {
         assert!(validate(VALID_SHELL).is_ok());
+    }
+
+    #[test]
+    fn registry_version_history_present_and_consistent() {
+        // The embedded registry ships its contract-change log (baseline
+        // 1.0 onward), and the newest entry must name the registry that
+        // carries it — the same invariant the Python loader enforces.
+        let reg = registry();
+        assert!(
+            !reg.version_history.is_empty(),
+            "the registry ships its versionHistory"
+        );
+        let versions: Vec<&str> = reg
+            .version_history
+            .iter()
+            .map(|e| e.registry_version.as_str())
+            .collect();
+        assert_eq!(versions.first(), Some(&"1.0"), "the log records its baseline");
+        assert!(versions.contains(&"1.1"), "the log records the cornerRadius delta");
+        let newest = reg.version_history.last().unwrap();
+        assert_eq!(
+            newest.registry_version, reg.registry_version,
+            "newest history entry must match the registry's own version"
+        );
     }
 
     #[test]

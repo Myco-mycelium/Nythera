@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Nyforge Inspector preflight** (`NyforgeBridge.inspect_version`):
+  reports a document's contract situation against the registry's
+  ``versionHistory`` WITHOUT importing it — schema support, declared
+  ``requiresRegistry`` requirements, the renderable change span, and
+  an honest ``anyDropped`` verdict. Losses are classified: known
+  newer-than-shipped requirements (and cleanly-newer unknown ones,
+  dotted-numeric compare so ``1.10`` > ``1.9``) land in the nameable
+  ``notYetInRegistry`` set; junk (typos, skipped versions) is flagged
+  ``unknownDocRequirements``. Exposed as ``nyforge_live --inspect``.
+  14 new tests.
+- **The registry log now records its baseline**: ``versionHistory``
+  gained the 1.0 entry, and the loader enforces that the newest
+  history entry matches the registry's ``registryVersion`` (fail-closed
+  — a bumped header without a logged entry is an import error, and
+  both drift polarities are pinned in tests). The Rust gate embeds the
+  log as ``VersionHistoryEntry`` with a consistency test (22/22).
+- **Documents can declare what they need**: ``.nstudio`` documents may
+  carry a ``requiresRegistry`` header (list of registry versions the
+  document's features were authored against). The pill variant ships
+  ``["1.1"]`` — its structure-identity test strips the header like the
+  project header, so a pure restyle stays a pure restyle.
+
+### Fixed
+
+- The loader's versionHistory docstrings claimed "possibly empty"
+  while the validator rejected empty lists; comments now match the
+  contract (non-empty, baseline 1.0 onward).
+
 ## [0.29.4] - 2026-09-13
 
 ### Added

@@ -40,6 +40,7 @@ References:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -56,6 +57,18 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Component mapping
 # ---------------------------------------------------------------------------
+
+def _registry_version_key(version: Any) -> Optional[Tuple[int, ...]]:
+    """Parse a dotted registry version ("1.1", "1.10") into a tuple of
+    ints for numeric comparison; ``None`` when it is not dotted-numeric.
+    """
+    if not isinstance(version, str) or not version:
+        return None
+    parts = version.split(".")
+    if not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
 
 # Maps NUI component type names to Nyrqis desktop window roles.
 # When Nyforge exports a Window with a known type hint, the bridge
@@ -184,6 +197,125 @@ class NyforgeBridge:
         self._doc_path = None
 
         return self._inject_document(doc)
+
+    def inspect_version(self, path: Optional[str] = None,
+                        text: Optional[str] = None) -> Dict[str, Any]:
+        """Inspector preflight: report a document's contract situation
+        WITHOUT injecting it.
+
+        Answers the Inspector's version-picker question — "can I open
+        this document, and what will it do to my project?" — in one
+        call, against the registry's own ``versionHistory`` log.
+
+        Parameters
+        ----------
+        path : str, optional
+            Path to a .nstudio document (use this or ``text``).
+        text : str, optional
+            A .nstudio document as a JSON string.
+
+        Returns
+        -------
+        dict
+            ``documentSchemaVersion`` — the document's ``version`` (as
+            written, ``None`` if absent),
+            ``schemaSupported`` — whether the import gate would accept it,
+            ``docHeaderVersions`` — every ``requiresRegistry`` entry the
+            document declares,
+            ``unknownDocRequirements`` — doc requirements that are
+            neither a known registry version nor cleanly newer than the
+            shipped one (a typo like ``1,1``, or a skipped version —
+            the Inspector flags these for review),
+            ``notYetInRegistry`` — the named "will lose these" set:
+            requirements newer than the shipped registry, whether from
+            this registry's own history or cleanly newer still (a
+            document authored on a newer build),
+            ``changesSinceOldestRequirement`` — the versionHistory
+            entries this build knows that the document's requirements
+            cover, oldest first, for the Inspector to render (empty
+            when the document declares nothing),
+            ``anyDropped`` — whether opening the document here would
+            drop anything (any not-yet-shipped or unresolvable
+            requirement).
+        """
+        raw: Dict[str, Any]
+        if text is not None:
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "error": f"malformed JSON: {exc}"}
+        elif path is not None:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    raw = json.load(handle)
+            except (OSError, json.JSONDecodeError) as exc:
+                return {"ok": False, "error": str(exc)}
+        else:
+            return {"ok": False, "error": "provide 'path' or 'text'"}
+        if not isinstance(raw, dict):
+            return {"ok": False, "error": "document root must be a JSON object"}
+
+        from ui.nstudio import NSTUDIO_SCHEMA_VERSION, VERSION_HISTORY
+
+        # History order is authoritative for known versions — registry
+        # versions are not necessarily single digits ("1.10" follows
+        # "1.9" in history order, not lexicographic order). For a
+        # requirement this build has never heard of, dotted-numeric
+        # comparison against the shipped registry decides whether it is
+        # a cleanly newer document (the cross-build case) or junk.
+        order = {str(e["registryVersion"]): i
+                 for i, e in enumerate(VERSION_HISTORY)}
+        shipped_idx = len(VERSION_HISTORY) - 1
+        shipped_key = _registry_version_key(
+            VERSION_HISTORY[-1]["registryVersion"])
+
+        def classify(req: str) -> str:
+            if req in order:
+                return ("honored" if order[req] <= shipped_idx
+                        else "not_yet")
+            key = _registry_version_key(req)
+            if key is not None and shipped_key is not None \
+                    and key > shipped_key:
+                return "not_yet"
+            return "unknown"
+
+        doc_version = raw.get("version")
+        requirements = [str(r) for r in raw.get("requiresRegistry") or []]
+        verdicts = [classify(r) for r in requirements]
+
+        unknown = sorted({r for r, v in zip(requirements, verdicts)
+                          if v == "unknown"})
+        # Total order: history position first (unknown requirements sort
+        # after known ones, numerically among themselves) — never set
+        # iteration order.
+        not_yet = sorted(
+            {r for r, v in zip(requirements, verdicts)
+             if v == "not_yet"},
+            key=lambda r: (order.get(r, -1),
+                           _registry_version_key(r) or ()))
+        # "Would I lose anything opening this here?" is true for BOTH a
+        # newer-than-shipped requirement (a nameable loss) and an
+        # unresolvable one (cannot be honored — flag for review).
+        any_dropped = bool(not_yet or unknown)
+
+        # Renderable context: what this build's log knows that the
+        # document's requirements cover — the baseline through the
+        # newest known requirement, or the full log when the document
+        # reaches beyond it (the user sees what their build DOES have).
+        known_idxs = [order[r] for r in requirements if r in order]
+        top = max(known_idxs) if known_idxs else -1
+        span = list(VERSION_HISTORY[:top + 1])
+
+        return {
+            "ok": True,
+            "documentSchemaVersion": doc_version,
+            "schemaSupported": doc_version == NSTUDIO_SCHEMA_VERSION,
+            "docHeaderVersions": requirements,
+            "unknownDocRequirements": unknown,
+            "notYetInRegistry": not_yet,
+            "changesSinceOldestRequirement": span,
+            "anyDropped": any_dropped,
+        }
 
     def _inject_document(self, doc: Any) -> Dict[str, Any]:
         """Map NUI components to DesktopSession windows."""

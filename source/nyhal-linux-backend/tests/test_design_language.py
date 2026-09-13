@@ -174,13 +174,56 @@ class TestRegistryVersionHistory(unittest.TestCase):
 
     def test_history_exposed_and_well_formed(self):
         from ui.nstudio import VERSION_HISTORY
-        self.assertTrue(VERSION_HISTORY, "registry 1.1 ships a history")
-        versions = {e["registryVersion"] for e in VERSION_HISTORY}
+        self.assertTrue(VERSION_HISTORY, "the registry ships a history")
+        versions = [e["registryVersion"] for e in VERSION_HISTORY]
+        self.assertEqual(versions[0], "1.0",
+                         "the log records its 1.0 baseline")
         self.assertIn("1.1", versions)
+        self.assertEqual(len(versions), len(set(versions)),
+                         "no duplicate history entries")
         for entry in VERSION_HISTORY:
             self.assertIsInstance(entry["registryVersion"], str)
             self.assertIsInstance(entry["change"], str)
             self.assertIsInstance(entry["breaking"], bool)
+
+    def test_newest_entry_matches_registry_header(self):
+        # The loader hard-fails on drift; this pins the shipped file so
+        # a bumped header without a logged entry can never land.
+        import json
+        import os
+        from ui import nstudio
+        from ui.nstudio import VERSION_HISTORY
+        reg = json.load(open(os.path.join(
+            os.path.dirname(os.path.abspath(nstudio.__file__)),
+            "contracts", "nui-api-v1.json")))
+        self.assertEqual(VERSION_HISTORY[-1]["registryVersion"],
+                         reg["registryVersion"])
+
+    def test_header_without_history_entry_fails_import(self):
+        # Drift polarity: bump the header, forget the log entry.
+        import json
+        import tempfile
+        from ui import nstudio
+        import os
+        reg = json.load(open(os.path.join(
+            os.path.dirname(os.path.abspath(nstudio.__file__)),
+            "contracts", "nui-api-v1.json")))
+        broken = dict(reg)
+        broken["registryVersion"] = "1.2"  # no matching history entry
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(broken, fh)
+            old = nstudio._REGISTRY_PATH
+            nstudio._REGISTRY_PATH = path
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    nstudio._load_registry()
+                self.assertIn("must match", str(ctx.exception))
+            finally:
+                nstudio._REGISTRY_PATH = old
+        finally:
+            os.unlink(path)
 
     def test_newest_entry_records_cornerRadius_as_additive(self):
         from ui.nstudio import VERSION_HISTORY

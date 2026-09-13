@@ -169,6 +169,7 @@ else
     # Design-language adoption (ui/hig token bridge + surfaces)
     run_test "Design Language" "tests.test_design_language"
     run_test "Shell Pill Variant" "tests.test_shell_pill_variant"
+    run_test "Nyforge Inspector Preflight" "tests.test_nyforge_inspect"
     
     # Pipeline tests
     run_test "Render Pipeline" "tests.test_render_pipeline"
