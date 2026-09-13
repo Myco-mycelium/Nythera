@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The newest-entry invariant's error message used a 3.12-only
+  nested-quote f-string (PEP 701); the live-image build's 3.11 syntax
+  gate caught it before a dead demo session could ship — the gate
+  working exactly as designed. Rewritten 3.11-safe.
 - The loader's versionHistory docstrings claimed "possibly empty"
   while the validator rejected empty lists; comments now match the
   contract (non-empty, baseline 1.0 onward).

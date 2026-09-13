@@ -155,10 +155,11 @@ def _load_registry() -> Tuple[
         # author bumped the header but not the history, or vice versa).
         if history[-1]["registryVersion"] != str(
                 registry.get("registryVersion", "")):
+            header_version = str(registry.get("registryVersion", ""))
             raise RuntimeError(
                 "Nyrqis API Registry: newest versionHistory entry "
                 f"('{history[-1]['registryVersion']}') must match the "
-                f"registry's registryVersion ('{registry.get("registryVersion", "")}')")
+                f"registry's registryVersion ('{header_version}')")
 
     return components, system_actions, history
 
