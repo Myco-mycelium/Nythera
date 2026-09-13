@@ -127,6 +127,7 @@ class NyforgeBridge:
         self._mapped: Dict[str, MappedWindow] = {}
         self._doc_hash: Optional[str] = None
         self._doc_path: Optional[str] = None
+        self._rejected_hash: Optional[str] = None
         self._callbacks: List[Callable] = []
         self._hot_reload_enabled = False
         self._watch_thread: Optional[threading.Thread] = None
@@ -623,8 +624,19 @@ class NyforgeBridge:
                 "doc_hash": self._doc_hash,
                 "inspector": inspector,
             }
+            # Transition-driven notifications: a file that STAYS broken
+            # is rejected once per edit, not once per poll — re-polling
+            # the same bytes returns the cached verdict without firing
+            # the callbacks again.
+            if new_hash == self._rejected_hash:
+                cached = dict(result)
+                cached["unchanged"] = True
+                return cached
+            self._rejected_hash = new_hash
             self._notify("reload_rejected", result)
             return result
+
+        self._rejected_hash = None
 
         # Remove old mapped windows
         self._clear_mapped()

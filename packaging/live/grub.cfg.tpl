@@ -8,6 +8,11 @@ menuentry "Nyrqis Live (demo)" {
     initrd /live/initrd
 }
 
+menuentry "Nyrqis Live (pill shell — registry-1.1 cornerRadius demo)" {
+    linux /live/vmlinuz boot=live nyrqis.variant=pill quiet splash
+    initrd /live/initrd
+}
+
 menuentry "Nyrqis Live (verbose — full boot log)" {
     linux /live/vmlinuz boot=live
     initrd /live/initrd

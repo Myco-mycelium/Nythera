@@ -171,6 +171,21 @@ else
     if python3 "$OPT/ui/drm_backend.py" probe >/dev/null 2>&1 \
        || [[ -w /dev/dri/card0 ]] || [[ -w /dev/dri/card1 ]]; then
         ok "DRM device available — attempting the desktop session"
+        # Boot-menu variant selection: `nyrqis.variant=pill` on the
+        # kernel cmdline (GRUB/isolinux "pill shell" entry) selects the
+        # shell variant for this boot; --design still wins.
+        variant=""
+        for word in $(cat /proc/cmdline); do
+            case "$word" in
+                nyrqis.variant=*) variant="${word#nyrqis.variant=}" ;;
+            esac
+        done
+        case "$variant" in
+            "") : ;;
+            stock) : ;;
+            *) export NYRQIS_SHELL_VARIANT="$variant"
+               ok "shell variant: $variant (kernel cmdline)" ;;
+        esac
         (cd "$OPT" && timeout 8 python3 nyrqis_init.py >/tmp/nyrqis-desktop.log 2>&1) \
             && ok "desktop session started (log: /tmp/nyrqis-desktop.log)" \
             || warn "desktop did not stay up (expected on some VMs) — see /tmp/nyrqis-desktop.log"

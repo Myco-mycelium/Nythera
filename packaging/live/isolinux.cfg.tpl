@@ -8,6 +8,10 @@ LABEL nyrqis
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd boot=live quiet splash
 
+LABEL nyrqis-pill
+    KERNEL /live/vmlinuz
+    APPEND initrd=/live/initrd boot=live nyrqis.variant=pill quiet splash
+
 LABEL nyrqis-verbose
     KERNEL /live/vmlinuz
     APPEND initrd=/live/initrd boot=live

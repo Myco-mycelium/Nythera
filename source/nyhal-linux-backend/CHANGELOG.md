@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Boot-menu shell selection on the live ISO**: the GRUB and isolinux
+  menus gained a "pill shell" entry that puts `nyrqis.variant=pill` on
+  the kernel cmdline; the demo session parses it and exports
+  `NYRQIS_SHELL_VARIANT` for the desktop session (`--design` still
+  wins). The registry-1.1 reference design is now one menu pick away
+  on any booted image.
+- **Transition-driven hot-reload callbacks**: a document that STAYS
+  broken fires `reload_rejected` once per edit, not once per poll —
+  re-polling identical broken bytes returns the cached verdict
+  silently; repairing to the original bytes is honestly `unchanged`.
+
 ## [0.29.5] - 2026-09-13
 
 ### Added

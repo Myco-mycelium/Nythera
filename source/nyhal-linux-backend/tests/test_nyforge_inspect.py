@@ -218,6 +218,54 @@ class TestSafeHotReload(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+    def test_rejection_is_transition_driven_not_per_poll(self):
+        """A file that STAYS broken fires the callback once per edit;
+        re-polling identical broken bytes returns the cached verdict
+        silently. Repairing to the ORIGINAL bytes is honestly
+        ``unchanged`` (the session never stopped running them); a
+        different valid edit reloads exactly once."""
+        import shutil
+        import tempfile
+        import threading
+        import time
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "doc.nstudio")
+            good = self._stock()
+            edited = json.loads(json.dumps(good))
+            edited["project"] = {"name": "v2", "id": "v2-id"}
+            broken = json.loads(json.dumps(good))
+            broken["screens"] = "oops"
+
+            self._write(path, good)
+            bridge = NyforgeBridge(self._FakeSession())
+            bridge.load_document(path)
+            events = []
+            done = threading.Event()
+
+            def callback(event, data):
+                events.append(event)
+                if event == "reload":
+                    done.set()
+
+            bridge.enable_hot_reload(interval=0.05, callback=callback)
+            try:
+                self._write(path, broken)
+                time.sleep(0.3)
+                self._write(path, broken)  # same broken bytes again
+                time.sleep(0.2)
+                self.assertEqual(events.count("reload_rejected"), 1,
+                                 "one rejection per broken edit")
+
+                self._write(path, edited)  # different, valid
+                self.assertTrue(done.wait(timeout=3.0),
+                                "a different valid edit must reload")
+                self.assertEqual(events.count("reload"), 1)
+            finally:
+                bridge.disable_hot_reload()
+        finally:
+            shutil.rmtree(tmp)
+
     def test_identical_content_reports_unchanged(self):
         import shutil
         import tempfile
