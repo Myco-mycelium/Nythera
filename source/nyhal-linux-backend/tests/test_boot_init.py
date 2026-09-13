@@ -94,6 +94,45 @@ class TestNyrqisInit(unittest.TestCase):
             _find_design(variant="bogus")
         self.assertIn("known variants", str(ctx.exception))
 
+    def test_find_design_remembers_daemon_persisted_choice(self):
+        """Persistence: the daemon stores every successful nui_load/swap
+        at <state_dir>/ui/shell.nstudio; the next boot's resolution
+        finds it (beating defaults, losing to explicit requests)."""
+        import json
+        import shutil
+        import tempfile
+        from nyrqis_init import _find_design
+
+        tmp = tempfile.mkdtemp()
+        try:
+            ui_dir = os.path.join(tmp, "ui")
+            os.makedirs(ui_dir)
+            remembered = os.path.join(ui_dir, "shell.nstudio")
+            with open(remembered, "w", encoding="utf-8") as fh:
+                json.dump({"version": "1.0.0"}, fh)
+
+            # Remembered beats defaults.
+            self.assertEqual(
+                _find_design(daemon_state_dir=tmp), remembered)
+
+            # Explicit requests beat the remembered choice.
+            fixture = os.path.join(
+                _HERE, "tests", "fixtures", "nstudio", "desktop.nstudio")
+            if os.path.exists(fixture):
+                self.assertEqual(
+                    _find_design(fixture, daemon_state_dir=tmp), fixture)
+
+            # No remembered file → defaults as before (back-compat).
+            empty = tempfile.mkdtemp()
+            try:
+                self.assertEqual(
+                    _find_design(daemon_state_dir=empty),
+                    _find_design())
+            finally:
+                shutil.rmtree(empty, ignore_errors=True)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_wait_for_socket_timeout(self):
         """_wait_for_socket returns False when no socket appears."""
         from nyrqis_init import _wait_for_socket

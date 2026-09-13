@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The variant choice persists across boots**: the daemon already
+  stores every successful ``nui_load``/swap at
+  ``<state_dir>/ui/shell.nstudio`` — now ``nyrqis_init`` actually looks
+  there. Resolution order: explicit ``--design`` > named variant
+  (``--variant`` / ``NYRQIS_SHELL_VARIANT``) > the remembered design >
+  the shipped trees. A pill swap in session N is the shell that boots
+  in session N+1; ``stock``/no-variant requests no longer silently
+  override the remembered choice, and the boot log says which one won
+  ("Remembered shell design: …").
 - **Shell-variant picker in the settings panel**: a "Shell Variant"
   section ([V] to cycle) requests a swap via a request/consume/report
   protocol the session drives — the panel never swaps by itself, it
@@ -93,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The persistence loop was broken by a one-directory offset**:
+  ``nui_load``/swaps persisted to ``<state_dir>/ui/shell.nstudio``
+  (documented, pinned by tests, and referenced by ``nyrqisctl`` help)
+  while ``nyrqis_init`` searched ``<state_dir>/shell.nstudio`` — a
+  remembered design could never be found. Init now searches the
+  daemon's real persist location.
+- ``NyforgeBridge.swap_document`` results carry ``doc_path`` (the
+  running document's path) — the settings-panel variant picker keys
+  off it, and the earlier smoke test had supplied it by hand.
 - **Stale-cdylib contract drift is now detected**: the nyui crate's
   embedded registry (`include_str!`, frozen at compile time) is
   exposed over FFI (`nyrqis_nyui_registry_version[_len]`), and the

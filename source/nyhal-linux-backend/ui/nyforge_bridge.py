@@ -641,6 +641,10 @@ class NyforgeBridge:
         result["inspector"] = inspector
         result["previous_path"] = previous
         if result["ok"]:
+            # Where the swap is persisted (the daemon stores the design
+            # next to its state file) — consumers like the settings
+            # panel's variant picker key off this.
+            result["doc_path"] = self._doc_path
             self._notify("swap", result)
         else:
             # The target validated at gate time but injection failed

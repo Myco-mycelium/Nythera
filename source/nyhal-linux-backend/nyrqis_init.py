@@ -275,12 +275,17 @@ def _wait_for_socket(path: str, timeout: float = SOCKET_WAIT_TIMEOUT) -> bool:
 
 
 def _find_design(user_design: Optional[str] = None,
-                 variant: str = DEFAULT_SHELL_VARIANT) -> str:
+                 variant: str = DEFAULT_SHELL_VARIANT,
+                 daemon_state_dir: Optional[str] = None) -> str:
     """Locate the shell design file.
 
     Resolution order: an existing explicit path, then a named variant
     (``shell/variants/<variant>.nstudio``; ``stock`` means "no override"
-    and falls through to the built-in candidates).
+    and falls through to the built-in candidates), then the daemon's
+    persisted design (``<state_dir>/ui/shell.nstudio`` — what a previous
+    session's last successful ``nui_load``/swap stored; explicit
+    requests beat the remembered one), then the documented default and
+    the shipped trees.
     """
     if user_design and os.path.exists(user_design):
         return user_design
@@ -299,7 +304,13 @@ def _find_design(user_design: Optional[str] = None,
             "shell variant '%s' not found at %s; using the stock shell",
             variant, variant_path)
 
-    candidates = [
+    candidates = []
+    if daemon_state_dir:
+        # The daemon persists every successful nui_load/swap next to its
+        # state file; that is the remembered choice and beats defaults.
+        candidates.append(
+            os.path.join(daemon_state_dir, "ui", "shell.nstudio"))
+    candidates.extend([
         DEFAULT_DESIGN,
         os.path.join(os.path.dirname(__file__), "shell", "defaults",
                      "default-shell.nstudio"),
@@ -309,7 +320,7 @@ def _find_design(user_design: Optional[str] = None,
                      "nstudio", "desktop.nstudio"),
         os.path.join(os.path.dirname(__file__), "tests", "fixtures",
                      "nstudio", "nyrqis-shell.nstudio"),
-    ]
+    ])
     for path in candidates:
         if os.path.exists(path):
             return path
@@ -567,12 +578,20 @@ Examples:
     # is a CLI error instead of a silent fallback.
     variant = args.variant or os.environ.get("NYRQIS_SHELL_VARIANT") \
         or DEFAULT_SHELL_VARIANT
+    # The daemon persists the last successfully loaded design next to
+    # its state file; that remembered choice beats defaults (but never
+    # an explicit --design or a named variant).
+    daemon_state_dir = os.path.dirname(os.path.abspath(args.socket))
     try:
-        design_path = _find_design(args.design, variant=variant)
+        design_path = _find_design(args.design, variant=variant,
+                                   daemon_state_dir=daemon_state_dir)
     except ValueError as exc:
         parser.error(str(exc))
     if not design_path:
         logger.warning("No shell design found; session will start with defaults")
+    elif design_path == os.path.join(
+            daemon_state_dir, "ui", "shell.nstudio"):
+        logger.info("Remembered shell design: %s", design_path)
     elif variant != DEFAULT_SHELL_VARIANT:
         logger.info("Shell variant: %s (%s)", variant, design_path)
 
