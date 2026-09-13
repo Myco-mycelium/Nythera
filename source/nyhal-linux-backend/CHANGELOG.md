@@ -5,6 +5,19 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-screen variant mixing** (``ui.variant_mix``): compose one shell
+  document from several variants — screens are the unit (each screen
+  comes wholly from one source; no component-level merge). The header
+  contract is computed from the RESULT: a mix that takes zero overlay
+  screens never inherits the overlay's ``requiresRegistry``. Mixed
+  documents pass the real import gate, get the same inspect verdict
+  from both engines (differential-pinned), and boot end-to-end through
+  the real daemon. 8 new tests (6,293 OK).
+
 ## [0.29.8] - 2026-09-13
 
 ### Added
