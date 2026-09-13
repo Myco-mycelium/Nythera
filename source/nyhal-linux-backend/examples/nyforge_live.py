@@ -132,6 +132,14 @@ def main():
              "the registry versionHistory (Inspector preflight) and exit",
     )
     parser.add_argument(
+        "--inspect-json",
+        dest="inspect_json",
+        action="store_true",
+        help="Same report as --inspect but machine-readable (raw JSON); "
+             "this is the integration point for the Nyforge contract "
+             "panel",
+    )
+    parser.add_argument(
         "--json", "-j",
         action="store_true",
         help="Output summary as JSON",
@@ -168,6 +176,14 @@ def main():
                   f"({summary['panel_size'][0]}x{summary['panel_size'][1]})")
             print(f"Preview rendered: {summary['preview_rendered']}")
             print(f"Verdict: {summary['verdict']}")
+        return
+
+    # Inspector preflight, machine-readable: the Nyforge contract panel
+    # (and any other tool) consumes the raw report JSON.
+    if args.inspect_json:
+        bridge = NyforgeBridge(None)
+        report = bridge.inspect_version(path=args.nstudio)
+        print(json.dumps(report, indent=2, sort_keys=True))
         return
 
     # Inspector preflight: report the document's version situation

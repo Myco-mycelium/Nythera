@@ -420,6 +420,24 @@ class TestInspectVersionFailures(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertFalse(report["schemaSupported"])
 
+    def test_inspect_json_cli_is_machine_readable(self):
+        """The Nyforge contract panel consumes this exact surface."""
+        import json
+        import subprocess
+        import sys
+        proc = subprocess.run(
+            [sys.executable, os.path.join(_HERE, "..", "examples",
+                                          "nyforge_live.py"),
+             "--inspect-json",
+             os.path.join(_HERE, "..", "shell", "variants",
+                          "pill.nstudio")],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["docHeaderVersions"], ["1.1"])
+        self.assertFalse(report["anyDropped"])
+
 
 if __name__ == "__main__":
     unittest.main()
