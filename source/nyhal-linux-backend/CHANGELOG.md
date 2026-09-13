@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Safe hot-reload**: `NyforgeBridge.refresh()` preflights the edited
+  document (Inspector verdict + import gate) BEFORE tearing down the
+  live session — a broken edit is rejected with the session kept
+  intact and the verdict attached; only a document that validates
+  both ways replaces the running one. New `reload_rejected` callback
+  event alongside `reload`.
 - **Runtime-selectable shell variants**: `nyrqis_init --variant pill`
   (or `NYRQIS_SHELL_VARIANT=pill`) boots the registry-1.1 pill
   reference design instead of the stock shell — resolution order:
@@ -50,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stale-cdylib contract drift is now detected**: the nyui crate's
+  embedded registry (`include_str!`, frozen at compile time) is
+  exposed over FFI (`nyrqis_nyui_registry_version[_len]`), and the
+  Python loader disables the crate when its version does not match
+  the tree's `nui-api-v1.json` — either direction, fail-closed
+  (crates without the symbols are disabled too). A 16-day-old cdylib
+  silently rejected registry-1.1 `cornerRadius` while the Python
+  floor accepted it; the two engines can no longer disagree.
 - The newest-entry invariant's error message used a 3.12-only
   nested-quote f-string (PEP 701); the live-image build's 3.11 syntax
   gate caught it before a dead demo session could ship — the gate

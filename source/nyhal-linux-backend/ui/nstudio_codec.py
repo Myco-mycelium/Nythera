@@ -97,9 +97,84 @@ def _load() -> Optional[ctypes.CDLL]:
         logger.warning("nyrqis_nyui missing nyrqis_nyui_version symbol")
         lib = None
 
+    if lib is not None:
+        lib = _check_registry_parity(lib)
+
     _RUST_LIB = lib
     _RUST_LIB_CHECKED = True
     return lib
+
+
+def _check_registry_parity(lib: ctypes.CDLL) -> Optional[ctypes.CDLL]:
+    """Disable the crate when its EMBEDDED registry does not match the
+    tree's ``nui-api-v1.json``.
+
+    The crate ``include_str!``-es the registry at compile time, so a
+    stale cdylib validates documents against an older contract — the
+    registry-1.1 ``cornerRadius`` was rejected exactly this way by an
+    Aug-build cdylib while the Python floor accepted it. Parity is
+    enforced in either direction: an old crate next to a new registry,
+    or a new crate next to a downgraded registry. A crate without the
+    version symbol predates the check and is disabled too (it cannot
+    prove its currency).
+    """
+    import json as _json
+
+    try:
+        symbols = [
+            lib.nyrqis_nyui_registry_version,
+            lib.nyrqis_nyui_registry_version_len,
+        ]
+        symbols[0].restype = ctypes.c_void_p
+        symbols[1].restype = ctypes.c_size_t
+    except AttributeError:
+        logger.warning(
+            "nyrqis_nyui lacks the registry-version symbols; disabling "
+            "crate (cannot prove its embedded registry is current)")
+        return None
+
+    try:
+        ptr = symbols[0]()
+        length = symbols[1]()
+        if not ptr or not length:
+            raise ValueError("empty registry version from the crate")
+        buf = ctypes.string_at(ptr, length)
+        crate_registry = buf.decode("utf-8")
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        logger.warning("nyrqis_nyui registry version unreadable (%s); "
+                       "disabling crate", exc)
+        return None
+
+    tree_registry = _tree_registry_version()
+    if tree_registry is None:
+        logger.warning(
+            "cannot read the tree's registry version; disabling crate "
+            "(parity unverifiable)")
+        return None
+    if crate_registry != tree_registry:
+        logger.warning(
+            "nyrqis_nyui embedded registry %s != tree registry %s; "
+            "disabling crate (rebuild rust/nyui) — stale cdylibs must "
+            "not validate documents against an older contract",
+            crate_registry, tree_registry)
+        return None
+    return lib
+
+
+def _tree_registry_version() -> Optional[str]:
+    """The registryVersion of the tree's ``nui-api-v1.json`` (None if
+    unreadable — fail-closed, the same posture as the loader)."""
+    import json as _json
+
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "contracts", "nui-api-v1.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return str(_json.load(fh).get("registryVersion"))
+    except (OSError, ValueError) as exc:
+        logger.warning("cannot read %s: %s", path, exc)
+        return None
 
 
 def available() -> bool:

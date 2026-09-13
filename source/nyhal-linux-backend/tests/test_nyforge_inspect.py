@@ -141,6 +141,101 @@ class TestInspectVersionLosses(unittest.TestCase):
             ["1.0", "1.1"])
 
 
+class TestSafeHotReload(unittest.TestCase):
+    """refresh() preflights before it tears down: a broken edit must
+    never destroy the live session, and every real reload carries the
+    Inspector verdict."""
+
+    class _FakeSession:
+        def __init__(self):
+            self.closed = 0
+
+        def add_window(self, window):
+            pass
+
+        def close_window(self, window_id):
+            self.closed += 1
+
+    def _write(self, path, raw):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+
+    def _stock(self):
+        with open(STOCK, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_broken_edit_is_rejected_and_session_kept(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "doc.nstudio")
+            good = self._stock()
+            self._write(path, good)
+            session = self._FakeSession()
+            bridge = NyforgeBridge(session)
+            self.assertTrue(bridge.load_document(path)["ok"])
+            before = len(bridge.mapped_windows)
+            self.assertGreater(before, 0)
+
+            broken = self._stock()
+            broken["screens"] = "not-a-list"
+            self._write(path, broken)
+            result = bridge.refresh()
+
+            self.assertFalse(result["ok"])
+            self.assertIn("session kept", result["error"])
+            self.assertIn("inspector", result)
+            self.assertEqual(len(bridge.mapped_windows), before,
+                             "a rejected edit must not tear down windows")
+            self.assertEqual(session.closed, 0)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_valid_edit_reloads_with_verdict(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "doc.nstudio")
+            good = self._stock()
+            good["requiresRegistry"] = ["1.1"]
+            self._write(path, good)
+            bridge = NyforgeBridge(self._FakeSession())
+            self.assertTrue(bridge.load_document(path)["ok"])
+
+            edited = json.loads(json.dumps(good))
+            edited["project"] = {
+                "name": "edited v2", "id": "demo-v2"}
+            self._write(path, edited)
+            result = bridge.refresh()
+
+            self.assertTrue(result["ok"])
+            self.assertNotIn("unchanged", result)
+            self.assertEqual(
+                result["inspector"]["docHeaderVersions"], ["1.1"])
+            self.assertFalse(result["inspector"]["anyDropped"])
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_identical_content_reports_unchanged(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "doc.nstudio")
+            self._write(path, self._stock())
+            bridge = NyforgeBridge(self._FakeSession())
+            bridge.load_document(path)
+            # Rewrite byte-identical content.
+            self._write(path, self._stock())
+            result = bridge.refresh()
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["unchanged"])
+        finally:
+            shutil.rmtree(tmp)
+
+
 class TestInspectVersionFailures(unittest.TestCase):
     """Honest failure modes."""
 

@@ -582,9 +582,15 @@ class NyforgeBridge:
     # -- Refresh (hot-reload) ----------------------------------------------
 
     def refresh(self) -> Dict[str, Any]:
-        """Re-load the current document and re-inject.
+        """Re-load the current document and re-inject — safely.
 
-        Returns the same structure as ``load_document``.
+        A broken edit must never tear down the live session: the new
+        document is preflighted (``inspect_version``) and passed through
+        the import gate BEFORE any window is removed. Only a document
+        that validates both ways replaces the running one; a failure
+        leaves the current session untouched and reports the verdict.
+        Returns the same structure as ``load_document`` plus an
+        ``inspector`` key (the preflight report) on real reloads.
         """
         if self._doc_path is None:
             return {"ok": False, "error": "No document loaded"}
@@ -600,11 +606,32 @@ class NyforgeBridge:
                 "doc_hash": self._doc_hash,
             }
 
+        # Inspector preflight FIRST — the verdict accompanies the
+        # result whichever way the reload goes.
+        inspector = self.inspect_version(path=self._doc_path)
+
+        # Validate the new text through the gate before touching the
+        # live session (loads, but does not inject).
+        from ui.nstudio import load as _load
+        try:
+            _load(self._doc_path)
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "error": "rejected — session kept: %s" % exc,
+                "windows_created": 0,
+                "doc_hash": self._doc_hash,
+                "inspector": inspector,
+            }
+            self._notify("reload_rejected", result)
+            return result
+
         # Remove old mapped windows
         self._clear_mapped()
 
         # Re-load
         result = self.load_document(self._doc_path)
+        result["inspector"] = inspector
         if result["ok"]:
             self._notify("reload", result)
         return result

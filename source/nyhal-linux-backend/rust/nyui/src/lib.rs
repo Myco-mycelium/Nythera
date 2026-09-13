@@ -1165,6 +1165,22 @@ pub extern "C" fn nyrqis_nyui_version() -> u32 {
     ABI_VERSION
 }
 
+/// The registry version embedded in this compiled crate (its
+/// `include_str!`-ed registry is frozen at build time). Python-side
+/// consumers compare it against the tree's registry to detect a stale
+/// cdylib: a mismatch must disable the crate, not silently validate
+/// documents against an older contract.
+#[no_mangle]
+pub extern "C" fn nyrqis_nyui_registry_version() -> *const c_char {
+    registry().registry_version.as_ptr() as *const c_char
+}
+
+/// Length in bytes of the registry version string (excluding the NUL).
+#[no_mangle]
+pub extern "C" fn nyrqis_nyui_registry_version_len() -> usize {
+    registry().registry_version.len()
+}
+
 /// Validate a `.nstudio` document given as UTF-8 bytes.
 ///
 /// Returns `0` on success or a negative status code (see module docs).
