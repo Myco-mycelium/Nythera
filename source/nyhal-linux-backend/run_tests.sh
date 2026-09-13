@@ -170,6 +170,7 @@ else
     run_test "Design Language" "tests.test_design_language"
     run_test "Shell Pill Variant" "tests.test_shell_pill_variant"
     run_test "Nyforge Inspector Preflight" "tests.test_nyforge_inspect"
+    run_test "Inspector Panel" "tests.test_inspector_panel"
     
     # Pipeline tests
     run_test "Render Pipeline" "tests.test_render_pipeline"

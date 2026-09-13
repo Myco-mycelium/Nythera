@@ -28,7 +28,7 @@ from ui.nyforge_bridge import NyforgeBridge, _registry_version_key
 
 _REPO = os.path.join(_HERE, os.pardir)
 STOCK = os.path.join(_REPO, "shell", "defaults", "desktop.nstudio")
-PILL = os.path.join(_REPO, "shell", "variants", "desktop-pill.nstudio")
+PILL = os.path.join(_REPO, "shell", "variants", "pill.nstudio")
 
 
 def _bridge():

@@ -51,6 +51,10 @@ DEFAULT_SOCKET = "/tmp/nyrqis-status.sock"
 DEFAULT_HEALTH_SOCKET = "/tmp/nyrqis-health.sock"
 DEFAULT_STATE_DIR = os.path.expanduser("~/.nyrqis")
 DEFAULT_DESIGN = os.path.join(DEFAULT_STATE_DIR, "shell.nstudio")
+# Runtime-selectable shell variants (registry-1.1 pill reference design):
+# explicit --design > NYRQIS_SHELL_VARIANT name > the stock shell.
+KNOWN_SHELL_VARIANTS = ("stock", "pill")
+DEFAULT_SHELL_VARIANT = "stock"
 DEFAULT_VAULT_DIR = "/var/lib/nyrqis/vault"
 DEFAULT_VAULT_KEY = ""
 DEFAULT_COMMIT_INTERVAL = 5.0
@@ -270,10 +274,30 @@ def _wait_for_socket(path: str, timeout: float = SOCKET_WAIT_TIMEOUT) -> bool:
     return False
 
 
-def _find_design(user_design: Optional[str] = None) -> str:
-    """Locate the shell design file."""
+def _find_design(user_design: Optional[str] = None,
+                 variant: str = DEFAULT_SHELL_VARIANT) -> str:
+    """Locate the shell design file.
+
+    Resolution order: an existing explicit path, then a named variant
+    (``shell/variants/<variant>.nstudio``; ``stock`` means "no override"
+    and falls through to the built-in candidates).
+    """
     if user_design and os.path.exists(user_design):
         return user_design
+
+    if variant and variant != "stock":
+        if variant not in KNOWN_SHELL_VARIANTS:
+            raise ValueError(
+                f"unknown shell variant '{variant}'; "
+                f"known variants: {', '.join(KNOWN_SHELL_VARIANTS)}")
+        variant_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "shell", "variants", f"{variant}.nstudio")
+        if os.path.exists(variant_path):
+            return variant_path
+        logger.warning(
+            "shell variant '%s' not found at %s; using the stock shell",
+            variant, variant_path)
 
     candidates = [
         DEFAULT_DESIGN,
@@ -469,6 +493,12 @@ Examples:
         help="Shell design file (.nstudio)",
     )
     parser.add_argument(
+        "--variant", default=None,
+        choices=KNOWN_SHELL_VARIANTS,
+        help="Named shell variant (overrides NYRQIS_SHELL_VARIANT; "
+             f"known: {', '.join(KNOWN_SHELL_VARIANTS)})",
+    )
+    parser.add_argument(
         "--headless", action="store_true",
         help="Run headless (no window, render one frame)",
     )
@@ -531,10 +561,20 @@ Examples:
     logger.info("║         Nyrqis Init — Boot Sequence       ║")
     logger.info("╚══════════════════════════════════════════╝")
 
-    # Find the shell design
-    design_path = _find_design(args.design)
+    # Find the shell design. Variant resolution: --variant flag >
+    # NYRQIS_SHELL_VARIANT environment > the stock shell. An explicit
+    # --design path always wins; the flag exists so a bad variant name
+    # is a CLI error instead of a silent fallback.
+    variant = args.variant or os.environ.get("NYRQIS_SHELL_VARIANT") \
+        or DEFAULT_SHELL_VARIANT
+    try:
+        design_path = _find_design(args.design, variant=variant)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not design_path:
         logger.warning("No shell design found; session will start with defaults")
+    elif variant != DEFAULT_SHELL_VARIANT:
+        logger.info("Shell variant: %s (%s)", variant, design_path)
 
     daemon_process: Optional[subprocess.Popen] = None
     exit_code = 0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the pill-variant shell document (shell/variants/
-desktop-pill.nstudio) — the reference design exercising the registry-1.1
+pill.nstudio) — the reference design exercising the registry-1.1
 ``Button.cornerRadius`` contract end-to-end.
 
 Pins:
@@ -24,7 +24,7 @@ from ui import nstudio
 from ui.compositor import Compositor
 
 _REPO = os.path.join(_HERE, os.pardir)
-PILL = os.path.join(_REPO, "shell", "variants", "desktop-pill.nstudio")
+PILL = os.path.join(_REPO, "shell", "variants", "pill.nstudio")
 STOCK = os.path.join(_REPO, "shell", "defaults", "desktop.nstudio")
 
 
@@ -43,7 +43,7 @@ def _buttons(doc):
     return out
 
 
-@unittest.skipUnless(os.path.exists(PILL), "desktop-pill.nstudio not found")
+@unittest.skipUnless(os.path.exists(PILL), "pill.nstudio not found")
 class TestPillVariantShell(unittest.TestCase):
 
     @classmethod

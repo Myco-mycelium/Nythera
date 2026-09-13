@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime-selectable shell variants**: `nyrqis_init --variant pill`
+  (or `NYRQIS_SHELL_VARIANT=pill`) boots the registry-1.1 pill
+  reference design instead of the stock shell — resolution order:
+  explicit `--design` path, then the named variant
+  (`shell/variants/<name>.nstudio`; the file stem is the variant
+  name), then the stock shell. Unknown variant names are a hard CLI
+  error, never a silent fallback. The pill variant file was renamed
+  `desktop-pill.nstudio` → `pill.nstudio` to make the convention
+  drop-in.
+- **The Inspector panel** (`ui/inspector_panel.py`): renders an
+  `inspect_version` report as real UI, two ways with pinned content
+  parity — a gate-valid NUI document (one Text per line, passes the
+  real import gate, renders via the compositor on both brand themes)
+  and a plain RGBA render using the same palette. The verdict gets a
+  solid status badge (accent = fully honored, red = WOULD DROP).
+  CLI: `python3 -m ui.inspector_panel <document.nstudio>`. 13 new
+  tests.
 - **Nyforge Inspector preflight** (`NyforgeBridge.inspect_version`):
   reports a document's contract situation against the registry's
   ``versionHistory`` WITHOUT importing it — schema support, declared

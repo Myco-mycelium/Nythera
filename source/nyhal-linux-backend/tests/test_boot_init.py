@@ -65,6 +65,35 @@ class TestNyrqisInit(unittest.TestCase):
         # May or may not find a design — just don't crash
         self.assertIsInstance(result, str)
 
+    def test_find_design_variant_resolution(self):
+        """Runtime-selectable shell variants: named variant resolves to
+        shell/variants/<name>.nstudio; explicit paths win; unknown
+        names raise (CLI turns that into an argument error)."""
+        from nyrqis_init import _find_design, KNOWN_SHELL_VARIANTS
+
+        self.assertIn("pill", KNOWN_SHELL_VARIANTS)
+
+        pill = _find_design(variant="pill")
+        self.assertTrue(pill.endswith(os.path.join(
+            "shell", "variants", "pill.nstudio")), pill)
+        self.assertTrue(os.path.exists(pill))
+
+        # "stock" is the no-override sentinel: same as no variant.
+        self.assertEqual(_find_design(variant="stock"), _find_design())
+
+        # An explicit existing design always beats the variant.
+        fixture = os.path.join(
+            _HERE, "tests", "fixtures", "nstudio", "desktop.nstudio")
+        if os.path.exists(fixture):
+            self.assertEqual(
+                _find_design(fixture, variant="pill"), fixture)
+
+        # Unknown variant names are a hard error, never a silent
+        # fallback — a typo'd name must not boot the wrong shell.
+        with self.assertRaises(ValueError) as ctx:
+            _find_design(variant="bogus")
+        self.assertIn("known variants", str(ctx.exception))
+
     def test_wait_for_socket_timeout(self):
         """_wait_for_socket returns False when no socket appears."""
         from nyrqis_init import _wait_for_socket
