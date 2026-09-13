@@ -284,6 +284,113 @@ class TestSafeHotReload(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class TestHotSwap(unittest.TestCase):
+    """swap_document: variant switching with refresh's guarantee —
+    the target is preflighted before teardown; a broken target keeps
+    the live session; the watch path follows the new document."""
+
+    class _FakeSession:
+        def __init__(self):
+            self.closed = 0
+
+        def add_window(self, window):
+            pass
+
+        def close_window(self, window_id):
+            self.closed += 1
+
+    def _write(self, path, raw):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+
+    def _stock(self):
+        with open(STOCK, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_swap_to_valid_document_switches(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "stock.nstudio")
+            b = os.path.join(tmp, "other.nstudio")
+            other = self._stock()
+            other["requiresRegistry"] = ["1.1"]
+            other["project"] = {"name": "other", "id": "other-id"}
+            self._write(a, self._stock())
+            self._write(b, other)
+
+            events = []
+            bridge = NyforgeBridge(self._FakeSession())
+            bridge._callbacks.append(lambda ev, d: events.append(ev))
+            self.assertTrue(bridge.load_document(a)["ok"])
+
+            result = bridge.swap_document(b)
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["previous_path"].endswith("stock.nstudio"))
+            self.assertEqual(result["inspector"]["docHeaderVersions"], ["1.1"])
+            self.assertFalse(result["inspector"]["anyDropped"])
+            self.assertTrue(bridge.doc_path.endswith("other.nstudio"))
+            self.assertIn("swap", events)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_swap_to_broken_target_keeps_session(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "stock.nstudio")
+            bad = os.path.join(tmp, "bad.nstudio")
+            broken = self._stock()
+            broken["screens"] = "oops"
+            self._write(a, self._stock())
+            self._write(bad, broken)
+
+            bridge = NyforgeBridge(self._FakeSession())
+            self.assertTrue(bridge.load_document(a)["ok"])
+            before = len(bridge.mapped_windows)
+
+            result = bridge.swap_document(bad)
+            self.assertFalse(result["ok"])
+            self.assertIn("session kept", result["error"])
+            self.assertTrue(result["previous_path_kept"])
+            self.assertIn("inspector", result)
+            self.assertTrue(bridge.doc_path.endswith("stock.nstudio"))
+            self.assertEqual(len(bridge.mapped_windows), before)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_swap_without_loaded_document_preflights(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "doc.nstudio")
+            self._write(a, self._stock())
+            bridge = NyforgeBridge(self._FakeSession())
+            result = bridge.swap_document(a)
+            self.assertTrue(result["ok"])
+            self.assertIn("inspector", result)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_swap_to_missing_target_is_rejected(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "doc.nstudio")
+            self._write(a, self._stock())
+            bridge = NyforgeBridge(self._FakeSession())
+            bridge.load_document(a)
+            result = bridge.swap_document(os.path.join(tmp, "nope.nstudio"))
+            self.assertFalse(result["ok"])
+            self.assertIn("not found", result["error"])
+        finally:
+            shutil.rmtree(tmp)
+
+
 class TestInspectVersionFailures(unittest.TestCase):
     """Honest failure modes."""
 

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hot-swap documents into the live session**
+  (`NyforgeBridge.swap_document`): the variant-switch operation — try
+  the pill shell without restarting. The target is preflighted
+  (Inspector verdict + import gate) before any teardown, exactly like
+  safe refresh; a broken target keeps the current session running and
+  the failure report names both documents. On success the watch path
+  follows the new document and a `swap` event fires (`swap_failed` if
+  injection fails after a clean gate pass — reported honestly, never
+  disguised as a swap). Four polarities pinned.
 - **Boot-menu shell selection on the live ISO**: the GRUB and isolinux
   menus gained a "pill shell" entry that puts `nyrqis.variant=pill` on
   the kernel cmdline; the demo session parses it and exports

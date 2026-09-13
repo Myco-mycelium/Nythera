@@ -582,6 +582,75 @@ class NyforgeBridge:
 
     # -- Refresh (hot-reload) ----------------------------------------------
 
+    def swap_document(self, new_path: str) -> Dict[str, Any]:
+        """Hot-swap the session to a different document — safely.
+
+        The variant-switch operation behind "try the pill shell without
+        restarting": the target is preflighted (``inspect_version``)
+        and passed through the import gate BEFORE any window is
+        removed, exactly like ``refresh``. On success the watch path
+        follows the new document; on failure the current session stays
+        untouched and the failure report names both documents.
+
+        Parameters
+        ----------
+        new_path : str
+            Path to the replacement document.
+
+        Returns
+        -------
+        dict
+            ``load_document``'s structure plus ``inspector`` (the
+            target's preflight verdict), ``previous_path``, and, on
+            rejection, ``previous_path_kept``.
+        """
+        if not new_path or not os.path.exists(new_path):
+            return {
+                "ok": False,
+                "error": "target document not found: %r" % (new_path,),
+                "windows_created": 0,
+            }
+        if self._doc_path is None:
+            # Nothing live: a plain initial load (still preflighted).
+            result = self.load_document(new_path)
+            result["inspector"] = self.inspect_version(path=new_path)
+            return result
+
+        previous = self._doc_path
+        inspector = self.inspect_version(path=new_path)
+
+        # Validate the target through the gate before touching the
+        # live session.
+        from ui.nstudio import load as _load
+        try:
+            _load(new_path)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": "swap rejected — session kept: %s" % exc,
+                "windows_created": 0,
+                "previous_path": previous,
+                "previous_path_kept": True,
+                "target_path": os.path.abspath(new_path),
+                "inspector": inspector,
+            }
+
+        self._clear_mapped()
+        self._doc_path = None  # load_document re-resolves the path
+        result = self.load_document(new_path)
+        result["inspector"] = inspector
+        result["previous_path"] = previous
+        if result["ok"]:
+            self._notify("swap", result)
+        else:
+            # The target validated at gate time but injection failed
+            # (session-side problem). The old document is no longer
+            # running; report it honestly instead of pretending a swap
+            # happened.
+            result["previous_path_kept"] = False
+            self._notify("swap_failed", result)
+        return result
+
     def refresh(self) -> Dict[str, Any]:
         """Re-load the current document and re-inject — safely.
 
