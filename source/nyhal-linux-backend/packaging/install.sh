@@ -173,18 +173,7 @@ case "$INSTALL_MODE" in
             echo "  → Shell design already exists at ~/.nyrqis/shell.nstudio"
         fi
         echo ""
-        # Install default shell design if not present
-        if [[ ! -f "${HOME}/.nyrqis/shell.nstudio" ]]; then
-            DEFAULT_SHELL="${BACKEND_DIR}/shell/defaults/default-shell.nstudio"
-            if [[ -f "$DEFAULT_SHELL" ]]; then
-                cp "$DEFAULT_SHELL" "${HOME}/.nyrqis/shell.nstudio"
-                echo "  ✓ Default shell design installed to ~/.nyrqis/shell.nstudio"
-            fi
-        else
-            echo "  → Shell design already exists at ~/.nyrqis/shell.nstudio"
-        fi
-        echo ""
-        echo "To enable the user service:"
+        echo "To enable the user services:"
         echo "  systemctl --user enable nyrqis-backend"
         echo "  systemctl --user start nyrqis-backend"
         ;;
@@ -253,9 +242,10 @@ echo "╚═══════════════════════�
 echo ""
 echo "Quick start:"
 echo "  nyrqis-backend boot                    # Boot the system"
-echo "  nyrqisctl status                       # Check daemon status"
+echo "  nyrqisctl ping                         # Check the daemon answers"
+echo "  nyrqisctl status                       # Daemon status / health"
 echo "  nyrqisctl containers list              # List containers"
-echo "  nyrqis-session shell.nstudio           # Start desktop session"
+echo "  nyrqis-init                             # Boot daemon → shell → session"
 echo ""
 echo "Service management:"
 echo "  sudo systemctl start nyrqis-backend    # Start daemon"

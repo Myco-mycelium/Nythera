@@ -58,6 +58,25 @@ sudo dd if=dist/nyrqis-live.iso of=/dev/sdX bs=4M status=progress conv=fsync
 Boot menu: `demo` (default), `verbose` (full boot log), `RAM` (copy the
 squashfs into RAM — fastest on machines with memory to spare).
 
+### Architecture support (honest status)
+
+The ISO is **amd64/x86_64 only**: the rootfs installs
+`linux-image-amd64`, and the boot images are `grub-pc-bin` +
+`grub-efi-amd64-bin` + isolinux. An arm64 build (Raspberry Pi 4/5,
+ARM servers) is a Phase-2 roadmap item — the pieces short of it:
+
+- `grub-efi-arm64-bin` + `grub-arm64-efi` (no isolinux on arm64 — UEFI
+  only), `linux-image-arm64`, and an arm64 CI runner or `qemu-system-arm`
+  for the boot smokes;
+- the arm64 cdylibs themselves already cross-compile in CI
+  (`arm64-conformance` workflow: 10 crates build for
+  `aarch64-unknown-linux-gnu`, and the aarch64 seccomp table
+  conformance passes) — the gap is the **image**, not the platform
+code.
+
+Do not hand-wave an arm64 ISO as "ready": it has never been built or
+boot-smoked, and no release asset claims otherwise.
+
 ## What the demo does
 
 The `demo` user is autologged on tty1 and `nyrqis-demo` runs:

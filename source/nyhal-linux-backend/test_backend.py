@@ -18420,6 +18420,67 @@ class TestSystemdUnit(unittest.TestCase):
         )
         self.assertIn("Restart=on-failure", text)
 
+    def test_systemd_unit_does_not_restrict_namespaces(self):
+        """RestrictNamespaces=yes revokes unshare(CLONE_NEWUSER) from
+        the daemon — the container launch path needs it (the installer
+        once shipped a copy of the unit with exactly that directive; the
+        drift between the two unit trees is what this test class
+        guards). Match only an ACTIVE directive: a line that starts (no
+        comment marker) with the setting, so the explanatory comment in
+        the unit does not false-positive."""
+        text = self.UNIT.read_text()
+        directives = [line.strip() for line in text.splitlines()
+                      if not line.lstrip().startswith(("#", ";"))]
+        for line in directives:
+            self.assertFalse(
+                line.startswith("RestrictNamespaces="),
+                f"active directive {line!r} breaks the daemon's "
+                "unprivileged user-namespace containers")
+
+    def test_unit_trees_in_sync_with_backend_packaging(self):
+        """install.sh deploys the BACKEND tree's units
+        (source/nyhal-linux-backend/packaging/systemd/) while this test
+        pins the ROOT tree's copy — two copies that drift means the
+        installed system runs a unit nobody tested. The trees must be
+        byte-identical (backend is the source of truth; the root copy
+        is a mirror for the repo-level docs)."""
+        backend_unit = (Path(__file__).resolve().parent
+                        / "packaging" / "systemd" / "nyrqis-backend.service")
+        self.assertTrue(backend_unit.is_file(),
+                        f"missing backend-tree unit {backend_unit}")
+        self.assertEqual(
+            self.UNIT.read_text(), backend_unit.read_text(),
+            "the two nyrqis-backend.service copies diverged — sync them "
+            "(backend tree is the source of truth; install.sh deploys it)")
+
+    def test_desktop_unit_trees_in_sync_and_targets_exist(self):
+        """Same drift guard for the desktop unit, plus: the desktop
+        unit must not reference user-session-only targets from the
+        SYSTEM manager (graphical-session.target is per-user; a system
+        unit wiring it fails 'systemd-analyze verify' on real hosts —
+        the shipped unit did exactly that)."""
+        backend_desktop = (Path(__file__).resolve().parent
+                           / "packaging" / "systemd" / "nyrqis-desktop.service")
+        root_desktop = (Path(__file__).resolve().parent.parent.parent
+                        / "packaging" / "systemd" / "nyrqis-desktop.service")
+        self.assertTrue(backend_desktop.is_file(),
+                        f"missing backend-tree desktop unit {backend_desktop}")
+        self.assertTrue(root_desktop.is_file(),
+                        f"missing root-tree desktop unit {root_desktop}")
+        self.assertEqual(
+            backend_desktop.read_text(), root_desktop.read_text(),
+            "the two nyrqis-desktop.service copies diverged — sync them")
+        text = backend_desktop.read_text()
+        directives = "\n".join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith(("#", ";")))
+        self.assertNotIn(
+            "graphical-session.target", directives,
+            "graphical-session.target is a USER-session target; a system "
+            "unit cannot Require/Want/enable against it (verify fails on "
+            "real hosts)")
+        self.assertIn("WantedBy=graphical.target", text)
+
 
 class TestSeccompEnforcement(unittest.TestCase):
     """Test NPS-017 §4.2 data-plane enforcement (FIND-BACKEND-002).

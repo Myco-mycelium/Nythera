@@ -5,6 +5,44 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.11] - 2026-09-14
+
+### Fixed
+
+- **The installer deployed a diverged, partially-broken systemd unit.**
+  The repo carries TWO ``packaging/systemd/`` trees (root + backend),
+  each pinned by a different test — and they had drifted. The backend
+  copy ``install.sh`` actually deploys lacked the NyVault wiring
+  (``--vault-dir/--vault-key-file``/``EnvironmentFile``) and carried
+  ``RestrictNamespaces=yes``, which revokes ``unshare(CLONE_NEWUSER)``
+  from the daemon itself — the unprivileged-userns container design
+  cannot launch under it. The backend tree is now the single source of
+  truth (vault wiring + ADR-0009 rate-limit flags + ``LimitNOFILE``;
+  NO ``RestrictNamespaces`` — documented in the unit why), the root copy
+  mirrors it byte-for-byte, and a drift-guard test fails on any future
+  divergence (directive-aware so explanatory comments do not
+  false-positive).
+- **The desktop unit referenced a user-session target.** A SYSTEM unit
+  cannot ``Require``/``Want``/enable against ``graphical-session.target``
+  (that target lives in the per-login user manager);
+  ``systemd-analyze verify`` fails on real hosts with "Unit
+  graphical-session.target not found" — the shipped unit did exactly
+  that. Rewired to ``graphical.target``.
+- ``install.sh``: removed the duplicated shell-design install block in
+  user mode and corrected the quick-start hints (``nyrqisctl ping``,
+  ``nyrqis-init``; ``containers list`` exits 1 without a daemon, which
+  was misleading as the first thing to try).
+
+### Documented
+
+- The live ISO's architecture support, honestly: **amd64/x86_64 only**.
+  An arm64 build (Raspberry Pi 4/5) is a Phase-2 roadmap item; the
+  arm64-conformance CI already cross-compiles 10 Rust crates for
+  aarch64 and passes the aarch64 seccomp-table conformance — the gap is
+  the image (arm64 rootfs, grub-efi-arm64, arm64 boot smokes), not the
+  platform code. ROADMAP marked PARTIAL with the precise remaining
+  work.
+
 ## [0.29.10] - 2026-09-14
 
 ### Fixed
