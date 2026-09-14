@@ -88,14 +88,23 @@ esac
 need() { command -v "$1" >/dev/null 2>&1 || MISSING+=("$1"); }
 MISSING=()
 need mksquashfs
-need genisoimage || need mkisofs || need xorriso
+# ISO assembler: ANY ONE of these satisfies the requirement (xorriso is
+# what grub-mkrescue drives; genisoimage/mkisofs are the BIOS-fallback
+# path). The old need-a||need-b||need-c form appended EVERY missing
+# alternative to MISSING even when a later one was present — it only
+# never bit because the amd64 CI installed genisoimage too.
+if ! command -v genisoimage >/dev/null 2>&1 \
+   && ! command -v mkisofs >/dev/null 2>&1 \
+   && ! command -v xorriso >/dev/null 2>&1; then
+    MISSING+=("genisoimage-or-xorriso")
+fi
 if [[ -z "$ROOTFS" && -z "$ROOTFS_TAR" ]]; then
     need debootstrap
 fi
 if ((${#MISSING[@]})); then
     log "missing tools: ${MISSING[*]}"
     log "on Debian/Ubuntu:  sudo apt-get install -y squashfs-tools \\"
-    log "    genisoimage xorriso debootstrap"
+    log "    xorriso debootstrap"
     exit 1
 fi
 
