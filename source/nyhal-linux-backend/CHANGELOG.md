@@ -5,6 +5,61 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.10] - 2026-09-14
+
+### Fixed
+
+- **Live boot: the demo session no longer loops forever on the console**
+  ("the live boot does not work"). ``nyrqis-demo`` ended with
+  ``exec bash -l`` while ``.bash_profile`` execs ``nyrqis-demo`` on every
+  login shell — a nested login shell re-read the profile and re-exec'd
+  the demo, an infinite banner respawn that never yielded a shell (the
+  CI smoke missed it: its serial handshake parks on ``sleep infinity``
+  before that line, and tty1's identical loop is invisible to ttyS0).
+  The profile is now guarded by ``NYRQIS_DEMO_ACTIVE`` and the demo
+  hands off to a non-profile interactive shell. Also: the capability
+  probe printed twice, and the two autologin consoles (tty1 + ttyS0)
+  raced a second daemon onto the same socket — a ``flock`` singleton
+  decides the starter and the loser adopts the winner.
+- **EGL/GBM/DRM crates: the Vulkan-class slot leak, in three more
+  crates.** Destroy/terminate/close set ``active = false`` but left the
+  ``Some(..)`` in the slot table while ``alloc_slot`` only reuses
+  ``None`` — any long-lived process exhausted the fixed tables
+  (4 displays, 32 configs, 64 buffers) and every later create returned
+  −1. The full-suite order-dependent EGL failures pointed here. All
+  destroys now ``take()`` the slot, and ``terminate`` frees the
+  display's configs (no other destruction path exists for them; the
+  50-cycle FFI stress loop caught "too many configs" at cycle 32).
+- **Stale ``test_egl.py`` calls**: the codec gained a required
+  ``config_id`` argument on ``create_window_surface``/``create_context``
+  and the legacy root-level tests were never updated (3 suite errors).
+- **GBM/DRM/EGL crate test flakes**: the crates' tests share a global
+  static STATE and run in parallel; a long loop test widened the
+  interleaving window and a mid-sequence ``reset_state()`` from another
+  test broke both (GBM ``full_surface_lifecycle`` saw surface id −1).
+  The compositor crate's poison-tolerant ``TEST_LOCK`` pattern is now
+  applied to all three crates (39 tests wrapped).
+
+### Added
+
+- **Menu-path boot smoke** (``tests/boot_smoke_menu.py`` + a
+  ``menu-boot`` live-iso CI job): the existing smoke boots the ISO's
+  kernel/initrd DIRECTLY with a hand-built cmdline — deliberately
+  immune to bootloader problems, so a broken GRUB menu or default entry
+  could ship green. The new job boots the ISO like a machine does (el
+  torito → GRUB menu → default entry) and asserts the demo session and
+  daemon on serial. Every GRUB/isolinux menu entry now carries
+  ``console=tty0 console=ttyS0,115200`` so the human boot path is
+  serial-observable.
+
+### Tests
+
+- EGL/GBM/DRM slot-reuse regression tests (cycle past every table
+  bound); config-reuse-across-terminate; smoke-driver verdict paths
+  verified against fake QEMU stand-ins (pass / pong-fail / dead-boot,
+  both drivers). Suite: 8,920 Python OK; 18/18 Rust crates green
+  (egl 16, gbm 15, drm 8).
+
 ## [0.29.9] - 2026-09-13
 
 ### Added

@@ -11,7 +11,8 @@ on:
       - "packaging/live/**"
       - "source/nyhal-linux-backend/**"
       - ".github/workflows/live-iso.yml"
-      - "tests/boot_smoke.py"   # the smoke's driver: its changes re-exercise the boot
+      - "tests/boot_smoke.py"        # the smoke's driver: its changes re-exercise the boot
+      - "tests/boot_smoke_menu.py"   # the menu-path smoke: same deal
     tags:
       - "v*"                    # release tags: the ISO ships WITH the release
   workflow_dispatch:
@@ -99,6 +100,44 @@ jobs:
           compression-level: 0
           retention-days: 30
           if-no-files-found: error
+
+  menu-boot:
+    # The HUMAN boot path: boots the built ISO with NO hand-built
+    # kernel cmdline — the el torito BIOS image runs, the GRUB menu
+    # times out, and its DEFAULT entry boots — then asserts the demo
+    # session banner and the daemon on the serial line. The direct-boot
+    # smoke above is deliberately immune to bootloader problems; this
+    # job is not: a broken menu, default entry, or console wiring fails
+    # here instead of on a user's machine (all menu entries carry
+    # console=tty0 console=ttyS0,115200 so the human path is
+    # serial-observable).
+    name: Menu-path boot smoke (GRUB default entry)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the built ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: nyrqis-live-iso
+          path: dist
+
+      - name: Boot the ISO like a machine (GRUB menu → default entry)
+        run: |
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso \
+            --timeout 780 --keep-logs
+        timeout-minutes: 15
+
+      - name: Upload menu-boot serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: menu-boot-smoke-serial-log
+          path: /tmp/nyrqis-boot-smoke-menu-*/serial.log
+          if-no-files-found: ignore
 
       - name: Attach the ISO to the release (tag builds only)
         # Every v* tag ships its own boot-smoked image as a permanent

@@ -12,6 +12,10 @@
 # Everything here degrades honestly; the banner is the product.
 set -u
 
+# Marks the demo session so a nested login shell (bash -l typed by the
+# user) does not exec the demo again — .bash_profile checks this.
+export NYRQIS_DEMO_ACTIVE=1
+
 OPT=/opt/nyrqis/nyhal-linux-backend
 BACKEND="$OPT/nyrqis_backend.py"
 CTL="$OPT/nyrqisctl.py"
@@ -63,24 +67,56 @@ probe() {
 # The ping polls for up to 30 s (TCG-slowed runners boot far slower than
 # a fixed sleep can guess) and never aborts early — READY must land even
 # when the daemon fails, so the driver's diagnosis is reliable.
+start_daemon() {
+    # Singleton daemon: both autologin consoles (tty1 + ttyS0) exec this
+    # script and can reach the daemon section nearly simultaneously —
+    # flock decides one winner; the loser returns immediately and then
+    # ADOPTS the winner's daemon via the ping that follows (a second
+    # daemon on the same socket dies with EADDRINUSE and its failure is
+    # what readers of the log would see — CI round 18 exactly). The lock
+    # fd is inherited by the daemon, so it is held for the daemon's
+    # lifetime; a crashed daemon releases it and the next session takes
+    # over. Also removes a bound-but-unlistened stale socket, which
+    # would otherwise EADDRINUSE forever.
+    (
+        flock -n 9 || exit 0
+        rm -f "$SOCK"
+        exec python3 "$BACKEND" service serve --socket "$SOCK" \
+            --state-file /tmp/nyrqis-daemon-state.json \
+            --vault-dir /tmp/nyrqis-vault \
+            >>"$LOG" 2>&1
+    ) 9>/tmp/nyrqis-daemon.lock &
+}
+
+# The two autologin consoles (tty1 and ttyS0) both exec this script:
+# whoever wins starts the daemon, the loser must ADOPT it instead of
+# racing a second daemon for the same socket (the EADDRINUSE loser's
+# PONG=0 is what a reader of the log would see — CI round 18 exactly).
+wait_for_daemon() {
+    local i
+    for i in $(seq 1 15); do
+        python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    return 1
+}
+
 if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     # Only the SERIAL session runs the smoke handshake: the driver
-    # reads ttyS0, and tty1's VGA output is invisible to it. Both
-    # consoles autologin and would otherwise race for the daemon
-    # socket — the loser dies on EADDRINUSE and its PONG=0 is the one
-    # the driver sees (CI round 18 exactly).
+    # reads ttyS0, and tty1's VGA output is invisible to it. The other
+    # console waits for the shared daemon instead of racing a second
+    # one for the same socket (EADDRINUSE loser's PONG=0 — CI round 18).
     case "$(tty 2>/dev/null)" in
         /dev/ttyS0|/dev/console) : ;;
-        *) exec bash -l ;;
+        *)
+            if ! wait_for_daemon; then start_daemon; wait_for_daemon; fi
+            exec sleep infinity
+            ;;
     esac
     echo "== nyrqis boot smoke =="
-    # A previous session's crashed daemon leaves a bound-but-unlistened
-    # socket file; bind() on it fails with EADDRINUSE forever.
-    rm -f "$SOCK"
-    python3 "$BACKEND" service serve --socket "$SOCK" \
-        --state-file /tmp/nyrqis-daemon-state.json \
-        --vault-dir /tmp/nyrqis-vault \
-        >"$LOG" 2>&1 &
+    if ! wait_for_daemon; then
+        start_daemon
+    fi
     pong=0
     for _ in $(seq 1 30); do
         if python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
@@ -143,15 +179,13 @@ BANNER
 section "Backend daemon"
 if [[ ! -f "$BACKEND" ]]; then
     missing "backend tree at $OPT — the image build failed to install it"
+elif python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+    # The OTHER autologin console already started the daemon: adopt it,
+    # never race a second one for the same socket.
+    ok "daemon already serving on $SOCK (adopted)"
 else
-    python3 "$BACKEND" service serve --socket "$SOCK" \
-        --state-file /tmp/nyrqis-daemon-state.json \
-        --vault-dir /tmp/nyrqis-vault \
-        --ipc-rate 2000 --ipc-bucket-size 256 \
-        --ipc-fair-shares 8 --ipc-sender-burst 64 \
-        >"$LOG" 2>&1 &
-    sleep 2
-    if kill -0 "$!" 2>/dev/null && python3 "$CTL" --socket "$SOCK" ping >/dev/null 2>&1; then
+    start_daemon
+    if wait_for_daemon; then
         ok "daemon serving on $SOCK (log: $LOG)"
         python3 "$CTL" --socket "$SOCK" ep-limits list 2>/dev/null | sed 's/^/    /'
     else
@@ -198,8 +232,6 @@ fi
 # ---------------------------------------------------------------- probe
 probe
 
-probe
-
 section "Try this"
 cat <<TRY
     python3 $CTL --socket $SOCK ep-limits list
@@ -211,4 +243,17 @@ TRY
 
 printf '\n%sThe demo is yours — everything above degrades honestly; what printed%s\n' "$D" "$N"
 printf '%sMISSING is exactly what the next release needs on this hardware.%s\n\n' "$D" "$N"
-exec bash -l
+# Hand off to a shell WITHOUT re-entering the demo: .bash_profile execs
+# this script, so spawning any login shell here (bash -l) would re-run
+# the profile → re-exec this script → an infinite banner loop that never
+# yields a shell (the "boots but floods the console" failure). Two cases:
+#   * interactive ($- has i): a human ran nyrqis-demo from a shell — a
+#     plain exec bash is a non-login shell, profile never re-read.
+#   * non-interactive (exec'd from .bash_profile at autologin): exec an
+#     INTERACTIVE shell with --noprofile so the profile — and therefore
+#     this script — cannot run again. Exiting instead would make agetty
+#     re-autologin and respawn the banner forever.
+case $- in
+    *i*) exec bash ;;
+    *)   exec bash --noprofile -i ;;
+esac

@@ -108,6 +108,21 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
     slots.iter().position(|s| s.is_none())
 }
 
+/// Serializes tests that drive the shared global STATE through the FFI
+/// functions: tests run in parallel threads and every one of them
+/// reset_state()s the same static, so a long loop test interleaved with
+/// another test's reset breaks both (full_surface_lifecycle saw a
+/// mid-sequence reset as surface id -1). Same pattern as the
+/// compositor crate's TEST_LOCK — poison-tolerant so one panic cannot
+/// cascade into every later test's lock acquisition.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// GBM function pointers loaded via dlopen.
 struct GbmFns {
     create_device: unsafe extern "C" fn(fd: c_int) -> *mut gbm_device,
@@ -471,7 +486,10 @@ pub extern "C" fn nyrqis_gbm_release_buffer(buffer_id: c_int) -> c_int {
         if buffer_id < 0 || buffer_id as usize >= MAX_BUFFERS {
             return -1;
         }
-        if let Some(buf) = &mut state.buffers[buffer_id as usize] {
+        // take() the slot: alloc_slot only reuses None slots, so leaving
+        // Some(..) here leaks the slot and any later create fails once
+        // the table is exhausted (the Vulkan/EGL slot-leak class).
+        if let Some(mut buf) = state.buffers[buffer_id as usize].take() {
             // Release the GBM buffer object
             #[cfg(not(test))]
             unsafe {
@@ -496,7 +514,8 @@ pub extern "C" fn nyrqis_gbm_destroy_surface(surface_id: c_int) -> c_int {
         if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
             return -1;
         }
-        if let Some(surf) = &mut state.surfaces[surface_id as usize] {
+        // take() the slot — see the release_buffer rationale above.
+        if let Some(mut surf) = state.surfaces[surface_id as usize].take() {
             // Destroy the GBM surface
             #[cfg(not(test))]
             unsafe {
@@ -521,7 +540,8 @@ pub extern "C" fn nyrqis_gbm_close_device(device_id: c_int) -> c_int {
         if device_id < 0 || device_id as usize >= MAX_DEVICES {
             return -1;
         }
-        if let Some(dev) = &mut state.devices[device_id as usize] {
+        // take() the slot — see the release_buffer rationale above.
+        if let Some(mut dev) = state.devices[device_id as usize].take() {
             // Destroy the GBM device
             #[cfg(not(test))]
             unsafe {
@@ -568,11 +588,13 @@ mod tests {
 
     #[test]
     fn version_returns_abi_version() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_version(), 0x0001_0000);
     }
 
     #[test]
     fn open_device_returns_stub_error() {
+        let _g = test_lock();
         reset_state();
         set_gbm_available(false);
         assert_eq!(nyrqis_gbm_open_device(std::ptr::null(), 0), -1);
@@ -580,6 +602,7 @@ mod tests {
 
     #[test]
     fn open_device_succeeds_when_gbm_available() {
+        let _g = test_lock();
         reset_state();
         set_gbm_available(true);
         let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
@@ -591,6 +614,7 @@ mod tests {
 
     #[test]
     fn open_multiple_devices() {
+        let _g = test_lock();
         reset_state();
         set_gbm_available(true);
         let d0 = nyrqis_gbm_open_device(std::ptr::null(), 0);
@@ -613,17 +637,43 @@ mod tests {
 
     #[test]
     fn create_surface_invalid_device() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_create_surface(-1, 800, 600, GBM_FORMAT_ARGB8888), -1);
     }
 
     #[test]
     fn create_surface_invalid_dimensions() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_create_surface(0, 0, 600, GBM_FORMAT_ARGB8888), -1);
         assert_eq!(nyrqis_gbm_create_surface(0, 800, 0, GBM_FORMAT_ARGB8888), -1);
     }
 
     #[test]
+    fn device_surface_buffer_slots_reuse_after_release() {
+        let _g = test_lock();
+        // More open/close cycles than MAX_DEVICES (and surfaces/buffers
+        // past their tables): every close must free its slot for reuse,
+        // or create calls fail once the table is exhausted (the
+        // Vulkan/EGL slot-leak class).
+        reset_state();
+        set_gbm_available(true);
+        for _ in 0..(MAX_DEVICES * 3) {
+            let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
+            assert!(dev >= 0, "gbm_open_device exhausted its slot table");
+            let surf = nyrqis_gbm_create_surface(dev, 64, 64, GBM_FORMAT_ARGB8888);
+            assert!(surf >= 0, "gbm surface slot table exhausted");
+            let buf = nyrqis_gbm_lock_buffer(surf);
+            assert!(buf >= 0, "gbm buffer slot table exhausted");
+            assert_eq!(nyrqis_gbm_release_buffer(buf), 0);
+            assert_eq!(nyrqis_gbm_destroy_surface(surf), 0);
+            assert_eq!(nyrqis_gbm_close_device(dev), 0);
+        }
+        set_gbm_available(false);
+    }
+
+    #[test]
     fn full_surface_lifecycle() {
+        let _g = test_lock();
         reset_state();
         set_gbm_available(true);
         let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
@@ -654,6 +704,7 @@ mod tests {
 
     #[test]
     fn multiple_surfaces_per_device() {
+        let _g = test_lock();
         reset_state();
         set_gbm_available(true);
         let dev = nyrqis_gbm_open_device(std::ptr::null(), 0);
@@ -684,31 +735,37 @@ mod tests {
 
     #[test]
     fn lock_buffer_invalid_surface() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_lock_buffer(-1), -1);
     }
 
     #[test]
     fn get_buffer_info_null_pointers() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_get_buffer_info(-1, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), -1);
     }
 
     #[test]
     fn release_buffer_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_release_buffer(-1), -1);
     }
 
     #[test]
     fn destroy_surface_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_destroy_surface(-1), -1);
     }
 
     #[test]
     fn close_device_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_gbm_close_device(-1), -1);
     }
 
     #[test]
     fn last_error_returns_message() {
+        let _g = test_lock();
         with_state(|state| set_last_error(state, "test error"));
         let mut buf = [0u8; 64];
         let n = nyrqis_gbm_last_error(buf.as_mut_ptr() as *mut c_char, 64);

@@ -143,6 +143,17 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
     slots.iter().position(|s| s.is_none())
 }
 
+/// Serializes tests that drive the shared global STATE (parallel test
+/// threads + reset_state() = mid-sequence resets; same pattern as the
+/// compositor/GBM crates). Poison-tolerant.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // ---------------------------------------------------------------------------
 // EGL function pointers loaded via dlopen
 // ---------------------------------------------------------------------------
@@ -683,7 +694,11 @@ pub extern "C" fn nyrqis_egl_destroy_surface(surface_id: c_int) -> c_int {
         if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
             return -1;
         }
-        if let Some(surf) = &mut state.surfaces[surface_id as usize] {
+        // take() the slot: alloc_slot only reuses None slots, so leaving
+        // Some(..) here leaks the slot and any later create fails with
+        // -1 once the table is exhausted (the Vulkan-crate slot-leak
+        // class; found by the full-suite order-dependent EGL failures).
+        if let Some(mut surf) = state.surfaces[surface_id as usize].take() {
             // Real EGL: call eglDestroySurface
             #[cfg(not(test))]
             unsafe {
@@ -710,7 +725,8 @@ pub extern "C" fn nyrqis_egl_destroy_context(context_id: c_int) -> c_int {
         if context_id < 0 || context_id as usize >= MAX_CONTEXTS {
             return -1;
         }
-        if let Some(ctx) = &mut state.contexts[context_id as usize] {
+        // take() the slot — see the destroy_surface rationale above.
+        if let Some(mut ctx) = state.contexts[context_id as usize].take() {
             // Real EGL: call eglDestroyContext
             #[cfg(not(test))]
             unsafe {
@@ -737,7 +753,8 @@ pub extern "C" fn nyrqis_egl_terminate(display_id: c_int) -> u32 {
         if display_id < 0 || display_id as usize >= MAX_DISPLAYS {
             return EGL_FALSE;
         }
-        if let Some(d) = &mut state.displays[display_id as usize] {
+        // take() the slot — see the destroy_surface rationale above.
+        if let Some(mut d) = state.displays[display_id as usize].take() {
             // Real EGL: call eglTerminate
             #[cfg(not(test))]
             let result = unsafe {
@@ -750,6 +767,19 @@ pub extern "C" fn nyrqis_egl_terminate(display_id: c_int) -> u32 {
             #[cfg(test)]
             let result = EGL_TRUE;
             d.active = false;
+            // eglTerminate invalidates the display's CONFIGS (per the EGL
+            // spec), and configs have no other destruction path in this
+            // codec — leave them allocated and the table exhausts after
+            // 32 choose_config calls ("too many configs"), found by the
+            // 50-cycle FFI stress loop. Surfaces/contexts have explicit
+            // destroy calls and stay the caller's responsibility.
+            for cfg in state.configs.iter_mut() {
+                if let Some(c) = cfg {
+                    if c.display_id == display_id {
+                        *cfg = None;
+                    }
+                }
+            }
             result
         } else {
             EGL_FALSE
@@ -785,11 +815,13 @@ mod tests {
 
     #[test]
     fn version_returns_abi_version() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_version(), 0x0001_0000);
     }
 
     #[test]
     fn get_display_returns_valid_id() {
+        let _g = test_lock();
         reset_state();
         set_egl_available(true);
         let id = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
@@ -800,6 +832,7 @@ mod tests {
 
     #[test]
     fn get_display_returns_error_when_not_available() {
+        let _g = test_lock();
         reset_state();
         set_egl_available(false);
         assert_eq!(nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY), -1);
@@ -807,11 +840,13 @@ mod tests {
 
     #[test]
     fn initialize_invalid_display() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_initialize(-1), EGL_FALSE);
     }
 
     #[test]
     fn initialize_succeeds() {
+        let _g = test_lock();
         reset_state();
         set_egl_available(true);
         let disp = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
@@ -823,6 +858,7 @@ mod tests {
 
     #[test]
     fn choose_config_returns_valid_id() {
+        let _g = test_lock();
         reset_state();
         set_egl_available(true);
         let disp = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
@@ -835,38 +871,105 @@ mod tests {
 
     #[test]
     fn create_window_surface_invalid_display() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_create_window_surface(-1, 0, 800, 600), -1);
     }
 
     #[test]
     fn create_context_invalid_display() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_create_context(-1, 0), -1);
     }
 
     #[test]
     fn destroy_surface_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_destroy_surface(-1), -1);
     }
 
     #[test]
     fn destroy_context_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_destroy_context(-1), -1);
     }
 
     #[test]
     fn terminate_invalid_display() {
+        let _g = test_lock();
         assert_eq!(nyrqis_egl_terminate(-1), EGL_FALSE);
     }
 
     #[test]
     fn last_error_returns_message() {
+        let _g = test_lock();
         let mut buf = [0u8; 64];
         let n = nyrqis_egl_last_error(buf.as_mut_ptr() as *mut c_char, 64);
         assert!(n >= 0);
     }
 
     #[test]
+    fn display_slots_reuse_after_terminate() {
+        let _g = test_lock();
+        // More create/terminate cycles than MAX_DISPLAYS: every terminate
+        // must free its slot for reuse, or get_display starts returning
+        // -1 after MAX_DISPLAYS cycles (the Vulkan-crate slot-leak class).
+        reset_state();
+        set_egl_available(true);
+        for _ in 0..(MAX_DISPLAYS * 3) {
+            let d = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
+            assert!(d >= 0, "get_display exhausted its slot table");
+            assert_eq!(nyrqis_egl_terminate(d), EGL_TRUE);
+        }
+        set_egl_available(false);
+    }
+
+    #[test]
+    fn surface_and_context_slots_reuse_after_destroy() {
+        let _g = test_lock();
+        // Same leak class for surfaces/contexts: cycle well past the
+        // fixed table sizes.
+        reset_state();
+        set_egl_available(true);
+        let disp = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
+        assert!(disp >= 0);
+        assert_eq!(nyrqis_egl_initialize(disp), EGL_TRUE);
+        let config = nyrqis_egl_choose_config(disp);
+        assert!(config >= 0);
+        for _ in 0..(MAX_SURFACES.max(MAX_CONTEXTS) * 3) {
+            let surf = nyrqis_egl_create_window_surface(disp, config, 64, 64);
+            assert!(surf >= 0, "surface slot table exhausted");
+            let ctx = nyrqis_egl_create_context(disp, config);
+            assert!(ctx >= 0, "context slot table exhausted");
+            assert_eq!(nyrqis_egl_destroy_surface(surf), 0);
+            assert_eq!(nyrqis_egl_destroy_context(ctx), 0);
+        }
+        set_egl_available(false);
+    }
+
+    #[test]
+    fn config_slots_reuse_across_lifecycles() {
+        let _g = test_lock();
+        // More get/initialize/choose_config/terminate cycles than
+        // MAX_CONFIGS: terminate must free the configs owned by the
+        // display (they have no other destruction path), or
+        // choose_config fails with "too many configs" after 32 cycles
+        // (found by the 50-cycle FFI stress loop).
+        reset_state();
+        set_egl_available(true);
+        for _ in 0..(MAX_CONFIGS * 2) {
+            let d = nyrqis_egl_get_display(EGL_DEFAULT_DISPLAY);
+            assert!(d >= 0, "get_display exhausted its slot table");
+            assert_eq!(nyrqis_egl_initialize(d), EGL_TRUE);
+            let c = nyrqis_egl_choose_config(d);
+            assert!(c >= 0, "config slot table exhausted");
+            assert_eq!(nyrqis_egl_terminate(d), EGL_TRUE);
+        }
+        set_egl_available(false);
+    }
+
+    #[test]
     fn full_display_lifecycle() {
+        let _g = test_lock();
         reset_state();
         set_egl_available(true);
 

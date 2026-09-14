@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Menu-path boot smoke for the Nyrqis live-demo ISO.
+
+The existing smoke (tests/boot_smoke.py) boots the ISO's kernel/initrd
+DIRECTLY with a hand-built kernel command line — deliberately immune to
+bootloader problems, which also means a broken GRUB/isolinux menu or a
+broken default entry can ship green. This driver closes that gap: it
+boots the ISO **exactly like a machine does** — the el torito BIOS
+image runs, the GRUB menu times out, its DEFAULT entry boots — with no
+-kernel/-initrd/-append hand-holding. What it asserts is the human
+boot contract:
+
+  1. GRUB actually boots the default entry (kernel + initrd from the
+     menu, i.e. the ISO's boot structure is intact),
+  2. live-boot finds and mounts the live medium,
+  3. systemd reaches the getty and the demo session runs,
+  4. the interactive demo banner prints ("== nyrqis live demo =="),
+  5. the daemon answers ping ("NYRQIS_BOOT_SMOKE_PONG=1" is emitted by
+     the smoke handshake on the serial console — the demo script's
+     banner path prints it via the probe section; on non-smoke boots
+     the daemon "ok" line from the Backend daemon section is accepted
+     as the daemon evidence).
+
+Every menu entry carries `console=tty0 console=ttyS0,115200`, so the
+full human path is observable on the serial line while the VGA console
+stays the primary human surface.
+
+Exit codes: 0 = the human boot path works end to end; 1 = any stage of
+it failed (the serial log tail is printed for diagnosis, and the whole
+log is emitted as ::error:: annotations — the credential-free failure
+channel, same as tests/boot_smoke.py).
+
+Usage:
+    python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso \
+        [--qemu qemu-system-x86_64] [--timeout 780] [--keep-logs]
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+# The interactive demo banner's first section header (printed by
+# nyrqis-demo after the kernel booted, live-boot pivoted, systemd
+# reached multi-user, and the autologin getty exec'd the session).
+MARKER_BANNER = "== Backend daemon =="
+# The daemon evidence on the serial line: the smoke handshake markers
+# are printed by the demo script on ttyS0 (both consoles autologin and
+# the handshake runs on the serial one under NYRQIS_BOOT_SMOKE; on a
+# plain menu boot WITHOUT the flag the "daemon serving" ok-line is the
+# equivalent evidence — accept either).
+MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
+MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
+MARKER_DAEMON_OK = "daemon serving on"
+MARKER_DAEMON_ADOPTED = "daemon already serving on"
+
+# Failure surfaces that mean the human path is dead (no banner can
+# ever arrive): GRUB did not find its config/kernel, the live medium
+# was not found, or the pivot/init failed.
+DEAD_PATTERNS = (
+    "kernel panic",
+    "unable to find a medium containing a live file system",
+    "gave up waiting for root device",
+    "(initramfs)",
+    "entering emergency mode",
+    "can't execute '/sbin/init'",
+    "no init found",
+    "error: file `/live/vmlinuz' not found",
+    "error: file `/live/initrd' not found",
+    "unknown filesystem",
+)
+
+
+def _emit_annotation(message):
+    """Surface the failure through a GitHub check annotation."""
+    flat = " ".join(message.split())[:600]
+    print(f"::error::menu boot smoke: {flat}", flush=True)
+
+
+def _emit_full_log(text, summary):
+    """Chunk the whole serial log into ::error:: annotations."""
+    _emit_annotation(summary)
+    compact = " ".join(text.split())
+    chunk_size = 950
+    max_chunks = 9
+    total = len(compact)
+    n = min(max_chunks, (total + chunk_size - 1) // chunk_size or 1)
+    start = 0 if total <= n * chunk_size else total - (n - 1) * chunk_size
+    for i in range(n):
+        piece = compact[start + i * chunk_size:start + (i + 1) * chunk_size]
+        print(f"::error::menu boot smoke: log[{i + 1}/{n}] {piece}", flush=True)
+
+
+def run_smoke(iso, qemu, timeout_s, keep_logs):
+    tmp = tempfile.mkdtemp(prefix="nyrqis-boot-smoke-menu-")
+    serial_log = os.path.join(tmp, "serial.log")
+    proc = None
+    try:
+        # NO -kernel/-initrd/-append: the ISO's own BIOS boot image must
+        # run, present the GRUB menu, time out, and boot the default
+        # entry — exactly what a real machine does with this ISO.
+        cmd = [
+            qemu,
+            "-machine", "accel=kvm:tcg",
+            "-m", "2048",
+            "-nographic",
+            "-no-reboot",
+            "-cdrom", iso,
+            "-boot", "d",
+            "-serial", f"file:{serial_log}",
+            "-monitor", "none",
+        ]
+        print(f"[menu-boot-smoke] qemu: {' '.join(cmd)}", flush=True)
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL)
+
+        deadline = time.monotonic() + timeout_s
+        saw_banner = saw_daemon = saw_pong_fail = False
+        dead_hit = None
+        text = ""
+        while time.monotonic() < deadline:
+            try:
+                with open(serial_log, "r", errors="replace") as fh:
+                    text = fh.read()
+            except FileNotFoundError:
+                text = ""
+            saw_banner = saw_banner or MARKER_BANNER in text
+            saw_daemon = (saw_daemon or MARKER_PONG_OK in text
+                          or MARKER_DAEMON_OK in text
+                          or MARKER_DAEMON_ADOPTED in text)
+            saw_pong_fail = saw_pong_fail or MARKER_PONG_FAIL in text
+            if saw_banner and (saw_daemon or saw_pong_fail):
+                break
+            if dead_hit is None:
+                for pattern in DEAD_PATTERNS:
+                    if pattern in text.lower():
+                        dead_hit = pattern
+                        break
+            if dead_hit is not None:
+                print(f"[menu-boot-smoke] dead boot pattern: {dead_hit!r} "
+                      "— failing fast (no banner can arrive)")
+                break
+            if proc.poll() is not None:
+                print(f"[menu-boot-smoke] qemu exited early: "
+                      f"rc={proc.returncode}")
+                break
+            time.sleep(2.0)
+
+        print(f"[menu-boot-smoke] markers: banner={saw_banner} "
+              f"daemon={saw_daemon} pong_fail={saw_pong_fail}")
+        try:
+            with open(serial_log, "r", errors="replace") as fh:
+                tail = fh.read()[-2000:]
+        except FileNotFoundError:
+            tail = "(no serial log written)"
+        if keep_logs:
+            print(f"[menu-boot-smoke] serial log kept: {serial_log}")
+
+        if not (saw_banner and saw_daemon):
+            _emit_full_log(
+                text,
+                f"menu-path markers banner={saw_banner} daemon={saw_daemon} "
+                f"pong_fail={saw_pong_fail}; dead_pattern={dead_hit!r}; "
+                f"full serial log follows in chunks")
+            print("[menu-boot-smoke] ---- serial log tail ----")
+            print(tail)
+            print("[menu-boot-smoke] -----------------------------")
+
+        if saw_banner and saw_daemon:
+            print("[menu-boot-smoke] PASS: GRUB booted the default entry, "
+                  "the demo session ran, and the daemon answered")
+            return 0
+        if saw_banner and saw_pong_fail:
+            print("[menu-boot-smoke] FAIL: the demo session ran but the "
+                  "daemon did not answer ping")
+            return 1
+        if dead_hit is not None:
+            print(f"[menu-boot-smoke] FAIL: dead boot pattern {dead_hit!r} "
+                  "— the human boot path is broken")
+        else:
+            print(f"[menu-boot-smoke] FAIL: no demo banner within "
+                  f"{timeout_s}s (GRUB/live-boot/session never completed)")
+        return 1
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if not keep_logs:
+            for name in (serial_log,):
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp)
+            except OSError:
+                pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("iso", help="path to the live ISO")
+    parser.add_argument("--qemu", default="qemu-system-x86_64")
+    parser.add_argument("--timeout", type=float, default=780.0,
+                        help="boot budget in seconds (default: 780)")
+    parser.add_argument("--keep-logs", action="store_true",
+                        help="keep the serial log")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.iso):
+        print(f"[menu-boot-smoke] ERROR: ISO not found: {args.iso}")
+        return 1
+    if os.system(f"command -v {args.qemu} >/dev/null 2>&1") != 0:
+        print(f"[menu-boot-smoke] SKIP: {args.qemu} not on PATH "
+              "(install qemu-system-x86 to run the menu boot smoke)")
+        return 0
+    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

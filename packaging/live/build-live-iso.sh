@@ -226,9 +226,12 @@ fi
 # without a profile hook the login stops at a bare bash prompt and
 # neither the banner nor the boot-smoke markers ever run. The profile
 # execs the demo session on every autologin console (tty1 and ttyS0).
+# NYRQIS_DEMO_ACTIVE guards the loop where nyrqis-demo's final `bash -l`
+# would re-read this profile and re-exec the demo — an infinite banner
+# respawn that never yields a shell ("the live boot does not work").
 cat > "$ROOTFS_SRC/home/demo/.bash_profile" <<'EOF'
-# The live demo session owns every autologin console.
-if [ -x /usr/local/bin/nyrqis-demo ]; then
+# The live demo session owns every autologin console — once.
+if [ -z "${NYRQIS_DEMO_ACTIVE:-}" ] && [ -x /usr/local/bin/nyrqis-demo ]; then
     exec /usr/local/bin/nyrqis-demo
 fi
 EOF

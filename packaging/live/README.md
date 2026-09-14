@@ -79,25 +79,30 @@ crash or a forged success.
 ## CI
 
 The `live-iso` workflow (`.github/workflows/live-iso.yml`) builds the
-rootfs + ISO on every push to `main`, **boots the ISO headless in QEMU**
-and asserts the daemon answers ping (the serial handshake in
-`tests/boot_smoke.py` — `NYRQIS_BOOT_SMOKE_PONG=1`), then uploads the
-ISO and the serial log as artifacts — download both from the Actions
-run page; no local build required.
+rootfs + ISO on every push to `main` and boots it **twice**:
 
-The smoke boots **directly via the ISO's kernel and initrd** (extracted
-at run time with `xorriso` or `isoinfo`) with `NYRQIS_BOOT_SMOKE=1` on
-a hand-built kernel command line — the outcome never depends on
-bootloader menu selection, and the ISO's GRUB default stays the
-graphical demo for humans. The smoke targets `multi-user.target` and
-budgets 780 s (a TCG-slowed runner boots full userspace 5–15× slower
-than KVM); dead boots (kernel panic, missing live medium, initramfs
-rescue shell) fail fast, and every failure emits a `::error::`
-annotation carrying markers + the serial tail — readable through the
-API without credentials — plus the uploaded serial-log artifact.
+1. **Direct boot** (`tests/boot_smoke.py`) — the ISO's kernel and
+   initrd are extracted at run time (`xorriso`/`isoinfo`) and booted
+   with `NYRQIS_BOOT_SMOKE=1` on a hand-built command line. Deliberately
+   immune to bootloader problems: it isolates live-boot/daemon health.
+2. **Menu-path boot** (`tests/boot_smoke_menu.py`, `menu-boot` job) —
+   the ISO boots **like a real machine**: el torito → GRUB menu →
+   default entry, no hand-holding. Asserts the demo session and daemon
+   on the serial line. Every GRUB/isolinux menu entry carries
+   `console=tty0 console=ttyS0,115200`, so the human boot path is
+   serial-observable while the VGA console stays the primary surface.
 
-Run the boot smoke yourself (needs `qemu-system-x86`):
+Both upload the ISO and the serial logs as artifacts — download from
+the Actions run page; no local build required. Dead boots (kernel
+panic, missing live medium, initramfs rescue shell, GRUB "file not
+found") fail fast, and every failure emits `::error::` annotations
+carrying markers + the serial tail — readable through the API without
+credentials. Budget per boot: 780 s (a TCG-slowed runner boots full
+userspace 5–15× slower than KVM).
+
+Run the boot smokes yourself (needs `qemu-system-x86`):
 
 ```bash
 python3 tests/boot_smoke.py dist/nyrqis-live.iso --timeout 600 --keep-logs
+python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 ```

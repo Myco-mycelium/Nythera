@@ -115,6 +115,17 @@ fn alloc_slot<T>(slots: &mut Vec<Option<T>>) -> Option<usize> {
     slots.iter().position(|s| s.is_none())
 }
 
+/// Serializes tests that drive the shared global STATE (parallel test
+/// threads + reset_state() = mid-sequence resets; same pattern as the
+/// compositor/GBM crates). Poison-tolerant.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // ---------------------------------------------------------------------------
 // DRM ioctl structures (matching kernel headers)
 // ---------------------------------------------------------------------------
@@ -579,7 +590,9 @@ pub extern "C" fn nyrqis_drm_close_device(device_id: c_int) -> c_int {
         if device_id < 0 || device_id as usize >= MAX_DEVICES {
             return -1;
         }
-        if let Some(dev) = &mut state.devices[device_id as usize] {
+        // take() the slot: alloc_slot only reuses None slots — leaving
+        // Some(..) leaks the slot (the Vulkan/EGL/GBM slot-leak class).
+        if let Some(mut dev) = state.devices[device_id as usize].take() {
             if dev.fd >= 0 {
                 unsafe { libc::close(dev.fd); }
             }
@@ -619,36 +632,65 @@ mod tests {
 
     #[test]
     fn version_returns_abi_version() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_version(), 0x0001_0000);
     }
 
     #[test]
     fn open_device_returns_stub_error() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_open_device(std::ptr::null(), 0), -1);
     }
 
     #[test]
     fn enumerate_connectors_invalid_device() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_enumerate_connectors(-1), -1);
     }
 
     #[test]
     fn get_connector_info_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_get_connector_info(-1, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), -1);
     }
 
     #[test]
     fn atomic_commit_invalid_device() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_atomic_commit(-1, 0, 0, 1), -1);
     }
 
     #[test]
     fn close_device_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_drm_close_device(-1), -1);
     }
 
     #[test]
+    fn device_slots_reuse_after_close() {
+        let _g = test_lock();
+        // More open/close cycles than MAX_DEVICES: every close must
+        // free its slot for reuse (the Vulkan/EGL/GBM slot-leak class).
+        // open_device in stub mode returns -1 (no real DRM), so drive
+        // the slot table directly through with_state.
+        for _ in 0..(MAX_DEVICES * 3) {
+            let id = with_state(|state| {
+                alloc_slot(&mut state.devices).map(|i| {
+                    state.devices[i] = Some(DeviceSlot {
+                        fd: -1,
+                        active: true,
+                    });
+                    i as c_int
+                })
+            }).expect("drm device slot table exhausted");
+            assert!(id >= 0, "drm device slot table exhausted");
+            assert_eq!(nyrqis_drm_close_device(id), 0);
+        }
+    }
+
+    #[test]
     fn last_error_returns_message() {
+        let _g = test_lock();
         with_state(|state| set_last_error(state, "test error"));
         let mut buf = [0u8; 64];
         let n = nyrqis_drm_last_error(buf.as_mut_ptr() as *mut c_char, 64);

@@ -56,14 +56,14 @@ class TestEglCodecDisplayOps(unittest.TestCase):
         """create_window_surface() with invalid display returns -1."""
         if not egl_codec.is_available():
             self.skipTest("EGL crate not available")
-        result = egl_codec.create_window_surface(-1, 800, 600)
+        result = egl_codec.create_window_surface(-1, 0, 800, 600)
         self.assertEqual(result, -1)
 
     def test_create_context_invalid_display(self):
         """create_context() with invalid display returns -1."""
         if not egl_codec.is_available():
             self.skipTest("EGL crate not available")
-        result = egl_codec.create_context(-1)
+        result = egl_codec.create_context(-1, 0)
         self.assertEqual(result, -1)
 
     def test_destroy_surface_invalid_id(self):
@@ -113,10 +113,11 @@ class TestEglCodecLifecycle(unittest.TestCase):
         config_id = egl_codec.choose_config(display_id)
         self.assertGreaterEqual(config_id, 0)
 
-        surface_id = egl_codec.create_window_surface(display_id, 1920, 1080)
+        surface_id = egl_codec.create_window_surface(display_id, config_id, 1920, 1080)
         self.assertGreaterEqual(surface_id, 0)
 
-        context_id = egl_codec.create_context(display_id)
+        context_id = egl_codec.create_context(display_id, config_id)
+        self.assertGreaterEqual(context_id, 0)
         self.assertGreaterEqual(context_id, 0)
 
         self.assertTrue(egl_codec.destroy_context(context_id))
