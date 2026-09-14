@@ -57,7 +57,7 @@ jobs:
             | xz -dc | awk '/^Package: grub-efi-arm64-bin$/{f=1} \
                             f && /^Filename: /{print $2; exit}')
           test -n "$DEB_PATH" || { echo "grub-efi-arm64-bin not found in the index"; exit 1; }
-          curl -fsSL -o /tmp/grub-arm64-bin.deb "https://deb.debian.org/$DEB_PATH"
+          curl -fsSL -o /tmp/grub-arm64-bin.deb "https://deb.debian.org/debian/$DEB_PATH"
           dpkg-deb -x /tmp/grub-arm64-bin.deb /tmp/grub-arm64-root
           test -d /tmp/grub-arm64-root/usr/lib/grub/arm64-efi \
             || { echo "arm64-efi modules not in the .deb — layout changed"; exit 1; }
