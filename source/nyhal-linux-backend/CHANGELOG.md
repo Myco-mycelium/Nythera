@@ -59,6 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified against fake QEMU stand-ins (pass / pong-fail / dead-boot,
   both drivers). Suite: 8,920 Python OK; 18/18 Rust crates green
   (egl 16, gbm 15, drm 8).
+- **Live-boot contract tests** (``tests/test_live_boot_contract.py``,
+  10 tests): pin the demo-session fix at unit-test speed — no login-
+  shell exec anywhere in ``nyrqis-demo`` (the loop), the
+  ``NYRQIS_DEMO_ACTIVE`` guard + ``--noprofile`` handoff, the builder's
+  ``.bash_profile`` guard, a serial console on EVERY GRUB/isolinux
+  entry (menu-smoke observability), and the menu smoke's CI artifact
+  glob matching its tmpdir prefix (a mismatch uploads nothing,
+  silently).
+- **Graphics-crate stress pass extended**: the compositor's
+  ``destroy_surface`` had the same slot leak (fixed — 300-cycle FFI
+  loop ran past the 256-surface bound); vulkan gained the cycle-past-
+  bound regression test it was missing (100 FFI lifecycles) plus the
+  TEST_LOCK serialization; wayland destroy paths verified already
+  ``take()``-based (honest −1 without a compositor socket).
 
 ## [0.29.9] - 2026-09-13
 

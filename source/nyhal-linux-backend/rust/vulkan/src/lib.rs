@@ -646,13 +646,50 @@ pub extern "C" fn nyrqis_vulkan_last_error(buf: *mut c_char, cap: c_int) -> c_in
 mod tests {
     use super::*;
 
+    /// Serializes tests that drive the shared global STATE through the
+    /// FFI functions (parallel test threads + reset_state() =
+    /// mid-sequence resets; same pattern as the compositor/egl/gbm/drm
+    /// crates). Poison-tolerant.
+    #[cfg(test)]
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(test)]
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn version_returns_abi_version() {
+        let _g = test_lock();
         assert_eq!(nyrqis_vulkan_version(), 0x0000_0200);
     }
 
     #[test]
+    fn slots_reuse_across_full_lifecycles() {
+        let _g = test_lock();
+        // Cycle the full instance→device→swapchain stack far past the
+        // fixed table bounds: every destroy take()s its slot, so create
+        // must never exhaust (the slot-leak regression that hit egl/
+        // gbm/drm/compositor).
+        reset_state();
+        set_vulkan_available(true);
+        for _ in 0..(MAX_INSTANCES.max(MAX_DEVICES).max(MAX_SWAPCHAINS) * 3) {
+            let inst = nyrqis_vulkan_create_instance();
+            assert!(inst >= 0, "instance slot table exhausted");
+            let dev = nyrqis_vulkan_create_device(inst);
+            assert!(dev >= 0, "device slot table exhausted");
+            let sc = nyrqis_vulkan_create_swapchain(dev, 64, 64, 2);
+            assert!(sc >= 0, "swapchain slot table exhausted");
+            assert_eq!(nyrqis_vulkan_destroy_swapchain(sc), 0);
+            assert_eq!(nyrqis_vulkan_destroy_device(dev), 0);
+            assert_eq!(nyrqis_vulkan_destroy_instance(inst), 0);
+        }
+        set_vulkan_available(false);
+    }
+
+    #[test]
     fn create_destroy_instance() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(true);
         let id = nyrqis_vulkan_create_instance();
@@ -663,6 +700,7 @@ mod tests {
 
     #[test]
     fn create_instance_fails_when_not_available() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(false);
         assert_eq!(nyrqis_vulkan_create_instance(), -1);
@@ -670,6 +708,7 @@ mod tests {
 
     #[test]
     fn create_device_invalid_instance() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(true);
         assert_eq!(nyrqis_vulkan_create_device(-1), -1);
@@ -678,16 +717,19 @@ mod tests {
 
     #[test]
     fn destroy_device_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_vulkan_destroy_device(-1), -1);
     }
 
     #[test]
     fn create_swapchain_invalid_device() {
+        let _g = test_lock();
         assert_eq!(nyrqis_vulkan_create_swapchain(-1, 1920, 1080, 3), -1);
     }
 
     #[test]
     fn create_swapchain_invalid_params() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(true);
         let inst = nyrqis_vulkan_create_instance();
@@ -702,16 +744,19 @@ mod tests {
 
     #[test]
     fn destroy_swapchain_invalid_id() {
+        let _g = test_lock();
         assert_eq!(nyrqis_vulkan_destroy_swapchain(-1), -1);
     }
 
     #[test]
     fn acquire_next_image_invalid_swapchain() {
+        let _g = test_lock();
         assert_eq!(nyrqis_vulkan_acquire_next_image(-1), -1);
     }
 
     #[test]
     fn full_vulkan_lifecycle() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(true);
 
@@ -736,6 +781,7 @@ mod tests {
 
     #[test]
     fn get_device_info() {
+        let _g = test_lock();
         reset_state();
         set_vulkan_available(true);
 
@@ -759,6 +805,7 @@ mod tests {
 
     #[test]
     fn last_error_returns_message() {
+        let _g = test_lock();
         let mut buf = [0u8; 64];
         let n = nyrqis_vulkan_last_error(buf.as_mut_ptr() as *mut c_char, 64);
         assert!(n >= 0);

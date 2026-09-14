@@ -301,12 +301,12 @@ pub extern "C" fn nyrqis_compositor_destroy_surface(surface_id: c_int) -> c_int 
         if surface_id < 0 || surface_id as usize >= MAX_SURFACES {
             return -1;
         }
-        if let Some(surf) = &mut state.surfaces[surface_id as usize] {
-            surf.active = false;
-            0
-        } else {
-            -1
-        }
+        // take() the slot: alloc_slot only reuses None slots — leaving
+        // Some(..) leaks the surface and create_surface fails after 256
+        // create/destroy cycles in any long-lived compositor process
+        // (the Vulkan/EGL/GBM/DRM slot-leak class). The pending-input /
+        // frame bookkeeping dies with the slot, which is the point.
+        state.surfaces[surface_id as usize].take().map(|_| 0).unwrap_or(-1)
     })
 }
 
@@ -681,6 +681,20 @@ mod tests {
         assert!(id >= 0);
         assert_eq!(nyrqis_compositor_destroy_surface(id), 0);
         assert_eq!(nyrqis_compositor_surface_count(), 0);
+    }
+
+    #[test]
+    fn surface_slots_reuse_across_create_destroy_cycles() {
+        let _g = crate::test_lock();
+        // Cycle create/destroy far past MAX_SURFACES: destroy_surface
+        // must take() the slot, or create_surface fails with "too many
+        // surfaces (max 256)" in any long-lived compositor process (the
+        // slot-leak class fixed across egl/gbm/drm/vulkan).
+        for _ in 0..(MAX_SURFACES * 2) {
+            let s = nyrqis_compositor_create_surface(0, 64, 64);
+            assert!(s >= 0, "surface slot table exhausted");
+            assert_eq!(nyrqis_compositor_destroy_surface(s), 0);
+        }
     }
 
     #[test]
