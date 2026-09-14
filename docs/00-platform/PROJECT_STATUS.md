@@ -1,7 +1,7 @@
 # Nyrqis Platform — Project Status
 
-**Last updated:** 2026-08-18
-**Status:** Production-ready
+**Last updated:** 2026-09-14
+**Status:** Production-ready — live-demo ISO boots and is verified on both the direct and the menu boot path
 
 ## Overview
 
@@ -136,14 +136,14 @@ Nyforge (design) → .nstudio → Nyrqis (validate + load + run + render) → sh
 
 | Repository | Tests | Status |
 |------------|-------|--------|
-| Nyrqis (floor) | 666 | ✅ All pass |
-| Nyrqis (shell) | 19 | ✅ All pass |
-| Nyrqis (PIL compositor) | 22 | ✅ All pass |
-| Nyrqis (SDL2 compositor) | 17 | ✅ All pass |
-| Nyrqis (C++ generator) | 19 | ✅ All pass |
-| Nyrqis (Python generator) | 19 | ✅ All pass |
-| Nyforge (Core) | 271 | ✅ All pass |
-| **Total** | **1033** | ✅ |
+| Nyrqis (Python, full suite) | 8,930 | ✅ All pass (37 hardware skips) |
+| Nyrqis (Rust, 18 crates) | 305 | ✅ All pass |
+| **Total** | **9,235** | ✅ |
+
+Live-image verification: the `live-iso` CI workflow builds the demo ISO
+and boots it **twice** — direct kernel boot (daemon handshake) and the
+menu path (GRUB default entry → demo session), see `tests/boot_smoke.py`
+and `tests/boot_smoke_menu.py`.
 
 ## CI Status
 

@@ -1,16 +1,32 @@
 ---
 title: Next Development Session Plan
-version: 6.5.0
-date: 2026-09-10
+version: 6.6.0
+date: 2026-09-14
 ---
 
 # Next Development Session Plan
+
+## Session 9 (2026-09-14) — LIVE BOOT FIXED: the demo loop CI could not see; the slot-leak class ends; menu-path smoke
+
+| Item | Status |
+|------|--------|
+| **Live boot: the real failure** | ✅ The ISO booted but the demo session never yielded a shell: `.bash_profile` execs `nyrqis-demo`, which ended with `exec bash -l` — the nested login shell re-read the profile and re-exec'd the demo, an infinite banner respawn. The CI smoke missed it twice over: its serial handshake parks on `sleep infinity` BEFORE that line, and tty1's identical loop is invisible to the ttyS0 driver. Fixed: the profile is guarded by `NYRQIS_DEMO_ACTIVE`, the demo hands off via `--noprofile -i`, and the loop is pinned by contract tests |
+| Demo script cleanups found with the loop | ✅ The capability probe printed twice; tty1/ttyS0 both raced a second daemon onto the shared socket (EADDRINUSE loser's failure is what a log reader sees — CI round 18's mechanism). A `flock` singleton decides the starter; the loser adopts the winner via the ping path |
+| **Slot-leak class, fully closed** | ✅ The Vulkan-crate slot leak (destroys set `active = false` but leave `Some(..)` while `alloc_slot` only reuses `None`) existed in FOUR more crates: **egl** (displays/contexts/surfaces), **gbm** (buffers/surfaces/devices), **drm** (devices), and — found by this session's stress pass — **compositor** (surfaces, would exhaust at 257). All destroys now `take()`; EGL `terminate` also frees the display's configs (no other destroy path exists for them) |
+| EGL config leak found by the stress loop | ✅ The 50-cycle FFI loop caught `choose_config` failing at cycle 32 ("too many configs") — single-cycle unit assertions can never see it. 200-cycle loop green after the fix |
+| Stale root-level `test_egl.py` | ✅ The codec grew a required `config_id` argument and the legacy file still called the old signature (3 suite errors). Updated |
+| Crate-test flakes: the shared-STATE hazard | ✅ egl/gbm/drm/vulkan tests drive one global static in parallel threads; a long loop test widened the interleaving window and a mid-sequence `reset_state()` broke both (GBM `full_surface_lifecycle` saw surface −1). The compositor crate's poison-tolerant `TEST_LOCK` pattern now guards all four crates (52 tests wrapped) |
+| **Menu-path boot smoke** | ✅ `tests/boot_smoke_menu.py` + a `menu-boot` CI job: the old smoke boots the kernel DIRECTLY with a hand-built cmdline — deliberately immune to bootloader problems, so a broken GRUB menu/default entry could ship green forever. The new job boots the ISO like a machine (el torito → GRUB menu → default entry) and asserts banner + daemon on serial. Every GRUB/isolinux entry now carries `console=tty0 console=ttyS0,115200` so the human path is serial-observable. Driver verdict paths verified against fake QEMU stand-ins (pass/pong-fail/dead, both drivers) |
+| Live-boot contract tests | ✅ `tests/test_live_boot_contract.py` (10 tests, unit-speed, in the standard suite): no login-shell exec anywhere in `nyrqis-demo`; the guard + `--noprofile` handoff; the builder's `.bash_profile` guard; serial console on EVERY menu entry; the menu smoke's CI artifact glob matching its tmpdir prefix (a mismatch silently uploads nothing); `bash -n` syntax gate |
+| Stress pass results | ✅ vulkan 100 FFI lifecycles; compositor 300 create/destroy cycles past the 256 bound; EGL 200 full lifecycles; 10 clean crate-test reruns per graphics crate; wayland verified `take()`-based (honest −1 without a socket) |
+| **Release 0.29.10** | ✅ Tagged `v0.29.10` on `751562c`; live-iso green on the tag (Build ✓ + **Menu-path boot smoke ✓**); ISO auto-attached ([v0.29.10 release](https://github.com/Myco-mycelium/Nythera/releases/tag/v0.29.10), 253 MB, unauthenticated fetch ✓). The release ISO ships with the boot fix verified on both boot paths |
+| Suite | ✅ 8,930 Python OK (was 8,920; +10 contract); 18/18 Rust crates green (compositor 50, egl 16, gbm 15, drm 8, vulkan 13) |
 
 ## Current State (End of Session)
 
 | Metric | Value |
 |--------|-------|
-| Total tests | **6,443+** (Python: 6,168 — 6,133 passing + 35 skipped — + Rust: 275 across 18 crates) |
+| Total tests | **8,948+** (Python: 8,930 — + 37 hardware-skips — + Rust: 305 across 18 crates) |
 | Rust crates | **18** (all built and verified) |
 | Python codecs | **8** (wayland, gbm, drm, egl, vulkan, nstudio, compositor, shm) |
 | GPU pipelines | **4** verified on real hardware (GBM, DRM, EGL, Vulkan) |
