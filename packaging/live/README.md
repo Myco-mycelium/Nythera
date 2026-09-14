@@ -58,24 +58,36 @@ sudo dd if=dist/nyrqis-live.iso of=/dev/sdX bs=4M status=progress conv=fsync
 Boot menu: `demo` (default), `verbose` (full boot log), `RAM` (copy the
 squashfs into RAM — fastest on machines with memory to spare).
 
-### Architecture support (honest status)
+### Architecture support
 
-The ISO is **amd64/x86_64 only**: the rootfs installs
-`linux-image-amd64`, and the boot images are `grub-pc-bin` +
-`grub-efi-amd64-bin` + isolinux. An arm64 build (Raspberry Pi 4/5,
-ARM servers) is a Phase-2 roadmap item — the pieces short of it:
+Two architectures build, and **both are boot-smoked in CI**:
 
-- `grub-efi-arm64-bin` + `grub-arm64-efi` (no isolinux on arm64 — UEFI
-  only), `linux-image-arm64`, and an arm64 CI runner or `qemu-system-arm`
-  for the boot smokes;
-- the arm64 cdylibs themselves already cross-compile in CI
-  (`arm64-conformance` workflow: 10 crates build for
-  `aarch64-unknown-linux-gnu`, and the aarch64 seccomp table
-  conformance passes) — the gap is the **image**, not the platform
-code.
+**amd64/x86_64 (default)** — hybrid UEFI + BIOS image: the rootfs
+installs `linux-image-amd64`, boot images are `grub-pc-bin` +
+`grub-efi-amd64-bin` + isolinux. Build with `build-live-iso.sh`, smoke
+with `tests/boot_smoke.py` / `tests/boot_smoke_menu.py` (amd64 is the
+drivers' default arch).
 
-Do not hand-wave an arm64 ISO as "ready": it has never been built or
-boot-smoked, and no release asset claims otherwise.
+**arm64** (`build-live-iso.sh --arch arm64`) — UEFI-only image (there
+is no BIOS/el torito/isolinux on arm64): `linux-image-arm64`, GRUB
+`arm64-efi`, every menu entry carries `console=ttyAMA0,115200` (the
+QEMU `virt` machine's UART). The rootfs cross-builds on an amd64 host
+with a foreign debootstrap under `qemu-user-static` — no arm64 runner
+needed. CI (`.github/workflows/live-iso-arm64.yml`) builds it weekly
+and runs **both** boot smokes under `qemu-system-aarch64 -M virt`:
+
+- direct kernel boot (`tests/boot_smoke.py --arch arm64`) over the
+ttyAMA0 handshake;
+- the human menu path (`tests/boot_smoke_menu.py --arch arm64`) through
+the image's own GRUB, UEFI firmware supplied via `-bios`
+(`qemu-efi-aarch64`'s edk2 image).
+
+Real-hardware arm64 (Raspberry Pi 4/5, ARM servers) remains untested —
+the QEMU-verified image is the deliverable until hardware smoke access
+exists; do not claim Pi support beyond "boots in the virt machine".
+
+Do not hand-wave an arm64 ISO as "hardware-ready": it is CI-boot-smoked
+in QEMU only, and no release asset claims otherwise.
 
 ## What the demo does
 

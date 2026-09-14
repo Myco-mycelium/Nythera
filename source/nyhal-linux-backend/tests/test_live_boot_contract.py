@@ -40,9 +40,13 @@ DEMO = os.path.join(
     "nyrqis-demo")
 BUILDER = os.path.join(_REPO_ROOT, "packaging", "live", "build-live-iso.sh")
 GRUB = os.path.join(_REPO_ROOT, "packaging", "live", "grub.cfg.tpl")
+GRUB_ARM64 = os.path.join(_REPO_ROOT, "packaging", "live", "grub.cfg.arm64.tpl")
 ISOLINUX = os.path.join(_REPO_ROOT, "packaging", "live", "isolinux.cfg.tpl")
+DIRECT_SMOKE = os.path.join(_REPO_ROOT, "tests", "boot_smoke.py")
 MENU_SMOKE = os.path.join(_REPO_ROOT, "tests", "boot_smoke_menu.py")
 LIVE_ISO_WF = os.path.join(_REPO_ROOT, ".github", "workflows", "live-iso.yml")
+LIVE_ISO_ARM64_WF = os.path.join(
+    _REPO_ROOT, ".github", "workflows", "live-iso-arm64.yml")
 
 # Any login-shell re-exec from inside the demo session loops: the
 # profile execs the demo, the demo execs the login shell, the shell
@@ -138,6 +142,103 @@ class TestMenuSerialObservability(unittest.TestCase):
                 "console=ttyS0", body,
                 f"isolinux label {name!r} has no serial console — the "
                 f"menu-path smoke would be blind to this boot path")
+
+
+class TestArm64BootContract(unittest.TestCase):
+    """The arm64 image boots through a DIFFERENT machine: UEFI-only (no
+    BIOS/el torito/isolinux on arm64), QEMU virt serial on ttyAMA0, and
+    a foreign debootstrap that must not ship its emulator binary."""
+
+    def setUp(self):
+        self.builder = read(BUILDER)
+        self.grub_arm64 = read(GRUB_ARM64)
+        self.direct = read(DIRECT_SMOKE)
+        self.menu = read(MENU_SMOKE)
+        self.wf = read(LIVE_ISO_ARM64_WF)
+
+    def test_arm64_grub_template_exists_and_covers_every_entry(self):
+        entries = re.findall(r"menuentry \"([^\"]+)\" \{(.*?)\}",
+                             self.grub_arm64, re.S)
+        self.assertTrue(entries, "grub.cfg.arm64.tpl must define entries")
+        for name, body in entries:
+            self.assertIn(
+                "console=ttyAMA0", body,
+                f"arm64 GRUB entry {name!r} has no ttyAMA0 console — the "
+                f"virt machine's UART is ttyAMA0, the smoke would be blind")
+
+    def test_builder_wires_arm64_end_to_end(self):
+        self.assertIn("--arch", self.builder)
+        self.assertIn("grub.cfg.arm64.tpl", self.builder,
+                      "the arm64 branch must install the arm64 GRUB template")
+        self.assertIn("linux-image-arm64", self.builder,
+                      "the arm64 debootstrap must pull the arm64 kernel")
+        self.assertIn("--foreign", self.builder,
+                      "cross-building needs a foreign debootstrap")
+
+    def test_builder_autologins_on_the_arm64_serial_console(self):
+        # The demo serial console is arch-specific (ttyAMA0 on the virt
+        # machine): without the serial-getty@ttyAMA0 drop-in the arm64
+        # smoke waits forever for a banner no autologin ever prints.
+        self.assertIn(
+            "serial-getty@ttyAMA0.service.d/autologin.conf", self.builder,
+            "the builder must ship the ttyAMA0 autologin drop-in (the arm64 "
+            "virt machine's demo console)")
+
+    def test_builder_never_ships_the_emulator(self):
+        # The qemu-aarch64-static binary is a HOST artifact for emulated
+        # chroot steps; shipping it wastes space and confuses audits.
+        self.assertIn(
+            'rm -f "$ROOTFS_SRC/usr/bin/qemu-aarch64-static"', self.builder,
+            "the builder must strip the emulator binary before mksquashfs")
+
+    def test_smokes_support_arm64(self):
+        for label, text in (("boot_smoke", self.direct),
+                            ("boot_smoke_menu", self.menu)):
+            self.assertIn(
+                "--arch", text,
+                f"{label} must accept --arch")
+            self.assertIn(
+                "ttyAMA0", text,
+                f"{label} must target the virt machine's ttyAMA0 console "
+                "for arm64")
+            self.assertIn(
+                "qemu-system-aarch64", text,
+                f"{label} must default the arm64 qemu binary")
+
+    def test_menu_smoke_supplies_uefi_firmware_on_arm64(self):
+        # Without -bios the virt machine has NO firmware and cannot boot
+        # the ISO at all — the UEFI image is part of the machine.
+        self.assertIn(
+            "-bios", self.menu,
+            "the menu smoke must pass the edk2 firmware with -bios on arm64")
+        self.assertIn(
+            "qemu-efi-aarch64", self.menu,
+            "the menu smoke must name the firmware package in its error "
+            "message (actionable CI failures)")
+
+    def test_arm64_workflow_runs_both_smokes(self):
+        self.assertIn("--arch arm64", self.wf,
+                      "the arm64 workflow must drive the smokes in arm64 mode")
+        self.assertIn("tests/boot_smoke.py", self.wf)
+        self.assertIn("tests/boot_smoke_menu.py", self.wf)
+        self.assertIn("qemu-user-static", self.wf,
+                      "the cross rootfs needs the emulator + binfmt")
+        self.assertIn("qemu-system-arm", self.wf,
+                      "the boot smokes need qemu-system-aarch64 (the "
+                      "qemu-system-arm package ships it)")
+        # Every serial-log upload glob must match the drivers' tmpdir
+        # prefixes (the amd64 lesson: a mismatch silently uploads
+        # nothing).
+        self.assertIn("/tmp/nyrqis-boot-smoke-", self.wf)
+        self.assertIn("/tmp/nyrqis-boot-smoke-menu-", self.wf)
+
+    def test_amd64_workflow_still_installs_the_ttyS0_drop_in(self):
+        # The arm64 additions must not disturb the amd64 image's serial
+        # autologin (both smokes depend on it).
+        root_wf = read(LIVE_ISO_WF)
+        self.assertIn("debootstrap", root_wf)
+        self.assertIn("serial-getty", self.builder,
+                      "the builder must keep the serial autologin overlay")
 
 
 class TestMenuSmokeWiring(unittest.TestCase):

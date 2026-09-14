@@ -32,7 +32,15 @@ channel, same as tests/boot_smoke.py).
 
 Usage:
     python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso \
-        [--qemu qemu-system-x86_64] [--timeout 780] [--keep-logs]
+        [--qemu qemu-system-x86_64] [--timeout 780] [--keep-logs] \
+        [--arch amd64]
+
+Architectures (--arch): amd64 (default) and arm64. On arm64 there is
+no BIOS/el torito, so the "machine" boots through UEFI: qemu-system-
+aarch64 -M virt with the qemu-efi-aarch64 (edk2) firmware image, whose
+boot entry chain-loads the ISO's grubaa64 EFI. The demo serial console
+is ttyAMA0 on the virt machine; the arm64 GRUB template carries it on
+every entry.
 """
 
 import argparse
@@ -93,17 +101,41 @@ def _emit_full_log(text, summary):
         print(f"::error::menu boot smoke: log[{i + 1}/{n}] {piece}", flush=True)
 
 
-def run_smoke(iso, qemu, timeout_s, keep_logs):
+def _find_uefi_firmware(arch):
+    """Locate the edk2 firmware image for UEFI boot (arm64 has no BIOS)."""
+    if arch == "arm64":
+        candidates = (
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/qemu/edk2-aarch64-code.fd",
+        )
+    else:
+        candidates = (
+            "/usr/share/OVMF/OVMF_CODE.fd",
+            "/usr/share/ovmf/OVMF_CODE.fd",
+        )
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
     tmp = tempfile.mkdtemp(prefix="nyrqis-boot-smoke-menu-")
     serial_log = os.path.join(tmp, "serial.log")
     proc = None
     try:
-        # NO -kernel/-initrd/-append: the ISO's own BIOS boot image must
-        # run, present the GRUB menu, time out, and boot the default
-        # entry — exactly what a real machine does with this ISO.
+        # NO -kernel/-initrd/-append: the ISO's own boot image must run,
+        # present the boot menu, time out, and boot the default entry —
+        # exactly what a real machine does with this ISO. On arm64 the
+        # "machine" is UEFI: without -bios the virt machine has no
+        # firmware and cannot boot anything, so the edk2 image is part
+        # of the machine, not part of the boot selection.
+        machine = (["-machine", "virt,accel=kvm:tcg", "-cpu", "cortex-a57"]
+                   if arch == "arm64" else ["-machine", "accel=kvm:tcg"])
         cmd = [
             qemu,
-            "-machine", "accel=kvm:tcg",
+            *machine,
             "-m", "2048",
             "-nographic",
             "-no-reboot",
@@ -112,6 +144,14 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
             "-serial", f"file:{serial_log}",
             "-monitor", "none",
         ]
+        if arch == "arm64":
+            firmware = _find_uefi_firmware("arm64")
+            if firmware is None:
+                print("[menu-boot-smoke] ERROR: no arm64 UEFI firmware "
+                      "found (apt-get install qemu-efi-aarch64)")
+                return 1
+            cmd += ["-bios", firmware]
+            print(f"[menu-boot-smoke] UEFI firmware: {firmware}", flush=True)
         print(f"[menu-boot-smoke] qemu: {' '.join(cmd)}", flush=True)
         proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -206,21 +246,30 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("iso", help="path to the live ISO")
-    parser.add_argument("--qemu", default="qemu-system-x86_64")
+    parser.add_argument("--qemu", default=None,
+                        help="qemu binary (default: qemu-system-x86_64 for "
+                             "amd64, qemu-system-aarch64 for arm64)")
+    parser.add_argument("--arch", default="amd64", choices=("amd64", "arm64"),
+                        help="ISO architecture (default: amd64)")
     parser.add_argument("--timeout", type=float, default=780.0,
                         help="boot budget in seconds (default: 780)")
     parser.add_argument("--keep-logs", action="store_true",
                         help="keep the serial log")
     args = parser.parse_args()
+    if args.qemu is None:
+        args.qemu = ("qemu-system-aarch64" if args.arch == "arm64"
+                     else "qemu-system-x86_64")
 
     if not os.path.exists(args.iso):
         print(f"[menu-boot-smoke] ERROR: ISO not found: {args.iso}")
         return 1
     if os.system(f"command -v {args.qemu} >/dev/null 2>&1") != 0:
         print(f"[menu-boot-smoke] SKIP: {args.qemu} not on PATH "
-              "(install qemu-system-x86 to run the menu boot smoke)")
+              "(install qemu-system-x86 or qemu-system-arm to run the menu "
+              "boot smoke)")
         return 0
-    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs)
+    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs,
+                     arch=args.arch)
 
 
 if __name__ == "__main__":

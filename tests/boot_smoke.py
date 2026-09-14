@@ -25,7 +25,12 @@ for diagnosis).
 
 Usage:
     python3 tests/boot_smoke.py dist/nyrqis-live.iso \
-        [--qemu qemu-system-x86_64] [--timeout 300] [--keep-logs]
+        [--qemu qemu-system-x86_64] [--timeout 300] [--keep-logs] \
+        [--arch amd64]
+
+Architectures (--arch): amd64 (default, qemu-system-x86_64) and arm64
+(qemu-system-aarch64 -M virt; the demo serial console is ttyAMA0 there,
+and the direct boot needs QEMU >= 8.2 to load Debian's zboot vmlinuz).
 """
 
 import argparse
@@ -48,9 +53,15 @@ MARKER_NYRQISCTL = "NYRQIS_BOOT_SMOKE_NYRQISCTL="
 # redirect all init output to /run/initramfs/initramfs.debug inside
 # the VM (invisible on serial). See initramfs-tools /init case arms:
 # "debug) log_output=/run/..." vs "debug=*) set -x" (no redirect).
-KERNEL_CMDLINE = ("boot=live debug=y console=ttyS0,115200 "
-                  "systemd.unit=multi-user.target "
-                  "NYRQIS_BOOT_SMOKE=1")
+# The demo serial console is arch-specific: ttyS0 on amd64, ttyAMA0 on
+# the QEMU 'virt' machine (arm64) — the autologin overlay ships both
+# serial-getty drop-ins, so whichever console the cmdline names gets
+# the demo session.
+def kernel_cmdline(arch):
+    console = "ttyAMA0" if arch == "arm64" else "ttyS0"
+    return (f"boot=live debug=y console={console},115200 "
+            "systemd.unit=multi-user.target "
+            "NYRQIS_BOOT_SMOKE=1")
 
 # Console patterns that mean the boot is DEAD (no marker can ever
 # arrive): fail fast instead of burning the whole budget. The prompt
@@ -152,7 +163,7 @@ def _extract_live_kernel(iso, dest_dir):
 
 
 
-def run_smoke(iso, qemu, timeout_s, keep_logs):
+def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
     tmp = tempfile.mkdtemp(prefix="nyrqis-boot-smoke-")
     serial_log = os.path.join(tmp, "serial.log")
     proc = None
@@ -162,16 +173,24 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
         except RuntimeError as exc:
             print(f"[boot-smoke] ERROR: {exc}")
             return 1
+        if arch == "arm64":
+            # -M virt: the reference arm64 machine. Its PL011 UART is
+            # ttyAMA0 (the cmdline above names it); cortex-a57 is the
+            # safe TCG baseline every bookworm+ kernel supports.
+            machine = ["-machine", "virt,accel=kvm:tcg",
+                       "-cpu", "cortex-a57"]
+        else:
+            machine = ["-machine", "accel=kvm:tcg"]
         cmd = [
             qemu,
-            "-machine", "accel=kvm:tcg",   # KVM when available, TCG otherwise
+            *machine,                      # KVM when available, TCG otherwise
             "-m", "2048",
             "-nographic",
             "-no-reboot",
             "-cdrom", iso,                 # the live medium (squashfs source)
             "-kernel", kernel,             # direct boot: no menu selection
             "-initrd", initrd,
-            "-append", KERNEL_CMDLINE,
+            "-append", kernel_cmdline(arch),
             "-serial", f"file:{serial_log}",
             "-monitor", "none",
         ]
@@ -289,7 +308,11 @@ def run_smoke(iso, qemu, timeout_s, keep_logs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("iso", help="path to the live ISO")
-    parser.add_argument("--qemu", default="qemu-system-x86_64")
+    parser.add_argument("--qemu", default=None,
+                        help="qemu binary (default: qemu-system-x86_64 for "
+                             "amd64, qemu-system-aarch64 for arm64)")
+    parser.add_argument("--arch", default="amd64", choices=("amd64", "arm64"),
+                        help="ISO architecture (default: amd64)")
     parser.add_argument("--timeout", type=float, default=780.0,
                         help="boot budget in seconds (default: 780 — a "
                              "TCG-slowed full userspace boot needs it)")
@@ -297,15 +320,19 @@ def main():
                         help="keep the serial log (prints its path instead "
                              "of the tail)")
     args = parser.parse_args()
+    if args.qemu is None:
+        args.qemu = ("qemu-system-aarch64" if args.arch == "arm64"
+                     else "qemu-system-x86_64")
 
     if not os.path.exists(args.iso):
         print(f"[boot-smoke] ERROR: ISO not found: {args.iso}")
         return 1
     if os.system(f"command -v {args.qemu} >/dev/null 2>&1") != 0:
         print(f"[boot-smoke] SKIP: {args.qemu} not on PATH "
-              "(install qemu-system-x86 to run the boot smoke)")
+              "(install qemu-system-x86 or qemu-system-arm to run the boot smoke)")
         return 0
-    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs)
+    return run_smoke(args.iso, args.qemu, args.timeout, args.keep_logs,
+                     arch=args.arch)
 
 
 if __name__ == "__main__":

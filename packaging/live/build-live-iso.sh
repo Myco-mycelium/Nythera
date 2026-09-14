@@ -23,6 +23,10 @@
 #       --rootfs /srv/nyrqis-rootfs \
 #       --output dist/nyrqis-live-$(git describe --tags).iso
 #
+# Architectures (--arch): amd64 (default — hybrid UEFI+BIOS) and arm64
+# (UEFI-only; cross-built with qemu-user-static, booted with
+# qemu-system-aarch64 -M virt, demo serial on ttyAMA0).
+#
 # Exit codes: 0 = ISO built; 1 = preconditions missing (they are printed).
 
 set -euo pipefail
@@ -34,6 +38,7 @@ BACKEND_DIR="$REPO_ROOT/source/nyhal-linux-backend"
 ROOTFS=""
 ROOTFS_TAR=""
 OUTPUT="dist/nyrqis-live.iso"
+ARCH="amd64"
 VOLUME_ID="NYRQIS_LIVE"
 WORKDIR=""
 SKIP_CHROOT=false
@@ -49,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --rootfs)       ROOTFS="$2"; shift 2 ;;
         --rootfs-tar)   ROOTFS_TAR="$2"; shift 2 ;;
+        --arch)         ARCH="$2"; shift 2 ;;
         --output|-o)    OUTPUT="$2"; shift 2 ;;
         --volume-id)    VOLUME_ID="$2"; shift 2 ;;
         --workdir)      WORKDIR="$2"; shift 2 ;;
@@ -65,6 +71,10 @@ while [[ $# -gt 0 ]]; do
         *) die "unknown argument: $1 (see --help)" ;;
     esac
 done
+case "$ARCH" in
+    amd64|arm64) ;;
+    *) die "unsupported --arch '$ARCH' (amd64 | arm64)" ;;
+esac
 
 # ---------------------------------------------------------------- preconditions
 need() { command -v "$1" >/dev/null 2>&1 || MISSING+=("$1"); }
@@ -127,11 +137,51 @@ else
     # initramfs SCRIPTS live in live-boot-initramfs-tools (a split
     # package minbase can skip via Recommends — six CI rounds burned
     # on the resulting script-less initrd).
-    debootstrap --variant=minbase \
-        --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools \
+    case "$ARCH" in
+        amd64) KERNEL_PKG=linux-image-amd64 ; DEB_ARCH=amd64 ;  FOREIGN=() ;;
+        arm64) KERNEL_PKG=linux-image-arm64 ; DEB_ARCH=arm64 ;
+               # Cross-rootfs: needs qemu-user-static + binfmt on the
+               # builder (the CI arm64 workflow installs both). Foreign
+               # first stage; the second stage runs below under the
+               # staged emulator so package configuration (useradd,
+               # initramfs hooks, systemd generators) completes.
+               FOREIGN=(--foreign) ;;
+    esac
+    debootstrap --variant=minbase --arch="$DEB_ARCH" \
+        "${FOREIGN[@]}" \
+        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
+    if ((${#FOREIGN[@]})); then
+        log "second-stage debootstrap under qemu-$DEB_ARCH-static (emulated)"
+        mkdir -p "$ROOTFS_SRC/usr/bin"
+        cp "$(command -v "qemu-$DEB_ARCH-static")" \
+            "$ROOTFS_SRC/usr/bin/"
+        if ! chroot "$ROOTFS_SRC" /debootstrap/debootstrap --second-stage; then
+            rm -f "$ROOTFS_SRC/usr/bin/qemu-$DEB_ARCH-static"
+            die "second-stage debootstrap failed under emulation —\n  the kernel must dispatch $DEB_ARCH binaries to qemu-user-static:\n  apt-get install qemu-user-static and confirm binfmt is registered\n  (ls /proc/sys/fs/binfmt_misc | grep $DEB_ARCH)"
+        fi
+    fi
 fi
 [[ -d "$ROOTFS_SRC" ]] || die "rootfs tree not found after acquisition"
+
+# Cross-arch chroot support: every chroot step below (useradd,
+# mkinitramfs, byte-compile) execs $DEB_ARCH binaries. binfmt_misc
+# resolves the registered interpreter path INSIDE the chroot, so
+# qemu-$DEB_ARCH-static must exist in the rootfs at the registered
+# host path (/usr/bin/qemu-$DEB_ARCH-static) — a rootfs from ANY
+# acquisition path needs it, not just the debootstrap one. Removed
+# again before mksquashfs (the shipped image must not carry a foreign
+# emulator binary).
+QEMU_IN_ROOTFS="$ROOTFS_SRC/usr/bin/qemu-$DEB_ARCH-static"
+if [[ "$ARCH" == arm64 ]]; then
+    if [[ ! -x "$QEMU_IN_ROOTFS" ]]; then
+        command -v "qemu-$DEB_ARCH-static" >/dev/null 2>&1 || \
+            die "cross-building arm64 needs qemu-user-static (apt-get install qemu-user-static; binfmt-support comes with it)"
+        mkdir -p "$ROOTFS_SRC/usr/bin"
+        cp "$(command -v "qemu-$DEB_ARCH-static")" "$QEMU_IN_ROOTFS"
+        log "staged qemu-$DEB_ARCH-static in the rootfs for emulated chroot steps"
+    fi
+fi
 
 # ---------------------------------------------------------------- Nyrqis tree
 log "installing the Nyrqis backend + desktop tree into /opt/nyrqis"
@@ -149,6 +199,14 @@ install -D "$SCRIPT_DIR/overlay/etc/systemd/system/getty@tty1.service.d/autologi
     "$ROOTFS_SRC/etc/systemd/system/getty@tty1.service.d/autologin.conf"
 install -D "$SCRIPT_DIR/overlay/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
     "$ROOTFS_SRC/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf"
+# The demo serial console is ARCH-SPECIFIC: ttyS0 on amd64, ttyAMA0 on
+# the arm64 QEMU 'virt' machine (and most arm64 SBCs). Ship BOTH
+# serial drop-ins on every image — the kernel cmdline's console= decides
+# which getty systemd instantiates, an unused drop-in is inert, and a
+# missing one means the arm64 smoke waits forever for a banner no
+# autologin ever prints.
+install -D "$SCRIPT_DIR/overlay/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" \
+    "$ROOTFS_SRC/etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf"
 install -D "$SCRIPT_DIR/overlay/usr/local/bin/nyrqis-demo" \
     "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
 chmod 0755 "$ROOTFS_SRC/usr/local/bin/nyrqis-demo"
@@ -248,7 +306,7 @@ sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Nyrqis Live (demo)"/' \
 KERNEL="$(ls "$ROOTFS_SRC"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1 || true)"
 INITRD="$(ls "$ROOTFS_SRC"/boot/initrd.img-* 2>/dev/null | sort -V | tail -1 || true)"
 [[ -n "$KERNEL" && -n "$INITRD" ]] || \
-    die "no kernel/initrd under $ROOTFS_SRC/boot — build the rootfs with linux-image-amd64"
+    die "no kernel/initrd under $ROOTFS_SRC/boot — build the rootfs with the $ARCH kernel package"
 
 # Live initramfs hooks: the live pivot needs live-boot's SCRIPTS and the
 # FILESYSTEM MODULES (squashfs, iso9660, loop, overlay). mkinitramfs
@@ -407,6 +465,9 @@ fi
     die "/sbin/init repair failed — the live pivot cannot exec an init"
 
 # ---------------------------------------------------------------- squashfs + ISO
+# The emulator binary must NOT ship in the image (foreign to the arch;
+# the booting machine has no use for it).
+rm -f "$ROOTFS_SRC/usr/bin/qemu-aarch64-static"
 log "building the squashfs rootfs image"
 mksquashfs "$ROOTFS_SRC" "$LIVE_DIR/filesystem.squashfs" \
     -comp zstd -Xcompression-level 15 -noappend -wildcards \
@@ -496,16 +557,37 @@ cp "$INITRD"  "$LIVE_DIR/initrd"
 
 log "writing boot configuration (GRUB for UEFI+BIOS, isolinux for legacy)"
 export VOLUME_ID
-mkdir -p "$ISO_ROOT/boot/grub" "$ISO_ROOT/isolinux"
-sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/grub.cfg.tpl"  > "$ISO_ROOT/boot/grub/grub.cfg"
-sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/isolinux.cfg.tpl" > "$ISO_ROOT/isolinux/isolinux.cfg"
+if [[ "$ARCH" == arm64 ]]; then
+    # arm64 has no BIOS/el torito: the image is GRUB UEFI only. There
+    # is no isolinux on this arch (syslinux is x86-only), and the QEMU
+    # 'virt' machine's serial port is ttyAMA0, not ttyS0 — the boot
+    # smokes drive the demo over ttyAMA0 (tests/boot_smoke*.py --arch).
+    mkdir -p "$ISO_ROOT/boot/grub"
+    sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/grub.cfg.arm64.tpl" \
+        > "$ISO_ROOT/boot/grub/grub.cfg"
+    log "arm64 image: GRUB UEFI only (no isolinux — syslinux is x86-only)"
+else
+    mkdir -p "$ISO_ROOT/boot/grub" "$ISO_ROOT/isolinux"
+    sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/grub.cfg.tpl"  > "$ISO_ROOT/boot/grub/grub.cfg"
+    sed "s/__VOLUME_ID__/$VOLUME_ID/g" "$SCRIPT_DIR/isolinux.cfg.tpl" > "$ISO_ROOT/isolinux/isolinux.cfg"
+fi
 
 mkdir -p "$(dirname "$OUTPUT")"
 # grub-mkrescue produces the hybrid (UEFI + BIOS) image when the grub
 # bins AND xorriso are installed; every BIOS fallback path needs the
 # isolinux binaries staged first.
 HYBRID=false
-if grub-mkrescue --version >/dev/null 2>&1 && \
+if [[ "$ARCH" == arm64 ]]; then
+    # arm64 needs no BIOS fallback: grub-efi-arm64-bin + xorriso make a
+    # UEFI-only image (there is no isolinux/syslinux BIOS path on arm64).
+    if grub-mkrescue --version >/dev/null 2>&1 \
+       && [[ -d /usr/lib/grub/arm64-efi ]] \
+       && command -v xorriso >/dev/null 2>&1; then
+        HYBRID=true
+    else
+        die "arm64 image needs grub-efi-arm64-bin + xorriso (apt-get install grub-efi-arm64-bin xorriso mtools)"
+    fi
+elif grub-mkrescue --version >/dev/null 2>&1 && \
    [[ -d /usr/lib/grub/i386-pc || -d /usr/lib/grub/x86_64-efi ]] && \
    command -v xorriso >/dev/null 2>&1; then
     HYBRID=true
@@ -527,5 +609,9 @@ else
 fi
 
 log "ISO built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
-log "boot it with:   qemu-system-x86_64 -m 4G -enable-kvm -cdrom $OUTPUT"
+case "$ARCH" in
+    amd64) QEMU_HINT="qemu-system-x86_64 -m 4G -enable-kvm -cdrom $OUTPUT" ;;
+    arm64) QEMU_HINT="qemu-system-aarch64 -M virt -m 2G -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd -cdrom $OUTPUT" ;;
+esac
+log "boot it with:   $QEMU_HINT"
 log "or write to USB: sudo dd if=$OUTPUT of=/dev/sdX bs=4M status=progress conv=fsync"

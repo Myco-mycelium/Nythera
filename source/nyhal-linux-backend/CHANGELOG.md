@@ -5,6 +5,36 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.12] - 2026-09-14
+
+### Added
+
+- **The arm64 live ISO is real and CI-boot-smoked** (the previously
+  documented amd64-only gap is closed at the QEMU level).
+  ``build-live-iso.sh --arch arm64`` cross-builds the rootfs with a
+  foreign debootstrap under ``qemu-user-static`` (the emulator binary
+  is staged for chroot steps and stripped before mksquashfs), produces
+  a UEFI-only GRUB image (no isolinux on arm64) whose every menu entry
+  carries ``console=ttyAMA0,115200`` (the QEMU ``virt`` machine's
+  UART), and is exercised weekly by the new ``live-iso-arm64``
+  workflow under ``qemu-system-aarch64 -M virt``: BOTH boot smokes run
+  in arm64 mode — the direct kernel boot and the human menu path
+  through the image's own GRUB (UEFI firmware supplied via ``-bios``
+  from ``qemu-efi-aarch64``). Both smoke drivers gained ``--arch``
+  (arm64 defaults to ``qemu-system-aarch64``, the virt machine, and
+  ttyAMA0). Six new contract tests pin the arm64 boot contract
+  (template coverage, builder wiring, emulator stripping, driver
+  support, UEFI wiring, CI artifact globs). Real-hardware status is
+  unchanged and honestly documented: QEMU-verified only.
+- **The installed-system audit is pinned as a test module.**
+  ``tests/test_packaging_parity.py`` (7 tests) runs the deployed
+  unit's exact ``ExecStart`` flags against a live daemon in a sandbox
+  and proves the configuration serves: ping, status, the ADR-0009
+  fair-share limits (2000/s envelope, 250/s per-sender), the health
+  socket, and a full vault roundtrip through the unit's vault wiring —
+  the exercise that found the 0.29.11 drift now runs on every CI
+  round.
+
 ## [0.29.11] - 2026-09-14
 
 ### Fixed

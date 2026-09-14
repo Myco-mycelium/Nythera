@@ -1,0 +1,114 @@
+name: live-iso-arm64
+
+# Builds the arm64 Nyrqis live-demo ISO (build-live-iso.sh --arch arm64)
+# and boot-smokes it exactly like the amd64 one: a direct-kernel boot
+# (tests/boot_smoke.py --arch arm64) and the human menu path through the
+# image's own GRUB (tests/boot_smoke_menu.py --arch arm64, UEFI via
+# qemu-efi-aarch64). The virt machine's serial console is ttyAMA0; both
+# smokes drive the demo session over it.
+#
+# The rootfs is cross-built with a foreign debootstrap
+# (qemu-user-static + binfmt emulation); no arm64 runner is required.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, offset from the amd64 build so the two do not contend.
+    - cron: "0 6 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "packaging/live/**"
+      - ".github/workflows/live-iso-arm64.yml"
+      - "tests/boot_smoke.py"
+      - "tests/boot_smoke_menu.py"
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: Build arm64 live demo ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap qemu-user-static binfmt-support \
+            squashfs-tools xorriso grub-efi-arm64-bin mtools \
+            dosfstools e2fsprogs
+
+      - name: Assemble the arm64 rootfs (foreign debootstrap, emulated)
+        run: |
+          sudo debootstrap --variant=minbase --arch=arm64 --foreign \
+            --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot \
+            bookworm /srv/nyrqis-rootfs-arm64 http://deb.debian.org/debian
+          # Stage the emulator INSIDE the rootfs: binfmt_misc resolves
+          # the interpreter path within the chroot. build-live-iso.sh
+          # does the same for its own chroot steps; the second stage
+          # and apt both need it present.
+          sudo cp /usr/bin/qemu-aarch64-static /srv/nyrqis-rootfs-arm64/usr/bin/
+          sudo chroot /srv/nyrqis-rootfs-arm64 /debootstrap/debootstrap --second-stage
+          sudo chroot /srv/nyrqis-rootfs-arm64 apt-get update
+          sudo chroot /srv/nyrqis-rootfs-arm64 apt-get install -y --no-install-recommends \
+            python3 python3-zstandard python3-nacl bash
+          sudo chroot /srv/nyrqis-rootfs-arm64 apt-get clean
+
+      - name: Build the arm64 ISO
+        run: |
+          sudo packaging/live/build-live-iso.sh \
+            --arch arm64 \
+            --rootfs /srv/nyrqis-rootfs-arm64 \
+            -o dist/nyrqis-live-arm64.iso
+          sudo tar -cf dist/nyrqis-rootfs-arm64.tar -C /srv nyrqis-rootfs-arm64
+        timeout-minutes: 90
+
+      - name: Smoke-check the ISO structure
+        run: |
+          test -f dist/nyrqis-live-arm64.iso
+          xorriso -indev dist/nyrqis-live-arm64.iso -find /live -name 'vmlinuz' | grep -q vmlinuz
+          xorriso -indev dist/nyrqis-live-arm64.iso -find /boot/grub -name 'grub.cfg' | grep -q grub.cfg
+          du -h dist/nyrqis-live-arm64.iso
+
+      - name: Direct boot smoke (arm64 kernel, ttyAMA0 handshake)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-arm qemu-efi-aarch64
+          python3 tests/boot_smoke.py dist/nyrqis-live-arm64.iso \
+            --arch arm64 --timeout 900 --keep-logs
+        timeout-minutes: 20
+
+      - name: Menu boot smoke (GRUB default entry via UEFI firmware)
+        run: |
+          python3 tests/boot_smoke_menu.py dist/nyrqis-live-arm64.iso \
+            --arch arm64 --timeout 900 --keep-logs
+        timeout-minutes: 20
+
+      - name: Upload direct-boot serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-boot-smoke-serial-log
+          path: /tmp/nyrqis-boot-smoke-*/serial.log
+          if-no-files-found: ignore
+
+      - name: Upload menu-boot serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-menu-boot-smoke-serial-log
+          path: /tmp/nyrqis-boot-smoke-menu-*/serial.log
+          if-no-files-found: ignore
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyrqis-live-iso-arm64
+          path: dist/nyrqis-live-arm64.iso
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error

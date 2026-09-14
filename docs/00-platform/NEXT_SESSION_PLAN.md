@@ -6,6 +6,16 @@ date: 2026-09-14
 
 # Next Development Session Plan
 
+## Session 10 (2026-09-14) — PACKAGING PARITY PINNED; the arm64 ISO is real; two systemd trees become one
+
+| Item | Status |
+|------|--------|
+| **The two systemd trees, reconciled** | ✅ Found in the follow-up audit: the repo carried TWO ``packaging/systemd/`` trees, each pinned by a DIFFERENT test, and ``install.sh`` deploys the BACKEND copy — which had drifted (``RestrictNamespaces=yes`` breaking the daemon's own userns containers; no vault wiring). The backend tree is now the single source of truth; the root copy mirrors it byte-for-byte; directive-aware drift-guard tests fail on divergence; desktop unit rewired off the user-scoped ``graphical-session.target`` (``systemd-analyze verify`` was clean for the first time). Released 0.29.11 |
+| **The installed-system audit, pinned as tests** | ✅ ``tests/test_packaging_parity.py`` (7 tests): the deployed unit's exact ``ExecStart`` flags run against a live daemon in a sandbox — ping, status, ADR-0009 fair-share limits (2000/s envelope → 250/s per sender), the health socket, and a full vault roundtrip through the unit's vault wiring. The exercise that FOUND the drift now runs every CI round. Two real fixes went into the test itself: the vault ``open`` output's handle is token 2 ("handle <H> for volume <VID>" — taking the last token grabbed the volume id and the daemon honestly said "foreign handle"), and vault paths are volume-absolute (``/audit.txt``) |
+| **The arm64 ISO exists and is boot-smoked in CI** | ✅ The documented amd64-only gap closed at the QEMU level: ``build-live-iso.sh --arch arm64`` cross-builds the rootfs (foreign debootstrap under ``qemu-user-static``; the emulator binary is staged for chroot steps and STRIPPED before mksquashfs), emits a UEFI-only GRUB image (no isolinux on arm64) with ``console=ttyAMA0,115200`` on every entry, and the new ``live-iso-arm64`` workflow boot-smokes BOTH paths weekly: direct kernel boot + the human menu path through the image's own GRUB (UEFI via ``-bios`` + ``qemu-efi-aarch64``). Both smoke drivers gained ``--arch`` (arm64 → ``qemu-system-aarch64 -M virt``, ``-cpu cortex-a57``, ttyAMA0). Caught before CI: the builder only shipped the ``serial-getty@ttyS0`` autologin drop-in — arm64 would have booted with NO demo banner; the ``ttyAMA0`` drop-in ships on every image now |
+| Arm64 boot contract pinned | ✅ 8 new contract tests in ``test_live_boot_contract.py`` (16 → 18 total incl. amd64 guards): arm64 GRUB template coverage, builder end-to-end wiring, emulator stripping, driver ``--arch``/ttyAMA0/qemu defaults, UEFI ``-bios`` wiring, CI artifact globs, amd64 ttyS0 drop-in preservation |
+| Suite | ✅ 8,955 Python OK (parity 7 + contract 8 + arm64 driver paths); full suite re-run green; version gate 0.29.12 |
+
 ## Session 9 (2026-09-14) — LIVE BOOT FIXED: the demo loop CI could not see; the slot-leak class ends; menu-path smoke
 
 | Item | Status |
