@@ -75,6 +75,14 @@ case "$ARCH" in
     amd64|arm64) ;;
     *) die "unsupported --arch '$ARCH' (amd64 | arm64)" ;;
 esac
+# Deb arch + kernel package are arch-wide facts (used by the cross-chroot
+# support block below even when the rootfs comes pre-built). Set ONCE,
+# before any acquisition path — with set -u an unbound reference here
+# kills the build after the rootfs is already assembled.
+case "$ARCH" in
+    amd64) DEB_ARCH=amd64 ; KERNEL_PKG=linux-image-amd64 ;;
+    arm64) DEB_ARCH=arm64 ; KERNEL_PKG=linux-image-arm64 ;;
+esac
 
 # ---------------------------------------------------------------- preconditions
 need() { command -v "$1" >/dev/null 2>&1 || MISSING+=("$1"); }
@@ -138,14 +146,14 @@ else
     # package minbase can skip via Recommends — six CI rounds burned
     # on the resulting script-less initrd).
     case "$ARCH" in
-        amd64) KERNEL_PKG=linux-image-amd64 ; DEB_ARCH=amd64 ;  FOREIGN=() ;;
-        arm64) KERNEL_PKG=linux-image-arm64 ; DEB_ARCH=arm64 ;
+        arm64)
                # Cross-rootfs: needs qemu-user-static + binfmt on the
                # builder (the CI arm64 workflow installs both). Foreign
                # first stage; the second stage runs below under the
                # staged emulator so package configuration (useradd,
                # initramfs hooks, systemd generators) completes.
                FOREIGN=(--foreign) ;;
+        *)     FOREIGN=() ;;
     esac
     debootstrap --variant=minbase --arch="$DEB_ARCH" \
         "${FOREIGN[@]}" \

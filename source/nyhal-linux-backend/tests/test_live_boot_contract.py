@@ -232,6 +232,39 @@ class TestArm64BootContract(unittest.TestCase):
         self.assertIn("/tmp/nyrqis-boot-smoke-", self.wf)
         self.assertIn("/tmp/nyrqis-boot-smoke-menu-", self.wf)
 
+    def test_arm64_workflow_supplies_the_grub_module_tree(self):
+        # grub-efi-arm64-bin is not in the amd64 apt index (arm64-built
+        # archives only — round 1 of CI proved it); the workflow must
+        # fetch the .deb from the binary-arm64 index and extract the
+        # module tree grub-mkrescue builds the UEFI image from.
+        self.assertIn(
+            "binary-arm64/Packages.xz", self.wf,
+            "the workflow must resolve the .deb from the arm64 index")
+        self.assertIn(
+            "grub-efi-arm64-bin", self.wf,
+            "the workflow must fetch grub-efi-arm64-bin")
+        self.assertIn(
+            "arm64-efi", self.wf,
+            "the workflow must stage the arm64-efi module tree")
+        self.assertIn(
+            "mtools", self.wf,
+            "grub-mkrescue builds efi.img via mtools (mformat/mcopy)")
+        # The first round failed on exactly this; pin the whole class:
+        # never `apt-get install grub-efi-arm64-bin`.
+        for line in self.wf.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            self.assertNotIn(
+                "apt-get install", stripped,
+                f"this apt-get line installs more than the preflight list? "
+                f"check it does not try to apt-install grub-efi-arm64-bin: "
+                f"{stripped!r}") if "grub-efi-arm64-bin" in stripped else None
+        self.assertNotIn(
+            "grub-efi-arm64-bin mtools", self.wf,
+            "grub-efi-arm64-bin is NOT apt-installable on amd64 — it broke "
+            "CI round 1; fetch the .deb instead")
+
     def test_amd64_workflow_still_installs_the_ttyS0_drop_in(self):
         # The arm64 additions must not disturb the amd64 image's serial
         # autologin (both smokes depend on it).

@@ -35,12 +35,35 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install cross-build toolchain
+        # grub-efi-arm64-bin exists ONLY in arm64-built archives (Debian
+        # main/binary-arm64, Ubuntu [ports]) — apt on this amd64 runner
+        # cannot locate it (the first CI round proved exactly that).
+        # The package is all data (grub modules), so extracting the .deb
+        # into /usr/lib/grub/arm64-efi is enough: grub-mkrescue
+        # (grub-common, amd64) builds the UEFI image from those modules
+        # at ISO assembly time — verified locally: the produced
+        # efi.img carries EFI/BOOT/bootaa64.efi and the xorriso plan
+        # has NO i386-pc eltorito path (pure UEFI, as arm64 requires).
+        # The deb URL is resolved from the Packages index so it cannot
+        # rot with version churn.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debootstrap qemu-user-static binfmt-support \
-            squashfs-tools xorriso grub-efi-arm64-bin mtools \
-            dosfstools e2fsprogs
+            squashfs-tools xorriso mtools dosfstools e2fsprogs \
+            grub-common grub2-common
+          DEB_PATH=$(curl -fsSL \
+            https://deb.debian.org/debian/dists/bookworm/main/binary-arm64/Packages.xz \
+            | xz -dc | awk '/^Package: grub-efi-arm64-bin$/{f=1} \
+                            f && /^Filename: /{print $2; exit}')
+          test -n "$DEB_PATH" || { echo "grub-efi-arm64-bin not found in the index"; exit 1; }
+          curl -fsSL -o /tmp/grub-arm64-bin.deb "https://deb.debian.org/$DEB_PATH"
+          dpkg-deb -x /tmp/grub-arm64-bin.deb /tmp/grub-arm64-root
+          test -d /tmp/grub-arm64-root/usr/lib/grub/arm64-efi \
+            || { echo "arm64-efi modules not in the .deb — layout changed"; exit 1; }
+          sudo cp -a /tmp/grub-arm64-root/usr/lib/grub/arm64-efi /usr/lib/grub/
+          ls /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi >/dev/null \
+            && echo "arm64-efi module tree staged ($(ls /usr/lib/grub/arm64-efi/*.mod | wc -l) modules)"
 
       - name: Assemble the arm64 rootfs (foreign debootstrap, emulated)
         run: |
