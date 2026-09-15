@@ -445,6 +445,22 @@ transit. Crate tests 50 → 67.
 Honest limitation: input events are still not fabricated (an honest
 silent seat), and popups have no positioning logic.
 
+### Live ISO: built and booted end-to-end (0.29.15)
+
+The full builder path was executed on the dev host with the same
+commands CI uses: debootstrap (bookworm/minbase) → chroot steps →
+squashfs → xorriso → **boot smoke in QEMU, all markers
+(`READY`/`PONG`/`PKGS=ok`)** — and the in-image capability probe
+prints ✓ for every software component (python3, zstandard, PyNaCl,
+lz4, FUSE 3, nyrqisctl, entry points); only the hardware DRM lines
+stay machine-dependent. Two build-blocking root causes were found and
+fixed on the way: debootstrap cannot resolve VIRTUAL dependencies
+(python3-zstandard and python3-pycparser need the REAL packages
+python3-cffi / python3-ply named in the include list), and the
+cleanup trap deleted the rootfs even under `--keep-workdir`,
+destroying the post-mortem artifact. A fail-closed `dpkg --audit`
+gate now runs on every rootfs acquisition path before squash.
+
 ## Package Repository (0.28.0, NPS-026 §7)
 
 The repository half of the package system — `backend/package_repo.py`

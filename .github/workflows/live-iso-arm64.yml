@@ -68,8 +68,12 @@ jobs:
       - name: Assemble the arm64 rootfs (foreign debootstrap, emulated)
         run: |
           sudo debootstrap --variant=minbase --arch=arm64 --foreign \
-            --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot \
+            --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
             bookworm /srv/nyrqis-rootfs-arm64 http://deb.debian.org/debian
+          # Same include list as build-live-iso.sh (python3-cffi /
+          # python3-ply are the REAL packages behind VIRTUAL deps
+          # debootstrap cannot resolve — without them second stage dies
+          # configuring python3-zstandard).
           # Stage the emulator INSIDE the rootfs: binfmt_misc resolves
           # the interpreter path within the chroot. build-live-iso.sh
           # does the same for its own chroot steps; the second stage

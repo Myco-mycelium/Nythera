@@ -5,6 +5,41 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.15] - 2026-09-15
+
+### Fixed
+
+- **The live ISO builder now provably boots complete — built and
+  booted end-to-end on this machine.** The debootstrap include list
+  gained `python3-cffi` and `python3-ply`: `python3-zstandard`
+  depends on the VIRTUAL packages `python3-cffi-backend-api-min/max`
+  and `python3-pycparser` on `python3-ply-lex/-yacc-3.10`, and
+  debootstrap's resolver cannot map virtual dependencies — dpkg left
+  zstandard unconfigured and the build died in second stage ("possibly
+  the package python3-zstandard is at fault"). After the fix the same
+  build completes clean (exit 0, empty `dpkg --audit`, all probe
+  modules import inside the rootfs), the ISO assembled (353 MB), and
+  the boot smoke passed every marker (`READY`/`PONG`/`PKGS=ok`) in
+  QEMU; the in-image probe prints ✓ for python3, zstandard, PyNaCl,
+  lz4, FUSE 3, nyrqisctl and the entry points (only the hardware DRM
+  lines stay honestly machine-dependent). The two CI workflows that
+  debootstrap their own rootfs carry the same include list, putting
+  their apt top-ups back to belt-and-braces.
+- **`--keep-workdir` now keeps the rootfs too.** The cleanup trap
+  deleted the assembled rootfs even when asked to keep the workdir —
+  destroying the one artifact a post-mortem needs (it cost this
+  session the failure log). Keeping the workdir now keeps everything
+  in it.
+
+### Added
+
+- **Fail-closed dpkg audit gate in the builder, on every rootfs
+  acquisition path:** after the package top-up, `dpkg --audit` inside
+  the rootfs must be empty — any unpacked-but-unconfigured package
+  aborts the build instead of shipping an image that boots with
+  broken components. Pinned by contract tests (the virtual-dep
+  providers in the include list; the audit result feeding `die`).
+
 ## [0.29.14] - 2026-09-15
 
 ### Added

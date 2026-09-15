@@ -6,6 +6,15 @@ date: 2026-09-15
 
 # Next Development Session Plan
 
+## Session 11c (2026-09-15) — THE ISO BUILT AND BOOTED END-TO-END: the user's boot report reproduced, root-caused, and disproven
+
+| Item | Status |
+|------|--------|
+| **The user's "python3 MISSING" boot report was reproduced at the source** | ✅ A full local build (debootstrap → squashfs → xorriso) died in second stage configuring python3-zstandard. Root cause: debootstrap's resolver cannot map VIRTUAL dependencies — python3-zstandard needs `python3-cffi-backend-api-min/max` (Provided by python3-cffi) and python3-pycparser needs `python3-ply-lex/-yacc-3.10` (Provided by python3-ply). Fixed by naming the real providers in every include list (builder + both CI workflows); verified empirically before the fix (exit 1, audit non-empty) and after (exit 0, audit empty, modules import) |
+| **The complete image was built and booted on this machine** | ✅ 353 MB ISO assembled clean; boot smoke in QEMU passed every marker (`READY`/`PONG`/`PKGS=ok`); the in-image probe prints ✓ for python3, zstandard, PyNaCl, lz4, FUSE 3, nyrqisctl, entry points — only the hardware DRM lines stay machine-dependent, as designed |
+| **Fail-closed hardening from the diagnosis** | ✅ A `dpkg --audit` gate aborts the build on ANY unconfigured package, on every rootfs acquisition path; `--keep-workdir` now actually keeps the rootfs (the trap was deleting the post-mortem artifact); 2 new contract tests pin the include list and the gate |
+| Suite | ✅ Contract tests 31/31; version gate 0.29.15 |
+
 ## Session 11b (2026-09-15) — PRIORITY 8 DOUBLED DOWN: a second real client, CI ownership, and boot-time package parity
 
 | Item | Status |

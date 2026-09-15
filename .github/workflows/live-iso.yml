@@ -42,8 +42,13 @@ jobs:
       - name: Assemble the rootfs (debootstrap)
         run: |
           sudo debootstrap --variant=minbase \
-            --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot \
+            --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
             bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
+          # Same include list as build-live-iso.sh's own debootstrap path:
+          # python3-cffi / python3-ply are the REAL packages behind the
+          # VIRTUAL deps python3-zstandard / python3-pycparser declare;
+          # debootstrap cannot resolve virtual deps and would leave
+          # zstandard unconfigured (verified build failure).
           # Python + the demo probe's module checks live in the rootfs.
           # (build-live-iso.sh also ensures these itself since 0.29.13 —
           # this step is belt-and-braces for the prebuilt-rootfs path.)

@@ -332,6 +332,38 @@ class TestProbeParityContract(unittest.TestCase):
                 f"debootstrap --include must carry {pkg}: the probe prints "
                 "MISSING for it at boot")
 
+    def test_debootstrap_includes_virtual_dep_providers(self):
+        """python3-zstandard depends on the VIRTUAL packages
+        python3-cffi-backend-api-min/max (Provided by python3-cffi) and
+        python3-pycparser depends on python3-ply-lex/-yacc-3.10
+        (Provided by python3-ply). debootstrap's resolver cannot map
+        virtual dependencies, so without the real providers named
+        explicitly dpkg leaves zstandard unconfigured and second stage
+        dies (verified against bookworm: this exact build failure)."""
+        m = re.search(r"--include=(\S+)\s*\\\n\s*\"\$SUITE\"", self.builder)
+        self.assertIsNotNone(m)
+        include = m.group(1)
+        for pkg in ("python3-cffi", "python3-ply"):
+            self.assertIn(
+                pkg, include,
+                f"debootstrap --include must carry {pkg}: it is the real "
+                "package behind a virtual dependency debootstrap cannot "
+                "resolve — without it the build dies configuring "
+                "python3-zstandard")
+
+    def test_builder_audits_dpkg_state_before_squash(self):
+        """Fail-closed: after the package top-up, `dpkg --audit` inside
+        the rootfs must be empty — any unpacked-but-unconfigured package
+        aborts the build instead of shipping a broken image."""
+        self.assertIn('chroot "$ROOTFS_SRC" dpkg --audit', self.builder,
+                      "builder must audit the rootfs dpkg state")
+        # The audit result must feed a die(), not a log line.
+        m = re.search(
+            r'AUDIT_OUT=.*dpkg --audit.*?\n.*?die ',
+            self.builder, re.DOTALL)
+        self.assertIsNotNone(
+            m, "a non-empty dpkg --audit must abort the build (die)")
+
     def test_builder_ensures_probe_packages_on_every_rootfs_path(self):
         """Tarball/–rootfs acquisitions skip debootstrap — the builder
         must top-up the probe packages on those paths too."""

@@ -119,9 +119,10 @@ ISO_ROOT="$WORKDIR/iso"
 LIVE_DIR="$ISO_ROOT/live"
 mkdir -p "$LIVE_DIR"
 
-cleanup() { [[ -n "${ROOTFS_SRC:-}" && -d "$ROOTFS_SRC" ]] && \
-    [[ "$ROOTFS_SRC" == "$WORKDIR"* ]] && rm -rf "$ROOTFS_SRC"; \
-    $KEEP_WORKDIR || rm -rf "$WORKDIR"; }
+# --keep-workdir means KEEP — including the assembled rootfs (it is the
+# failure-diagnosis artifact; deleting it while keeping the rest made a
+# kept workdir useless for post-mortems).
+cleanup() { $KEEP_WORKDIR || rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
 # isolinux boot binaries, needed by every BIOS-path ISO build.
@@ -164,9 +165,15 @@ else
                FOREIGN=(--foreign) ;;
         *)     FOREIGN=() ;;
     esac
+    # python3-cffi / python3-ply are the REAL packages behind the VIRTUAL
+    # deps python3-zstandard declares (python3-cffi-backend-api-min/max)
+    # and python3-pycparser declares (python3-ply-lex/-yacc-3.10).
+    # debootstrap's resolver cannot map virtual dependencies, so without
+    # them named explicitly dpkg leaves zstandard unconfigured and the
+    # build dies in second stage (verified against bookworm).
     debootstrap --variant=minbase --arch="$DEB_ARCH" \
         "${FOREIGN[@]}" \
-        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-nacl,python3-lz4,fuse3 \
+        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
     if ((${#FOREIGN[@]})); then
         log "second-stage debootstrap under qemu-$DEB_ARCH-static (emulated)"
@@ -309,6 +316,15 @@ else
   (python3/python3-zstandard/python3-nacl/python3-lz4/fuse3). The probe
   prints MISSING lines for exactly these at boot — the image must not
   ship without them."
+    # Fail-closed on ANY configure surprise, on EVERY acquisition path:
+    # dpkg --audit is empty iff every unpacked package configured. A
+    # non-empty audit means the image would boot with broken/missing
+    # components — the exact failure class this builder exists to
+    # prevent (virtual-dep resolution gaps left python3-zstandard
+    # unconfigured in a real build).
+    AUDIT_OUT="$(chroot "$ROOTFS_SRC" dpkg --audit 2>&1 || true)"
+    [[ -z "$(printf '%s' "$AUDIT_OUT" | tr -d '[:space:]')" ]] || \
+        die "the rootfs has unconfigured packages:\n$AUDIT_OUT"
     # demo user (uid 1000, passwordless sudo, autologged on tty1). Prefer
     # useradd; a hand-built rootfs tarball may lack shadow-utils.
     if chroot "$ROOTFS_SRC" sh -c 'command -v useradd' >/dev/null 2>&1; then
