@@ -166,7 +166,7 @@ else
     esac
     debootstrap --variant=minbase --arch="$DEB_ARCH" \
         "${FOREIGN[@]}" \
-        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools \
+        --include=systemd,systemd-sysv,sudo,$KERNEL_PKG,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-nacl,python3-lz4,fuse3 \
         "$SUITE" "$ROOTFS_SRC" "$MIRROR"
     if ((${#FOREIGN[@]})); then
         log "second-stage debootstrap under qemu-$DEB_ARCH-static (emulated)"
@@ -286,6 +286,29 @@ if $SKIP_CHROOT; then
     log "--skip-chroot: writing the demo user records directly"
     write_demo_user_records
 else
+    # Demo-probe userland: the capability probe the booted image prints
+    # is a CONTRACT — python3 + zstandard + PyNaCl are REQUIRED (the
+    # backend cannot run / compression falls back / signing refuses),
+    # so the image must carry them no matter HOW the rootfs was
+    # acquired. debootstrap's --include covers the default path; this
+    # step covers tarball/rootfs acquisitions and top-ups CI caches.
+    # (Under --skip-chroot there is no package manager to ask; the
+    # probe-parity gate below fails the build honestly instead.)
+    log "ensuring the demo probe's required packages are present"
+    chroot "$ROOTFS_SRC" sh -c '
+        NEED=""
+        for p in python3 python3-zstandard python3-nacl python3-lz4 fuse3; do
+            dpkg -s "$p" >/dev/null 2>&1 || NEED="$NEED $p"
+        done
+        if [ -n "$NEED" ]; then
+            apt-get update -qq >/dev/null 2>&1
+            apt-get install -y -qq --no-install-recommends $NEED
+            echo "installed:$NEED"
+        fi
+    ' || die "installing the demo probe's required packages failed
+  (python3/python3-zstandard/python3-nacl/python3-lz4/fuse3). The probe
+  prints MISSING lines for exactly these at boot — the image must not
+  ship without them."
     # demo user (uid 1000, passwordless sudo, autologged on tty1). Prefer
     # useradd; a hand-built rootfs tarball may lack shadow-utils.
     if chroot "$ROOTFS_SRC" sh -c 'command -v useradd' >/dev/null 2>&1; then
@@ -480,6 +503,43 @@ else
 fi
 [[ -e "$ROOTFS_SRC/sbin/init" ]] || \
     die "/sbin/init repair failed — the live pivot cannot exec an init"
+
+# ---------------------------------------------------------------- probe parity
+# VERIFIED, not assumed: the demo session's capability probe IS the
+# boot contract — every ✓/✗ line it can print must be decided by what
+# the IMAGE carries. A rootfs acquired through any non-default path
+# (tarball, --rootfs, an older CI cache) may lack the probe's REQUIRED
+# components, and the gap only surfaces at boot as ✗ MISSING lines on
+# the console (exactly what a booted image reported: "python3").
+# Fail the BUILD here instead — a builder must not ship an image whose
+# own first screen reports missing components.
+PROBE_GAPS=""
+[[ -x "$ROOTFS_SRC/usr/bin/python3" ]] || PROBE_GAPS="$PROBE_GAPS python3"
+if [[ -n "$PROBE_GAPS" ]]; then
+    die "probe-parity: the image would boot with MISSING:$PROBE_GAPS
+  The capability probe treats these as required (the backend cannot
+  run without them) — the build refuses to ship such an image.
+  The ensure-packages step installs them when the rootfs has apt;
+  under --skip-chroot you must supply a rootfs that already carries
+  python3 (+ python3-zstandard / python3-nacl / python3-lz4) and fuse3."
+fi
+for mod in zstandard nacl lz4.frame; do
+    if ! chroot "$ROOTFS_SRC" /usr/bin/python3 -c "import $mod" >/dev/null 2>&1; then
+        PROBE_GAPS="$PROBE_GAPS python3-$mod"
+    fi
+done
+[[ -e "$ROOTFS_SRC/bin/fusermount3" || -e "$ROOTFS_SRC/usr/bin/fusermount3" ]] \
+    || PROBE_GAPS="$PROBE_GAPS fusermount3"
+if [[ -n "$PROBE_GAPS" ]]; then
+    die "probe-parity: the image would boot with MISSING:$PROBE_GAPS
+  The capability probe prints MISSING lines for exactly these at boot.
+  The ensure-packages step above installs python3-zstandard,
+  python3-nacl, python3-lz4 and fuse3 whenever apt is available; if
+  this fires, that step failed (see its error) or the rootfs was built
+  with --skip-chroot. Fix the rootfs; do not ship a probe that
+  immediately reports its own image incomplete."
+fi
+log "probe parity verified: python3 + zstandard/nacl/lz4 + fusermount3 present"
 
 # ---------------------------------------------------------------- squashfs + ISO
 # The emulator binary must NOT ship in the image (foreign to the arch;

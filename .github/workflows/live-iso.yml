@@ -45,9 +45,11 @@ jobs:
             --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot \
             bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
           # Python + the demo probe's module checks live in the rootfs.
+          # (build-live-iso.sh also ensures these itself since 0.29.13 —
+          # this step is belt-and-braces for the prebuilt-rootfs path.)
           sudo chroot /srv/nyrqis-rootfs apt-get update
           sudo chroot /srv/nyrqis-rootfs apt-get install -y --no-install-recommends \
-            python3 python3-zstandard python3-nacl bash
+            python3 python3-zstandard python3-nacl python3-lz4 fuse3 bash
           sudo chroot /srv/nyrqis-rootfs apt-get clean
           # /dev/kvm, /dev/dri etc. are NOT probed at build time — the
           # banner probes the booting machine, not the builder.

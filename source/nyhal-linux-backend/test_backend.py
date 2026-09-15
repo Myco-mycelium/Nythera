@@ -35,6 +35,14 @@ from unittest import mock
 # Add source directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Test fixtures live relative to THIS file, not the pytest CWD —
+# hardcoding "tests/fixtures/..." made five tests pass only when the
+# suite was invoked from the backend directory.
+_NSTUDIO_FIXTURE = str(
+    Path(__file__).resolve().parent / "tests" / "fixtures" / "nstudio"
+    / "desktop.nstudio"
+)
+
 from backend.container import (
     Container, ContainerManager, ContainerConfig, ContainerState,
     ResourceLimits, _DIRECT_LAUNCH_TIMEOUT_S,
@@ -25593,7 +25601,7 @@ class TestLocalization(unittest.TestCase):
         self.assertEqual(nstudio.resolve_text("$localize:settings.save", {}), "$localize:settings.save")
 
     def test_missing_localize_key_rejected(self):
-        raw = open("tests/fixtures/nstudio/desktop.nstudio").read()
+        raw = open(_NSTUDIO_FIXTURE).read()
         bad = raw.replace('"$localize:search.label"', '"$localize:ghost.key"')
         with self.assertRaises(nstudio.NstudioValidationError) as ctx:
             nstudio.loads(bad)
@@ -25626,7 +25634,7 @@ class TestLocalization(unittest.TestCase):
         self.assertIn("requires a 'locales' section", str(ctx.exception))
 
     def test_fixture_localizes_both_override_and_action_argument(self):
-        doc = nstudio.loads(open("tests/fixtures/nstudio/desktop.nstudio").read())
+        doc = nstudio.loads(open(_NSTUDIO_FIXTURE).read())
         self.assertEqual(nstudio.resolve_text("$localize:search.label", doc.locales), "Search")
         _t, _n, args = doc.resolve_action("behavior_dnd_on")
         self.assertEqual(
@@ -25812,7 +25820,7 @@ class TestExpressions(unittest.TestCase):
 
     def test_desktop_fixture_expression_condition_and_argument(self):
         doc = nstudio.loads(open(
-            "tests/fixtures/nstudio/desktop.nstudio").read())
+            _NSTUDIO_FIXTURE).read())
         b = doc.behavior_by_id("behavior_dnd_on")
         self.assertEqual(b.condition["expression"],
                          "state.doNotDisturb == true")
@@ -25971,7 +25979,7 @@ class TestAnimations(unittest.TestCase):
 
     def test_desktop_fixture_animation(self):
         doc = nstudio.loads(open(
-            "tests/fixtures/nstudio/desktop.nstudio").read())
+            _NSTUDIO_FIXTURE).read())
         self.assertEqual(
             [(a.id, a.target, a.property, a.duration, a.easing)
              for a in doc.animations],
@@ -26088,7 +26096,7 @@ class TestStateScopes(unittest.TestCase):
 
     def test_desktop_fixture_scopes(self):
         doc = nstudio.loads(open(
-            "tests/fixtures/nstudio/desktop.nstudio").read())
+            _NSTUDIO_FIXTURE).read())
         self.assertEqual(sorted(doc.state_scopes.keys()),
                          ["persistent", "session"])
         self.assertEqual(doc.resolve_state("persistent.theme"), "Eclipse")

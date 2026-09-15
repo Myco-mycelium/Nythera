@@ -54,7 +54,9 @@ class ObjectType(IntEnum):
 
 
 class WLEvent(IntEnum):
-    """Wayland server events (opcode)."""
+    """Wayland opcodes (flat across interfaces; events and requests
+    share the numbering space per interface, values per the stable
+    wayland / xdg-shell specifications)."""
     WL_DISPLAY_ERROR = 0
     WL_DISPLAY_DELETE_ID = 2
     WL_REGISTRY_GLOBAL = 0
@@ -62,12 +64,21 @@ class WLEvent(IntEnum):
     WL_CALLBACK_DONE = 0
     WL_COMPOSITOR_CREATE_SURFACE = 0
     WL_COMPOSITOR_CREATE_REGION = 1
+    # wl_shm requests: create_pool=0, destroy=1.
+    WL_SHM_CREATE_POOL = 0
+    WL_SHM_DESTROY = 1
+    # wl_shm_pool requests: create_buffer=0, destroy=1, resize=2.
+    WL_SHM_POOL_CREATE_BUFFER = 0
+    WL_SHM_POOL_DESTROY = 1
+    WL_SHM_POOL_RESIZE = 2
     WL_SHM_FORMAT = 0
     WL_BUFFER_RELEASE = 0
     WL_OUTPUT_GEOMETRY = 0
     WL_OUTPUT_MODE = 1
-    WL_OUTPUT_DONE = 3
-    WL_OUTPUT_SCALE = 4
+    # wl_output events: geometry=0, mode=1, done=2 (v2+), scale=3
+    # (v2+).
+    WL_OUTPUT_DONE = 2
+    WL_OUTPUT_SCALE = 3
     WL_SEAT_CAPABILITIES = 0
     WL_SEAT_NAME = 1
     WL_POINTER_ENTER = 0
@@ -82,34 +93,35 @@ class WLEvent(IntEnum):
     WL_KEYBOARD_MODIFIERS = 4
     WL_SURFACE_ENTER = 0
     WL_SURFACE_LEAVE = 1
-    WL_REGION_CREATE = 0
-    WL_REGION_DESTROY = 1
-    WL_REGION_ADD = 2
-    WL_REGION_SUBTRACT = 3
+    # wl_region has NO events: add=1, subtract=2, destroy=0 are
+    # REQUESTS (this module only encodes events, so they are not
+    # emitted here).
     XDG_WM_BASE_PING = 0
+    # xdg_wm_base requests: destroy=0, create_positioner=1,
+    # get_xdg_surface=2, pong=3 (wire-verified against libwayland).
     XDG_WM_BASE_GET_XDG_SURFACE = 2
-    XDG_WM_BASE_GET_XDG_POPUP = 3
+    XDG_WM_BASE_PONG = 3
     XDG_SURFACE_GET_TOPLEVEL = 1
     XDG_SURFACE_GET_POPUP = 2
     XDG_SURFACE_SET_WINDOW_GEOMETRY = 3
     XDG_SURFACE_ACK_CONFIGURE = 4
     XDG_TOPLEVEL_DESTROY = 0
+    XDG_TOPLEVEL_SET_PARENT = 1
     XDG_TOPLEVEL_SET_TITLE = 2
     XDG_TOPLEVEL_SET_APP_ID = 3
-    XDG_TOPLEVEL_SET_MIN_SIZE = 5
-    XDG_TOPLEVEL_SET_MAX_SIZE = 6
-    XDG_TOPLEVEL_SET_MINIMIZE = 7
-    XDG_TOPLEVEL_SET_MAXIMIZE = 8
-    XDG_TOPLEVEL_UNSET_MAXIMIZE = 9
-    XDG_TOPLEVEL_SET_FULLSCREEN = 10
-    XDG_TOPLEVEL_UNSET_FULLSCREEN = 11
-    XDG_TOPLEVEL_SET_MOVING = 14
-    XDG_TOPLEVEL_SET_RESIZING = 15
-    XDG_TOPLEVEL_SET_ACTIVATED = 17
-    XDG_TOPLEVEL_SET_CLOSED = 19
+    XDG_TOPLEVEL_SHOW_WINDOW_MENU = 4
+    XDG_TOPLEVEL_MOVE = 5
+    XDG_TOPLEVEL_RESIZE = 6
+    XDG_TOPLEVEL_SET_MAX_SIZE = 7
+    XDG_TOPLEVEL_SET_MIN_SIZE = 8
+    XDG_TOPLEVEL_SET_MAXIMIZED = 9
+    XDG_TOPLEVEL_UNSET_MAXIMIZED = 10
+    XDG_TOPLEVEL_SET_FULLSCREEN = 11
+    XDG_TOPLEVEL_UNSET_FULLSCREEN = 12
+    XDG_TOPLEVEL_SET_MINIMIZED = 13
     XDG_TOPLEVEL_CONFIGURE = 0
     XDG_TOPLEVEL_CLOSE = 1
-    XDG_TOPLEVEL_WM_CONFIGURE = 2
+    XDG_TOPLEVEL_CONFIGURE_BOUNDS = 2
 
 
 @dataclass

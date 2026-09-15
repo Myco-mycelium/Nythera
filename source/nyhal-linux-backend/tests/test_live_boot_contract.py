@@ -307,5 +307,93 @@ class TestMenuSmokeWiring(unittest.TestCase):
             "that neither path reaches the final shell handoff")
 
 
+class TestProbeParityContract(unittest.TestCase):
+    """The image must carry everything its own capability probe calls
+    required — a boot that prints MISSING lines for its own components
+    is a broken build, and the builder must refuse to ship it.
+
+    (Found the hard way: a booted image's first screen read
+    "✗ MISSING: python3 (backend cannot run)" — the debootstrap
+    --include list had no python3 and only the CI chroot step papered
+    over it, so any rootfs acquired by any other path shipped dead.)
+    """
+
+    def setUp(self):
+        self.builder = read(BUILDER)
+
+    def test_debootstrap_includes_the_probe_requirements(self):
+        # The include list ends with a line-continuation before "$SUITE".
+        m = re.search(r"--include=(\S+)\s*\\\n\s*\"\$SUITE\"", self.builder)
+        self.assertIsNotNone(m, "builder must have a debootstrap --include list")
+        include = m.group(1)
+        for pkg in ("python3", "python3-zstandard", "python3-nacl", "fuse3"):
+            self.assertIn(
+                pkg, include,
+                f"debootstrap --include must carry {pkg}: the probe prints "
+                "MISSING for it at boot")
+
+    def test_builder_ensures_probe_packages_on_every_rootfs_path(self):
+        """Tarball/–rootfs acquisitions skip debootstrap — the builder
+        must top-up the probe packages on those paths too."""
+        self.assertIn("python3-zstandard python3-nacl python3-lz4 fuse3",
+                      self.builder,
+                      "the ensure-packages step must cover all probe packages")
+        self.assertIn("dpkg -s \"$p\"", self.builder,
+                      "ensure-packages must check installed state, not assume")
+
+    def test_builder_has_probe_parity_gate(self):
+        """Fail-closed gate: no image ships whose own boot probe would
+        print MISSING for a required component."""
+        self.assertIn("probe-parity", self.builder,
+                      "builder must carry the probe-parity gate")
+        # The gate checks the interpreter, the three python modules the
+        # probe requires, and fusermount3.
+        for needle in ("/usr/bin/python3", "zstandard", "nacl", "lz4.frame",
+                       "fusermount3"):
+            self.assertIn(needle, self.builder)
+        # The python3 check must abort the build (die), not warn.
+        m = re.search(
+            r'\[\[ -x "\$ROOTFS_SRC/usr/bin/python3" \]\] \|\| PROBE_GAPS',
+            self.builder)
+        self.assertIsNotNone(
+            m, "a missing python3 must feed the probe-parity gate")
+
+    def test_probe_marks_python3_required(self):
+        """The probe side of the contract: python3 is REQUIRED (the
+        backend cannot run) — it must print MISSING, never a warn."""
+        demo = read(DEMO)
+        self.assertIn('missing "python3 (backend cannot run)"', demo)
+
+    def test_probe_required_components_are_built_into_the_image(self):
+        """Every component the probe marks required must appear in the
+        builder's ensure-packages step — the two sides of the contract
+        stay locked together."""
+        demo = read(DEMO)
+        builder = self.builder
+        # The probe's missing() calls name the required components.
+        self.assertIn("python3", demo)
+        for pkg in ("python3-zstandard", "python3-nacl", "python3-lz4", "fuse3"):
+            self.assertIn(pkg, builder,
+                          f"builder must install {pkg} into the image")
+
+
+class TestWorkflowProbeTopUp(unittest.TestCase):
+    """CI's chroot top-up must stay in sync with the probe contract."""
+
+    def test_amd64_workflow_installs_the_probe_packages(self):
+        wf = read(LIVE_ISO_WF)
+        for pkg in ("python3", "python3-zstandard", "python3-nacl",
+                    "python3-lz4", "fuse3"):
+            self.assertIn(pkg, wf,
+                          f"live-iso.yml rootfs step must install {pkg}")
+
+    def test_arm64_workflow_installs_the_probe_packages(self):
+        wf = read(LIVE_ISO_ARM64_WF)
+        for pkg in ("python3", "python3-zstandard", "python3-nacl",
+                    "python3-lz4", "fuse3"):
+            self.assertIn(pkg, wf,
+                          f"live-iso-arm64.yml rootfs step must install {pkg}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,103 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.13] - 2026-09-15
+
+### Added
+
+- **The wire event loop speaks the client-compatibility surface
+  (rust/compositor, ABI 0x0000_0300 → 0x0000_0400)** — the protocol
+  every real Wayland client needs, closing the Priority-8 gap in the
+  plan's success criteria (weston-simple-shm / GTK4 / Qt6 class of
+  clients):
+  - **Bind responses for the advertised globals.** The loop
+    advertised ``wl_output``/``wl_seat``/``xdg_wm_base`` but serving
+    any bind of them was a protocol error that killed the connection;
+    now ``wl_shm`` bind    announces its formats (ARGB8888, XRGB8888 —
+    the client picks its pixel format from these), ``wl_output`` bind
+    sends geometry / mode(current|preferred) / scale / done with real
+    output geometry at 96-dpi physical size (``.scale``/``.done`` only
+    at bound version ≥ 2, per spec), and ``wl_seat`` bind sends
+    capabilities (pointer|keyboard) + name (bound version ≥ 2 only).
+    Seat requests (get_pointer/get_keyboard/get_touch) create their
+    device objects.
+  - **xdg-shell roles with the initial configure pair.**
+    ``xdg_wm_base.get_xdg_surface`` (validated against a real
+    wl_surface — a non-surface argument is the spec's defunct-surface
+    error), ``get_toplevel``/``get_popup``, ``pong``, ``destroy``, and
+    the toplevel/popup request families are served; the first commit
+    of a role surface delivers the initial
+    ``xdg_toplevel.configure(0,0,[])`` + ``xdg_surface.configure(serial)``
+    pair in the required order — xdg clients block forever without it.
+  - **The boring requests every client interleaves** are served
+    instead of erroring: ``wl_surface.damage``/``damage_buffer``,
+    ``set_opaque_region``/``set_input_region``,
+    ``set_buffer_scale``/``set_buffer_transform``,
+    ``wl_compositor.create_region`` + region ops, ``wl_buffer.destroy``,
+    ``wl_shm_pool.resize``, ``wl_shm.destroy``, and null-buffer attach
+    (detach).
+  - **wl_display.error on every protocol error** — the client learns
+    WHY it was disconnected (including which object offended) instead
+    of seeing a silent socket close. Bind versions above the
+    advertised version are refused (version honesty: the loop never
+    sends events a client that bound version v cannot parse).
+  - **Per-client object namespaces.** The object table is scoped by
+    owning client (object ids are per-connection in the protocol —
+    two clients may both use id 2), and the new
+    ``nyrqis_compositor_client_disconnected`` FFI tears down one
+    client's objects/roles/outbound queue and destroys its crate
+    surfaces — a disconnect no longer leaks surfaces into the slot
+    table. ``CompositorHost.on_client_disconnected`` calls it
+    (fail-closed when the crate is absent).
+- **weston-simple-shm runs its double-buffered frame loop against
+  the compositor** — the real upstream client (libwayland, no fakes)
+  connects over the Unix socket, binds everything, acks the initial
+  configure, maps its SHM pool, and draws frame after frame
+  (attach → damage → frame → commit → ``wl_buffer.release`` ×2)
+  with zero protocol errors on either side. Every opcode constant in
+  the implementation was then wire-verified against the canonical
+  ``wayland-client-protocol.h``; this exercise caught FIVE wrong
+  tables that unit tests with hand-built fixtures could not:
+  ``xdg_wm_base.get_xdg_surface`` is opcode 2 (destroy=0,
+  create_positioner=1, pong=3), ``wl_shm_pool`` is
+  create_buffer=0/destroy=1/resize=2, ``wl_surface`` is
+  set_opaque=4/set_input=5/set_transform=7/set_scale=8,
+  ``wl_output`` events are done=2/scale=3 (scale precedes done), and
+  ``wl_display.error`` carries the ``ous`` signature (object, u32
+  code, message). ``wl_output.release``/``wl_seat.release``
+  destructors and ``xdg_wm_base.create_positioner`` are served for
+  the versions advertised.
+- **The socket layer silently discarded every client fd.**
+  ``recvmsg(bufsize)`` defaults ``ancbufsize`` to 0, which drops all
+  ancillary data — a client's ``wl_shm.create_pool`` fd (its pixel
+  memory!) vanished in transit and ``fds_received`` stayed 0. The
+  read loop now passes a real ancillary buffer size.
+- ``wl_buffer.release`` no longer retires the buffer object (release
+  means "content consumed", not destroyed — weston-simple-shm
+  re-attaches released buffers; destroying them killed the client on
+  its third frame).
+- ``tests/test_wayland_client_compat.py`` (8 tests): the real-client
+  handshake over a Unix domain socket through the full stack —
+  registry → bind wl_shm/wl_output/wl_seat/xdg_wm_base (asserting the
+  exact event bytes: format codes, geometry/mode/scale/done,
+  capabilities), the xdg-toplevel flow with the initial configure
+  pair, the pool→buffer→attach→frame→commit content path,
+  protocol-error ``wl_display.error`` delivery, and version-overrun
+  refusal.
+- ``tests/test_weston_simple_shm.py``: the upstream binary against
+  the full stack for ~3 s — must stay connected, drive the SHM fd
+  through, register a surface, and survive with zero protocol errors
+  (skips honestly where weston is not installed).
+- ``tests/test_weston.py`` rewritten: the previous stubs ran the
+  client without ``XDG_RUNTIME_DIR`` (libwayland refuses absolute
+  ``WAYLAND_DISPLAY`` paths), against a bare socket server with no
+  wire loop, and asserted nothing. Now they drive the full stack and
+  assert the conversation (bytes both ways, fd, surface, no errors,
+  teardown). NOTE for anyone testing by hand: never set
+  ``WAYLAND_SOCKET``, not even to "" — libwayland parses a
+  set-but-empty value as an fd number and aborts.
+- Crate tests 50 → **67** (17 wire-level tests pin the same surface).
+
 ## [0.29.12] - 2026-09-14
 
 ### Added

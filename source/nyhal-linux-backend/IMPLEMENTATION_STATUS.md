@@ -273,7 +273,7 @@ All Priorities 1-6 from NEXT_SESSION_PLAN v6.0 are complete:
 | Priority | Task | Timeline |
 |----------|------|----------|
 | 7 | Real hardware testing (AMD, NVIDIA, ARM) | M14 Phase 2 |
-| 8 | Wayland client compatibility (weston, GTK4, Qt6) | M14 Phase 2 |
+| 8 | ✅ Wayland client compatibility — the wire loop serves the full real-client handshake: bind events (wl_shm formats, wl_output geometry/mode/done, wl_seat capabilities), xdg-shell roles + initial configure pair, damage/regions, wl_display.error (**done 0.29.13**, protocol-verified; weston/GTK/Qt binary runs on hardware remain) | M14 Phase 2 |
 | 9 | ✅ Socket/epoll host half on the compositor wire event loop (**done 0.27.0**); DRM presentation (**done 0.28.0**, software-composited; DRM modeset on real hardware remains) | M14 follow-on |
 | 10 | GPU acceleration (GBM + DRM) production hardening | M14 follow-on |
 
@@ -393,6 +393,50 @@ exposed that `ui/drm_backend.py` previously spoke no real DRM UAPI
 SETCRTC would disable scanout) — it now implements the real
 two-call query protocol, dumb-buffer ADDFB2 presentation, and correct
 ioctl numbers per `include/uapi/drm/drm_mode.h`.
+
+## Wire Event Loop Client Compatibility (0.29.13)
+
+The Priority-8 "Wayland client compatibility" gap is closed at the
+protocol level: the compositor's wire event loop
+(`rust/compositor`, ABI 0x0000_0300 → **0x0000_0400**) now serves the
+full handshake every real client performs:
+
+- **Bind responses**: `wl_shm` formats (ARGB8888/XRGB8888),
+  `wl_output` geometry/mode/scale/done (real output geometry, 96-dpi
+  physical size; `.scale`/`.done` gated to bound version ≥ 2),
+  `wl_seat` capabilities + name (version-gated) with device objects
+  for get_pointer/get_keyboard/get_touch. Previously ALL of these
+  were `protocol error: unsupported` — the connection died at bind.
+- **xdg-shell**: `get_xdg_surface` (validated against a real
+  wl_surface), `get_toplevel`/`get_popup`, pong/destroy, and the
+  initial `xdg_toplevel.configure` + `xdg_surface.configure(serial)`
+  pair on the role surface's first commit — xdg clients block
+  forever without it.
+- **Core requests served instead of erroring**: damage/damage_buffer,
+  opaque/input regions, buffer scale/transform, create_region,
+  buffer destroy, pool resize, null-buffer detach.
+- **`wl_display.error` on every protocol error** — clients learn why
+  they were disconnected (including the offending object id).
+  Bind versions above the advertised version are refused.
+- **Per-client object namespaces** + `client_disconnected` teardown:
+  a disconnect destroys the client's crate surfaces and drops its
+  objects/roles/queue (no surface-table leak).
+
+Tests: `tests/test_wayland_client_compat.py` (8 end-to-end tests over
+a real socket: exact event bytes for the bind responses, the xdg
+flow, the SHM content path, error delivery),
+`tests/test_weston_simple_shm.py` (the upstream weston-simple-shm
+BINARY against the full stack: connects, acks configure, drives its
+SHM pool fd through, renders its double-buffered frame loop with zero
+protocol errors — this real-client run caught five wrong opcode
+tables the hand-built fixtures never hit, all now wire-verified
+against `wayland-client-protocol.h`), and `tests/test_weston.py`
+(rewritten: the old stubs asserted nothing and ran without
+`XDG_RUNTIME_DIR`). Also fixed in the process: the socket layer's
+`recvmsg` dropped ALL ancillary data (`ancbufsize` defaulted to 0) —
+a client's SHM pool fd vanished in transit. Crate tests 50 → 67.
+Honest limitation: input events are still not fabricated (an honest
+silent seat), and popups have no positioning logic.
 
 ## Package Repository (0.28.0, NPS-026 §7)
 

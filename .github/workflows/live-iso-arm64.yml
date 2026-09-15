@@ -77,8 +77,10 @@ jobs:
           sudo cp /usr/bin/qemu-aarch64-static /srv/nyrqis-rootfs-arm64/usr/bin/
           sudo chroot /srv/nyrqis-rootfs-arm64 /debootstrap/debootstrap --second-stage
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get update
+          # (build-live-iso.sh also ensures these itself since 0.29.13 —
+          # this step is belt-and-braces for the cross-built rootfs.)
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get install -y --no-install-recommends \
-            python3 python3-zstandard python3-nacl bash
+            python3 python3-zstandard python3-nacl python3-lz4 fuse3 bash
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get clean
 
       - name: Build the arm64 ISO

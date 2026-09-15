@@ -41,15 +41,15 @@ class WaylandOpcodes(IntEnum):
     WL_DISPLAY_SYNC = 0
     WL_DISPLAY_GET_REGISTRY = 1
     
-    # wl_compositor
-    WL_COMPOSITOR_CREATE_SURFACE = 1
-    WL_COMPOSITOR_CREATE_REGION = 2
+    # wl_compositor (create_surface=0, create_region=1)
+    WL_COMPOSITOR_CREATE_SURFACE = 0
+    WL_COMPOSITOR_CREATE_REGION = 1
     
-    # wl_shm
-    WL_SHM_CREATE_POOL = 1
+    # wl_shm (create_pool=0, destroy=1)
+    WL_SHM_CREATE_POOL = 0
     
-    # wl_shm_pool
-    WL_SHM_POOL_CREATE_BUFFER = 1
+    # wl_shm_pool (create_buffer=0, destroy=1, resize=2)
+    WL_SHM_POOL_CREATE_BUFFER = 0
     
     # wl_buffer
     WL_BUFFER_DESTROY = 0
@@ -59,17 +59,21 @@ class WaylandOpcodes(IntEnum):
     WL_SURFACE_ATTACH = 1
     WL_SURFACE_DAMAGE = 2
     WL_SURFACE_COMMIT = 6
-    WL_SURFACE_SET_BUFFER_SCALE = 7
+    WL_SURFACE_SET_BUFFER_SCALE = 8
     
     # wl_output
     WL_OUTPUT_GEOMETRY = 0
     WL_OUTPUT_MODE = 1
     
-    # wl_seat
-    WL_SEAT_GET_POINTER = 1
-    WL_SEAT_GET_KEYBOARD = 3
+    # wl_seat (spec request opcodes: get_pointer=0, get_keyboard=1)
+    WL_SEAT_GET_POINTER = 0
+    WL_SEAT_GET_KEYBOARD = 1
     
-    # xdg_wm_base
+    # xdg_wm_base (spec request opcodes: destroy=0, get_xdg_surface=1,
+    # pong=2; ping is an EVENT with opcode 0)
+    XDG_WM_BASE_DESTROY = 0
+    # xdg_wm_base requests: destroy=0, create_positioner=1,
+    # get_xdg_surface=2, pong=3 (wire-verified against libwayland).
     XDG_WM_BASE_GET_XDG_SURFACE = 2
     XDG_WM_BASE_PONG = 3
     

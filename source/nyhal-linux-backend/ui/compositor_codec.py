@@ -9,7 +9,7 @@ stub functions that return honest error codes. This matches the
 pattern used by ``wayland_codec.py`` and ``gbm_codec.py``.
 
 References:
-    - rust/compositor/ (crate: nyrqis-compositor, ABI 0.2.0)
+    - rust/compositor/ (crate: nyrqis-compositor, ABI 0.4.0)
     - ADR-0026: Wayland display-server integration
     - ADR-0020: Implementation languages and the platform boundary
 """
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ABI_VERSION: int = 0x0000_0300  # 0.3.0 — wl_shm pool/buffer objects in the wire loop
+ABI_VERSION: int = 0x0000_0400  # 0.4.0 — client-compat protocol surface (wl_output/wl_seat/xdg-shell bind events, damage/regions, wl_display.error, client-disconnect teardown)
 
 # Input event types (mirrors the Rust enum)
 INPUT_KEY_PRESS: int = 1
@@ -301,8 +301,25 @@ def last_frame_time(surface_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Wire-format event loop (ABI 0.2.0)
+# Wire-format event loop (ABI 0.2.0; client-compat surface since 0.4.0)
 # ---------------------------------------------------------------------------
+
+def client_disconnected(client_id: int) -> int:
+    """Release one client's protocol state in the event loop: its
+    objects leave the table, its xdg roles are dropped, its crate
+    surfaces are destroyed, and its outbound queue is released.
+
+    Safe on unknown client ids (a valid no-op, returns 0). Returns -1
+    when the crate is absent (the host half's own cleanup still runs).
+    """
+    cdll = _load()
+    if cdll is None:
+        return -1
+    fn = cdll.nyrqis_compositor_client_disconnected
+    fn.restype = ctypes.c_int
+    fn.argtypes = [ctypes.c_uint32]
+    return fn(ctypes.c_uint32(client_id))
+
 
 def handle_client_data(client_id: int, data: bytes) -> int:
     """Feed client bytes (wire-format Wayland requests) into the event

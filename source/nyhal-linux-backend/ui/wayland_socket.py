@@ -32,15 +32,16 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Wayland protocol message opcodes (subset)
+# Wayland protocol opcodes (the core subset; values per the stable
+# wayland / xdg-shell specifications)
 class WaylandOpcodes(IntEnum):
     """Core Wayland protocol opcodes."""
     WL_DISPLAY_GET_REGISTRY = 1
     WL_DISPLAY_SYNC = 0
-    WL_COMPOSITOR_CREATE_SURFACE = 1
-    WL_COMPOSITOR_CREATE_REGION = 2
-    WL_SHM_CREATE_POOL = 1
-    WL_SHM_POOL_CREATE_BUFFER = 1
+    WL_COMPOSITOR_CREATE_SURFACE = 0
+    WL_COMPOSITOR_CREATE_REGION = 1
+    WL_SHM_CREATE_POOL = 0
+    WL_SHM_POOL_CREATE_BUFFER = 0
     WL_BUFFER_DESTROY = 0
     WL_SURFACE_ATTACH = 1
     WL_SURFACE_DAMAGE = 2
@@ -48,12 +49,20 @@ class WaylandOpcodes(IntEnum):
     WL_SURFACE_DESTROY = 0
     WL_OUTPUT_GEOMETRY = 0
     WL_OUTPUT_MODE = 1
-    WL_SEAT_GET_POINTER = 1
-    WL_SEAT_GET_KEYBOARD = 2
-    WL_POINTER_MOTION = 0
-    WL_POINTER_BUTTON = 1
-    WL_KEYBOARD_KEY = 1
+    WL_SEAT_GET_POINTER = 0
+    WL_SEAT_GET_KEYBOARD = 1
+    WL_SEAT_GET_TOUCH = 2
+    WL_POINTER_ENTER = 0
+    WL_POINTER_LEAVE = 1
+    WL_POINTER_MOTION = 2
+    WL_POINTER_BUTTON = 3
+    WL_KEYBOARD_KEYMAP = 0
+    WL_KEYBOARD_ENTER = 1
+    WL_KEYBOARD_LEAVE = 2
+    WL_KEYBOARD_KEY = 3
     WL_KEYBOARD_MODIFIERS = 4
+    # xdg_wm_base requests: destroy=0, create_positioner=1,
+    # get_xdg_surface=2, pong=3 (wire-verified against libwayland).
     XDG_WM_BASE_GET_XDG_SURFACE = 2
     XDG_WM_BASE_PONG = 3
     XDG_SURFACE_GET_TOPLEVEL = 1
@@ -308,7 +317,13 @@ class WaylandSocketServer:
 
         while self._running and client.active:
             try:
-                data, ancdata, _flags, _addr = client.fd.recvmsg(4096)
+                # ancbufsize MUST be non-zero: recvmsg defaults it to 0,
+                # which silently DISCARDS all ancillary data — the
+                # client's wl_shm pool fds would vanish in transit and
+                # no real pixel memory would ever reach the host.
+                data, ancdata, _flags, _addr = client.fd.recvmsg(
+                    4096, 4096,
+                )
                 # A zero-byte read with ancillary fds is NOT a
                 # disconnect — the fd arrived detached from payload.
                 if not data and not ancdata:

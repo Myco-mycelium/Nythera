@@ -1,10 +1,24 @@
 ---
 title: Next Development Session Plan
-version: 6.6.0
-date: 2026-09-14
+version: 6.7.0
+date: 2026-09-15
 ---
 
 # Next Development Session Plan
+
+## Session 11 (2026-09-15) — PRIORITY 8 CLOSED AT THE PROTOCOL LEVEL: the wire loop survives a real client handshake
+
+| Item | Status |
+|------|--------|
+| **The audit that found the gap** | Re-reading `rust/compositor/src/event_loop.rs` against what real clients do: the loop advertised five globals but serving ANY bind of `wl_output`/`wl_seat`/`xdg_wm_base` fell into the `unsupported opcode` arm — a protocol error that killed the connection. Every real client (weston-simple-shm, GTK4, Qt6) binds at least one of those at handshake: the compositor could hold a socket conversation with our own test client and NO ONE else. Same class: `wl_surface.damage`/`damage_buffer`/`set_*_region`/`set_buffer_scale` (every renderer sends them), `create_region`, `wl_buffer.destroy`, `wl_shm_pool.resize`, and no `wl_shm.format` events on bind (simple-shm cannot even pick a pixel format), and no initial xdg configure (xdg clients block forever) |
+| **The client-compatibility surface (ABI 0x0000_0300 → 0x0000_0400)** | ✅ Bind responses for every advertised global: wl_shm formats (ARGB8888/XRGB8888), wl_output geometry/mode(current\|preferred)/done (real output geometry at 96-dpi physical size, `.done` gated to bound version ≥ 2 — never send an event a client's bound version cannot parse), wl_seat capabilities+name (version-gated) with device objects for get_pointer/get_keyboard/get_touch. xdg-shell: get_xdg_surface (validated against a real wl_surface — non-surface argument = the spec's defunct-surface error), get_toplevel/get_popup, pong, destroy, and the initial `xdg_toplevel.configure(0,0,[])` + `xdg_surface.configure(serial)` pair on first commit in the required order. The boring requests served instead of erroring: damage, damage_buffer, opaque/input regions, buffer scale/transform, create_region + region ops, buffer destroy, pool resize, null-buffer detach |
+| **wl_display.error on every protocol error** | ✅ Clients learn WHY they were disconnected (message names the offending object) instead of a silent socket close; bind versions above the advertised version are refused with an error event |
+| **Per-client object namespaces + disconnect teardown** | ✅ The object table is scoped by owning client (ids are per-connection namespaces — two clients may both use id 2); new `nyrqis_compositor_client_disconnected` FFI destroys the client's crate surfaces, drops its objects/roles/queue — a disconnect no longer leaks surfaces into the slot table (the Session 9 leak class, one layer up). `CompositorHost.on_client_disconnected` calls it fail-closed. A subtle lock-ordering hazard fixed in passing: `reset_state` held STATE while acquiring EVENT_LOOP (the dispatch path nests the other way) — deadlocked under the parallel harness; reset moved outside the lock |
+| **The real client ran** — and audited every constant | ✅ Upstream `weston-simple-shm` (real libwayland, no fakes) connects, binds everything, acks the initial configure, maps its SHM pool, and runs its double-buffered frame loop (attach → damage → frame → commit → `wl_buffer.release` ×2) with zero protocol errors. Getting there caught FIVE wrong opcode tables that hand-built fixtures never hit: `xdg_wm_base.get_xdg_surface` is **2** (destroy=0, create_positioner=1, pong=3), `wl_shm_pool` is **create_buffer=0/destroy=1/resize=2**, `wl_surface` is **set_opaque=4/set_input=5/set_transform=7/set_scale=8**, `wl_output` events are **done=2/scale=3** (scale precedes done), and `wl_display.error` carries the **`ous`** signature. Every constant is now wire-verified against the canonical `wayland-client-protocol.h`. Lesson recorded: memory-recalled opcode tables are how this class of bug ships; trace the real client or read the generated header |
+| **The socket layer silently discarded every client fd** | ✅ Found by the real client: `recvmsg(bufsize)` defaults `ancbufsize` to 0, which DROPS all ancillary data — a client's `wl_shm.create_pool` fd (its pixel memory) vanished in transit and `fds_received` stayed 0. The read loop now passes a real ancillary buffer size. Also: `wl_buffer.release` no longer retires the buffer object (release ≠ destroy; weston-simple-shm re-attaches released buffers — destroying them killed the client on its third frame) |
+| Client-compat pinned as tests | ✅ `tests/test_wayland_client_compat.py` (8 tests): the real-client handshake over a real Unix socket through the full stack, asserting exact event bytes — format codes, geometry/mode/scale/done, capabilities, the xdg configure pair and its ordering, the pool→buffer→attach→frame→commit content path, error delivery, version-overrun refusal. `tests/test_weston_simple_shm.py`: the upstream binary against the full stack for ~3 s (must stay connected, drive the SHM fd through, register a surface, zero protocol errors). `tests/test_weston.py` rewritten — the old stubs ran without `XDG_RUNTIME_DIR` (libwayland refuses absolute `WAYLAND_DISPLAY`) against a bare socket server and asserted nothing. Crate tests 50 → **67** (17 wire-level tests). Test-writing lesson recorded: byte-level event accounting must count NEW events per recv, not cumulative stream positions — three flaky-looking failures were this, not the implementation |
+| Honest limitations | Input events are still not fabricated (an honest silent seat beats a lying synthetic stream); popups join the table with no positioning logic; pixel content still flows host-side (the fd/SCM_RIGHTS path has its own tests); weston/GTK/Qt BINARY runs on hardware remain the true end-to-end proof — this session makes the protocol conversation survive their handshake |
+| Suite | ✅ Crate 67/67; full backend suite **6,307 passed, 29 skipped** on the session run (includes the previously-skipped weston tests, now real); version gate 0.29.13 |
 
 ## Session 10 (2026-09-14) — PACKAGING PARITY PINNED; the arm64 ISO is real; two systemd trees become one
 
@@ -389,7 +403,7 @@ not. Phased so each phase ships green independently:
 | Multi-monitor | Per-output rendering working | ✅ Implemented |
 | Benchmarks | All display paths measured | ✅ Implemented |
 | Custom compositor | Automated CI testing | ✅ Implemented |
-| Wayland clients | weston-simple-shm working | Pending |
+| Wayland clients | weston-simple-shm working | ✅ Verified (real upstream client, full frame loop, zero protocol errors — dev host; hardware/QEMU boot smoke remains the shipped-image proof) |
 
 ## References
 

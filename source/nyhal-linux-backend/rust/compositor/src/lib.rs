@@ -33,9 +33,11 @@ pub mod wayland;
 pub mod protocols;
 pub mod event_loop;
 
-/// ABI version: 0x0000_0300 (0.3.0 — wl_shm pool/buffer objects in the
-/// wire loop, wl_display.sync served).
-const ABI_VERSION: u32 = 0x0000_0300;
+/// ABI version: 0x0000_0400 (0.4.0 — client-compatibility protocol
+/// surface in the wire loop: wl_output/wl_seat/wl_shm bind events,
+/// xdg-shell roles with the initial configure pair, wl_surface
+/// damage/region requests, buffer/pool lifecycle, wl_display.error).
+const ABI_VERSION: u32 = 0x0000_0400;
 const MAX_CLIENTS: usize = 32;
 const MAX_SURFACES: usize = 256;
 const MAX_OUTPUTS: usize = 16;
@@ -119,7 +121,7 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn with_state<F, R>(f: F) -> R
+pub(crate) fn with_state<F, R>(f: F) -> R
 where
     F: FnOnce(&mut CompositorState) -> R,
 {
@@ -602,18 +604,23 @@ pub extern "C" fn nyrqis_compositor_last_error(buf: *mut c_char, cap: c_int) -> 
 
 #[cfg(test)]
 pub(crate) fn reset_state() {
-    let mut guard = STATE.lock().unwrap();
-    *guard = Some(CompositorState {
-        clients: (0..MAX_CLIENTS).map(|_| None).collect(),
-        surfaces: (0..MAX_SURFACES).map(|_| None).collect(),
-        outputs: (0..MAX_OUTPUTS).map(|_| None).collect(),
-        input_queues: (0..MAX_SURFACES).map(|_| Vec::new()).collect(),
-        total_input_dispatched: 0,
-        last_error: String::new(),
-        running: false,
-    });
-    // Also reset the wire-format event loop's object table + outbound
-    // queues so tests start from a clean protocol state.
+    {
+        let mut guard = STATE.lock().unwrap();
+        *guard = Some(CompositorState {
+            clients: (0..MAX_CLIENTS).map(|_| None).collect(),
+            surfaces: (0..MAX_SURFACES).map(|_| None).collect(),
+            outputs: (0..MAX_OUTPUTS).map(|_| None).collect(),
+            input_queues: (0..MAX_SURFACES).map(|_| Vec::new()).collect(),
+            total_input_dispatched: 0,
+            last_error: String::new(),
+            running: false,
+        });
+    }
+    // Reset the event loop OUTSIDE the STATE lock: the event loop's
+    // dispatch path nests the other way (EVENT_LOOP → STATE, e.g. the
+    // wl_output bind arm reads the output geometry), and holding STATE
+    // across an EVENT_LOOP acquisition is a lock-inversion deadlock
+    // under the parallel test harness.
     crate::event_loop::reset_event_loop_state();
 }
 
@@ -630,7 +637,7 @@ mod tests {
     #[test]
     fn version_returns_abi_version() {
         let _g = crate::test_lock();
-        assert_eq!(nyrqis_compositor_version(), 0x0000_0300);
+        assert_eq!(nyrqis_compositor_version(), 0x0000_0400);
     }
 
     #[test]

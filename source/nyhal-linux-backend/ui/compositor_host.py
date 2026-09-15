@@ -2,7 +2,7 @@
 
 Bridges the host-side ``WaylandSocketServer`` (accept, read, write over
 a real Unix domain socket) to the Rust compositor's wire-format event
-loop (``rust/compositor``, ABI 0.2.0) through ``ui/compositor_codec.py``:
+loop (``rust/compositor``, ABI 0.4.0) through ``ui/compositor_codec.py``:
 
 1. A real Wayland client connects to the Unix domain socket.
 2. Bytes read from the client are fed into the crate via
@@ -47,7 +47,8 @@ _HEADER_SIZE = 8
 # wl_shm / wl_shm_pool request opcodes (the subset the host handles).
 _OPCODE_SHM_CREATE_POOL = 0        # wl_shm.create_pool(new_id, fd, size)
 _OPCODE_POOL_CREATE_BUFFER = 1    # wl_shm_pool.create_buffer(...)
-_OPCODE_POOL_DESTROY = 2          # wl_shm_pool.destroy
+_OPCODE_POOL_DESTROY = 0          # wl_shm_pool.destroy (destroy=0,
+                                  # create_buffer=1, resize=2)
 _OPCODE_COMPOSITOR_CREATE_SURFACE = 0  # wl_compositor.create_surface(new_id)
 
 # wl_shm wire args (after the fd): new_id u32, size i32.
@@ -397,7 +398,20 @@ class CompositorHost:
 
     def on_client_disconnected(self, client_id: int) -> None:
         """Release per-client state (partial buffer, pending events,
-        staged fds, pending pools)."""
+        staged fds, pending pools) and tear down the client's protocol
+        state in the Rust event loop (its objects leave the object
+        table, its xdg roles are dropped, and its crate surfaces are
+        destroyed — a disconnect no longer leaks surfaces into the
+        compositor's slot table).
+        """
+        # The wire event loop first; fail-closed (absent crate ⇒ the
+        # host-half cleanup below still runs).
+        try:
+            from ui import compositor_codec as comp
+
+            comp.client_disconnected(client_id)
+        except ImportError:
+            pass
         with self._lock:
             self._stats.partial.pop(client_id, None)
             self._pending.pop(client_id, None)

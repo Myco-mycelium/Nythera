@@ -210,8 +210,8 @@ class TestCompositorE2E(unittest.TestCase):
             # Wait for connection
             time.sleep(0.1)
             
-            # Send wl_compositor.create_surface (object_id=2, opcode=1)
-            success = client.send_request(2, 1, 100)  # new_id=100
+            # Send wl_compositor.create_surface (object_id=2, opcode=0)
+            success = client.send_request(2, 0, 100)  # new_id=100
             self.assertTrue(success)
             
             # Wait for surface to be created
@@ -363,7 +363,7 @@ class TestWaylandProtocolE2E(unittest.TestCase):
             time.sleep(0.1)
             
             # Create surface first
-            client.send_request(2, 1, 100)  # wl_compositor.create_surface
+            client.send_request(2, 0, 100)  # wl_compositor.create_surface
             
             # Get XDG surface
             client.send_request(3, 2, 200, 100)  # xdg_wm_base.get_xdg_surface

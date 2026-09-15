@@ -39,7 +39,13 @@ sudo packaging/live/build-live-iso.sh --rootfs-tar rootfs.tar.zst -o out.iso
 A prebuilt rootfs tree must contain: a `/boot/vmlinuz-*` +
 `/boot/initrd.img-*` pair, `live-boot`, and enough userland for
 `python3` + `bash` (everything Nyrqis-specific is copied in by the
-builder).
+builder). Since 0.29.13 the builder also **ensures the capability
+probe's required packages** (`python3`, `python3-zstandard`,
+`python3-nacl`, `python3-lz4`, `fuse3`) on every acquisition path and
+runs a **probe-parity gate** before packing the squashfs: a build
+fails rather than ship an image whose boot probe would print
+`✗ MISSING:` for its own components. (`--skip-chroot` has no package
+manager — supply a rootfs that already carries the packages.)
 
 ## Boot it
 
