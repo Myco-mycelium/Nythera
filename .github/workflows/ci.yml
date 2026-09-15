@@ -540,6 +540,33 @@ jobs:
         working-directory: source/nyhal-linux-backend
         run: python3 -B -m unittest tests.test_compositor_host
 
+  wayland-real-clients:
+    name: Real Wayland clients (weston-simple-shm + weston-terminal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the compositor crate
+        working-directory: source/nyhal-linux-backend/rust/compositor
+        run: cargo build --release
+      # The upstream binaries: weston-simple-shm (the canonical first
+      # client any compositor must survive) and weston-terminal (the
+      # GTK-class client — wl_seat devices, cursor pool, a real VTE
+      # drawing loop). fonts-dejavu-core gives VTE a font to render.
+      - name: Install weston (weston-simple-shm + weston-terminal)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y weston fonts-dejavu-core
+      - name: Real clients drive the full stack, zero protocol errors
+        working-directory: source/nyhal-linux-backend
+        run: |
+          python3 -B -m unittest \
+            tests.test_wayland_client_compat \
+            tests.test_weston_simple_shm \
+            tests.test_weston_terminal \
+            tests.test_weston -v
+
   backend:
     name: Python backend tests
     runs-on: ubuntu-latest

@@ -31,6 +31,25 @@ ok()      { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
 warn()    { printf '  %s•%s %s\n' "$Y" "$N" "$*"; }
 missing() { printf '  %s✗ MISSING:%s %s\n' "$R" "$N" "$*"; }
 
+# Package-parity marker for the boot-smoke drivers: the probe's
+# REQUIRED package class — the components whose absence it reports as
+# ✗ MISSING (hardware items like DRM nodes are machine-dependent and
+# honestly reported, never image defects). A booted image whose first
+# screen would print MISSING must fail the CI smoke, not merely look
+# sad in a human session — this marker is what the drivers assert.
+pkg_marker() {
+    local gaps=""
+    have python3                     || gaps="$gaps python3"
+    python3 -c "import zstandard" 2>/dev/null || gaps="$gaps python3-zstandard"
+    python3 -c "import nacl" 2>/dev/null      || gaps="$gaps python3-nacl"
+    have fusermount3                 || gaps="$gaps fusermount3"
+    if [ -z "$gaps" ]; then
+        echo "NYRQIS_BOOT_SMOKE_PKGS=ok"
+    else
+        echo "NYRQIS_BOOT_SMOKE_PKGS=missing$gaps"
+    fi
+}
+
 # The capability probe, as a function so --probe-only can run it on any
 # machine (no boot required).
 probe() {
@@ -140,6 +159,9 @@ if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     else
         echo "NYRQIS_BOOT_SMOKE_NYRQISCTL=0"
     fi
+    # BEFORE the ready marker (drivers may stop reading at READY): the
+    # probe's required-package class must be complete in the image.
+    pkg_marker
     echo "NYRQIS_BOOT_SMOKE_READY=1"
     exec sleep infinity
 fi
@@ -231,6 +253,9 @@ fi
 
 # ---------------------------------------------------------------- probe
 probe
+# The drivers' package-parity evidence, in the interactive log too (the
+# menu boot smoke greps the same serial stream).
+pkg_marker
 
 section "Try this"
 cat <<TRY

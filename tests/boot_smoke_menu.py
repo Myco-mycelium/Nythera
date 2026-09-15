@@ -63,6 +63,11 @@ MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
 MARKER_DAEMON_OK = "daemon serving on"
 MARKER_DAEMON_ADOPTED = "daemon already serving on"
+# The probe's required-package class, verified INSIDE the booted image
+# (gating: a MISSING-class gap fails the menu smoke too — the human
+# boot path and the smoke path boot the SAME squashfs).
+MARKER_PKGS_OK = "NYRQIS_BOOT_SMOKE_PKGS=ok"
+MARKER_PKGS_BAD = "NYRQIS_BOOT_SMOKE_PKGS=missing"
 
 # Failure surfaces that mean the human path is dead (no banner can
 # ever arrive): GRUB did not find its config/kernel, the live medium
@@ -159,6 +164,7 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
 
         deadline = time.monotonic() + timeout_s
         saw_banner = saw_daemon = saw_pong_fail = False
+        saw_pkgs_ok = saw_pkgs_bad = False
         dead_hit = None
         text = ""
         while time.monotonic() < deadline:
@@ -172,7 +178,14 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                           or MARKER_DAEMON_OK in text
                           or MARKER_DAEMON_ADOPTED in text)
             saw_pong_fail = saw_pong_fail or MARKER_PONG_FAIL in text
-            if saw_banner and (saw_daemon or saw_pong_fail):
+            saw_pkgs_ok = saw_pkgs_ok or MARKER_PKGS_OK in text
+            saw_pkgs_bad = saw_pkgs_bad or MARKER_PKGS_BAD in text
+            # The pkg marker is printed AFTER the daemon section (the
+            # desktop attempt runs in between), so a daemon sighting
+            # alone breaks too early — the parity evidence must land
+            # before the verdict (deadline still bounds a hung demo).
+            if saw_banner and (saw_daemon or saw_pong_fail) \
+                    and (saw_pkgs_ok or saw_pkgs_bad):
                 break
             if dead_hit is None:
                 for pattern in DEAD_PATTERNS:
@@ -190,7 +203,16 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             time.sleep(2.0)
 
         print(f"[menu-boot-smoke] markers: banner={saw_banner} "
-              f"daemon={saw_daemon} pong_fail={saw_pong_fail}")
+              f"daemon={saw_daemon} pong_fail={saw_pong_fail} "
+              f"pkgs_ok={saw_pkgs_ok} pkgs_bad={saw_pkgs_bad}")
+        if saw_pkgs_bad:
+            pkg_line = "(marker line not found)"
+            for line in text.splitlines():
+                if line.startswith(MARKER_PKGS_BAD):
+                    pkg_line = line.strip()
+                    break
+            print(f"[menu-boot-smoke] FAIL: the image's capability probe "
+                  f"would report missing components at boot — {pkg_line}")
         try:
             with open(serial_log, "r", errors="replace") as fh:
                 tail = fh.read()[-2000:]
@@ -209,9 +231,20 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             print(tail)
             print("[menu-boot-smoke] -----------------------------")
 
+        if saw_banner and saw_daemon and saw_pkgs_bad:
+            print("[menu-boot-smoke] FAIL: the session ran but the probe's "
+                  "required packages are incomplete — the image must not "
+                  "ship (see the marker line above)")
+            return 1
+        if saw_banner and saw_daemon and not (saw_pkgs_ok or saw_pkgs_bad):
+            print("[menu-boot-smoke] FAIL: the session ran but the "
+                  "package-parity marker never appeared — the demo never "
+                  "reached its probe")
+            return 1
         if saw_banner and saw_daemon:
             print("[menu-boot-smoke] PASS: GRUB booted the default entry, "
-                  "the demo session ran, and the daemon answered")
+                  "the demo session ran, the daemon answered, and the "
+                  "probe's required packages are complete")
             return 0
         if saw_banner and saw_pong_fail:
             print("[menu-boot-smoke] FAIL: the demo session ran but the "

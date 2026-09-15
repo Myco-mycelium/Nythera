@@ -6,6 +6,15 @@ date: 2026-09-15
 
 # Next Development Session Plan
 
+## Session 11b (2026-09-15) — PRIORITY 8 DOUBLED DOWN: a second real client, CI ownership, and boot-time package parity
+
+| Item | Status |
+|------|--------|
+| **weston-terminal (GTK class) runs its full session** | ✅ VTE spawns a real shell, draws real content through TWO SHM pools (window + cursor), binds every global at client-chosen versions (wl_output v2 exercises the version-gated `.done`/`.scale` path), survives with zero protocol errors. Pinned as `tests/test_weston_terminal.py`. Priority 8 now holds TWO independent real-client proofs — the minimal SHM path AND a GTK event-loop client with a spawned process |
+| **The real-client run is CI's job now** | ✅ New `wayland-real-clients` job installs weston on every round and drives the four real-client test modules against the built crate — a wire-format regression fails CI in minutes instead of at the next manual client run |
+| **The boot smoke verifies the probe's package class inside the image** | ✅ The demo prints `NYRQIS_BOOT_SMOKE_PKGS=ok\|missing:…` (the probe's required class: python3, zstandard, PyNaCl, fusermount3) and BOTH smoke drivers gate on it — an image whose probe would print MISSING fails CI at smoke time instead of booting to a sad first screen (the exact failure a real boot reported). Hardware items stay honest machine-dependent reports. Contract tests pin the chain end to end; the marker's ok and missing paths were both exercised locally |
+| Suite | ✅ Crate 67/67; Python suite **6,311 passed, 29 skipped**; version gate 0.29.14 |
+
 ## Session 11 (2026-09-15) — PRIORITY 8 CLOSED AT THE PROTOCOL LEVEL: the wire loop survives a real client handshake
 
 | Item | Status |
@@ -403,7 +412,7 @@ not. Phased so each phase ships green independently:
 | Multi-monitor | Per-output rendering working | ✅ Implemented |
 | Benchmarks | All display paths measured | ✅ Implemented |
 | Custom compositor | Automated CI testing | ✅ Implemented |
-| Wayland clients | weston-simple-shm working | ✅ Verified (real upstream client, full frame loop, zero protocol errors — dev host; hardware/QEMU boot smoke remains the shipped-image proof) |
+| Wayland clients | weston-simple-shm working | ✅ Verified (real upstream client, full frame loop, zero protocol errors — dev host; hardware/QEMU boot smoke remains the shipped-image proof) — **and weston-terminal (GTK class), pinned in CI (Session 11b)** |
 
 ## References
 

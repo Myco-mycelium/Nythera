@@ -7,7 +7,12 @@ NYRQIS_BOOT_SMOKE=1` on the hand-built kernel command line, and asserts:
 
   1. NYRQIS_BOOT_SMOKE_READY=1 — the demo session reached the console,
      and
-  2. NYRQIS_BOOT_SMOKE_PONG=1 — the backend daemon answered ping.
+  2. NYRQIS_BOOT_SMOKE_PONG=1 — the backend daemon answered ping, and
+  3. NYRQIS_BOOT_SMOKE_PKGS=ok — the probe's required package class
+     (python3, zstandard, PyNaCl, fusermount3) is complete in the
+     image. A booted image whose capability probe would print
+     "✗ MISSING: python3" fails HERE, at smoke time — the exact
+     failure a real boot reported and a release was almost cut with.
 
 The handshake: the kernel command line set HERE carries
 NYRQIS_BOOT_SMOKE=1; nyrqis-demo (started by the serial-autologin
@@ -44,6 +49,10 @@ import time
 MARKER_READY = "NYRQIS_BOOT_SMOKE_READY=1"
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
+# The probe's required-package class, verified INSIDE the booted image
+# (gating: a MISSING-class gap fails the smoke).
+MARKER_PKGS_OK = "NYRQIS_BOOT_SMOKE_PKGS=ok"
+MARKER_PKGS_BAD = "NYRQIS_BOOT_SMOKE_PKGS=missing"
 # Entry-point wrappers on PATH inside the image (informational: printed
 # in the verdict, never gates pass/fail by itself).
 MARKER_NYRQISCTL = "NYRQIS_BOOT_SMOKE_NYRQISCTL="
@@ -201,6 +210,7 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
 
         deadline = time.monotonic() + timeout_s
         saw_ready = saw_pong_ok = saw_pong_fail = False
+        saw_pkgs_ok = saw_pkgs_bad = False
         dead_hit = None
         while time.monotonic() < deadline:
             # Read first: the markers must be parsed even when qemu exits
@@ -214,6 +224,8 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             saw_ready = saw_ready or MARKER_READY in text
             saw_pong_ok = saw_pong_ok or MARKER_PONG_OK in text
             saw_pong_fail = saw_pong_fail or MARKER_PONG_FAIL in text
+            saw_pkgs_ok = saw_pkgs_ok or MARKER_PKGS_OK in text
+            saw_pkgs_bad = saw_pkgs_bad or MARKER_PKGS_BAD in text
             if saw_ready and (saw_pong_ok or saw_pong_fail):
                 break
             if dead_hit is None:
@@ -231,7 +243,18 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             time.sleep(2.0)
 
         print(f"[boot-smoke] markers: ready={saw_ready} "
-              f"pong_ok={saw_pong_ok} pong_fail={saw_pong_fail}")
+              f"pong_ok={saw_pong_ok} pong_fail={saw_pong_fail} "
+              f"pkgs_ok={saw_pkgs_ok} pkgs_bad={saw_pkgs_bad}")
+        if saw_pkgs_bad:
+            # Name the gaps: the marker line carries them.
+            pkg_line = "(marker line not found)"
+            for line in text.splitlines():
+                if line.startswith(MARKER_PKGS_BAD):
+                    pkg_line = line.strip()
+                    break
+            print(f"[boot-smoke] FAIL: the image's capability probe would "
+                  f"report missing components at boot — {pkg_line}. "
+                  "No release ships from an image like this.")
         if MARKER_NYRQISCTL in text:
             print(f"[boot-smoke] nyrqisctl-on-PATH: "
                   f"{text.split(MARKER_NYRQISCTL)[1].splitlines()[0][0]}")
@@ -275,10 +298,15 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 f"dead_pattern={dead_hit!r}; "
                 f"full serial log follows in chunks")
 
-        if saw_ready and saw_pong_ok:
+        if saw_ready and saw_pong_ok and saw_pkgs_ok:
             print("[boot-smoke] PASS: the demo session reached the serial "
-                  "console and the daemon answered ping")
+                  "console, the daemon answered ping, and the probe's "
+                  "required packages are complete")
             return 0
+        if saw_ready and saw_pong_ok and not saw_pkgs_ok:
+            print("[boot-smoke] FAIL: pong answered but the package-parity "
+                  "marker never read ok — the image is incomplete")
+            return 1
         if saw_ready and saw_pong_fail:
             print("[boot-smoke] FAIL: the demo session ran but the daemon "
                   "did not answer ping — see the log tail above")

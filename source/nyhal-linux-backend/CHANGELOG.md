@@ -5,6 +5,36 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.14] - 2026-09-15
+
+### Added
+
+- **weston-terminal — the GTK-class real client — runs its full
+  session against the compositor** (`tests/test_weston_terminal.py`):
+  VTE spawns a real shell, draws real content through two SHM pools
+  (window + cursor — the fd path twice), binds every global at
+  client-chosen versions (wl_compositor 3, wl_output 2 — the
+  version-gated `.done`/`.scale` path — wl_seat 7, xdg_wm_base 5),
+  and survives the session with zero protocol errors. Priority 8 now
+  has TWO independent real-client proofs (minimal + GTK class).
+- **The real-client run is pinned in CI** (new `wayland-real-clients`
+  job): every round installs weston and drives
+  `test_wayland_client_compat` + `test_weston_simple_shm` +
+  `test_weston_terminal` + `test_weston` against the built crate —
+  a wire-format regression fails CI in minutes, not at the next
+  manual client run.
+- **The boot smoke now verifies the probe's package class INSIDE the
+  booted image.** The demo session prints
+  `NYRQIS_BOOT_SMOKE_PKGS=ok|missing:…` (covering exactly the probe's
+  required class: python3, zstandard, PyNaCl, fusermount3) on every
+  boot path, and BOTH smoke drivers (direct-kernel and GRUB-menu)
+  gate their verdict on it: an image whose capability probe would
+  print "✗ MISSING" fails CI at smoke time instead of booting to a
+  sad first screen. Hardware items (DRM nodes) stay honest
+  machine-dependent reports, never image defects. Contract tests pin
+  the marker chain (demo emits it, both drivers assert it, the menu
+  driver does not break before the parity evidence lands).
+
 ## [0.29.13] - 2026-09-15
 
 ### Added

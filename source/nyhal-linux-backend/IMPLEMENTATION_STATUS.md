@@ -430,11 +430,18 @@ BINARY against the full stack: connects, acks configure, drives its
 SHM pool fd through, renders its double-buffered frame loop with zero
 protocol errors — this real-client run caught five wrong opcode
 tables the hand-built fixtures never hit, all now wire-verified
-against `wayland-client-protocol.h`), and `tests/test_weston.py`
+against `wayland-client-protocol.h`),
+`tests/test_weston_terminal.py` (the GTK-class client: VTE + real
+shell + two SHM pools + version-gated binds — the second independent
+real-client proof, 0.29.14), and `tests/test_weston.py`
 (rewritten: the old stubs asserted nothing and ran without
-`XDG_RUNTIME_DIR`). Also fixed in the process: the socket layer's
-`recvmsg` dropped ALL ancillary data (`ancbufsize` defaulted to 0) —
-a client's SHM pool fd vanished in transit. Crate tests 50 → 67.
+`XDG_RUNTIME_DIR`). CI pins the whole real-client run in the
+`wayland-real-clients` job (0.29.14), and the boot smokes gate on
+`NYRQIS_BOOT_SMOKE_PKGS=ok` — an image whose capability probe would
+print MISSING fails CI instead of shipping. Also fixed in the
+process: the socket layer's `recvmsg` dropped ALL ancillary data
+(`ancbufsize` defaulted to 0) — a client's SHM pool fd vanished in
+transit. Crate tests 50 → 67.
 Honest limitation: input events are still not fabricated (an honest
 silent seat), and popups have no positioning logic.
 

@@ -376,6 +376,59 @@ class TestProbeParityContract(unittest.TestCase):
             self.assertIn(pkg, builder,
                           f"builder must install {pkg} into the image")
 
+    def test_demo_emits_the_package_parity_marker(self):
+        """The booted image must state its own package parity on the
+        serial log (NYRQIS_BOOT_SMOKE_PKGS=ok|missing:…) — the CI smoke
+        drivers assert it, so a probe that would print MISSING fails at
+        smoke time instead of shipping as "some files like python3 are
+        missing".
+        """
+        demo = read(DEMO)
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=ok", demo,
+                      "the demo must print the ok marker when complete")
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=missing", demo,
+                      "the demo must name its gaps when incomplete")
+        # The marker covers the probe's REQUIRED class — the same
+        # components the probe prints MISSING for.
+        m = re.search(
+            r"pkg_marker\(\)\s*\{(.+?)\n\}", demo, re.S)
+        self.assertIsNotNone(m, "demo must define pkg_marker()")
+        body = m.group(1)
+        for needle in ("python3", "zstandard", "nacl", "fusermount3"):
+            self.assertIn(needle, body,
+                          f"pkg_marker must check {needle} (probe-required)")
+        # The smoke branch must print the marker BEFORE the ready
+        # marker (drivers may stop reading at READY).
+        smoke_branch = demo.split("NYRQIS_BOOT_SMOKE_READY=1")[0]
+        self.assertIn("pkg_marker", smoke_branch,
+                      "the smoke branch must emit the marker before READY")
+
+    def test_direct_smoke_asserts_the_package_parity_marker(self):
+        direct = read(DIRECT_SMOKE)
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=ok", direct,
+                      "the direct smoke must gate on the ok marker")
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=missing", direct,
+                      "the direct smoke must detect the missing marker")
+        # Gating, not informational: ok must be part of the PASS
+        # condition.
+        self.assertRegex(
+            direct, r"saw_ready and saw_pong_ok and saw_pkgs_ok",
+            "PASS must require the package parity marker")
+
+    def test_menu_smoke_asserts_the_package_parity_marker(self):
+        menu = read(MENU_SMOKE)
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=ok", menu,
+                      "the menu smoke must gate on the ok marker")
+        self.assertIn("NYRQIS_BOOT_SMOKE_PKGS=missing", menu,
+                      "the menu smoke must detect the missing marker")
+        # The menu driver polls until BOTH daemon and parity evidence
+        # arrive — a daemon-only break would race the probe.
+        self.assertRegex(
+            menu,
+            r"saw_banner and \(saw_daemon or saw_pong_fail\)\s*\\?\s*"
+            r"and \(saw_pkgs_ok or saw_pkgs_bad\)",
+            "the menu smoke must not break before parity evidence lands")
+
 
 class TestWorkflowProbeTopUp(unittest.TestCase):
     """CI's chroot top-up must stay in sync with the probe contract."""
