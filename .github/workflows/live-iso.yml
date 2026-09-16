@@ -39,17 +39,38 @@ jobs:
             grub-pc-bin grub-efi-amd64-bin mtools isolinux \
             qemu-utils
 
-      - name: Assemble the rootfs (debootstrap)
+      - name: Restore the cached rootfs (if a previous round built one)
+        # The debootstrap rootfs is a pure function of the include list
+        # + Debian suite — cache it so a routine ISO rebuild (docs,
+        # demo, smoke-driver changes) skips the ~15-20 min bootstrap.
+        # The cache key carries the include list so a package-set change
+        # invalidates automatically. actions/cache refreshes the entry
+        # only on key miss, so an unchanged list reuses the oldest copy;
+        # the tar age is irrelevant (minbase + apt-get clean is inert).
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nyrqis-rootfs-cache
+          key: nyrqis-rootfs-amd64-bookworm-v1-systemd-sysv-sudo-linux-image-amd64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+
+      - name: Assemble the rootfs (debootstrap, or restore from cache)
         run: |
-          sudo debootstrap --variant=minbase \
-            --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
-            bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
-          # Same include list as build-live-iso.sh's own debootstrap path:
-          # python3-cffi / python3-ply are the REAL packages behind the
-          # VIRTUAL deps python3-zstandard / python3-pycparser declare;
-          # debootstrap cannot resolve virtual deps and would leave
-          # zstandard unconfigured (verified build failure).
+          if sudo test -d /tmp/nyrqis-rootfs-cache/rootfs; then
+            echo "rootfs cache HIT — reusing the cached rootfs"
+            sudo mv /tmp/nyrqis-rootfs-cache/rootfs /srv/nyrqis-rootfs
+          else
+            echo "rootfs cache MISS — running debootstrap"
+            sudo debootstrap --variant=minbase \
+              --include=systemd,systemd-sysv,sudo,linux-image-amd64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
+              bookworm /srv/nyrqis-rootfs http://deb.debian.org/debian
+            # Same include list as build-live-iso.sh's own debootstrap path:
+            # python3-cffi / python3-ply are the REAL packages behind the
+            # VIRTUAL deps python3-zstandard / python3-pycparser declare;
+            # debootstrap cannot resolve virtual deps and would leave
+            # zstandard unconfigured (verified build failure).
+          fi
           # Python + the demo probe's module checks live in the rootfs.
+          # Runs on BOTH paths: the cache could predate a builder-side
+          # top-up change, and apt is a cheap no-op when satisfied.
           # (build-live-iso.sh also ensures these itself since 0.29.13 —
           # this step is belt-and-braces for the prebuilt-rootfs path.)
           sudo chroot /srv/nyrqis-rootfs apt-get update
@@ -64,9 +85,11 @@ jobs:
           sudo packaging/live/build-live-iso.sh \
             --rootfs /srv/nyrqis-rootfs \
             -o dist/nyrqis-live.iso
-          # Keep the rootfs tarball as a secondary artifact so a rebuild
-          # does not re-run debootstrap (build-live-iso.sh accepts it).
-          sudo tar -cf dist/nyrqis-rootfs.tar -C /srv nyrqis-rootfs
+          # Stage the rootfs for the post-build cache save (the action
+          # saves only when its key missed; a hit skips this silently).
+          sudo mkdir -p /tmp/nyrqis-rootfs-cache
+          sudo rm -rf /tmp/nyrqis-rootfs-cache/rootfs
+          sudo cp -a /srv/nyrqis-rootfs /tmp/nyrqis-rootfs-cache/rootfs
         timeout-minutes: 60
 
       - name: Smoke-check the ISO structure
@@ -166,6 +189,10 @@ jobs:
             --json assets -q '.assets[].name'
 
       - name: Upload rootfs cache artifact
+        # Superseded by the actions/cache rootfs above — the artifact
+        # kept a 7-day tar nobody consumed. The cache action is the
+        # durable store now.
+        if: false
         uses: actions/upload-artifact@v4
         with:
           name: nyrqis-live-rootfs

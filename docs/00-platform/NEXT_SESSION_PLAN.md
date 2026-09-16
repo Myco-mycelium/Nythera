@@ -1,10 +1,18 @@
 ---
 title: Next Development Session Plan
-version: 6.8.0
+version: 6.9.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11e (2026-09-16) — CI STOPS REBUILDING THE IDENTICAL ROOTFS: cache keyed by the include list, contract-pinned
+
+| Item | Status |
+|------|--------|
+| **Rootfs caching in both ISO workflows** | ✅ `actions/cache` stores the debootstrap rootfs keyed by the include list — a package-set change invalidates automatically; the chroot apt top-up runs on BOTH paths (a cached rootfs can never predate a top-up change); the arm64 workflow re-stages qemu-aarch64-static if the cached rootfs lost it; the unused 7-day tarball artifact retired. 4 contract tests pin the wiring (39 total) |
+| **Session artifact hygiene** | ✅ ~7 GB of one-shot /tmp artifacts swept (3 rootfs workdirs, superseded + bloated ISOs, smoke logs, hundreds of test ephemeral dirs); the two final boot-verified ISOs kept |
+| Suite | ✅ Python suite **8,849 passed, 29 skipped**; contract 39/39; YAML validated |
 
 ## Session 11d (2026-09-16) — BOTH ARCHITECTURES PROVEN ON REAL EMULATED MACHINES: the arm64 image completes its own boot smoke
 

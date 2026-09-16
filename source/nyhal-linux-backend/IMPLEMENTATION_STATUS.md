@@ -461,7 +461,15 @@ cleanup trap deleted the rootfs even under `--keep-workdir`,
 destroying the post-mortem artifact. A fail-closed `dpkg --audit`
 gate now runs on every rootfs acquisition path before squash.
 
-### Live ISO: both architectures proven on real emulated machines (0.29.16)
+### Live ISO: CI caches the rootfs; both architectures proven on real emulated machines (0.29.16/0.29.17)
+
+**CI rootfs caching (0.29.17):** both ISO workflows store the
+ debootstrap rootfs via `actions/cache`, keyed by the include list
+ (a package-set change invalidates automatically). The chroot apt
+ top-up runs on both hit and miss paths so a cached rootfs can never
+ predate a top-up change; the arm64 workflow re-stages
+ `qemu-aarch64-static` when a cached rootfs lacks it.
+
 
 The **arm64** image was cross-built from scratch on this host
 (foreign debootstrap under qemu-user + binfmt, GRUB arm64-efi from

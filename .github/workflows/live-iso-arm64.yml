@@ -65,24 +65,47 @@ jobs:
           ls /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi >/dev/null \
             && echo "arm64-efi module tree staged ($(ls /usr/lib/grub/arm64-efi/*.mod | wc -l) modules)"
 
-      - name: Assemble the arm64 rootfs (foreign debootstrap, emulated)
+      - name: Restore the cached rootfs (if a previous round built one)
+        # Cross-built arm64 rootfs (foreign debootstrap + emulated
+        # second stage) is the workflow's slowest step by far — cache
+        # it exactly like the amd64 workflow does. The key carries the
+        # include list so a package-set change invalidates.
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nyrqis-rootfs-cache
+          key: nyrqis-rootfs-arm64-bookworm-v1-systemd-sysv-sudo-linux-image-arm64-live-boot-python3-zstandard-cffi-ply-nacl-lz4-fuse3
+
+      - name: Assemble the arm64 rootfs (foreign debootstrap, emulated, or restore from cache)
         run: |
-          sudo debootstrap --variant=minbase --arch=arm64 --foreign \
-            --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
-            bookworm /srv/nyrqis-rootfs-arm64 http://deb.debian.org/debian
-          # Same include list as build-live-iso.sh (python3-cffi /
-          # python3-ply are the REAL packages behind VIRTUAL deps
-          # debootstrap cannot resolve — without them second stage dies
-          # configuring python3-zstandard).
-          # Stage the emulator INSIDE the rootfs: binfmt_misc resolves
-          # the interpreter path within the chroot. build-live-iso.sh
-          # does the same for its own chroot steps; the second stage
-          # and apt both need it present.
-          sudo cp /usr/bin/qemu-aarch64-static /srv/nyrqis-rootfs-arm64/usr/bin/
-          sudo chroot /srv/nyrqis-rootfs-arm64 /debootstrap/debootstrap --second-stage
+          if sudo test -d /tmp/nyrqis-rootfs-cache/rootfs; then
+            echo "rootfs cache HIT — reusing the cached arm64 rootfs"
+            sudo mv /tmp/nyrqis-rootfs-cache/rootfs /srv/nyrqis-rootfs-arm64
+          else
+            echo "rootfs cache MISS — running foreign debootstrap"
+            sudo debootstrap --variant=minbase --arch=arm64 --foreign \
+              --include=systemd,systemd-sysv,sudo,linux-image-arm64,live-boot,live-boot-initramfs-tools,python3,python3-zstandard,python3-cffi,python3-ply,python3-nacl,python3-lz4,fuse3 \
+              bookworm /srv/nyrqis-rootfs-arm64 http://deb.debian.org/debian
+            # Same include list as build-live-iso.sh (python3-cffi /
+            # python3-ply are the REAL packages behind VIRTUAL deps
+            # debootstrap cannot resolve — without them second stage dies
+            # configuring python3-zstandard).
+            # Stage the emulator INSIDE the rootfs: binfmt_misc resolves
+            # the interpreter path within the chroot. build-live-iso.sh
+            # does the same for its own chroot steps; the second stage
+            # and apt both need it present.
+            sudo cp /usr/bin/qemu-aarch64-static /srv/nyrqis-rootfs-arm64/usr/bin/
+            sudo chroot /srv/nyrqis-rootfs-arm64 /debootstrap/debootstrap --second-stage
+          fi
+          # The qemu-aarch64-static staged inside MUST survive from the
+          # cached rootfs too — build-live-iso.sh's chroot steps need it
+          # (a cached rootfs already carries it; a fresh one has it from
+          # the miss branch above). Belt-and-braces re-stage:
+          sudo test -x /srv/nyrqis-rootfs-arm64/usr/bin/qemu-aarch64-static \
+            || sudo cp /usr/bin/qemu-aarch64-static /srv/nyrqis-rootfs-arm64/usr/bin/
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get update
-          # (build-live-iso.sh also ensures these itself since 0.29.13 —
-          # this step is belt-and-braces for the cross-built rootfs.)
+          # Runs on BOTH paths: the cache could predate a builder-side
+          # top-up change. (build-live-iso.sh also ensures these itself
+          # since 0.29.13 — belt-and-braces for the cross-built rootfs.)
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get install -y --no-install-recommends \
             python3 python3-zstandard python3-nacl python3-lz4 fuse3 bash
           sudo chroot /srv/nyrqis-rootfs-arm64 apt-get clean
@@ -93,7 +116,11 @@ jobs:
             --arch arm64 \
             --rootfs /srv/nyrqis-rootfs-arm64 \
             -o dist/nyrqis-live-arm64.iso
-          sudo tar -cf dist/nyrqis-rootfs-arm64.tar -C /srv nyrqis-rootfs-arm64
+          # Stage the rootfs for the post-build cache save (the action
+          # saves only when its key missed).
+          sudo mkdir -p /tmp/nyrqis-rootfs-cache
+          sudo rm -rf /tmp/nyrqis-rootfs-cache/rootfs
+          sudo cp -a /srv/nyrqis-rootfs-arm64 /tmp/nyrqis-rootfs-cache/rootfs
         timeout-minutes: 90
 
       - name: Smoke-check the ISO structure

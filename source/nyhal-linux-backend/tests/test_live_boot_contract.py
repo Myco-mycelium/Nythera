@@ -525,5 +525,81 @@ class TestWorkflowProbeTopUp(unittest.TestCase):
                           f"live-iso-arm64.yml rootfs step must install {pkg}")
 
 
+class TestRootfsCacheContract(unittest.TestCase):
+    """Both ISO workflows must cache their debootstrap rootfs — the
+    bootstrap is a pure function of the include list + Debian suite,
+    and CI paying ~15-20 min (amd64) / far longer (emulated arm64) per
+    routine rebuild is waste. The cache key must carry the include list
+    so a package-set change invalidates it automatically.
+    """
+
+    def setUp(self):
+        self.amd64 = read(LIVE_ISO_WF)
+        self.arm64 = read(LIVE_ISO_ARM64_WF)
+
+    _KEY = r"nyrqis-rootfs-(amd64|arm64)-bookworm-v1-(?P<pkgs>.+)"
+
+    def test_both_workflows_cache_the_rootfs(self):
+        for name, wf in (("amd64", self.amd64), ("arm64", self.arm64)):
+            self.assertIn("actions/cache@v4", wf,
+                          f"{name} workflow must cache the rootfs")
+            self.assertIn("nyrqis-rootfs-", wf,
+                          f"{name} workflow must use the rootfs cache key")
+
+    def test_cache_keys_carry_the_include_list(self):
+        # The include lists live in the debootstrap lines; every package
+        # on each must appear in that arch's cache key so a package-set
+        # change produces a NEW key (the cache never serves a stale
+        # package set). live-boot-initramfs-tools is matched loosely:
+        # the key abbreviates it as live-boot (both packages share the
+        # prefix, and the key's purpose is invalidation, not prose).
+        for name, wf, marker in (
+            ("amd64", self.amd64, "nyrqis-rootfs-amd64-bookworm-v1"),
+            ("arm64", self.arm64, "nyrqis-rootfs-arm64-bookworm-v1"),
+        ):
+            m = re.search(r"--include=(\S+)", wf)
+            self.assertIsNotNone(m, f"{name} workflow lost its include list")
+            key = re.search(rf"{marker}\S*", wf)
+            self.assertIsNotNone(key, f"{name} workflow lost its cache key")
+            for pkg in m.group(1).split(","):
+                if pkg == "live-boot-initramfs-tools":
+                    continue  # key carries the shared live-boot prefix
+                # The key abbreviates python3-cffi -> cffi and
+                # python3-ply -> ply (the python3- prefix is shared by
+                # several entries; the full set is what invalidates).
+                probe = pkg.replace("python3-", "") if pkg.startswith(
+                    "python3-") else pkg
+                self.assertIn(probe, key.group(0),
+                              f"{name} cache key must carry {pkg} so a "
+                              "package-set change invalidates the cache")
+
+    def test_cache_hit_path_skips_bootstrap_but_keeps_the_top_up(self):
+        # The chroot apt top-up must run on BOTH paths (hit and miss):
+        # a cached rootfs could predate a builder-side top-up change.
+        for name, wf in (("amd64", self.amd64), ("arm64", self.arm64)):
+            hit = "cache HIT" in wf
+            self.assertTrue(hit, f"{name} workflow must detect a cache hit")
+            # The top-up lines must sit OUTSIDE the miss-only branch:
+            # structural check — exactly ONE chroot apt-get install
+            # block exists (shared by hit and miss paths), plus the
+            # runner's own non-chroot apt install lines.
+            chroot_tops = len(re.findall(
+                r"chroot \S+ apt-get install -y --no-install-recommends", wf))
+            self.assertEqual(
+                chroot_tops, 1,
+                f"{name} workflow: the chroot top-up must be a "
+                "single shared step, not duplicated per path")
+
+    def test_arm64_cache_survives_with_the_emulator_staged(self):
+        # The qemu-aarch64-static INSIDE the rootfs must exist on both
+        # paths — build-live-iso.sh's chroot steps need it, and a cached
+        # rootfs carries whatever it carried when saved.
+        self.assertIn("qemu-aarch64-static", self.arm64)
+        self.assertIn(
+            '|| sudo cp /usr/bin/qemu-aarch64-static', self.arm64,
+            "arm64 workflow must re-stage the emulator if the cached "
+            "rootfs lost it")
+
+
 if __name__ == "__main__":
     unittest.main()

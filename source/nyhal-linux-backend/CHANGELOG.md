@@ -5,6 +5,26 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.17] - 2026-09-16
+
+### Changed
+
+- **CI caches the debootstrap rootfs in both ISO workflows.** The
+  rootfs is a pure function of the include list + Debian suite, yet
+  every round re-paid ~15-20 min (amd64) or far longer (emulated
+  arm64) to rebuild the identical tree. `actions/cache` now stores it
+  keyed by the include list — a package-set change produces a new key
+  automatically — and the chroot apt top-up still runs on BOTH paths
+  (hit and miss) so a cached rootfs can never predate a builder-side
+  top-up change. The unused 7-day rootfs tarball artifact was retired;
+  the arm64 workflow re-stages `qemu-aarch64-static` if the cached
+  rootfs lacks it. Four contract tests pin the wiring (keys carry the
+  include list, one shared top-up, emulator presence).
+- **Session artifact hygiene:** the build/boot session left ~7 GB of
+  one-shot artifacts in /tmp (three rootfs workdirs, superseded and
+  bloated ISOs, smoke serial logs, hundreds of test-suite ephemeral
+  dirs); swept, keeping only the two final boot-verified ISOs.
+
 ## [0.29.16] - 2026-09-16
 
 ### Fixed
