@@ -1,10 +1,20 @@
 ---
 title: Next Development Session Plan
-version: 6.7.0
-date: 2026-09-15
+version: 6.8.0
+date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11d (2026-09-16) — BOTH ARCHITECTURES PROVEN ON REAL EMULATED MACHINES: the arm64 image completes its own boot smoke
+
+| Item | Status |
+|------|--------|
+| **The arm64 image was cross-built from scratch and booted** | ✅ Foreign debootstrap under qemu-user + binfmt, GRUB arm64-efi from the Debian .deb (CI's exact method), 354 MB ISO assembled clean through every builder gate (dpkg audit, probe parity, initrd, squashfs) — then booted under `qemu-system-aarch64 -M virt` (edk2 firmware, TCG emulation, QEMU 8.2 handles Debian's zboot vmlinuz) |
+| **The first arm64 boot exposed a real arm64-only bug — and the fix is proven on the machine** | ✅ The image booted, autologged in on ttyAMA0, then hung forever: the demo's smoke handshake matched only `/dev/ttyS0`, so the arm64 serial session took the non-serial branch and parked on `sleep infinity` before ANY marker printed (the amd64-first codebase never exercised this path). The handshake now matches both serial consoles; the SAME image then passed every marker (`READY`, `PONG=1`, `NYRQISCTL=1`, `PKGS=ok`) — the arm64 ISO can complete its own boot smoke |
+| **The builder is idempotent against a reused rootfs (the CI cache path)** | ✅ Two rebuild defects found on the reused-rootfs path: `useradd demo` aborted the build (user already exists), and `cp -a src dst` NESTED a duplicate backend tree — the image grew 354 MB → 815 MB in one rebuild. Both fixed; the rebuilt image is back at its correct 354 MB and passes the smoke again |
+| **amd64 reproducibility** | ✅ A fresh from-scratch amd64 ISO re-passed BOTH smokes — direct-kernel (READY/PONG/PKGS all green) and the GRUB-menu path (banner, daemon, PKGS) — on the same day as the arm64 proof |
+| Suite | ✅ Contract tests 35/35; boot_init 26/26; version gate 0.29.16 |
 
 ## Session 11c (2026-09-15) — THE ISO BUILT AND BOOTED END-TO-END: the user's boot report reproduced, root-caused, and disproven
 

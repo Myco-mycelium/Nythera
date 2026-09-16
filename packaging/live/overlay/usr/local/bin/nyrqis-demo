@@ -87,8 +87,9 @@ probe() {
 # a fixed sleep can guess) and never aborts early — READY must land even
 # when the daemon fails, so the driver's diagnosis is reliable.
 start_daemon() {
-    # Singleton daemon: both autologin consoles (tty1 + ttyS0) exec this
-    # script and can reach the daemon section nearly simultaneously —
+    # Singleton daemon: both autologin consoles (the GUI getty + the
+    # arch's serial getty) exec this script and can reach the daemon
+    # section nearly simultaneously —
     # flock decides one winner; the loser returns immediately and then
     # ADOPTS the winner's daemon via the ping that follows (a second
     # daemon on the same socket dies with EADDRINUSE and its failure is
@@ -107,7 +108,8 @@ start_daemon() {
     ) 9>/tmp/nyrqis-daemon.lock &
 }
 
-# The two autologin consoles (tty1 and ttyS0) both exec this script:
+# The two autologin consoles (GUI getty + the arch's serial getty) both
+# exec this script:
 # whoever wins starts the daemon, the loser must ADOPT it instead of
 # racing a second daemon for the same socket (the EADDRINUSE loser's
 # PONG=0 is what a reader of the log would see — CI round 18 exactly).
@@ -122,11 +124,17 @@ wait_for_daemon() {
 
 if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     # Only the SERIAL session runs the smoke handshake: the driver
-    # reads ttyS0, and tty1's VGA output is invisible to it. The other
-    # console waits for the shared daemon instead of racing a second
-    # one for the same socket (EADDRINUSE loser's PONG=0 — CI round 18).
+    # reads the serial line, and the other console's VGA output is
+    # invisible to it. The serial console is ARCH-SPECIFIC — ttyS0 on
+    # x86, ttyAMA0 on arm64 (QEMU 'virt' and most SBCs) — so both are
+    # matched here; /dev/console covers the ttyS0=console handoff case.
+    # The other console waits for the shared daemon instead of racing a
+    # second one for the same socket (EADDRINUSE loser's PONG=0 — CI
+    # round 18). Matching ONLY ttyS0 here (the original form) hung the
+    # arm64 smoke forever: its serial session fell into the * branch and
+    # parked on `sleep infinity` before printing any marker.
     case "$(tty 2>/dev/null)" in
-        /dev/ttyS0|/dev/console) : ;;
+        /dev/ttyS0|/dev/ttyAMA0|/dev/console) : ;;
         *)
             if ! wait_for_daemon; then start_daemon; wait_for_daemon; fi
             exec sleep infinity

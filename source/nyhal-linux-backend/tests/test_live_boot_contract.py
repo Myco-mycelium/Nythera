@@ -274,6 +274,51 @@ class TestArm64BootContract(unittest.TestCase):
                       "the builder must keep the serial autologin overlay")
 
 
+class TestArm64SmokeContract(unittest.TestCase):
+    """The arm64 image must complete the SAME boot smoke as amd64.
+
+    (Found the hard way: the first arm64 ISO booted, autologged in on
+    ttyAMA0, and then hung forever — the demo's smoke handshake matched
+    only /dev/ttyS0, so the serial session took the non-serial branch
+    and parked on `sleep infinity` before printing a single marker.)
+    """
+
+    def setUp(self):
+        self.demo = read(DEMO)
+        self.builder = read(BUILDER)
+
+    def test_smoke_handshake_matches_both_serial_consoles(self):
+        # The serial console is arch-specific: ttyS0 on x86, ttyAMA0 on
+        # arm64 (QEMU virt + most SBCs). Both must run the handshake.
+        m = re.search(r'case "\$\(tty 2>/dev/null\)" in\s*\n\s*([^)]*?)\)',
+                      self.demo)
+        self.assertIsNotNone(m, "demo must dispatch the smoke handshake on tty")
+        arms = m.group(1)
+        self.assertIn("/dev/ttyS0", arms, "amd64 serial console must run the handshake")
+        self.assertIn("/dev/ttyAMA0", arms,
+                      "arm64 serial console must run the handshake — without "
+                      "this arm64 boots hang before any marker")
+        self.assertIn("/dev/console", arms)
+
+    def test_builder_ships_the_ttyAMA0_autologin_drop_in(self):
+        self.assertIn("serial-getty@ttyAMA0.service.d", self.builder,
+                      "the arm64 image needs its own serial autologin drop-in")
+
+    def test_builder_opt_install_is_idempotent(self):
+        # cp -a src dst NESTS src inside dst when dst exists (reused
+        # --rootfs path): the image grew 354M -> 815M in one rebuild.
+        self.assertRegex(
+            self.builder,
+            r'rm -rf "\$OPT/nyhal-linux-backend"\s*\n\s*cp -a "\$BACKEND_DIR"',
+            "the /opt tree must be removed before cp -a so a reused rootfs "
+            "cannot nest a duplicate copy")
+
+    def test_demo_user_creation_is_idempotent(self):
+        self.assertIn("|| chroot \"$ROOTFS_SRC\" sh -c 'id -u demo", self.builder,
+                      "a reused rootfs already has the demo user; useradd "
+                      "must not abort the build")
+
+
 class TestMenuSmokeWiring(unittest.TestCase):
     """Driver + CI plumbing must agree, or the log upload is silent."""
 

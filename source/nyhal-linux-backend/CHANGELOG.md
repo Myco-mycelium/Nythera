@@ -5,6 +5,42 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.16] - 2026-09-16
+
+### Fixed
+
+- **The arm64 image can now complete its own boot smoke.** The first
+  arm64 ISO booted, autologged in on ttyAMA0, and then hung forever:
+  the demo's smoke handshake matched only `/dev/ttyS0` (plus
+  `/dev/console`), so on arm64 the serial session took the
+  non-serial branch and parked on `sleep infinity` before printing
+  any marker — a class of failure the smoke driver would report as a
+  timeout with no diagnosis. The handshake now matches both serial
+  consoles (`ttyS0` on x86, `ttyAMA0` on arm64 — the arch-specific
+  console the drivers already document). Proven on a real emulated
+  machine: the arm64 ISO now passes every marker (`READY`, `PONG=1`,
+  `NYRQISCTL=1`, `PKGS=ok`) under `qemu-system-aarch64 -M virt` with
+  TCG emulation.
+- **The builder is idempotent against a reused rootfs.** Two
+  non-idempotent steps aborted or bloated rebuilds on the `--rootfs`
+  path (the CI cache path): `useradd demo` failed on a rootfs that
+  already carried the user (aborting mid-build), and `cp -a src dst`
+  NESTED a duplicate backend tree inside the existing one — the arm64
+  image grew 354 MB → 815 MB in a single rebuild. The tree is now
+  removed before copying, the demo-user step tolerates an existing
+  user, and the rebuilt image is back at its correct 354 MB.
+
+### Added
+
+- **arm64 boot evidence and contract pinning:** a fresh from-scratch
+  arm64 cross-build (foreign debootstrap under qemu-user, GRUB
+  arm64-efi from the Debian .deb — CI's exact method) booted under
+  `qemu-system-aarch64` and passed the full direct-kernel smoke;
+  the amd64 rebuild re-passed both the direct and GRUB-menu smokes
+  (reproducibility). Four new contract tests pin the ttyAMA0
+  handshake, the ttyAMA0 autologin drop-in, and both idempotency
+  fixes (35 total).
+
 ## [0.29.15] - 2026-09-15
 
 ### Fixed

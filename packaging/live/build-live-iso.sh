@@ -211,6 +211,10 @@ fi
 log "installing the Nyrqis backend + desktop tree into /opt/nyrqis"
 OPT="$ROOTFS_SRC/opt/nyrqis"
 mkdir -p "$OPT"
+# Idempotent install: cp -a src dst NESTS src inside dst when dst already
+# exists, so a reused --rootfs grew the image by a full tree copy per
+# rebuild (354M -> 815M observed). Always start the tree fresh.
+rm -rf "$OPT/nyhal-linux-backend"
 cp -a "$BACKEND_DIR" "$OPT/nyhal-linux-backend"
 # The Rust FFI crates are optional at runtime (honest fallbacks); keep the
 # prebuilt cdylibs if they exist, drop the build caches to save image size.
@@ -326,9 +330,13 @@ else
     [[ -z "$(printf '%s' "$AUDIT_OUT" | tr -d '[:space:]')" ]] || \
         die "the rootfs has unconfigured packages:\n$AUDIT_OUT"
     # demo user (uid 1000, passwordless sudo, autologged on tty1). Prefer
-    # useradd; a hand-built rootfs tarball may lack shadow-utils.
+    # useradd; a hand-built rootfs tarball may lack shadow-utils. Idempotent:
+    # a REUSED rootfs (--rootfs, the CI cache path) already carries the
+    # demo user, and useradd's failure would abort the build mid-flight.
     if chroot "$ROOTFS_SRC" sh -c 'command -v useradd' >/dev/null 2>&1; then
-        chroot "$ROOTFS_SRC" useradd -m -u 1000 -s /bin/bash demo
+        chroot "$ROOTFS_SRC" useradd -m -u 1000 -s /bin/bash demo 2>/dev/null \
+            || chroot "$ROOTFS_SRC" sh -c 'id -u demo >/dev/null 2>&1' \
+            || die "demo user missing and useradd failed"
     else
         write_demo_user_records
     fi

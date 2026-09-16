@@ -55,10 +55,11 @@ import time
 # reached multi-user, and the autologin getty exec'd the session).
 MARKER_BANNER = "== Backend daemon =="
 # The daemon evidence on the serial line: the smoke handshake markers
-# are printed by the demo script on ttyS0 (both consoles autologin and
-# the handshake runs on the serial one under NYRQIS_BOOT_SMOKE; on a
-# plain menu boot WITHOUT the flag the "daemon serving" ok-line is the
-# equivalent evidence — accept either).
+# are printed by the demo script on the arch's serial console (ttyS0 on
+# x86, ttyAMA0 on arm64 — both consoles autologin and the handshake runs
+# on the serial one under NYRQIS_BOOT_SMOKE; on a plain menu boot WITHOUT
+# the flag the "daemon serving" ok-line is the equivalent evidence —
+# accept either).
 MARKER_PONG_OK = "NYRQIS_BOOT_SMOKE_PONG=1"
 MARKER_PONG_FAIL = "NYRQIS_BOOT_SMOKE_PONG=0"
 MARKER_DAEMON_OK = "daemon serving on"

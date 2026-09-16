@@ -461,6 +461,26 @@ cleanup trap deleted the rootfs even under `--keep-workdir`,
 destroying the post-mortem artifact. A fail-closed `dpkg --audit`
 gate now runs on every rootfs acquisition path before squash.
 
+### Live ISO: both architectures proven on real emulated machines (0.29.16)
+
+The **arm64** image was cross-built from scratch on this host
+(foreign debootstrap under qemu-user + binfmt, GRUB arm64-efi from
+the Debian .deb — CI's exact method) and **booted under
+`qemu-system-aarch64 -M virt`**: the first boot exposed an
+arm64-only bug — the demo's smoke handshake matched only `/dev/ttyS0`,
+so the ttyAMA0 serial session parked before printing any marker and
+the smoke hung forever. The handshake now matches both serial
+consoles, and the fixed image passes every marker (`READY`,
+`PONG=1`, `NYRQISCTL=1`, `PKGS=ok`) on the emulated machine. Two
+builder idempotency defects found on the reused-rootfs (CI cache)
+path were fixed in the same round: `useradd demo` aborted rebuilds,
+and `cp -a` nested a duplicate `/opt` tree (354 MB → 815 MB in one
+rebuild — back to 354 MB after the fix, re-smoked green). The amd64
+rebuild re-passed both the direct-kernel and GRUB-menu smokes the
+same day (reproducibility). Four new contract tests pin the ttyAMA0
+handshake, the ttyAMA0 autologin drop-in, and both idempotency
+fixes.
+
 ## Package Repository (0.28.0, NPS-026 §7)
 
 The repository half of the package system — `backend/package_repo.py`
