@@ -709,7 +709,18 @@ else
         -o "$OUTPUT" "$ISO_ROOT"
 fi
 
-log "ISO built: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
+# Size gate: the ISO must stay inside its expected footprint. The
+# observed envelope is ~354 MB (both arches; amd64 356M at most). This
+# is not cosmetic: the reused-rootfs /opt-nesting bug shipped an 815 MB
+# image with a duplicated backend tree, and only a rebuild's manual
+# size comparison caught it. A ceiling of 500 MB passes every known
+# good build with huge headroom and fails any silent tree duplication,
+# stray artifact, or accidental large-file inclusion.
+ISO_MB=$(( $(stat -c %s "$OUTPUT") / 1024 / 1024 ))
+if [ "$ISO_MB" -gt 500 ]; then
+    die "ISO is ${ISO_MB} MB — over the 500 MB ceiling. Known-good builds\n      land at ~354 MB; an oversized image almost always means a\n      duplicated tree or stray artifact sneaked into the squashfs.\n      Inspect the rootfs before forcing this gate."
+fi
+log "ISO built: $OUTPUT (${ISO_MB} MB)"
 case "$ARCH" in
     amd64) QEMU_HINT="qemu-system-x86_64 -m 4G -enable-kvm -cdrom $OUTPUT" ;;
     arm64) QEMU_HINT="qemu-system-aarch64 -M virt -m 2G -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd -cdrom $OUTPUT" ;;

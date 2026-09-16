@@ -5,6 +5,27 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.18] - 2026-09-16
+
+### Added
+
+- **ISO size gate in the builder:** the built image must stay under a
+  500 MB ceiling or the build fails. Known-good builds land at ~354 MB
+  (amd64 356M max observed), so the gate passes them with headroom —
+  while any silent tree duplication (the 815 MB /opt-nesting bug was
+  caught only by manual size comparison), stray artifact, or accidental
+  large-file inclusion now aborts at build time instead of surfacing as
+  a bloated release asset.
+- **The arm64 menu-path boot smoke is its own CI job.** Both smokes
+  previously ran as steps inside the single arm64 build job, so a
+  menu-path regression was indistinguishable from a build or
+  direct-smoke failure until someone read the logs. A
+  `menu-boot-arm64` job now downloads the built ISO and boots it
+  through UEFI GRUB exactly like the amd64 `menu-boot` job — a
+  bootloader regression fails one named job while the builder gates
+  and the direct smoke stay green, and neither path can mask the
+  other. Contract tests pin the job split for both architectures.
+
 ## [0.29.17] - 2026-09-16
 
 ### Changed

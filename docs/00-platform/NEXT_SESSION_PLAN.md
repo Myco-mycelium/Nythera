@@ -1,10 +1,18 @@
 ---
 title: Next Development Session Plan
-version: 6.9.0
+version: 6.10.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11f (2026-09-16) — BUILD-TIME SIZE GATE + PER-ARCH, PER-PATH JOB SPLIT: failures are diagnosable from the job list
+
+| Item | Status |
+|------|--------|
+| **ISO size gate in the builder** | ✅ The build dies if the ISO exceeds 500 MB (known-good ~354 MB, duplication produces 700+ MB) — the 815 MB /opt-nesting bug would now abort at build time instead of shipping a bloated image. Contract-pinned with envelope bounds (40→42 tests) |
+| **arm64 menu smoke is its own CI job** | ✅ `menu-boot-arm64` downloads the built ISO and boots through UEFI GRUB — mirrors the amd64 `menu-boot` split. A menu regression fails one named job while builder gates + direct smoke stay green; neither path masks the other. Contract tests pin the split for both arches (parsed-YAML checks, immune to header/trigger mentions) |
+| Suite | ✅ Contract 42/42; YAML validated; builder syntax OK |
 
 ## Session 11e (2026-09-16) — CI STOPS REBUILDING THE IDENTICAL ROOTFS: cache keyed by the include list, contract-pinned
 

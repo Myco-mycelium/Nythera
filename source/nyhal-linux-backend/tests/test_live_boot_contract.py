@@ -30,6 +30,8 @@ import os
 import re
 import unittest
 
+import yaml
+
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # backend dir is <repo>/source/nyhal-linux-backend — the repo root is
 # two levels up.
@@ -317,6 +319,99 @@ class TestArm64SmokeContract(unittest.TestCase):
         self.assertIn("|| chroot \"$ROOTFS_SRC\" sh -c 'id -u demo", self.builder,
                       "a reused rootfs already has the demo user; useradd "
                       "must not abort the build")
+
+
+class TestIsoSizeGate(unittest.TestCase):
+    """The builder must refuse to ship an oversized ISO.
+
+    (Found the hard way: the reused-rootfs /opt-nesting bug produced an
+    815 MB image with a duplicated backend tree — noticed only by
+    manual size comparison across rebuilds.)
+    """
+
+    def setUp(self):
+        self.builder = read(BUILDER)
+
+    def test_builder_gates_the_iso_size(self):
+        # The gate must run AFTER the image exists (stat on $OUTPUT)
+        # and fail the build (die) — not just warn.
+        self.assertRegex(
+            self.builder,
+            r"stat -c %s \"\$OUTPUT\"",
+            "the size gate must measure the built ISO")
+        m = re.search(
+            r"if \[ \"\$ISO_MB\" -gt (\d+) \]; then\s*\n\s*die", self.builder)
+        self.assertIsNotNone(
+            m, "the size gate must die (fail the build) over the ceiling")
+        ceiling = int(m.group(1))
+        # The envelope: known-good builds are ~354 MB (amd64 356M max
+        # observed). The ceiling must have headroom above that but stay
+        # low enough to catch tree duplication (~2x = 700+ MB).
+        self.assertGreaterEqual(ceiling, 450,
+                                "ceiling too tight — known-good builds are ~354 MB")
+        self.assertLessEqual(ceiling, 600,
+                             "ceiling too loose — duplication produces 700+ MB")
+
+
+class TestJobSplitContract(unittest.TestCase):
+    """Each boot path is its own CI job, per architecture — a one-path
+    or one-arch failure must be diagnosable from the job list alone,
+    and must not mask the other paths' results.
+    """
+
+    def setUp(self):
+        self.amd64 = read(LIVE_ISO_WF)
+        self.arm64 = read(LIVE_ISO_ARM64_WF)
+
+    def test_amd64_menu_smoke_is_its_own_job(self):
+        # amd64: build (+ direct smoke in-job) and menu-boot are separate
+        # jobs; the menu job downloads the ISO artifact, so a build
+        # failure cannot mask the menu verdict (it never runs).
+        d = yaml.safe_load(self.amd64)
+        jobs = d["jobs"]
+        self.assertIn("menu-boot", jobs,
+                      "amd64 workflow must keep a dedicated menu-boot job")
+        self.assertEqual(jobs["menu-boot"].get("needs"), "build",
+                         "amd64 menu-boot must depend on build")
+        self.assertIn("boot_smoke_menu.py", self.amd64)
+        # The direct smoke stays in the build job (separate path signal).
+        build_steps = [
+            (s.get("run") or "") if isinstance(s, dict) else ""
+            for s in jobs["build"]["steps"]
+        ]
+        self.assertTrue(any("tests/boot_smoke.py" in r for r in build_steps),
+                        "amd64 direct smoke must remain in the build job")
+        self.assertFalse(any("boot_smoke_menu.py" in r for r in build_steps),
+                         "amd64 menu smoke must live only in the menu-boot job")
+
+    def test_arm64_menu_smoke_is_its_own_job(self):
+        d = yaml.safe_load(self.arm64)
+        jobs = d["jobs"]
+        self.assertIn("menu-boot-arm64", jobs,
+                      "arm64 workflow must have a dedicated menu-boot job — "
+                      "both smokes inside one build job makes a menu-path "
+                      "regression undiagnosable from the job list")
+        self.assertEqual(jobs["menu-boot-arm64"].get("needs"), "build-arm64",
+                         "arm64 menu-boot must depend on build-arm64")
+        # The menu job must download the ISO artifact (it runs on a
+        # fresh runner, so it cannot rely on the build job's dist/).
+        menu_yaml = self.arm64.split("menu-boot-arm64:")[1]
+        self.assertIn("download-artifact", menu_yaml,
+                      "arm64 menu-boot runs on a fresh runner — it must "
+                      "download the built ISO")
+        self.assertIn("--arch arm64", menu_yaml,
+                      "arm64 menu-boot must boot the arm64 way")
+        # The build job keeps ONLY the direct smoke (the split's point):
+        # check the PARSED steps, not raw text (the file header and
+        # trigger paths legitimately mention the menu driver).
+        build_steps = [
+            (s.get("run") or "") if isinstance(s, dict) else ""
+            for s in jobs["build-arm64"]["steps"]
+        ]
+        self.assertTrue(any("tests/boot_smoke.py" in r for r in build_steps),
+                        "arm64 direct smoke must remain in the build job")
+        self.assertFalse(any("boot_smoke_menu.py" in r for r in build_steps),
+                         "arm64 menu smoke must MOVE out of the build job")
 
 
 class TestMenuSmokeWiring(unittest.TestCase):
