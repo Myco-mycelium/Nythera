@@ -1,10 +1,19 @@
 ---
 title: Next Development Session Plan
-version: 6.10.0
+version: 6.11.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11g (2026-09-16) — HANGS FAIL IN MINUTES: explicit budgets on all 33 CI jobs; size gate proven on a real build
+
+| Item | Status |
+|------|--------|
+| **Timeout audit across all five workflows** | ✅ 30 previously-unbudgeted jobs (30 of 32 in ci.yml, 2 in arm64-conformance, 2 in docs) relied on GitHub's 6-hour default; all now carry explicit `timeout-minutes` sized per job type. Contract tests pin universal coverage + the boot-critical envelopes (44 total) |
+| **The ISO size gate is proven on a real build** | ✅ Fresh from-scratch amd64 ISO: 355 MB, exit 0, every gate green — the gate passes known-good builds with headroom as designed |
+| **The pipeline is documented** | ✅ `packaging/live/README.md` now maps the four-job verdict table, the four fail-closed gates in order, the rootfs cache contract, arm64 specifics, and manual run instructions |
+| Suite | ✅ Python suite **8,854 passed, 29 skipped**; contract 44/44; all 5 YAMLs valid |
 
 ## Session 11f (2026-09-16) — BUILD-TIME SIZE GATE + PER-ARCH, PER-PATH JOB SPLIT: failures are diagnosable from the job list
 

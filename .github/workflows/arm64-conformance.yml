@@ -32,6 +32,7 @@ jobs:
   arm64-cross-compile:
     name: aarch64 Rust crate cross-compilation
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -61,6 +62,7 @@ jobs:
   arm64-table-conformance:
     name: aarch64 seccomp table conformance (x86_64)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

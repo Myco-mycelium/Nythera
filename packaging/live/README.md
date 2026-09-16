@@ -143,3 +143,48 @@ Run the boot smokes yourself (needs `qemu-system-x86`):
 python3 tests/boot_smoke.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 ```
+
+### Pipeline map (what runs in CI, and what each job proves)
+
+The ISO pipeline is four jobs across two workflows — `live-iso.yml`
+(amd64) and `live-iso-arm64.yml` (arm64). Each job is a named verdict:
+a failure is diagnosable from the job list alone, and no job can mask
+another.
+
+| Job | Proves | Can fail alone because |
+|-----|--------|------------------------|
+| `build` (amd64) / `build-arm64` | the image is complete and internally consistent | debootstrap/copy/top-up steps, the dpkg audit gate, the probe-parity gate, the byte-compile gate, or the ISO size gate refused it; the **direct** smoke (in-job) then proves live-boot + daemon health, immune to bootloader problems |
+| `menu-boot` / `menu-boot-arm64` | the **human** boot path works | GRUB menu, default entry, console wiring, or the UEFI firmware path broke — the direct smoke staying green isolates it to the bootloader |
+
+**Gates inside the build job (fail closed, in order):**
+
+1. **dpkg audit** — every rootfs acquisition path must have zero
+   unpacked-but-unconfigured packages.
+2. **Probe parity** — the boot probe's REQUIRED components
+   (`python3`, `zstandard`, `nacl`, `lz4`, `fusermount3`, nyrqisctl,
+   entry points) must be present in the image before it can ship.
+3. **Byte-compile** — the shipped tree must compile with the image's
+   own Python (bookworm = 3.11).
+4. **ISO size** — the assembled ISO must be ≤ 500 MB (known-good
+   ~354 MB). An oversized image almost always means a duplicated tree
+   or stray artifact sneaked into the squashfs.
+
+**Rootfs caching:** both workflows cache the debootstrap rootfs via
+`actions/cache`, keyed by the include list — a package-set change
+invalidates automatically. The chroot apt top-up runs on cache hits
+too, so a cached rootfs can never predate a top-up change. First run
+after a key change pays one bootstrap; routine rebuilds skip it.
+
+**arm64 specifics:** the rootfs is cross-built (foreign debootstrap
+under qemu-user + binfmt); GRUB arm64-efi modules come from the
+Debian `.deb` (not apt-installable on amd64 runners); the menu job
+boots through UEFI (`qemu-efi-aarch64`); the serial console is
+ttyAMA0 — both smoke drivers and the demo's smoke handshake handle
+it. Budget per arm64 boot: 900 s under TCG emulation.
+
+**Triggering a run manually:** Actions → live-iso (or live-iso-arm64)
+→ Run workflow. Every job carries an explicit `timeout-minutes`, so
+a hung boot fails the job instead of burning the 6-hour default.
+Serial logs upload as artifacts on failure (`if: always()`), and
+failures emit `::error::` annotations readable through the API
+without credentials.

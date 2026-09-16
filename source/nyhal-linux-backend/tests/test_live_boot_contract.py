@@ -414,6 +414,50 @@ class TestJobSplitContract(unittest.TestCase):
                          "arm64 menu smoke must MOVE out of the build job")
 
 
+class TestJobTimeoutContract(unittest.TestCase):
+    """Every job in every workflow carries an explicit timeout-minutes —
+    a hung boot (or crate build, or test run) fails its job instead of
+    burning GitHub's 6-hour default. Budgets must leave margin above
+    the slowest legitimate run but fail fast on a real hang.
+    """
+
+    WORKFLOWS = (
+        LIVE_ISO_WF,
+        LIVE_ISO_ARM64_WF,
+        os.path.join(_REPO_ROOT, ".github", "workflows", "ci.yml"),
+        os.path.join(_REPO_ROOT, ".github", "workflows",
+                     "arm64-conformance.yml"),
+        os.path.join(_REPO_ROOT, ".github", "workflows", "docs.yml"),
+    )
+
+    def test_every_job_has_a_timeout(self):
+        for path in self.WORKFLOWS:
+            d = yaml.safe_load(read(path))
+            name = os.path.basename(path)
+            missing = [job for job, spec in d["jobs"].items()
+                       if "timeout-minutes" not in spec]
+            self.assertEqual(
+                missing, [],
+                f"{name}: jobs without timeout-minutes fail after GitHub's "
+                "6-hour default — every job needs an explicit budget")
+
+    def test_iso_pipeline_timeouts_keep_margin_but_fail_fast(self):
+        # Envelope checks on the boot-critical budgets: generous enough
+        # for TCG-slowed runners, tight enough that a hang is cut in
+        # minutes-scale rather than hours.
+        d = yaml.safe_load(read(LIVE_ISO_ARM64_WF))
+        self.assertLessEqual(d["jobs"]["build-arm64"]["timeout-minutes"], 150,
+                             "arm64 build budget runaway")
+        self.assertGreaterEqual(d["jobs"]["build-arm64"]["timeout-minutes"], 90,
+                                "arm64 build budget too tight for TCG")
+        menu = d["jobs"]["menu-boot-arm64"]
+        self.assertLessEqual(menu["timeout-minutes"], 45,
+                             "arm64 menu-boot budget runaway")
+        amd = yaml.safe_load(read(LIVE_ISO_WF))
+        self.assertLessEqual(amd["jobs"]["menu-boot"]["timeout-minutes"], 45,
+                             "amd64 menu-boot budget runaway")
+
+
 class TestMenuSmokeWiring(unittest.TestCase):
     """Driver + CI plumbing must agree, or the log upload is silent."""
 

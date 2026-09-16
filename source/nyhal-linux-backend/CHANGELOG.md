@@ -5,6 +5,28 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.19] - 2026-09-16
+
+### Added
+
+- **Explicit job-level timeouts across all five workflows (33
+  jobs).** Previously only 3 jobs carried a budget; every other job
+  relied on GitHub's 6-hour default — a hung boot, crate build, or
+  test run burned the runner for hours. Budgets are sized per job
+  type with margin above the slowest legitimate run (e.g. arm64
+  cross-build 120 min, direct/menu boot smokes 15-30 min, small
+  crates 20 min, the full Python suite 75 min) so real hangs fail in
+  minutes-scale instead.
+- **The size gate is proven on a real build:** a fresh from-scratch
+  amd64 ISO built end-to-end with the gate active — 355 MB, exit 0,
+  every gate green.
+- **The live-iso pipeline is documented** in `packaging/live/README.md`:
+  the four-job verdict table (what each job proves, what fails it in
+  isolation), the four fail-closed build gates in order, the rootfs
+  cache contract, arm64 specifics, and how to trigger/read a run.
+  Contract tests pin universal timeout coverage and the boot-critical
+  budget envelopes (44 total).
+
 ## [0.29.18] - 2026-09-16
 
 ### Added

@@ -461,7 +461,15 @@ cleanup trap deleted the rootfs even under `--keep-workdir`,
 destroying the post-mortem artifact. A fail-closed `dpkg --audit`
 gate now runs on every rootfs acquisition path before squash.
 
-### Live ISO: CI caches the rootfs; both architectures proven on real emulated machines (0.29.16-0.29.18)
+### Live ISO: CI caches the rootfs; both architectures proven on real emulated machines (0.29.16-0.29.19)
+
+**Timeout audit (0.29.19):** every job in all five workflows carries
+ an explicit `timeout-minutes` (33 jobs; 30 previously relied on the
+ 6-hour GitHub default) — budgets sized per job type with margin for
+ TCG-slowed boots, contract-pinned. The ISO size gate was proven on a
+ fresh real build (355 MB, exit 0), and the pipeline is documented in
+ `packaging/live/README.md`.
+
 
 **Size gate + job split (0.29.18):** the builder dies on an ISO over
  500 MB (known-good ~354 MB; catches silent tree duplication — the
