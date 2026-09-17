@@ -100,7 +100,7 @@ def _emit_annotation(message):
     print(f"::error::boot smoke: {flat}", flush=True)
 
 
-def _emit_full_log(text, summary):
+def _emit_full_log(text, summary, qemu_stderr=""):
     """Chunk the WHOLE serial log into ::error:: annotations.
 
     The serial-log artifact needs auth to download and job logs are not
@@ -110,9 +110,20 @@ def _emit_full_log(text, summary):
     ~9 KB log, which has covered every real boot so far. The first
     chunk is the diagnosis summary, the rest are numbered log segments
     so the boot narrative can be reconstructed in order.
+
+    A whitespace-only serial log (qemu died before the guest wrote
+    anything readable) compacts to the empty string — in that case the
+    QEMU STDERR takes its place, because an empty ``log[1/1] ``
+    annotation is the sound of one round of CI burning with zero
+    information (2026-09-17, arm64 round 12).
     """
     _emit_annotation(summary)
     compact = " ".join(text.split())
+    if not compact and qemu_stderr:
+        compact = "[qemu stderr] " + " ".join(qemu_stderr.split())
+    if not compact:
+        compact = "(serial log empty AND qemu stderr empty — qemu died "\
+                  "before the guest or the emulator wrote anything)"
     chunk_size = 950
     max_chunks = 9  # 1 summary + 9 log chunks = 10 error annotations
     total = len(compact)
@@ -128,6 +139,15 @@ def _emit_full_log(text, summary):
     for i in range(n):
         piece = compact[start + i * chunk_size:start + (i + 1) * chunk_size]
         print(f"::error::boot smoke: log[{i + 1}/{n}] {piece}", flush=True)
+
+
+def _read_tail(path, n=2000):
+    """Last n characters of a file, or "" (qemu may not have started)."""
+    try:
+        with open(path, "r", errors="replace") as fh:
+            return fh.read()[-n:]
+    except FileNotFoundError:
+        return ""
 
 
 def _extract_live_kernel(iso, dest_dir):
@@ -175,6 +195,10 @@ def _extract_live_kernel(iso, dest_dir):
 def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
     tmp = tempfile.mkdtemp(prefix="nyrqis-boot-smoke-")
     serial_log = os.path.join(tmp, "serial.log")
+    # qemu's stderr is where early death explains itself (bad option,
+    # unsupported machine, port collision). Discarding it made every
+    # instant-exit round undiagnosable from CI.
+    qemu_stderr_log = os.path.join(tmp, "qemu-stderr.log")
     proc = None
     try:
         try:
@@ -204,9 +228,10 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             "-monitor", "none",
         ]
         print(f"[boot-smoke] qemu: {' '.join(cmd)}", flush=True)
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL)
+        with open(qemu_stderr_log, "wb") as qerr:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=qerr,
+                stdin=subprocess.DEVNULL)
 
         deadline = time.monotonic() + timeout_s
         saw_ready = saw_pong_ok = saw_pong_fail = False
@@ -238,7 +263,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                       "— failing fast (no marker can arrive)")
                 break
             if proc.poll() is not None:
-                print(f"[boot-smoke] qemu exited early: rc={proc.returncode}")
+                qerr_tail = _read_tail(qemu_stderr_log, 600)
+                print(f"[boot-smoke] qemu exited early: rc={proc.returncode} "
+                      f"stderr: {qerr_tail.strip() or '(empty)'}", flush=True)
                 break
             time.sleep(2.0)
 
@@ -263,13 +290,19 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 tail = fh.read()[-2000:]
         except FileNotFoundError:
             tail = "(no serial log written)"
+        qerr_tail = _read_tail(qemu_stderr_log, 2000)
         if keep_logs:
             print(f"[boot-smoke] serial log kept: {serial_log}")
+            print(f"[boot-smoke] qemu stderr kept: {qemu_stderr_log}")
         # ALWAYS print the tail on failure — with --keep-logs (CI) the
         # log path is useless without the run's log to read it from.
         if not (saw_ready and saw_pong_ok):
             # Cheap classification so the job log names the failure mode.
             lowered = tail.lower()
+            if qerr_tail.strip():
+                print("[boot-smoke] diagnosis: qemu itself reported:")
+                print("[boot-smoke]   " + "\n[boot-smoke]   ".join(
+                    qerr_tail.strip().splitlines()[-5:]))
             if "kernel panic" in lowered or "run-init" in lowered:
                 print("[boot-smoke] diagnosis: the KERNEL panicked — "
                       "initrd/medium mismatch (live-boot could not set "
@@ -285,7 +318,13 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 print("[boot-smoke] diagnosis: session ran but no PONG "
                       "line — the smoke branch's ping loop was cut off")
             print("[boot-smoke] ---- serial log tail ----")
-            print(tail)
+            # A whitespace-only tail prints as raw \r soup and reads as
+            # nothing — show its repr so even "empty but 190 bytes" is
+            # itself evidence.
+            if not tail.strip():
+                print(repr(tail) if tail else "(empty)")
+            else:
+                print(tail)
             print("[boot-smoke] -----------------------------")
             # And surface it as check annotations: that is the one
             # failure channel readable via the API without credentials.
@@ -296,7 +335,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 f"markers ready={saw_ready} pong_ok={saw_pong_ok} "
                 f"pong_fail={saw_pong_fail}; "
                 f"dead_pattern={dead_hit!r}; "
-                f"full serial log follows in chunks")
+                f"qemu_rc={proc.returncode if proc else 'n/a'}; "
+                f"full serial log follows in chunks",
+                qemu_stderr=qerr_tail)
 
         if saw_ready and saw_pong_ok and saw_pkgs_ok:
             print("[boot-smoke] PASS: the demo session reached the serial "

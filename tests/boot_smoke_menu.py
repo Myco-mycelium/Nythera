@@ -93,10 +93,19 @@ def _emit_annotation(message):
     print(f"::error::menu boot smoke: {flat}", flush=True)
 
 
-def _emit_full_log(text, summary):
+def _emit_full_log(text, summary, qemu_stderr=""):
     """Chunk the whole serial log into ::error:: annotations."""
     _emit_annotation(summary)
     compact = " ".join(text.split())
+    # A whitespace-only serial log (qemu died before the guest wrote
+    # anything readable) compacts to "" — an empty log[1/1] annotation
+    # carries zero information; the qemu stderr does not (2026-09-17,
+    # arm64 round 12).
+    if not compact and qemu_stderr:
+        compact = "[qemu stderr] " + " ".join(qemu_stderr.split())
+    if not compact:
+        compact = "(serial log empty AND qemu stderr empty — qemu died "\
+                  "before the guest or the emulator wrote anything)"
     chunk_size = 950
     max_chunks = 9
     total = len(compact)
@@ -126,9 +135,21 @@ def _find_uefi_firmware(arch):
     return None
 
 
+def _read_tail(path, n=2000):
+    """Last n characters of a file, or "" (qemu may not have started)."""
+    try:
+        with open(path, "r", errors="replace") as fh:
+            return fh.read()[-n:]
+    except FileNotFoundError:
+        return ""
+
+
 def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
     tmp = tempfile.mkdtemp(prefix="nyrqis-boot-smoke-menu-")
     serial_log = os.path.join(tmp, "serial.log")
+    # qemu's stderr explains early death (bad option, firmware missing,
+    # port collision) — discarding it made instant-exit rounds opaque.
+    qemu_stderr_log = os.path.join(tmp, "qemu-stderr.log")
     proc = None
     try:
         # NO -kernel/-initrd/-append: the ISO's own boot image must run,
@@ -160,7 +181,7 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             print(f"[menu-boot-smoke] UEFI firmware: {firmware}", flush=True)
         print(f"[menu-boot-smoke] qemu: {' '.join(cmd)}", flush=True)
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cmd, stdout=subprocess.DEVNULL, stderr=open(qemu_stderr_log, "wb"),
             stdin=subprocess.DEVNULL)
 
         deadline = time.monotonic() + timeout_s
@@ -199,7 +220,9 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 break
             if proc.poll() is not None:
                 print(f"[menu-boot-smoke] qemu exited early: "
-                      f"rc={proc.returncode}")
+                      f"rc={proc.returncode} stderr: "
+                      f"{_read_tail(qemu_stderr_log, 600).strip() or '(empty)'}",
+                      flush=True)
                 break
             time.sleep(2.0)
 
@@ -219,18 +242,29 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
                 tail = fh.read()[-2000:]
         except FileNotFoundError:
             tail = "(no serial log written)"
+        qerr_tail = _read_tail(qemu_stderr_log, 2000)
         if keep_logs:
             print(f"[menu-boot-smoke] serial log kept: {serial_log}")
+            print(f"[menu-boot-smoke] qemu stderr kept: {qemu_stderr_log}")
 
         if not (saw_banner and saw_daemon):
             _emit_full_log(
                 text,
                 f"menu-path markers banner={saw_banner} daemon={saw_daemon} "
                 f"pong_fail={saw_pong_fail}; dead_pattern={dead_hit!r}; "
-                f"full serial log follows in chunks")
+                f"qemu_rc={proc.returncode if proc else 'n/a'}; "
+                f"full serial log follows in chunks",
+                qemu_stderr=qerr_tail)
             print("[menu-boot-smoke] ---- serial log tail ----")
-            print(tail)
+            if not tail.strip():
+                print(repr(tail) if tail else "(empty)")
+            else:
+                print(tail)
             print("[menu-boot-smoke] -----------------------------")
+            if qerr_tail.strip():
+                print("[menu-boot-smoke] diagnosis: qemu itself reported:")
+                print("[menu-boot-smoke]   " + "\n[menu-boot-smoke]   ".join(
+                    qerr_tail.strip().splitlines()[-5:]))
 
         if saw_banner and saw_daemon and saw_pkgs_bad:
             print("[menu-boot-smoke] FAIL: the session ran but the probe's "
