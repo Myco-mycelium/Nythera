@@ -22,6 +22,8 @@ on:
       - ".github/workflows/live-iso-arm64.yml"
       - "tests/boot_smoke.py"
       - "tests/boot_smoke_menu.py"
+    tags:
+      - "v*"                    # release tags: menu-boot-arm64's release step is gated on refs/tags/v*, so WITHOUT this trigger the arm64 ISO could never reach a release (the amd64 workflow had exactly this block; found when v0.29.25 shipped with amd64 runs only)
 
 permissions:
   contents: write   # release upload needs contents:write on tag builds

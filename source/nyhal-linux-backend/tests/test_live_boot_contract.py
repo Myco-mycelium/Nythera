@@ -234,6 +234,25 @@ class TestArm64BootContract(unittest.TestCase):
         self.assertIn("/tmp/nyrqis-boot-smoke-", self.wf)
         self.assertIn("/tmp/nyrqis-boot-smoke-menu-", self.wf)
 
+    def test_arm64_workflow_triggers_on_release_tags(self):
+        # menu-boot-arm64's release step is gated on
+        # refs/tags/v* — without a tags: push trigger the step can
+        # NEVER fire, and arm64 releases silently ship without their
+        # ISO (found when v0.29.25 got amd64 tag runs only; the amd64
+        # workflow carries the same block). Branch push + tag push
+        # must BOTH be possible on this workflow.
+        d = yaml.safe_load(self.wf)
+        push = d[True]["push"]  # PyYAML parses a bare `on:` as boolean True
+        self.assertIn("branches", push, "arm64 workflow must keep its main-branch trigger")
+        self.assertIn("tags", push,
+                      "arm64 workflow must ALSO trigger on tag pushes — its "
+                      "menu-boot-arm64 release step is gated on refs/tags/v*, "
+                      "so without a tags: trigger the arm64 ISO can never "
+                      "reach a GitHub release")
+        self.assertTrue(
+            any(str(t).startswith("v") for t in push["tags"]),
+            "the tags trigger must cover v* release tags")
+
     def test_arm64_workflow_supplies_the_grub_module_tree(self):
         # grub-efi-arm64-bin is not in the amd64 apt index (arm64-built
         # archives only — round 1 of CI proved it); the workflow must
