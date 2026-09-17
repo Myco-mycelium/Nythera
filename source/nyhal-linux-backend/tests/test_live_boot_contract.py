@@ -889,8 +889,9 @@ class TestSkipRegister(unittest.TestCase):
         declared_skips = int(m.group(1))
         declared_passing = int(m.group(2).replace(",", ""))
         # The known-environmental skip set (this host): 2 Vulkan +
-        # 6 Wayland-crate + 1 SCM_RIGHTS sandbox.
-        KNOWN_ENV_SKIPS = 9
+        # 1 SCM_RIGHTS sandbox. The 6 wayland-crate entries activate
+        # only when the cdylib is absent (0.29.23 builds it here).
+        KNOWN_ENV_SKIPS = 3
         self.assertEqual(declared_skips, KNOWN_ENV_SKIPS,
                          "register header out of date — re-run the suite "
                          "with -rs and update TEST_SKIP_REGISTER.md")

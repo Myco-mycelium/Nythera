@@ -5,6 +5,32 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.23] - 2026-09-16
+
+### Changed
+
+- **Skip purge final state: 3 skips** (from 35 pre-triage). Building
+  the wayland cdylib locally (`cargo build --release` in
+  ``rust/wayland``) un-skipped all 6 ``test_wayland_multimonitor``
+  tests; the remaining 3 are the two Vulkan-hardware tests and the
+  SCM_RIGHTS sandbox one — all environmental, all in the register.
+
+### Added
+
+- **FFI byref audit (all crates):** every ctypes ``byref()`` call site
+  audited across ui/, backend/, fuse/, ipc/ — all pass standalone
+  ctypes instances or whole Structures; the DRM ``get_connector_info``
+  fixed in 0.29.22 was the only field-byref instance. The wayland
+  ``get_output_info`` passes a whole struct by reference (correct).
+
+### Verified
+
+- **Release-upload race harness:** the hardened create→re-view logic
+  from both workflow steps was exercised concurrently against a fake
+  ``gh`` with real ``already_exists`` semantics, in both race orders
+  (amd64-loses and arm64-loses) — both jobs exit 0 and both ISOs
+  upload in every round.
+
 ## [0.29.22] - 2026-09-16
 
 ### Fixed

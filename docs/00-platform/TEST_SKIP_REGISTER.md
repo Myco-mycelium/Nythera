@@ -1,6 +1,6 @@
 ---
 title: Test Skip Register
-version: 1.1.0
+version: 1.2.0
 date: 2026-09-16
 ---
 
@@ -15,13 +15,15 @@ import-failure skip that masks a missing API is a bug: the
 implementation must meet its spec suite (the 0.28.0/0.29.21
 convention), and the skip must be deleted.
 
-Status after 0.29.22: **9 skips** in a suite of 8,983 passing tests
-(0.1%). Every remaining skip is environmental; keep this register
-honest when anything changes — the contract test
+Status after 0.29.23: **3 skips** in a suite of 8,992 passing tests
+(<0.1%). Building the wayland cdylib locally un-skipped the six
+wayland-crate entries (they remain documented below for hosts without
+the artifact). Every remaining skip is environmental; keep this
+register honest when anything changes — the contract test
 `TestSkipRegister` re-reads it, re-scans the suite for dead
 import-failure skips, and fails on drift.
 
-## The register (complete — 9 entries)
+## The register (current — 3 entries; 9 when the wayland cdylib is absent)
 
 | # | Test | Category | Reason | Owner |
 |---|---|---|---|---|
