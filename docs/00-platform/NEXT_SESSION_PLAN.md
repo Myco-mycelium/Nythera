@@ -1,10 +1,28 @@
 ---
 title: Next Development Session Plan
-version: 6.14.0
+version: 6.15.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11k (2026-09-16) — THE LESSONS GET ENFORCERS: the byref rule is scanned, the wayland crate is a CI gate, the race harness is a tool
+
+**Byref rule (0.29.24):** ``test_ffi_byref_contract`` statically scans
+every FFI wrapper module for ``ctypes.byref(struct.field)`` — the
+pattern behind the 0.29.22 DRM crash — and fails listing call sites.
+The DRM regression is separately pinned.
+
+**Wayland crate in CI:** ``rust-wayland-conformance`` builds the
+cdylib and forces the 18 multimonitor tests through it as a required
+gate — the crate path can never again go unexercised the way DRM's
+did.
+
+**Race harness as a tool:** ``scripts/test_release_race.sh`` +
+``fake_gh.sh`` permanently verify the concurrent-create release path
+offline (both race orders, both jobs exit 0, both ISOs upload);
+documented in ``packaging/live/README.md`` with a run-after-any-
+upload-change rule.
 
 ## Session 11j (2026-09-16) — THE SKIP PURGE COMPLETES: 35 → 9; a real DRM bug falls out of asserting the crate path; the register is pinned
 

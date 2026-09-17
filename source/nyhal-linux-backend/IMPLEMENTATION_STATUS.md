@@ -505,6 +505,16 @@ same day (reproducibility). Four new contract tests pin the ttyAMA0
 handshake, the ttyAMA0 autologin drop-in, and both idempotency
 fixes.
 
+### byref rule pinned; wayland crate gated in CI; race harness kept (0.29.24)
+
+The no-field-byref FFI rule is enforced by ``test_ffi_byref_contract``
+(static scan over every FFI wrapper module for
+``byref(struct.field)``). The wayland cdylib's 18 multimonitor tests
+run as the ``rust-wayland-conformance`` required CI job. The
+release-race harness (``scripts/test_release_race.sh``) permanently
+guards the concurrent-create path of both ISO workflows' release
+uploads.
+
 ### Skip purge completes; DRM FFI bug found by asserting the crate path (0.29.22)
 
 Skips 19 → 9 (from 35 pre-triage): the DRM device-ops tests now

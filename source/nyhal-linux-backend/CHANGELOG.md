@@ -5,6 +5,26 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.24] - 2026-09-16
+
+### Added
+
+- **byref-rule contract test** (`tests/test_ffi_byref_contract.py`,
+  3 tests): statically scans every FFI wrapper module for
+  ``ctypes.byref(struct.field)`` — the latent crate-path crash pattern
+  behind the 0.29.22 DRM bug — plus a regression pin on the DRM
+  out-params and an FFI-modules-manifest check.
+- **Release-race harness** (``scripts/test_release_race.sh`` +
+  ``scripts/fake_gh.sh``): runs both ISO workflows' upload-step logic
+  concurrently against a fake ``gh`` with real ``already_exists``
+  semantics, in both race orders; exit 0 proves the release path is
+  race-safe. Documented in ``packaging/live/README.md``; run after any
+  change to the upload steps.
+- **Wayland FFI conformance job** (``rust-wayland-conformance`` in
+  ci.yml): builds the wayland cdylib and forces the 18 multimonitor
+  tests through it — the crate path is now a required CI gate instead
+  of an accident of a local build.
+
 ## [0.29.23] - 2026-09-16
 
 ### Changed

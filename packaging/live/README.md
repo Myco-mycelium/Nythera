@@ -144,6 +144,28 @@ python3 tests/boot_smoke.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 ```
 
+### Release uploads & the race harness
+
+On a `v*` tag push, the `menu-boot` (amd64) and `menu-boot-arm64`
+jobs each attach their ISO to the GitHub release. Both jobs race to
+create the release page; the hardened step tolerates losing the race
+(create fails with "already exists" → re-view → upload proceeds).
+That logic is verified offline — no GitHub access required — by the
+race harness, which runs both jobs' exact step logic concurrently
+against a fake `gh` with real concurrency semantics, in both race
+orders:
+
+```bash
+scripts/test_release_race.sh
+# → round[amd64-loses]: amd64_rc=0 arm64_rc=0 assets_uploaded=2/2
+# → round[arm64-loses]: amd64_rc=0 arm64_rc=0 assets_uploaded=2/2
+# → RACE-HARNESS: ALL PASS
+```
+
+Run it after ANY change to the release-upload steps (or when touching
+`scripts/fake_gh.sh`, which models `gh`'s view/create/upload
+behavior). Exit 0 = race-safe.
+
 ### Pipeline map (what runs in CI, and what each job proves)
 
 The ISO pipeline is four jobs across two workflows — `live-iso.yml`
