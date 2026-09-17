@@ -216,8 +216,21 @@ mkdir -p "$OPT"
 # rebuild (354M -> 815M observed). Always start the tree fresh.
 rm -rf "$OPT/nyhal-linux-backend"
 cp -a "$BACKEND_DIR" "$OPT/nyhal-linux-backend"
-# The Rust FFI crates are optional at runtime (honest fallbacks); keep the
-# prebuilt cdylibs if they exist, drop the build caches to save image size.
+# The Rust FFI artifacts are optional at runtime (honest fallbacks) but
+# load-bearing when present — the boot demo now PROVES the FFI surface
+# (NYRQIS_BOOT_SMOKE_CRATE). Keep the compiled cdylibs + launcher-init:
+# copy them out of the target dirs, then drop the build caches (the
+# target dirs themselves carry tens of MB of intermediate objects).
+cdies=0
+for t in "$BACKEND_DIR"/rust/*/target/release; do
+    for a in "$t"/libnyrqis_*.so "$t"/nyrqis-launcher; do
+        if [ -f "$a" ]; then
+            install -D "$a" "$OPT/nyhal-linux-backend/rust/.cdylibs/$(basename "$a")"
+            cdies=$((cdies+1))
+        fi
+    done
+done
+log "kept $cdies Rust FFI artifact(s) in rust/.cdylibs"
 rm -rf "$OPT/nyhal-linux-backend"/{.git,__pycache__,rust/*/target,.pytest_cache}
 find "$OPT" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 

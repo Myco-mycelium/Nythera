@@ -21,6 +21,16 @@ BACKEND="$OPT/nyrqis_backend.py"
 CTL="$OPT/nyrqisctl.py"
 SOCK=/tmp/nyrqis-status.sock
 LOG=/tmp/nyrqis-daemon.log
+# Rust cdylibs install location (the build keeps compiled artifacts in
+# rust/.cdylibs). Exported so every loader's bare-name fallback via
+# LD_LIBRARY_PATH finds them without a wrapper wrapper per module.
+export NYRQIS_CDYLIB_DIR="$OPT/rust/.cdylibs"
+if [ -d "$NYRQIS_CDYLIB_DIR" ]; then
+    case ":$LD_LIBRARY_PATH:" in
+        *":$NYRQIS_CDYLIB_DIR:"*) : ;;
+        *) export LD_LIBRARY_PATH="$NYRQIS_CDYLIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+fi
 
 G=$'\e[1;32m'; B=$'\e[1;34m'; Y=$'\e[1;33m'; R=$'\e[1;31m'; D=$'\e[2m'; N=$'\e[0m'
 
@@ -30,6 +40,23 @@ section() { printf '\n%s== %s ==%s\n' "$B" "$*" "$N"; }
 ok()      { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
 warn()    { printf '  %s•%s %s\n' "$Y" "$N" "$*"; }
 missing() { printf '  %s✗ MISSING:%s %s\n' "$R" "$N" "$*"; }
+
+# FFI marker for the boot-smoke serial log: counts the shipped Rust
+# cdylibs and how many load through ctypes. Informational (crates are
+# optional at runtime with honest stub fallbacks), but a sudden 0
+# explains a degraded boot at a glance.
+crate_marker() {
+    local shipped loaded so
+    shipped=$(ls "$NYRQIS_CDYLIB_DIR"/libnyrqis_*.so 2>/dev/null | wc -l)
+    loaded=0
+    if [ "$shipped" -gt 0 ]; then
+        for so in "$NYRQIS_CDYLIB_DIR"/libnyrqis_*.so; do
+            python3 -c "import ctypes,sys; ctypes.CDLL(sys.argv[1])" \
+                "$so" >/dev/null 2>&1 && loaded=$((loaded+1))
+        done
+    fi
+    echo "NYRQIS_BOOT_SMOKE_CRATE=$loaded/$shipped"
+}
 
 # Package-parity marker for the boot-smoke drivers: the probe's
 # REQUIRED package class — the components whose absence it reports as
@@ -170,6 +197,11 @@ if grep -q 'NYRQIS_BOOT_SMOKE=1' /proc/cmdline 2>/dev/null; then
     # BEFORE the ready marker (drivers may stop reading at READY): the
     # probe's required-package class must be complete in the image.
     pkg_marker
+    # FFI honesty marker: report how many Rust cdylibs shipped and
+    # actually dlopen. Optional at runtime (honest fallbacks), so this
+    # is INFORMATIONAL — never a pass/fail gate (a crate that fails to
+    # load degrades to the stub path by design).
+    crate_marker
     echo "NYRQIS_BOOT_SMOKE_READY=1"
     exec sleep infinity
 fi

@@ -897,6 +897,52 @@ class TestSkipRegister(unittest.TestCase):
                          "with -rs and update TEST_SKIP_REGISTER.md")
         self.assertGreater(declared_passing, 8900)
 
+class TestFfiArtifactsInImage(unittest.TestCase):
+    """ADR-0027 supporting rule — boot-time FFI honesty: the image
+    ships its compiled cdylibs (rust/.cdylibs, not the target dirs),
+    the demo exports their location via LD_LIBRARY_PATH, and the boot
+    smoke reports an informational CRATE marker (loaded/shipped).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.builder = open(BUILDER).read()
+        cls.demo = open(DEMO).read()
+
+    def test_builder_keeps_cdylibs_and_drops_target_dirs(self):
+        # The artifacts land in rust/.cdylibs BEFORE the target dirs
+        # are pruned (ordering matters — the pruner must not be able to
+        # delete the kept artifacts). Indexing from the copy SITE (the
+        # .cdylibs install line), not the comment that mentions it.
+        self.assertIn("rust/.cdylibs", self.builder)
+        install_line = self.builder.index(
+            '.cdylibs/$(basename "$a")')
+        target_prune = self.builder.index("rust/*/target,.pytest_cache")
+        self.assertLess(
+            install_line, target_prune,
+            "builder must copy the cdylibs out BEFORE pruning target dirs")
+        self.assertIn("libnyrqis_*.so", self.builder,
+                      "must collect the compiled cdylibs")
+        self.assertIn("nyrqis-launcher", self.builder,
+                      "must keep the Rust launcher-init binary")
+
+    def test_demo_exports_the_cdylib_dir(self):
+        self.assertIn("NYRQIS_CDYLIB_DIR", self.demo)
+        self.assertIn("LD_LIBRARY_PATH", self.demo,
+                      "demo must export the cdylib dir on LD_LIBRARY_PATH")
+
+    def test_boot_smoke_reports_a_crate_marker(self):
+        self.assertIn("NYRQIS_BOOT_SMOKE_CRATE=", self.demo)
+        # Informational, not a pass/fail gate: crates are optional at
+        # runtime (honest stub fallbacks) — the marker explains, the
+        # drivers must not fail on it.
+        for driver in (DIRECT_SMOKE, MENU_SMOKE):
+            text = open(driver).read()
+            self.assertNotIn(
+                "NYRQIS_BOOT_SMOKE_CRATE", text,
+                f"{os.path.basename(driver)}: CRATE is informational — "
+                "the drivers must not gate on it")
+
 
 if __name__ == "__main__":
     unittest.main()

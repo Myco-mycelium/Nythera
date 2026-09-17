@@ -62,10 +62,56 @@ run_round() { # amd64_delay arm64_delay label
   [ "$assets" = "2" ] || { FAIL=1; echo "  !! assets wrong"; }
 }
 
+# Re-run round: the release ALREADY exists (a previous workflow run
+# uploaded it). Both jobs run the SAME full workflow body as rounds 1-2
+# (view → create-or-skip → --clobber upload): view succeeds, create is
+# skipped cleanly, and the upload clobbers the previous run's assets.
+# The "clobber" variant runs both jobs CONCURRENTLY over the same tag.
+run_rerun_round() { # [clobber]
+  local mode="${1:-sequential}"
+  local s; s="$(mktemp -d /tmp/fake-gh-state-XXXXXX)"
+  mkdir -p "$s/assets"
+  touch "$s/release-exists"
+  # Seed with the names the uploads produce: job_body writes dist-$iso,
+  # and the fake keys assets by basename — so the previous run's assets
+  # are dist-nyrqis-live.iso / dist-nyrqis-live-arm64.iso.
+  echo previous-amd64 > "$s/assets/dist-nyrqis-live.iso"
+  echo previous-arm64 > "$s/assets/dist-nyrqis-live-arm64.iso"
+  local r1=0 r2=0 a_ok=1
+  if [ "$mode" = clobber ]; then
+    FAKE_GH_STATE="$s" job_body nyrqis-live.iso 0 \
+      >"$WORK/log-rerun-clobber-amd64.txt" 2>&1 & local p1=$!
+    FAKE_GH_STATE="$s" job_body nyrqis-live-arm64.iso 0 \
+      >"$WORK/log-rerun-clobber-arm64.txt" 2>&1 & local p2=$!
+    wait "$p1"; r1=$?
+    wait "$p2"; r2=$?
+  else
+    FAKE_GH_STATE="$s" job_body nyrqis-live.iso 0 \
+      >"$WORK/log-rerun-sequential.txt" 2>&1; r1=$?
+    FAKE_GH_STATE="$s" job_body nyrqis-live-arm64.iso 0 \
+      >>"$WORK/log-rerun-sequential.txt" 2>&1; r2=$?
+  fi
+  # Replacement proof: the asset CONTENT must be this run's upload, not
+  # the seeded previous-* text (a skipped clobber would leave the seed).
+  grep -q content-of-nyrqis-live.iso "$s/assets/dist-nyrqis-live.iso" 2>/dev/null || a_ok=0
+  grep -q content-of-nyrqis-live-arm64.iso "$s/assets/dist-nyrqis-live-arm64.iso" 2>/dev/null || a_ok=0
+  echo "round[rerun-$mode]: amd64_rc=$r1 arm64_rc=$r2 assets_replaced=$a_ok"
+  [ "$r1" = "0" ] && [ "$r2" = "0" ] || { FAIL=1; echo "  !! a job failed"; }
+  [ "$a_ok" = "1" ] || { FAIL=1; echo "  !! assets not replaced"; }
+  rm -rf "$s"
+}
+
 # Round 1: amd64 paces (loses), arm64 creates immediately (wins).
 run_round 0.5 0 "amd64-loses"
 # Round 2: the mirror.
 run_round 0 0.5 "arm64-loses"
+# Round 3: re-run — the release ALREADY exists (a previous workflow run
+# uploaded it). Both jobs must skip create cleanly (view succeeds) and
+# --clobber-upload over the existing assets.
+run_rerun_round
+# Round 4: re-run WITH concurrent clobber — both jobs upload the same
+# tag simultaneously over existing assets; neither may fail.
+run_rerun_round "clobber"
 
 echo "--- job logs ---"; tail -n +1 "$WORK"/log-*.txt
 if [ "$FAIL" = "0" ]; then
