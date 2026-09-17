@@ -882,12 +882,34 @@ class TestReleaseUploadContract(unittest.TestCase):
                 step.get("if"), "startsWith(github.ref, 'refs/tags/v')",
                 f"{job}: release upload must run on v* tags only")
             run = step["run"]
+            # The upload goes through curl with a BOUNDED --max-time:
+            # `gh release upload` stalled twice on the ~250 MB asset
+            # (v0.29.25 rounds 3-4; even a solo success once took 8.8
+            # min) and the job-budget kill left no retry chance. The
+            # URL's ?name= parameter is what names the asset — it must
+            # match the built file exactly.
             self.assertIn(
-                f"gh release upload \"${{GITHUB_REF_NAME}}\" dist/{iso}",
-                run,
-                f"{job}: must upload the built ISO {iso}")
-            self.assertIn("--clobber", run,
-                          f"{job}: re-runs must be idempotent (--clobber)")
+                f"?name={iso}", run,
+                f"{job}: must upload the built ISO {iso} (curl asset name)")
+            self.assertIn(
+                f'--upload-file "dist/{iso}"', run,
+                f"{job}: must upload the exact file the build verified")
+            self.assertIn(
+                "--max-time", run,
+                f"{job}: every upload attempt must be time-bounded — "
+                "an unbounded gh upload stalled 28.5 min (v0.29.25)")
+            self.assertIn(
+                "deleting stale asset", run,
+                f"{job}: re-runs must be idempotent (delete-before-upload "
+                "is the curl-era --clobber)")
+            self.assertEqual(
+                run.count("for attempt in 1 2 3"), 1,
+                f"{job}: upload must retry with bounded attempts")
+            # A hang must die as THIS named step, never as a silent
+            # job-budget cancellation (round 3's diagnosis was only
+            # possible because the step timeout carried the evidence).
+            self.assertEqual(step.get("timeout-minutes"), 20,
+                             f"{job}: attach step needs its own 20-min budget")
 
     def test_both_upload_steps_tolerate_concurrent_release_creation(self):
         # Both jobs' create-failure path re-views the release (the

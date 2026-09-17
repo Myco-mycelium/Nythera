@@ -199,19 +199,33 @@ jobs:
                    gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
                      || { echo "::error::release ${GITHUB_REF_NAME} could not be created or found"; exit 1; }; }
           fi
-          # RETRY: the ~250 MB asset upload has stalled indefinitely
-          # (v0.29.25, both arches). Bounded retries turn a stall into
-          # a wait-and-succeed.
+          # RETRY: `gh release upload` STALLED twice on the ~250 MB
+          # asset (v0.29.25 rounds 3-4; once even solo at 8.8 min it
+          # worked, twice it hung past 20 min). Upload via curl instead:
+          # bounded per attempt (--max-time), idempotent re-runs via
+          # delete-before-upload (the --clobber equivalent).
+          upload_url="$(gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
+            --json uploadUrl -q .uploadUrl)"
+          upload_url="${upload_url%%\{*}"
+          asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${GITHUB_REF_NAME}" \
+            --jq ".assets[] | select(.name==\"nyrqis-live.iso\") | .id" 2>/dev/null || true)"
+          if [ -n "$asset_id" ]; then
+            echo "deleting stale asset id=$asset_id (clobber)"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null 2>&1 || true
+          fi
           up_ok=0
           for attempt in 1 2 3; do
-            if gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live.iso \
-                 --repo "$GITHUB_REPOSITORY" --clobber; then
+            if curl --fail --silent --show-error --max-time 540 \
+                 --header "Authorization: Bearer $GH_TOKEN" \
+                 --header "Content-Type: application/x-iso9660-image" \
+                 --upload-file "dist/nyrqis-live.iso" \
+                 "${upload_url}?name=nyrqis-live.iso"; then
               up_ok=1; break
             fi
-            echo "upload attempt $attempt failed; retrying in 30s"
+            echo "upload attempt $attempt failed or timed out (540s cap); retrying in 30s"
             sleep 30
           done
-          [ "$up_ok" = 1 ] || { echo "::error::asset upload failed after 3 attempts"; exit 1; }
+          [ "$up_ok" = 1 ] || { echo "::error::asset upload failed after 3 bounded attempts"; exit 1; }
           gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
             --json assets -q '.assets[].name'
 
