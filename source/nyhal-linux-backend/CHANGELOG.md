@@ -5,6 +5,57 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.25] - 2026-09-17
+
+### Fixed
+
+- **Two wire bugs found by the first canonical-XML opcode run**
+  (`ui/wayland_protocol.py`): `WL_DISPLAY_DELETE_ID` was 2, canonical
+  `wayland.xml` says event 1 (requests and events number in SEPARATE
+  sequences — the classic memory-recall error); `wl_shm` claimed a
+  `destroy` request that does not exist (canonical: `create_pool` +
+  `release`). Both defined-but-unused, so no call site dispatched on
+  the wrong values. The contract test (`test_wayland_opcode_header_contract`)
+  now verifies against BOTH canonical sources (`wayland.xml` via
+  `WAYLAND_XML`, `xdg-shell.xml` via `XDG_SHELL_XML` — the xdg constant
+  false-mismatch against `wayland.xml` was itself the exposure),
+  requires FULL enum coverage, and pins the corrected constants.
+  Verified against the real upstream XMLs; suite skips 4→3.
+- **The arm64 live-ISO CI boot smoke went green for the first time**
+  (red on every run since 2026-09-14). Four stacked causes, peeled in
+  order: (1) the new `rust-wayland-conformance` gate failed on bare
+  runners — Pillow (the `WaylandSession` software renderer) was never
+  installed; the test now skips honestly (register v1.3.0) and the
+  gate installs `pillow` + `libwayland-dev`. (2) The 15-min smoke
+  budget shared with apt could not fit a real TCG handshake (measured
+  ~685 s on a FAST host); apt is its own step now, driver timeout
+  1680 s, arithmetic pinned in `TestJobTimeoutContract`. (3) The boot
+  smokes burned a blind 2-second round because QEMU's stderr went to
+  DEVNULL and an empty serial log compacted to an empty annotation;
+  both drivers now capture stderr, surface it with the exit code, and
+  fall back to it when the serial log is whitespace-only. (4) The
+  instrumented round named the true root cause: `failed to find
+  romfile "efi-virtio.rom"` — the virt machine's default virtio-net
+  NIC needs ipxe-qemu's option ROM, which `--no-install-recommends`
+  never installs (every localhost boot passed for exactly this
+  reason). Both smokes run `-net none`; the contract pins the flag.
+  Green round: direct smoke 173 s, menu path 108 s.
+- **`scripts/test_release_race.sh` re-run rounds** now exercise the
+  FULL workflow body (view → skip create → `--clobber` upload) over a
+  pre-existing release, sequentially and concurrently, with
+  content-level replacement proof (seeded assets match the uploads'
+  basenames).
+
+### Added
+
+- **FFI artifacts ship in the live image** (`rust/.cdylibs`): the
+  builder copies the compiled cdylibs + `nyrqis-launcher` out of the
+  target dirs before pruning them; the demo exports the dir on
+  `LD_LIBRARY_PATH` and the boot smoke reports an informational
+  `NYRQIS_BOOT_SMOKE_CRATE=loaded/shipped` marker (17/17 verified
+  end-to-end from the real builder loop + the demo's own marker code).
+  Contract: `TestFfiArtifactsInImage`.
+
 ## [0.29.24] - 2026-09-16
 
 ### Added

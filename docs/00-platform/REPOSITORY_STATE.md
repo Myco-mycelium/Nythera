@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-10
+2026-09-17
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -757,6 +757,35 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-17 (**the arm64 CI boot smoke finally went green — four
+  stacked root causes**): every `live-iso-arm64` run had failed since
+  2026-09-14. The causes, in the order CI could not reveal them:
+  (1) the `ci.yml` wayland-conformance gate — itself newly pushed —
+  failed on bare runners because Pillow (the `WaylandSession` software
+  renderer) was never installed; `test_session_render_frame` now skips
+  honestly (env-renderer, register v1.3.0) and the gate installs
+  `pillow` + `libwayland-dev` (the cdylib dlopens the system Wayland
+  library at runtime). (2) A local pure-TCG measurement (banner ~2 min,
+  PONG/PKGS/READY at ~685 s on a fast host) showed the old 15-min
+  smoke budget — shared with apt install time — could not fit the
+  handshake; apt moved to its own step, the driver timeout went to
+  1680 s, and `TestJobTimeoutContract` now pins the arithmetic.
+  (3) Still failing in 2 s with a 190-byte log, the drivers were
+  instrumented to capture QEMU stderr (previously DEVNULL) and carry it
+  into check annotations when the serial log compacts to nothing —
+  which named cause (4) outright: `failed to find romfile
+  "efi-virtio.rom"`. The virt machine's default virtio-net NIC needs
+  ipxe-qemu's option ROM, absent under the workflow's
+  `--no-install-recommends` apt line; every localhost boot passed only
+  because ipxe-qemu was installed there. Both smokes now run `-net
+  none` (the serial console is the only channel) and the contract pins
+  the flag. First fully green arm64 round: direct smoke 173 s, menu
+  path (GRUB UEFI) 108 s. Along the way the first canonical-XML opcode
+  run disproved two memory-recalled constants (`WL_DISPLAY_DELETE_ID`
+  2→1 — requests and events number in separate sequences; wl_shm has
+  no destroy request, only `release`), and the opcode contract test now
+  verifies against BOTH `wayland.xml` and `xdg-shell.xml` with full
+  enum coverage. Suite: 6,371 tests, 3 environmental skips.
 - 2026-08-13 (**ADR-0020 migrations #1 and #2 implemented**): the
   `rust/seccomp` crate (policy compiler / validator / simulator) and the
   `rust/syscalls` crate (`sethostname`/`prctl`/`unshare` wrappers;

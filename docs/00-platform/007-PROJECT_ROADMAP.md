@@ -264,7 +264,7 @@ focuses on making Nyrqis ready for real users and contributors.
 **Phase 2: Hardware Compatibility**
 - [ ] AMD Radeon GPU testing and validation
 - [ ] NVIDIA GPU testing (Nouveau driver path)
-- [ ] ARM64 cross-compilation and testing (Raspberry Pi 4/5) — PARTIAL: 10 Rust crates cross-compile for aarch64 + aarch64 seccomp-table conformance pass in CI (arm64-conformance workflow); the live ISO now cross-builds (`build-live-iso.sh --arch arm64`, UEFI-only, ttyAMA0 demo console) and is QEMU boot-smoked weekly (live-iso-arm64 workflow: direct + menu path under `qemu-system-aarch64 -M virt`); remaining: real-hardware run
+- [ ] ARM64 cross-compilation and testing (Raspberry Pi 4/5) — PARTIAL, CI-verified: 10 Rust crates cross-compile for aarch64 + aarch64 seccomp-table conformance pass in CI (arm64-conformance workflow); the live ISO cross-builds (`build-live-iso.sh --arch arm64`, UEFI-only, ttyAMA0 demo console) and BOTH QEMU boot smokes went green on CI 2026-09-17 (direct handshake 173 s, GRUB UEFI menu path 108 s — the multi-week red streak was a missing ipxe-qemu NIC ROM under `--no-install-recommends`, then a too-tight TCG smoke budget; both fixed and contract-pinned). Remaining: real-hardware run
 - [ ] RISC-V 64 initial support
 - [ ] Wayland client compatibility testing (weston, GTK4, Qt6, Sway)
 
