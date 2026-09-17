@@ -176,7 +176,15 @@ class TestWaylandSessionMultiMonitor(unittest.TestCase):
 
     def test_session_render_frame(self):
         """Session can render a frame."""
+        from ui import wayland_session
         from ui.wayland_session import WaylandSession
+        # Pillow IS the session's software renderer: without it
+        # render_frame() honestly returns None (documented fallback),
+        # which is an environmental gap, not a code defect. CI's
+        # wayland-conformance gate installs python3-pil so this runs
+        # for real where the gate enforces it.
+        if wayland_session.Image is None:
+            self.skipTest("PIL absent — WaylandSession's software renderer is Pillow")
         session = WaylandSession(640, 480)
         session.start()
         img = session.render_frame()

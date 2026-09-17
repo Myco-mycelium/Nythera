@@ -548,6 +548,15 @@ jobs:
       - name: Build the crate
         working-directory: source/nyhal-linux-backend/rust/wayland
         run: cargo build --release
+      # The crate dlopens the system Wayland library at runtime —
+      # without libwayland-dev the load fails and the cdylib silently
+      # degrades to the stub (the exact gap this gate exists to close).
+      - name: Install libwayland-dev (for runtime loading)
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev
+      # WaylandSession's software renderer is Pillow; without it
+      # test_session_render_frame cannot exercise the FFI render path.
+      - name: Install Pillow (the session's software renderer)
+        run: pip install pillow
       - name: Force the multimonitor tests through the cdylib
         working-directory: source/nyhal-linux-backend
         env:

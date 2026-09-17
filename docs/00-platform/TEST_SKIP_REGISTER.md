@@ -1,7 +1,7 @@
 ---
 title: Test Skip Register
-version: 1.2.0
-date: 2026-09-16
+version: 1.3.0
+date: 2026-09-17
 ---
 
 # Test Skip Register
@@ -23,7 +23,7 @@ register honest when anything changes — the contract test
 `TestSkipRegister` re-reads it, re-scans the suite for dead
 import-failure skips, and fails on drift.
 
-## The register (current — 3 entries; 9 when the wayland cdylib is absent)
+## The register (current — 3 entries; 9 when the wayland cdylib is absent; 8 on a bare CI runner, where additionally Pillow is missing)
 
 | # | Test | Category | Reason | Owner |
 |---|---|---|---|---|
@@ -36,6 +36,7 @@ import-failure skips, and fails on drift.
 | 7 | `tests/test_wayland_multimonitor.py:63` | env-crate | Same as above | compositor team |
 | 8 | `tests/test_wayland_multimonitor.py:71` | env-crate | Same as above | compositor team |
 | 9 | `tests/test_compositor_presentation.py:334` | env-sandbox | This dev container's seccomp profile drops SCM_RIGHTS ancillary data, so fd-passing over a real Unix socket cannot be observed; CI (no such profile) runs it for real | compositor team |
+| 10 | `tests/test_wayland_multimonitor.py:187` | env-renderer | Pillow (the WaylandSession software renderer) absent — render_frame() honestly returns None; CI's wayland-conformance gate installs pillow and runs it for real | compositor team |
 
 ## Purged in 0.29.21–0.29.22 (the cautionary tales)
 
