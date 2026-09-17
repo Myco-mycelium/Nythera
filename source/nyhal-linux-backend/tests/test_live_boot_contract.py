@@ -453,9 +453,65 @@ class TestJobTimeoutContract(unittest.TestCase):
         menu = d["jobs"]["menu-boot-arm64"]
         self.assertLessEqual(menu["timeout-minutes"], 45,
                              "arm64 menu-boot budget runaway")
+        self.assertGreaterEqual(menu["timeout-minutes"], 35,
+                                "arm64 menu-boot budget too tight: the TCG "
+                                "smoke alone measured ~12 min on a FAST host "
+                                "— shared runners are slower (2026-09-14..17 "
+                                "CI died on the 15-min arithmetic)")
         amd = yaml.safe_load(read(LIVE_ISO_WF))
         self.assertLessEqual(amd["jobs"]["menu-boot"]["timeout-minutes"], 45,
                              "amd64 menu-boot budget runaway")
+
+    def test_arm64_smoke_budget_covers_the_measured_tcg_envelope(self):
+        """The 2026-09-14..17 arm64 CI failures were pure budget, not
+        boot bugs: the image boots and passes every marker under TCG in
+        ~11.5 min on a FAST host (measured 2026-09-17: banner ~2 min,
+        PONG/PKGS/READY at ~685 s) — GitHub's shared runners emulate
+        aarch64 several times slower, and the old 15-min smoke budget
+        killed QEMU mid-handshake every round. Pin the corrected
+        arithmetic: apt isolated from the smoke step, driver timeout
+        >2.5x the fast-host envelope, step budget above the driver
+        timeout, job budget above the step.
+        """
+        d = yaml.safe_load(read(LIVE_ISO_ARM64_WF))
+        build = d["jobs"]["build-arm64"]
+        steps = {s.get("name"): s for s in build["steps"] if "name" in s}
+        smoke = steps["Direct boot smoke (arm64 kernel, ttyAMA0 handshake)"]
+        # The QEMU toolchain must not share the smoke's budget: apt time
+        # is time the handshake does not have.
+        self.assertIn("Install the QEMU toolchain", steps,
+                      "apt must be its own step — apt time must not eat "
+                      "the smoke's boot window")
+        apt_step = steps["Install the QEMU toolchain"]
+        self.assertEqual(apt_step.get("timeout-minutes"), 5)
+        # Driver timeout: >2.5x the fast-host TCG envelope (~11.5 min),
+        # still fail-fast on a real hang.
+        m = re.search(r"--timeout (\d+)", smoke["run"])
+        self.assertIsNotNone(m, "the smoke must pass an explicit --timeout")
+        driver_s = int(m.group(1))
+        self.assertGreaterEqual(driver_s, 1500,
+                                "driver timeout below the measured TCG "
+                                "envelope — CI will kill a healthy boot")
+        self.assertLessEqual(driver_s, 1800,
+                             "driver timeout runaway — a hang must fail fast")
+        # Step budget must exceed the driver timeout (apt is separate).
+        self.assertGreater(
+            smoke["timeout-minutes"] * 60, driver_s,
+            "smoke step budget must exceed the driver's own timeout — "
+            "otherwise the job-level kill fires before the driver's "
+            "diagnostics can be written")
+        # Menu smoke: same arithmetic.
+        menu = d["jobs"]["menu-boot-arm64"]
+        menu_steps = {s.get("name"): s for s in menu["steps"] if "name" in s}
+        menu_smoke = menu_steps["Boot the ISO like a machine (GRUB menu → default entry, UEFI)"]
+        m = re.search(r"--timeout (\d+)", menu_smoke["run"])
+        self.assertIsNotNone(m)
+        self.assertGreaterEqual(int(m.group(1)), 1500)
+        self.assertGreater(
+            menu_smoke["timeout-minutes"] * 60, int(m.group(1)))
+        self.assertGreater(
+            menu["timeout-minutes"], menu_smoke["timeout-minutes"],
+            "menu job budget must cover checkout + download + apt + smoke + upload")
 
 
 class TestMenuSmokeWiring(unittest.TestCase):

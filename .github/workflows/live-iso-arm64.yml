@@ -30,7 +30,10 @@ jobs:
   build-arm64:
     name: Build arm64 live demo ISO
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Worst case: cache-miss emulated debootstrap (step cap 90) + apt (5)
+    # + smoke (29) + checkout/cache/upload overhead. Ceiling
+    # sanity-checked by TestJobTimeoutContract (<= 150).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -130,13 +133,28 @@ jobs:
           xorriso -indev dist/nyrqis-live-arm64.iso -find /boot/grub -name 'grub.cfg' | grep -q grub.cfg
           du -h dist/nyrqis-live-arm64.iso
 
-      - name: Direct boot smoke (arm64 kernel, ttyAMA0 handshake)
+      # The QEMU toolchain installs in its OWN step: apt time must not
+      # eat the smoke step's budget (round after round of arm64 CI died
+      # on exactly this arithmetic).
+      - name: Install the QEMU toolchain
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             qemu-system-arm qemu-efi-aarch64
+        timeout-minutes: 5
+
+      - name: Direct boot smoke (arm64 kernel, ttyAMA0 handshake)
+        run: |
           python3 tests/boot_smoke.py dist/nyrqis-live-arm64.iso \
-            --arch arm64 --timeout 900 --keep-logs
-        timeout-minutes: 20
+            --arch arm64 --timeout 1680 --keep-logs
+        # Measured envelope: a full arm64 boot smoke under TCG took
+        # ~11.5 min on a fast host (banner at ~2 min, markers at
+        # ~11.5 min); GitHub's shared runners emulate aarch64 several
+        # times slower, and the previous 15-min budget killed QEMU
+        # mid-handshake on every round since 2026-09-14 — on an image
+        # that provably boots. 28 min is ~2.5x the fast-host envelope
+        # and still fails fast on a real hang.
+        timeout-minutes: 29
 
       - name: Upload direct-boot serial log
         if: always()
@@ -167,7 +185,8 @@ jobs:
     name: Menu-path boot smoke (GRUB via UEFI)
     runs-on: ubuntu-latest
     needs: build-arm64
-    timeout-minutes: 30
+    # checkout + artifact download + apt (5) + smoke (29) + upload.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -177,13 +196,19 @@ jobs:
           name: nyrqis-live-iso-arm64
           path: dist
 
-      - name: Boot the ISO like a machine (GRUB menu → default entry, UEFI)
+      - name: Install the QEMU toolchain
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             qemu-system-arm qemu-efi-aarch64
+        timeout-minutes: 5
+
+      - name: Boot the ISO like a machine (GRUB menu → default entry, UEFI)
+        run: |
           python3 tests/boot_smoke_menu.py dist/nyrqis-live-arm64.iso \
-            --arch arm64 --timeout 900 --keep-logs
-        timeout-minutes: 20
+            --arch arm64 --timeout 1680 --keep-logs
+        # Same TCG-envelope arithmetic as the direct smoke above.
+        timeout-minutes: 29
 
       - name: Upload menu-boot serial log
         if: always()
