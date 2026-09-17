@@ -1,10 +1,32 @@
 ---
 title: Next Development Session Plan
-version: 6.13.0
+version: 6.14.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11j (2026-09-16) — THE SKIP PURGE COMPLETES: 35 → 9; a real DRM bug falls out of asserting the crate path; the register is pinned
+
+**The find of the round (0.29.22):** rewriting the DRM test skips as
+both-mode assertions exposed a **latent `get_connector_info` FFI
+crash** — `ctypes.byref(struct.field)` passes a plain int, not a
+ctypes instance. Invisible for the crate's whole life because the
+tests skipped whenever the crate WAS present. Fixed and verified
+against the loaded cdylib.
+
+**Purge:** 19 → 9 skips. DRM device-ops (6) now assert both stub and
+crate paths; the compositor-host stub test patches codec
+availability; the 3 boot-to-desktop render tests run the real
+architecture (`Compositor.render_screen`, `NyrqisShell(doc).run()`).
+Dead `except ImportError → skip` branches around first-party imports
+removed — breakage fails loudly.
+
+**Pinned:** `TestSkipRegister` (3 tests) — the register
+(`TEST_SKIP_REGISTER.md`) exists and states the rule, no
+first-party import-failure skip exists anywhere in the suite, and
+the header counts match suite reality. Suite **8,986 passed,
+9 skipped** (all environmental), leak-count 0.
 
 ## Session 11i (2026-09-16) — SKIPS ARE ANSWERS, NOT EXCUSES: 35 → 19; the zero-leak guarantee and the release path are now pinned
 

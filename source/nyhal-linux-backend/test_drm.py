@@ -32,45 +32,46 @@ class TestDrmCodecAvailable(unittest.TestCase):
 class TestDrmCodecDeviceOps(unittest.TestCase):
     """Test DRM device operations."""
 
-    def test_open_device_returns_negative_in_stub(self):
-        """open_device() returns -1 when DRM is not available."""
-        if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
-        result = drm_codec.open_device()
+    def test_open_device_invalid_path_fails_in_both_modes(self):
+        """open_device() on a bogus path returns -1 in stub mode AND
+        with the real crate loaded (the real driver also refuses to
+        open a nonexistent card) — no skip either way."""
+        result = drm_codec.open_device("/nonexistent/nyrqis-test-card")
         self.assertEqual(result, -1)
 
-    def test_open_device_with_path(self):
-        """open_device() with a path returns -1 in stub mode."""
+    def test_open_device_default_path_matches_mode(self):
+        """open_device() with the default path: -1 in stub mode; with
+        the crate, a valid fd (which is then closed cleanly) or -1 on
+        hosts without a DRM node."""
+        result = drm_codec.open_device()
         if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
-        result = drm_codec.open_device("/dev/dri/card0")
-        self.assertEqual(result, -1)
+            if result >= 0:
+                self.assertTrue(drm_codec.close_device(result))
+        else:
+            self.assertEqual(result, -1)
 
     def test_enumerate_connectors_invalid_device(self):
-        """enumerate_connectors() with invalid device returns -1."""
-        if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
+        """enumerate_connectors() with invalid device returns -1 in
+        both stub and crate modes (invalid handles are errors, never
+        exceptions)."""
         result = drm_codec.enumerate_connectors(-1)
         self.assertEqual(result, -1)
 
     def test_get_connector_info_invalid_id(self):
-        """get_connector_info() with invalid ID returns None."""
-        if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
+        """get_connector_info() with invalid ID returns None in both
+        modes."""
         result = drm_codec.get_connector_info(-1)
         self.assertIsNone(result)
 
     def test_atomic_commit_invalid(self):
-        """atomic_commit() with invalid params returns False."""
-        if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
+        """atomic_commit() with invalid params returns False in both
+        modes."""
         result = drm_codec.atomic_commit(-1, 0, 0, 1)
         self.assertFalse(result)
 
     def test_close_device_invalid(self):
-        """close_device() with invalid ID returns False."""
-        if drm_codec.is_available():
-            self.skipTest("DRM crate is available")
+        """close_device() with invalid ID returns False in both
+        modes."""
         result = drm_codec.close_device(-1)
         self.assertFalse(result)
 

@@ -306,16 +306,23 @@ class TestCompositorHostStubEngine(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_feed_without_crate_is_honest_noop(self):
-        """In stub mode feeding data doesn't fabricate events."""
-        # Use a fresh module namespace with the codec forced unavailable.
-        import importlib
+        """In stub mode feeding data doesn't fabricate events.
+
+        The fail-closed stub contract is asserted directly: on hosts
+        with the crate, the codec's availability (what ``_engine()``
+        consults) is patched off — no skip either way.
+        """
+        from unittest import mock
         from ui import compositor_codec as comp
         from ui import compositor_host
 
+        if compositor_host.CompositorHost().engine == "rust":
+            patcher = mock.patch.object(comp, "available", return_value=False)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
         host = compositor_host.CompositorHost()
-        engine = host.engine
-        if engine == "rust":
-            self.skipTest("compositor crate available; stub path untestable here")
+        self.assertEqual(host.engine, "stub")
         # Feeding a full handshake in stub mode must not raise and must
         # not invent pending bytes.
         host.on_client_data(1, _enc_request(1, 1, _enc_u32(2)))

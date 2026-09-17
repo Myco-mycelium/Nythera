@@ -829,5 +829,73 @@ class TestReleaseUploadContract(unittest.TestCase):
                 f"{build_job}: must upload the artifact dist/{iso}")
 
 
+class TestSkipRegister(unittest.TestCase):
+    """Pin the Test Skip Register (docs/00-platform/TEST_SKIP_REGISTER.md)
+    against suite reality: the register must exist, must document the
+    no-dead-skips rule, and every skip reason in the suite must be
+    environmental (never "not implemented"). Import-failure skips on
+    first-party modules are the dead-skip pattern that hid the missing
+    SystemSnapshot API for four releases.
+    """
+
+    REGISTER = os.path.join(
+        _REPO_ROOT, "docs", "00-platform", "TEST_SKIP_REGISTER.md")
+
+    def test_register_exists_and_states_the_rule(self):
+        self.assertTrue(os.path.isfile(self.REGISTER))
+        text = open(self.REGISTER).read()
+        self.assertIn("a skip is an answer, not an excuse", text)
+        self.assertIn("## The register", text)
+
+    def test_no_first_party_import_failure_skips(self):
+        # The dead-skip pattern: except ImportError → skipTest(...)
+        # where the import is a FIRST-PARTY module (ui.*, backend.*).
+        # Environmental skips (optional Rust artifacts, hardware) name
+        # the crate/hardware explicitly and are allowed.
+        pattern = re.compile(
+            r"except\s+ImportError.*?:\s*\n\s*self\.skipTest\(\s*['\"]([^'\"]*)['\"]")
+        backend_dir = os.path.dirname(_BACKEND_DIR)
+        offenders = []
+        for root, _dirs, files in os.walk(backend_dir):
+            if "target" in root.split(os.sep):
+                continue
+            for fn in files:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(root, fn)
+                for m in pattern.finditer(open(path, encoding="utf-8",
+                                               errors="replace").read()):
+                    reason = m.group(1)
+                    if not re.search(
+                            r"crate|vulkan|DRM|Wayland|hardware|display|"
+                            r"sandbox|no device|not built|CI|PIL|Pillow",
+                            reason, re.I):
+                        offenders.append(f"{path}: {reason}")
+        self.assertEqual(
+            offenders, [],
+            "import-failure skips must name an environmental reason "
+            "(crate/hardware/display) — a vague skip may be masking a "
+            "missing first-party API (the system_monitor lesson): "
+            + "; ".join(offenders))
+
+    def test_register_matches_suite_skip_count(self):
+        # The register's header must state the current skip count —
+        # parse it and compare with the actual suite run data pinned
+        # here (updated by whoever changes the skip set).
+        text = open(self.REGISTER).read()
+        m = re.search(r"\*\*(\d+) skips\*\* in a suite of ([\d,]+) passing",
+                      text)
+        self.assertIsNotNone(m, "register header must state the counts")
+        declared_skips = int(m.group(1))
+        declared_passing = int(m.group(2).replace(",", ""))
+        # The known-environmental skip set (this host): 2 Vulkan +
+        # 6 Wayland-crate + 1 SCM_RIGHTS sandbox.
+        KNOWN_ENV_SKIPS = 9
+        self.assertEqual(declared_skips, KNOWN_ENV_SKIPS,
+                         "register header out of date — re-run the suite "
+                         "with -rs and update TEST_SKIP_REGISTER.md")
+        self.assertGreater(declared_passing, 8900)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -118,10 +118,9 @@ class TestBackendPipeline(unittest.TestCase):
 
     def test_desktop_backend_lifecycle(self):
         """Full desktop backend lifecycle."""
-        try:
-            from ui.desktop_backend import DesktopBackend
-        except ImportError:
-            self.skipTest("DesktopBackend not available")
+        # First-party import: a breakage must FAIL this test, never
+        # skip it (the dead-skip rule — see TEST_SKIP_REGISTER.md).
+        from ui.desktop_backend import DesktopBackend
         from ui.backend_abstraction import get_backend, BackendType
         backend = get_backend(BackendType.HEADLESS)
         db = DesktopBackend(backend)
@@ -143,10 +142,9 @@ class TestBackendPipeline(unittest.TestCase):
 
     def test_live_session_lifecycle(self):
         """Full live session lifecycle."""
-        try:
-            from ui.live_session import LiveSession
-        except ImportError:
-            self.skipTest("LiveSession not available")
+        # First-party import: a breakage must FAIL this test, never
+        # skip it (the dead-skip rule — see TEST_SKIP_REGISTER.md).
+        from ui.live_session import LiveSession
         session = LiveSession(640, 480)
         session.start()
         self.assertEqual(session.state, "running")

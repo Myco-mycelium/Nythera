@@ -5,6 +5,40 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.22] - 2026-09-16
+
+### Fixed
+
+- **DRM crate path: latent `get_connector_info` TypeError** — the FFI
+  wrapper passed `ctypes.byref(struct.field)` (a plain int, not a
+  ctypes instance) for every out-parameter, which would have crashed
+  with the real crate. Invisible forever because the tests skipped
+  whenever the crate was present. Fixed with standalone c_uint32
+  out-params; verified against the loaded cdylib.
+
+### Changed
+
+- **Skip purge continues: 19 → 9 skips.** The 6 DRM device-ops
+  conditional inversions are now both-mode assertions (stub AND crate
+  paths asserted, no skip); the compositor-host stub-engine test
+  patches codec availability instead of skipping on crate hosts; the
+  3 boot-to-desktop compositor/shell tests are rewritten against the
+  real architecture (`Compositor.render_screen`, `NyrqisShell(doc).
+  run()`) instead of spec-era constructors that never existed.
+- **Dead `except ImportError → skip` branches removed** around
+  first-party imports (`DesktopBackend`, `LiveSession`,
+  `nstudio_codec`) — a breakage now fails loudly.
+
+### Added
+
+- **Test Skip Register** (`docs/00-platform/TEST_SKIP_REGISTER.md`):
+  all 9 remaining skips documented with category/reason/owner, the
+  dead-skip cautionary tales, and the rules for adding new skips.
+  `TestSkipRegister` contract tests (3) pin the register: it exists
+  and states the rule; no first-party import-failure skip exists
+  anywhere in the suite (regex scan over every test file); the header
+  counts match suite reality.
+
 ## [0.29.21] - 2026-09-16
 
 ### Added

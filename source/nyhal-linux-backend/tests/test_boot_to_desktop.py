@@ -197,20 +197,22 @@ class TestDesktopRenderPipeline(unittest.TestCase):
     """Test the desktop rendering pipeline end-to-end."""
 
     def test_compositor_renders_to_image(self):
-        """Test that the desktop compositor produces a valid image."""
-        try:
-            from ui.compositor import NyrqisCompositor
-        except ImportError:
-            self.skipTest("NyrqisCompositor not available")
+        """The PIL Compositor renders a real .nstudio design to a PIL
+        image (the spec-era no-arg NyrqisCompositor().render() never
+        existed; the current architecture renders documents)."""
+        from ui.compositor import Compositor
+        from ui.nstudio import load as nstudio_load
 
-        try:
-            compositor = NyrqisCompositor()
-            img = compositor.render()
-            from PIL import Image
-            self.assertIsInstance(img, Image.Image)
-            self.assertEqual(img.size, (1920, 1080))
-        except Exception:
-            self.skipTest("Compositor init failed (no display)")
+        design = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "fixtures", "nstudio", "desktop.nstudio",
+        )
+        self.assertTrue(os.path.exists(design))
+        comp = Compositor()
+        img = comp.render_screen(nstudio_load(design))
+        from PIL import Image
+        self.assertIsInstance(img, Image.Image)
+        self.assertGreater(img.size[0], 0)
 
     def test_compositor_uses_backend(self):
         """Test that compositor can use the backend abstraction."""
@@ -220,20 +222,21 @@ class TestDesktopRenderPipeline(unittest.TestCase):
         self.assertIsNotNone(frame)
 
     def test_shell_renders_with_backend(self):
-        """Test shell rendering through backend."""
-        try:
-            from ui.shell import NyrqisShell
-        except ImportError:
-            self.skipTest("NyrqisShell not available")
+        """The shell loads a real .nstudio design and renders it (the
+        spec-era no-arg NyrqisShell() never existed — the shell takes a
+        NstudioDocument)."""
+        from ui.shell import NyrqisShell
+        from ui.nstudio import load as nstudio_load
 
-        try:
-            shell = NyrqisShell()
-            # Shell should be able to render without errors
-            result = shell.render()
-            # Result could be a list of strings or an image
-            self.assertIsNotNone(result)
-        except Exception:
-            self.skipTest("Shell init failed")
+        design = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "fixtures", "nstudio", "desktop.nstudio",
+        )
+        self.assertTrue(os.path.exists(design))
+        shell = NyrqisShell(nstudio_load(design))
+        result = shell.run()
+        self.assertTrue(result["ok"])
+        self.assertGreater(result["component_count"], 0)
 
 
 class TestBootSequence(unittest.TestCase):
@@ -328,11 +331,9 @@ class TestDesktopSessionE2E(unittest.TestCase):
 
     def test_desktop_backend_full_cycle(self):
         """Test DesktopBackend: create, focus, render, close."""
-        try:
-            from ui.desktop_backend import DesktopBackend
-        except ImportError:
-            self.skipTest("DesktopBackend not available")
-
+        # First-party import: a breakage must FAIL this test, never
+        # skip it (the dead-skip rule — see TEST_SKIP_REGISTER.md).
+        from ui.desktop_backend import DesktopBackend
         from ui.backend_abstraction import get_backend, BackendType
         backend = get_backend(BackendType.HEADLESS)
         db = DesktopBackend(backend)
@@ -355,26 +356,25 @@ class TestDesktopSessionE2E(unittest.TestCase):
         db.close_window(w2)
 
     def test_compositor_with_design(self):
-        """Test rendering with .nstudio design loaded."""
-        try:
-            from ui.compositor import NyrqisCompositor
-        except ImportError:
-            self.skipTest("NyrqisCompositor not available")
+        """Rendering with a .nstudio design loaded: the desktop fixture
+        renders through the PIL Compositor with component content
+        visible (non-uniform pixels)."""
+        from ui.compositor import Compositor
+        from ui.nstudio import load as nstudio_load
 
-        design_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "designs", "default.nstudio"
+        design = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "fixtures", "nstudio", "desktop.nstudio",
         )
-        if not os.path.exists(design_path):
-            self.skipTest("Default design not found")
-
-        try:
-            compositor = NyrqisCompositor(design_path=design_path)
-            img = compositor.render()
-            from PIL import Image
-            self.assertIsInstance(img, Image.Image)
-        except Exception:
-            self.skipTest("Compositor with design failed")
+        self.assertTrue(os.path.exists(design))
+        comp = Compositor()
+        img = comp.render_screen(nstudio_load(design))
+        from PIL import Image
+        self.assertIsInstance(img, Image.Image)
+        # Content actually rendered (not a blank canvas).
+        colors = img.convert("RGB").getcolors(maxcolors=100000)
+        self.assertIsNotNone(colors)
+        self.assertGreater(len(colors), 1)
 
 
 class TestBackendAbstractionImports(unittest.TestCase):

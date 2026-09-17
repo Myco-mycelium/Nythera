@@ -122,17 +122,28 @@ def get_connector_info(connector_id: int) -> Optional[DrmConnectorInfo]:
     lib = _load_lib()
     if lib is None:
         return None
-    info = DrmConnectorInfo()
+    # Out-params must be standalone c_uint32 instances: byref() on a
+    # Structure FIELD fails (field access yields a plain int) — a
+    # latent TypeError the stub-mode-only tests never caught.
+    width = ctypes.c_uint32(0)
+    height = ctypes.c_uint32(0)
+    refresh = ctypes.c_uint32(0)
+    status = ctypes.c_uint32(0)
     result = lib.nyrqis_drm_get_connector_info(
         connector_id,
-        ctypes.byref(info.width),
-        ctypes.byref(info.height),
-        ctypes.byref(info.refresh),
-        ctypes.byref(info.status),
+        ctypes.byref(width),
+        ctypes.byref(height),
+        ctypes.byref(refresh),
+        ctypes.byref(status),
     )
     if result < 0:
         return None
-    return info
+    return DrmConnectorInfo(
+        width=width.value,
+        height=height.value,
+        refresh=refresh.value,
+        status=status.value,
+    )
 
 
 def atomic_commit(device_id: int, connector_id: int, crtc_id: int, fb_id: int) -> bool:

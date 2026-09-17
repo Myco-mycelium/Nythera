@@ -112,13 +112,13 @@ class TestMixScreens(unittest.TestCase):
         report = self.bridge.inspect_version(text=text)
         self.assertTrue(report["ok"])
         self.assertFalse(report["anyDropped"])
-        try:
-            from ui import nstudio_codec
-            if not nstudio_codec.available():
-                self.skipTest("Rust nyui crate not available")
-            rs = nstudio_codec.inspect_version_rust(text)
-        except ImportError:
-            self.skipTest("nstudio_codec import failed")
+        # First-party module: an ImportError must FAIL this test,
+        # never skip it (the dead-skip rule — TEST_SKIP_REGISTER.md).
+        # The skip below is environmental (the Rust crate artifact).
+        from ui import nstudio_codec
+        if not nstudio_codec.available():
+            self.skipTest("Rust nyui crate not available")
+        rs = nstudio_codec.inspect_version_rust(text)
         for key in ("docHeaderVersions", "notYetInRegistry",
                     "unknownDocRequirements", "anyDropped",
                     "schemaSupported"):

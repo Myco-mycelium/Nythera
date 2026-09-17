@@ -505,6 +505,19 @@ same day (reproducibility). Four new contract tests pin the ttyAMA0
 handshake, the ttyAMA0 autologin drop-in, and both idempotency
 fixes.
 
+### Skip purge completes; DRM FFI bug found by asserting the crate path (0.29.22)
+
+Skips 19 → 9 (from 35 pre-triage): the DRM device-ops tests now
+assert both stub and crate modes (exposing a latent
+``ctypes.byref(struct.field)`` TypeError in ``get_connector_info`` —
+the crate path had never been exercised), the compositor-host stub
+contract is patched-availability-tested, the boot-to-desktop render
+tests run the real architecture, and dead import-failure skip
+branches around first-party modules are removed. The complete skip
+inventory lives in ``TEST_SKIP_REGISTER.md`` with a contract test
+(``TestSkipRegister``) pinning it against suite reality — the same
+scan that polices the no-dead-skips rule.
+
 ### Temp-hygiene pinned; system_monitor meets its spec (0.29.21)
 
 The zero-leak guarantee is now guarded by ``TestTempFileHygiene`` (dir
