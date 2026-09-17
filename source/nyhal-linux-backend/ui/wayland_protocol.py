@@ -57,16 +57,21 @@ class WLEvent(IntEnum):
     """Wayland opcodes (flat across interfaces; events and requests
     share the numbering space per interface, values per the stable
     wayland / xdg-shell specifications)."""
+    # wl_display events: error=0, delete_id=1 (canonical wayland.xml:
+    # requests and events number in SEPARATE sequences, so delete_id is
+    # event 1, not the merged-sequence 2).
     WL_DISPLAY_ERROR = 0
-    WL_DISPLAY_DELETE_ID = 2
+    WL_DISPLAY_DELETE_ID = 1
     WL_REGISTRY_GLOBAL = 0
     WL_REGISTRY_GLOBAL_REMOVE = 1
     WL_CALLBACK_DONE = 0
     WL_COMPOSITOR_CREATE_SURFACE = 0
     WL_COMPOSITOR_CREATE_REGION = 1
-    # wl_shm requests: create_pool=0, destroy=1.
+    # wl_shm requests: create_pool=0, release=1 (the wl_shm interface
+    # has NO destroy request — the 0.29.13 memory-recalled table had
+    # one; canonical wayland.xml ships create_pool + release only).
     WL_SHM_CREATE_POOL = 0
-    WL_SHM_DESTROY = 1
+    WL_SHM_RELEASE = 1
     # wl_shm_pool requests: create_buffer=0, destroy=1, resize=2.
     WL_SHM_POOL_CREATE_BUFFER = 0
     WL_SHM_POOL_DESTROY = 1

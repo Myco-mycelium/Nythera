@@ -6,13 +6,19 @@ memory-recalled; they were corrected against the canonical
 ``wayland-client-protocol.h`` / ``wayland.xml`` and pinned by
 byte-exact client-compat tests.
 
-This test makes the canonical-source check executable wherever the
-source is present: if ``wayland.xml`` (or the generated header) is on
-the machine, every opcode constant in ``ui/wayland_protocol.py`` is
-cross-checked against it. When the canonical source is absent (hosts
-without libwayland-dev), the test skips honestly — the byte-exact
-client-compat suite and the real-client CI job remain the active
-enforcement layer.
+The canonical check is executable wherever the sources are present.
+There are TWO canonical files: ``wayland.xml`` (wl_* interfaces,
+installed by libwayland-dev) and ``xdg-shell.xml`` (xdg_* interfaces,
+from wayland-protocols / libwayland-protocols or the xdg-shell source
+tree). Both are optional on this host: when a file is absent, its
+class of constants is unchecked HERE and the byte-exact client-compat
+suite and the real-client CI job remain the active enforcement layer.
+
+The first canonical run (2026-09-17) disproved two more memory-recalled
+constants: ``WL_DISPLAY_DELETE_ID`` was 2 (canonical: event 1 —
+requests and events number in separate sequences) and ``wl_shm`` had a
+``destroy`` request (canonical: create_pool + release only). Both
+fixed; this test keeps them honest.
 
 Parse errors here mean the XML grammar drifted or a constant is wrong:
 both fail loudly, never silently pass.
@@ -77,7 +83,7 @@ _NAME_MAP = {
     "WL_COMPOSITOR_CREATE_REGION": ("wl_compositor", "request", "create_region"),
     # wl_shm
     "WL_SHM_CREATE_POOL": ("wl_shm", "request", "create_pool"),
-    "WL_SHM_DESTROY": ("wl_shm", "request", "destroy"),
+    "WL_SHM_RELEASE": ("wl_shm", "request", "release"),
     "WL_SHM_FORMAT": ("wl_shm", "event", "format"),
     # wl_shm_pool
     "WL_SHM_POOL_CREATE_BUFFER": ("wl_shm_pool", "request", "create_buffer"),
@@ -108,6 +114,13 @@ _NAME_MAP = {
     # wl_surface
     "WL_SURFACE_ENTER": ("wl_surface", "event", "enter"),
     "WL_SURFACE_LEAVE": ("wl_surface", "event", "leave"),
+}
+
+# xdg-shell constants come from xdg-shell.xml — a SEPARATE canonical
+# file from wayland.xml (looking them up in wayland.xml is exactly the
+# false-mismatch that failed the first canonical run). Same parse rule:
+# opcodes are per-interface, in document order, per kind.
+_XDG_NAME_MAP = {
     # xdg_wm_base
     "XDG_WM_BASE_PING": ("xdg_wm_base", "event", "ping"),
     "XDG_WM_BASE_GET_XDG_SURFACE": ("xdg_wm_base", "request", "get_xdg_surface"),
@@ -118,46 +131,82 @@ _NAME_MAP = {
     "XDG_SURFACE_SET_WINDOW_GEOMETRY": ("xdg_surface", "request", "set_window_geometry"),
     "XDG_SURFACE_ACK_CONFIGURE": ("xdg_surface", "request", "ack_configure"),
     # xdg_toplevel
+    "XDG_TOPLEVEL_DESTROY": ("xdg_toplevel", "request", "destroy"),
+    "XDG_TOPLEVEL_SET_PARENT": ("xdg_toplevel", "request", "set_parent"),
+    "XDG_TOPLEVEL_SET_TITLE": ("xdg_toplevel", "request", "set_title"),
+    "XDG_TOPLEVEL_SET_APP_ID": ("xdg_toplevel", "request", "set_app_id"),
+    "XDG_TOPLEVEL_SHOW_WINDOW_MENU": ("xdg_toplevel", "request", "show_window_menu"),
+    "XDG_TOPLEVEL_MOVE": ("xdg_toplevel", "request", "move"),
+    "XDG_TOPLEVEL_RESIZE": ("xdg_toplevel", "request", "resize"),
+    "XDG_TOPLEVEL_SET_MAX_SIZE": ("xdg_toplevel", "request", "set_max_size"),
+    "XDG_TOPLEVEL_SET_MIN_SIZE": ("xdg_toplevel", "request", "set_min_size"),
+    "XDG_TOPLEVEL_SET_MAXIMIZED": ("xdg_toplevel", "request", "set_maximized"),
+    "XDG_TOPLEVEL_UNSET_MAXIMIZED": ("xdg_toplevel", "request", "unset_maximized"),
+    "XDG_TOPLEVEL_SET_FULLSCREEN": ("xdg_toplevel", "request", "set_fullscreen"),
+    "XDG_TOPLEVEL_UNSET_FULLSCREEN": ("xdg_toplevel", "request", "unset_fullscreen"),
+    "XDG_TOPLEVEL_SET_MINIMIZED": ("xdg_toplevel", "request", "set_minimized"),
     "XDG_TOPLEVEL_CONFIGURE": ("xdg_toplevel", "event", "configure"),
     "XDG_TOPLEVEL_CLOSE": ("xdg_toplevel", "event", "close"),
     "XDG_TOPLEVEL_CONFIGURE_BOUNDS": ("xdg_toplevel", "event", "configure_bounds"),
 }
+
+# Every WLEvent member must live in exactly one canonical map — no
+# unverified opcodes (Rule 1).
+_ALL_NAME_MAP = {**_NAME_MAP, **_XDG_NAME_MAP}
+
+# Canonical protocol XMLs: wayland.xml is installed by libwayland-dev;
+# xdg-shell.xml ships with wayland-protocols (package
+# libwayland-protocols on Debian) and inside wayland's source tree.
+_XDG_SHELL_XML_CANDIDATES = [
+    os.environ.get("XDG_SHELL_XML"),
+    "/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml",
+    "/usr/local/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml",
+]
+
+
+def _find_xdg_shell_xml():
+    for c in _XDG_SHELL_XML_CANDIDATES:
+        if c and os.path.isfile(c):
+            return c
+    return None
 
 
 class TestOpcodeHeaderContract(unittest.TestCase):
     """Every mapped constant must equal its canonical wire opcode."""
 
     def test_all_mapped_members_exist_in_the_enums(self):
-        # The _NAME_MAP must cover exactly the constants the enum
-        # defines (a missing entry = an unverified opcode = Rule 1
-        # violation). xdg-shell constants come from xdg-shell.xml, a
-        # separate canonical file — only wl_* members are required to
-        # be mapped here when wayland.xml alone is the source.
+        # FULL coverage: every WLEvent member must be mapped to its
+        # canonical source (a missing entry = an unverified opcode =
+        # Rule 1 violation). wl_* members verify against wayland.xml,
+        # xdg_* members against xdg-shell.xml.
         for member in WLEvent.__members__:
-            if member.startswith("XDG_"):
-                continue  # xdg-shell.xml is a different source file
             self.assertIn(
-                member, _NAME_MAP,
+                member, _ALL_NAME_MAP,
                 f"WLEvent.{member} is not header/XML-verified — "
-                "add it to _NAME_MAP (ADR-0027 Rule 1: never "
-                "memory-verified)")
+                "add it to _NAME_MAP (wayland.xml) or _XDG_NAME_MAP "
+                "(xdg-shell.xml) (ADR-0027 Rule 1: never memory-verified)")
 
-    def test_opcodes_match_wayland_xml(self):
-        xml_path = _find_wayland_xml()
-        if not xml_path:
+    def test_opcodes_match_canonical_xml(self):
+        wl_xml = _find_wayland_xml()
+        xdg_xml = _find_xdg_shell_xml()
+        if not wl_xml and not xdg_xml:
             self.skipTest(
-                "wayland.xml not installed (libwayland-dev absent) — "
-                "real-client CI job enforces this rule there")
-        canonical = _parse_canonical_opcodes(xml_path)
+                "neither wayland.xml (libwayland-dev) nor xdg-shell.xml "
+                "(libwayland-protocols) installed — the real-client CI job "
+                "enforces this rule there")
+        canonical = {}
+        if wl_xml:
+            canonical.update(_parse_canonical_opcodes(wl_xml))
+        if xdg_xml:
+            canonical.update(_parse_canonical_opcodes(xdg_xml))
         mismatches = []
         for name, value in WLEvent.__members__.items():
-            if name not in _NAME_MAP:
-                continue  # xdg members: different canonical file
-            iface, kind, wire = _NAME_MAP[name]
+            iface, kind, wire = _ALL_NAME_MAP[name]
             table = canonical.get(iface)
             if table is None or (kind, wire) not in table:
                 mismatches.append(
-                    f"{name}: {iface}.{kind}.{wire} not in {xml_path}")
+                    f"{name}: {iface}.{kind}.{wire} not found in the "
+                    "installed canonical XML(s)")
                 continue
             want = table[(kind, wire)]
             if value != want:
@@ -167,9 +216,14 @@ class TestOpcodeHeaderContract(unittest.TestCase):
         self.assertEqual(mismatches, [], "; ".join(mismatches))
 
     def test_the_five_infamous_tables(self):
-        # Direct pins for the five tables the real-client run disproved
-        # (ADR-0027 Context): these hold even without wayland.xml.
+        # Direct pins for the tables the real-client run disproved
+        # (ADR-0027 Context) plus the two the first canonical-XML run
+        # disproved: delete_id is EVENT 1 (separate per-kind sequences
+        # — not the merged-sequence 2), and wl_shm has release=1 (no
+        # destroy request exists).
         self.assertEqual(WLEvent.WL_DISPLAY_ERROR, 0)
+        self.assertEqual(WLEvent.WL_DISPLAY_DELETE_ID, 1)
+        self.assertEqual(WLEvent.WL_SHM_RELEASE, 1)
         self.assertEqual(WLEvent.WL_OUTPUT_DONE, 2)
         self.assertEqual(WLEvent.WL_OUTPUT_SCALE, 3)
 
