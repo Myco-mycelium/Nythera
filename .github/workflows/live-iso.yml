@@ -226,6 +226,13 @@ jobs:
             sleep 30
           done
           [ "$up_ok" = 1 ] || { echo "::error::asset upload failed after 3 bounded attempts"; exit 1; }
+          # DRAFT SELF-HEAL: deleting a tag (e.g. force-moving it) makes
+          # GitHub convert that tag's release to a DRAFT. Drafts are
+          # invisible to anonymous API/clients while authenticated
+          # `gh release view` still sees them — so the upload above can
+          # "succeed" into a release nobody can ever download. Re-publish
+          # unconditionally; this is a no-op for a live release.
+          gh release edit "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --draft=false
           gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
             --json assets -q '.assets[].name'
 

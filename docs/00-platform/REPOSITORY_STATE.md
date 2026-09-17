@@ -757,6 +757,25 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-17 (**the v0.29.25 release pipeline: three attach-step
+  failure modes, ending in a hidden-draft release**): shipping the tag
+  surfaced failures the boot smokes never could. (1) `gh release
+  upload` stalled twice on the ~250 MB asset (once 28.5 min to a
+  job-budget cancellation with zero evidence, once solo); uploads now
+  go through `curl` against the release `upload_url` with a bounded
+  `--max-time` per attempt, delete-before-upload idempotency, 3
+  retries, and their own 20-min step timeout so a hang dies as a named
+  step. (2) `--generate-notes` (server-side generation, a known stall
+  point) was replaced with deterministic `--notes`. (3) The decisive
+  one: after the tag was force-moved across commits, GitHub converted
+  the existing release into a DRAFT — invisible to the anonymous API
+  (404, release "gone") while authenticated `gh release view` still
+  sees it, so CI happily uploaded both ISOs into a release nobody
+  could download; every step "succeeded". The attach steps now
+  self-heal with `gh release edit --draft=false` after the upload gate
+  (ordering pinned by `TestReleaseUploadContract`), and the tag is
+  never force-moved while its release exists. Final state: both
+  architectures' ISOs attached to a public v0.29.25.
 - 2026-09-17 (**the arm64 CI boot smoke finally went green — four
   stacked root causes**): every `live-iso-arm64` run had failed since
   2026-09-14. The causes, in the order CI could not reveal them:

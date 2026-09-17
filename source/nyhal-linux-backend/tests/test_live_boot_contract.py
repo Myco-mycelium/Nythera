@@ -926,6 +926,31 @@ class TestReleaseUploadContract(unittest.TestCase):
                 raw,
                 f"{name}: a real create failure must fail the step loudly")
 
+    def test_both_attach_steps_self_heal_a_zombie_draft(self):
+        # Deleting a tag (force-moving one) converts that tag's GitHub
+        # release into a DRAFT: invisible to anonymous API/clients while
+        # authenticated `gh release view` still sees it. v0.29.25's
+        # release sat fully-uploaded-but-hidden this way — every CI step
+        # "succeeded" into a release nobody could download. Both attach
+        # steps must re-publish (a no-op for a live release) after the
+        # upload succeeds, and strictly AFTER it (never publish a release
+        # whose asset upload failed).
+        heal = ('gh release edit "${GITHUB_REF_NAME}" '
+                '--repo "$GITHUB_REPOSITORY" --draft=false')
+        marker = "asset upload failed after 3 bounded attempts"
+        for wf, job, name in (
+            (self.amd64, "menu-boot", "amd64"),
+            (self.arm64, "menu-boot-arm64", "arm64"),
+        ):
+            run = self._release_step(wf, job)["run"]
+            self.assertIn(heal, run,
+                          f"{name}: attach step must clear the draft flag "
+                          "(tag deletion drafts the release)")
+            self.assertGreater(
+                run.index(heal), run.index(marker),
+                f"{name}: draft self-heal must run only after the upload "
+                "gate passes")
+
     def test_arm64_workflow_grants_contents_write(self):
         self.assertEqual(
             self.arm64["permissions"].get("contents"), "write",
