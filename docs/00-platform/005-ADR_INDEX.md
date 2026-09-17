@@ -46,6 +46,7 @@ only.
 | ADR-0022 | NyVault — storage as a daemon-hosted service on the IPC transport | Proposed | 2026-08-15 | — |
 | ADR-0023 | NyVault key manager — envelope encryption with Rust-held key custody | Proposed | 2026-08-15 | — |
 | ADR-0024 | Streaming data plane — chunked framing for large CALL payloads | Proposed | 2026-08-16 | — |
+| ADR-0027 | Wire-verified protocol constants and fail-closed acceptance gates | **Accepted** | 2026-09-16 | — |
 
 ## ADR Statuses
 
@@ -78,6 +79,7 @@ only.
 | 1.17.0  | 2026-08-15 | Add ADR-0022 (NyVault storage service) and ADR-0023 (NyVault key manager) |
 | 1.18.0  | 2026-08-16 | Add ADR-0024 (streaming data plane — chunked framing for large CALL payloads) |
 | 1.19.0  | 2026-09-10 | ADR-0009 v1.3.1: Implementation Note — per-sender fairness implemented (`FairTokenBucket`, fair-by-default endpoints, operator control-plane ops, dynamic-shares opt-in), §32b–d benchmark record complete, review package published (`ADR-0009-review-package.md`) |
+| 1.20.0  | 2026-09-16 | Add ADR-0027 (wire-verified protocol constants and fail-closed acceptance gates) — **Accepted** |
 
 ---
 **End of Document**

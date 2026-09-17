@@ -505,6 +505,23 @@ same day (reproducibility). Four new contract tests pin the ttyAMA0
 handshake, the ttyAMA0 autologin drop-in, and both idempotency
 fixes.
 
+### Temp-hygiene + ADR-0027 (0.29.20)
+
+The suite (and any daemon-backed run) was leaking **hundreds of
+orphaned `/tmp` entries per run** — ``nyrqis-aa-*``/``nyrqis-se-*``
+mkdtemp LSM trees, seccomp policy and BPF files. Three root causes,
+all closed: ``_cleanup_policy_files`` only unlinked files (the dirs
+are now derived and rmtree'd from the tracked paths); containers
+never waited/stopped on had no cleanup path at all (``__del__``
+last-resort sweep, never load-bearing); the daemon host's stop and
+the launcher-test helpers didn't sweep (now they do, via
+``addCleanup`` so failures clean too). A full suite run now finishes
+with **zero** leaked temp dirs. **ADR-0027** documents the two
+retrospective lessons of the Wayland round: constants must be
+verified on the wire (the real weston-simple-shm client disproved
+five opcode tables written from memory) and builds must fail closed
+(the four ISO gates).
+
 ## Package Repository (0.28.0, NPS-026 §7)
 
 The repository half of the package system — `backend/package_repo.py`

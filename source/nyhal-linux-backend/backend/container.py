@@ -355,6 +355,25 @@ class ContainerManager:
         self._billing_records: Dict[str, List[Dict[str, Any]]] = {}  # container_id → records
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
+    def __del__(self):
+        """Best-effort temp-file cleanup when the manager is dropped.
+
+        Containers normally clean their policy/BPF/LSM temp files at
+        wait()/stop()/terminate(); a manager abandoned while containers
+        are still live (the test suite did this hundreds of times per
+        run) would leave its mkdtemp LSM trees (nyrqis-aa-*/nyrqis-se-*
+        and the seccomp/BPF policy files) in /tmp forever. ``__del__``
+        is a LAST-RESORT sweeper — never load-bearing: every normal path
+        still cleans up eagerly and ``_cleanup_policy_files`` is
+        idempotent, so a manager already fully cleaned up no-ops here.
+        """
+        try:
+            self._cleanup_policy_files()
+        except Exception:
+            # Interpreter shutdown (module globals may already be None)
+            # or a partially-constructed manager — nothing safe to do.
+            pass
+
     def _record_event(self, kind: str, container_id: str,
                       detail: str = "") -> None:
         """Record a lifecycle event in the bounded ring buffer."""
@@ -2410,6 +2429,11 @@ class ContainerManager:
         self._cap_reset(container)
         self._ipc_unregister(container)
         self._cleanup_network(container)
+        # Temp policy/BPF/LSM files are per-container (written at
+        # spawn); a terminated container never needs them again. The
+        # manager-level files for OTHER containers stay tracked and are
+        # only removed by their own wait()/stop paths.
+        self._cleanup_policy_files()
         container.overlay = None  # release overlay reference
         # Auto-restart check
         self._maybe_restart(container)
@@ -2451,6 +2475,11 @@ class ContainerManager:
         self._cap_reset(container)
         self._ipc_unregister(container)
         self._cleanup_network(container)
+        # Temp policy/BPF/LSM files are per-container (written at
+        # spawn); a terminated container never needs them again. The
+        # manager-level files for OTHER containers stay tracked and are
+        # only removed by their own wait()/stop paths.
+        self._cleanup_policy_files()
         container.overlay = None  # release overlay reference
         # Auto-restart check
         self._maybe_restart(container)
@@ -2843,6 +2872,7 @@ class ContainerManager:
         if container.pid is None:
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)  # idempotent; no registry entry to drop
+            self._cleanup_policy_files()  # never-spawned: any temp files are orphaned
             return
         
         try:
@@ -2892,6 +2922,9 @@ class ContainerManager:
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
+            # Temp policy/BPF/LSM files are per-container; a terminated
+            # container never needs them again (same as the wait() path).
+            self._cleanup_policy_files()
             logger.info(f"Terminated container {container.id}")
         except OSError as e:
             logger.error(f"Error terminating container {container.id}: {e}")
@@ -2900,6 +2933,7 @@ class ContainerManager:
             container.transition_to(ContainerState.TERMINATED)
             self._cap_reset(container)
             self._ipc_unregister(container)
+            self._cleanup_policy_files()
         finally:
             self._reap_direct_child(container)
     
@@ -3027,10 +3061,22 @@ class ContainerManager:
                 build_lsm_policy, AppArmorProfile, SEPolicy, lsm_audit,
             )
             from backend.capability import Capability
-            # Clean up old LSM files
+            # Clean up old LSM files AND their mkdtemp dirs (the dirs
+            # would otherwise orphan every reload — see
+            # _cleanup_policy_files for the dir-derivation logic).
+            stale_dirs = set()
             for path in list(self._lsm_files):
                 try:
                     os.unlink(path)
+                except OSError:
+                    pass
+                parent = os.path.dirname(os.path.abspath(path))
+                if os.path.basename(parent).startswith(
+                        ("nyrqis-aa-", "nyrqis-se-")):
+                    stale_dirs.add(parent)
+            for d in stale_dirs:
+                try:
+                    shutil.rmtree(d)
                 except OSError:
                     pass
             self._lsm_files.clear()
@@ -35880,12 +35926,29 @@ class ContainerManager:
         return path
     
     def _cleanup_policy_files(self) -> None:
-        """Remove seccomp policy + BPF + LSM temp files."""
+        """Remove seccomp policy + BPF + LSM temp files AND the temp
+        dirs that held the LSM trees. Only unlinking the files left
+        every ``mkdtemp`` dir behind (nyrqis-aa-*/nyrqis-se-*): a suite
+        run accumulated hundreds of orphaned dirs in /tmp. The dirs are
+        derived from the tracked file paths (their parents), so no
+        extra bookkeeping is needed."""
+        orphan_dirs = set()
         for path in self._policy_files + self._bpf_files + self._lsm_files:
             try:
                 os.unlink(path)
             except OSError as e:
                 logger.warning(f"Failed to remove policy file {path}: {e}")
+            # The LSM files live in dedicated mkdtemp dirs (the se dir;
+            # the aa file's parent) — remember them for removal.
+            parent = os.path.dirname(os.path.abspath(path))
+            base = os.path.basename(parent)
+            if base.startswith(("nyrqis-aa-", "nyrqis-se-")):
+                orphan_dirs.add(parent)
+        for d in orphan_dirs:
+            try:
+                shutil.rmtree(d)
+            except OSError as e:
+                logger.warning(f"Failed to remove policy dir {d}: {e}")
         self._policy_files.clear()
         self._bpf_files.clear()
         self._lsm_files.clear()

@@ -24,7 +24,7 @@ on:
       - "tests/boot_smoke_menu.py"
 
 permissions:
-  contents: read
+  contents: write   # release upload needs contents:write on tag builds
 
 jobs:
   build-arm64:
@@ -192,3 +192,24 @@ jobs:
           name: arm64-menu-boot-smoke-serial-log
           path: /tmp/nyrqis-boot-smoke-menu-*/serial.log
           if-no-files-found: ignore
+
+      - name: Attach the ISO to the release (tag builds only)
+        # Both architectures ship with a v* release: the amd64 upload
+        # lives in live-iso.yml's menu-boot job; this is the arm64 half.
+        # The release page may not exist yet for a fresh tag — the
+        # amd64 job creates it; both jobs tolerate it already existing
+        # (whichever runs first creates, the other attaches). --clobber
+        # makes re-runs idempotent.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" \
+                 --repo "$GITHUB_REPOSITORY" \
+                 --title "Nyrqis ${GITHUB_REF_NAME}" \
+                 --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live-arm64.iso \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name'

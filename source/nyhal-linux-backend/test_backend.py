@@ -92,6 +92,10 @@ class TestContainerPrimitives(unittest.TestCase):
     
     def setUp(self):
         self.manager = ContainerManager(use_cgroups_v2=False)
+        # Real-launch tests (app_launch etc.) write temp policy/BPF/LSM
+        # files tracked on the manager — always clean them up, failure
+        # or not (a suite run leaked hundreds of dirs without this).
+        self.addCleanup(self.manager._cleanup_policy_files)
     
     def test_container_creation(self):
         """Test creating a container."""
@@ -429,7 +433,23 @@ class TestAppCLI(unittest.TestCase):
 
 
 class TestLSMPolicy(unittest.TestCase):
-    """Test LSM (AppArmor/SELinux) policy generation."""
+    """Test LSM (AppArmor/SELinux) policy generation.
+
+    Any test that runs ``_setup_lsm``/``reload_policy`` creates temp
+    dirs under /tmp (AppArmor + SELinux files, the ``lsm_policy.json``
+    audit copy). Every such test MUST register
+    ``manager._cleanup_policy_files`` via ``addCleanup`` — a suite run
+    was leaving hundreds of /tmp/nyrqis-aa-*/nyrqis-se-* dirs behind
+    (the cleanup methods only unlink the FILES; the dirs are removed
+    too via the se_module_dir's parent handling in _cleanup_temp_dirs).
+    """
+
+    def _lsm_manager(self, capability_manager=None):
+        """A ContainerManager whose temp files are cleaned up after the
+        test, assertion failure or not (addCleanup runs always)."""
+        manager = ContainerManager(capability_manager=capability_manager)
+        self.addCleanup(manager._cleanup_policy_files)
+        return manager
 
     def test_build_lsm_policy_minimal(self):
         """A minimal capability set produces a minimal policy."""
@@ -642,7 +662,7 @@ class TestLSMPolicy(unittest.TestCase):
 
     def test_container_setup_lsm_no_caps(self):
         """_setup_lsm works with no capabilities (minimal policy)."""
-        manager = ContainerManager()
+        manager = self._lsm_manager()
         config = ContainerConfig()  # no capabilities
         container = manager.create(config)
         manager._setup_lsm(container)
@@ -656,7 +676,7 @@ class TestLSMPolicy(unittest.TestCase):
         """reload_policy regenerates LSM files from current capabilities."""
         from backend.capability import CapabilityManager, Capability
         cap_mgr = CapabilityManager()
-        manager = ContainerManager(capability_manager=cap_mgr)
+        manager = self._lsm_manager(capability_manager=cap_mgr)
         config = ContainerConfig(
             capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
         )
@@ -683,7 +703,7 @@ class TestLSMPolicy(unittest.TestCase):
         """revoke_and_reload revokes capability and refreshes LSM."""
         from backend.capability import CapabilityManager, Capability
         cap_mgr = CapabilityManager()
-        manager = ContainerManager(capability_manager=cap_mgr)
+        manager = self._lsm_manager(capability_manager=cap_mgr)
         config = ContainerConfig(
             capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
         )
@@ -710,7 +730,7 @@ class TestLSMPolicy(unittest.TestCase):
         """reload_policy returns True on success."""
         from backend.capability import CapabilityManager, Capability
         cap_mgr = CapabilityManager()
-        manager = ContainerManager(capability_manager=cap_mgr)
+        manager = self._lsm_manager(capability_manager=cap_mgr)
         config = ContainerConfig(
             capabilities=["CAP_FILESYSTEM_READ"],
         )
@@ -19656,6 +19676,14 @@ def _launch_cleanup(manager, container) -> None:
             os.waitpid(launcher_pid, 0)
         except (ChildProcessError, ProcessLookupError):
             pass
+    # Temp policy/BPF/LSM files outlive the container (tracked on the
+    # manager, not the container) — without this, every real-launch
+    # test and every support-probe run leaks its mkdtemp LSM dirs and
+    # policy files into /tmp (hundreds per suite run).
+    try:
+        manager._cleanup_policy_files()
+    except Exception:
+        pass
 
 
 def _netns_launch_supported() -> bool:
@@ -19952,7 +19980,9 @@ class TestLauncherInitRust(unittest.TestCase):
     """
 
     def _manager(self):
-        return ContainerManager(use_cgroups_v2=False, use_direct_syscalls=True)
+        m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=True)
+        self.addCleanup(m._cleanup_policy_files)
+        return m
 
     def test_launcher_exec_uses_rust_binary_when_available(self):
         m = self._manager()
@@ -23255,6 +23285,7 @@ class TestContainerIpcRegistry(unittest.TestCase):
         registry = ContainerIpcRegistry()
         m = ContainerManager(use_cgroups_v2=False, use_direct_syscalls=False,
                              ipc_registry=registry)
+        self.addCleanup(m._cleanup_policy_files)
         c = m.create(ContainerConfig(name="ctr-legacy", command=["/bin/true"]))
 
         def fake_spawn(container):

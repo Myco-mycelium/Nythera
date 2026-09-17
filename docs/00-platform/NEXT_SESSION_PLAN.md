@@ -1,10 +1,31 @@
 ---
 title: Next Development Session Plan
-version: 6.11.0
+version: 6.12.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11h (2026-09-16) — THE SUITE STOPS LITTERING: zero leaked /tmp dirs per run; ADR-0027 records the two retrospective lessons
+
+**Temp-hygiene (0.29.20):** every suite run left hundreds of orphaned
+`/tmp` entries (nyrqis-aa-*/nyrqis-se-* LSM mkdtemp trees, seccomp
+policy and BPF files). Root causes closed at both levels: production
+(``_cleanup_policy_files`` now removes the mkdtemp DIRS it only ever
+unlinked files from; ``ContainerManager.__del__`` sweeps abandoned
+managers; ``StatusServiceHost.stop`` cleans up) and tests (all
+LSM/launcher/IPC tests register the sweep via ``addCleanup`` so it
+runs on assertion failure too). Proof: full suite **8,949 passed,
+35 skipped — leak-count 0** immediately after the run (was hundreds).
+
+**ADR-0027:** the Wayland round's two lessons, formalized — protocol
+constants written from memory are wrong until proven on the wire (a
+real weston-simple-shm client disproved five opcode tables), and
+build correctness claims must fail closed (the four ISO gates: dpkg
+audit, probe parity, byte-compile, size).
+
+Also in this round: arm64 ISO workflow ships the image on ``v*`` tag
+releases (mirroring amd64), with ``contents: write`` granted.
 
 ## Session 11g (2026-09-16) — HANGS FAIL IN MINUTES: explicit budgets on all 33 CI jobs; size gate proven on a real build
 

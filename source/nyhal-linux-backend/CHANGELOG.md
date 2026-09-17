@@ -5,6 +5,36 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.20] - 2026-09-16
+
+### Fixed
+
+- **Temp-file leaks (tests + daemon):** every suite run left hundreds of
+  orphaned ``/tmp`` entries behind. Root causes, all fixed:
+  - ``_cleanup_policy_files`` only unlinked tracked FILES — the mkdtemp
+    dirs holding the LSM trees (``nyrqis-aa-*``/``nyrqis-se-*``) were
+    never removed; it now derives and rmtree's them from the tracked
+    paths (no extra bookkeeping).
+  - Containers never waited/stopped on (the suite's dominant pattern)
+    had no cleanup path at all — ``ContainerManager.__del__`` now runs a
+    best-effort last-resort sweep (never load-bearing: all normal paths
+    still clean eagerly, and the cleanup is idempotent).
+  - ``StatusServiceHost.stop`` and the launcher tests' shared
+    ``_launch_cleanup`` helper now sweep the manager's temp files too.
+  - All ``TestLSMPolicy``/launcher/IPC tests register the cleanup via
+    ``addCleanup`` so it runs on assertion failure as well.
+
+### Added
+
+- **ADR-0027** (``docs/reference/adr/``): wire-verified protocol
+  constants and the fail-closed build-gate pattern, retrospectively
+  documenting the Wayland opcode corrections and the ISO gates.
+
+### Changed
+
+- arm64 ISO workflow: releases on ``v*`` tags now upload the arm64 image
+  alongside the amd64 one (``contents: write`` added).
+
 ## [0.29.19] - 2026-09-16
 
 ### Added

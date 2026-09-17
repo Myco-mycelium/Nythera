@@ -709,6 +709,13 @@ class StatusServiceHost:
         self._stop_main_loop()
         self._stop_health_socket()
         self.server.close()
+        # Temp policy/BPF/LSM files outlive the serve loops; without
+        # this, every daemon-backed test host (and a real daemon stop)
+        # leaks its mkdtemp LSM dirs and policy files into /tmp.
+        try:
+            self.container_manager._cleanup_policy_files()
+        except Exception:
+            pass
 
     def serve_until_signal(self) -> None:
         """Serve until SIGINT/SIGTERM, then stop cleanly (the CLI
