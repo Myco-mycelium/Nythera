@@ -505,6 +505,19 @@ same day (reproducibility). Four new contract tests pin the ttyAMA0
 handshake, the ttyAMA0 autologin drop-in, and both idempotency
 fixes.
 
+### Temp-hygiene pinned; system_monitor meets its spec (0.29.21)
+
+The zero-leak guarantee is now guarded by ``TestTempFileHygiene`` (dir
+removal, abandoned-manager GC sweep, idempotency, zero-new-entries
+after the suite pattern). Both ISO workflows' release uploads are
+contract-pinned: exact built filename, tag gating, ``--clobber``,
+race-safe concurrent create, ``contents: write``. The 16
+``TestSystemMonitor`` skips (``SystemSnapshot`` never existed —
+skipped since 0.28.0) now pass: ``ui/system_monitor.py`` grew the
+spec-pinned snapshot API while every existing caller keeps working.
+Suite: 8,949 → 8,973 passed; skips 35 → 19 (all remaining are
+genuine environment inversions or hardware needs).
+
 ### Temp-hygiene + ADR-0027 (0.29.20)
 
 The suite (and any daemon-backed run) was leaking **hundreds of

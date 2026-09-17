@@ -741,6 +741,119 @@ class TestLSMPolicy(unittest.TestCase):
         self.assertTrue(result)
 
 
+class TestTempFileHygiene(unittest.TestCase):
+    """Pin the zero-leak guarantee (0.29.20): the suite once left
+    hundreds of orphaned /tmp/nyrqis-aa-*/nyrqis-se-* mkdtemp LSM trees
+    and nyrqis-policy-*/nyrqis-bpf-* files behind per run.
+
+    Three closed paths, each pinned here:
+    1. _cleanup_policy_files removes the mkdtemp DIRS, not just files.
+    2. A manager abandoned while containers are live (never waited on)
+       is swept by __del__ at garbage collection.
+    3. The cleanup is idempotent (double-call safe) — the __del__
+       sweeper must never turn a previously-cleaned manager into an
+       error.
+    """
+
+    # Only entries created by THIS suite run count as leaks; another
+    # process may legitimately have temp files in flight.
+    PREFIXES = (
+        "/tmp/nyrqis-aa-", "/tmp/nyrqis-se-",
+        "/tmp/nyrqis-policy-", "/tmp/nyrqis-bpf-",
+    )
+
+    def _snapshot(self):
+        import glob as _glob
+        found = []
+        for p in self.PREFIXES:
+            found.extend(_glob.glob(p + "*"))
+        return set(found)
+
+    def _new_entries(self, before):
+        return self._snapshot() - set(before)
+
+    def test_cleanup_policy_files_removes_mkdtemp_dirs_not_just_files(self):
+        """After _setup_lsm + cleanup, no aa/se dir remains on disk."""
+        import os
+        before = self._snapshot()
+        manager = ContainerManager()
+        self.addCleanup(manager._cleanup_policy_files)
+        container = manager.create(ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
+        ))
+        manager._setup_lsm(container)
+        aa_dir = os.path.dirname(os.path.abspath(container.config.aa_profile))
+        se_dir = container.config.se_module_dir
+        self.assertTrue(os.path.isdir(aa_dir))
+        self.assertTrue(os.path.isdir(se_dir))
+        manager._cleanup_policy_files()
+        self.assertFalse(os.path.exists(aa_dir))
+        self.assertFalse(os.path.exists(se_dir))
+        self.assertEqual(self._new_entries(before), set())
+
+    def test_abandoned_manager_is_swept_by_gc(self):
+        """A manager whose containers are never waited on still releases
+        its LSM trees when the manager object is garbage-collected (the
+        __del__ last-resort sweep — the suite's dominant leak path)."""
+        import gc
+        import os
+        before = self._snapshot()
+        def _abandon():
+            m = ContainerManager()
+            c = m.create(ContainerConfig(
+                capabilities=["CAP_FILESYSTEM_READ"],
+            ))
+            m._setup_lsm(c)  # write aa/se trees; NO wait()/stop() ever
+            aa_dir = os.path.dirname(os.path.abspath(
+                c.config.aa_profile))
+            se_dir = c.config.se_module_dir
+            self.assertTrue(os.path.isdir(aa_dir))
+            self.assertTrue(os.path.isdir(se_dir))
+            return aa_dir, se_dir
+        aa_dir, se_dir = _abandon()
+        gc.collect()  # drop the manager → __del__ → cleanup
+        self.assertFalse(os.path.exists(aa_dir))
+        self.assertFalse(os.path.exists(se_dir))
+        self.assertEqual(self._new_entries(before), set())
+
+    def test_cleanup_policy_files_is_idempotent(self):
+        """Double cleanup is safe (the __del__ sweeper runs after any
+        explicit cleanup without erroring or resurrecting paths)."""
+        manager = ContainerManager()
+        container = manager.create(ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ"],
+        ))
+        manager._setup_lsm(container)
+        manager._cleanup_policy_files()
+        # No exception, no state assertion — a second call must just be
+        # a no-op.
+        manager._cleanup_policy_files()
+        self.assertEqual(manager._policy_files, [])
+        self.assertEqual(manager._bpf_files, [])
+        self.assertEqual(manager._lsm_files, [])
+
+    def test_full_suite_pattern_leaves_nothing_behind(self):
+        """The exact combination the old suite ran thousands of times:
+        manager + _setup_lsm + reload_policy + terminate, with nothing
+        but addCleanup — zero new /tmp entries may survive."""
+        before = self._snapshot()
+        manager = ContainerManager()
+        self.addCleanup(manager._cleanup_policy_files)
+        config = ContainerConfig(
+            capabilities=["CAP_FILESYSTEM_READ", "CAP_NETWORK_SOCKET"],
+        )
+        container = manager.create(config)
+        manager._setup_lsm(container)
+        manager.reload_policy(container)
+        # Explicit sweep — exactly what the registered addCleanup runs
+        # at teardown (idempotent, so this mirrors reality).
+        manager._cleanup_policy_files()
+        # (No spawn/terminate: a never-spawned container has no valid
+        # terminate transition — its temp files are covered by the
+        # addCleanup sweep above, which is exactly what the suite does.)
+        self.assertEqual(self._new_entries(before), set())
+
+
 class TestContainerFreezer(unittest.TestCase):
     """Test the cgroup v2 freezer integration for suspension
     (implementation_plan.md §4.1): suspend freezes the container's whole

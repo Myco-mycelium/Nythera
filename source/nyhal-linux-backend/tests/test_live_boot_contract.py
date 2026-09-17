@@ -740,5 +740,94 @@ class TestRootfsCacheContract(unittest.TestCase):
             "rootfs lost it")
 
 
+class TestReleaseUploadContract(unittest.TestCase):
+    """Pin the release-upload wiring in both ISO workflows: a ``v*``
+    tag push must ship BOTH architectures' boot-smoked ISOs as release
+    assets, race-safely (both tag jobs may try to create the release
+    concurrently; the loser must tolerate ``already_exists``).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.amd64 = yaml.safe_load(open(LIVE_ISO_WF))
+        cls.arm64 = yaml.safe_load(open(LIVE_ISO_ARM64_WF))
+        cls.amd64_raw = open(LIVE_ISO_WF).read()
+        cls.arm64_raw = open(LIVE_ISO_ARM64_WF).read()
+
+    def _release_step(self, wf, job):
+        steps = wf["jobs"][job]["steps"]
+        rel = [s for s in steps if "release" in s.get("name", "").lower()]
+        self.assertEqual(
+            len(rel), 1,
+            f"{job} must have exactly one release-upload step")
+        return rel[0]
+
+    def test_both_workflows_have_a_tag_gated_release_step(self):
+        for wf, job, iso in (
+            (self.amd64, "menu-boot", "nyrqis-live.iso"),
+            (self.arm64, "menu-boot-arm64", "nyrqis-live-arm64.iso"),
+        ):
+            step = self._release_step(wf, job)
+            self.assertEqual(
+                step.get("if"), "startsWith(github.ref, 'refs/tags/v')",
+                f"{job}: release upload must run on v* tags only")
+            run = step["run"]
+            self.assertIn(
+                f"gh release upload \"${{GITHUB_REF_NAME}}\" dist/{iso}",
+                run,
+                f"{job}: must upload the built ISO {iso}")
+            self.assertIn("--clobber", run,
+                          f"{job}: re-runs must be idempotent (--clobber)")
+
+    def test_both_upload_steps_tolerate_concurrent_release_creation(self):
+        # Both jobs' create-failure path re-views the release (the
+        # winner of the race created it) before failing the step.
+        for raw, name in ((self.amd64_raw, "amd64"),
+                          (self.arm64_raw, "arm64")):
+            self.assertIn("RACE-SAFE", raw,
+                          f"{name}: upload must be race-aware")
+            self.assertIn(
+                "gh release view \"${GITHUB_REF_NAME}\"", raw,
+                f"{name}: create-failure path must re-check the release")
+            self.assertIn(
+                "::error::release ${GITHUB_REF_NAME} could not be created",
+                raw,
+                f"{name}: a real create failure must fail the step loudly")
+
+    def test_arm64_workflow_grants_contents_write(self):
+        self.assertEqual(
+            self.arm64["permissions"].get("contents"), "write",
+            "release upload needs contents:write")
+        self.assertEqual(
+            self.amd64["permissions"].get("contents"), "write")
+
+    def test_uploaded_filenames_match_the_builder_output(self):
+        # The uploaded filename must be the exact file the build job
+        # produced and verified (a mismatch uploads nothing or the wrong
+        # file silently): the builder's -o flag, the post-build `test
+        # -f`, and the upload-artifact path must all agree per arch.
+        for wf_raw, wf, build_job, iso in (
+            (self.amd64_raw, self.amd64, "build", "nyrqis-live.iso"),
+            (self.arm64_raw, self.arm64, "build-arm64",
+             "nyrqis-live-arm64.iso"),
+        ):
+            steps = wf["jobs"][build_job]["steps"]
+            build_runs = "\n".join(
+                s["run"] for s in steps
+                if "run" in s and "build-live-iso.sh" in s["run"])
+            self.assertIn(
+                f"-o dist/{iso}", build_runs,
+                f"{build_job}: builder must write dist/{iso}")
+            self.assertIn(
+                f"test -f dist/{iso}", wf_raw,
+                f"{build_job}: must verify dist/{iso} exists post-build")
+            upload = [s for s in steps
+                      if s.get("uses", "").startswith("actions/upload-artifact")]
+            self.assertTrue(
+                any(u.get("with", {}).get("path") == f"dist/{iso}"
+                    for u in upload),
+                f"{build_job}: must upload the artifact dist/{iso}")
+
+
 if __name__ == "__main__":
     unittest.main()

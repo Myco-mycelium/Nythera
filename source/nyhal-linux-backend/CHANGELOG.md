@@ -5,6 +5,33 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.21] - 2026-09-16
+
+### Added
+
+- **Temp-hygiene pinned:** ``TestTempFileHygiene`` (4 tests) guards the
+  zero-leak guarantee — dir removal (not just file unlink), the
+  ``__del__`` sweep of an abandoned manager, cleanup idempotency, and
+  the full suite pattern leaving zero new ``/tmp`` entries.
+- **Release-upload contract (4 tests):** both ISO workflows must carry
+  a tag-gated ``gh release upload`` of the exact built ISO filename,
+  with ``--clobber`` idempotency, a race-safe create (concurrent tag
+  jobs tolerate ``already_exists``), and ``contents: write``.
+
+### Fixed
+
+- **system_monitor meets its spec suite:** 16 tests skipped since
+  0.28.0 (import failure: ``SystemSnapshot`` never existed) now pass.
+  ``ui/system_monitor.py`` grew the pinned API — ``snapshot()``
+  (unrate-limited, appends ``SystemSnapshot`` to a bounded ``history``,
+  dispatches ``"snapshot"`` events), ``latest``, ``cpu_history`` /
+  ``memory_history``, ``get_summary`` (empty pre-data),
+  ``on_snapshot``, ``set_process_search`` / ``filtered_processes`` /
+  ``set_sort_by`` / ``top_processes``, ``include_processes=False``, and
+  spec construction kwargs on the dataclasses (``percent``,
+  ``per_core``, ``mount``, ``bytes_sent``/``bytes_recv``). Existing
+  callers (``update()``, ``show()``, demo desktop) are unaffected.
+
 ## [0.29.20] - 2026-09-16
 
 ### Fixed

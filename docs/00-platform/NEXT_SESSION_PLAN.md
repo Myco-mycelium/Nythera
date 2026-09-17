@@ -1,10 +1,27 @@
 ---
 title: Next Development Session Plan
-version: 6.12.0
+version: 6.13.0
 date: 2026-09-16
 ---
 
 # Next Development Session Plan
+
+## Session 11i (2026-09-16) — SKIPS ARE ANSWERS, NOT EXCUSES: 35 → 19; the zero-leak guarantee and the release path are now pinned
+
+**Skip triage (0.29.21):** all 35 skips categorized. 16 were
+actionable — ``TestSystemMonitor`` never ran because the spec's
+``SystemSnapshot`` didn't exist; the implementation now meets its spec
+(snapshot/latest/history/summary/search/top, ``include_processes``,
+spec kwargs) with zero caller breakage. The remaining 19 are legitimate:
+6+1 crate-vs-stub inversions, 2 Vulkan, 6 Wayland crate, 1 sandbox
+SCM_RIGHTS, 3 real-display boot-to-desktop.
+
+**Pinned:** the zero-leak guarantee (``TestTempFileHygiene`` — dir
+removal, GC sweep of abandoned managers, idempotency, zero-new-
+entries) and the release-upload path (tag gating, exact filename
+parity with the builder output, ``--clobber``, race-safe concurrent
+create, ``contents: write``) — the race would have failed one arch's
+upload on a tag push. Suite **8,973 passed, 19 skipped**, leak-count 0.
 
 ## Session 11h (2026-09-16) — THE SUITE STOPS LITTERING: zero leaked /tmp dirs per run; ADR-0027 records the two retrospective lessons
 

@@ -43,17 +43,25 @@ class MonitorView(Enum):
 
 @dataclass
 class CpuInfo:
-    """Per-core CPU information."""
-    core_id: int
+    """Per-core CPU information.
+
+    ``percent``/``per_core`` are spec-suite construction aliases (the
+    0.28.0 convention: the implementation meets its spec suite);
+    ``percent`` mirrors ``usage``, ``per_core`` carries per-core
+    percentages as plain floats.
+    """
+    core_id: int = 0
     usage: float = 0.0      # 0-100%
     frequency: float = 0.0   # MHz
     temperature: float = 0.0 # Celsius (0 = unavailable)
     history: List[float] = field(default_factory=list)
+    percent: float = 0.0
+    per_core: List[float] = field(default_factory=list)
 
 
 @dataclass
 class MemoryInfo:
-    """Memory usage information."""
+    """Memory usage information (``percent`` mirrors ``usage_percent``)."""
     total_mb: float = 0.0
     used_mb: float = 0.0
     available_mb: float = 0.0
@@ -63,13 +71,15 @@ class MemoryInfo:
     swap_used_mb: float = 0.0
     usage_percent: float = 0.0
     history: List[float] = field(default_factory=list)
+    percent: float = 0.0
 
 
 @dataclass
 class DiskInfo:
-    """Disk partition information."""
-    device: str
-    mount_point: str
+    """Disk partition information (``mount`` aliases ``mount_point``,
+    ``percent`` mirrors ``usage_percent`` — spec-suite kwargs)."""
+    device: str = ""
+    mount_point: str = ""
     fs_type: str = ""
     total_gb: float = 0.0
     used_gb: float = 0.0
@@ -77,12 +87,15 @@ class DiskInfo:
     usage_percent: float = 0.0
     read_speed: float = 0.0   # MB/s
     write_speed: float = 0.0  # MB/s
+    mount: Optional[str] = None
+    percent: float = 0.0
 
 
 @dataclass
 class NetworkInfo:
-    """Network interface information."""
-    interface: str
+    """Network interface information (``bytes_sent``/``bytes_recv``
+    mirror ``tx_bytes``/``rx_bytes`` — spec-suite kwargs)."""
+    interface: str = ""
     rx_bytes: int = 0
     tx_bytes: int = 0
     rx_speed: float = 0.0   # KB/s
@@ -91,6 +104,8 @@ class NetworkInfo:
     tx_history: List[float] = field(default_factory=list)
     ip_address: str = ""
     is_up: bool = True
+    bytes_sent: int = 0
+    bytes_recv: int = 0
 
 
 @dataclass
@@ -118,6 +133,23 @@ class SystemInfo:
     boot_time: float = 0.0
 
 
+@dataclass
+class SystemSnapshot:
+    """Immutable point-in-time capture of the system state (the type
+    ``SystemMonitor.snapshot()`` returns and ``history`` stores)."""
+    timestamp: float = field(default_factory=time.time)
+    hostname: str = ""
+    os_name: str = ""
+    kernel: str = ""
+    architecture: str = ""
+    uptime_seconds: float = 0.0
+    load_avg: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    cpu_count: int = 0
+    boot_time: float = 0.0
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # System monitor
 # ---------------------------------------------------------------------------
@@ -140,10 +172,12 @@ class SystemMonitor:
         session=None,
         history_size: int = 60,
         update_interval: float = 1.0,
+        include_processes: bool = True,
     ) -> None:
         self._session = session
         self._history_size = history_size
         self._update_interval = update_interval
+        self._include_processes = include_processes
 
         # State
         self._view: MonitorView = MonitorView.OVERVIEW
@@ -164,6 +198,14 @@ class SystemMonitor:
         self._prev_cpu_times: List[Tuple[int, int]] = []
         self._prev_net_bytes: Dict[str, Tuple[int, int]] = {}
         self._prev_disk_io: Dict[str, Tuple[int, int]] = {}
+
+        # Spec-suite snapshot API: bounded history of SystemSnapshot,
+        # the latest one, per-snapshot callbacks, and the process
+        # search term used by filtered_processes().
+        self._history: deque = deque(maxlen=history_size)
+        self._latest: Optional[SystemSnapshot] = None
+        self._snapshot_callbacks: List[Callable] = []
+        self._process_search: str = ""
 
         # View state
         self._selected_tab: str = "overview"
@@ -288,6 +330,123 @@ class SystemMonitor:
     @property
     def temperatures(self) -> Dict[str, float]:
         return dict(self._temperatures)
+
+    # -- Snapshot API (spec suite: snapshot/latest/history/summary) ----
+
+    def snapshot(self) -> SystemSnapshot:
+        """Refresh all data unconditionally and capture a SystemSnapshot.
+
+        Unlike ``update()`` this is NOT rate-limited: every call appends
+        one history entry (the spec suite calls it in a tight loop and
+        counts entries). Dispatches a ``"snapshot"`` event to the
+        per-snapshot callbacks registered via ``on_snapshot``.
+        """
+        self._read_system_info()
+        self._read_cpu()
+        self._read_memory()
+        self._read_disk()
+        self._read_network()
+        self._read_processes()
+        self._read_temperatures()
+        self._last_update = time.time()
+        snap = SystemSnapshot(
+            hostname=self._system.hostname,
+            os_name=self._system.os_name,
+            kernel=self._system.kernel,
+            architecture=self._system.architecture,
+            uptime_seconds=self._system.uptime_seconds,
+            load_avg=self._system.load_avg,
+            cpu_count=self._system.cpu_count,
+            boot_time=self._system.boot_time,
+            cpu_percent=self.cpu_overall,
+            memory_percent=self._memory.usage_percent,
+        )
+        self._latest = snap
+        self._history.append(snap)
+        for cb in self._snapshot_callbacks:
+            try:
+                cb("snapshot", snap)
+            except Exception:
+                pass
+        return snap
+
+    @property
+    def latest(self) -> Optional[SystemSnapshot]:
+        """The most recent snapshot, or None before the first one."""
+        return self._latest
+
+    @property
+    def history(self) -> List[SystemSnapshot]:
+        """Snapshot history, oldest first (bounded by ``history_size``)."""
+        return list(self._history)
+
+    def cpu_history(self, n: int = 60) -> List[float]:
+        """The last ``n`` overall CPU percentages as plain floats."""
+        snaps = list(self._history)[-n:]
+        return [s.cpu_percent for s in snaps]
+
+    def memory_history(self, n: int = 60) -> List[float]:
+        """The last ``n`` memory percentages as plain floats."""
+        snaps = list(self._history)[-n:]
+        return [s.memory_percent for s in snaps]
+
+    def on_snapshot(self, callback: Callable) -> None:
+        """Register ``callback(event_name, snapshot)`` for each snapshot."""
+        self._snapshot_callbacks.append(callback)
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Summary dict for the current view; {} before any data exists
+        (the spec suite pins the empty state pre-snapshot)."""
+        if self._latest is None and self._last_update == 0:
+            return {}
+        return {
+            "hostname": self._system.hostname,
+            "cpu_percent": self.cpu_overall,
+            "memory_percent": self._memory.usage_percent,
+            "disks": [
+                {
+                    "mount": d.mount_point,
+                    "percent": d.usage_percent,
+                }
+                for d in self._disks
+            ],
+            "uptime_seconds": self._system.uptime_seconds,
+            "process_count": len(self._processes),
+        }
+
+    def set_process_search(self, term: str) -> None:
+        """Filter ``filtered_processes()`` by name substring (case-
+        insensitive; empty string clears the filter)."""
+        self._process_search = term or ""
+
+    def set_sort_by(self, key: str) -> None:
+        """Set the process sort key (cpu, memory, name, pid); invalid
+        keys are ignored (spec-pinned, no exception)."""
+        if key in ("cpu", "memory", "name", "pid"):
+            self._process_sort_key = key
+            self._process_reverse = True
+
+    def top_processes(self, n: int = 5, by: str = "cpu") -> List[ProcessInfo]:
+        """The top ``n`` processes by the given metric (cpu, memory,
+        name, pid) — descending, except name which sorts ascending."""
+        key_map = {
+            "cpu": lambda p: p.cpu_percent,
+            "memory": lambda p: p.memory_mb,
+            "name": lambda p: p.name.lower(),
+            "pid": lambda p: p.pid,
+        }
+        key = key_map.get(by, key_map["cpu"])
+        procs = sorted(self._processes, key=key,
+                       reverse=(by != "name"))
+        return procs[:n]
+
+    def filtered_processes(self) -> List[ProcessInfo]:
+        """The process list with the search filter and sort applied."""
+        procs = self.processes
+        if self._process_search:
+            term = self._process_search.lower()
+            procs = [p for p in procs if term in p.name.lower()]
+        return procs
 
     @property
     def uptime(self) -> str:
@@ -535,6 +694,8 @@ class SystemMonitor:
     def _read_processes(self) -> None:
         """Read process list from /proc."""
         self._processes = []
+        if not self._include_processes:
+            return
         try:
             pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
         except OSError:

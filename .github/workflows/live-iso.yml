@@ -178,11 +178,20 @@ jobs:
         run: |
           # The release page may not exist yet for a fresh tag — create
           # it (from the tag, with generated notes) before uploading.
-          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "${GITHUB_REF_NAME}" \
+          # RACE-SAFE: on a tag push, this job and menu-boot-arm64 run
+          # concurrently and BOTH may see no release; the loser's create
+          # fails with "already_exists" — tolerate that (the winner
+          # created it) and re-check before giving up, so both ISOs
+          # always upload.
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
                  --repo "$GITHUB_REPOSITORY" \
                  --title "Nyrqis ${GITHUB_REF_NAME}" \
-                 --generate-notes
+                 --generate-notes \
+              || { sleep 10; \
+                   gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+                     || { echo "::error::release ${GITHUB_REF_NAME} could not be created or found"; exit 1; }; }
+          fi
           gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live.iso \
             --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \

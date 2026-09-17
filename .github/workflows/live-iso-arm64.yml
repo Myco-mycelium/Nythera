@@ -204,11 +204,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "${GITHUB_REF_NAME}" \
+          # RACE-SAFE create: on a tag push, this job and live-iso.yml's
+          # menu-boot run concurrently and BOTH may see no release; the
+          # loser's create fails with "already_exists" — tolerate that
+          # (the winner created it) and re-check before giving up, so
+          # both ISOs always upload.
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
                  --repo "$GITHUB_REPOSITORY" \
                  --title "Nyrqis ${GITHUB_REF_NAME}" \
-                 --generate-notes
+                 --generate-notes \
+              || { sleep 10; \
+                   gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+                     || { echo "::error::release ${GITHUB_REF_NAME} could not be created or found"; exit 1; }; }
+          fi
           gh release upload "${GITHUB_REF_NAME}" dist/nyrqis-live-arm64.iso \
             --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
