@@ -170,6 +170,13 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             "-boot", "d",
             "-serial", f"file:{serial_log}",
             "-monitor", "none",
+            # NO network: the default virt machine instantiates a
+            # virtio-net NIC whose option ROM (ipxe-qemu's
+            # efi-virtio.rom) is absent under --no-install-recommends —
+            # qemu exits 1 before the guest boots (2026-09-17 arm64
+            # rounds 12-13; localhost passed only because ipxe-qemu is
+            # installed here). The smoke needs no NIC.
+            "-net", "none",
         ]
         if arch == "arm64":
             firmware = _find_uefi_firmware("arm64")

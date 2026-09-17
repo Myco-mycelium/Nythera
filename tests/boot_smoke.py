@@ -226,6 +226,14 @@ def run_smoke(iso, qemu, timeout_s, keep_logs, arch="amd64"):
             "-append", kernel_cmdline(arch),
             "-serial", f"file:{serial_log}",
             "-monitor", "none",
+            # NO network: the default virt machine instantiates a
+            # virtio-net NIC whose option ROM (ipxe-qemu's
+            # efi-virtio.rom) is NOT installed by the CI step's
+            # --no-install-recommends apt line — qemu then exits 1
+            # before the guest boots (2026-09-17 arm64 rounds 12-13;
+            # localhost passed only because ipxe-qemu is installed
+            # here). The smoke talks to the serial console only.
+            "-net", "none",
         ]
         print(f"[boot-smoke] qemu: {' '.join(cmd)}", flush=True)
         with open(qemu_stderr_log, "wb") as qerr:

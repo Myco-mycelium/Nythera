@@ -514,6 +514,41 @@ class TestJobTimeoutContract(unittest.TestCase):
             "menu job budget must cover checkout + download + apt + smoke + upload")
 
 
+class TestSmokeDriversNeedNoNic(unittest.TestCase):
+    """The virt machine's default NIC needs ipxe-qemu's efi-virtio.rom,
+    which --no-install-recommends does not install: qemu exited 1 before
+    the guest booted (2026-09-17, arm64 rounds 12-13 — diagnosed only
+    after the drivers learned to report qemu's stderr). Every localhost
+    boot passed only because ipxe-qemu was installed there. The smokes
+    talk to the serial console exclusively; -net none removes the whole
+    option-ROM dependency class.
+    """
+
+    def test_both_smokes_run_without_a_nic(self):
+        for label, path in (("boot_smoke", DIRECT_SMOKE),
+                            ("boot_smoke_menu", MENU_SMOKE)):
+            text = read(path)
+            self.assertIn(
+                '"-net", "none"', text,
+                f"{label} must pass -net none — the default NIC's option "
+                "ROM (ipxe-qemu's efi-virtio.rom) is absent on CI's "
+                "--no-install-recommends install, and qemu exits 1 "
+                "before the guest boots")
+
+    def test_smokes_surface_qemu_stderr_on_early_exit(self):
+        # The 2-second round that returned a 190-byte serial log and an
+        # empty annotation burned a full CI round for zero information.
+        # The drivers must capture qemu's stderr and include it in the
+        # failure evidence.
+        for label, path in (("boot_smoke", DIRECT_SMOKE),
+                            ("boot_smoke_menu", MENU_SMOKE)):
+            text = read(path)
+            self.assertIn("qemu_stderr", text,
+                          f"{label} must capture qemu stderr — DEVNULL made "
+                          "instant qemu death undiagnosable")
+            self.assertIn("qemu exited early", text)
+
+
 class TestMenuSmokeWiring(unittest.TestCase):
     """Driver + CI plumbing must agree, or the log upload is silent."""
 
