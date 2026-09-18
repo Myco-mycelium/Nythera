@@ -12,6 +12,12 @@ name: live-iso-arm64
 
 on:
   workflow_dispatch:
+    # Same input as live-iso.yml's: the re-attach job's release tag.
+    inputs:
+      release-tag:
+        description: Tag whose release receives the ISO (must match v*)
+        type: string
+        required: false
   schedule:
     # Weekly, offset from the amd64 build so the two do not contend.
     - cron: "0 6 * * 1"

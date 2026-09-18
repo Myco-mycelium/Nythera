@@ -17,6 +17,15 @@ on:
     tags:
       - "v*"                    # release tags: the ISO ships WITH the release
   workflow_dispatch:
+    # The re-attach job's input: the tag whose release receives the
+    # ISO. Dispatch the DEFAULT branch with a v* tag for a no-rebuild
+    # re-attach (build re-runs, attach reuses the fresh artifact); or
+    # dispatch a tag ref to rebuild + re-smoke before attaching.
+    inputs:
+      release-tag:
+        description: Tag whose release receives the ISO (must match v*)
+        type: string
+        required: false
   schedule:
     # Weekly refresh so the shipped image tracks main.
     - cron: "0 3 * * 1"

@@ -1007,6 +1007,21 @@ class TestReleaseUploadContract(unittest.TestCase):
             self.assertLessEqual(rj.get("timeout-minutes", 999), 30,
                                  f"{job}: job budget must stay bounded")
 
+    def test_dispatch_inputs_declare_release_tag(self):
+        # The re-attach jobs read inputs.release-tag; without a declared
+        # workflow_dispatch input GitHub yields an EMPTY string and the
+        # job silently skips — the v0.29.25 drill caught exactly that.
+        for wf, name in ((self.amd64, "amd64"), (self.arm64, "arm64")):
+            inputs = wf[True]["workflow_dispatch"].get("inputs", {})
+            inp = inputs.get("release-tag")
+            self.assertIsNotNone(
+                inp,
+                f"{name}: workflow_dispatch must declare a release-tag "
+                "input or the re-attach job can never fire")
+            self.assertEqual(
+                inp.get("type"), "string",
+                f"{name}: release-tag must be a string input")
+
     def test_arm64_workflow_grants_contents_write(self):
         self.assertEqual(
             self.arm64["permissions"].get("contents"), "write",
