@@ -757,6 +757,31 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-18 (**credential hygiene made operational; the rotation
+  tool's first version failed its own negative probe — and that is
+  why it has one**): the inline-URL PAT moved into a global
+  store+cache credential helper (0600 ``~/.git-credentials-nyrqis``,
+  credential-free remote URL, validated by real pushes), a daily
+  ``pat-expiry-watch.yml`` runway check landed (repo variable
+  ``PAT_EXPIRES_AT``: warn unset → warn ≤30 d → red ≤7 d; the PAT's
+  true expiry is not API-visible), and ``scripts/rotate_push_pat.sh``
+  does one-pass rotation (hidden stdin token, token never in process
+  argv via 0600 netrc + 0700 askpass, ls-remote probe, expiry-variable
+  upsert with UI fallback). v1 swapped the credential store BEFORE
+  validating and a deliberately negative probe then left a FAKE token
+  in the live store — recovered from the still-in-session URL, v2 now
+  validates first (identity + auth) and the same probe proves the
+  store is byte-untouched on rejection. The re-attach drill ran the
+  shared script against the LIVE release (dispatch itself is
+  actions:write-gated and this PAT lacks it): stale-asset delete →
+  curl upload → draft-heal → replacement asset's server digest
+  identical to the original — the round-trip is integrity-preserving.
+  A pre-drill check also caught that the re-attach jobs read
+  ``inputs.release-tag`` without a declared dispatch input (empty
+  string → silent skip); declared + pinned. Schedule evidence: amd64's
+  weekly cron fired and passed once under the old structure (Sep 14);
+  arm64's first fire is Mon Sep 21 — all three crons are now pinned by
+  contract tests until then. Suite: 63 boot-contract tests green.
 - 2026-09-18 (**release tooling consolidated into one script; the
   race harness had silently drifted**): the v0.29.25 followups exposed
   a structural flaw — the race harness's ``job_body`` was a MANUAL

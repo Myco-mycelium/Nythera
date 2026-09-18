@@ -1007,6 +1007,29 @@ class TestReleaseUploadContract(unittest.TestCase):
             self.assertLessEqual(rj.get("timeout-minutes", 999), 30,
                                  f"{job}: job budget must stay bounded")
 
+    def test_scheduled_triggers_survived_the_restructure(self):
+        # Both ISO workflows keep their weekly cron and the PAT watcher
+        # keeps its daily one. Scheduled runs execute the workflow file
+        # as it exists on the default branch at fire time — the new
+        # three-job shape must not have orphaned the schedule blocks,
+        # and a future edit must not drop a cron silently. (arm64's
+        # cron has never fired yet — created after Mon Sep 14 06:00 UTC,
+        # first fire Mon Sep 21 — so this pin is its only proof until
+        # then; scheduled runs are otherwise a strict subset of the
+        # proven-green push runs: same ref, tag-gated steps skip.)
+        for wf, name in ((self.amd64, "amd64"), (self.arm64, "arm64")):
+            crons = [s.get("cron") for s in wf[True]["schedule"]]
+            self.assertEqual(
+                crons, ["0 3 * * 1"] if name == "amd64" else ["0 6 * * 1"],
+                f"{name}: weekly ISO-refresh cron must stay declared")
+        watch = yaml.safe_load(
+            open(os.path.join(_REPO_ROOT, ".github", "workflows",
+                              "pat-expiry-watch.yml")))
+        self.assertEqual(
+            [s.get("cron") for s in watch[True]["schedule"]],
+            ["37 5 * * *"],
+            "pat-expiry-watch: daily runway check must stay scheduled")
+
     def test_dispatch_inputs_declare_release_tag(self):
         # The re-attach jobs read inputs.release-tag; without a declared
         # workflow_dispatch input GitHub yields an EMPTY string and the
