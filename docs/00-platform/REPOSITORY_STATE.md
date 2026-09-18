@@ -644,7 +644,7 @@ measurements:
    (admission ≤ ~60–70% keeps the fair tail ≤ ~15 ms in the model).
    ADR-0013's review package is ready; the defaults themselves are an
    Architecture Group decision.
-5. Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).
+5. ~~Benchmark default CPU/memory resource-limit values (NPS-010 §9, independent of the ADR-0009 blocker).~~ **Data collected 2026-09-18** (`tests/BENCHMARK_RESULTS.md` §35, methodology in BENCHMARK_PLAN §7, real cgroup-v2 enforcement via the user manager's delegated subtree): representative shapes peak 3.2–9.0 MB (256 MB default = 28–80× floor headroom); quota throttling is a TAIL phenomenon (20% quota → p50 unchanged, p95 +8× — monitor p95/`nr_throttled`, not mean usage); 64-PID default sits 1.5× above a modest supervisor shape. **The §9 SUSPENDED-accounting question is answered with data:** frozen containers hold 100% of memory, consume 0% CPU, and stay kernel-reclaimable via `memory.high` — the consistent model is full memory accounting, zero CPU accounting. Default VALUES remain an Architecture Group decision.
 6. Benchmark FUSE overhead for NyFS's Linux Backend (ADR-0016;
    determines whether the FUSE decision holds or needs a kernel-module
    fallback). **Proxy data re-run 2026-08-12 after the per-block CoW
@@ -666,7 +666,7 @@ measurements:
    handshake (`NyFSMount` `writeback_cache=True`, default): writes now
    batch at 128 KiB and stream at ~40–46 MB/s (~25×). No gate declared
    met.
-7. Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed — expected to be negligible but not asserted as fact without a measurement, per NPC-002 §5.2.
+7. ~~Benchmark hash-chain computation/verification overhead before ADR-0018 exits Proposed~~ **Data collected 2026-09-18** (`tests/BENCHMARK_RESULTS.md` §34, methodology in BENCHMARK_PLAN §6, real implementation benchmarked): append ~6.4 µs p50 / ≈100 k events/s sustained, verify O(n) with a stable ~3.3–3.5 µs/event constant through 100 k events, the hash itself only ~19% of the append cost, 2–8% overhead against the audited IPC ops — the "negligible" expectation is confirmed as measured fact. **Scope finding (§34e): the chain hash covers salt + prev_hash + op + timestamp but NOT the `details` payload — rewriting a stored event's details is undetectable by `verify_audit_integrity`** (demonstrated on the real code; recorded in ADR-0018's status as an open spec decision).
 
 Genuinely still open, not fabricable:
 8. Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` (currently all Unassigned) — requires actual contributors, not something to invent.

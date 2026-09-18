@@ -77,6 +77,12 @@ without needing a separate, independently-trusted signing authority.
   per NPC-002 §5.2 this is not asserted as a claim without a benchmark —
   it's a reasonable expectation given hash-chaining's typical cost
   profile, not a measured fact yet.
+  **Measured 2026-09-18** (`tests/BENCHMARK_RESULTS.md` §34, methodology
+  in `tests/BENCHMARK_PLAN.md` §6): append ~6.4 µs p50 (≈100 k events/s
+  sustained), full-chain verify O(n) at a stable ~3.3–3.5 µs/event
+  through 100 k events, the hash itself only ~19% of the append cost,
+  and a 2–8% overhead against the IPC operations audited — the
+  "negligible" premise is confirmed as measured fact.
 
 ## Status
-Accepted — implemented in `backend/container.py` (`initialize_audit_integrity`, `append_audit_event`, `verify_audit_integrity`). Hash-chained append-only audit log with SHA-256 integrity verification. Benchmark pending (NPC-002 §5.2).
+Accepted — implemented in `backend/container.py` (`initialize_audit_integrity`, `append_audit_event`, `verify_audit_integrity`). Hash-chained append-only audit log with SHA-256 integrity verification. Benchmark data collected 2026-09-18 (`tests/BENCHMARK_RESULTS.md` §34): per-event append ~6.4 µs p50 (≈100 k events/s sustained), O(n) verify with a stable ~3.3–3.5 µs/event constant through 100 k events, hash ≈19% of the append cost, 2–8% overhead against the audited IPC operations — the negligible-cost expectation is confirmed as measured fact. **Known scope limitation recorded with the data (§34e): the chain hash covers salt + prev_hash + op + timestamp but NOT the `details` payload — rewriting a stored event's details is not detected by `verify_audit_integrity` (demonstrated empirically). Closing that gap (hashing a canonical serialization of the details too) is an open spec decision for the review that exits this ADR from `Proposed`.**

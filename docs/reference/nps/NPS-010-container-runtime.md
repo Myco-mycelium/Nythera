@@ -173,9 +173,24 @@ administrator questions.
   alongside ADR-0009.
 - Exact default CPU/memory limit values (§7.2) require benchmarking across
   representative workloads and are deferred pending that data, per NPC-002
-  §5.2.
+  §5.2. **Status update 2026-09-18: the deferred data now exists**
+  (`tests/BENCHMARK_RESULTS.md` §35, methodology in BENCHMARK_PLAN §7 —
+  real cgroup-v2 enforcement): representative workload shapes peak at
+  3.2–9.0 MB (the 256 MB default is 28–80× that floor); quota throttling
+  is a tail phenomenon (a bursty shape at 2.5× under-provisioned quota
+  keeps its exact p50 while p95 grows ~8× — monitor p95/`nr_throttled`,
+  not mean usage); the 64-PID default sits just 1.5× above a modest
+  supervisor shape's peak (fork-fail below it is clean). The default
+  VALUES remain an Architecture Group decision; this is the data the
+  deferral was waiting for.
 - Whether SUSPENDED containers should count against active resource
-  budgets or a separate reduced accounting is undecided.
+  budgets or a separate reduced accounting is undecided. **Status
+  update 2026-09-18: measured** (§35d): a frozen container consumes 0%
+  CPU but retains 100% of its memory, and the kernel can still reclaim
+  from a frozen cgroup via the `memory.high` pressure path. The
+  accounting model consistent with actual enforcement is therefore:
+  **full memory accounting, zero CPU accounting** for SUSPENDED
+  containers.
 
 ## Revision History
 
@@ -186,6 +201,7 @@ administrator questions.
 | 1.1.0   | 2026-07-13 | §4.2: require atomic validity-check-and-grant, closing FIND-CAPABILITY-001. §8.1: require tamper-evident (hash-chained) audit log per new ADR-0018, closing FIND-CAPABILITY-002. Both from threat model Phase 3 (NPS-021). |
 | 1.2.0   | 2026-08-12 | §9 status note: record first-pass ADR-0009 benchmark data (tests/BENCHMARK_RESULTS.md); default bucket shown to throttle this workload shape; ADR-0009 remains Proposed |
 | 1.3.0   | 2026-09-10 | §7.1.1 (new): normatively require per-sender fairness in the endpoint bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed |
+| 1.4.0   | 2026-09-18 | §9: both open-question deferrals now have data — §35 of tests/BENCHMARK_RESULTS.md (real cgroup-v2 enforcement) covers the default CPU/memory limit question (footprint floor 28–80× under the 256 MB default; quota throttling is tail-shaped; 64-PID default 1.5× above a modest supervisor) and answers the SUSPENDED-accounting question (full memory, zero CPU; frozen cgroups stay kernel-reclaimable). Default values remain an Architecture Group decision |
 
 ---
 **End of Document**

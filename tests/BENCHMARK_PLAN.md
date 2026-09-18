@@ -119,6 +119,92 @@ patterns) applies to any default chosen from this data.
 Group decision (NPC-002 §5.2); this section exists so the decision has
 data.
 
+## 6. Hash-Chain Audit-Log Overhead (referenced by ADR-0018)
+
+**Question:** what does hash-chaining every capability audit event
+(ADR-0018) cost in append latency, verification cost as the chain
+grows, and overhead relative to the operations being audited — is the
+"expected to be negligible" premise in ADR-0018 §"Consequences" true?
+
+**Method (added 2026-09-18):** `python3 tests/benchmark_adr0018.py` —
+calls the REAL implementation (`backend/container.py`:
+`initialize_audit_integrity` / `append_audit_event` /
+`verify_audit_integrity`, the exact methods the IPC control plane
+invokes per grant/revoke, `ipc/control.py` ~8553) on a real
+`ContainerManager` + `Container`. No mocks:
+
+1. **Append distribution** — 100 k events on one chain,
+   p50/p95/p99/max per-op latency and sustained throughput, with GC
+   disabled during timing (microbenchmark hygiene) and repeated with
+   GC on (the daemon runs with GC on).
+2. **Verify scaling** — full-chain verification at 1 k / 10 k / 50 k /
+   100 k events: total ms and per-event µs, with a stability check
+   that the per-event constant does not grow (no accidental
+   superlinearity).
+3. **Floor decomposition** — raw `hashlib.sha256` of the same content,
+   the content f-string construction, the duplicate `_audit_trail`
+   write, vs the full method: how much of the cost is the hash itself.
+4. **Context** — the measured append cost as a percentage of the
+   audited IPC operations (cited from §20 of the results file; the
+   ratio, not re-measurement, is the point).
+5. **Tamper scope** — an empirical property check, not a performance
+   number: what the chain hash actually covers (op, timestamp,
+   prev_hash) and what it does not (the `details` payload),
+   demonstrated by mutating each on the real code and observing
+   whether `verify_audit_integrity` detects it.
+
+**Honesty note:** single host, CPython; absolute numbers are
+host-dependent. The structural findings (O(n) verify with a stable
+constant, µs-class append, hash is a minority of the append cost) are
+host-independent code properties. Tamper tests mutate only the
+in-memory chain of a throwaway container.
+
+**Pass/fail gate:** none — "negligible" is a judgment for the
+Architecture Group; this section exists so the judgment has data
+(and so the tamper-scope limitation is on record).
+
+## 7. Default CPU/Memory Resource Limits (NPS-010 §7.2/§9)
+
+**Question:** what default CPU/memory limits should containers ship
+with (NPS-010 §7.2), and should SUSPENDED containers count against
+active resource budgets or a separate reduced accounting (NPS-010 §9,
+second open question)?
+
+**Method (added 2026-09-18):** `python3 tests/benchmark_nps010_limits.py`
+— real cgroup-v2 enforcement via the systemd user manager's delegated
+subtree (cpu/memory/pids controllers), throwaway cgroups torn down per
+run, the shipped `ResourceLimits` defaults as the reference point:
+
+1. **Memory footprint** — `memory.peak` (or sampled `memory.current`)
+   of four representative workload shapes (idle daemon, language-
+   runtime service, bursty interactive producer, process supervisor),
+   charged whole-process: a wrapper shell moves itself into the
+   cgroup BEFORE exec so startup pages are included.
+2. **CPU quota sweep** — the bursty shape under cpu.max
+   {none, 200%, 50%, 20% of one CPU}: burst-completion latency
+   p50/p95/p99/max plus `cpu.stat` throttling — where a quota starts
+   to bite an interactive-shaped workload and what shape the damage
+   takes.
+3. **PID limit sweep** — pids.max {16, 32, 64, 128, max} against a
+   supervisor fork-bombing 40 concurrent children: where the 64-PID
+   default actually fails.
+4. **SUSPENDED accounting** — `cgroup.freeze=1` on a mid-flight
+   container: CPU consumed, memory retained, kernel reclaim
+   (`memory.high` poke) while frozen, unfreeze round-trip. This is
+   the data for the reduced-vs-full accounting question.
+
+**Honesty note:** single host; "representative workloads" are process
+shapes bounding the floor, not the full Nyrqis app stack — mapping to
+real app containers (NyRuntime + compositor + shell) stays future
+work. The structural findings (throttle-tail bimodality, the
+freeze-accounting split, the default's headroom class) are not
+host-dependent. No namespaces; the cgroup is the unit under test,
+matching what the backend enforces.
+
+**Pass/fail gate:** none — default VALUES are an Architecture Group
+decision (NPC-002 §5.2); this section exists so §9's deferral has its
+data and the SUSPENDED-accounting question has a measured answer.
+
 ## Status
 
 **2026-08-12 update (consolidated runner + re-run after per-block CoW):**
@@ -188,6 +274,18 @@ journal × block-size interplay — under journal commit, save time is
 flat across 64 KiB → 1 MiB blocks (0.18–0.25 s) because the journal
 fsyncs once regardless of block count; block size remains relevant
 only for read/write amplification and ratio (6.38 → 6.50).
+
+**2026-09-18 update (ADR-0018 + resource limits):** §6 and §7 added —
+`tests/benchmark_adr0018.py` benchmarked the real hash-chain audit log
+(append ~6.4 µs p50, verify O(n) at a stable ~3.5 µs/event; **finding:
+the `details` payload is not hashed — tampering with it is
+undetectable**, recorded in ADR-0018's status) and
+`tests/benchmark_nps010_limits.py` measured the shipped container
+resource-limit defaults under real cgroup-v2 enforcement (memory
+footprint floor 28–80× under the 256 MB default, quota throttling is
+a tail phenomenon, 64-PID default 1.5× above a modest supervisor,
+and the SUSPENDED freeze-accounting question answered: full memory,
+zero CPU). Results in `BENCHMARK_RESULTS.md` §34–§35.
 
 None of the plan's pass/fail gates are declared met on the strength of
 these runs — these numbers exist to inform implementation, not to close

@@ -1548,6 +1548,195 @@ No gate declared met — ADR-0013 stays `Proposed` with its tuning
 parameters now backed by quantified simulation data for Architecture
 Group review.
 
+## 34. ADR-0018 Close-Out — Hash-Chain Audit-Log Overhead + Tamper-Scope Finding (2026-09-18)
+
+`python3 tests/benchmark_adr0018.py` — calls the REAL implementation
+(`backend/container.py`'s `initialize_audit_integrity` /
+`append_audit_event` / `verify_audit_integrity` — the exact methods the
+IPC control plane invokes per capability grant/revoke,
+`ipc/control.py` ~8553) on a real `ContainerManager` + `Container`.
+Methodology in `BENCHMARK_PLAN.md` §6.
+
+### 34a. Append distribution (100 k events, one chain)
+
+| mode | p50 | p95 | p99 | max | throughput |
+|------|----:|----:|----:|----:|-----------:|
+| GC off | 6.4 µs | 12.3 µs | 17.1 µs | 0.78 ms | **126,700 events/s** |
+| GC on | 6.4 µs | 11.9 µs | 16.9 µs | 64.5 ms | 106,000 events/s |
+
+(The GC-on max is one collection pause, not per-event cost; steady
+state is identical — chain-event dicts are too small to trigger
+collections at this scale.)
+
+### 34b. Verify scaling (full-chain verification)
+
+| chain length | total | per event |
+|-------------:|------:|----------:|
+| 1,000 | 3.3 ms | 3.33 µs |
+| 10,000 | 34.4 ms | 3.44 µs |
+| 50,000 | 174.3 ms | 3.49 µs |
+| 100,000 | 353.7 ms | 3.54 µs |
+
+**O(n) with a stable constant** (6% spread across two orders of
+magnitude of chain length — no superlinearity). Verify is also
+out-of-band (periodic/on-demand), so it never sits on the
+grant/revoke hot path.
+
+### 34c. Cost decomposition
+
+| component | µs |
+|-----------|---:|
+| raw `sha256` of the hashed content | 1.34 |
+| content f-string + `time.time()` | 1.13 |
+| duplicate `_audit_trail` entry (partial share) | 1.20 |
+| **full `append_audit_event`** | **7.09** |
+
+**Finding: the hash itself is only ~19% of the append cost** — the
+rest is Python machinery (dict/list bookkeeping, attribute lookups,
+the duplicate `_audit_trail` write). Any future "the chain is too
+slow" conclusion would be misdirected at crypto; the real lever is
+the surrounding bookkeeping.
+
+### 34d. Overhead vs the audited operation (cited §20 data)
+
+| audited op | append overhead |
+|-----------|----------------:|
+| in-process call p50 (§20, 92 µs) | 7.6% |
+| wire call p50 (§20, ABI 2.0.0, 307–357 µs) | 2.0–2.3% |
+
+**Finding: ADR-0018's "expected to be negligible" premise is
+confirmed as measured fact** — per-event cost is µs-class and a
+two-to-eight percent tax on the operations being audited, in the
+regime where the audit chain cannot become the bottleneck (§20's
+~200 µs floor notwithstanding — even against the floor the tax is
+~3.5%).
+
+### 34e. Tamper-scope finding (property, not performance)
+
+Empirically demonstrated on the real code: the hashed content is
+`salt + prev_hash + op + timestamp` — **the `details` payload is NOT
+hashed and NOT covered by `verify_audit_integrity`**:
+
+| mutation | detected? |
+|----------|-----------|
+| event `details` (the capability granted, to whom) | **NO — verify still reports `valid=True`** |
+| event `op` | yes |
+| event `timestamp` | yes |
+
+So a tamperer can rewrite *what was granted* (the payload an attacker
+actually wants to falsify) without breaking the chain. The chain still
+detects op/timestamp/sequencing rewrites, and the details live in the
+duplicate `_audit_trail` (whose `integrity_hash` references the event
+hash but does not cover the details either). **This is a scope
+limitation of the shipped scheme relative to ADR-0018's
+"tamper-evident" intent; the fix (hash a canonical serialization of
+the details too) is a spec/implementation decision for the
+Architecture Group, recorded here so it is discovered by review
+rather than by an adversary.**
+
+No gate declared met — ADR-0018's exit from `Proposed` remains an
+Architecture Group decision; this gives that review its data (and the
+tamper-scope caveat it should weigh).
+
+## 35. NPS-010 §7.2/§9 — Default Resource Limits Under Real cgroup-v2 Enforcement (2026-09-18)
+
+`python3 tests/benchmark_nps010_limits.py` — real cgroup-v2 enforcement
+via the systemd user manager's delegated subtree (user@1000.service,
+controllers cpu/memory/pids), throwaway cgroups torn down per run.
+Methodology in `BENCHMARK_PLAN.md` §7. The shipped defaults under test
+(`backend/container.py` `ResourceLimits`): memory_mb=256, pid_limit=64,
+cpu_shares=1024, cpu_quota_us=None.
+
+### 35a. Memory footprint of representative workload shapes
+
+Whole-process charging (a wrapper shell moves itself into the cgroup
+before exec, so interpreter-startup pages are included — moving after
+spawn undercounts by the entire baseline RSS; measured artifact).
+
+| workload shape | peak | % of 256 MB default |
+|----------------|-----:|--------------------:|
+| idle daemon (sleep) | 3.2 MB | 1% |
+| python service (20k-entry state + request loop) | 9.0 MB | 4% |
+| bursty producer (10 ms bursts) | 4.5 MB | 2% |
+| supervisor (32 concurrent children) | 8.5 MB | 3% |
+
+**Finding: the 256 MB default is 28–80× these shapes.** Honest
+framing: these are process shapes bounding the FLOOR — real Nyrqis
+app containers (NyRuntime + compositor + shell) will sit higher; the
+default's headroom against a heavy real stack is future work with the
+actual demo components. What the data does establish: nothing
+close to 256 MB is required to keep a representative container
+healthy, so the default will not throttle anything of this class.
+
+### 35b. CPU quota sweep on a bursty (interactive-shaped) workload
+
+50% duty cycle (10 ms busy burst / 10 ms sleep), 200 bursts; quota
+applied via `cpu.max` (100 ms period). Throttling from `cpu.stat`.
+
+| quota | p50 | p95 | p99 | max | throttled |
+|-------|----:|----:|----:|----:|----------:|
+| none (shipped default) | 10.00 ms | 10.00 | 10.00 | 10.01 | 0 |
+| 200% (2 cores) | 10.00 | 10.00 | 10.00 | 10.00 | 0 |
+| 50% of one CPU | 10.00 | 10.00 | 10.01 | 15.10 | 13.5 ms |
+| 20% of one CPU | **10.00** | **79.60** | 79.94 | 85.28 | 5,988 ms |
+
+**Finding: quota throttling is a TAIL phenomenon for bursty shapes.**
+At 20% quota — 2.5× under-provisioned against this workload's 50%
+duty demand — the median burst is *completely unaffected* (p50 exactly
+10.00 ms) while p95 explodes 8× (79.6 ms). The mechanism: each 100 ms
+quota period admits ~2 bursts unmolested, then exhausts, stretching
+the 3rd to the refill boundary. An interactive workload under a too-
+small quota does not get "slow" — it gets *bimodal*, which surfaces to
+users as intermittent stutter, not sustained lag. Monitoring p50/mean
+CPU usage would miss it entirely; p95/max and `nr_throttled` are the
+signals that catch it. Default headroom (quota=None) is safe; the
+number an operator should fear is quota < ~2.5× a workload's average
+demand.
+
+### 35c. PID limit sweep on a supervisor shape
+
+| pids.max | fork 40 concurrent children |
+|---------:|-----------------------------|
+| 16 | FAILED (`Cannot fork`) |
+| 32 | FAILED (`Cannot fork`) |
+| **64 (shipped default)** | OK |
+| 128 | OK |
+| max | OK |
+
+**Finding: the 64-PID default sits just 1.5× above a modest
+supervisor's need** (41 tasks at peak: shell + 40 children) — a
+supervisor shape fork-bombing 64+ children meets the wall quickly.
+64 is defensible for ordinary app containers; supervisor-shaped
+containers need an explicit raise, which §7.2's "SHOULD be
+assignable" already provides. The failure mode is clean (fork
+refused, no cascade).
+
+### 35d. SUSPENDED accounting — the §9 freeze question, answered with data
+
+`cgroup.freeze=1` on a mid-flight container (8.7 MB peak, request
+loop running):
+
+| measurement | value |
+|-------------|------:|
+| CPU while frozen (3 s window) | **0.0 ms — 0.0% of one core, zero throttle events** |
+| memory.current while frozen | **8.7 MB — 100% of peak retained** |
+| kernel reclaim while frozen | works: `memory.high` poke reclaimed 9 → 7 MB |
+| unfreeze → workload completes | yes |
+
+**Finding: the correct accounting model for §9's second open question
+is "full memory accounting, zero CPU accounting"** — a frozen
+container holds every page it owned (a SUSPENDED container MUST still
+count fully against memory budgets; "reduced accounting" for memory
+would misrepresent actual enforcement) while consuming no CPU at all
+(no CPU budget impact). The kernel's pressure path (`memory.high`)
+can still reclaim from a frozen cgroup, so memory pressure under
+deep suspension degrades gracefully rather than deadlocking. Freeze
+and unfreeze are clean round-trips on this kernel.
+
+No gate declared met — the default values themselves remain an
+Architecture Group decision (NPC-002 §5.2); this is the data §9
+deferral was waiting for, plus the freeze-accounting answer.
+
 ## Status vs BENCHMARK_PLAN
 
 | Plan section | Status |
@@ -1556,6 +1745,9 @@ Group review.
 | §2 Zstd level selection | First-pass data collected (synthetic corpus; **end-to-end NyFS compression ratios measured 2026-08-12: 6.42 : 1 synthetic (§7) vs 1.29 : 1 real /usr/share sample (§12)**; **§2 close-out data collected 2026-09-10 (§31)** — real-asset sweep (ratio flat ~1.07 at every level on already-compressed data; ≥7 buys ≤2% for 60× compute), real LZ4 fast path (2.7× zstd-1 at equal ratio on real data; the zlib approximation is retired), concurrent scaling (2.2× at 8 threads — GIL partially released); the level-choice data is now complete; no gate declared met |
 | §3 Token-bucket parameters | First-pass data collected (defaults shown to throttle this workload shape); **sweep + adversarial interference collected 2026-09-10 (§32)** — steady state ≈ refill rate (burst only shapes spike absorption), shipped default 500/s ≈ 4.5% of path capacity, shared bucket starves a 250 Hz legitimate client under flood (per-sender fairness identified as the missing mechanism); no gate declared met |
 | §4 FUSE overhead | Proxy data **re-run after the per-block CoW rewrite (2026-08-12)** — streaming writes ~162 MB/s (4× the old path), small-op pattern dominated by per-call block compress + per-read checksum verify (§5). **Live-mount first-pass data collected 2026-08-12** (§6) — real kernel mount works end-to-end (durability + snapshots verified); the 4 KiB write-batching limit was **fixed by INIT-handshake negotiation** (writeback_cache=True): writes now batch at 128 KiB and stream at ~40–46 MB/s (~25×); small-write cost remains per-call block compress + checksum. **Persisted-image lifecycle data collected 2026-08-12** (§7) — end-to-end compression ratio 6.42 : 1 on a synthetic corpus, save() is fsync-bound at ~27 ms/block, re-save 0.15 s, load() ~0.04 s. **Commit-cost levers measured 2026-08-12** (§8–9) — block size helps ~40–60% (1 MiB, at small-write amplification cost); batched fsync is noise; **journal commit (one fsync per transaction) is decisive: ~60–70× faster** (0.20 s vs 11–15 s, §9) and ~61× on a small-file corpus (§12). **Mixed workload measured** (§13): ~3.7–4× lower per-commit latency in a repeated write/read/commit loop (131 vs 504 ms); write throughput unchanged by commit mode (~1.9 MB/s, CoW-compress-bound). **Compaction cost measured** (§14): the deferred materialize pass runs at ~27 ms/block — exactly an interleaved save of referenced blocks (11.2 s per 417-block / 2.5 MB journal); `NyFSMount(auto_compact=True)` moves it off the transaction path. **Journal × block size measured** (§15): under journal commit, save time is flat across 64 KiB → 1 MiB blocks (0.18–0.25 s — one fsync regardless of block count) while the ratio still improves 6.38 → 6.50 — the §8 block-size lever is an interleaved-mode lever only. **Cross-snapshot dedup measured** (§10): CoW sharing makes a 20%-churn snapshot cost ~2% of an independent copy (~49×). No gate declared met |
+| §7 Default CPU/memory resource limits | **Data collected 2026-09-18 (§35)** — real cgroup-v2 enforcement: memory footprint of representative shapes 3.2–9.0 MB (256 MB default = 28–80× headroom at the floor); quota throttling shown to be a TAIL phenomenon (20% quota leaves p50 exactly at burst length, p95 +8×); the 64-PID default sits 1.5× above a modest supervisor's peak; **SUSPENDED accounting answered: frozen containers hold 100% of memory, consume 0% CPU, remain kernel-reclaimable** |
+| §7 Default CPU/memory resource limits | **Data collected 2026-09-18 (§35)** — real cgroup-v2 enforcement: memory footprint of representative shapes 3.2–9.0 MB (256 MB default = 28–80× headroom at the floor); quota throttling shown to be a TAIL phenomenon (20% quota leaves p50 exactly at burst length, p95 +8×); the 64-PID default sits 1.5× above a modest supervisor's peak; **SUSPENDED accounting answered: frozen containers hold 100% of memory, consume 0% CPU, remain kernel-reclaimable** |
+| §6 Hash-chain audit-log overhead | **Data collected 2026-09-18 (§34)** — append ~6.4 µs p50 / ≈100 k events/s sustained; verify O(n) at a stable ~3.3–3.5 µs/event to 100 k; the hash is ~19% of the append cost; overhead 2–8% of the audited IPC op. **Tamper-scope finding: the `details` payload is not hashed — tampering with it is undetectable by `verify_audit_integrity`** (demonstrated on the real code; fix is a spec decision) |
 
 Nothing in `BENCHMARK_PLAN.md`'s gates has been declared met on the
 strength of this first pass; these numbers exist to inform the next

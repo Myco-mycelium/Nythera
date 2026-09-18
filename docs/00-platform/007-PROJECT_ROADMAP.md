@@ -142,7 +142,7 @@ benchmarking or real contributors.
 - [x] `requirements-docs.txt`: pin `mkdocs-material` to the 9.x line given the Material team's own public warning about breaking, production-unready changes in MkDocs 2.0
 - [ ] Assign real subsystem owners in `SUBSYSTEM_OWNERS.md` — requires actual contributors, intentionally not fabricated
 - [x] Begin Linux Backend implementation work (NPS-017 §6) — see the Cross-Cutting NyHAL section above; first spike done, §4.2–§4.5 remain unstarted
-- [~] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` — first pass run 2026-08-12: IPC latency, token-bucket defaults, and the NyFS ops-layer proxy measured (`tests/BENCHMARK_RESULTS.md`); Zstd levels, EEVDF tuning, live FUSE-mount comparison, and hash-chain still pending
+- [~] Run the four benchmarks defined in `tests/BENCHMARK_PLAN.md` — first pass run 2026-08-12: IPC latency, token-bucket defaults, and the NyFS ops-layer proxy measured (`tests/BENCHMARK_RESULTS.md`); Zstd levels and EEVDF tuning closed out 2026-09-10 (§31–33); **hash-chain overhead measured 2026-09-18 (§34 — negligible confirmed, plus an unhashed-`details` tamper-scope finding recorded in ADR-0018) and container resource limits measured the same day (§35 — quota-throttle tail behavior, PID-default adequacy, SUSPENDED freeze accounting)**; live FUSE-mount comparison still pending
 
 ### M11 — Response to External Repository Review
 An external review of the repository (2026-07-13) rated it 8.6/10 and
@@ -258,7 +258,7 @@ focuses on making Nyrqis ready for real users and contributors.
 - [x] Governance expansion (`NPC-010`) — RFC process, release process, deprecation policy, versioning, branching, commit conventions, ADR workflow
 - [x] Build architecture (`BUILD-001`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
 - [x] Developer onboarding (`TUT-003`) — prerequisites, first build, coding standards, repository tour, first contribution, debugging, testing
-- [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency targets, filesystem performance targets, gaming targets, AI inference targets
+- [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency targets, filesystem performance targets, gaming targets, AI inference targets (note 2026-09-18: container resource-limit data landed — `tests/BENCHMARK_RESULTS.md` §35: memory footprints vs the 256 MB default, quota-throttle tail behavior, PID-limit adequacy, and the SUSPENDED freeze-accounting answer; NPS-010 §9's deferrals now have data)
 - [ ] Package format specification update — update NPS-026 with implementation findings from ADR-0022/0023 (NyVault)
 
 **Phase 2: Hardware Compatibility**
