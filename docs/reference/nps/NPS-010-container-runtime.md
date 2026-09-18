@@ -192,6 +192,22 @@ administrator questions.
   **full memory accounting, zero CPU accounting** for SUSPENDED
   containers.
 
+**Proposed defaults from the §35 data (2026-09-18; informative — the
+values remain an Architecture Group decision):**
+
+| limit | shipped default | §35 data | proposal |
+|---|---|---|---|
+| `memory_mb` | 256 | representative shapes peak 3.2–9.0 MB (28–80× headroom at the floor); real Nyrqis app stack unmeasured | **keep 256** — nothing of the measured class is throttled by it; revisit when the real app stack (NyRuntime + compositor + shell) is measured |
+| `pid_limit` | 64 | a modest supervisor shape (shell + 40 children) peaks at 41 tasks; fork-fail below is a clean refusal | **keep 64** for app containers; supervisor-shaped containers MUST raise it explicitly via §7.2's assignability (1.5× headroom is too thin to be silent about) |
+| `cpu_quota_us` | None (unlimited) | quota throttling is a TAIL phenomenon: at 2.5× under-provisioning, p50 is unchanged while p95 grows ~8× (bimodal stutter, invisible to mean-usage monitoring) | **keep unlimited by default**; when quotas are assigned, size them ≥ ~2.5× the workload's average demand and monitor p95 latency + `nr_throttled`, never mean usage |
+| SUSPENDED accounting | undecided | frozen: 0% CPU, 100% memory retained, kernel-reclaimable via `memory.high` | **normative when §7 is next amended**: SUSPENDED containers count FULLY against memory budgets and NOT AT ALL against CPU budgets; budget checks MUST NOT treat suspension as memory relief |
+
+Operator guidance the data earns (candidate for the ops how-to): the
+failure signature of an under-sized quota is a *bimodal* latency
+distribution with a clean median — alerts keyed on p50/mean CPU will
+not fire; alert on p95 burst-completion latency and
+`cpu.stat`'s `nr_throttled` instead.
+
 ## Revision History
 
 | Version | Date       | Change       |
@@ -202,6 +218,7 @@ administrator questions.
 | 1.2.0   | 2026-08-12 | §9 status note: record first-pass ADR-0009 benchmark data (tests/BENCHMARK_RESULTS.md); default bucket shown to throttle this workload shape; ADR-0009 remains Proposed |
 | 1.3.0   | 2026-09-10 | §7.1.1 (new): normatively require per-sender fairness in the endpoint bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed |
 | 1.4.0   | 2026-09-18 | §9: both open-question deferrals now have data — §35 of tests/BENCHMARK_RESULTS.md (real cgroup-v2 enforcement) covers the default CPU/memory limit question (footprint floor 28–80× under the 256 MB default; quota throttling is tail-shaped; 64-PID default 1.5× above a modest supervisor) and answers the SUSPENDED-accounting question (full memory, zero CPU; frozen cgroups stay kernel-reclaimable). Default values remain an Architecture Group decision |
+| 1.5.0   | 2026-09-18 | §9: proposed-defaults table added from the §35 data (keep 256 MB / 64 PIDs / unlimited quota, with the raise-it-explicitly rule for supervisor shapes and the ≥2.5× sizing + p95/`nr_throttled` monitoring rule for assigned quotas); SUSPENDED-accounting proposal made normative-candidate (full memory, zero CPU; suspension is not budget relief) — all pending Architecture Group decision |
 
 ---
 **End of Document**

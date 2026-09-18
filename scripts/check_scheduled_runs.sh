@@ -2,7 +2,9 @@
 # check_scheduled_runs.sh — report the scheduled (cron) run status of
 # the release-pipeline workflows, so the first arm64 cron fire
 # (Mon 2026-09-21 06:00 UTC) and every later one are caught even when
-# nobody is watching.
+# nobody is watching. Also verifies the PAT-expiry watcher's scheduled
+# fires (its whole job is to go red BEFORE the PAT dies, so a missed
+# fire is itself a finding).
 #
 # Usage:
 #   scripts/check_scheduled_runs.sh            # human summary
@@ -17,6 +19,7 @@ set -u
 
 REPO="Myco-mycelium/Nythera"
 WORKFLOWS="live-iso.yml live-iso-arm64.yml"
+WATCHER="pat-expiry-watch.yml"
 WATCH=0
 [ "${1:-}" = "--watch" ] && WATCH=1
 
@@ -54,8 +57,39 @@ else:
   return 0
 }
 
+check_watcher() { # the expiry watcher: absence of fires is a finding
+  local json n last
+  json="$(curl -s "${NRC[@]}" \
+    "https://api.github.com/repos/$REPO/actions/workflows/$WATCHER/runs?event=schedule&per_page=1")"
+  n="$(echo "$json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["workflow_runs"]))')"
+  if [ "$n" = 0 ]; then
+    echo "$WATCHER schedule: NO RUN YET (daily 05:37 UTC — expected at least one fire per day once landed)"
+    return 0
+  fi
+  last="$(echo "$json" | python3 -c "
+import json,sys
+r=json.load(sys.stdin)['workflow_runs'][0]
+print(f\"{r['status']}/{r['conclusion']} at {r['created_at']}\")")"
+  echo "$WATCHER schedule: $last"
+  # A watcher that exists but has not fired in >48h is silently dead.
+  local created
+  created="$(echo "$json" | python3 -c "
+import json,sys,datetime
+r=json.load(sys.stdin)['workflow_runs'][0]
+print(datetime.datetime.fromisoformat(r['created_at'].replace('Z','+00:00')).timestamp())")"
+  local now age
+  now="$(date -u +%s)"
+  age=$(( (now - created) / 86400 ))
+  if [ "$age" -gt 2 ]; then
+    echo "::error::$WATCHER last fired ${age}d ago — the daily schedule is not firing (workflow disabled? cron broken?)"
+    FAIL=1
+  fi
+  return 0
+}
+
 if [ "$WATCH" = 0 ]; then
   for wf in $WORKFLOWS; do check_workflow "$wf"; done
+  check_watcher
   [ "$FAIL" = 0 ] && echo "SCHEDULED RUNS: OK" || echo "SCHEDULED RUNS: FAILURE SEEN"
   exit "$FAIL"
 fi
@@ -82,5 +116,6 @@ print(f\"{runs[0]['status']}/{runs[0]['conclusion']}\" if runs else 'none')")"
     *) echo "::error::$wf scheduled run still $STATE after the watch window"; FAIL=1 ;;
   esac
 done
+check_watcher
 [ "$FAIL" = 0 ] && echo "SCHEDULED RUNS: ALL PASS" || echo "SCHEDULED RUNS: FAILURES"
 exit "$FAIL"
