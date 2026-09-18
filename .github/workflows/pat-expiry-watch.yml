@@ -1,0 +1,45 @@
+name: pat-expiry-watch
+
+# The push credential for this workstation is a fine-grained PAT whose
+# expiry the API does not expose — only Settings → Developer settings →
+# Fine-grained tokens can show it. Its date lives in the repo variable
+# PAT_EXPIRES_AT (YYYY-MM-DD). This job warns daily until 30 days
+# remain, then turns RED at 7 so the rotation cannot be missed; rotate
+# the token and refresh ~/.git-credentials-nyrqis on the workstation.
+
+on:
+  schedule:
+    # Daily, deliberately off the hour to avoid the top-of-hour queue.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  expiry:
+    name: PAT expiry runway
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the declared expiry runway
+        env:
+          PAT_EXPIRES_AT: ${{ vars.PAT_EXPIRES_AT }}
+        run: |
+          if [ -z "$PAT_EXPIRES_AT" ]; then
+            echo "::warning::PAT_EXPIRES_AT repo variable is NOT set — the push credential is a fine-grained PAT whose expiry only the settings UI shows. Copy the expiry date into the variable (Settings → Secrets and variables → Actions → Variables, YYYY-MM-DD) so this check can warn at 30 days and fail at 7."
+            exit 0
+          fi
+          if ! date -u -d "$PAT_EXPIRES_AT" +%s >/dev/null 2>&1; then
+            echo "::error::PAT_EXPIRES_AT='$PAT_EXPIRES_AT' is not a date (want YYYY-MM-DD)"
+            exit 1
+          fi
+          days=$(( ( $(date -u -d "$PAT_EXPIRES_AT" +%s) \
+                   - $(date -u -d "$(date -u +%Y-%m-%d)" +%s) ) / 86400 ))
+          echo "PAT expires $PAT_EXPIRES_AT — $days day(s) of runway"
+          if [ "$days" -le 7 ]; then
+            echo "::error::PAT expires in $days day(s) — rotate NOW: create a new fine-grained PAT (repo Myco-mycelium/Nythera, Contents+Workflows read/write), update ~/.git-credentials-nyrqis on the workstation, then set PAT_EXPIRES_AT to the new date."
+            exit 1
+          elif [ "$days" -le 30 ]; then
+            echo "::warning::PAT expires in $days day(s) — schedule the rotation."
+          fi
