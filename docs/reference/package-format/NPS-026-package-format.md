@@ -1,14 +1,14 @@
 ---
 title: Nyrqis Package Format (.nypkg)
 document_id: NPS-026
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Normative
 subsystem: storage
 owners:
   - Nyrqis Architecture
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-09-18
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, ADR-0004, NPS-004, NPS-005, NPS-006, NPS-010]
@@ -150,7 +150,47 @@ Follows NPS-006 §7: uninstall removes the base images; the overlay
 (saves, mods) **MUST** be retained by default and offered for deletion as
 a separate, explicit user choice (NPC-001 §10).
 
-## 13. Open Questions *(Informative)*
+## 13. Relationship to NyVault Volumes (implementation findings, 2026-09-18)
+
+ADR-0022/0023 shipped the NyVault storage service (daemon-hosted
+volumes on the IPC transport, envelope-encrypted at the block layer).
+The package format interacts with it at four points; this section
+records the interactions without duplicating the ADRs (NPS-018 §8):
+
+13.1. **A vault volume is a NyFS filesystem image** — the same CoW,
+checksum, compression, and journal-commit machinery a package's
+content images use (ADR-0022 §"Decision"). Packages therefore install
+INTO volumes coherently: the content-image semantics of §4 and the
+integrity tree of §7 apply unchanged inside a volume.
+
+13.2. **Integrity trees are computed at package-build time over
+PLAINTEXT content; at-rest protection inside an encrypted volume is
+the volume's AEAD block layer** (ADR-0023: every block at rest is
+`nonce ‖ ciphertext ‖ tag`, checksum over ciphertext). The two
+mechanisms compose without re-work: the signature (§6) and tree (§7)
+verify the publisher's bytes BEFORE encryption; the AEAD tag protects
+the encrypted-at-rest form; the tree never needs re-encryption when a
+volume is re-keyed (ADR-0023's rotation re-wraps DEKs only).
+
+13.3. **Streaming install (§11) into a vault volume rides the
+storage-service CALL path** (ADR-0022), which pages transport payloads
+at 32 KiB per call — a streaming installer targeting a vault MUST
+chunk to that paging. Throughput note from the live encrypted-mount
+benchmark (BENCHMARK_RESULTS §27): the durable per-CALL commit
+currently dominates vault writes (~0.28 MB/s vs native ~1,700 MB/s;
+reads ~2.1 MB/s); write-commit batching is the documented next step,
+so §11's performance expectations against a vault volume are
+commit-bound until it lands.
+
+13.4. **Uninstall (§12) maps onto volume lifecycle**: removing a
+package removes its content images; an application's DATA volumes are
+creator-scoped assets of the container (ADR-0022 — grants never imply
+the capability, admin ops are creator/operator-only) and follow §12's
+retain-by-default rule unchanged.
+
+## 14. Open Questions *(Informative)*
+
+## 14. Open Questions *(Informative)*
 
 - Exact manifest serialization (binary vs. structured text) — the item
   NPS-006 §9 deferred — remains open here too; the tutorial
@@ -163,12 +203,24 @@ a separate, explicit user choice (NPC-001 §10).
   review before being treated as settled.
 - Cross-package asset deduplication (NPS-006 §9) may interact with the
   integrity tree and is deferred.
+- **One hardware root for both trust anchors (added 2026-09-18):** the
+  §6 package-signing design and the vault KEK custody (ADR-0023) will
+  both want a hardware root of trust — ADR-0023 already names TPM2 /
+  PKCS#11 as pluggable backends behind a Rust trait. When the signing
+  scheme is designed, the two SHOULD converge on the same hardware-
+  key surface rather than growing separate token stacks.
+- **Manifest vocabulary vs the vault registry (added 2026-09-18):**
+  ADR-0023 persists the volume registry + wrapped DEKs across daemon
+  restarts; if manifests settle on a structured-text serialization,
+  the registry's persisted format SHOULD follow the same vocabulary
+  so install/restore tooling reads one syntax.
 
 ## Revision History
 
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-08-12 | Initial draft — package structure, signed manifests, integrity trees, deltas, streaming install, rollback, dependencies; closing Milestone 11 gap category 7 and threat-model finding FIND-PACKAGE-001 |
+| 1.1.0   | 2026-09-18 | §13 (new): implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees cover plaintext while vault AEAD covers at-rest (composition without re-encryption), streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14: hardware-root convergence and registry-vocabulary open questions added. Closes the M14 Phase 1 "package format update" item |
 
 ---
 **End of Document**

@@ -111,7 +111,7 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 - [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
 - [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
 - [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, Identity flagged pending its own NPS)
-- [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2)
+- [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2). **v1.1.0 (2026-09-18)**: §13 records the implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees (plaintext) compose with vault AEAD (at-rest) without re-encryption, streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14 adds the hardware-root-convergence and registry-vocabulary open questions. Closes the M14 Phase 1 package-format-update item
 - [x] NPS-027 Package Trust Model — Draft (Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006)
 
 ## Requirements Database
@@ -568,6 +568,11 @@ builds and deploys to GitHub Pages on push to `main`. Version pinned via
 breaking, currently-unsuitable-for-production changes in MkDocs 2.0.
 
 ## Next Actions
+**All pending Architecture Group decisions are consolidated on one
+agenda: `docs/00-platform/AG_AGENDA.md` (2026-09-18)** — the review
+session can work from that document alone; the per-item state below
+is the standing record.
+
 Benchmark-gated (unblocks the 3 ADRs + 4 NPS documents held above).
 First-pass data for four of the seven items landed 2026-08-12
 (`tests/BENCHMARK_RESULTS.md`); the remaining items still have no
