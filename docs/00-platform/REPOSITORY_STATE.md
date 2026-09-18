@@ -774,8 +774,14 @@ Documentation hygiene, fixed earlier this session:
   could download; every step "succeeded". The attach steps now
   self-heal with `gh release edit --draft=false` after the upload gate
   (ordering pinned by `TestReleaseUploadContract`), and the tag is
-  never force-moved while its release exists. Final state: both
-  architectures' ISOs attached to a public v0.29.25.
+  never force-moved while its release exists. Post-hardening, a
+  sustained `uploads.github.com` 5xx window (500/500/hang, then
+  500/500/502 across two rounds — untracked on githubstatus, which
+  stayed green) beat the in-step retries; recovery was self-serve:
+  download the green build's ISO artifact with a PAT, re-upload on the
+  endpoint's recovery, and verify the server-side sha256 digest
+  against the local hash. Final state: both architectures' ISOs
+  attached to a public v0.29.25, digest-verified.
 - 2026-09-17 (**the arm64 CI boot smoke finally went green — four
   stacked root causes**): every `live-iso-arm64` run had failed since
   2026-09-14. The causes, in the order CI could not reveal them:
