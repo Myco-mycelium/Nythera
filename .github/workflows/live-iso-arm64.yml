@@ -22,6 +22,7 @@ on:
       - ".github/workflows/live-iso-arm64.yml"
       - "tests/boot_smoke.py"
       - "tests/boot_smoke_menu.py"
+      - "scripts/attach_release_asset.sh"  # the release logic itself
     tags:
       - "v*"                    # release tags: menu-boot-arm64's release step is gated on refs/tags/v*, so WITHOUT this trigger the arm64 ISO could never reach a release (the amd64 workflow had exactly this block; found when v0.29.25 shipped with amd64 runs only)
 
@@ -224,10 +225,10 @@ jobs:
       - name: Attach the ISO to the release (tag builds only)
         # Both architectures ship with a v* release: the amd64 upload
         # lives in live-iso.yml's menu-boot job; this is the arm64 half.
-        # The release page may not exist yet for a fresh tag — the
-        # amd64 job creates it; both jobs tolerate it already existing
-        # (whichever runs first creates, the other attaches). --clobber
-        # makes re-runs idempotent.
+        # The logic (race-safe create, bounded-curl upload, draft
+        # self-heal) lives in ONE shared script also used by the
+        # re-attach job below and race-tested by test_release_race.sh
+        # against fake_gh.sh — do not inline it back here.
         if: startsWith(github.ref, 'refs/tags/v')
         # Same as the amd64 attach step: a hang must die as this named
         # step, not as a job-budget cancellation with no evidence
@@ -235,54 +236,39 @@ jobs:
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # RACE-SAFE create: on a tag push, this job and live-iso.yml's
-          # menu-boot run concurrently and BOTH may see no release; the
-          # loser's create fails with "already_exists" — tolerate that
-          # (the winner created it) and re-check before giving up, so
-          # both ISOs always upload. --notes: deterministic, and it
-          # removes the --generate-notes server stall point.
-          if ! gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" \
-                 --repo "$GITHUB_REPOSITORY" \
-                 --title "Nyrqis ${GITHUB_REF_NAME}" \
-                 --notes "Boot-smoked live ISOs for ${GITHUB_REF_NAME} (amd64 + arm64). Both architectures passed the direct and menu-path QEMU boot smokes." \
-              || { sleep 10; \
-                   gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-                     || { echo "::error::release ${GITHUB_REF_NAME} could not be created or found"; exit 1; }; }
-          fi
-          # RETRY: `gh release upload` STALLED twice on the ~250 MB
-          # asset (v0.29.25 rounds 3-4). Upload via curl instead:
-          # bounded per attempt (--max-time), idempotent re-runs via
-          # delete-before-upload (the --clobber equivalent).
-          upload_url="$(gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
-            --json uploadUrl -q .uploadUrl)"
-          upload_url="${upload_url%%\{*}"
-          asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/${GITHUB_REF_NAME}" \
-            --jq ".assets[] | select(.name==\"nyrqis-live-arm64.iso\") | .id" 2>/dev/null || true)"
-          if [ -n "$asset_id" ]; then
-            echo "deleting stale asset id=$asset_id (clobber)"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null 2>&1 || true
-          fi
-          up_ok=0
-          for attempt in 1 2 3; do
-            if curl --fail --silent --show-error --max-time 540 \
-                 --header "Authorization: Bearer $GH_TOKEN" \
-                 --header "Content-Type: application/x-iso9660-image" \
-                 --upload-file "dist/nyrqis-live-arm64.iso" \
-                 "${upload_url}?name=nyrqis-live-arm64.iso"; then
-              up_ok=1; break
-            fi
-            echo "upload attempt $attempt failed or timed out (540s cap); retrying in 30s"
-            sleep 30
-          done
-          [ "$up_ok" = 1 ] || { echo "::error::asset upload failed after 3 bounded attempts"; exit 1; }
-          # DRAFT SELF-HEAL: deleting a tag (e.g. force-moving it) makes
-          # GitHub convert that tag's release to a DRAFT. Drafts are
-          # invisible to anonymous API/clients while authenticated
-          # `gh release view` still sees them — so the upload above can
-          # "succeed" into a release nobody can ever download. Re-publish
-          # unconditionally; this is a no-op for a live release.
-          gh release edit "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --draft=false
-          gh release view "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
-            --json assets -q '.assets[].name'
+          ISO_PATH: dist/nyrqis-live-arm64.iso
+        run: scripts/attach_release_asset.sh
+
+  re-attach:
+    # Manual recovery path (workflow_dispatch): uploads.github.com has
+    # had sustained 5xx windows — v0.29.25's beat the in-step retries
+    # (500/500/hang + 500/500/502) — so this job re-attaches the
+    # ALREADY-BUILT arm64 ISO from this run's artifact; no rebuild.
+    # Dispatch on main with release-tag set.
+    name: Re-attach ISO to the release
+    runs-on: ubuntu-latest
+    needs: [build-arm64, menu-boot-arm64]
+    if: >-
+      always() &&
+      needs.build-arm64.result == 'success' &&
+      needs.menu-boot-arm64.result != 'cancelled' &&
+      startsWith(inputs.release-tag, 'v')
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the built ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: nyrqis-live-iso-arm64
+          path: dist
+
+      - name: Attach the ISO to the release
+        # Same 20-min named-step budget as the tag-push attach: a hang
+        # must be visible and bounded, never a job-budget cancellation.
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_PATH: dist/nyrqis-live-arm64.iso
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: scripts/attach_release_asset.sh

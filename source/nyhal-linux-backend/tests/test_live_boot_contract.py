@@ -49,6 +49,10 @@ MENU_SMOKE = os.path.join(_REPO_ROOT, "tests", "boot_smoke_menu.py")
 LIVE_ISO_WF = os.path.join(_REPO_ROOT, ".github", "workflows", "live-iso.yml")
 LIVE_ISO_ARM64_WF = os.path.join(
     _REPO_ROOT, ".github", "workflows", "live-iso-arm64.yml")
+# Single source of truth for the release-attach logic (both workflows'
+# attach steps, their re-attach jobs, and the race harness all run it).
+ATTACH_SCRIPT = os.path.join(
+    _REPO_ROOT, "scripts", "attach_release_asset.sh")
 
 # Any login-shell re-exec from inside the demo session loops: the
 # profile execs the demo, the demo execs the login shell, the shell
@@ -863,6 +867,7 @@ class TestReleaseUploadContract(unittest.TestCase):
         cls.arm64 = yaml.safe_load(open(LIVE_ISO_ARM64_WF))
         cls.amd64_raw = open(LIVE_ISO_WF).read()
         cls.arm64_raw = open(LIVE_ISO_ARM64_WF).read()
+        cls.attach = open(ATTACH_SCRIPT).read()
 
     def _release_step(self, wf, job):
         steps = wf["jobs"][job]["steps"]
@@ -881,75 +886,126 @@ class TestReleaseUploadContract(unittest.TestCase):
             self.assertEqual(
                 step.get("if"), "startsWith(github.ref, 'refs/tags/v')",
                 f"{job}: release upload must run on v* tags only")
-            run = step["run"]
-            # The upload goes through curl with a BOUNDED --max-time:
-            # `gh release upload` stalled twice on the ~250 MB asset
-            # (v0.29.25 rounds 3-4; even a solo success once took 8.8
-            # min) and the job-budget kill left no retry chance. The
-            # URL's ?name= parameter is what names the asset — it must
-            # match the built file exactly.
-            self.assertIn(
-                f"?name={iso}", run,
-                f"{job}: must upload the built ISO {iso} (curl asset name)")
-            self.assertIn(
-                f'--upload-file "dist/{iso}"', run,
-                f"{job}: must upload the exact file the build verified")
-            self.assertIn(
-                "--max-time", run,
-                f"{job}: every upload attempt must be time-bounded — "
-                "an unbounded gh upload stalled 28.5 min (v0.29.25)")
-            self.assertIn(
-                "deleting stale asset", run,
-                f"{job}: re-runs must be idempotent (delete-before-upload "
-                "is the curl-era --clobber)")
+            # The logic lives in the shared script (also used by the
+            # re-attach jobs and executed by the race harness). EXACT
+            # match: an inline body here would be a drifting twin.
             self.assertEqual(
-                run.count("for attempt in 1 2 3"), 1,
-                f"{job}: upload must retry with bounded attempts")
+                step.get("run"), "scripts/attach_release_asset.sh",
+                f"{job}: attach step must run the shared script, not an "
+                "inline copy of it")
+            self.assertEqual(
+                step.get("env", {}).get("ISO_PATH"), f"dist/{iso}",
+                f"{job}: must upload the exact file the build verified")
             # A hang must die as THIS named step, never as a silent
             # job-budget cancellation (round 3's diagnosis was only
             # possible because the step timeout carried the evidence).
             self.assertEqual(step.get("timeout-minutes"), 20,
                              f"{job}: attach step needs its own 20-min budget")
 
-    def test_both_upload_steps_tolerate_concurrent_release_creation(self):
-        # Both jobs' create-failure path re-views the release (the
-        # winner of the race created it) before failing the step.
-        for raw, name in ((self.amd64_raw, "amd64"),
-                          (self.arm64_raw, "arm64")):
-            self.assertIn("RACE-SAFE", raw,
-                          f"{name}: upload must be race-aware")
-            self.assertIn(
-                "gh release view \"${GITHUB_REF_NAME}\"", raw,
-                f"{name}: create-failure path must re-check the release")
-            self.assertIn(
-                "::error::release ${GITHUB_REF_NAME} could not be created",
-                raw,
-                f"{name}: a real create failure must fail the step loudly")
+    def test_attach_script_upload_mechanics(self):
+        # The upload goes through curl with a BOUNDED --max-time:
+        # `gh release upload` stalled twice on the ~250 MB asset
+        # (v0.29.25 rounds 3-4; even a solo success once took 8.8
+        # min) and the job-budget kill left no retry chance. The
+        # URL's ?name= parameter is what names the asset — driven by
+        # ISO_NAME so every caller ships its real asset name.
+        run = self.attach
+        self.assertIn(
+            "?name=$ISO_NAME", run,
+            "asset name must come from the URL's ?name= parameter")
+        self.assertIn(
+            '--upload-file "$ISO_PATH"', run,
+            "upload must stream the ISO_PATH the caller verified")
+        self.assertIn(
+            "--max-time", run,
+            "every upload attempt must be time-bounded — an unbounded "
+            "gh upload stalled 28.5 min (v0.29.25)")
+        self.assertIn(
+            "deleting stale asset", run,
+            "re-runs must be idempotent (delete-before-upload is the "
+            "curl-era --clobber)")
+        self.assertGreaterEqual(
+            run.count("RETRY_ATTEMPTS"), 2,
+            "upload must retry with bounded attempts")
 
-    def test_both_attach_steps_self_heal_a_zombie_draft(self):
+    def test_attach_script_tolerates_concurrent_release_creation(self):
+        # The create-failure path re-views the release (the winner of
+        # the race created it) before failing.
+        self.assertIn("RACE-SAFE", self.attach,
+                      "upload must be race-aware")
+        self.assertIn(
+            'gh release view "$RELEASE_TAG" --repo "$REPO"', self.attach,
+            "create-failure path must re-check the release")
+        self.assertIn(
+            "::error::release $RELEASE_TAG could not be created",
+            self.attach,
+            "a real create failure must fail the step loudly")
+
+    def test_attach_script_self_heals_a_zombie_draft(self):
         # Deleting a tag (force-moving one) converts that tag's GitHub
         # release into a DRAFT: invisible to anonymous API/clients while
         # authenticated `gh release view` still sees it. v0.29.25's
         # release sat fully-uploaded-but-hidden this way — every CI step
-        # "succeeded" into a release nobody could download. Both attach
-        # steps must re-publish (a no-op for a live release) after the
-        # upload succeeds, and strictly AFTER it (never publish a release
-        # whose asset upload failed).
-        heal = ('gh release edit "${GITHUB_REF_NAME}" '
-                '--repo "$GITHUB_REPOSITORY" --draft=false')
-        marker = "asset upload failed after 3 bounded attempts"
-        for wf, job, name in (
-            (self.amd64, "menu-boot", "amd64"),
-            (self.arm64, "menu-boot-arm64", "arm64"),
+        # "succeeded" into a release nobody could download. The script
+        # must re-publish (a no-op for a live release) after the upload
+        # succeeds, and strictly AFTER it (never publish a release whose
+        # asset upload failed).
+        self.assertIn('--draft=false', self.attach,
+                      "attach script must clear the draft flag (tag "
+                      "deletion drafts the release)")
+        self.assertGreater(
+            self.attach.index("--draft=false"),
+            self.attach.index("asset upload failed after"),
+            "draft self-heal must run only after the upload gate passes")
+
+    def test_both_workflows_have_a_dispatchable_reattach_job(self):
+        # uploads.github.com has had sustained 5xx windows that beat the
+        # in-step retries (v0.29.25: 500/500/hang + 500/500/502) and the
+        # workflow token cannot re-run failed jobs. Each workflow needs
+        # a manual re-attach job: download THIS run's already-built ISO
+        # artifact and attach it to the release — no rebuild.
+        for wf, job, build_job, menu_job, artifact, iso in (
+            (self.amd64, "re-attach", "build", "menu-boot",
+             "nyrqis-live-iso", "nyrqis-live.iso"),
+            (self.arm64, "re-attach", "build-arm64", "menu-boot-arm64",
+             "nyrqis-live-iso-arm64", "nyrqis-live-arm64.iso"),
         ):
-            run = self._release_step(wf, job)["run"]
-            self.assertIn(heal, run,
-                          f"{name}: attach step must clear the draft flag "
-                          "(tag deletion drafts the release)")
-            self.assertGreater(
-                run.index(heal), run.index(marker),
-                f"{name}: draft self-heal must run only after the upload "
-                "gate passes")
+            rj = wf["jobs"].get(job)
+            self.assertIsNotNone(rj, f"{job} job must exist")
+            self.assertIn(build_job, rj.get("needs", []),
+                          f"{job} needs the built ISO artifact ({build_job})")
+            self.assertIn(menu_job, rj.get("needs", []),
+                          f"{job} gates on the menu smoke ({menu_job})")
+            cond = rj.get("if", "")
+            self.assertIn("always()", cond,
+                          f"{job}: must evaluate even when menu-boot failed")
+            self.assertIn("startsWith(inputs.release-tag, 'v')", cond,
+                          f"{job}: must refuse to touch non-v releases")
+            steps = rj["steps"]
+            dl = [s for s in steps
+                  if s.get("uses", "").startswith("actions/download-artifact")]
+            self.assertTrue(
+                any(d.get("with", {}).get("name") == artifact and
+                    d.get("with", {}).get("path") == "dist" for d in dl),
+                f"{job}: must download the {artifact} artifact into dist/")
+            att = [s for s in steps if s.get("run")]
+            self.assertTrue(
+                any(s.get("run") == "scripts/attach_release_asset.sh"
+                    for s in att),
+                f"{job}: attach step must run the shared script")
+            astep = [s for s in att
+                     if s.get("run") == "scripts/attach_release_asset.sh"][0]
+            self.assertEqual(
+                astep.get("env", {}).get("ISO_PATH"), f"dist/{iso}",
+                f"{job}: must attach the downloaded {iso}")
+            self.assertEqual(
+                astep.get("env", {}).get("RELEASE_TAG"),
+                "${{ inputs.release-tag }}",
+                f"{job}: release tag comes from the dispatch input")
+            self.assertEqual(astep.get("timeout-minutes"), 20,
+                             f"{job}: attach step needs its own 20-min budget")
+            self.assertLessEqual(rj.get("timeout-minutes", 999), 30,
+                                 f"{job}: job budget must stay bounded")
 
     def test_arm64_workflow_grants_contents_write(self):
         self.assertEqual(

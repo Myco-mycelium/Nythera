@@ -757,6 +757,36 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-18 (**release tooling consolidated into one script; the
+  race harness had silently drifted**): the v0.29.25 followups exposed
+  a structural flaw — the race harness's ``job_body`` was a MANUAL
+  TRANSCRIPTION of the workflow attach steps, and it had already
+  drifted (still tested ``gh release upload --clobber`` +
+  ``--generate-notes`` after the workflows moved to bounded-curl +
+  ``--notes``, and its "race" rounds ran the two jobs against
+  SEPARATE state dirs, so the concurrent-create path never actually
+  raced). The attach logic now lives in exactly one place:
+  ``scripts/attach_release_asset.sh`` — run verbatim by both
+  workflows' attach steps, by NEW ``re-attach`` workflow_dispatch jobs
+  in both workflows (manual recovery from uploads.github.com outages:
+  re-attach the already-built ISO artifact; the GITHUB_TOKEN cannot
+  re-run failed jobs and a dispatch on main with ``release-tag=v…``
+  needs no rebuild), and by the harness itself against expanded fakes
+  (``fake_gh.sh`` now models view/create/edit/api incl. the uploadUrl
+  and asset-id lookups plus a deterministic create-race-loser mode;
+  new ``fake_curl.sh`` keys assets by the URL's ``?name=`` like the
+  real endpoint). The harness now shares ONE release state between
+  both jobs — the loser path fires for real. Contract tests pin the
+  script as an EXACT ``run:`` match (an inline body would regrow the
+  twin) and pin the re-attach jobs' gating (``always()`` +
+  ``startsWith(inputs.release-tag, 'v')`` + artifact→dist +
+  20-min step budget). Also verified: both v0.29.25 release ISOs
+  re-downloaded anonymously, local sha256 == server-pinned digest on
+  BOTH (d961c51e… / 982878eb…); remote PAT audited — fine-grained,
+  repo-admin (contents+workflows write, NO actions-write, which 403'd
+  the rerun API), always-expiring, stored plaintext in .git/config and
+  echoed to terminal output this session → rotation recommended.
+  Suite: 9,011 tests, 3 environmental skips.
 - 2026-09-17 (**the v0.29.25 release pipeline: three attach-step
   failure modes, ending in a hidden-draft release**): shipping the tag
   surfaced failures the boot smokes never could. (1) `gh release

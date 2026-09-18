@@ -147,24 +147,37 @@ python3 tests/boot_smoke_menu.py dist/nyrqis-live.iso --timeout 600 --keep-logs
 ### Release uploads & the race harness
 
 On a `v*` tag push, the `menu-boot` (amd64) and `menu-boot-arm64`
-jobs each attach their ISO to the GitHub release. Both jobs race to
-create the release page; the hardened step tolerates losing the race
-(create fails with "already exists" → re-view → upload proceeds).
-That logic is verified offline — no GitHub access required — by the
-race harness, which runs both jobs' exact step logic concurrently
-against a fake `gh` with real concurrency semantics, in both race
-orders:
+jobs each attach their ISO to the GitHub release. The attach logic —
+race-safe create ("already exists" → re-view → upload proceeds),
+bounded-curl upload with delete-before-upload idempotency, and the
+draft self-heal (deleting a tag converts its release to a draft,
+which hides every asset) — lives in ONE shared script:
+
+```bash
+scripts/attach_release_asset.sh   # the single source of truth
+```
+
+It is run by both workflows' attach steps, by their `re-attach`
+workflow_dispatch jobs (manual recovery: re-attach the already-built
+ISO from a run's artifact when `uploads.github.com` misbehaves —
+dispatch on `main` with `release-tag=v…`), and by the race harness,
+which runs it CONCURRENTLY against a fake `gh` + fake `curl` with
+real concurrency semantics, in both race orders:
 
 ```bash
 scripts/test_release_race.sh
 # → round[amd64-loses]: amd64_rc=0 arm64_rc=0 assets_uploaded=2/2
 # → round[arm64-loses]: amd64_rc=0 arm64_rc=0 assets_uploaded=2/2
+# → round[rerun-sequential]: ... assets_replaced=1
+# → round[rerun-clobber]: ... assets_replaced=1
 # → RACE-HARNESS: ALL PASS
 ```
 
-Run it after ANY change to the release-upload steps (or when touching
-`scripts/fake_gh.sh`, which models `gh`'s view/create/upload
-behavior). Exit 0 = race-safe.
+Run it after ANY change to `scripts/attach_release_asset.sh` (or when
+touching `scripts/fake_gh.sh` / `scripts/fake_curl.sh`, which model
+`gh`'s view/create/edit/api and curl's asset-upload behavior). Exit 0
+= race-safe. Do NOT inline the attach logic back into the workflows —
+that is how the harness drifted from the steps it claimed to test.
 
 ### Pipeline map (what runs in CI, and what each job proves)
 
