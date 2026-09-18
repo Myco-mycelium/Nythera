@@ -81,6 +81,34 @@ depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 > into chunks that the receiver reassembles before dispatch. Everything
 > ≤ the budget is byte-identical to today. Back-compat is first-class.
 
+> **Review input (2026-09-18, prepared for the AG session):** two
+> structured caveats for reading the evidence, plus one open item.
+>
+> 1. **Scope the win honestly — writes and single dispatch, not I/O
+>    in general.** §29's reads moved ~1.02–1.08× only: a streamed read
+>    still carries each ≤32 KiB piece in its own REPLY datagram and the
+>    AEAD block decode dominates that path. The Group should accept
+>    this ADR as a WRITE-path + dispatch-amortization decision, not a
+>    general data-plane accelerator; if read-side streaming is wanted
+>    later, the leverage is the REPLY datagram boundary and/or the
+>    AEAD block size (ADR-0023), not this framing.
+> 2. **The §27 absolute numbers are baselines, not current state.**
+>    §27's live encrypted-mount figures (pre-batching) date from
+>    before 0.14.8/0.14.9 (write-commit batching/group commit) and
+>    0.14.20/0.14.21 (this ADR's increments); current-stack
+>    performance is strictly better on the write path and unchanged on
+>    reads. Downstream citations of §27 (e.g. NPS-026 §13.3 as of
+>    v1.1.0) have been annotated accordingly.
+> 3. **Open item — one missing evidence artifact:** a post-0.14.21
+>    re-run of the §27 live-mount benchmark (same harness,
+>    `tests/benchmarks.py --vault-mount-io`) on the current stack to
+>    quantify the combined batching + streaming improvement. Attempted
+>    2026-09-18; the child wedged twice (the suite's documented
+>    environmental FUSE skip on this host) — it is NOT a gate for
+>    accepting the ADR (the §29 A/B on the real paths is the decision
+>    evidence), but it would put a current absolute number next to the
+>    historical one.
+
 # ADR-0024 — Streaming Data Plane: Chunked Framing for Large CALL Payloads
 
 ## Context

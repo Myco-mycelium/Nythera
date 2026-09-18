@@ -173,14 +173,19 @@ the encrypted-at-rest form; the tree never needs re-encryption when a
 volume is re-keyed (ADR-0023's rotation re-wraps DEKs only).
 
 13.3. **Streaming install (§11) into a vault volume rides the
-storage-service CALL path** (ADR-0022), which pages transport payloads
-at 32 KiB per call — a streaming installer targeting a vault MUST
-chunk to that paging. Throughput note from the live encrypted-mount
-benchmark (BENCHMARK_RESULTS §27): the durable per-CALL commit
-currently dominates vault writes (~0.28 MB/s vs native ~1,700 MB/s;
-reads ~2.1 MB/s); write-commit batching is the documented next step,
-so §11's performance expectations against a vault volume are
-commit-bound until it lands.
+storage-service data plane** (ADR-0022/0024). Two cost layers are
+measured, and both have since been addressed — the numbers below are
+the historical baselines, cited because they name the mechanisms:
+the 32 KiB per-CALL paging cost (BENCHMARK_RESULTS §27, pre-batching:
+~0.28 MB/s encrypted writes, the durable per-CALL commit dominating)
+was addressed by write-commit batching (0.14.8/0.14.9) and then by
+the streaming data plane (ADR-0024, 0.14.20/0.14.21): streamed 1 MiB
+writes are 5.6× faster plaintext / 6.6× encrypted than paged (§29);
+reads were already AEAD-decode-bound and barely move (~1.02–1.08×).
+A streaming installer targeting a vault SHOULD use the streaming
+data plane (chunk envelope or wire-level STREAM_CHUNK) rather than
+raw paging; the residual costs are the AEAD block layer and the
+single-datagram read path, not the install protocol.
 
 13.4. **Uninstall (§12) maps onto volume lifecycle**: removing a
 package removes its content images; an application's DATA volumes are
