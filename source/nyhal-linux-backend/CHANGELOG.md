@@ -5,6 +5,43 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.26] - 2026-09-18
+
+### Changed
+
+- Release tooling: ISO release-attach logic consolidated into
+  `scripts/attach_release_asset.sh` (single source of truth for both
+  workflows' attach steps, their `re-attach` dispatch jobs, and the
+  race harness — the harness now executes the real script against
+  expanded fakes instead of a drifting transcription).
+- Workflows: bounded-curl asset uploads with a 20-min step budget,
+  draft self-heal after the upload gate, and a `release-tag` dispatch
+  input powering the no-rebuild re-attach recovery jobs.
+- CONTRIBUTING: pre-release checklist added (version drift, suite +
+  race harness, credential sweep, tag-and-watch, post-ship digest
+  check) — every item traces to a shipping incident.
+
+### Added
+
+- `scripts/rotate_push_pat.sh` (one-pass credential rotation,
+  validate-before-mutate), `scripts/verify_pat_grants.sh` (grant
+  probe + optional tag drill with digest comparison),
+  `scripts/check_scheduled_runs.sh` (cron-run reporter/watcher), and
+  the daily `pat-expiry-watch` runway workflow.
+- `docs/how-to/ship-a-release.md` — the release driver's runbook with
+  all six failure modes and recovery paths.
+
+### Fixed
+
+- Wayland wire constants corrected against the canonical XMLs
+  (`WL_DISPLAY_DELETE_ID` 2→1; wl_shm has `release`, not `destroy`);
+  the opcode contract test now verifies against both `wayland.xml`
+  and `xdg-shell.xml` with full enum coverage.
+- arm64 CI boot smokes: honest Pillow skip in the conformance gate,
+  measured TCG budgets (1680 s driver / 29-min step), QEMU stderr
+  captured into check annotations, `-net none` (the missing
+  `efi-virtio.rom` under `--no-install-recommends` killed QEMU in 2 s).
+
 ## [0.29.25] - 2026-09-17
 
 ### Fixed
