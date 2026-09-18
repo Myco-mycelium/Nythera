@@ -123,9 +123,23 @@ In context (§34d): the fixed scheme's append lands around
 and still ~5% of the wire call p50 it audits. **The fix is cheap at
 the platform's scale; it is not a performance question.**
 
+**Prototype result (2026-09-18, uncommitted by design):** the fix was
+prototyped end-to-end and measured against the real suite — a
+`scheme` marker per event, canonical-JSON details in the hashed
+content, and a verify path that recomputes from exactly what append
+hashed (None vs {} preserved, not coerced). Measured: append
+**19.0 µs/event** with details (6.9 µs when details=None — the v1
+content form), verify **10.1 µs/event** O(n)-preserved (110k mixed
+events in 2.1 s) — the §34e mutation table flips to all-detected,
+full `test_backend.py` suite passes (2532 OK). The prototype's diff
+was deliberately reverted pending this Group's decision; the numbers
+here are its record. (Estimate check: the ~17 µs prediction above
+was within ~12% of the measured 19 µs.)
+
 Back-compatibility note for the implementer: verify must accept both
 schemes during a transition (or the chain must be versioned per
-event), since existing in-memory chains hash the old content.
+event) — the prototype's per-event `scheme` marker is the working
+demonstration; legacy v1 events verify under the op+timestamp rule.
 
 ### 4.3 Options for the Group
 
@@ -221,8 +235,9 @@ rather than free.
 > prev_hash but NOT the details payload — rewriting which capability
 > was granted, to whom, is undetectable by the shipped verifier
 > (demonstrated empirically). The fix (hash canonical details JSON)
-> costs ~4× the hash work per event — ~17 µs/event total, still >35k
-> events/s — and is recommended.
+> costs ~4× the hash work per event — prototyped end-to-end at
+> ~19 µs/event with the full suite passing (see §4.2) — and is
+> recommended.
 >
 > **3. Dual mechanisms** (§5.1): a second chain family
 > (`create_audit_chain`/`verify_audit_chain`) exists in the same file

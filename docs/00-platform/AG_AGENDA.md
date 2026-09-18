@@ -80,9 +80,11 @@ package's four decisions:
    reconcile in whichever direction is intended.
 2. **Tamper scope**: the chain hash does NOT cover the `details`
    payload (§34e, demonstrated) — accept as a scoped limitation
-   (amend the wording honestly) or direct the fix (measured:
-   canonical-JSON hashing ≈ 4× hash work, ~17 µs/event total, still
-   ~35k events/s; recommended).
+   (amend the wording honestly) or direct the fix (prototyped
+   end-to-end: per-event scheme marker + canonical-JSON details in
+   the hashed content, measured 19.0 µs/event append with the full
+   suite passing and the §34e mutation table all-detected — see the
+   review package §4.2; recommended).
 3. **Dual mechanisms**: a second chain family
    (`create_audit_chain`/`verify_audit_chain`) with weaker guarantees
    exists in the same file — consolidate or scope explicitly.
