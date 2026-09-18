@@ -259,7 +259,7 @@ focuses on making Nyrqis ready for real users and contributors.
 - [x] Build architecture (`BUILD-001`) — toolchain, build graph, cross-compilation, reproducible builds, CI stages, artifact signing
 - [x] Developer onboarding (`TUT-003`) — prerequisites, first build, coding standards, repository tour, first contribution, debugging, testing
 - [ ] Performance engineering budgets — startup targets, memory budgets, IPC latency targets, filesystem performance targets, gaming targets, AI inference targets (note 2026-09-18: container resource-limit data landed — `tests/BENCHMARK_RESULTS.md` §35: memory footprints vs the 256 MB default, quota-throttle tail behavior, PID-limit adequacy, and the SUSPENDED freeze-accounting answer; NPS-010 §9's deferrals now have data)
-- [ ] Package format specification update — update NPS-026 with implementation findings from ADR-0022/0023 (NyVault)
+- [x] Package format specification update — update NPS-026 with implementation findings from ADR-0022/0023 (NyVault) — **done 2026-09-18 as NPS-026 v1.1.0**: §13 records the four interactions (volumes are NyFS images; plaintext integrity trees compose with vault AEAD without re-encryption; streaming install inherits 32 KiB CALL paging, commit-bound until batching; uninstall maps onto creator-scoped lifecycle); §14 adds hardware-root convergence + registry-vocabulary open questions. With this, **M14 Phase 1 (Documentation & Governance) is complete** — the last remaining item, performance budgets, landed its container-resource-limit data the same day (§35), leaving only the budget-numbers themselves
 
 **Phase 2: Hardware Compatibility**
 - [ ] AMD Radeon GPU testing and validation

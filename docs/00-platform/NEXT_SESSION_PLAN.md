@@ -1,10 +1,40 @@
 ---
 title: Next Development Session Plan
-version: 6.15.0
-date: 2026-09-16
+version: 6.16.0
+date: 2026-09-18
 ---
 
 # Next Development Session Plan
+
+## Session 12 (2026-09-18) — THE MEASUREMENT PASSES CLOSE THE BACKLOG; THE REVIEW GETS ONE AGENDA
+
+**Two more benchmark gates closed (§34–§35):** ADR-0018's hash-chain
+audit log measured against the real implementation (~6.4 µs/event
+append, O(n) verify, "negligible" premise confirmed) — which surfaced
+the tamper-scope hole (details payload not hashed), a second parallel
+chain mechanism, and memory-only persistence. NPS-010 §9's container
+resource-limit defaults measured under real cgroup-v2 enforcement
+(256 MB default = 28–80× footprint floor; quota throttling is a TAIL
+phenomenon — p50 unchanged while p95 grows 8×; 64 PIDs = 1.5× a
+modest supervisor; SUSPENDED = full memory, zero CPU, still
+reclaimable). The §34e-style details-coverage fix was prototyped,
+measured (19.0 µs/event, suite 2532 OK), recorded in the review
+package, and reverted pending the Group — main carries the decision,
+not the change.
+
+**The docs caught up to the code:** ADR-0018 review package (four
+decisions, including the Accepted-vs-Proposed index discrepancy);
+NPS-010 §9 v1.5.0 proposed-defaults table; NPS-026 v1.1.0 NyVault
+findings (M14 Phase 1 complete); and **`AG_AGENDA.md`** — every
+pending Architecture Group decision on one document, in three
+independent bundles with a decision-log table. The next session that
+wants to move any ADR out of Proposed starts there.
+
+**Also this round:** v0.29.26 shipped first-try on the rehearsed
+checklist and was verified end-to-end (anonymous download → digest
+match → boot on this host); the release tooling gained the
+re-attach jobs, the rotation tool, the grant verifier, and the
+watcher-aware Monday check.
 
 ## Session 11k (2026-09-16) — THE LESSONS GET ENFORCERS: the byref rule is scanned, the wayland crate is a CI gate, the race harness is a tool
 

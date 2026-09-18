@@ -247,8 +247,85 @@ rather than free.
 > restart destroys the record — making restart the cheapest tamper.
 > The Group should set a persistence requirement (offline-first
 > append-only local file, verified on load) or amend the ADR to scope
-> the guarantee to a single manager lifetime.
+> the guarantee to a single manager lifetime.## 8. Appendix — pre-drafted ADR-0018 v2.0.0 (merge-ready if §4/§5 direct the fix)
+
+Prepared 2026-09-18 so a "direct the fix" decision can be applied in
+one pass without a drafting round. The prototype behind these numbers
+and diff shapes was built, measured (19.0 µs/event append, suite 2532
+OK, mutation table all-detected), and reverted — nothing below is
+untested intent. If the Group instead chooses §4.3(a) (honest
+re-scoping), this appendix is discarded and only the status
+reconciliation (§2) applies.
+
+**Amendment text (would become ADR-0018 v2.0.0, `updated:
+2026-09-XX`):**
+
+> ## Decision (v2.0.0 amendments)
+>
+> **1. Payload coverage (closes the §34e gap).** Each event's hash
+> covers a canonical serialization of its `details` payload:
+> `sha256(salt ‖ prev_hash ‖ op ‖ timestamp ‖ json(details))` with
+> `json()` = UTF-8 `json.dumps(details, sort_keys=True,
+> separators=(',',':'))`. Events carry a `scheme` marker (2); events
+> without it (and events appended with `details=None`) verify under
+> the v1 op+timestamp rule, so chains created before this amendment
+> remain verifiable (mixed chains verified in the prototype). `None`
+> and `{}` are distinct: `None` hashes the v1 form, `{}` hashes the
+> v2 form with `'{}'` — append and verify must agree on this
+> exactly.
+>
+> **2. Persistence (closes the restart attack).** Each container's
+> chain MUST be appended to an append-only JSONL file under the
+> container's state directory at or before the durability point of
+> the operation the event records; the chain MUST be re-verified on
+> load and a verification failure MUST fail closed (the affected
+> container's capability grants are suspended pending operator
+> review, per NPS-010 §4.2's fail-closed posture). The file is the
+> canonical record; the in-memory chain is a cache. This keeps the
+> offline-first property (ADR-0018's original constraint) while
+> making process restart survivable and restart-with-rewrite
+> detectable.
+>
+> **3. Single mechanism.** The `create_audit_chain` /
+> `append_audit_entry` / `verify_audit_chain` family is deprecated
+> and MUST be removed or consolidated onto the
+> `initialize_audit_integrity` path in the same change that ships
+> this amendment — two chain families with different guarantee
+> levels must not coexist (NPS-018 §8's no-duplication rule applied
+> to mechanisms).
+>
+> ## Consequences (additions)
+>
+> - Measured cost of payload coverage: append 19.0 µs/event with
+>   details (6.9 µs with `details=None`), verify 10.1 µs/event,
+>   O(n) preserved at 110k events — unchanged conclusions from the
+>   §34 record ("negligible" holds).
+> - Verification now covers what an attacker actually wants to
+>   rewrite (which capability was granted, to whom) — closing the
+>   gap demonstrated in `tests/BENCHMARK_RESULTS.md` §34e.
+> - The persistence requirement gives the restart attack (§5.2 of
+>   the review package) a detection path instead of a free pass.
+>
+> ## Status
+>
+> Accepted (v2.0.0, 2026-09-XX, Architecture Group) — supersedes the
+> v1.0.0 decision; the v1 scheme remains verifiable for existing
+> chains.
+
+**Implementation checklist if directed (one change, three files):**
+
+1. `backend/container.py`: scheme constant + `_audit_event_content`
+   + scheme-marker append + dual-rule verify (the prototype diff);
+   plus JSONL persistence writer on the event path and
+   verify-on-load in the manager's container-restore path.
+2. `test_backend.py` (`TestAuditIntegrity`): pin the §34e mutation
+   table to all-detected; pin mixed-chain verification; pin the
+   None/{} distinction; add a persistence round-trip (append →
+   restart → verify → tamper-file → load fails closed).
+3. `tests/BENCHMARK_RESULTS.md` §34: replace the "prototype" note
+   with the shipped-scheme numbers (re-run `benchmark_adr0018.py`).
+4. Index/README/REPOSITORY_STATE status flips (the §2 reconciliation,
+   applied for real this time).
 
 ---
-
 **End of Document**
