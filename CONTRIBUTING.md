@@ -215,6 +215,51 @@ python3 -m unittest tests.test_generate_rust tests.test_generate_cpp tests.test_
 python3 tools/validate_generators.py --verbose
 ```
 
+## Pre-Release Checklist
+
+Run this before every `v*` tag push — every item traces to a release
+that shipped without it (full stories:
+[`docs/how-to/ship-a-release.md`](docs/how-to/ship-a-release.md)).
+
+```bash
+# 1. Version drift: pyproject == newest CHANGELOG heading, same commit
+python3 tools/check_version_drift.py
+
+# 2. Full suite + the release-race harness (the harness runs the REAL
+#    scripts/attach_release_asset.sh against fakes — never edit that
+#    script without running it)
+cd source/nyhal-linux-backend && python3 -m unittest discover && cd ../..
+scripts/test_release_race.sh
+
+# 3. CREDENTIAL SWEEP — a token must never enter a commit or its
+#    history (the push credential lives in ~/.git-credentials-nyrqis,
+#    NOT in .git/config; keep it that way):
+grep -rnE 'github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}' \
+  $(git ls-files) && echo "SECRET-SHAPED STRING COMMITTED" || echo "working tree clean"
+# History: scan every commit's TREE for a REAL token (the 20-char
+# predicate cannot match the rotation tools' own short pattern
+# literals, so a clean result means clean history — no filtering):
+git grep -E 'github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}' \
+  $(git rev-list --all) 2>/dev/null \
+  && echo "REAL TOKEN IN HISTORY — rotate it, then purge (git filter-repo)" \
+  || echo "history clean"
+
+# 4. Tag (annotated) and push; then watch BOTH pipelines to the end
+git tag -a vX.Y.Z -m "Nyrqis vX.Y.Z" && git push origin vX.Y.Z
+scripts/check_scheduled_runs.sh   # or the Actions tab
+
+# 5. Post-ship: release must be PUBLIC (draft = tag was force-moved at
+#    some point — the attach script self-heals on the next attach) with
+#    BOTH ISOs; digest-check anything you must trust byte-for-byte
+curl -s https://api.github.com/repos/Myco-mycelium/Nythera/releases/tags/vX.Y.Z \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name'), 'draft:', d.get('draft')); [print(' ', a['name'], a['size'], a['digest']) for a in d.get('assets',[])]"
+```
+
+Push credentials are expiring fine-grained PATs watched by the daily
+`pat-expiry-watch` workflow (red at ≤7 days of runway); rotate with
+`scripts/rotate_push_pat.sh` and verify grants with
+`scripts/verify_pat_grants.sh`.
+
 ## Common Tasks
 
 ### Adding a new component type
