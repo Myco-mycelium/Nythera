@@ -757,6 +757,28 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-18 (**v0.29.26: the process shipped a release first-try —
+  rehearsed, then real**): the checklist added to CONTRIBUTING was
+  validated twice the same day. First a full dress rehearsal: version
+  bump + CHANGELOG (``300cfee``), tag ``v0.29.26-test``, both
+  pipelines green (amd64 + arm64, direct and menu boot smokes),
+  release created PUBLIC with both assets and server digests, then a
+  clean rollback — release deleted BEFORE the tag (the draft-zombie
+  lesson, applied), tag deleted, main force-with-lease reset, v0.29.25
+  verified byte-untouched via its pinned digests. Then the real ship:
+  the bump commit was cherry-picked (tree byte-identical, so the
+  warm arm64 rootfs cache applied), the checklist ran verbatim (drift
+  OK, suite 9,013 OK / 3 env skips, race harness 4/4 on the real
+  attach script, credential sweep tree+history clean), tag ``v0.29.26``
+  pushed, both tag pipelines green in one pass, release public
+  immediately with both ISOs (amd64 242 MB ``76f16a15…``, arm64
+  256 MB ``2f49d484…``) and re-attach jobs correctly skipped.
+  Contrast with v0.29.25: five rounds, three failure modes, a hidden
+  draft, and manual self-serve recovery — v0.29.26 shipped in one
+  round with zero interventions. Still gated on token grants
+  (Actions/Variables RW): the dispatch drill and PAT_EXPIRES_AT
+  automation; the daily ``pat-expiry-watch`` first fire and arm64's
+  first cron fire (Mon Sep 21) are the next scheduled verifications.
 - 2026-09-18 (**credential hygiene made operational; the rotation
   tool's first version failed its own negative probe — and that is
   why it has one**): the inline-URL PAT moved into a global
