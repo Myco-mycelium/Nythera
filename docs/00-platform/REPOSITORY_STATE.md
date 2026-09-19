@@ -798,7 +798,14 @@ Documentation hygiene, fixed earlier this session:
   replacement PAT minted with Contents RW, Workflows RW, Actions RW,
   Variables RW. The Monday arm64 cron was pre-verified as far as
   possible without the fire: cron ``0 6 * * 1`` in the YAML, workflow
-  state ``active`` via the API.
+  state ``active`` via the API. The AG review kickoff produced
+  ``AG_DECISION_BRIEF.md`` (AI-drafted per-item pre-read with
+  recommendations and a consequences ledger — suggest-side only) and
+  agenda v1.1.0's pre-flight block, after the sweep found C1's
+  premise wrong (ADR-0022/0023 Accepted-in-text since 2026-09-06,
+  index stale) and re-verified all of B1's claims in the audit code;
+  ``verify_pat_grants.sh --drill`` was pinned to v0.29.27 with its
+  fail-closed 403 behavior verified live.
 - 2026-09-18 (**v0.29.26: the process shipped a release first-try —
   rehearsed, then real**): the checklist added to CONTRIBUTING was
   validated twice the same day. First a full dress rehearsal: version

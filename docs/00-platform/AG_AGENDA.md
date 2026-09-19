@@ -33,7 +33,10 @@ suggestion: §A ≈ 45 min, §B ≈ 60 min, §C ≈ 30 min.
 > path. Frontmatter sweep: ADR-0007/0009/0013/0016/0024 `Proposed`;
 > ADR-0018/0022/0023 `Accepted` in their own text; the ADR index
 > (005-ADR_INDEX.md) still says `Proposed` for all three — see the
-> corrected C1 below.
+> corrected C1 below. An AI-drafted per-item pre-read with options,
+> recommendations, and a consequences ledger exists at
+> `AG_DECISION_BRIEF.md` — every recommendation there is overridable
+> Group judgment (NPC-001 §11.1), not a decision.
 
 ---
 
