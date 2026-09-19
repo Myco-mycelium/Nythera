@@ -6,7 +6,7 @@
 #   scripts/verify_pat_grants.sh            # probe only (report; exit 0
 #                                           # unless a probe itself errors)
 #   scripts/verify_pat_grants.sh --drill    # + dispatch live-iso.yml at
-#                                           # ref=v0.29.25, poll it, and
+#                                           # ref=v0.29.27, poll it, and
 #                                           # compare the re-shipped
 #                                           # asset digest to the pinned
 #                                           # one (exit 1 on mismatch)
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO="Myco-mycelium/Nythera"
-PINNED_AMD64_DIGEST="d961c51eda79481c859ec5ea8ddc63462579689c35913092952dddc4f4199886"
+PINNED_AMD64_DIGEST="cf6618b8eaf6b46a1108070f8485e0753e9698c585ded3b20cf95e049d7306a7"
 DRILL=0
 [ "${1:-}" = "--drill" ] && DRILL=1
 
@@ -116,15 +116,15 @@ fi
 # --- optional: the full dispatch drill --------------------------------
 if [ "$DRILL" = 1 ]; then
   echo
-  echo "=== DRILL: dispatch live-iso.yml at ref=v0.29.25, release-tag=v0.29.25 ==="
+  echo "=== DRILL: dispatch live-iso.yml at ref=v0.29.27, release-tag=v0.29.27 ==="
   CODE="$(curl -s --netrc-file "$NETRC" -o /tmp/vp-d.json -w '%{http_code}' -X POST \
     -H "Accept: application/vnd.github+json" \
-    -d '{"ref":"v0.29.25","inputs":{"release-tag":"v0.29.25"}}' \
+    -d '{"ref":"v0.29.27","inputs":{"release-tag":"v0.29.27"}}' \
     "https://api.github.com/repos/$REPO/actions/workflows/live-iso.yml/dispatches" || true)"
   [ "$CODE" = "204" ] || { echo "::error::drill dispatch failed (HTTP $CODE)"; exit 1; }
   # The tag is annotated: dereference to the commit the run reports.
   TAGSHA="$(curl -s --netrc-file "$NETRC" \
-    "https://api.github.com/repos/$REPO/git/ref/tags/v0.29.25" \
+    "https://api.github.com/repos/$REPO/git/ref/tags/v0.29.27" \
     | python3 -c "import json,sys;print(json.load(sys.stdin)['object']['sha'])")"
   COMMIT="$(curl -s --netrc-file "$NETRC" \
     "https://api.github.com/repos/$REPO/git/tags/$TAGSHA" \
@@ -144,7 +144,7 @@ if [ "$DRILL" = 1 ]; then
     completed/success) ;;
     *) echo "::error::drill run ended $STATUS"; exit 1 ;;
   esac
-  DIGEST="$(curl -s "https://api.github.com/repos/$REPO/releases/tags/v0.29.25" \
+  DIGEST="$(curl -s --max-time 30 "https://api.github.com/repos/$REPO/releases/tags/v0.29.27" \
     | python3 -c "
 import json,sys
 d=json.load(sys.stdin)

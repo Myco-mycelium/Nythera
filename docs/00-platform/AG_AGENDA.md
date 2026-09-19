@@ -1,7 +1,7 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.0.0
+version: 1.1.0
 status: Informational
 owners: [Nyrqis Architecture]
 created: 2026-09-18
@@ -20,6 +20,20 @@ closed every measurement gate; what remains is judgment.
 Reading order for a first session: the three bundles below are
 independent; within a bundle the items are ordered. Time-boxed
 suggestion: §A ≈ 45 min, §B ≈ 60 min, §C ≈ 30 min.
+
+> **Pre-flight (2026-09-19, AI-verified against the tree — claims the
+> session can take as ground truth):** every B1 technical claim was
+> re-verified in `backend/container.py` and holds: (1) the primary
+> chain's hash content is `salt‖prev_hash‖op‖ts` — `details` is NOT
+> hashed (tamper-scope hole demonstrated); (2) the second family
+> (`create_audit_chain`/`append_audit_entry`) hashes a canonical-JSON
+> payload that DOES cover `result`, but is unsalted and rooted at an
+> empty `prev_hash`; (3) both chains are plain in-process attributes —
+> memory-only. ADR-0009's review package exists at the documented
+> path. Frontmatter sweep: ADR-0007/0009/0013/0016/0024 `Proposed`;
+> ADR-0018/0022/0023 `Accepted` in their own text; the ADR index
+> (005-ADR_INDEX.md) still says `Proposed` for all three — see the
+> corrected C1 below.
 
 ---
 
@@ -129,18 +143,29 @@ feeds C1's review gate).
 
 ## Bundle C — Ratify what is already running
 
-### C1. ADR-0022 / ADR-0023 — NyVault service + key custody (implemented, unratified)
+### C1. ADR-0022 / ADR-0023 — NyVault service + key custody (accepted in text, index stale, ratification unconfirmed)
 
-Both are **marked Proposed in frontmatter while fully implemented**
-(lifecycle ops, FUSE passthrough, at-rest encryption with per-volume
-DEKs and Rust-held KEK custody, KEK rotation without re-encryption,
-quotas, path-scoped grants). This is the reverse of B1's discrepancy:
-implementation has outrun the review.
+**Corrected 2026-09-19 (pre-flight; this agenda v1.0.0 had the
+polarity wrong):** both ADRs say `Accepted` in their own text since
+2026-09-06 (`3262618` "Accept ADR-0022 and ADR-0023"), are fully
+implemented (lifecycle ops, FUSE passthrough, at-rest encryption with
+per-volume DEKs and Rust-held KEK custody, KEK rotation without
+re-encryption, quotas, path-scoped grants) — and the ADR index still
+says `Proposed` for both. Same polarity as B1: own text vs index.
+What no record establishes is whether the 2026-09-06 acceptance was a
+sanctioned Architecture Group decision — no sign-off record exists in
+the tree.
 
-**Decision:** ratify as-implemented (with the §27/§29 performance
-record as the known-cost ledger), or direct changes. Note ADR-0024
-(streaming data plane) is the drafted next step gated on this review
-plus the `--vault-stream` evidence run.
+**Decisions:**
+1. Confirm or void the 2026-09-06 acceptance: confirm = it was a
+   sanctioned decision and the index gets corrected to match;
+   void = the flip was premature, the ADRs return to `Proposed`, and
+   ratification happens in this session. Per C2's ground-truth rule,
+   reconcile against the implementation record either way.
+2. Ratify as-implemented (with the §27/§29 performance record as the
+   known-cost ledger), or direct changes. Note ADR-0024 (streaming
+   data plane) is the drafted next step gated on this review plus the
+   `--vault-stream` evidence run.
 
 ### C2. Sign-off mechanics
 
@@ -171,6 +196,7 @@ plus the `--vault-stream` evidence run.
 | B1 persistence requirement | | | |
 | B2 defaults + standing rules | | | |
 | B2 SUSPENDED normative | | | |
+| C1 confirm/void the 2026-09-06 acceptance | | | |
 | C1 NyVault ratification | | | |
 
 ---
