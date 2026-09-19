@@ -789,6 +789,16 @@ Documentation hygiene, fixed earlier this session:
   then reported OK: live-iso cron green, ``pat-expiry-watch`` fired
   today (the push PAT proven alive on release day), arm64's first
   cron fire expected Mon Sep 21.
+  (Digests pinned at publish time: amd64 242 MB ``cf6618b8…``, arm64
+  256 MB ``24ce9df8…`` — server-computed fields, matched against the
+  local sha256 of both re-downloaded assets.)
+``scripts/verify_pat_grants.sh`` probed the same day: identity OK,
+  variables-write and actions-write still MISSING (HTTP 403) — the
+  dispatch drill and PAT_EXPIRES_AT automation remain gated on a
+  replacement PAT minted with Contents RW, Workflows RW, Actions RW,
+  Variables RW. The Monday arm64 cron was pre-verified as far as
+  possible without the fire: cron ``0 6 * * 1`` in the YAML, workflow
+  state ``active`` via the API.
 - 2026-09-18 (**v0.29.26: the process shipped a release first-try —
   rehearsed, then real**): the checklist added to CONTRIBUTING was
   validated twice the same day. First a full dress rehearsal: version
