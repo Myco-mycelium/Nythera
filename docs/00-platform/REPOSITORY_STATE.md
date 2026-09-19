@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-17
+2026-09-19
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -762,6 +762,33 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-19 (**v0.29.27: the demo proven on the machine before the
+  release, and the release proven on the machine after**): pre-ship,
+  both v0.29.26 assets were downloaded anonymously, digest-pinned,
+  and booted on this host — **all four paths** (both arches × direct
+  kernel + GRUB menu) green under TCG (no KVM, no sudo here), the
+  first time the live demo was verified on the dev host rather than
+  only in CI. 0.29.27 ships the docs/benchmarks round (ADR-0018 §34,
+  NPS-010 §35, ``AG_AGENDA.md``, the ADR-0018 review package + v2.0.0
+  pre-draft, ADR-0024 review input, NPS-026 v1.1.0, and the
+  watcher-aware ``check_scheduled_runs.sh``); gates: drift OK,
+  contract tests 76 OK (1 env skip), generators 36/36, both new
+  benchmark modules re-run green on-host, suite green, race harness
+  4/4 on the real attach script, credential sweep tree+history
+  clean. Tag ``v0.29.27`` pushed: both tag pipelines green (amd64
+  build + direct smoke; arm64 build + UEFI menu smoke; re-attach jobs
+  correctly skipped), release public immediately with both ISOs and
+  server digests — then BOTH new assets were re-downloaded
+  anonymously, digest-matched, and booted again on this host (all
+  four paths pass on the shipped bytes). Post-ship,
+  ``check_scheduled_runs.sh`` caught two defects in its own new
+  watcher check — Python's float ``timestamp()`` prints ``…​.0``
+  which bash arithmetic rejects (the >48h silent-death check could
+  never run), and the crash fell through into the 120-min watch loop
+  — fixed (``int()`` cast, ``--max-time`` on every curl); the check
+  then reported OK: live-iso cron green, ``pat-expiry-watch`` fired
+  today (the push PAT proven alive on release day), arm64's first
+  cron fire expected Mon Sep 21.
 - 2026-09-18 (**v0.29.26: the process shipped a release first-try —
   rehearsed, then real**): the checklist added to CONTRIBUTING was
   validated twice the same day. First a full dress rehearsal: version

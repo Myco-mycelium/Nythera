@@ -43,7 +43,7 @@ fi
 FAIL=0
 check_workflow() { # workflow-file
   local wf="$1" json
-  json="$(curl -s "${NRC[@]}" \
+  json="$(curl -s --max-time 30 "${NRC[@]}" \
     "https://api.github.com/repos/$REPO/actions/workflows/$wf/runs?event=schedule&per_page=1")"
   echo "$json" | python3 -c "
 import json,sys
@@ -59,7 +59,7 @@ else:
 
 check_watcher() { # the expiry watcher: absence of fires is a finding
   local json n last
-  json="$(curl -s "${NRC[@]}" \
+  json="$(curl -s --max-time 30 "${NRC[@]}" \
     "https://api.github.com/repos/$REPO/actions/workflows/$WATCHER/runs?event=schedule&per_page=1")"
   n="$(echo "$json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["workflow_runs"]))')"
   if [ "$n" = 0 ]; then
@@ -76,7 +76,9 @@ print(f\"{r['status']}/{r['conclusion']} at {r['created_at']}\")")"
   created="$(echo "$json" | python3 -c "
 import json,sys,datetime
 r=json.load(sys.stdin)['workflow_runs'][0]
-print(datetime.datetime.fromisoformat(r['created_at'].replace('Z','+00:00')).timestamp())")"
+# int(): timestamp() prints a float and bash arithmetic rejects '1789810887.0'
+# (the >48h check crashed on every invocation until this cast existed).
+print(int(datetime.datetime.fromisoformat(r['created_at'].replace('Z','+00:00')).timestamp()))")"
   local now age
   now="$(date -u +%s)"
   age=$(( (now - created) / 86400 ))
@@ -99,7 +101,7 @@ for wf in $WORKFLOWS; do
   echo "=== watching $wf scheduled runs (up to 120 min) ==="
   for i in $(seq 1 24); do
     sleep 300
-    STATE="$(curl -s "${NRC[@]}" \
+    STATE="$(curl -s --max-time 30 "${NRC[@]}" \
       "https://api.github.com/repos/$REPO/actions/workflows/$wf/runs?event=schedule&per_page=1" \
       | python3 -c "
 import json,sys
