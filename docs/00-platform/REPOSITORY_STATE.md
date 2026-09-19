@@ -764,7 +764,20 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
-- 2026-09-19 (**the AG decisions applied; the drill's gate made
+- 2026-09-19 (**v0.29.28: the AG decision package shipped; the local
+  four-path proof is now standing practice**): gates on the bumped
+  tree (drift OK, full suite green, race harness 4/4, credential
+  sweep clean), tag ``v0.29.28`` pushed, both pipelines green in one
+  pass (amd64 build + smoke; arm64 build + UEFI menu smoke), release
+  public immediately with both ISOs — then BOTH assets were
+  re-downloaded anonymously, digest-matched, and booted on this host
+  on all four paths (2 arches × direct + menu), all PASS — the third
+  release verified this way in one day. Digests pinned at publish:
+  amd64 243 MB ``ae89763c…``, arm64 256 MB ``49a3d529…``. The
+  release carries the audit-log hardening (scheme-2 details
+  coverage, one hasher, opt-in persistence), the accepted
+  ADR-0007/0009/0013/0016, the ratified ADR-0022/0023, and NPS-010
+  v1.6.0 with normative §9 defaults.
   precise**): the Architecture Group decisions were recorded
   (``AG_AGENDA.md``'s decision log, all 13 rows) and applied to the
   tree — ADR-0007/0009/0013/0016 Accepted, ADR-0018's review CLOSED
@@ -781,6 +794,7 @@ Documentation hygiene, fixed earlier this session:
   fine-grained PAT to add Actions RW + Variables RW, then
   ``scripts/verify_pat_grants.sh --drill`` runs the whole round-trip
   unattended); the drill failed closed at the 403 gate as designed.
+- 2026-09-19 (**the AG decisions applied; the drill's gate made
 - 2026-09-19 (**v0.29.27: the demo proven on the machine before the
   release, and the release proven on the machine after**): pre-ship,
   both v0.29.26 assets were downloaded anonymously, digest-pinned,
