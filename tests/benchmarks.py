@@ -1011,13 +1011,15 @@ def _vault_mount_worker():
                 read += chunk
             return mbps(size, time.perf_counter() - t0)
 
-    tmp = tempfile.mkdtemp(prefix="nyrqis-vault-mnt-bench-")
-    sock = os.path.join(tmp, "status.sock")
-    vault = os.path.join(tmp, "vault")
-    key = os.path.join(tmp, "vault.key")
-    mnt = os.path.join(tmp, "mnt")
-    native_dir = os.path.join(tmp, "native")
-    os.makedirs(mnt, exist_ok=True)
+    # The parent owns the whole scratch dir and passes the mountpoint
+    # via NYRQIS_BENCH_MNT (§4 parity): on a wedged run the parent can
+    # unmount and remove everything even if this child is unkillable.
+    mnt = os.environ["NYRQIS_BENCH_MNT"]
+    base = os.path.dirname(mnt)
+    sock = os.path.join(base, "status.sock")
+    vault = os.path.join(base, "vault")
+    key = os.path.join(base, "vault.key")
+    native_dir = os.path.join(base, "native")
     os.makedirs(native_dir, exist_ok=True)
     with open(key, "wb") as f:
         f.write(keys.make_blob_any(b"bench-mount-secret"))
@@ -1029,7 +1031,7 @@ def _vault_mount_worker():
         vault_passphrase="bench-mount-secret")
     host.start()
     client = IPCClient(DEFAULT_OPERATOR_ID,
-                       os.path.join(tmp, "ctl.sock")).bind()
+                       os.path.join(base, "ctl.sock")).bind()
     try:
         reply = client.call(sock, _json.dumps({
             "service": "storage", "op": "volume_create",
@@ -1040,6 +1042,18 @@ def _vault_mount_worker():
             return {"skipped": "mount could not be started"}
         watchdog = threading.Timer(90.0, lambda: os._exit(99))
         watchdog.start()
+        # Wedge diagnostics (2026-09-19 §27): after 45 s, and every 45 s
+        # after, dump all thread stacks to a file — it survives SIGKILL,
+        # unlike the stderr pipe (buffered content dies with the child).
+        # The parent surfaces the tail in the skip message, so a wedged
+        # run carries its own autopsy (serve-thread vs FUSE-loop state).
+        try:
+            import faulthandler
+            _wedge_fh = open(os.path.join(base, "wedge-dump.txt"), "w")
+            faulthandler.dump_traceback_later(45.0, repeat=True,
+                                              file=_wedge_fh)
+        except Exception:
+            _wedge_fh = None
         try:
             time.sleep(2.0)  # the FUSE loop establishes the kernel mount
             results = {}
@@ -1077,6 +1091,16 @@ def _vault_mount_worker():
         finally:
             watchdog.cancel()
             try:
+                import faulthandler
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
+            try:
+                if _wedge_fh is not None:
+                    _wedge_fh.close()
+            except Exception:
+                pass
+            try:
                 subprocess.run(["fusermount3", "-u", mnt],
                                capture_output=True, timeout=5)
             except Exception:
@@ -1090,6 +1114,25 @@ def _vault_mount_worker():
         host.stop()
 
 
+def _wedge_dump_tail(base) -> str:
+    """Tail of the child's faulthandler stack dump, if any (§27 wedge
+    diagnostics; 2026-09-19). Empty string when the child never wedged
+    long enough to dump.
+    """
+    try:
+        with open(os.path.join(base, "wedge-dump.txt")) as fh:
+            lines = [ln.rstrip() for ln in fh.read().splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    # Full autopsy persists past scratch cleanup for post-mortem.
+    try:
+        shutil.copyfile(os.path.join(base, "wedge-dump.txt"),
+                        "/tmp/nyrqis-last-wedge-dump.txt")
+    except OSError:
+        pass
+    return " ".join(lines[-24:])[:900]
+
+
 def benchmark_vault_mount_io(timeout_s=150):
     """Live ENCRYPTED NyVault FUSE mount vs native I/O (§27,
     2026-08-15): the same real-kernel-mount shape as §4/§6, but the
@@ -1100,12 +1143,21 @@ def benchmark_vault_mount_io(timeout_s=150):
     """
     if not _fuse_mount_available():
         return {"skipped": "no fusepy / /dev/fuse / fusermount on this host"}
-    base = tempfile.mkdtemp(prefix="nyrqis-vault-bench-")
+    # Parent creates the mountpoint and owns the whole scratch dir so it
+    # can lazily unmount and remove a wedged child's leftovers even if
+    # the child is unkillable (§4 parity; fixed 2026-09-19 — the pre-fix
+    # timeout path killed the child but never unmounted, leaving a stale
+    # nyvault mount + tmpdir behind on every wedge).
+    base = tempfile.mkdtemp(prefix="nyrqis-vault-mnt-bench-")
+    mnt = os.path.join(base, "mnt")
+    os.makedirs(mnt, exist_ok=True)
+    env = dict(os.environ)
+    env["NYRQIS_BENCH_MNT"] = mnt
     proc = subprocess.Popen(
         [sys.executable, "-B", os.path.abspath(__file__),
          "--vault-mount-child"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        start_new_session=True,
+        env=env, start_new_session=True,
     )
     try:
         out, err = proc.communicate(timeout=timeout_s)
@@ -1125,18 +1177,38 @@ def benchmark_vault_mount_io(timeout_s=150):
                 proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-        return {
-            "skipped": "encrypted live mount timed out after %ss (wedged "
-                       "FUSE request); child %s may require root abort or "
-                       "reboot to clear" % (timeout_s, proc.pid),
-        }
+        # Lazy-unmount + scratch cleanup so a wedged run leaves no stale
+        # nyvault mount or tmpdir behind (§4 parity).
+        dump = _wedge_dump_tail(base)
+        try:
+            subprocess.run(["fusermount3", "-uz", mnt],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        shutil.rmtree(base, ignore_errors=True)
+        msg = ("encrypted live mount timed out after %ss (wedged FUSE "
+               "request); child %s may require root abort or "
+               "reboot to clear" % (timeout_s, proc.pid))
+        if dump:
+            msg += "; child stacks: " + dump
+        return {"skipped": msg}
     try:
         result = json.loads(out.decode().strip().splitlines()[-1])
     except (ValueError, IndexError):
-        return {
-            "skipped": "encrypted live-mount child failed (rc=%s): %s"
-                       % (proc.returncode, err.decode()[:300]),
-        }
+        # Child died on its own (e.g. storage-service timeouts unwinding
+        # through the passthrough fallbacks): clean its scratch dir —
+        # the mount itself is the child's finally-block's job, which
+        # runs whenever the child exits at all.
+        subprocess.run(["fusermount3", "-uz", mnt],
+                       capture_output=True, timeout=5)
+        dump = _wedge_dump_tail(base)
+        shutil.rmtree(base, ignore_errors=True)
+        msg = ("encrypted live-mount child failed (rc=%s): %s"
+               % (proc.returncode, err.decode()[:300]))
+        if dump:
+            msg += "; child stacks: " + dump
+        return {"skipped": msg}
+    shutil.rmtree(base, ignore_errors=True)
     return result
 
 

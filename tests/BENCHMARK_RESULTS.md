@@ -1094,6 +1094,58 @@ data is visible immediately, durable after `fsync()`, at handle
 close/unmount, or at the interval tick — a daemon crash before then
 loses it (POSIX fsync semantics; the interval bounds the loss window).
 
+### §27 re-run attempt (2026-09-19): live-mount defect reproduced and contained
+
+Context: the host gained `/dev/fuse` (2026-09-18), so the section was
+taken up to re-measure the mount through the 0.14.21 streaming data
+plane (`stream_ver` ≥ 2 rides the wire-level read path — ADR-0024's
+mechanism). Result: **the live encrypted mount no longer completes on
+this host — reproduced three times**. Findings, in order:
+
+1. **The wedge is real and characterized.** The kernel mount
+   establishes (`fsname=nyvault` in `/proc/mounts`), then the FIRST
+   filesystem op through it puts the child in D-state on
+   `folio_wait_bit_common` — a kernel page wait inside the FUSE
+   request path, waiting on a reply that never arrives.
+2. **Two end-states observed.** (a) *Self-unwind*: the pending
+   storage-service call times out (`Errno 110`), the passthrough
+   fallback chain (wire-streamed → streamed → paging) all report
+   "no reply from the storage service", the child exits rc=1.
+   (b) *Hard wedge*: no timeout fires; the parent's 150 s containment
+   SIGKILLs the child.
+3. **Product defect isolated (harness bugs fixed first — see 4).**
+   A reproducible `ipc: client dropped malformed datagram (invalid IPC
+   message wire format)` immediately precedes the service silence, and
+   the silence is total: all THREE read paths time out, because the
+   transport serve loop is single-threaded (`serve_once` invokes
+   `on_call` inline) — one stalled handler makes the service mute for
+   every subsequent CALL. Root-cause hypothesis: a malformed
+   reply/reassembly interaction on the 0.14.21 wire-stream read path
+   wedges the pending-reply wait while the kernel holds the folio
+   wait. This is an integration defect of the streaming read path
+   under a real kernel mount — §29's `--vault-stream` evidence (no
+   kernel mount involved) is unaffected.
+4. **Harness containment fixed (§4 parity, 2026-09-19).** The §27
+   parent had lost the §4 pattern's two load-bearing pieces: it
+   created no mountpoint for the child and never lazy-unmounted on
+   timeout — every wedged run leaked a stale `nyvault` mount and
+   tmpdir (observed). Fixed: parent-owned mountpoint via
+   `NYRQIS_BENCH_MNT`, `fusermount3 -uz` + rmtree on both the timeout
+   and child-failed paths. Validated: the hard-wedge run now leaves
+   **0 stale mounts / 0 tmpdirs** where the pre-fix run left both.
+5. **Wedge autopsy now built in.** The child faulthandler-dumps all
+   thread stacks every 45 s to a file that survives SIGKILL; the tail
+   is surfaced in the skip message and the full dump persisted to
+   `/tmp/nyrqis-last-wedge-dump.txt` (captures: the FUSE session
+   thread mid `_build_fuse`, the IPC client thread in a reply wait —
+   the fixture for the root-cause hunt).
+
+Verdict: the §27 table above stands as the 2026-08-15 (pre-streaming)
+baseline. The streaming-read-path re-measurement stays **blocked by
+the defect in 3**, now precisely characterized, contained, and armed
+with an autopsy — a one-command reproduction
+(`python3 tests/benchmarks.py --vault-mount-io`).
+
 ## 28. Quota Ledger Refresh per Commit (2026-08-16)
 
 ADR-0022 accounting made the per-container usage ledger a **cache
