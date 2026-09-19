@@ -1,10 +1,27 @@
 ---
 title: Next Development Session Plan
-version: 6.16.0
-date: 2026-09-18
+version: 6.16.1
+date: 2026-09-19
 ---
 
 # Next Development Session Plan
+
+## STANDING ITEM — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
+
+`live-iso-arm64.yml` fires its first weekly scheduled build Monday
+morning (cron `0 6 * * 1`; workflow state `active` — pre-verified via
+the API on 2026-09-19). The manual-dispatch fallback is blocked by the
+same missing Actions grant as the PAT drill, so this cron is the ONLY
+path to the first scheduled arm64 verification. After it should have
+fired, run:
+
+    scripts/check_scheduled_runs.sh          # one-shot report
+    scripts/check_scheduled_runs.sh --watch  # wait for it live
+
+Pass = `live-iso-arm64.yml schedule: completed/success`. A failed fire
+is self-describing (`::error::` annotations, no auth needed); re-fire
+options are dispatch (needs Actions RW — currently 403) or a no-op tag
+push, whichever the failure diagnosis supports.
 
 ## Session 12 (2026-09-18) — THE MEASUREMENT PASSES CLOSE THE BACKLOG; THE REVIEW GETS ONE AGENDA
 
