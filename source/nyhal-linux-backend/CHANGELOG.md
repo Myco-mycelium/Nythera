@@ -5,6 +5,49 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.28] - 2026-09-19
+
+### Added
+
+- **Audit-log hardening (ADR-0018 review outcomes, merged from
+  `audit-b1-hardening`):** per-event scheme markers with scheme-2
+  hashing covering the canonical form of the whole event — the
+  §34e tamper-scope hole (details payload unhashed) is closed;
+  `None` vs `{}` details hash differently; stripping the scheme
+  marker is itself detected; scheme-1 legacy events verify under
+  their own rules with their documented limitation intact.
+- **Single audit hasher:** the second chain family
+  (`create_audit_chain`/`append_audit_entry`/`verify_audit_chain`)
+  now delegates to the same scheme-2 construction (chain salt +
+  result payload in the hash, chain-break detection added) — two
+  families, one guarantee.
+- **Opt-in audit persistence** (`audit_snapshot_dir` argument or
+  `NYRQIS_AUDIT_SNAPSHOT_DIR`): per-append JSONL delta lines
+  (measured 122 µs/event, O(1)), atomic compaction rewrite,
+  restore-on-init, `__del__` last-resort flush; the daemon wires it
+  to the state-file directory — the restart attack is now
+  detectable rather than free.
+- 10 new tests pinning the review decisions (25/25 audit tests
+  total with the 15 existing contract tests); the ADR-0018
+  benchmark gained a `--persistence` section whose first measurement
+  killed the O(n) full-rewrite design (3800 µs/event at n=200)
+  before it could ship.
+
+### Changed
+
+- **Architecture Group decisions applied** (decision log in
+  `AG_AGENDA.md`): ADR-0007/0009/0013/0016 accepted; ADR-0018's
+  review closed with all six sign-off items ticked; ADR-0022/0023
+  confirmed + ratified (the 2026-09-06 acceptance sanctioned; stale
+  index rows and body blockquotes corrected); NPS-010 v1.6.0
+  Accepted with §9 defaults normative (256 MB / 64 PIDs / unlimited
+  quota + standing rules) and the SUSPENDED accounting rule adopted
+  (full memory, zero CPU). Ledger: 18 ADRs accepted, 4 held,
+  1 rejected.
+- Audit append cost under scheme 2: 22.5 µs/event p50 (vs 6.4 µs
+  scheme-1) — the measured price of covering the details payload;
+  verify stays O(n) at ~15 µs/event.
+
 ## [0.29.27] - 2026-09-19
 
 ### Added
