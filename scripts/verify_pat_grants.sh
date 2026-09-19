@@ -163,5 +163,5 @@ echo
 if [ "$MISSING" = 0 ]; then
   echo "ALL GRANTS PRESENT."
 else
-  echo "GRANTS MISSING (see above) — mint the replacement with Contents RW, Workflows RW, Actions RW, Variables RW."
+  echo "GRANTS MISSING (see above) — mint the replacement with Contents RW, Workflows RW, Actions RW, Variables RW, Pull requests RW (the 2026-09-19 round found PR creation also needs it — the staged audit-b1-hardening branch could not open its PR)."
 fi
