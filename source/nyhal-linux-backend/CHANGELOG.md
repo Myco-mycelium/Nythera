@@ -5,6 +5,39 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.27] - 2026-09-19
+
+### Added
+
+- **ADR-0018 close-out benchmarks** (`tests/benchmark_adr0018.py`,
+  BENCHMARK_RESULTS §34): the hash-chained audit log measured against
+  the real implementation (~6.4 µs/event append, O(n) verify — the
+  "negligible" premise confirmed as measured fact), plus the §34e
+  tamper-scope demonstration: the chain hash does not cover the
+  `details` payload. The §34e-style details-coverage fix was
+  prototyped, measured (19.0 µs/event, suite green), recorded in the
+  review package, and **reverted pending the Group** — main carries
+  the decision, not the change.
+- **NPS-010 §9 defaults benchmarks** (`tests/benchmark_nps010_limits.py`,
+  BENCHMARK_RESULTS §35): container resource-limit defaults measured
+  under real cgroup-v2 enforcement (256 MB = 28–80× the footprint
+  floor; quota throttling is a tail phenomenon — p50 unchanged while
+  p95 grows 8×; SUSPENDED = full memory, zero CPU).
+- **`AG_AGENDA.md`** — every pending Architecture Group decision on
+  one document, in three independent bundles with a decision-log
+  table; ADR-0018 review package + v2.0.0 pre-draft.
+
+### Changed
+
+- Docs: ADR-0024 review input (scope the streaming win honestly to
+  writes + dispatch amortization; §27 absolute numbers annotated as
+  pre-batching baselines downstream, incl. NPS-026 v1.1.0 NyVault
+  findings); NPS-010 §9 v1.5.0 proposed-defaults table; Milestone 14
+  Phase 1 (package-trust pilot) ticked.
+- `scripts/check_scheduled_runs.sh` now also verifies the
+  `pat-expiry-watch` scheduled fires (a watcher that exists but has
+  not fired is silently dead — absence of runs is itself a finding).
+
 ## [0.29.26] - 2026-09-18
 
 ### Changed
