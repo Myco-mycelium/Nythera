@@ -285,6 +285,7 @@ class ContainerManager:
         use_direct_syscalls: bool = True,
         ipc_registry: Optional[ContainerIpcRegistry] = None,
         capability_manager: Optional["CapabilityManager"] = None,
+        audit_snapshot_dir: Optional[str] = None,
     ):
         """Initialize the container manager.
         
@@ -318,6 +319,15 @@ class ContainerManager:
                 services) and its grants are revoked when it
                 terminates. Pass the same object as the
                 ``IPCDatagramServer``'s ``capability_manager``.
+            audit_snapshot_dir: If given (or set via the
+                ``NYRQIS_AUDIT_SNAPSHOT_DIR`` env var), audit chains
+                snapshot atomically under this directory on every
+                append and are restored on manager re-initialization —
+                ADR-0018 review decision 4 (restart must not destroy
+                the record). Disabled when unset (the audit log stays
+                in-memory, exactly as before this option existed);
+                ``off``/``none``/``0`` suppresses an inherited
+                configuration.
         """
         self.containers: Dict[str, Container] = {}
         self.ipc_registry = ipc_registry
@@ -353,6 +363,9 @@ class ContainerManager:
             "storage_mb_per_hour": 0.002,  # $0.002 per GB-hour
         }
         self._billing_records: Dict[str, List[Dict[str, Any]]] = {}  # container_id → records
+        # ADR-0018 review decision 4: audit-chain snapshot persistence.
+        # See the ``audit_snapshot_dir`` arg docstring for the contract.
+        self._audit_snapshot_override = audit_snapshot_dir
         logger.info(f"ContainerManager initialized (cgroups_v2={self.use_cgroups_v2})")
 
     def __del__(self):
@@ -372,6 +385,19 @@ class ContainerManager:
         except Exception:
             # Interpreter shutdown (module globals may already be None)
             # or a partially-constructed manager — nothing safe to do.
+            pass
+        try:
+            # B1.4 last-resort flush: normal paths snapshot on every
+            # append; this covers a manager dropped with unsaved
+            # chains (e.g. chain-2 entries appended after a restore
+            # disabled autosave mid-flight). Idempotent with the
+            # per-append saves.
+            if self._audit_snapshot_dir():
+                for c in list(getattr(self, 'containers', {}).values()):
+                    chain = getattr(c, '_audit_hash_chain', None)
+                    if chain:
+                        self.save_audit_snapshot(c)
+        except Exception:
             pass
 
     def _record_event(self, kind: str, container_id: str,
@@ -21421,18 +21447,56 @@ class ContainerManager:
     # ------------------------------------------------------------------
 
     def initialize_audit_integrity(self, container: Container) -> Dict[str, Any]:
-        """Initialize audit log integrity tracking with hash chain."""
+        """Initialize audit log integrity tracking with hash chain.
+
+        Hashing scheme (ADR-0018 review §4.2): every event records a
+        per-event ``scheme`` marker and the hash covers a canonical
+        form of the WHOLE event — salt, prev_hash, op, timestamp, and
+        the details payload (scheme 2). Scheme-1 events (details
+        stored alongside but NOT hashed) remain verifiable under their
+        own rules so a chain that predates the scheme bump stays
+        checkable; the marker is itself inside the hashed content, so
+        a tamperer cannot strip a scheme-2 event back to scheme 1
+        without detection.
+        """
         import hashlib
         import time as _time
         container._audit_hash_chain = []
         container._audit_salt = hashlib.sha256(
             f"{container.id}{_time.time()}".encode()
         ).hexdigest()[:16]
-        return {
+        # B1.4 (ADR-0018 review decision 4): adopt the snapshot written
+        # by a previous manager lifetime when persistence is
+        # configured. Restored events keep their stored hashes;
+        # verify re-checks them, so an edited snapshot fails
+        # verification instead of silently loading rewritten history.
+        restored = self._audit_restore_snapshot(container)
+        result = {
             "container_id": container.id,
             "initialized": True,
             "salt": container._audit_salt,
         }
+        if restored is not None:
+            result["restored_events"] = len(container._audit_hash_chain)
+        return result
+
+    @staticmethod
+    def _audit_event_content(
+        salt: str, prev_hash: str, op: str, ts: float,
+        details: Optional[Dict[str, Any]],
+    ) -> str:
+        """Scheme-2 hashed content: everything the event carries.
+
+        Canonical JSON (sorted keys, no whitespace) makes the details
+        payload order-independent — mutating any byte of ``details``
+        changes the hash. The leading scheme tag versions the
+        construction per event.
+        """
+        return "2|" + "|".join((
+            salt, prev_hash, op, repr(float(ts)),
+            json.dumps(details or {}, sort_keys=True,
+                       separators=(",", ":"), default=str),
+        ))
 
     def append_audit_event(
         self,
@@ -21440,7 +21504,7 @@ class ContainerManager:
         op: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Append an audit event with integrity hash."""
+        """Append an audit event with integrity hash (scheme 2)."""
         import hashlib
         import time as _time
         if not hasattr(container, '_audit_hash_chain'):
@@ -21451,12 +21515,13 @@ class ContainerManager:
         prev_hash = chain[-1]["hash"] if chain else "0" * 64
         ts = _time.time()
         event_data = {
+            "scheme": 2,
             "op": op,
             "details": details or {},
             "timestamp": ts,
             "prev_hash": prev_hash,
         }
-        content = f"{salt}{prev_hash}{op}{ts}"
+        content = self._audit_event_content(salt, prev_hash, op, ts, details)
         event_hash = hashlib.sha256(content.encode()).hexdigest()
         event_data["hash"] = event_hash
         chain.append(event_data)
@@ -21469,12 +21534,27 @@ class ContainerManager:
             "integrity_hash": event_hash,
         })
 
+        # B1.4: persist the delta when persistence is configured —
+        # restart must not destroy the record. O(1) per event (one
+        # JSONL line pair); a failed save is logged, never raised
+        # into the append path.
+        self._audit_autosave(container, [
+            {"kind": "event", "event": event_data},
+            {"kind": "trail", "entry": container._audit_trail[-1]},
+        ])
+
         return {"event_hash": event_hash, "chain_length": len(chain)}
 
     def verify_audit_integrity(
         self, container: Container
     ) -> Dict[str, Any]:
-        """Verify the integrity of the audit hash chain."""
+        """Verify the integrity of the audit hash chain.
+
+        Per-event scheme dispatch: scheme-2 events hash the full
+        canonical form (details included); scheme-1 events hash the
+        legacy ``salt‖prev_hash‖op‖timestamp`` form. An event with an
+        unknown scheme is reported as tampered rather than guessed at.
+        """
         import hashlib
         if not hasattr(container, '_audit_hash_chain'):
             return {"error": "Audit integrity not initialized"}
@@ -21483,7 +21563,21 @@ class ContainerManager:
         tampered = []
         for i, event in enumerate(chain):
             prev_hash = chain[i - 1]["hash"] if i > 0 else "0" * 64
-            content = f"{salt}{prev_hash}{event['op']}{event['timestamp']}"
+            scheme = event.get("scheme", 1)
+            if scheme == 2:
+                content = self._audit_event_content(
+                    salt, prev_hash, event["op"], event["timestamp"],
+                    event.get("details"),
+                )
+            elif scheme == 1:
+                content = f"{salt}{prev_hash}{event['op']}{event['timestamp']}"
+            else:
+                tampered.append({
+                    "index": i,
+                    "type": "unknown_scheme",
+                    "scheme": scheme,
+                })
+                continue
             expected = hashlib.sha256(content.encode()).hexdigest()
             if event["hash"] != expected:
                 tampered.append({
@@ -21505,6 +21599,223 @@ class ContainerManager:
             "tampered": tampered,
             "valid": len(tampered) == 0,
         }
+
+    # -- B1.4: snapshot persistence (the restart-survivable record) --
+
+    def _audit_snapshot_dir(self) -> Optional[str]:
+        """Configured snapshot directory, or None when disabled.
+
+        Disabled by default: with no ``audit_snapshot_dir`` argument
+        and no ``NYRQIS_AUDIT_SNAPSHOT_DIR`` env var the audit log is
+        in-memory exactly as before the persistence option existed.
+        """
+        override = getattr(self, '_audit_snapshot_override', None)
+        if override is not None:
+            text = str(override).strip()
+            if text.lower() in ("off", "none", "0"):
+                return None
+            return text
+        raw = os.environ.get("NYRQIS_AUDIT_SNAPSHOT_DIR", "").strip()
+        if raw.lower() in ("off", "none", "0"):
+            return None
+        return raw or None
+
+    @staticmethod
+    def _audit_snapshot_filename(container_id: str) -> str:
+        safe = "".join(
+            ch if (ch.isalnum() or ch in "._-") else "_"
+            for ch in container_id
+        )[:80] or "container"
+        return f"{safe}.audit.json"
+
+    def _audit_snapshot_path(self, container_id: str) -> str:
+        return os.path.join(
+            self._audit_snapshot_dir(),
+            self._audit_snapshot_filename(container_id),
+        )
+
+    def save_audit_snapshot(self, container: Container) -> Dict[str, Any]:
+        """Atomically rewrite the container's whole audit record as a
+        COMPACTED JSONL snapshot.
+
+        One file per container. Line order: a ``meta`` line (record
+        version, container id, chain salt), then every primary-chain
+        event, every trail-mirror entry, and — for each manager-level
+        chain of this container — a ``chain`` header followed by its
+        entries. The write is tmp + ``os.replace`` so a reader never
+        sees a torn file. Best effort: a failed save is logged and
+        returned, never raised into the append path.
+
+        The per-append path does NOT come through here (that would be
+        O(n) per event — measured, see
+        tests/benchmark_adr0018.py --persistence): appends append one
+        line each via ``_audit_append_lines``; this full rewrite is
+        the compaction / adoption path.
+        """
+        d = self._audit_snapshot_dir()
+        if not d:
+            return {"ok": False, "error": "audit persistence not configured"}
+        lines: List[Dict[str, Any]] = [{
+            "kind": "meta", "version": 2,
+            "container_id": container.id,
+            "salt": container._audit_salt,
+        }]
+        for ev in getattr(container, '_audit_hash_chain', []):
+            lines.append({"kind": "event", "event": ev})
+        for tr in getattr(container, '_audit_trail', []):
+            lines.append({"kind": "trail", "entry": tr})
+        for cid, ch in getattr(self, '_audit_chains', {}).items():
+            if ch.get("container_id") != container.id:
+                continue
+            lines.append({
+                "kind": "chain", "chain_id": cid,
+                "salt": ch.get("salt", ""),
+                "created_at": ch.get("created_at"),
+                "container_name": ch.get("container_name"),
+                "last_hash": ch.get("last_hash", ""),
+            })
+            for e in ch.get("entries", []):
+                lines.append({"kind": "chain_entry", "chain_id": cid,
+                              "entry": e})
+            ch["_persisted"] = True
+        payload = "".join(
+            json.dumps(l, sort_keys=True, default=str) + "\n"
+            for l in lines)
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = self._audit_snapshot_path(container.id)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp, path)
+            return {"ok": True, "path": path, "lines": len(lines)}
+        except OSError as exc:
+            logger.warning("audit snapshot save failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
+    def _audit_append_lines(
+        self, container: Container, lines: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Append delta lines to the container's JSONL snapshot —
+        O(1) per audit event (the file grows exactly as the in-memory
+        record grows). Creates the file with its ``meta`` line when
+        absent. Best effort like every persistence path.
+        """
+        d = self._audit_snapshot_dir()
+        if not d:
+            return {"ok": False, "error": "audit persistence not configured"}
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = self._audit_snapshot_path(container.id)
+            exists = os.path.exists(path)
+            with open(path, "a", encoding="utf-8") as fh:
+                if not exists:
+                    fh.write(json.dumps({
+                        "kind": "meta", "version": 2,
+                        "container_id": container.id,
+                        "salt": container._audit_salt,
+                    }, sort_keys=True, default=str) + "\n")
+                for line in lines:
+                    fh.write(json.dumps(
+                        line, sort_keys=True, default=str) + "\n")
+            return {"ok": True, "path": path}
+        except OSError as exc:
+            logger.warning("audit snapshot append failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
+    def _audit_autosave(
+        self, container: Container, lines: List[Dict[str, Any]]
+    ) -> None:
+        """Persist the just-appended record delta when persistence is
+        configured. The cost is measured
+        (tests/benchmark_adr0018.py --persistence) so the requirement
+        carries its number, not just its intent.
+        """
+        if not self._audit_snapshot_dir():
+            return
+        self._audit_append_lines(container, lines)
+
+    def _audit_restore_snapshot(
+        self, container: Container
+    ) -> Optional[Dict[str, Any]]:
+        """Restore the primary chain (and trail mirror and manager-
+        level chains) from the JSONL snapshot of a previous manager
+        lifetime, when persistence is configured and a matching file
+        exists. A snapshot for a DIFFERENT container id is ignored
+        (a stale file is not this container's record). Restored events
+        keep their stored hashes; verify re-checks them, so an edited
+        snapshot fails verification instead of silently loading
+        rewritten history.
+        """
+        d = self._audit_snapshot_dir()
+        if not d:
+            return None
+        try:
+            with open(self._audit_snapshot_path(container.id),
+                      "r", encoding="utf-8") as fh:
+                raw_lines = fh.readlines()
+        except (OSError, ValueError):
+            return None
+        events: List[Dict[str, Any]] = []
+        trail: List[Dict[str, Any]] = []
+        chains: Dict[str, Dict[str, Any]] = {}
+        meta_salt = None
+        try:
+            for raw in raw_lines:
+                line = json.loads(raw)
+                kind = line.get("kind")
+                if kind == "meta":
+                    if line.get("container_id") != container.id:
+                        return None  # a stale file is not this record
+                    meta_salt = line.get("salt")
+                elif kind == "event":
+                    events.append(line.get("event") or {})
+                elif kind == "trail":
+                    trail.append(line.get("entry") or {})
+                elif kind == "chain":
+                    chains[line.get("chain_id", "")] = {
+                        "container_id": container.id,
+                        "container_name": line.get("container_name"),
+                        "created_at": line.get(
+                            "created_at", time.time()),
+                        "entries": [],
+                        "last_hash": line.get("last_hash", ""),
+                        "verified": True,
+                        "scheme": 2,
+                        "salt": line.get("salt", ""),
+                        "_persisted": True,
+                        "_restored": True,
+                    }
+                elif kind == "chain_entry":
+                    cid = line.get("chain_id", "")
+                    chains.setdefault(cid, {
+                        "container_id": container.id,
+                        "created_at": time.time(),
+                        "entries": [], "last_hash": "",
+                        "verified": True, "scheme": 2, "salt": "",
+                        "_persisted": True, "_restored": True,
+                    })
+                    entry = line.get("entry") or {}
+                    chains[cid]["entries"].append(entry)
+                    chains[cid]["last_hash"] = entry.get(
+                        "hash", chains[cid]["last_hash"])
+        except (TypeError, ValueError):
+            return None
+        # A snapshot can legitimately carry only manager-level chains
+        # (a container whose audit used the chain-2 family exclusively)
+        # — restore whatever the file holds.
+        if not events and not chains:
+            return None
+        if events:
+            container._audit_salt = meta_salt or container._audit_salt
+            container._audit_hash_chain = events
+            if trail:
+                container._audit_trail = trail
+        if not hasattr(self, '_audit_chains'):
+            self._audit_chains = {}
+        for cid, ch in chains.items():
+            self._audit_chains.setdefault(cid, ch)
+        return {"restored_events": len(events)}
 
     def get_audit_integrity_report(
         self, container: Container
@@ -28087,31 +28398,102 @@ class ContainerManager:
     # Audit log tamper detection and integrity checks
     # ------------------------------------------------------------------
 
-    def _compute_audit_hash(self, entry: Dict[str, Any], prev_hash: str = "") -> str:
-        """Compute a SHA-256 hash of an audit entry with chaining."""
-        import hashlib
-        payload = json.dumps({
-            "ts": entry.get("ts", 0),
-            "op": entry.get("op", ""),
-            "container_id": entry.get("container_id", ""),
-            "result": entry.get("result", {}),
-            "prev_hash": prev_hash,
-        }, sort_keys=True, default=str)
+    def _compute_audit_hash(
+        self, entry: Dict[str, Any], prev_hash: str = "",
+        salt: str = "",
+    ) -> str:
+        """Compute a SHA-256 hash of an audit entry with chaining.
+
+        Scheme-2 delegation (ADR-0018 review §4.2): the payload is the
+        canonical JSON of the whole entry — scheme marker, chain salt,
+        timestamp, op, container id, result (this family's details
+        payload), prev_hash — so any mutation, including of the
+        result payload, is detectable. Legacy entries (no scheme
+        marker) keep the historical construction so an in-memory chain
+        that predates the bump stays checkable.
+        """
+        if entry.get("scheme") == 2:
+            payload = json.dumps({
+                "scheme": 2,
+                "salt": salt,
+                "ts": entry.get("ts", 0),
+                "op": entry.get("op", ""),
+                "container_id": entry.get("container_id", ""),
+                "result": entry.get("result", {}),
+                "prev_hash": prev_hash,
+            }, sort_keys=True, default=str)
+        else:
+            payload = json.dumps({
+                "ts": entry.get("ts", 0),
+                "op": entry.get("op", ""),
+                "container_id": entry.get("container_id", ""),
+                "result": entry.get("result", {}),
+                "prev_hash": prev_hash,
+            }, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode()).hexdigest()
 
+    def _container_by_id(self, container_id: str) -> Optional[Container]:
+        """Resolve a container object by id for the chain-2 record's
+        persistence path (the manager-level chains outlive their
+        creating call frames, so the reference is looked up, not
+        held)."""
+        containers = getattr(self, 'containers', {})
+        try:
+            direct = containers.get(container_id)
+        except Exception:  # noqa: BLE001 - registry shape best effort
+            direct = None
+        if direct is not None:
+            return direct
+        for c in containers.values():
+            if getattr(c, 'id', None) == container_id:
+                return c
+        return None
+
     def create_audit_chain(self, container: Container) -> Dict[str, Any]:
-        """Create an integrity-tracked audit chain for a container."""
+        """Create an integrity-tracked audit chain for a container.
+
+        Scheme-2 chain: per-entry scheme markers, a chain salt, and the
+        result payload inside the hash. When snapshot persistence is
+        configured and a snapshot for this container carries this
+        chain, the stored chain is adopted (restart must not destroy
+        the record — ADR-0018 review decision 4); otherwise a fresh
+        chain is created.
+        """
         if not hasattr(self, '_audit_chains'):
             self._audit_chains = {}
         chain_id = f"chain-{container.id[:12]}"
-        self._audit_chains[chain_id] = {
-            "container_id": container.id,
-            "container_name": container.config.name,
-            "created_at": time.time(),
-            "entries": [],
-            "last_hash": "",
-            "verified": True,
-        }
+        # Restore FIRST: a persisted chain for this container must be
+        # adopted before the fresh (empty) chain is registered, or the
+        # restore pass would skip this chain id as already existing.
+        restored = self._audit_restore_snapshot(container)
+        persisted = (
+            self._audit_chains.get(chain_id, {})
+            if restored is not None else {}
+        )
+        if not persisted.get("entries"):
+            chain = {
+                "container_id": container.id,
+                "container_name": container.config.name,
+                "created_at": time.time(),
+                "entries": [],
+                "last_hash": "",
+                "verified": True,
+                "scheme": 2,
+                "salt": hashlib.sha256(
+                    f"{chain_id}{time.time()}".encode()
+                ).hexdigest()[:16],
+            }
+            self._audit_chains[chain_id] = chain
+            # Persist the chain HEADER (carrying the salt) before any
+            # entry line can reference it — a restored chain must
+            # verify against the salt its entries were hashed with.
+            self._audit_autosave(container, [{
+                "kind": "chain", "chain_id": chain_id,
+                "salt": chain["salt"],
+                "created_at": chain["created_at"],
+                "container_name": chain["container_name"],
+                "last_hash": "",
+            }])
         return {"chain_id": chain_id, "container_id": container.id}
 
     def append_audit_entry(
@@ -28125,28 +28507,47 @@ class ContainerManager:
         if not chain:
             return {"error": "Chain not found"}
         entry = {
+            "scheme": 2,
             "ts": time.time(),
             "op": op,
             "container_id": chain["container_id"],
             "result": result or {},
             "prev_hash": chain["last_hash"],
         }
-        entry["hash"] = self._compute_audit_hash(entry, chain["last_hash"])
+        entry["hash"] = self._compute_audit_hash(
+            entry, chain["last_hash"], salt=chain.get("salt", ""))
         chain["entries"].append(entry)
         chain["last_hash"] = entry["hash"]
+        cont = self._container_by_id(chain.get("container_id", ""))
+        if cont is not None:
+            self._audit_autosave(cont, [
+                {"kind": "chain_entry", "chain_id": chain_id,
+                 "entry": entry},
+            ])
         return {"ok": True, "chain_id": chain_id, "hash": entry["hash"]}
 
     def verify_audit_chain(self, chain_id: str) -> Dict[str, Any]:
-        """Verify the integrity of an audit chain."""
+        """Verify the integrity of an audit chain.
+
+        Recomputes each entry's hash with the chain's salt (scheme-2
+        delegation into ``_compute_audit_hash``) and checks hash-chain
+        continuity — both hash mismatches and chain breaks are
+        tamper evidence.
+        """
         chain = getattr(self, '_audit_chains', {}).get(chain_id)
         if not chain:
             return {"error": "Chain not found"}
         prev_hash = ""
         tampered = []
         for i, entry in enumerate(chain["entries"]):
-            expected = self._compute_audit_hash(entry, prev_hash)
+            expected = self._compute_audit_hash(
+                entry, prev_hash, salt=chain.get("salt", ""))
             if entry.get("hash") != expected:
-                tampered.append({"index": i, "op": entry.get("op"), "expected": expected[:16]})
+                tampered.append({"index": i, "op": entry.get("op"),
+                                 "expected": expected[:16]})
+            if entry.get("prev_hash", "") != prev_hash:
+                tampered.append({"index": i, "op": entry.get("op"),
+                                 "type": "chain_break"})
             prev_hash = entry.get("hash", "")
         chain["verified"] = len(tampered) == 0
         return {
