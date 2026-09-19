@@ -137,7 +137,7 @@ stays `Proposed` today regardless.
 | A3 | index row 0013 → Accepted; NPS-012 §6.1 amendment | scheduler defaults land with the kernel work |
 | A4 | index row 0016 → Accepted | reopen criterion recorded in the ADR |
 | B1.1 | index row 0018 → Accepted | — |
-| B1.2–4 | review package §4.2 disposition notes | the details-coverage fix (prototyped, measured) + persistence requirement land as a code change with its benchmark re-run |
+| B1.2–4 | review package §4.2 disposition notes | **already staged**: branch `audit-b1-hardening` (NOT on main) implements all three — scheme-2 details coverage, one hasher, opt-in snapshot persistence (JSONL deltas, 122 µs/event O(1)); 25/25 audit tests + full suite green; merges the moment the Group directs |
 | B2 | NPS-010 §9 proposal table → normative; §7 SUSPENDED amendment | none |
 | C1 | index rows 0022/0023 → Accepted | `--vault-stream` evidence run feeds ADR-0024's review |
 

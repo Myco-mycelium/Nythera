@@ -141,6 +141,28 @@ schemes during a transition (or the chain must be versioned per
 event) — the prototype's per-event `scheme` marker is the working
 demonstration; legacy v1 events verify under the op+timestamp rule.
 
+**Branch staged 2026-09-19 (`audit-b1-hardening`, NOT on main):** the
+full B1 hardening exists as a ready-to-apply branch, validated on the
+tree it changes — 25/25 audit tests (15 existing contract tests stay
+green + 10 new tests pinning the review decisions: chain-level details
+tamper detection, scheme-marker stripping detected, unknown-scheme
+reporting, scheme-1 legacy events still verifying *with their
+documented hole intact*, chain-2 result coverage, chain-break
+detection, restart-preservation, snapshot-tamper rejection,
+persistence off by default, env/override semantics), FULL backend
+suite green. Measured on that branch: append **22.5 µs/event** p50
+under scheme 2 (vs 6.4 µs scheme 1 — the details coverage cost,
+consistent with §4.2's estimate), verify linear ~15 µs/event, and the
+§34e mutation table now reports chain-level details tamper DETECTED
+plus scheme-strip detected. B1.4 persistence ships there as an
+opt-in (`audit_snapshot_dir` / `NYRQIS_AUDIT_SNAPSHOT_DIR`, off by
+default): per-append JSONL delta lines (measured **122 µs/event,
+O(1)**) with an atomic compaction rewrite — the branch's own history
+records a first full-rewrite-per-append design measuring 3800 µs/event
+at n=200 (O(n)) being killed by its benchmark. The branch merges only
+when this Group directs the fix; main carries the decision, not the
+change.
+
 ### 4.3 Options for the Group
 
 - **(a) Accept the limitation as recorded** — argue the log's primary

@@ -805,7 +805,14 @@ Documentation hygiene, fixed earlier this session:
   premise wrong (ADR-0022/0023 Accepted-in-text since 2026-09-06,
   index stale) and re-verified all of B1's claims in the audit code;
   ``verify_pat_grants.sh --drill`` was pinned to v0.29.27 with its
-  fail-closed 403 behavior verified live.
+  fail-closed 403 behavior verified live. The B1 hardening was then
+  staged as branch ``audit-b1-hardening`` (f577005 + f089cad, never on
+  main): scheme-2 hashing (details covered, None vs {} preserved,
+  scheme markers hashed), one hasher behind both families, opt-in
+  JSONL snapshot persistence — 25/25 audit tests, full suite green,
+  append 22.5 µs/event p50, persistence delta 122 µs/event O(1);
+  its own benchmark killed the first full-rewrite design (3800 µs at
+  n=200, O(n)). It merges only when the Group directs.
 - 2026-09-18 (**v0.29.26: the process shipped a release first-try —
   rehearsed, then real**): the checklist added to CONTRIBUTING was
   validated twice the same day. First a full dress rehearsal: version
