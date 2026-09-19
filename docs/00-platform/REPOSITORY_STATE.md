@@ -764,6 +764,23 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-19 (**the AG decisions applied; the drill's gate made
+  precise**): the Architecture Group decisions were recorded
+  (``AG_AGENDA.md``'s decision log, all 13 rows) and applied to the
+  tree — ADR-0007/0009/0013/0016 Accepted, ADR-0018's review CLOSED
+  (all six sign-off items ticked; the ``audit-b1-hardening`` branch
+  merged: scheme-2 hashing, one hasher, opt-in persistence),
+  ADR-0022/0023 confirmed + ratified (the stale 2026-08-15 body
+  blockquotes were the real polarity source — the frontmatter had
+  said Accepted all along), NPS-010 v1.6.0 Accepted with the §9
+  defaults normative and the SUSPENDED rule adopted now. Ledger:
+  18 ADRs accepted, 4 held, 1 rejected. The replacement PAT arrived
+  the same day and was probed: identity + Contents OK (pushes work)
+  but **Actions write and Variables write are still 403** — the mint
+  omitted exactly the two permissions the drill needs (edit the
+  fine-grained PAT to add Actions RW + Variables RW, then
+  ``scripts/verify_pat_grants.sh --drill`` runs the whole round-trip
+  unattended); the drill failed closed at the 403 gate as designed.
 - 2026-09-19 (**v0.29.27: the demo proven on the machine before the
   release, and the release proven on the machine after**): pre-ship,
   both v0.29.26 assets were downloaded anonymously, digest-pinned,
