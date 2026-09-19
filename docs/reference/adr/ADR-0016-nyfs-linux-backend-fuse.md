@@ -2,7 +2,7 @@
 title: NyFS Linux Backend Implemented as a User-Space FUSE Filesystem
 document_id: ADR-0016
 version: 1.0.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-07-13
@@ -72,5 +72,7 @@ Linux kernel module.
   native implementation question.
 
 ## Status
-Proposed — initial implementation strategy decided; kernel-module
-fallback remains explicitly open pending FUSE overhead benchmarking.
+Accepted (2026-09-19) — FUSE-first confirmed; the kernel-module
+fallback is a documented escape hatch reopened only by a named
+workload demonstrating FUSE overhead beyond its threshold (none
+measured so far; §5–§15 is the measurement record).

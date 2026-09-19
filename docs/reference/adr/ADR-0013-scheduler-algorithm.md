@@ -2,7 +2,7 @@
 title: Adopt an EEVDF-Derived Scheduler with a Real-Time Priority Class
 document_id: ADR-0013
 version: 1.1.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-13
 updated: 2026-09-10
@@ -97,6 +97,7 @@ still applies to any default chosen from it. Findings:
   are NPS-010 §7.2's decision.
 
 ## Status
-Proposed — algorithm family decided; tuning parameters now backed by
-quantified simulation data (2026-09-10); defaults pending Architecture
-Group review per NPC-002 §5.2.
+Accepted (2026-09-19) — Linux-6.6 weight table adopted; RT admission
+reserve set at ≤ ~60–70%; input/audio classes required to submit small
+requests (NPS-012 §6.1 shape). The §33 simulation data is the tuning
+record.

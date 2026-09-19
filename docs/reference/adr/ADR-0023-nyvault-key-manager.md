@@ -5,13 +5,15 @@ version: 0.1.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-09-19
 ai_assisted: true
 depends_on: [NPS-004, NPS-011, ADR-0002, ADR-0014, ADR-0020, ADR-0022]
 ---
 
-> **Status (2026-08-15):** Proposed — drafted for Architecture Group
-> review as the required follow-on to ADR-0022. This ADR fixes the
+> **Status:** Accepted — ratified by the Architecture Group on
+> 2026-09-19, which CONFIRMED the 2026-09-06 acceptance commit
+> (`3262618`) as sanctioned; the ADR index rows were the stale half of
+> that discrepancy. This ADR fixes the
 > *key custody and encryption boundary* for NyVault; the concrete
 > hardware backends (TPM2, PKCS#11 token) are named as pluggable
 > implementations behind a Rust trait and are NOT required for the

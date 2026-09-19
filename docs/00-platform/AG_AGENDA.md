@@ -2,7 +2,7 @@
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
 version: 1.1.0
-status: Informational
+status: Disposed — decisions recorded 2026-09-19 (see the decision log)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -184,23 +184,23 @@ the tree.
 
 ---
 
-## Decision log (fill at the session)
+## Decision log — filled 2026-09-19
 
 | item | decision | owner | date |
 |---|---|---|---|
-| A1 mechanism + defaults | | | |
-| A1 static/dynamic shares | | | |
-| A2 default level | | | |
-| A3 weight table + RT reserve | | | |
-| A4 FUSE-first confirmed | | | |
-| B1 status reconciliation | | | |
-| B1 tamper scope (a/b) | | | |
-| B1 dual mechanisms | | | |
-| B1 persistence requirement | | | |
-| B2 defaults + standing rules | | | |
-| B2 SUSPENDED normative | | | |
-| C1 confirm/void the 2026-09-06 acceptance | | | |
-| C1 NyVault ratification | | | |
+| A1 mechanism + defaults | Accepted — mechanism + §4 defaults as shipped (recommendation followed) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| A1 static/dynamic shares | Static default, dynamic opt-in (shipped posture) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| A2 default level | Accepted — default level 3 (NPS-005 §3 low-single-digits row) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| A3 weight table + RT reserve | Accepted — Linux-6.6 table; RT admission reserve ≤ ~60–70%; small-request requirement | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| A4 FUSE-first confirmed | Confirmed — kernel-module fallback stays a named reopen criterion | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B1 status reconciliation | Reconciled to Accepted (ADR text was right; indexes corrected) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B1 tamper scope (a/b) | (b) fix DIRECTED — scheme-2 details coverage, merged from audit-b1-hardening | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B1 dual mechanisms | Consolidated — one scheme-2 hasher behind both families | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B1 persistence requirement | Set — opt-in JSONL snapshot persistence; daemon path wired to the state-file dir | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B2 defaults + standing rules | Adopted as proposed — 256 MB / 64 PIDs / unlimited quota + standing rules | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| B2 SUSPENDED normative | Adopted — full memory, zero CPU; suspension is not budget relief (NPS-010 v1.6.0) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| C1 confirm/void the 2026-09-06 acceptance | CONFIRMED — sanctioned decision; index rows corrected to match | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| C1 NyVault ratification | Ratified as-implemented (§27/§29 performance record = known-cost ledger) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
 
 ---
 

@@ -2,7 +2,7 @@
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
 version: 1.3.1
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-09-10
@@ -143,8 +143,9 @@ The NPS-010 §7.1 wording still needs to adopt this mechanism, and the
 ADR itself remains `Proposed` pending Architecture Group review.
 
 ## Status
-Proposed — sweep + adversarial data collected (2026-09-10, §32);
-parameter recommendation above ready for Architecture Group review.
+Accepted (2026-09-19) — mechanism and §4 defaults adopted as shipped;
+static `fair_shares` default with dynamic opt-in (the shipped
+posture).
 The fairness mechanism is implemented in the Linux backend
 (Implementation Note above); spec-side adoption in NPS-010 §7.1 is the
 remaining step.

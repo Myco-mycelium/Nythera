@@ -2,7 +2,7 @@
 title: Architecture Group Decision Brief — Pre-Read for the Pending Agenda
 document_id: AG-BRIEF-2026-09
 version: 1.0.0
-status: Informational
+status: Superseded — decisions made 2026-09-19 (see AG_AGENDA.md's decision log)
 owners: [Nyrqis Architecture]
 created: 2026-09-19
 ai_assisted: true
@@ -10,6 +10,12 @@ depends_on: [AG-AGENDA-2026-09, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0018
 ---
 
 # Architecture Group Decision Brief — Pre-Read
+
+> **DISPOSED 2026-09-19.** The Architecture Group's decisions are
+> recorded in `AG_AGENDA.md`'s decision log: A1–A4 accepted per this
+> brief's recommendations, B1 fix directed (the staged branch merged),
+> B2 adopted, C1 confirmed + ratified. This brief is retained as the
+> record of what was recommended and why.
 
 **What this document is:** an AI-drafted pre-read for the session that
 disposes of `AG_AGENDA.md` (v1.1.0). Every factual claim was

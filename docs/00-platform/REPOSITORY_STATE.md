@@ -52,8 +52,10 @@ performance budgets, and developer onboarding — see
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-11 accepted, 8 held (4 named benchmark blockers plus 4 decisions pending
-Architecture Group sign-off, not benchmark-blocked), 1 rejected.
+18 accepted, 4 held (ADR-0014/0015/0019/0024 — each with its blocker
+named), 1 rejected. The 2026-09-19 Architecture Group decisions
+(recorded in `AG_AGENDA.md`'s decision log) accepted ADR-0007,
+0009, 0013, 0016, and 0018's close-out, and ratified ADR-0022/0023.
 
 - [x] ADR-0001 Diátaxis + MkDocs Material — Accepted
 - [x] ADR-0002 Copy-on-write filesystem — Accepted
@@ -61,23 +63,23 @@ Architecture Group sign-off, not benchmark-blocked), 1 rejected.
 - [x] ADR-0004 Containerized execution model — Accepted
 - [x] ADR-0005 Windows compatibility translation layer — Accepted
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
-- [ ] ADR-0007 Zstandard as default compression codec — **Proposed**, close-out data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §31): real-asset level sweep (ratio flat ~1.07 at every level on already-compressed data), real LZ4 fast path (2.7× zstd-1 compression at equal ratio), concurrent scaling (2.2× at 8 threads); default-level decision pending Architecture Group review with the data now complete
+- [x] ADR-0007 Zstandard as default compression codec — **Accepted** (2026-09-19): default level 3 per NPS-005 §3; data §31
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [ ] ADR-0009 Per-container token-bucket IPC rate limiting — **Proposed**, review package ready (`docs/reference/adr/ADR-0009-review-package.md`): sweep + adversarial + fair-bucket defaults data complete (2026-09-10, `tests/BENCHMARK_RESULTS.md` §32a–d); the per-sender fairness mechanism is implemented in the Linux backend (`FairTokenBucket`, fair-by-default endpoints, operator control-plane knobs) and adopted normatively in NPS-010 §7.1.1; §32d proposes review defaults (input-class envelope 2,000/s, shares=8 → 250/s guaranteed per sender) and surfaces the one open mechanism question (static vs. dynamic `fair_shares`) — Architecture Group sign-off pending
+- [x] ADR-0009 Per-container token-bucket IPC rate limiting — **Accepted** (2026-09-19): mechanism + §4 defaults as shipped; static `fair_shares` default with dynamic opt-in; data §32a–e
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
-- [ ] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Proposed**, tuning data collected (2026-09-10, `tests/BENCHMARK_RESULTS.md` §33, discrete-event simulation): interactive latency governed by the task's own request size (≤1.5 ms → zero overruns under hogs), Linux-6.6 weight table recommended (best tail isolation, share accuracy within 1–2%), RT reserve shown non-optional (100% RT utilization starves the fair class with zero RT misses); defaults pending Architecture Group review
+- [x] ADR-0013 EEVDF-derived scheduler with real-time priority class — **Accepted** (2026-09-19): Linux-6.6 weight table, RT reserve ≤ ~60–70%, small-request requirement; data §33
 - [ ] ADR-0014 UEFI Secure Boot with user-enrollable keys — **Proposed**, pending Architecture Group review (not benchmark-blocked)
 - [ ] ADR-0015 Shared dynamic binary translation for ARM/x86 — **Proposed**, approach decided; performance validation blocked on benchmark data
-- [ ] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Proposed**, initial strategy decided; kernel-module fallback blocked on FUSE-overhead benchmark data
+- [x] ADR-0016 NyFS Linux Backend as user-space FUSE filesystem — **Accepted** (2026-09-19): FUSE-first confirmed; kernel-module fallback = named reopen criterion; data §5–§15
 - [x] ADR-0017 Reject domain-grouped NPS renumbering — **Rejected** (the project's first; considered and explicitly declined, not left unresolved)
-- [ ] ADR-0018 Hash-chained append-only log for capability audit records — **Proposed in the indexes / Accepted in the ADR's own text (discrepancy recorded)**, review package ready (`docs/reference/adr/ADR-0018-review-package.md`): benchmark record complete (2026-09-18, §34 — negligible-cost premise confirmed as measured fact) and three decisions teed up for the Architecture Group: reconcile the status, the tamper-scope hole (the chain hash does NOT cover the `details` payload — demonstrated in §34e; fix measured at ~17 µs/event total, recommended), a second parallel chain mechanism with weaker guarantees (`create_audit_chain`/`verify_audit_chain`), and memory-only persistence (a process restart destroys the record — restart is the cheapest tamper)
+- [x] ADR-0018 Hash-chained append-only log for capability audit records — **Accepted, review CLOSED** (2026-09-19): status reconciled to Accepted everywhere; tamper-scope fix DIRECTED and landed (scheme-2 hashing, details covered, 22.5 µs/event; merged from `audit-b1-hardening`); dual mechanisms consolidated behind one hasher; persistence requirement set (opt-in JSONL snapshots, daemon path wired) — all six sign-off checklist items ticked in the review package
 - [ ] ADR-0019 Journal commit as the default NyFS save() mode — **Proposed**, review package for the 2026-08-12 implementer default flip; daemon lifecycle design note (`source/nyhal-linux-backend/DAEMON_LIFECYCLE.md`) answers its open question 1, AG tuning review pending
 - [x] ADR-0020 Implementation languages and the platform boundary — **Accepted** (v2.0.0, 2026-08-13), canonical language matrix (Rust/C++/C platform languages; NyHAL resolved Rust-first) + platform-boundary principle: platform-critical execution paths must not depend on the Python interpreter; supersedes v1 (Python + Rust, 2026-08-12); Architecture Group acceptance recorded in issue #2 (closing the issue itself is a manual step — the PAT cannot comment/close issues)
 - [x] ADR-0021 NyRuntime direction — IPC serving loop behind the FFI boundary — **Accepted** (2026-08-15), close gate met (wire p50 82–95 µs vs <100 µs target, §22)
-- [x] ADR-0022 NyVault — storage as a daemon-hosted service on the IPC transport — **Proposed** (2026-08-15) but IMPLEMENTED through the accounting increments (0.14.10–0.14.19: quotas, warnings, event ring, path-scoped grants, subtree quotas); Architecture Group review pending
-- [x] ADR-0023 NyVault key manager — envelope encryption with Rust-held key custody — **Proposed** (2026-08-15) but IMPLEMENTED (at-rest encryption claimed: per-volume DEKs, KEK custody crate, AEAD block layer); Architecture Group review pending
+- [x] ADR-0022 NyVault — storage as a daemon-hosted service on the IPC transport — **Accepted, RATIFIED** (2026-09-19): the Group CONFIRMED the 2026-09-06 acceptance (`3262618`) as sanctioned and ratified as-implemented (the §27/§29 performance record is the known-cost ledger); the stale index/body statuses were the discrepancy
+- [x] ADR-0023 NyVault key manager — envelope encryption with Rust-held key custody — **Accepted, RATIFIED** (2026-09-19): confirmed with ADR-0022; as-implemented ratification
 - [ ] ADR-0024 Streaming data plane — chunked framing for large CALL payloads — **Proposed** (2026-08-16) with TWO increments already implemented the same day and the evidence run complete (§29: streamed 1 MiB writes 5.6× plaintext / 6.6× encrypted vs paging; reads already AEAD-bound, ~1.02–1.08×): 0.14.20 service-level streaming (chunk envelope over ordinary CALLs, codec untouched) and 0.14.21 wire-level STREAM_CHUNK framing on both serving paths (Rust loop reassembles; close-race fix rode along); the Rust client half's streaming remains the documented follow-on. Review input prepared 2026-09-18 (see the ADR's status block): two structured caveats — the read-path result scopes the win to writes + single dispatch (do not review it as a general I/O accelerator), and §27's absolute numbers are pre-batching/pre-streaming baselines (a post-0.14.21 FUSE-mount re-benchmark is the one missing evidence artifact, not yet collected — §27-style run wedged twice in the child on 2026-09-18, matching the suite's documented environmental skips)
 
 ## Specifications (NPS)

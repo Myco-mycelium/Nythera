@@ -28,23 +28,23 @@ only.
 | ADR-0004 | Containerized execution model for all application classes | Accepted | 2026-07-13 | — |
 | ADR-0005 | Windows compatibility via translation layer, not full emulation | Accepted | 2026-07-13 | — |
 | ADR-0006 | Adopt a hybrid microkernel as the Nyrqis kernel base | Accepted | 2026-07-13 | — |
-| ADR-0007 | Adopt Zstandard as the default compression codec | Proposed | 2026-07-12 | — |
+| ADR-0007 | Adopt Zstandard as the default compression codec | Accepted | 2026-07-12 | — |
 | ADR-0008 | Adopt an AOSP-based container runtime for Android compatibility | Accepted | 2026-07-13 | — |
-| ADR-0009 | Per-container token-bucket rate limiting for IPC | Proposed — review package ready | 2026-07-12 | — |
+| ADR-0009 | Per-container token-bucket rate limiting for IPC | Accepted | 2026-07-12 | — |
 | ADR-0010 | Adopt Vulkan as the native graphics API foundation | Accepted | 2026-07-13 | — |
 | ADR-0011 | AI assistant runs as an ordinary capability-scoped container | Accepted | 2026-07-13 | — |
 | ADR-0012 | Adopt NyHAL as a pluggable kernel abstraction layer | Accepted | 2026-07-13 | — |
-| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Proposed — tuning data collected 2026-09-10, review pending | 2026-07-13 | — |
+| ADR-0013 | Adopt an EEVDF-derived scheduler with a real-time priority class | Accepted | 2026-07-13 | — |
 | ADR-0014 | Adopt UEFI Secure Boot with user-enrollable keys | Proposed | 2026-07-13 | — |
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed | 2026-07-13 | — |
-| ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed | 2026-07-13 | — |
+| ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Accepted | 2026-07-13 | — |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** | 2026-07-13 | — |
-| ADR-0018 | Hash-chained append-only log for capability audit records | Proposed | 2026-07-13 | — |
+| ADR-0018 | Hash-chained append-only log for capability audit records | Accepted | 2026-07-13 | — |
 | ADR-0019 | Journal commit as the default NyFS save() mode | Proposed | 2026-08-12 | — |
 | ADR-0020 | Implementation languages and the platform boundary | **Accepted** | 2026-08-13 | ADR-0020 v1 superseded by v2 (Python and Rust, 2026-08-12) |
 | ADR-0021 | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** | 2026-08-15 | — |
-| ADR-0022 | NyVault — storage as a daemon-hosted service on the IPC transport | Proposed | 2026-08-15 | — |
-| ADR-0023 | NyVault key manager — envelope encryption with Rust-held key custody | Proposed | 2026-08-15 | — |
+| ADR-0022 | NyVault — storage as a daemon-hosted service on the IPC transport | Accepted | 2026-08-15 | — |
+| ADR-0023 | NyVault key manager — envelope encryption with Rust-held key custody | Accepted | 2026-08-15 | — |
 | ADR-0024 | Streaming data plane — chunked framing for large CALL payloads | Proposed | 2026-08-16 | — |
 | ADR-0027 | Wire-verified protocol constants and fail-closed acceptance gates | **Accepted** | 2026-09-16 | — |
 

@@ -228,12 +228,12 @@ rather than free.
 
 ## 6. Sign-off checklist
 
-- [ ] Status discrepancy resolved (§2) — one status across ADR + 3 indexes + REPOSITORY_STATE
-- [ ] Benchmark record accepted (§3); "negligible" premise closed as measured
-- [ ] Tamper-scope decision made: (a) honest re-scoping of the guarantee, or (b) fix directed with the §4.2 cost budget (recommended)
-- [ ] Dual-mechanism question resolved (§5.1): consolidate or scope explicitly
-- [ ] Persistence requirement decided (§5.2): the restart attack must not be free
-- [ ] ADR-0018 → final status; NPS-010 §8.1 wording reconciled with whatever §4/§5 decisions are made
+- [x] Status discrepancy resolved (§2) — reconciled to Accepted across ADR, index, and REPOSITORY_STATE (2026-09-19)
+- [x] Benchmark record accepted (§3); "negligible" premise closed as measured (2026-09-19)
+- [x] Tamper-scope decision made: (b) fix DIRECTED (2026-09-19) — landed via `audit-b1-hardening` merge, scheme-2 hashing, 22.5 µs/event
+- [x] Dual-mechanism question resolved (§5.1): CONSOLIDATED — both families behind the scheme-2 hasher (2026-09-19)
+- [x] Persistence requirement decided (§5.2): opt-in JSONL snapshot persistence REQUIRED for the daemon path (state-file dir), off by default elsewhere — the restart attack is now detectable (2026-09-19)
+- [x] ADR-0018 → Accepted (final); NPS-010 §8.1 consistent — the scheme-2 verifier is the tamper-evident mechanism §8.1 requires (2026-09-19)
 
 ## 7. Draft sign-off request (for the Architecture Group agenda)
 

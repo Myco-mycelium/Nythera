@@ -5,13 +5,15 @@ version: 0.1.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-09-19
 ai_assisted: true
 depends_on: [NPS-003, NPS-004, NPS-011, ADR-0002, ADR-0003, ADR-0007, ADR-0016, ADR-0019, ADR-0020, ADR-0021]
 ---
 
-> **Status (2026-08-15):** Proposed — drafted for Architecture Group
-> review. This ADR names the *service boundary and trust model* for
+> **Status:** Accepted — ratified by the Architecture Group on
+> 2026-09-19, which CONFIRMED the 2026-09-06 acceptance commit
+> (`3262618`) as sanctioned; the ADR index rows were the stale half of
+> that discrepancy. This ADR names the *service boundary and trust model* for
 > NyVault; the cryptographic key-management layer and the hardware
 > integration points (the matrix's "C/C++ where hardware integration
 > requires it") are explicitly deferred to follow-on ADRs so this

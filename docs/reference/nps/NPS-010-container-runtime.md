@@ -1,14 +1,14 @@
 ---
 title: Container Runtime
 document_id: NPS-010
-version: 1.3.0
-status: Draft
+version: 1.6.0
+status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-10
+updated: 2026-09-19
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0009, NPS-002, NPS-003]
@@ -165,12 +165,10 @@ administrator questions.
   §32b adversarial finding (shared-bucket starvation) is closed at the
   mechanism level: §7.1.1 now requires per-sender fairness, implemented
   in the Linux backend as `FairTokenBucket` with fair-by-default
-  endpoints. The container lifecycle, capability assignment, and
-  revocation sections (§4–§6, §8) are not themselves blocked, but this
-  document is kept `Draft` as a whole rather than partially accepted,
-  consistent with NPC-001 §5's rule that acceptance applies to a
-  document, not a subset of its sections. Expected to move to `Accepted`
-  alongside ADR-0009.
+  endpoints. **Status (2026-09-19): ADR-0009 was Accepted by the
+  Architecture Group (static `fair_shares` default, dynamic opt-in),
+  removing this document's last transitive blocker — NPS-010 is now
+  `Accepted` as a whole.**
 - Exact default CPU/memory limit values (§7.2) require benchmarking across
   representative workloads and are deferred pending that data, per NPC-002
   §5.2. **Status update 2026-09-18: the deferred data now exists**
@@ -179,10 +177,11 @@ administrator questions.
   3.2–9.0 MB (the 256 MB default is 28–80× that floor); quota throttling
   is a tail phenomenon (a bursty shape at 2.5× under-provisioned quota
   keeps its exact p50 while p95 grows ~8× — monitor p95/`nr_throttled`,
-  not mean usage); the 64-PID default sits just 1.5× above a modest
-  supervisor shape's peak (fork-fail below it is clean). The default
-  VALUES remain an Architecture Group decision; this is the data the
-  deferral was waiting for.
+  not mean usage);  the 64-PID default sits just 1.5× above a modest
+  supervisor shape's peak (fork-fail below it is clean). **Status
+  (2026-09-19): the default VALUES were adopted by the Architecture
+  Group** — keep 256 MB / 64 PIDs / unlimited quota, with the standing
+  rules below now normative (§7.2).
 - Whether SUSPENDED containers should count against active resource
   budgets or a separate reduced accounting is undecided. **Status
   update 2026-09-18: measured** (§35d): a frozen container consumes 0%
@@ -190,17 +189,18 @@ administrator questions.
   from a frozen cgroup via the `memory.high` pressure path. The
   accounting model consistent with actual enforcement is therefore:
   **full memory accounting, zero CPU accounting** for SUSPENDED
-  containers.
+  containers. **Status (2026-09-19): adopted as normative** by the
+  Architecture Group decision recorded in `AG_AGENDA.md` — see §7.2's
+  amendment and the table below.
 
-**Proposed defaults from the §35 data (2026-09-18; informative — the
-values remain an Architecture Group decision):**
+**Adopted defaults (Architecture Group, 2026-09-19; data §35):**
 
 | limit | shipped default | §35 data | proposal |
 |---|---|---|---|
 | `memory_mb` | 256 | representative shapes peak 3.2–9.0 MB (28–80× headroom at the floor); real Nyrqis app stack unmeasured | **keep 256** — nothing of the measured class is throttled by it; revisit when the real app stack (NyRuntime + compositor + shell) is measured |
-| `pid_limit` | 64 | a modest supervisor shape (shell + 40 children) peaks at 41 tasks; fork-fail below is a clean refusal | **keep 64** for app containers; supervisor-shaped containers MUST raise it explicitly via §7.2's assignability (1.5× headroom is too thin to be silent about) |
+| `pid_limit` | 64 | a modest supervisor shape (shell + 40 children) peaks at 41 tasks; fork-fail below is a clean refusal | **keep 64 (NORMATIVE)** for app containers; supervisor-shaped containers MUST raise it explicitly via §7.2's assignability (1.5× headroom is too thin to be silent about) |
 | `cpu_quota_us` | None (unlimited) | quota throttling is a TAIL phenomenon: at 2.5× under-provisioning, p50 is unchanged while p95 grows ~8× (bimodal stutter, invisible to mean-usage monitoring) | **keep unlimited by default**; when quotas are assigned, size them ≥ ~2.5× the workload's average demand and monitor p95 latency + `nr_throttled`, never mean usage |
-| SUSPENDED accounting | undecided | frozen: 0% CPU, 100% memory retained, kernel-reclaimable via `memory.high` | **normative when §7 is next amended**: SUSPENDED containers count FULLY against memory budgets and NOT AT ALL against CPU budgets; budget checks MUST NOT treat suspension as memory relief |
+| SUSPENDED accounting | **normative (2026-09-19)** | frozen: 0% CPU, 100% memory retained, kernel-reclaimable via `memory.high` | ADOPTED: SUSPENDED containers count FULLY against memory budgets and NOT AT ALL against CPU budgets; budget checks MUST NOT treat suspension as memory relief |
 
 Operator guidance the data earns (candidate for the ops how-to): the
 failure signature of an under-sized quota is a *bimodal* latency
@@ -219,6 +219,7 @@ not fire; alert on p95 burst-completion latency and
 | 1.3.0   | 2026-09-10 | §7.1.1 (new): normatively require per-sender fairness in the endpoint bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed |
 | 1.4.0   | 2026-09-18 | §9: both open-question deferrals now have data — §35 of tests/BENCHMARK_RESULTS.md (real cgroup-v2 enforcement) covers the default CPU/memory limit question (footprint floor 28–80× under the 256 MB default; quota throttling is tail-shaped; 64-PID default 1.5× above a modest supervisor) and answers the SUSPENDED-accounting question (full memory, zero CPU; frozen cgroups stay kernel-reclaimable). Default values remain an Architecture Group decision |
 | 1.5.0   | 2026-09-18 | §9: proposed-defaults table added from the §35 data (keep 256 MB / 64 PIDs / unlimited quota, with the raise-it-explicitly rule for supervisor shapes and the ≥2.5× sizing + p95/`nr_throttled` monitoring rule for assigned quotas); SUSPENDED-accounting proposal made normative-candidate (full memory, zero CPU; suspension is not budget relief) — all pending Architecture Group decision |
+| 1.6.0   | 2026-09-19 | **Document → Accepted**: ADR-0009's acceptance removed the last transitive blocker. §9 defaults ADOPTED by the Architecture Group (256 MB / 64 PIDs / unlimited quota + standing rules + SUSPENDED accounting = full memory, zero CPU, normative) — decision recorded in `AG_AGENDA.md`'s decision log |
 
 ---
 **End of Document**

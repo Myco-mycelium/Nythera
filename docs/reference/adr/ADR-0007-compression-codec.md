@@ -2,7 +2,7 @@
 title: Adopt Zstandard as the Default Compression Codec
 document_id: ADR-0007
 version: 1.1.0
-status: Proposed
+status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-12
 updated: 2026-09-10
@@ -98,6 +98,7 @@ a low default, 1–3) remains an Architecture Group decision per NPS-005
 §3.
 
 ## Status
-Proposed — benchmark data complete (2026-08-12 first pass + 2026-09-10
-close-out); pending Architecture Group review for the default-level
-choice.
+Accepted (2026-09-19) — default level 3 per NPS-005 §3's
+low-single-digits row; the data shows ratio flat ~1.07 at every level
+on real assets, so ≥7 buys ≤2% for ~60× compute. Reopen condition: a
+named workload with compressible-but-cold data where 2% matters.
