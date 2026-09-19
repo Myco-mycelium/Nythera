@@ -34186,6 +34186,209 @@ class TestAuditIntegrityChain(unittest.TestCase):
         self.assertEqual(r2["entry_count"], 1)
         self.assertIn("hash", r2["entries"][0])
 
+    # ------------------------------------------------------------------
+    # B1 hardening (ADR-0018 review §4.2) — scheme-2 coverage, single
+    # hasher, snapshot persistence. These tests pin the REVIEW
+    # DECISIONS, not just the code: they fail if any of the three
+    # findings regresses.
+    # ------------------------------------------------------------------
+
+    def _setenv(self, name, value):
+        """Env setter safe for addCleanup (None restores a deleted var)."""
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+    def test_b1_details_tamper_detected(self):
+        """B1.2: mutating the details payload flips verify to invalid."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-details")
+        mgr.append_audit_event(c, "CAP-GRANT",
+                               {"capability": "CAP-1"})
+        mgr.append_audit_event(c, "CAP-GRANT",
+                               {"capability": "CAP-2"})
+        self.assertTrue(mgr.verify_audit_integrity(c)["valid"])
+        # The chain-level tamper the §34e demonstration needed: the
+        # details payload a tamperer would rewrite.
+        c._audit_hash_chain[0]["details"] = {
+            "capability": "CAP-EVIL", "note": "history rewritten",
+        }
+        v = mgr.verify_audit_integrity(c)
+        self.assertFalse(v["valid"])
+        self.assertGreaterEqual(v["tampered_count"], 1)
+        # ...and the honest restore puts it back to valid.
+        c._audit_hash_chain[0]["details"] = {"capability": "CAP-1"}
+        self.assertTrue(mgr.verify_audit_integrity(c)["valid"])
+
+    def test_b1_scheme_marker_cannot_be_stripped(self):
+        """B1.2: stripping the scheme marker of a scheme-2 event is
+        itself detected (the marker is inside the hashed content)."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-strip")
+        mgr.append_audit_event(c, "CAP-GRANT", {"capability": "CAP-1"})
+        self.assertTrue(mgr.verify_audit_integrity(c)["valid"])
+        del c._audit_hash_chain[0]["scheme"]
+        v = mgr.verify_audit_integrity(c)
+        self.assertFalse(v["valid"])
+
+    def test_b1_legacy_scheme1_events_still_verify(self):
+        """B1.2: pre-existing scheme-1 events verify under their own
+        rules (a chain that predates the scheme bump stays checkable)
+        — and their scope limitation stays the documented truth: a
+        details edit on a scheme-1 event is NOT detectable, which is
+        exactly why scheme 2 exists."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-legacy")
+        mgr.initialize_audit_integrity(c)
+        ts = time.time()
+        c._audit_hash_chain.append({
+            "op": "LEGACY-OP",
+            "details": {"note": "written before scheme 2"},
+            "timestamp": ts,
+            "prev_hash": "0" * 64,
+            "hash": hashlib.sha256(
+                f"{c._audit_salt}{'0' * 64}LEGACY-OP{ts}".encode()
+            ).hexdigest(),
+        })
+        self.assertTrue(mgr.verify_audit_integrity(c)["valid"])
+        # The scheme-1 hole, pinned as honest documentation:
+        c._audit_hash_chain[0]["details"] = {"note": "rewritten"}
+        self.assertTrue(mgr.verify_audit_integrity(c)["valid"])
+
+    def test_b1_unknown_scheme_reported(self):
+        """B1.2: an event with an unknown scheme is tamper evidence."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-unknown")
+        mgr.append_audit_event(c, "OP")
+        c._audit_hash_chain[0]["scheme"] = 99
+        v = mgr.verify_audit_integrity(c)
+        self.assertFalse(v["valid"])
+        self.assertTrue(
+            any(t.get("type") == "unknown_scheme" for t in v["tampered"]))
+
+    def test_b1_chain2_details_in_hash(self):
+        """B1.3: chain-2 result payloads are inside the hash."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-chain2")
+        cid = mgr.create_audit_chain(c)["chain_id"]
+        mgr.append_audit_entry(cid, "container_run",
+                               {"exit": 0, "who": "alice"})
+        self.assertTrue(mgr.verify_audit_chain(cid)["verified"])
+        chain = mgr._audit_chains[cid]
+        chain["entries"][0]["result"] = {"exit": 0, "who": "bob"}
+        self.assertFalse(mgr.verify_audit_chain(cid)["verified"])
+
+    def test_b1_chain2_chain_break_detected(self):
+        """B1.3: a spliced entry breaks the chain continuity check."""
+        mgr = self._manager()
+        c = self._make(mgr, "b1-splice")
+        cid = mgr.create_audit_chain(c)["chain_id"]
+        mgr.append_audit_entry(cid, "op1")
+        mgr.append_audit_entry(cid, "op2")
+        chain = mgr._audit_chains[cid]
+        chain["entries"][1]["prev_hash"] = "f" * 64
+        self.assertFalse(mgr.verify_audit_chain(cid)["verified"])
+        types = {
+            t.get("type") for t in
+            mgr.verify_audit_chain(cid)["tampered_entries"]
+        }
+        self.assertIn("chain_break", types)
+
+    def test_b1_persistence_restart_preserves_record(self):
+        """B1.4: a new manager lifetime adopts the snapshot and the
+        restored chain verifies — restart no longer destroys the
+        record."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="nyrqis-b1-persist-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        m1 = self._manager()
+        c1 = self._make(m1, "b1-persist")
+        m1._audit_snapshot_override = d
+        m1.append_audit_event(c1, "CAP-GRANT", {"capability": "CAP-1"})
+        m1.append_audit_event(c1, "CAP-GRANT", {"capability": "CAP-2"})
+        cid1 = m1.create_audit_chain(c1)["chain_id"]
+        m1.append_audit_entry(cid1, "container_run", {"exit": 0})
+        # The append path must have already flushed the snapshot.
+        self.assertTrue(os.path.exists(
+            os.path.join(d, m1._audit_snapshot_filename(c1.id))))
+        # A NEW manager (the restart) restores the record and it
+        # verifies end to end.
+        m2 = self._manager()
+        m2._audit_snapshot_override = d
+        c2 = self._make(m2, "b1-persist")
+        init = m2.initialize_audit_integrity(c2)
+        self.assertEqual(init["restored_events"], 2)
+        v = m2.verify_audit_integrity(c2)
+        self.assertTrue(v["valid"])
+        self.assertEqual(v["chain_length"], 2)
+        cid2 = m2.create_audit_chain(c2)["chain_id"]
+        self.assertTrue(m2.verify_audit_chain(cid2)["verified"])
+
+    def test_b1_persistence_off_by_default(self):
+        """B1.4: with no configuration the audit log stays in-memory —
+        no snapshot files, no restore, exactly the pre-B1.4 behavior."""
+        d = tempfile.mkdtemp(prefix="nyrqis-b1-off-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        old = os.environ.pop("NYRQIS_AUDIT_SNAPSHOT_DIR", None)
+        self.addCleanup(self._setenv, "NYRQIS_AUDIT_SNAPSHOT_DIR", old)
+        mgr = self._manager()
+        c = self._make(mgr, "b1-off")
+        mgr.append_audit_event(c, "OP")
+        self.assertFalse(mgr._audit_snapshot_dir())
+        r = mgr.save_audit_snapshot(c)
+        self.assertFalse(r["ok"])
+        self.assertEqual(os.listdir(d), [])
+
+    def test_b1_persistence_env_and_disabled_values(self):
+        """B1.4: the env var enables persistence; off/none/0 disable it
+        even when inherited from a wider configuration."""
+        d = tempfile.mkdtemp(prefix="nyrqis-b1-env-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        old = os.environ.pop("NYRQIS_AUDIT_SNAPSHOT_DIR", None)
+        self.addCleanup(self._setenv, "NYRQIS_AUDIT_SNAPSHOT_DIR", old)
+        os.environ["NYRQIS_AUDIT_SNAPSHOT_DIR"] = d
+        mgr = self._manager()
+        c = self._make(mgr, "b1-env")
+        mgr.append_audit_event(c, "OP")
+        self.assertEqual(mgr._audit_snapshot_dir(), d)
+        self.assertTrue(os.path.exists(
+            os.path.join(d, mgr._audit_snapshot_filename(c.id))))
+        # Explicit off wins over the env var.
+        mgr2 = self._manager()
+        mgr2._audit_snapshot_override = "off"
+        c2 = self._make(mgr2, "b1-env")
+        mgr2.append_audit_event(c2, "OP")
+        self.assertIsNone(mgr2._audit_snapshot_dir())
+        self.assertEqual(os.listdir(d),
+                         [mgr._audit_snapshot_filename(c.id)])
+
+    def test_b1_snapshot_tamper_fails_verification(self):
+        """B1.4: an edited snapshot loads but does NOT verify — the
+        restore path is not a history-rewriting path."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="nyrqis-b1-tamper-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        m1 = self._manager()
+        c1 = self._make(m1, "b1-tamper")
+        m1._audit_snapshot_override = d
+        m1.append_audit_event(c1, "CAP-GRANT", {"capability": "CAP-1"})
+        path = os.path.join(d, m1._audit_snapshot_filename(c1.id))
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = [json.loads(l) for l in fh if l.strip()]
+        for line in lines:
+            if line.get("kind") == "event":
+                line["event"]["details"] = {"capability": "CAP-EVIL"}
+                break
+        with open(path, "w", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(json.dumps(line) + "\n")
+        m2 = self._manager()
+        m2._audit_snapshot_override = d
+        c2 = self._make(m2, "b1-tamper")
+        m2.initialize_audit_integrity(c2)
+        self.assertFalse(m2.verify_audit_integrity(c2)["valid"])
+
 
 
 

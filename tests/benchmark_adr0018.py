@@ -74,6 +74,8 @@ Run:
 import argparse
 import gc
 import hashlib
+import os
+import shutil
 import statistics
 import sys
 import time
@@ -311,16 +313,15 @@ def bench_tamper_scope():
     v0 = mgr.verify_audit_integrity(c)
     print(f"  baseline: valid={v0['valid']} len={v0['chain_length']}")
 
-    # (a) mutate DETAILS of a middle event (the payload a tamperer wants
-    # to change: which capability was granted, to whom)
+    # (a) mutate DETAILS of a middle event IN THE CHAIN (the payload a
+    # tamperer wants to change: which capability was granted, to whom)
     target = c._audit_hash_chain[2]
-    trail = c._audit_trail[2]
-    orig_details = dict(trail["details"])
-    trail["details"] = {"capability": "CAP-EVIL", "note": "history rewritten"}
+    orig_details = dict(target["details"])
+    target["details"] = {"capability": "CAP-EVIL", "note": "history rewritten"}
     v1 = mgr.verify_audit_integrity(c)
     detected_details = not v1["valid"]
     # restore
-    trail["details"] = orig_details
+    target["details"] = orig_details
 
     # (b) mutate OP (covered by the hash) — must be detected
     real_op = target["op"]
@@ -337,22 +338,92 @@ def bench_tamper_scope():
     detected_ts = not v3["valid"]
     target["timestamp"] = real_ts
 
+    # (d) strip the scheme marker — the marker is inside the hashed
+    # content, so demoting a scheme-2 event to "legacy" is detected
+    real_scheme = target.get("scheme")
+    target.pop("scheme", None)
+    v4 = mgr.verify_audit_integrity(c)
+    detected_scheme_strip = not v4["valid"]
+    target["scheme"] = real_scheme
+
     print(f"  mutate details  → detected: {detected_details}  (verify valid={v1['valid']})")
     print(f"  mutate op       → detected: {detected_op}")
     print(f"  mutate timestamp→ detected: {detected_ts}")
-    print(
-        "  hashed content = salt + prev_hash + op + timestamp; details are\n"
-        "  stored alongside but NOT hashed — tampering with the details\n"
-        "  payload is NOT detectable by verify_audit_integrity. Scope\n"
-        "  limitation of the shipped scheme, recorded for the Architecture\n"
-        "  Group (fix = hash the canonical details JSON too; spec decision,\n"
-        "  not this benchmark's to make)."
-    )
+    print(f"  strip scheme    → detected: {detected_scheme_strip}")
+    if detected_details:
+        print(
+            "  scheme 2 (ADR-0018 review §4.2): hashed content =\n"
+            "  '2' + salt + prev_hash + op + timestamp + canonical-JSON\n"
+            "  details — the details payload IS covered; stripping the\n"
+            "  per-event scheme marker is itself detected. The _audit_trail\n"
+            "  mirror stays an unhashed convenience copy (not part of the\n"
+            "  tamper-evident record); the chain is the record.\n"
+            "  (The §34e demonstration mutated the MIRROR — outside the\n"
+            "  chain under BOTH schemes; the scheme-1 hole it recorded\n"
+            "  was at the chain level and is closed by the scheme-2 fix.)"
+        )
+    else:
+        print(
+            "  hashed content = salt + prev_hash + op + timestamp; details are\n"
+            "  stored alongside but NOT hashed — tampering with the details\n"
+            "  payload is NOT detectable by verify_audit_integrity. Scope\n"
+            "  limitation of the shipped scheme, recorded for the Architecture\n"
+            "  Group (fix = hash the canonical details JSON too; spec decision,\n"
+            "  not this benchmark's to make)."
+        )
     return {
         "details_tamper_detected": detected_details,
         "op_tamper_detected": detected_op,
         "timestamp_tamper_detected": detected_ts,
+        "scheme_strip_detected": detected_scheme_strip,
     }
+
+
+# --------------------------------------------------------------------------
+# 6. PERSISTENCE (the B1.4 snapshot requirement carries its number)
+# --------------------------------------------------------------------------
+def bench_persistence():
+    print("== PERSISTENCE: append cost with per-append JSONL deltas ==")
+    import tempfile
+    d = tempfile.mkdtemp(prefix="nyrqis-audit-persist-bench-")
+    os.environ["NYRQIS_AUDIT_SNAPSHOT_DIR"] = d
+    try:
+        n = 200
+        mgr, c = make_manager_and_container()
+        details = {"capability": "CAP-1", "target": "svc", "note": "x" * 32}
+        mgr.append_audit_event(c, "WARMUP", details)
+        t0 = time.perf_counter()
+        for i in range(n):
+            mgr.append_audit_event(
+                c, "CAP-GRANT",
+                {"capability": f"CAP-{i}", "target": "svc", "note": "x" * 32})
+        total = (time.perf_counter() - t0) / n * 1e6
+        path = os.path.join(d, mgr._audit_snapshot_filename(c.id))
+        size = os.path.getsize(path)
+        t1 = time.perf_counter()
+        mgr.save_audit_snapshot(c)  # the compaction / full-rewrite path
+        compact_us = (time.perf_counter() - t1) * 1e6
+        print(f"  append + delta line: {total:.1f} µs/event (n={n})")
+        print(f"  JSONL file at n={n + 1}: {size} bytes")
+        print(f"  full compaction rewrite (once): {compact_us:.0f} µs")
+        v = mgr.verify_audit_integrity(c)
+        print(f"  post-snapshot verify: valid={v['valid']} len={v['chain_length']}")
+        print(
+            "  (per-append persistence appends one delta line — O(1),\n"
+            "  file grows as the record grows; the whole-record rewrite\n"
+            "  is compaction only. A first design rewrote the full file\n"
+            "  per append and measured O(n) — 3800 µs at n=200 — which\n"
+            "  is exactly why this section exists: the requirement\n"
+            "  carries its number, and the number killed the bad design.)"
+        )
+        return {
+            "append_with_delta_us": total,
+            "jsonl_bytes": size,
+            "compaction_us": compact_us,
+        }
+    finally:
+        os.environ.pop("NYRQIS_AUDIT_SNAPSHOT_DIR", None)
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def main():
@@ -362,9 +433,11 @@ def main():
     ap.add_argument("--floor", action="store_true")
     ap.add_argument("--context", action="store_true")
     ap.add_argument("--tamper-scope", action="store_true")
+    ap.add_argument("--persistence", action="store_true")
     args = ap.parse_args()
     run_all = not any(
-        (args.append, args.verify, args.floor, args.context, args.tamper_scope)
+        (args.append, args.verify, args.floor, args.context,
+         args.tamper_scope, args.persistence)
     )
 
     if run_all or args.tamper_scope:
@@ -377,6 +450,8 @@ def main():
         bench_floor()
     if run_all or args.context:
         bench_context()
+    if run_all or args.persistence:
+        bench_persistence()
 
 
 if __name__ == "__main__":

@@ -293,6 +293,14 @@ class StatusServiceHost:
             use_cgroups_v2=False, use_direct_syscalls=True,
             ipc_registry=self.ipc_registry,
             capability_manager=self.capability_manager,
+            # ADR-0018 review decision 4: container audit chains
+            # snapshot next to the daemon state file when persistence
+            # is configured — the restart-survivable record. No state
+            # file → no snapshots (in-memory, as before).
+            audit_snapshot_dir=(
+                os.path.dirname(self.state_file)
+                if self.state_file else None
+            ),
         )
         self.server = IPCDatagramServer(
             self.ipc_manager, "ep-svc", socket_path,
