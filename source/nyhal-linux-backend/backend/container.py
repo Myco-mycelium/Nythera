@@ -21494,8 +21494,13 @@ class ContainerManager:
         """
         return "2|" + "|".join((
             salt, prev_hash, op, repr(float(ts)),
-            json.dumps(details or {}, sort_keys=True,
-                       separators=(",", ":"), default=str),
+            # None vs {} hash DIFFERENTLY (the review package's
+            # prototype preserved this distinction: a caller that
+            # passed no details is not one that passed an empty
+            # record).
+            json.dumps(details, sort_keys=True,
+                       separators=(",", ":"), default=str)
+            if details is not None else "null",
         ))
 
     def append_audit_event(
@@ -21517,7 +21522,11 @@ class ContainerManager:
         event_data = {
             "scheme": 2,
             "op": op,
-            "details": details or {},
+            # Stored VERBATIM as hashed: verify recomputes from this
+            # field, so None must remain None (not coerced to {}). A
+            # caller that passed no details is not one that passed an
+            # empty record.
+            "details": details,
             "timestamp": ts,
             "prev_hash": prev_hash,
         }
