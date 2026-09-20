@@ -779,7 +779,23 @@ Documentation hygiene, fixed earlier this session:
   CI covered the amd64 direct smoke. Digests pinned at publish:
   amd64 254,257,152 B ``3468f7b0…``; arm64 268,853,248 B
   ``2a55d0cb…``. Scheduled-runs watcher OK (arm64's first weekly cron
-  fire remains Mon Sep 21, the standing Monday item).
+  fire remains Mon Sep 21, the standing Monday item). Same-session
+  followup round: the gc_blocks audit finding now has a **deterministic
+  failure demonstration** — the unlocked pre-fix body, pinned by event
+  barriers to the losing interleaving (set computed → write+save lands
+  a block file → unlink pass), deletes 4 referenced block files and
+  the reload fails (``missing block file …``) — reproduced once on
+  this host and then removed with its scratch script (the shipped
+  lock + stress regression test remain the fix). The PAT grants are
+  re-probed and unchanged: identity + Contents OK, Actions write and
+  Variables write still 403, the dispatch drill fails closed at its
+  403 gate as designed — ungating it remains the manual PAT edit
+  (add Actions RW + Variables RW, then ``scripts/verify_pat_grants.sh
+  --drill`` runs the round-trip unattended). The Monday cron was
+  pre-verified as far as possible without the fire: arm64 cron
+  ``0 6 * * 1`` in the YAML, all three scheduled workflows ``active``
+  via the API, and pat-expiry-watch already fired green today; the
+  arm64 fire itself is tomorrow's check.
 - 2026-09-20 (**v0.29.29: the §27 live-mount wedge root-caused — the
   defect was client-side reply theft, not a muted serve loop — and the
   blocked streaming re-measurement collected**): the hunt the 45 s
