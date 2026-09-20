@@ -282,6 +282,26 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="brief-d1-registered",
+        pattern=r"AG_BRIEF_DYNAMIC_SHARES",
+        description="Standing item D1 (dynamic shares default): its pre-read brief is registered in AG_AGENDA.md",
+        check="path_contains",
+        check_args={
+            "needle": "AG_BRIEF_DYNAMIC_SHARES.md",
+            "files": ["docs/00-platform/AG_AGENDA.md"],
+        },
+    ),
+    Claim(
+        claim_id="brief-d2-registered",
+        pattern=r"AG_BRIEF_NPS027_PACKAGE_TRUST",
+        description="Standing item D2 (NPS-027 acceptance): its pre-read brief is registered in AG_AGENDA.md",
+        check="path_contains",
+        check_args={
+            "needle": "AG_BRIEF_NPS027_PACKAGE_TRUST.md",
+            "files": ["docs/00-platform/AG_AGENDA.md"],
+        },
+    ),
+    Claim(
         claim_id="nykernel-backend-absent",
         pattern=r"backend doesn't exist yet|implementation doesn't exist yet",
         description="NPS-017 §6 / NPS-021 / NPS-023: the NyKernel backend is still unbuilt",
