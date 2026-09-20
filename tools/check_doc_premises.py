@@ -148,11 +148,21 @@ def _check_crate_exists(paths: list[str], args: dict) -> tuple[str, str]:
 
 
 def _check_path_contains(paths: list[str], args: dict) -> tuple[str, str]:
-    """Every listed file exists and contains the needle."""
+    """The needle appears in the evidence files.
+
+    By default the evidence files are the pattern-matched paths (every
+    file recording the premise must still contain the needle). For
+    cross-file claims — premise text in one document, evidence in
+    another — pass ``files`` in check_args to assert the needle against
+    an explicit list instead.
+    """
     needle = str(args["needle"])
+    targets = [str(f) for f in args.get("files", [])] or list(paths)
+    if not targets:
+        return "warn", "no evidence files to check (pattern matched nothing, no files arg)"
     missing: list[str] = []
     no_match: list[str] = []
-    for rel in paths:
+    for rel in targets:
         text = _read(REPO_ROOT / rel)
         if text.startswith("\0READ_ERROR"):
             missing.append(rel)
@@ -162,7 +172,7 @@ def _check_path_contains(paths: list[str], args: dict) -> tuple[str, str]:
         return "fail", f"files recorded as containing {needle!r} are gone: {', '.join(missing)}"
     if no_match:
         return "fail", f"{needle!r} no longer found in: {', '.join(no_match)}"
-    return "ok", f"{needle!r} present in {len(paths)} recorded location(s)"
+    return "ok", f"{needle!r} present in {len(targets)} evidence file(s)"
 
 
 def _check_dir_absent(paths: list[str], args: dict) -> tuple[str, str]:
@@ -259,14 +269,17 @@ CLAIMS: list[Claim] = [
         pattern=r"until a formal license is adopted|formal open-source license",
         description="REPOSITORY_STATE item 9: LICENSE is still the Milestone 1 placeholder",
         check="path_contains",
-        check_args={"needle": "not yet finalized"},
+        check_args={"needle": "not yet finalized", "files": ["LICENSE"]},
     ),
     Claim(
         claim_id="owners-unassigned",
         pattern=r"all Unassigned",
         description="REPOSITORY_STATE item 8: SUBSYSTEM_OWNERS.md entries are still Unassigned",
         check="path_contains",
-        check_args={"needle": "*Unassigned*"},
+        check_args={
+            "needle": "*Unassigned*",
+            "files": ["docs/00-platform/SUBSYSTEM_OWNERS.md"],
+        },
     ),
     Claim(
         claim_id="nykernel-backend-absent",
