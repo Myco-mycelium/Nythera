@@ -241,7 +241,10 @@ the tree.
   specified guarantees of NPS-006/NPS-026, not from code — no package
   manager exists yet. Acceptance here unblocks item 18's residual
   (PKI implementation) and closes the planned threat-model phase list
-  formally. Adjacent to B3 (NPS-026 v1.1.0, already informational).
+  formally.  Adjacent to B3 (NPS-026 v1.1.0, already informational).  Pre-read:
+  `AG_BRIEF_NPS027_PACKAGE_TRUST.md` (AI-drafted, suggest-side —
+  findings ledger, three options, recommends accepting NPS-027 and
+  routing FIND-PACKAGE-003's design decision to NPS-026's review).
 
 ---
 
