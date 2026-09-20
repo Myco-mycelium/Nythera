@@ -21,7 +21,8 @@ This directory is scaffolded per docs/00-platform/003-ENGINEERING_HANDBOOK.md.
 - `check_depends_on_cycles.py` — verifies the `depends_on` graph across
   every document in `docs/00-platform/` and `docs/reference/` is a DAG
   (no circular references). Run with `python3 tools/check_depends_on_cycles.py`.
-  Not yet wired into CI — see `REPOSITORY_STATE.md` Next Actions.
+  Runs in CI as the `Check depends_on cycles` step of
+  `.github/workflows/docs.yml`, alongside the premise check above.
 
 The generator/preview tooling (`generate_*.py`, `render.py`,
 `preview_server.py`, `validate_generators.py`, `compare_benchmarks.py`)

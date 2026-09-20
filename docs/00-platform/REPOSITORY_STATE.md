@@ -715,15 +715,21 @@ decided at the spec level — none of these are documentation tasks:
   describes the enforced state and its residual gaps.
 
 Process and tooling:
-17. Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
+17. ~~Wire `tools/check_depends_on_cycles.py` into `.github/workflows/docs.yml`
     as a CI step. It found 4 real circular dependencies this pass
     (NPS-001↔ADR-0012, NPS-001↔ADR-0013, NPS-001↔ADR-0014,
     NPS-007/008↔ADR-0015 — each individually reasonable when added, only
     circular together) that had been sitting in already-committed,
     already-pushed documents undetected. Running it by hand caught them
-    this time; it should run automatically going forward.
-17b. Run `tools/check_doc_premises.py` (added 2026-09-20) on the docs
-    regularly — ideally the same CI step as the item above. It mechanizes
+    this time; it should run automatically going forward.~~ **Done — and
+    this item itself went stale past its own wiring**: the step is
+    already in `docs.yml`'s build job (found 2026-09-20 while wiring
+    item 17b).
+17b. ~~Run `tools/check_doc_premises.py` (added 2026-09-20) on the docs
+    regularly — ideally the same CI step as the item above.~~ **Done
+    2026-09-20** — it runs as the `Check recorded doc premises` step in
+    `docs.yml`'s build job, right after the cycles check and before the
+    strict build. It mechanizes
     the premise audit: an explicit CLAIM REGISTRY re-verifies recorded
     load-bearing claims ("evidence is BENCHMARK_RESULTS §32e", "the
     crate is shipped", "the rename is still pending") against current
