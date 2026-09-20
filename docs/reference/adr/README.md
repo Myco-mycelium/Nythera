@@ -24,7 +24,7 @@ directory; this index tracks status only.
 | [ADR-0015](ADR-0015-shared-arm-translation.md) | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | [ADR-0016](ADR-0016-nyfs-linux-backend-fuse.md) | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | [ADR-0017](ADR-0017-reject-nps-renumbering.md) | Reject domain-grouped NPS renumbering | **Rejected** |
-| [ADR-0018](ADR-0018-hash-chained-audit-log.md) | Hash-chained append-only log for capability audit records | Proposed |
+| [ADR-0018](ADR-0018-hash-chained-audit-log.md) | Hash-chained append-only log for capability audit records | Accepted |
 | [ADR-0019](ADR-0019-journal-commit-default.md) | Journal commit as the default NyFS save() mode | Proposed |
 | [ADR-0020](ADR-0020-implementation-languages.md) | Implementation languages and the platform boundary | **Accepted** |
 | [ADR-0021](ADR-0021-nyruntime-transport-serving-loop.md) | NyRuntime direction — IPC serving loop behind the FFI boundary | **Accepted** — close gate met |

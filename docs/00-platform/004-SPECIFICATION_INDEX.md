@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.22.0
+version: 1.23.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-13
+updated: 2026-09-20
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -55,7 +55,7 @@ accepts, deprecates, or rejects any normative document (NPC-001 §6.5).
 | ADR-0015 | Shared dynamic binary translation approach for ARM/x86 compatibility | Proposed |
 | ADR-0016 | NyFS Linux Backend implemented as a user-space FUSE filesystem | Proposed |
 | ADR-0017 | Reject domain-grouped NPS renumbering | **Rejected** |
-| ADR-0018 | Hash-chained append-only log for capability audit records | Proposed |
+| ADR-0018 | Hash-chained append-only log for capability audit records | Accepted |
 | ADR-0019 | Journal commit as the default NyFS save() mode | Proposed |
 | ADR-0020 | Implementation languages and the platform boundary | **Accepted** |
 
@@ -160,6 +160,7 @@ change process.
 | 1.20.0  | 2026-08-12 | Record first-pass benchmark data (tests/BENCHMARK_RESULTS.md): NPS-003 §6.1 latency and ADR-0009 token-bucket statuses updated to reflect data collected — gates not declared met |
 | 1.21.0  | 2026-08-12 | Add NPS-027 (Threat Model Phase 7 — Package Trust Model, completing Milestone 12); ADR-0007 status reflects first-pass Zstd data collected |
 | 1.22.0  | 2026-09-10 | NPS-010 v1.3.0: §7.1.1 (new) normatively requires per-sender fairness in the endpoint token bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed; ADR-0009 review package published |
+| 1.23.0  | 2026-09-20 | ADR-0018 status cell corrected to Accepted — the 2026-09-19 review reconciliation ("status reconciled to Accepted everywhere") missed this table and the adr/README.md listing; caught by the docs premise audit |
 
 ---
 **End of Document**

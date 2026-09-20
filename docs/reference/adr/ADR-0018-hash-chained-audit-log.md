@@ -5,7 +5,7 @@ version: 1.0.0
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-09-19
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, NPS-018, NPS-021]
 ---

@@ -107,8 +107,10 @@ senders × per-sender demand**.
 - [ ] Defaults accepted (§4) or amended
 - [x] Static/dynamic shares decided (§5.1) — **static default, dynamic
   opt-in** (AG decision log A1, 2026-09-19; dynamic-as-default
-  registered as a standing agenda item, pending an adversarial
-  re-benchmark of dynamic mode)
+  registered as a standing agenda item, decision-ready: the measured
+  ledger is complete — §32e dynamic-mode adversarial runs, §32f the
+  dynamic lone-sender cell — and `AG_BRIEF_DYNAMIC_SHARES.md`
+  packages the options; what remains is pure policy judgment)
 - [ ] ADR-0009 → `Accepted`; NPS-010 → `Accepted` (transitive block clears)
 - [ ] NPS-011 `CAP-IPC-HIGH-THROUGHPUT` wording reconciled with §7.1.1 if needed
 
