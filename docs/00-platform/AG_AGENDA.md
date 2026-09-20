@@ -1,12 +1,12 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.2.0
-status: Disposed — decisions recorded 2026-09-19 (see the decision log); one standing item registered for the next agenda (2026-09-20)
+version: 1.3.0
+status: Disposed — decisions recorded 2026-09-19 (see the decision log); two standing items registered for the next agenda (2026-09-20: dynamic-shares default; NPS-027 review)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
-depends_on: [ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0018, ADR-0022, ADR-0023, NPS-010, NPS-026, NPC-001]
+depends_on: [ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0018, ADR-0022, ADR-0023, NPS-010, NPS-026, NPS-027, NPC-001]
 ---
 
 # Architecture Group Agenda — Pending Decisions
@@ -224,6 +224,24 @@ the tree.
   Pre-read: `AG_BRIEF_DYNAMIC_SHARES.md` (AI-drafted, suggest-side —
   three options with a consequences ledger; recommends retaining the
   static default).
+
+- **NPS-027 — Package Trust Model (threat model Phase 7; Draft →
+  review for Acceptance).** Found during the 2026-09-20 next-actions
+  audit: REPOSITORY_STATE items 18/20 still asked for "a real
+  package-signing/PKI specification" and called Phase 7 "the last
+  planned phase" — but Phase 7 shipped as `NPS-027` on 2026-08-12 and
+  has been awaiting this review ever since. What the session reviews:
+  the spec's dispositions of `FIND-PACKAGE-001` (checksums detect
+  corruption, not tampering; publisher authenticity requires the
+  signature block) and `FIND-PACKAGE-004` (overlay content as
+  user-installed mods), the publisher-identity model, and the
+  verification boundary — it extends NPS-006/NPS-026 and leans on
+  ADR-0014 (Secure Boot trust anchor) and ADR-0018 (tamper-evident
+  records). Honest scope: like Phases 3 and 6, it reasons from the
+  specified guarantees of NPS-006/NPS-026, not from code — no package
+  manager exists yet. Acceptance here unblocks item 18's residual
+  (PKI implementation) and closes the planned threat-model phase list
+  formally. Adjacent to B3 (NPS-026 v1.1.0, already informational).
 
 ---
 
