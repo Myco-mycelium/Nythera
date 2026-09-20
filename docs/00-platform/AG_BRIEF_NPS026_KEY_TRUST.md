@@ -1,8 +1,8 @@
 ---
 title: AG Pre-read — Publisher Key Trust (NPS-026 §6.3, REQ-SEC-0004)
 document_id: AG-BRIEF-2026-09-PK
-version: 1.0.0
-status: Pre-read — standing item D3 on AG_AGENDA.md (registered 2026-09-20)
+version: 1.1.0
+status: Pre-read — standing item D3 on AG_AGENDA.md (registered 2026-09-20; draft §6.3 amendment appended for review alongside the decision)
 owners: [Nyrqis Architecture]
 created: 2026-09-20
 ai_assisted: true
@@ -98,6 +98,65 @@ that is the one place where this is policy, not mechanism.
 |---|---|
 | NPS-026 amendment (its path to Accepted) | §6.3 expanded into the mechanism (root-set distribution, enrollment flow, revocation list + expiry, propagation semantics, rotation); `REQ-SEC-0004` closed; NPS-027's FIND-PACKAGE-003 disposition note updated to point at the design |
 | Implementation era | Key store + verification states in the future package manager; revocation-list distribution channel; enrollment UI per the protected-confirmation pattern; hardware-root convergence question (NPS-026 §14, 2026-09-18) may fold the package root set into the boot anchor |
+
+## Appendix — Draft §6.3 amendment text (propose-only, for review alongside D3)
+
+**What this is:** the mechanism text D3's decision would trigger, drafted
+so the Group reviews the decision and its wording in one sitting. It is
+AI-drafted (NPC-001 §11.1), propose-only, and **not** in NPS-026 — on
+decision, it lands via NPS-026's own amendment pass, replacing the
+pattern-only §6.3 and today's non-normative pointer note. Clause
+numbers continue §6's existing scheme.
+
+> **6.3.** Trust anchors **SHOULD** follow the key-management model
+> established for boot in ADR-0014: a platform trust anchor plus
+> user-enrollable keys, so self-built packages and third-party stores
+> remain possible without a single monopoly key. The mechanism is:
+>
+> **6.3.1. Initial trust distribution.** The system **MUST** ship with a
+> platform root set of publisher trust anchors as part of the OS image
+> (ADR-0014's firmware-anchor analogue). A key **MUST NOT** be trusted
+> merely because it arrived alongside a package that references it —
+> trust-on-first-use is rejected: it provides no authenticity against a
+> network attacker intercepting the download (`FIND-PACKAGE-003`).
+>
+> **6.3.2. Enrollment.** A publisher key outside the platform root set
+> **MUST NOT** verify packages until the user has explicitly enrolled
+> it, through a protected confirmation (the NPS-015 §5.5 pattern)
+> displaying the publisher identity, the key fingerprint, and the
+> enrollment source. The confirmation **MUST NOT** be skippable by the
+> enrolling party.
+>
+> **6.3.3. Revocation inputs.** Publisher keys **MUST** carry an expiry
+> date. The platform **MUST** distribute a revocation list out-of-band
+> (the ADR-0014 ``dbx`` analogue). A revoked or expired key **MUST**
+> fail verification for new installs, updates, and every
+> package-verification touchpoint immediately upon list delivery or
+> expiry.
+>
+> **6.3.4. Propagation to installed packages.** Revocation **MUST NOT**
+> silently block launching already-installed, previously-verified
+> content: the system **MUST** surface an advisory notice at launch for
+> affected packages and **MUST** block hard at install, update, and
+> re-verification touchpoints. The advisory/block split preserves user
+> agency over owned software while making a compromised-publisher state
+> non-silent and non-propagating.
+>
+> **6.3.5. Rotation.** A publisher **MAY** rotate keys by cross-signing
+> the new key with the previously trusted one, preserving continuity for
+> already-installed content; a rotation that cannot cross-sign requires
+> fresh user enrollment per 6.3.2.
+>
+> **6.3.6. Conformance scope.** The signature scheme, algorithms, and
+> key parameters for all of the above are out of scope of this section —
+> reserved per NPC-002 §6.2 for dedicated human review.
+
+**Mapping to D3's sub-decisions:** 6.3.1 → initial trust distribution;
+6.3.2 → enrollment UX; 6.3.3 + 6.3.4 → revocation inputs and the
+advisory/block propagation split (the one policy-shaped call);
+6.3.5 → rotation; 6.3.6 → the crypto fence. On acceptance of this text,
+`REQ-SEC-0004` closes and NPS-027's FIND-PACKAGE-003 disposition gains
+its final pointer.
 
 ## What this pre-read deliberately does not answer
 

@@ -247,8 +247,10 @@ the tree.
   routing FIND-PACKAGE-003's design decision to NPS-026's review).
   The routed design decision now has its own pre-read too:
   `AG_BRIEF_NPS026_KEY_TRUST.md` (the publisher-key trust model,
-  recommendating the ADR-0014 mirror) — prepared so NPS-026's path to
-  `Accepted` is not blocked by an undesigned REQ-SEC-0004.
+  recommendating the ADR-0014 mirror; **v1.1.0 appends the draft §6.3
+  amendment text** so the Group reviews the decision and its normative
+  wording in one sitting) — prepared so NPS-026's path to `Accepted` is
+  not blocked by an undesigned REQ-SEC-0004.
   **Registered as standing item D3 below** (2026-09-20).
 
 - **REQ-SEC-0004 — Publisher key trust (the mechanism design for
