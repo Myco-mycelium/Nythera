@@ -302,6 +302,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="brief-pk-registered",
+        pattern=r"REQ-SEC-0004",
+        description="The routed FIND-PACKAGE-003 key-trust design has its pre-read anchored from NPS-026 §6.3",
+        check="path_contains",
+        check_args={
+            "needle": "AG_BRIEF_NPS026_KEY_TRUST.md",
+            "files": ["docs/reference/package-format/NPS-026-package-format.md"],
+        },
+    ),
+    Claim(
         claim_id="nykernel-backend-absent",
         pattern=r"backend doesn't exist yet|implementation doesn't exist yet",
         description="NPS-017 §6 / NPS-021 / NPS-023: the NyKernel backend is still unbuilt",

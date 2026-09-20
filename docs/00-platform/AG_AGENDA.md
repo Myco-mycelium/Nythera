@@ -245,6 +245,10 @@ the tree.
   `AG_BRIEF_NPS027_PACKAGE_TRUST.md` (AI-drafted, suggest-side —
   findings ledger, three options, recommends accepting NPS-027 and
   routing FIND-PACKAGE-003's design decision to NPS-026's review).
+  The routed design decision now has its own pre-read too:
+  `AG_BRIEF_NPS026_KEY_TRUST.md` (the publisher-key trust model,
+  recommendating the ADR-0014 mirror) — prepared so NPS-026's path to
+  `Accepted` is not blocked by an undesigned REQ-SEC-0004.
 
 ---
 

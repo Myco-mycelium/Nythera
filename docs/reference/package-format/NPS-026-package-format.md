@@ -93,6 +93,15 @@ for boot in ADR-0014: a platform trust anchor plus user-enrollable
 keys, so self-built packages and third-party stores remain possible
 without a single monopoly key.
 
+> Non-normative note (2026-09-20): the enrollment/revocation *mechanism*
+> this clause defers — the design decision routed here by NPS-027's
+> `FIND-PACKAGE-003` / `REQ-SEC-0004` — has a suggest-side pre-read at
+> `docs/00-platform/AG_BRIEF_NPS026_KEY_TRUST.md` (recommendation: the
+> full ADR-0014 mirror — bundled root set, protected-confirmation
+> enrollment, advisory/block revocation propagation, cross-signature
+> rotation). The mechanism text lands in this section on this
+> document's path to `Accepted`.
+
 6.4. A package **MAY** be updated only by a publisher able to produce a
 valid signature for the update (see §8); update and original signatures
 are verified through the same path.
