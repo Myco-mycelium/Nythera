@@ -105,7 +105,10 @@ senders × per-sender demand**.
 
 - [ ] Mechanism accepted (token bucket + per-sender fairness, NPS-010 §7.1.1)
 - [ ] Defaults accepted (§4) or amended
-- [ ] Static/dynamic shares decided (§5.1)
+- [x] Static/dynamic shares decided (§5.1) — **static default, dynamic
+  opt-in** (AG decision log A1, 2026-09-19; dynamic-as-default
+  registered as a standing agenda item, pending an adversarial
+  re-benchmark of dynamic mode)
 - [ ] ADR-0009 → `Accepted`; NPS-010 → `Accepted` (transitive block clears)
 - [ ] NPS-011 `CAP-IPC-HIGH-THROUGHPUT` wording reconciled with §7.1.1 if needed
 

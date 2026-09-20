@@ -1,14 +1,14 @@
 ---
 title: Container Runtime
 document_id: NPS-010
-version: 1.6.0
+version: 1.7.0
 status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-19
+updated: 2026-09-20
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, ADR-0004, ADR-0006, ADR-0009, NPS-002, NPS-003]
@@ -124,7 +124,13 @@ legitimate 250 Hz client to ~9 admitted/s under a full-speed flood).
 The bucket **MUST** still cap total intake at the shared envelope.
 Endpoint limiter parameters (including `fair_shares`/`sender_burst`)
 **MAY** be retuned by the operator at runtime through the control
-plane.
+plane. The operator **MAY** also switch an endpoint's bucket to
+**dynamic shares** (`dynamic_shares=True`): `fair_shares` then means
+"shares at full occupancy" and the effective per-sender refill is the
+envelope divided by the live sender count — the full-occupancy
+guarantee of this §7.1.1 is unchanged (ADR-0009 §5.1; the accepted
+posture is static default + dynamic opt-in, with dynamic-as-default a
+standing agenda item, not a default).
 
 7.2. Containers **SHOULD** also be assignable CPU-time and memory limits,
 enforced by the scheduler and memory manager (NPS-001 §3), to prevent a
@@ -220,6 +226,7 @@ not fire; alert on p95 burst-completion latency and
 | 1.4.0   | 2026-09-18 | §9: both open-question deferrals now have data — §35 of tests/BENCHMARK_RESULTS.md (real cgroup-v2 enforcement) covers the default CPU/memory limit question (footprint floor 28–80× under the 256 MB default; quota throttling is tail-shaped; 64-PID default 1.5× above a modest supervisor) and answers the SUSPENDED-accounting question (full memory, zero CPU; frozen cgroups stay kernel-reclaimable). Default values remain an Architecture Group decision |
 | 1.5.0   | 2026-09-18 | §9: proposed-defaults table added from the §35 data (keep 256 MB / 64 PIDs / unlimited quota, with the raise-it-explicitly rule for supervisor shapes and the ≥2.5× sizing + p95/`nr_throttled` monitoring rule for assigned quotas); SUSPENDED-accounting proposal made normative-candidate (full memory, zero CPU; suspension is not budget relief) — all pending Architecture Group decision |
 | 1.6.0   | 2026-09-19 | **Document → Accepted**: ADR-0009's acceptance removed the last transitive blocker. §9 defaults ADOPTED by the Architecture Group (256 MB / 64 PIDs / unlimited quota + standing rules + SUSPENDED accounting = full memory, zero CPU, normative) — decision recorded in `AG_AGENDA.md`'s decision log |
+| 1.7.0   | 2026-09-20 | §7.1.1 notes the accepted ADR-0009 posture (static `fair_shares` default, dynamic opt-in) and permits the operator to enable dynamic shares per endpoint — the §7.1.1 full-occupancy guarantee is mode-independent; dynamic-as-default stays a standing agenda item, not a default |
 
 ---
 **End of Document**

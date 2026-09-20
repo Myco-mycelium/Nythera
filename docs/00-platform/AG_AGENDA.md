@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.1.0
-status: Disposed — decisions recorded 2026-09-19 (see the decision log)
+version: 1.2.0
+status: Disposed — decisions recorded 2026-09-19 (see the decision log); one standing item registered for the next agenda (2026-09-20)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -201,6 +201,27 @@ the tree.
 | B2 SUSPENDED normative | Adopted — full memory, zero CPU; suspension is not budget relief (NPS-010 v1.6.0) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
 | C1 confirm/void the 2026-09-06 acceptance | CONFIRMED — sanctioned decision; index rows corrected to match | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
 | C1 NyVault ratification | Ratified as-implemented (§27/§29 performance record = known-cost ledger) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+
+---
+
+## Standing items for the next agenda (registered 2026-09-20)
+
+- **ADR-0009 follow-on — dynamic shares as the DEFAULT (policy,
+  data incomplete).** The 2026-09-19 session decided A1's mechanism
+  question: static `fair_shares` default with dynamic opt-in. Making
+  dynamic mode the default is the one remaining policy question in
+  the rate-limiting space, and it is deliberately NOT decided here:
+  the shipped data covers static shares under flood (§32c/§32d) and
+  dynamic mode's guarantee (full-occupancy; a lone sender may use the
+  whole envelope), but there is **no adversarial re-benchmark of
+  dynamic mode under flood** — the same starve-a-legitimate-client
+  harness that motivated the mechanism. Before this item is decided:
+  (1) collect the dynamic-mode adversarial data
+  (`tests/benchmark_bucket.py` against `dynamic_shares=True`),
+  (2) weigh the measured lone-sender cost of static shares
+  (`sender_burst + envelope/shares`, §32d.1) against dynamic mode's
+  behavior under the same flood, (3) decide default-posture. The
+  guarantee is mode-independent either way (NPS-010 §7.1.1, v1.7.0).
 
 ---
 

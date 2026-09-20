@@ -136,16 +136,18 @@ The per-sender fairness the benchmark section above calls for is now
   "shares at full occupancy" and the effective per-sender refill is
   the envelope divided by the live sender count — a lone sender may
   use the whole envelope, the full-occupancy guarantee is unchanged.
-  Not yet the default (pending adversarial re-benchmark; review
-  package §5.1).
-
-The NPS-010 §7.1 wording still needs to adopt this mechanism, and the
-ADR itself remains `Proposed` pending Architecture Group review.
+  **Posture decided 2026-09-19 (AG, decision log A1):** static default,
+  dynamic opt-in. Making dynamic the DEFAULT is a future policy
+  question, not a pending one — it is registered as a standing agenda
+  item (`AG_AGENDA.md`, standing items) and requires an adversarial
+  re-benchmark of dynamic mode plus a Group decision.
 
 ## Status
 Accepted (2026-09-19) — mechanism and §4 defaults adopted as shipped;
 static `fair_shares` default with dynamic opt-in (the shipped
 posture).
 The fairness mechanism is implemented in the Linux backend
-(Implementation Note above); spec-side adoption in NPS-010 §7.1 is the
-remaining step.
+(Implementation Note above) and adopted normatively in NPS-010 §7.1.1
+(since 2026-09-10, with the accepted posture noted there 2026-09-20) —
+spec-side adoption is complete; nothing remains open in this ADR
+except the standing dynamic-as-default policy item above.

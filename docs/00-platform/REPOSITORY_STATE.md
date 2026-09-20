@@ -65,7 +65,7 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
 - [x] ADR-0007 Zstandard as default compression codec — **Accepted** (2026-09-19): default level 3 per NPS-005 §3; data §31
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [x] ADR-0009 Per-container token-bucket IPC rate limiting — **Accepted** (2026-09-19): mechanism + §4 defaults as shipped; static `fair_shares` default with dynamic opt-in; data §32a–e
+- [x] ADR-0009 Per-container token-bucket IPC rate limiting — **Accepted** (2026-09-19): mechanism + §4 defaults as shipped; static `fair_shares` default with dynamic opt-in; data §32a–e. **Follow-on reconciled 2026-09-20**: the accepted posture is normative in NPS-010 §7.1.1 (v1.7.0 — dynamic shares operator-permitted, guarantee mode-independent); dynamic-as-DEFAULT registered as the agenda's one standing item (needs the dynamic-mode adversarial re-benchmark first)
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
@@ -795,7 +795,14 @@ Documentation hygiene, fixed earlier this session:
   pre-verified as far as possible without the fire: arm64 cron
   ``0 6 * * 1`` in the YAML, all three scheduled workflows ``active``
   via the API, and pat-expiry-watch already fired green today; the
-  arm64 fire itself is tomorrow's check.
+  arm64 fire itself is tomorrow's check. Reconciliation round: ADR-0009's
+  stale "spec-side adoption is the remaining step" line corrected
+  (NPS-010 §7.1.1 has been normative since 2026-09-10); NPS-010 v1.7.0
+  notes the accepted static-default/dynamic-opt-in posture in §7.1.1;
+  the ADR-0009 review package's §5.1 checklist item ticked with the
+  decision reference; and ``AG_AGENDA.md`` v1.2.0 carries one standing
+  item for the next session — dynamic shares as the DEFAULT, gated on
+  the dynamic-mode adversarial re-benchmark that does not exist yet.
 - 2026-09-20 (**v0.29.29: the §27 live-mount wedge root-caused — the
   defect was client-side reply theft, not a muted serve loop — and the
   blocked streaming re-measurement collected**): the hunt the 45 s
