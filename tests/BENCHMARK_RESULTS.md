@@ -1140,11 +1140,70 @@ this host — reproduced three times**. Findings, in order:
    thread mid `_build_fuse`, the IPC client thread in a reply wait —
    the fixture for the root-cause hunt).
 
-Verdict: the §27 table above stands as the 2026-08-15 (pre-streaming)
-baseline. The streaming-read-path re-measurement stays **blocked by
-the defect in 3**, now precisely characterized, contained, and armed
-with an autopsy — a one-command reproduction
-(`python3 tests/benchmarks.py --vault-mount-io`).
+Verdict: the §27 table above stands as the 2026-08-15
+(pre-wire-streaming) baseline. The streaming-read-path re-measurement
+was blocked by the defect in 3 — root-caused and fixed 2026-09-20, see
+the re-measurement below.
+
+### §27 root cause + re-measurement (2026-09-20): client-side reply theft; fixed, streaming mount re-measured
+
+The root-cause hunt the autopsy armed succeeded — with a correction to
+finding 3: **the "single-threaded serve loop goes mute" reading was
+wrong.** A mid-wedge stack dump shows the daemon's serving-loop thread
+healthy and stepping throughout (`loop.step` in `_drive_main_loop`);
+no handler ever stalled. The silence was CLIENT-side:
+
+**Root cause: concurrent FUSE workers racing one shared IPCClient.**
+The passthrough mounts through fusepy with libfuse's multithreaded
+session (`nothreads=False`), so libfuse dispatches kernel ops on a
+worker-thread pool. The wedge autopsy caught TWO workers simultaneously
+inside `read → _call → client_call`. The IPC client's reply correlation
+is a single-consumer protocol on ONE socket — each CALL's sender waits
+for its own REPLY on the same endpoint every caller reads from. Two
+concurrent workers race their recv loops: one worker's `recvmsg`
+consumes the other's reply (dropped as uncorrelated by the Rust client
+half's correlation, or by the floor's), the loser times out, and every
+fallback attempt (wire-streamed → streamed → paging) races the same
+shared socket the same way — "no reply from the storage service" three
+times while the daemon delivered every reply it was asked for. Only
+big ops wedge because only they overlap (kernel readahead pipelines
+multiple 128 KiB reads); §29's in-process exchange (no kernel mount,
+one client thread) can never race. The "malformed datagram" log line
+was the same race surfacing on the floor receive path.
+
+**Fix (`ipc/transport.py`): `IPCClient` serializes the whole call
+exchange per client** — `call` / `call_stream_write` /
+`call_stream_reply` hold a per-client lock across send + correlated
+wait (one client = one in-flight exchange). The service side processes
+calls sequentially anyway (the dispatch handoff is one dispatcher
+thread), so client-side serialization costs nothing. Regression tests:
+`TestClientConcurrentCalls` (floor half forced + the Rust client
+half) — verified to fail pre-fix (`None != b'AAAA'`, the theft
+timeout) and pass post-fix.
+
+**Re-measurement (`--vault-mount-io`, two runs — the first clean §27
+numbers since 2026-08-15):**
+
+| Pattern | 2026-08-15 (pre-wire-streaming) | 2026-09-20 run 1 / run 2 |
+|---------|--------------------------------|--------------------------|
+| Write, 1 MiB syscalls | 3.25–3.40 MB/s | 9.58 / 10.47 MB/s |
+| Write, 4 KiB syscalls | 0.77–0.80 MB/s | 0.69 / 0.67 MB/s |
+| Read, 1 MiB | 2.17 MB/s | 6.34 / 6.30 MB/s |
+| Read, 4 KiB | 2.03–2.16 MB/s | 4.97 / 5.02 MB/s |
+| Small files, 100×4 KiB | 253–264 files/s | 165.5 / 168.3 files/s |
+| Native side (1 MiB write) | 975–1,738 MB/s | 1,914 / 1,995 MB/s |
+
+Reading: **the wire-streamed paths now complete under the real kernel
+mount** — 1 MiB writes ~3× the pre-streaming baseline (each 128 KiB
+kernel write is ONE wire-streamed round trip instead of four paged
+calls) and 1 MiB reads ~3× (one wire-streamed reply per kernel read;
+the AEAD block decode still dominates, matching §29's read finding).
+4 KiB writes sit just under the old band and small-file throughput is
+lower than 2026-08-15's 253–264 files/s — host-state-sensitive
+(native side moved too), single-pass numbers, no gate declared met, no
+default re-declared. This is the evidence ADR-0024's review input
+called "the one missing evidence artifact" (the post-0.14.21
+FUSE-mount re-benchmark): now collected.
 
 ## 28. Quota Ledger Refresh per Commit (2026-08-16)
 

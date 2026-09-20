@@ -17634,6 +17634,100 @@ class TestWireLevelStreaming(unittest.TestCase):
             server.close()
 
 
+class TestClientConcurrentCalls(unittest.TestCase):
+    """§27 wedge root cause (2026-09-19): the reply correlation is a
+    single-consumer protocol on ONE socket. libfuse's multithreaded
+    worker pool dispatched two vault-passthrough reads concurrently on
+    one shared IPCClient; one thread's recv loop consumed the other's
+    reply (dropped as uncorrelated), the read timed out, and every
+    streaming fallback raced the same way — the live mount wedged with
+    a kernel folio wait while the daemon's serve loop was healthy.
+    IPCClient now serializes the whole call exchange per client."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nyrqis-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _server_and_client(self):
+        manager = IPCManager()
+        manager.create_endpoint("ep", "ep")
+        svc_path = os.path.join(self.tmp, "svc.sock")
+        cli_path = os.path.join(self.tmp, "cli.sock")
+        server = IPCDatagramServer(
+            manager, "ep", svc_path, pid_registry={},
+            trusted_uids={os.getuid()})
+
+        def handler(msg, sender, sender_path):
+            # The handler sleeps so the two concurrent workers' reply
+            # waits genuinely overlap — the theft window the fix closes.
+            time.sleep(0.12)
+            server.reply(sender_path, msg.message_id, msg.payload)
+
+        server.on_call = handler
+        server.bind()
+        stop = threading.Event()
+        threading.Thread(target=server.serve, args=(stop,),
+                         daemon=True).start()
+        client = IPCClient(DEFAULT_OPERATOR_ID, cli_path).bind()
+        self.addCleanup(client.close)
+        self.addCleanup(stop.set)
+        self.addCleanup(server.close)
+        return client, svc_path
+
+    def _concurrent_rounds(self, client, svc_path, rounds=3):
+        results, errors = {}, []
+
+        def worker(tag):
+            try:
+                reply = client.call(svc_path, tag.encode(),
+                                    timeout_s=5.0)
+                results[tag] = None if reply is None else reply.payload
+            except Exception as e:  # noqa: BLE001 - recorded, not raised
+                errors.append(e)
+
+        for _ in range(rounds):
+            threads = [threading.Thread(target=worker, args=(tag,))
+                       for tag in ("AAAA", "BBBB")]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15.0)
+        self.assertEqual(errors, [])
+        return results
+
+    def test_concurrent_calls_floor_path_both_receive_own_reply(self):
+        """Two threads exchanging calls on ONE client both get their own
+        correlated replies (floor client half, forced for determinism).
+        Pre-fix, one worker's recv consumed the other's reply and the
+        loser timed out — the §27 live-mount wedge."""
+        from ipc import loop as ipc_loop
+        client, svc_path = self._server_and_client()
+
+        def _no_crate(*args, **kwargs):
+            raise ipc_loop.BackendUnavailable()
+
+        saved = ipc_loop.client_call
+        ipc_loop.client_call = _no_crate
+        try:
+            results = self._concurrent_rounds(client, svc_path)
+        finally:
+            ipc_loop.client_call = saved
+        self.assertEqual(results["AAAA"], b"AAAA")
+        self.assertEqual(results["BBBB"], b"BBBB")
+
+    def test_concurrent_calls_rust_client_half_both_receive_own_reply(self):
+        """The same invariant through the Rust client half (crate
+        present): concurrent callers on one client serialize instead of
+        racing inside ``nyrqis_ipcd_client_call``'s poll/recvmsg."""
+        from ipc import loop as ipc_loop
+        if not ipc_loop.available():
+            self.skipTest("Rust ipcd crate not built")
+        client, svc_path = self._server_and_client()
+        results = self._concurrent_rounds(client, svc_path)
+        self.assertEqual(results["AAAA"], b"AAAA")
+        self.assertEqual(results["BBBB"], b"BBBB")
+
+
 class TestNyVaultOperations(unittest.TestCase):
     """The NyVault FUSE passthrough (ADR-0022): FUSE ops whose
     handlers are storage-service CALLs — exercised without a kernel
@@ -37678,6 +37772,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestStorageService))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageStreaming))
     suite.addTests(loader.loadTestsFromTestCase(TestWireLevelStreaming))
+    suite.addTests(loader.loadTestsFromTestCase(TestClientConcurrentCalls))
     suite.addTests(loader.loadTestsFromTestCase(TestNyVaultOperations))
     suite.addTests(loader.loadTestsFromTestCase(TestStorageGuarantees))
     suite.addTests(loader.loadTestsFromTestCase(TestHIGDesignSystem))

@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-19
+2026-09-20
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -80,7 +80,7 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [x] ADR-0021 NyRuntime direction — IPC serving loop behind the FFI boundary — **Accepted** (2026-08-15), close gate met (wire p50 82–95 µs vs <100 µs target, §22)
 - [x] ADR-0022 NyVault — storage as a daemon-hosted service on the IPC transport — **Accepted, RATIFIED** (2026-09-19): the Group CONFIRMED the 2026-09-06 acceptance (`3262618`) as sanctioned and ratified as-implemented (the §27/§29 performance record is the known-cost ledger); the stale index/body statuses were the discrepancy
 - [x] ADR-0023 NyVault key manager — envelope encryption with Rust-held key custody — **Accepted, RATIFIED** (2026-09-19): confirmed with ADR-0022; as-implemented ratification
-- [ ] ADR-0024 Streaming data plane — chunked framing for large CALL payloads — **Proposed** (2026-08-16) with TWO increments already implemented the same day and the evidence run complete (§29: streamed 1 MiB writes 5.6× plaintext / 6.6× encrypted vs paging; reads already AEAD-bound, ~1.02–1.08×): 0.14.20 service-level streaming (chunk envelope over ordinary CALLs, codec untouched) and 0.14.21 wire-level STREAM_CHUNK framing on both serving paths (Rust loop reassembles; close-race fix rode along); the Rust client half's streaming remains the documented follow-on. Review input prepared 2026-09-18 (see the ADR's status block): two structured caveats — the read-path result scopes the win to writes + single dispatch (do not review it as a general I/O accelerator), and §27's absolute numbers are pre-batching/pre-streaming baselines (a post-0.14.21 FUSE-mount re-benchmark is the one missing evidence artifact, not yet collected — §27-style run wedged twice in the child on 2026-09-18, matching the suite's documented environmental skips)
+- [ ] ADR-0024 Streaming data plane — chunked framing for large CALL payloads — **Proposed** (2026-08-16) with TWO increments already implemented the same day and the evidence run complete (§29: streamed 1 MiB writes 5.6× plaintext / 6.6× encrypted vs paging; reads already AEAD-bound, ~1.02–1.08×): 0.14.20 service-level streaming (chunk envelope over ordinary CALLs, codec untouched) and 0.14.21 wire-level STREAM_CHUNK framing on both serving paths (Rust loop reassembles; close-race fix rode along); the Rust client half's streaming remains the documented follow-on. Review input prepared 2026-09-18 (see the ADR's status block): two structured caveats — the read-path result scopes the win to writes + single dispatch (do not review it as a general I/O accelerator), and §27's absolute numbers are pre-batching/pre-streaming baselines (a post-0.14.21 FUSE-mount re-benchmark is the one missing evidence artifact, not yet collected — §27-style run wedged twice in the child on 2026-09-18, matching the suite's documented environmental skips). **The missing artifact was collected 2026-09-20** (BENCHMARK_RESULTS.md §27 re-measurement: wire-streamed 1 MiB writes 9.58–10.47 MB/s, reads 6.30–6.34 MB/s under a real kernel mount) after the wedge's root cause was found and fixed — see the 2026-09-20 note below)
 
 ## Specifications (NPS)
 13 accepted, 14 held (4 named benchmark/dependency blockers, plus
@@ -764,6 +764,34 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-20 (**v0.29.29: the §27 live-mount wedge root-caused — the
+  defect was client-side reply theft, not a muted serve loop — and the
+  blocked streaming re-measurement collected**): the hunt the 45 s
+  faulthandler autopsy armed succeeded, and it corrected the previous
+  session's reading. A mid-wedge stack dump caught TWO libfuse worker
+  threads simultaneously inside `read → _call → client_call` on ONE
+  shared `IPCClient` while the daemon's serving-loop thread stepped
+  healthily in `_drive_main_loop` — the passthrough mounts through
+  fusepy with libfuse's multithreaded session (`nothreads=False`), so
+  kernel ops (readahead pipelines several 128 KiB reads) dispatch
+  concurrently, and the IPC client's reply correlation — a
+  single-consumer protocol on one socket — let one worker's `recvmsg`
+  consume the other's reply (dropped as uncorrelated). The loser timed
+  out and every fallback (wire-streamed → streamed → paging) raced the
+  same shared socket the same way: "no reply from the storage service"
+  three times while the daemon delivered every reply it was asked for.
+  Fix: `IPCClient` serializes the whole call exchange per client
+  (`call`/`call_stream_write`/`call_stream_reply` under a per-client
+  lock — the service side is sequential anyway, one dispatcher
+  thread, so this costs nothing); `TestClientConcurrentCalls` pins the
+  invariant on both client halves and was verified to fail pre-fix
+  with exactly the theft signature. Same-day payoff: the §27 re-run
+  completed for the first time since 2026-08-15 — wire-streamed 1 MiB
+  writes 9.58–10.47 MB/s (~3× the pre-streaming baseline), 1 MiB reads
+  6.30–6.34 MB/s (~3×), 4 KiB/small-file figures host-state-sensitive;
+  no gate declared met. This is the post-0.14.21 FUSE-mount evidence
+  ADR-0024's review input named as its one missing artifact. Full
+  suite green (2,648 tests, `test_backend.py`); repro scratch removed.
 - 2026-09-19 (**v0.29.28: the AG decision package shipped; the local
   four-path proof is now standing practice**): gates on the bumped
   tree (drift OK, full suite green, race harness 4/4, credential

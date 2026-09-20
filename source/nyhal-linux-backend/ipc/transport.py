@@ -746,6 +746,20 @@ class IPCClient:
     def __init__(self, container_id: str, path: str):
         self.container_id = container_id
         self.endpoint = UnixDatagramEndpoint(path)
+        # §27 wedge root cause (2026-09-20): the reply correlation is a
+        # SINGLE-CONSUMER protocol on ONE socket — a CALL's sender waits
+        # for its own REPLY on the same endpoint every caller reads
+        # from. Two threads exchanging calls on one client race their
+        # recvmsg loops and one thread's reply is consumed (dropped as
+        # uncorrelated) by the other — the caller times out while the
+        # server sees its reply delivered. This wedged the live NyVault
+        # mount under libfuse's multithreaded worker pool (§27): every
+        # fallback attempt raced the same way. One client = one
+        # in-flight call exchange; concurrent callers serialize here.
+        # The service side processes calls sequentially (the serving
+        # loop's dispatch handoff is a single dispatcher thread), so
+        # client-side serialization costs nothing.
+        self._call_lock = threading.Lock()
 
     def bind(self) -> "IPCClient":
         self.endpoint.bind()
@@ -811,7 +825,22 @@ class IPCClient:
         on the FLOOR path by design — the Rust client half is
         single-round-trip and cannot pipeline chunks (the ADR's
         wire-level client streaming is the documented follow-on).
-        Calls at or below the budget are byte-identical either way."""
+        Calls at or below the budget are byte-identical either way.
+
+        Thread-safety (§27 wedge fix): the whole exchange — send plus
+        the correlated-reply wait — holds the client's call lock, so
+        concurrent callers on ONE client serialize instead of racing
+        for each other's replies."""
+        with self._call_lock:
+            return self._call(peer_path, payload, timeout_s,
+                              capabilities, wire_stream)
+
+    def _call(
+        self, peer_path: str, payload: bytes,
+        timeout_s: float = 10.0,
+        capabilities: Optional[List[str]] = None,
+        wire_stream: bool = False,
+    ) -> Optional[IPCMessage]:
         msg = IPCMessage(
             message_type=IPCMessageType.CALL,
             sender_id=self.container_id,
@@ -983,7 +1012,18 @@ class IPCClient:
         Returns the reply message (or None on timeout). The caller
         built the chunk payloads (each an ordinary ``volume_write``
         CALL with the stream envelope) and knows how to interpret the
-        final reply."""
+        final reply.
+
+        Thread-safety: the whole pipelined exchange holds the client's
+        call lock (see ``call``)."""
+        with self._call_lock:
+            return self._call_stream_write(
+                peer_path, chunk_payloads, timeout_s, capabilities)
+
+    def _call_stream_write(
+        self, peer_path: str, chunk_payloads: List[bytes],
+        timeout_s: float = 10.0, capabilities: Optional[List[str]] = None,
+    ) -> Optional[IPCMessage]:
         msgs = [
             IPCMessage(
                 message_type=IPCMessageType.CALL,
@@ -1025,7 +1065,18 @@ class IPCClient:
         or a plain error) is returned as a one-element list so the
         caller can surface it. FLOOR path by design (see
         ``call_stream_write``); None on timeout or a service error
-        reply."""
+        reply.
+
+        Thread-safety: the whole exchange holds the client's call lock
+        (see ``call``)."""
+        with self._call_lock:
+            return self._call_stream_reply(
+                peer_path, payload, timeout_s, capabilities)
+
+    def _call_stream_reply(
+        self, peer_path: str, payload: bytes,
+        timeout_s: float = 10.0, capabilities: Optional[List[str]] = None,
+    ) -> Optional[List[bytes]]:
         msg = IPCMessage(
             message_type=IPCMessageType.CALL,
             sender_id=self.container_id,

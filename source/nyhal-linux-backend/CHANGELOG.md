@@ -5,6 +5,40 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.29] - 2026-09-20
+
+### Fixed
+
+- **The §27 live-mount wedge root-caused and fixed — the defect was
+  client-side reply theft, not a muted serve loop.** The vault
+  passthrough mounts through libfuse's multithreaded session, so
+  kernel ops dispatch on concurrent worker threads; two workers
+  racing one shared `IPCClient` made each worker's recv loop consume
+  the other's correlated reply (dropped as uncorrelated), the loser
+  timed out, and every streaming fallback raced the same shared
+  socket the same way — "no reply from the storage service" while the
+  daemon's serving loop was healthy and delivering every reply. Only
+  large ops wedge because only they overlap (kernel readahead
+  pipelines multiple 128 KiB reads).
+- `IPCClient` now serializes the whole call exchange per client
+  (`call` / `call_stream_write` / `call_stream_reply` hold a
+  per-client lock across send + correlated wait). The service side
+  processes calls sequentially (the dispatch handoff is one
+  dispatcher thread), so client-side serialization costs nothing.
+- `TestClientConcurrentCalls` (2 tests: floor half forced + the Rust
+  client half) pins the invariant and was verified to fail pre-fix
+  with exactly the theft signature (`None` reply → timeout).
+
+### Changed
+
+- **§27 streaming re-measurement collected (BENCHMARK_RESULTS.md):**
+  the first clean live-mount numbers since 2026-08-15 — wire-streamed
+  1 MiB writes 9.58–10.47 MB/s (~3× the pre-streaming baseline of
+  3.25–3.40) and 1 MiB reads 6.30–6.34 MB/s (~3× 2.17); 4 KiB and
+  small-file figures host-state-sensitive, no gate declared met. This
+  is the post-0.14.21 FUSE-mount evidence ADR-0024's review input
+  named as its one missing artifact.
+
 ## [0.29.28] - 2026-09-19
 
 ### Added
