@@ -139,8 +139,12 @@ The per-sender fairness the benchmark section above calls for is now
   **Posture decided 2026-09-19 (AG, decision log A1):** static default,
   dynamic opt-in. Making dynamic the DEFAULT is a future policy
   question, not a pending one — it is registered as a standing agenda
-  item (`AG_AGENDA.md`, standing items) and requires an adversarial
-  re-benchmark of dynamic mode plus a Group decision.
+  item (`AG_AGENDA.md`, standing items). The decision ledger is
+  complete (§32e adversarial, §32f lone-sender + full-occupancy,
+  2026-09-20): the item is pure policy judgment — the measured trade
+  is a ~6.6× lone-sender take and ~3.8× low-occupancy flooder take
+  under dynamic, with the legitimate-client guarantee identical in
+  both modes.
 
 ## Status
 Accepted (2026-09-19) — mechanism and §4 defaults adopted as shipped;

@@ -1582,6 +1582,37 @@ the larger abuser take is acceptable — not a benchmark question.
 
 No gate declared met.
 
+### 32f. The static-vs-dynamic ledger completed (2026-09-20)
+
+The standing agenda item (dynamic shares as the DEFAULT) needed the
+lone-sender side of the comparison — §32d measured a lone sender under
+STATIC shares (share-capped), §32e measured the adversarial pair under
+dynamic, but no run had measured a lone sender under DYNAMIC shares
+(the honest cost/benefit side). `--fair-sweep` now runs both:
+
+| scenario | static shares | dynamic shares |
+|----------|--------------:|---------------:|
+| lone full-speed sender on 256 / 2,000/s, shares=8 | 313.0 calls/s (§32d) | **2,063.0 calls/s (§32f)** |
+| 8 senders × 250 Hz, same envelope | 250.5/s each — all meet | 250.0–250.5/s each — all meet |
+| flood + 250 Hz legitimate (§32e re-run today) | flood 271.3/s, legit 250.0/s | flood 1,022.0/s, legit 250.3/s, 0 throttled |
+
+**Finding: the trade is exactly what the model says it is, now with a
+number on every cell.** Dynamic shares let a lone sender draw the full
+envelope (~2,063/s ≈ 2,000/s envelope + burst; ~6.6× the static
+cap) — the utilization win — and at full occupancy both modes are
+indistinguishable (250/s per sender; the §32e full-occupancy claim is
+pinned with data, not just asserted). The adversarial cost is the
+flooder's absolute take under low occupancy: ~1,022/s vs ~271/s
+(~3.8×) with the legitimate client fully protected either way. The
+2026-09-10 §32e numbers reproduce within noise today (flood 1,021.7 →
+1,022.0, legit 250.3 → 250.3).
+
+This completes the data the standing item asked for: the decision is
+now purely the policy question §32e framed it as — whether the larger
+low-occupancy abuser take is acceptable platform-wide — with no
+measurement left to collect. No gate declared met; no posture changed
+(static remains the shipped default).
+
 ## 33. ADR-0013 Tuning Data — EEVDF Scheduling Simulation (2026-09-10)
 
 `python3 tests/benchmark_adr0013.py` — a discrete-event EEVDF

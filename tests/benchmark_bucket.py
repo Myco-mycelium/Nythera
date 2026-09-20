@@ -397,16 +397,38 @@ def fair_sweep() -> dict:
         FairTokenBucket(bucket_size=200, tokens_per_second=500.0,
                         fair_shares=8, sender_burst=64),
         n=8, per_sender_hz=250.0)
+    # Dynamic-shares side of the same ledger (§32f, 2026-09-20): the
+    # lone-sender take under dynamic shares (the honest comparison the
+    # static-vs-dynamic default decision needs — static caps a lone
+    # sender at sender_burst + envelope/shares, dynamic lets it draw
+    # toward the whole envelope), and the full-occupancy re-check
+    # (8 senders: both modes must give 250/s each — the §32e claim,
+    # pinned with data).
+    lone_dynamic = _drive_against_bucket(
+        FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                        fair_shares=8, sender_burst=64,
+                        dynamic_shares=True),
+        WINDOW_S, pre_drain=False)
+    out["lone_sender_dynamic"] = {
+        "envelope": "256 / 2,000/s, shares=8, dynamic",
+        "sustained": round(lone_dynamic["sustained"], 1)}
+    out["eight_senders_dynamic"] = _drive_n_senders(
+        FairTokenBucket(bucket_size=256, tokens_per_second=2000.0,
+                        fair_shares=8, sender_burst=64,
+                        dynamic_shares=True),
+        n=8, per_sender_hz=250.0)
     return out
 
 
 def _print_fair_sweep(data: dict) -> None:
     for key in ("lone_sender_shipped_default",
-                "lone_sender_proposed_envelope"):
+                "lone_sender_proposed_envelope",
+                "lone_sender_dynamic"):
         d = data[key]
         print(f"  {key}: {d['sustained']} calls/s "
               f"({d['envelope']})")
-    for key in ("eight_senders_sized", "eight_senders_undersized"):
+    for key in ("eight_senders_sized", "eight_senders_undersized",
+                "eight_senders_dynamic"):
         d = data[key]
         print(f"  {key}: per-sender {d['min_admitted']}–"
               f"{d['max_admitted']}/s of {d['requested_per_sender']} "

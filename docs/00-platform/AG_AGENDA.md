@@ -206,22 +206,21 @@ the tree.
 
 ## Standing items for the next agenda (registered 2026-09-20)
 
-- **ADR-0009 follow-on — dynamic shares as the DEFAULT (policy,
-  data incomplete).** The 2026-09-19 session decided A1's mechanism
+- **ADR-0009 follow-on — dynamic shares as the DEFAULT (policy; data
+  COMPLETE).** The 2026-09-19 session decided A1's mechanism
   question: static `fair_shares` default with dynamic opt-in. Making
   dynamic mode the default is the one remaining policy question in
-  the rate-limiting space, and it is deliberately NOT decided here:
-  the shipped data covers static shares under flood (§32c/§32d) and
-  dynamic mode's guarantee (full-occupancy; a lone sender may use the
-  whole envelope), but there is **no adversarial re-benchmark of
-  dynamic mode under flood** — the same starve-a-legitimate-client
-  harness that motivated the mechanism. Before this item is decided:
-  (1) collect the dynamic-mode adversarial data
-  (`tests/benchmark_bucket.py` against `dynamic_shares=True`),
-  (2) weigh the measured lone-sender cost of static shares
-  (`sender_burst + envelope/shares`, §32d.1) against dynamic mode's
-  behavior under the same flood, (3) decide default-posture. The
-  guarantee is mode-independent either way (NPS-010 §7.1.1, v1.7.0).
+  the rate-limiting space. Correction (2026-09-20): this item was
+  registered claiming the dynamic-mode adversarial data did not exist
+  — that was wrong; §32e (2026-09-10) measured it, and §32f
+  (2026-09-20) completed the ledger with the missing lone-sender
+  dynamic number (lone sender: 313/s static vs 2,063/s dynamic;
+  8 senders: 250/s each in both modes; flood + legitimate: legit
+  fully protected either way, the flooder's take 271/s static vs
+  1,022/s dynamic). Every cell now has a number; **the item is
+  decision-ready** — purely the policy question §32e framed: is the
+  larger low-occupancy abuser take acceptable platform-wide? No
+  measurement remains to collect; a session can decide it any time.
 
 ---
 
