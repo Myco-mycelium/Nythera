@@ -736,21 +736,42 @@ Process and tooling:
     reality. Add a registry entry whenever a document records a new
     load-bearing premise — including this document's own evidence
     citations.
-18. Elevate priority on Milestone 11's package-format gap category
+18. ~~Elevate priority on Milestone 11's package-format gap category
     (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
     found that `.nygi` integrity currently relies on checksums alone,
     which don't establish publisher authenticity; an attacker can tamper
     with an image and simply recompute a valid checksum. Not fixable by a
-    quick amendment; needs a real package-signing/PKI specification.
-19. Continue Milestone 11's remaining prioritized backlog
+    quick amendment; needs a real package-signing/PKI specification.~~
+    **Done 2026-08-12 — superseded by `NPS-027`** (Package Trust Model,
+    threat model Phase 7): it deepens `FIND-PACKAGE-001`'s disposition
+    (publisher authenticity requires signatures; checksums detect
+    corruption, not tampering) and specifies the signature block,
+    publisher identity, and the verification boundary. Residual:
+    `NPS-027` is Draft pending Architecture Group review, and no PKI
+    implementation exists (the package manager itself is still future).
+    Found while auditing this list 2026-09-20: the item was left open
+    after its deliverable landed.
+19. ~~Continue Milestone 11's remaining prioritized backlog
     (`007-PROJECT_ROADMAP.md`) — diagrams, API reference, ABI
     specification, object registry, and package format are now `Draft`
     (2026-08-12 pass); governance expansion, build architecture docs,
     performance budgets, and developer onboarding remain. Each is
-    roughly the size of a prior milestone on its own.
-20. Continue the threat model (Milestone 12, `docs/reference/security/`):
+    roughly the size of a prior milestone on its own.~~ **Done — all
+    four "remain" items landed**: governance expansion (`NPC-010`),
+    build architecture (`BUILD-001`), developer onboarding (`TUT-003`,
+    `docs/tutorials/developer-onboarding.md`), and performance budgets
+    (`PERF-001` v1.0.0, 2026-09-06). The roadmap's own M14 Phase 1
+    checklist records completion (its 2026-09-18 note); this list item
+    was never struck. Residual: `PERF-001` predates the §35
+    container-resource-limit data and should absorb it.
+20. ~~Continue the threat model (Milestone 12, `docs/reference/security/`):
     Phase 7 (Package Trust Model, extending NPS-006, already well-motivated
-    by `FIND-PACKAGE-001`) is the last planned phase.
+    by `FIND-PACKAGE-001`) is the last planned phase.~~ **Done 2026-08-12**
+    — Phase 7 shipped as `NPS-027` (`TB-PACKAGE`, extends NPS-006/NPS-026,
+    dispositions `FIND-PACKAGE-001`/`FIND-PACKAGE-004`); the planned
+    phase list is complete. Residual: `NPS-027` awaits Architecture
+    Group review (Draft). Found stale in the same 2026-09-20 audit as
+    items 18 and 19.
 21. Once an AI assistant implementation begins, build it against the
     amended `NPS-015` from the start — a protected confirmation UI
     (`REQ-AI-0003`), suggestion audit logging via `ADR-0018`'s mechanism
@@ -778,6 +799,7 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-20 (**next-actions audit: three more silently-completed items struck**): the sweep for action-17-style staleness found items 18, 19, and 20 open-in-text with their deliverables long since landed — `NPS-027` (threat model Phase 7, `FIND-PACKAGE-001`'s disposition) has existed since 2026-08-12, and all four of item 19's "remaining" backlog docs (`NPC-010`, `BUILD-001`, `TUT-003`, `PERF-001`) shipped by 2026-09-06. Items 8/9/11/12/21 verified genuinely open (owners unassigned, LICENSE placeholder, contributor-count and concrete-need gates, future AI work). Residuals recorded on the struck items: `NPS-027` awaits Architecture Group review; `PERF-001` should absorb the §35 container-resource-limit data. This is the drift class `tools/check_doc_premises.py` (now in CI) hunts — though TODO-list staleness itself still needs the human audit pass.
 - 2026-09-20 (**v0.29.30 shipped: the limiter-persistence release verified end to end**): gates on the bumped tree — drift OK, suite 2,651 green, release-race harness ALL PASS, credential sweep tree + history clean; tag ``v0.29.30`` pushed (main at ``0b6124b``), both tag pipelines green (``live-iso`` and ``live-iso-arm64``, completed/success), release public with both ISOs; both assets re-downloaded anonymously, digest-matched byte-for-byte, and booted on this host — amd64 direct PASS, arm64 direct PASS (solo run; see the note below), arm64 GRUB-UEFI menu PASS; amd64 menu path again environment-blocked (no x86 OVMF firmware, no sudo), CI covered the amd64 direct smoke. Digests pinned at publish: amd64 254,261,248 B ``cd34c51c…``; arm64 268,861,440 B ``81974a43…``. Verification honesty note: the FIRST arm64 direct attempt ran three guests in parallel and FAILED on the 780 s wall — the serial log shows the guest reached the smoke banner and the daemon, it was starvation from guest contention, not an ISO defect; re-run solo it PASSES. Boot verification is a **one-guest-at-a-time** operation on this host; that is now recorded practice. Scheduled-runs watcher OK (arm64's first weekly cron fire remains Mon Sep 21 — tomorrow). The PAT grants remain unchanged (Actions write + Variables write still 403; the drill keeps failing closed at its gate until the manual PAT edit).
 - 2026-09-20 (**v0.29.30: limiter overrides persist across a daemon
   restart — the runbook's scope note became a fix**): every

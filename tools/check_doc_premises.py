@@ -255,6 +255,20 @@ CLAIMS: list[Claim] = [
         check_args={"needle": "block_encrypt"},
     ),
     Claim(
+        claim_id="license-placeholder",
+        pattern=r"until a formal license is adopted|formal open-source license",
+        description="REPOSITORY_STATE item 9: LICENSE is still the Milestone 1 placeholder",
+        check="path_contains",
+        check_args={"needle": "not yet finalized"},
+    ),
+    Claim(
+        claim_id="owners-unassigned",
+        pattern=r"all Unassigned",
+        description="REPOSITORY_STATE item 8: SUBSYSTEM_OWNERS.md entries are still Unassigned",
+        check="path_contains",
+        check_args={"needle": "*Unassigned*"},
+    ),
+    Claim(
         claim_id="nykernel-backend-absent",
         pattern=r"backend doesn't exist yet|implementation doesn't exist yet",
         description="NPS-017 §6 / NPS-021 / NPS-023: the NyKernel backend is still unbuilt",
