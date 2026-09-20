@@ -21084,6 +21084,59 @@ class TestNyFSPersistence(unittest.TestCase):
             os.path.exists(os.path.join(
                 self.base, "state", "blocks", f"{old_id}.bin")))
 
+    def test_gc_blocks_thread_safe_against_concurrent_writes(self):
+        """§27 FUSE thread-safety audit (2026-09-20): gc_blocks must
+        hold the filesystem lock across the referenced-set walk +
+        unlink pass. Unlocked, a concurrent ``write`` + ``save()`` can
+        land a new block file between the set computation and the
+        unlink loop, and gc deletes a block the tree already
+        references — silent data loss on the next load. libfuse's
+        multithreaded session makes this a real concurrency surface,
+        not a theoretical one."""
+        fs = NyFSFilesystem(self.base, block_size=4096)
+        fs.create_file("/seed.bin")
+        fs.write("/seed.bin", b"s" * 1000)
+        fs.create_file("/hot.bin")
+        fs.save(use_journal=False)
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            i = 0
+            while not stop.is_set() and i < 40:
+                try:
+                    fs.write("/hot.bin", os.urandom(8192))
+                    fs.save(use_journal=False)
+                except Exception as e:  # noqa: BLE001 - recorded
+                    errors.append(e)
+                i += 1
+
+        def collector():
+            while not stop.is_set():
+                try:
+                    fs.gc_blocks()
+                except Exception as e:  # noqa: BLE001 - recorded
+                    errors.append(e)
+
+        threads = [threading.Thread(target=writer),
+                   threading.Thread(target=collector)]
+        for t in threads:
+            t.start()
+        # The writer finishes on its own; give the collector a beat,
+        # then stop everything.
+        threads[0].join(timeout=60.0)
+        time.sleep(0.05)
+        stop.set()
+        threads[1].join(timeout=10.0)
+        self.assertEqual(errors, [])
+        # The final state must survive a full reload: every block file
+        # the tree references exists on disk and content reads back.
+        fs.save(use_journal=False)
+        reloaded = NyFSFilesystem.load(self.base)
+        self.assertEqual(reloaded.read("/seed.bin"), b"s" * 1000)
+        hot = reloaded.getattr("/hot.bin")["st_size"]
+        self.assertEqual(hot, 8192)
+
     def test_batched_fsync_save_roundtrip(self):
         # Grouped-fsync save (all temps written, then all fsynced, then
         # all renamed) must produce the same loadable state as the

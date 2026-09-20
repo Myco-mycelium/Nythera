@@ -1,11 +1,11 @@
 ---
 title: Streaming Data Plane — Chunked Framing for Large CALL Payloads
 document_id: ADR-0024
-version: 0.1.0
+version: 0.2.0
 status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-09-20
 ai_assisted: true
 depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 ---
@@ -108,6 +108,23 @@ depends_on: [NPS-003, NPS-011, ADR-0009, ADR-0020, ADR-0021, ADR-0022, ADR-0023]
 >    accepting the ADR (the §29 A/B on the real paths is the decision
 >    evidence), but it would put a current absolute number next to the
 >    historical one.
+>
+> **Evidence update (2026-09-20): the open item is CLOSED.** The wedge
+> that blocked the re-run was root-caused — concurrent libfuse worker
+> threads racing one shared `IPCClient` consumed each other's
+> correlated replies (client-side reply theft; the daemon's serving
+> loop was healthy throughout) — and fixed by per-client call
+> serialization in `ipc/transport.py` (0.29.29, see
+> `tests/BENCHMARK_RESULTS.md` §27). The post-0.14.21 FUSE-mount
+> re-measurement then completed cleanly (two runs, first clean §27
+> numbers since 2026-08-15): wire-streamed 1 MiB writes 9.58–10.47 MB/s
+> (~3× the pre-streaming baseline of 3.25–3.40) and 1 MiB reads
+> 6.30–6.34 MB/s (~3× 2.17) — the write-path + dispatch win this ADR
+> predicts, now measured through a real kernel mount, with the read
+> side still AEAD-bound exactly as caveat 1 scoped it. Caveat 2's
+> "baselines, not current state" note is superseded: §27 now carries
+> current-stack figures. Acceptance remains the Group's call; the
+> evidence set for that review is now complete.
 
 # ADR-0024 — Streaming Data Plane: Chunked Framing for Large CALL Payloads
 

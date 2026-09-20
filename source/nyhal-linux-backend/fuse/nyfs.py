@@ -1493,26 +1493,34 @@ class NyFSFilesystem:
         snapshot. Returns the number of files removed. Orphaned blocks
         are the only files a crash can leave behind, so this is safe to
         run after a successful ``save()``.
+
+        Holds the filesystem lock for the whole referenced-set walk +
+        unlink pass (§27 audit, 2026-09-20): a concurrent ``write`` +
+        ``save()`` must not land a new block file between the
+        referenced-set computation and the unlink loop — an unlocked
+        pass would delete a block the tree already references. The
+        other FUSE-reachable operations already take the lock.
         """
-        blocks_dir = self._blocks_dir()
-        if not blocks_dir.exists():
-            return 0
-        referenced = {
-            b.block_id for b in self._all_blocks(self.inodes)
-        }
-        for snap in self.snapshots.values():
-            referenced |= {b.block_id for b in self._all_blocks(snap)}
-        removed = 0
-        for path in blocks_dir.glob("*.bin"):
-            if path.stem not in referenced:
+        with self.lock:
+            blocks_dir = self._blocks_dir()
+            if not blocks_dir.exists():
+                return 0
+            referenced = {
+                b.block_id for b in self._all_blocks(self.inodes)
+            }
+            for snap in self.snapshots.values():
+                referenced |= {b.block_id for b in self._all_blocks(snap)}
+            removed = 0
+            for path in blocks_dir.glob("*.bin"):
+                if path.stem not in referenced:
+                    path.unlink()
+                    removed += 1
+            # Stale temp files from an interrupted save are never
+            # referenced and never become visible; clean them up too.
+            for path in blocks_dir.glob(".*.tmp"):
                 path.unlink()
                 removed += 1
-        # Stale temp files from an interrupted save are never referenced
-        # and never become visible; clean them up too.
-        for path in blocks_dir.glob(".*.tmp"):
-            path.unlink()
-            removed += 1
-        return removed
+            return removed
 
 class NyFSOperations:
     """FUSE operation handlers backed by a ``NyFSFilesystem``.
