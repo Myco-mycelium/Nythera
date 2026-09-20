@@ -804,6 +804,41 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-20 (**session summary: the wedge day — two verified releases, the premise machinery, and both AG items packaged**; 19 commits, in six arcs):
+  (1) **The §27 live-mount wedge root-caused and fixed** (``312c03e``): the
+  45 s faulthandler autopsy caught two libfuse workers inside
+  ``client_call`` on one shared ``IPCClient`` — reply theft, not a muted
+  serve loop; the client now serializes its call exchange. The blocked
+  streaming re-measurement then ran for the first time since 2026-08-15.
+  (2) **v0.29.29 shipped and verified** (``9d150e6``/``28f2120``/``52eb2d2``):
+  ADR-0024 evidence reconciled, the ``gc_blocks`` lock + audit findings,
+  a deterministic gc-race demonstration, release digests pinned and all
+  three feasible boot paths green.
+  (3) **The rate-limiting ledger completed** (``931551d``/``f19da9d``/``5a22d7a``):
+  ADR-0009's stale lines corrected, NPS-010 v1.7.0 states the accepted
+  posture, the D1 standing item's wrong premise ("data missing") was
+  itself corrected and §32f's lone-sender cell completed the
+  static-vs-dynamic ledger, packaged as the D1 pre-read brief.
+  (4) **v0.29.30 shipped and verified** (``e98b150``/``0b6124b``/``67a7888``):
+  the rate-limit operations runbook, limiter overrides persisting across
+  daemon restart (the restart test caught the state-clobber bug before
+  ship), digests + boots green — and the recorded lesson that boot
+  verification is a one-guest-at-a-time operation on this host.
+  (5) **The premise machinery** (``93b3cbb``/``30ffebc``/``772a26f``/``d23d5d4``/``d934e84``):
+  the hand audit caught ADR-0018's missed status cells and ADR-0009's
+  wrong wording; ``check_doc_premises.py`` mechanized it (claim registry,
+  now 13 claims) and CI-wired it; the next-actions audit struck
+  silently-completed items 18/19/20 (and found 17 long done); one
+  honest stumble — a red CI push from cross-file evidence semantics —
+  repaired same-hour with the tool fixed rather than the check muted.
+  (6) **PERF-001 v1.1.0 and the AG packaging** (``ede2b47``/``e15cf87``/``294c49c``/``5f2010b``):
+  §35's container-limit data absorbed, §4.2's misread overhead ratios
+  recomputed from source, cadence marked aspirational; NPS-027's review
+  registered as standing item D2 with its own pre-read brief; both
+  briefs pinned in the registry. Standing threads: PAT grants unchanged
+  all day (Actions/Variables write 403; drill fail-closed — the manual
+  PAT edit remains the owner's step) and the arm64 cron's first fire is
+  tomorrow 06:00 UTC.
 - 2026-09-20 (**next-actions audit: three more silently-completed items struck**): the sweep for action-17-style staleness found items 18, 19, and 20 open-in-text with their deliverables long since landed — `NPS-027` (threat model Phase 7, `FIND-PACKAGE-001`'s disposition) has existed since 2026-08-12, and all four of item 19's "remaining" backlog docs (`NPC-010`, `BUILD-001`, `TUT-003`, `PERF-001`) shipped by 2026-09-06. Items 8/9/11/12/21 verified genuinely open (owners unassigned, LICENSE placeholder, contributor-count and concrete-need gates, future AI work). Residuals recorded on the struck items: `NPS-027` awaits Architecture Group review; `PERF-001` should absorb the §35 container-resource-limit data. This is the drift class `tools/check_doc_premises.py` (now in CI) hunts — though TODO-list staleness itself still needs the human audit pass.
 - 2026-09-20 (**v0.29.30 shipped: the limiter-persistence release verified end to end**): gates on the bumped tree — drift OK, suite 2,651 green, release-race harness ALL PASS, credential sweep tree + history clean; tag ``v0.29.30`` pushed (main at ``0b6124b``), both tag pipelines green (``live-iso`` and ``live-iso-arm64``, completed/success), release public with both ISOs; both assets re-downloaded anonymously, digest-matched byte-for-byte, and booted on this host — amd64 direct PASS, arm64 direct PASS (solo run; see the note below), arm64 GRUB-UEFI menu PASS; amd64 menu path again environment-blocked (no x86 OVMF firmware, no sudo), CI covered the amd64 direct smoke. Digests pinned at publish: amd64 254,261,248 B ``cd34c51c…``; arm64 268,861,440 B ``81974a43…``. Verification honesty note: the FIRST arm64 direct attempt ran three guests in parallel and FAILED on the 780 s wall — the serial log shows the guest reached the smoke banner and the daemon, it was starvation from guest contention, not an ISO defect; re-run solo it PASSES. Boot verification is a **one-guest-at-a-time** operation on this host; that is now recorded practice. Scheduled-runs watcher OK (arm64's first weekly cron fire remains Mon Sep 21 — tomorrow). The PAT grants remain unchanged (Actions write + Variables write still 403; the drill keeps failing closed at its gate until the manual PAT edit).
 - 2026-09-20 (**v0.29.30: limiter overrides persist across a daemon
