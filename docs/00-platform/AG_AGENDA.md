@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.3.0
-status: Disposed — decisions recorded 2026-09-19 (see the decision log); two standing items registered for the next agenda (2026-09-20: dynamic-shares default; NPS-027 review)
+version: 1.4.0
+status: Disposed — decisions recorded 2026-09-19 (see the decision log); three standing items registered for the next agenda (2026-09-20: dynamic-shares default; NPS-027 review; publisher key trust REQ-SEC-0004)
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -249,6 +249,22 @@ the tree.
   `AG_BRIEF_NPS026_KEY_TRUST.md` (the publisher-key trust model,
   recommendating the ADR-0014 mirror) — prepared so NPS-026's path to
   `Accepted` is not blocked by an undesigned REQ-SEC-0004.
+  **Registered as standing item D3 below** (2026-09-20).
+
+- **REQ-SEC-0004 — Publisher key trust (the mechanism design for
+  NPS-026 §6.3; analysis COMPLETE, decision-ready).** `FIND-PACKAGE-003`
+  (routed here by NPS-027) requires the enrollment/revocation design
+  §6.3's pattern clause defers. The pre-read
+  (`AG_BRIEF_NPS026_KEY_TRUST.md`) frames the four sub-decisions —
+  initial trust distribution, enrollment UX, revocation propagation,
+  rotation — and ledgers three options, recommending the full ADR-0014
+  mirror (bundled platform root set; protected-confirmation enrollment;
+  revocation advisory at launch, blocking at install/update;
+  cross-signature rotation). What the session judges: the sub-decisions,
+  with the revocation-propagation split as the one genuinely
+  policy-shaped call. The concrete crypto scheme stays reserved per
+  NPC-002 §6.2, and the mechanism text lands via NPS-026's amendment on
+  its path to `Accepted` — so this decision and D2's unblock each other.
 
 ---
 

@@ -2,7 +2,7 @@
 title: AG Pre-read — Publisher Key Trust (NPS-026 §6.3, REQ-SEC-0004)
 document_id: AG-BRIEF-2026-09-PK
 version: 1.0.0
-status: Pre-read — input to NPS-026's review, not a standing item of its own
+status: Pre-read — standing item D3 on AG_AGENDA.md (registered 2026-09-20)
 owners: [Nyrqis Architecture]
 created: 2026-09-20
 ai_assisted: true
@@ -14,10 +14,11 @@ depends_on: [NPS-026, NPS-027, ADR-0014, AG-AGENDA-2026-09, NPC-001]
 **What this document is:** an AI-drafted pre-read for the design
 decision that `NPS-027` (`FIND-PACKAGE-003`, `REQ-SEC-0004`) routed to
 NPS-026's review: how a publisher's public key first becomes trusted,
-and how it is revoked or rotated. Standing item D2's brief
-(`AG_BRIEF_NPS027_PACKAGE_TRUST.md`) explicitly fenced this off; this
-document prepares it so the decision does not block NPS-026's path to
-`Accepted`.
+and how it is revoked or rotated. Registered 2026-09-20 as **standing
+item D3** on `AG_AGENDA.md` — the analysis here is complete and
+decision-ready; what remains is the Group's judgment on the
+sub-decisions, after which the mechanism text lands via NPS-026's
+amendment (unblocking its path to `Accepted`).
 
 **What this document is not:** a decision, and not a crypto-scheme
 proposal. Per NPC-001 §11.1 the recommendation is overridable Group

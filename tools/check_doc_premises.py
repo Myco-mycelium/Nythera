@@ -312,6 +312,16 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="brief-pk-agenda",
+        pattern=r"AG_BRIEF_NPS026_KEY_TRUST",
+        description="Standing item D3 (publisher key trust): its pre-read is registered in AG_AGENDA.md",
+        check="path_contains",
+        check_args={
+            "needle": "AG_BRIEF_NPS026_KEY_TRUST.md",
+            "files": ["docs/00-platform/AG_AGENDA.md"],
+        },
+    ),
+    Claim(
         claim_id="nykernel-backend-absent",
         pattern=r"backend doesn't exist yet|implementation doesn't exist yet",
         description="NPS-017 §6 / NPS-021 / NPS-023: the NyKernel backend is still unbuilt",
