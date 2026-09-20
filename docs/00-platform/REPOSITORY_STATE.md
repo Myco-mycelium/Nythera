@@ -722,6 +722,14 @@ Process and tooling:
     circular together) that had been sitting in already-committed,
     already-pushed documents undetected. Running it by hand caught them
     this time; it should run automatically going forward.
+17b. Run `tools/check_doc_premises.py` (added 2026-09-20) on the docs
+    regularly — ideally the same CI step as the item above. It mechanizes
+    the premise audit: an explicit CLAIM REGISTRY re-verifies recorded
+    load-bearing claims ("evidence is BENCHMARK_RESULTS §32e", "the
+    crate is shipped", "the rename is still pending") against current
+    reality. Add a registry entry whenever a document records a new
+    load-bearing premise — including this document's own evidence
+    citations.
 18. Elevate priority on Milestone 11's package-format gap category
     (specifically digital signatures) — Phase 2's `FIND-PACKAGE-001`
     found that `.nygi` integrity currently relies on checksums alone,
