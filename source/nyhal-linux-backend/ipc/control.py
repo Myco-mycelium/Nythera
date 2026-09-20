@@ -65,6 +65,15 @@ from .transport import DEFAULT_OPERATOR_ID  # the server is the auth boundary
 # why" across a daemon's lifetime.
 _CONTROL_AUDIT_MAX = 512
 
+# The operator's limiter overrides (endpoint_id -> config dict) ride the
+# daemon state file alongside the audit trail (2026-09-20): a retune
+# records the override in memory AND in the persisted payload, so a
+# daemon restart re-applies the operator's posture instead of silently
+# returning every endpoint to code defaults. Bounded like the trail;
+# stale ids (ephemeral container endpoints) are pruned at restore/apply
+# time and dropped oldest when the map is full.
+_LIMITER_OVERRIDES_MAX = 256
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +96,7 @@ class ControlService:
                  state_saver: Optional[Any] = None,
                  audit_saver: Optional[Any] = None,
                  audit_loader: Optional[Any] = None,
+                 limiter_loader: Optional[Any] = None,
                  ipc_manager: Optional[Any] = None) -> None:
         self.container_manager = container_manager
         self.capability_manager = capability_manager
@@ -114,6 +124,14 @@ class ControlService:
         self.audit_saver = audit_saver
         self.audit_loader = audit_loader
         self._restore_audit()
+        # The operator's limiter overrides, restored from persistence
+        # (best effort, like the trail). The host applies them to the
+        # live endpoints at start() via ``apply_limiter_overrides``;
+        # a retune records one (see ``_record_limiter_override``) so
+        # the next restart keeps the operator's posture.
+        self.limiter_loader = limiter_loader
+        self._limiter_overrides: Dict[str, Dict[str, Any]] = {}
+        self._restore_limiters()
 
     def _restore_audit(self) -> None:
         """Seed the trail from persistence (called at construction; a
@@ -131,6 +149,25 @@ class ControlService:
             self._audit_trail = [
                 e for e in trail if isinstance(e, dict)
             ][-_CONTROL_AUDIT_MAX:]
+
+    def _restore_limiters(self) -> None:
+        """Seed the limiter overrides from persistence (called at
+        construction; a loader failure or non-dict payload degrades to
+        an empty map, never an error)."""
+        loader = self.limiter_loader
+        if loader is None:
+            return
+        try:
+            overrides = loader()
+        except Exception as exc:  # noqa: BLE001 - best effort
+            logger.warning("ipc: limiter override restore failed (%s)", exc)
+            return
+        if isinstance(overrides, dict):
+            cleaned = [
+                (str(k), dict(v)) for k, v in overrides.items()
+                if isinstance(v, dict)
+            ][-_LIMITER_OVERRIDES_MAX:]
+            self._limiter_overrides = dict(cleaned)
 
     def attach(self, server) -> "ControlService":
         """Give the service the server to reply through (the router
@@ -8780,6 +8817,10 @@ class ControlService:
                 dynamic_shares=dynamic,
             )
         endpoint.rate_limit = new_limiter
+        # Record the override BEFORE the audit entry is persisted: the
+        # host's state payload carries both (control_audit AND
+        # endpoint_limit_overrides), so one write lands both.
+        self._record_limiter_override(endpoint_id, new_limiter)
         outcome = {
             "endpoint_id": endpoint_id,
             "limiter": self._endpoint_limit_snapshot(new_limiter),
@@ -8789,6 +8830,67 @@ class ControlService:
         self._record_audit("configure_endpoint_rate_limit", request,
                            outcome)
         self._reply(server, sender_path, call_id, {"ok": True, **outcome})
+
+    def _record_limiter_override(self, endpoint_id: str, limiter) -> None:
+        """Store one endpoint's limiter posture (the persistence half of
+        ``configure_endpoint_rate_limit``): the in-memory map is the
+        authoritative state, the host's state-file write carries it
+        (the snapshot is taken at write time), and a restart re-applies
+        it via ``apply_limiter_overrides``. Bounded; drop-oldest."""
+        self._limiter_overrides[endpoint_id] = {
+            "rate": float(limiter.tokens_per_second),
+            "bucket_size": int(limiter.bucket_size),
+            "fair_shares": int(limiter.fair_shares),
+            "sender_burst": int(limiter.sender_burst),
+            "dynamic_shares": bool(limiter.dynamic_shares),
+        }
+        if len(self._limiter_overrides) > _LIMITER_OVERRIDES_MAX:
+            for key in list(self._limiter_overrides)[
+                    :-_LIMITER_OVERRIDES_MAX]:
+                self._limiter_overrides.pop(key, None)
+
+    def limiter_overrides_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """The operator's limiter overrides (what the host persists in
+        the state file's ``endpoint_limit_overrides``)."""
+        return {k: dict(v) for k, v in self._limiter_overrides.items()}
+
+    def apply_limiter_overrides(self, manager) -> Dict[str, int]:
+        """Apply the stored overrides to the endpoints that exist in
+        ``manager`` (called by the host at start, after the endpoints
+        are created and before serving). Unknown ids are skipped (a
+        restart's ephemeral container endpoints get fresh defaults by
+        design); one corrupt stored config degrades to a skipped entry,
+        never an error. Returns a small report for the caller's log:
+        applied / skipped_missing / skipped_invalid."""
+        report = {"applied": 0, "skipped_missing": 0, "skipped_invalid": 0}
+        endpoints = getattr(manager, "endpoints", {})
+        for endpoint_id, cfg in self._limiter_overrides.items():
+            endpoint = endpoints.get(endpoint_id)
+            if endpoint is None:
+                report["skipped_missing"] += 1
+                continue
+            try:
+                endpoint.rate_limit = FairTokenBucket(
+                    bucket_size=int(cfg["bucket_size"]),
+                    tokens_per_second=float(cfg["rate"]),
+                    fair_shares=max(int(cfg["fair_shares"]), 1),
+                    sender_burst=max(int(cfg["sender_burst"]), 0),
+                    dynamic_shares=bool(cfg["dynamic_shares"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "ipc: limiter override for %s is invalid (%s); skipped",
+                    endpoint_id, exc)
+                report["skipped_invalid"] += 1
+                continue
+            report["applied"] += 1
+            logger.info(
+                "ipc: limiter override applied to %s "
+                "(%s/s, bucket %s, shares %s, burst %s, dynamic %s)",
+                endpoint_id, cfg.get("rate"), cfg.get("bucket_size"),
+                cfg.get("fair_shares"), cfg.get("sender_burst"),
+                cfg.get("dynamic_shares"))
+        return report
 
     def _get_endpoint_rate_limit(self, server, sender_path, call_id,
                                  request) -> None:

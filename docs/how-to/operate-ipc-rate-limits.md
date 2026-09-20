@@ -141,10 +141,14 @@ watch -n5 'nyrqisctl ep-limits-get --endpoint-id ep-svc'
 
 ## Scope notes (honest)
 
-- Limiter configuration is daemon process state: a daemon restart
-  recreates the endpoints at their code/manifest defaults — re-apply
-  operator retunes after a restart (they are visible in
-  `ep-limits-audit` for exactly this).
+- **With a state file** (`--state-file`, the systemd unit sets one),
+  operator retunes persist: every retune records the endpoint's
+  posture in the state file (`endpoint_limit_overrides`) and a
+  restarted daemon re-applies it before serving — the retune survives
+  the restart. Without a state file the configuration is daemon
+  process state: a restart recreates the endpoints at their
+  code/manifest defaults, so re-apply your retunes by hand (they are
+  visible in `ep-limits-audit` for exactly this).
 - The admission metrics come from a bounded in-memory sample ring;
   there is no historical export. If you need history, sample
   `ep-limits-metrics` on a cron.

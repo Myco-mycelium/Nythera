@@ -764,6 +764,18 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-20 (**v0.29.30: limiter overrides persist across a daemon
+  restart — the runbook's scope note became a fix**): every
+  ``configure_endpoint_rate_limit`` retune records the posture in the
+  daemon state file (``endpoint_limit_overrides``, riding EVERY state
+  write so a plain save cannot clobber the map — the first test draft
+  caught exactly that clobber), and a restarted host re-applies the
+  stored posture before serving (unknown ephemeral ids skipped,
+  corrupt entries skipped with a warning, the report logged).
+  State-file-less hosts are unchanged (fresh defaults; the manual
+  re-apply note stands there). 2 new tests (service-level restart
+  round-trip + the full host restart shape); suite 2,651 green; the
+  runbook scope note updated to describe the persisted behavior.
 - 2026-09-20 (**v0.29.29 shipped: the §27 fix + audit ride a verified
   release**): gates on the bumped tree — drift OK, full suite green in
   three chunks (2,649 core + 6,380 tests/ + 101 GPU/installer/SDK

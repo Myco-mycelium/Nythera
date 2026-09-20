@@ -331,6 +331,11 @@ class StatusServiceHost:
             # separate from the container manifest on purpose.
             audit_saver=self._save_audit_trail,
             audit_loader=self._load_audit_trail,
+            # The operator's limiter overrides ride the same state file:
+            # a retune is re-applied at start instead of silently lost to
+            # code defaults (the runbook's "re-apply after restart" note
+            # is now only for hosts WITHOUT a state file).
+            limiter_loader=self._load_limiter_overrides,
         )
         # NyVault (ADR-0022): capability-gated named volumes backed by
         # NyFS roots under ``vault_dir`` (None disables NyFS backing —
@@ -414,6 +419,19 @@ class StatusServiceHost:
             self._thread.start()
         self._start_health_socket()
         self._recover()
+        # Re-apply the operator's limiter overrides (restored from the
+        # state file) BEFORE the first state save records the applied
+        # posture: a restarted daemon keeps the operator's tuning
+        # instead of silently returning endpoints to code defaults.
+        try:
+            report = self.control.apply_limiter_overrides(self.ipc_manager)
+            if report.get("applied"):
+                logger.info(
+                    "status host: %d limiter override(s) re-applied "
+                    "from the state file (%d unknown endpoints skipped)",
+                    report["applied"], report["skipped_missing"])
+        except Exception:  # noqa: BLE001 - re-application is best effort
+            logger.exception("status host: limiter override re-apply failed")
         self._save_state()
         return self
 
@@ -670,6 +688,12 @@ class StatusServiceHost:
             "started_at": self._started_at,
             "recovery": self._recovery,
             "containers": DaemonStateFile.manifest(known),
+            # Every state write carries the operator's limiter
+            # overrides — a plain save (stop, container lifecycle)
+            # must not clobber the map the audit-saver path wrote.
+            "endpoint_limit_overrides": (
+                self.control.limiter_overrides_snapshot()
+                if getattr(self, "control", None) is not None else {}),
         })
 
     def _save_audit_trail(self, trail) -> None:
@@ -691,6 +715,8 @@ class StatusServiceHost:
             "recovery": self._recovery,
             "containers": DaemonStateFile.manifest(known),
             "control_audit": list(trail),
+            "endpoint_limit_overrides": (
+                self.control.limiter_overrides_snapshot()),
         })
 
     def _load_audit_trail(self):
@@ -704,6 +730,18 @@ class StatusServiceHost:
             return None
         trail = prev.get("control_audit")
         return trail if isinstance(trail, list) else None
+
+    def _load_limiter_overrides(self):
+        """The persisted limiter overrides (or None) from the state
+        file — the loader half of the control service's limiter
+        persistence (applied to the live endpoints at start)."""
+        if self.state is None:
+            return None
+        prev = self.state.load()
+        if not isinstance(prev, dict):
+            return None
+        overrides = prev.get("endpoint_limit_overrides")
+        return overrides if isinstance(overrides, dict) else None
 
     def stop(self) -> None:
         """Persist the final state, signal the serve loops, let them

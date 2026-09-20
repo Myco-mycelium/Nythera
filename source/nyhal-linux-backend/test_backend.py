@@ -14137,6 +14137,80 @@ class TestControlService(unittest.TestCase):
                            audit_loader=bad_loader)
         self.assertEqual(c._audit_trail, [])
 
+    def test_limiter_overrides_persist_across_restart(self):
+        """The operator's limiter retunes survive a daemon restart: a
+        retune records the posture in the override map (persisted by
+        the host's state-file payload), a rebuilt ControlService
+        restores it, and apply_limiter_overrides re-creates the stored
+        limiter on the live endpoint. Unknown endpoints are skipped;
+        a corrupt stored config degrades to a skipped entry."""
+        from ipc.control import ControlService
+        from ipc.core import FairTokenBucket
+        saved = {}
+
+        def loader():
+            return saved.get("overrides")
+
+        def saver(overrides):
+            saved["overrides"] = overrides
+
+        def make_control():
+            return ControlService(
+                self._FakeManager(), operator_id="op",
+                limiter_loader=loader,
+                audit_saver=lambda trail: saved.__setitem__("trail", trail),
+                audit_loader=lambda: saved.get("trail"))
+
+        first = make_control()
+        first._record_limiter_override(
+            "ep-svc", FairTokenBucket(
+                bucket_size=256, tokens_per_second=2000.0,
+                fair_shares=8, sender_burst=64, dynamic_shares=True))
+        saved["overrides"] = first.limiter_overrides_snapshot()
+        self.assertEqual(saved["overrides"]["ep-svc"]["rate"], 2000.0)
+        self.assertTrue(saved["overrides"]["ep-svc"]["dynamic_shares"])
+
+        # Restart shape: a new instance restores the override and
+        # re-applies it to a manager that has the endpoint again.
+        second = make_control()
+        from ipc.core import IPCManager
+        mgr = IPCManager()
+        endpoint = mgr.create_endpoint("container-svc", "ep-svc")
+        report = second.apply_limiter_overrides(mgr)
+        self.assertEqual(report, {"applied": 1, "skipped_missing": 0,
+                                  "skipped_invalid": 0})
+        applied = endpoint.rate_limit
+        self.assertIsInstance(applied, FairTokenBucket)
+        self.assertEqual(applied.tokens_per_second, 2000.0)
+        self.assertEqual(applied.bucket_size, 256)
+        self.assertEqual(applied.fair_shares, 8)
+        self.assertTrue(applied.dynamic_shares)
+
+        # Unknown ids are skipped honestly (ephemeral endpoints get
+        # fresh defaults by design).
+        report = second.apply_limiter_overrides(mgr)
+        self.assertEqual(report["applied"], 1)
+        mgr2 = IPCManager()  # no ep-svc
+        report = second.apply_limiter_overrides(mgr2)
+        self.assertEqual(report, {"applied": 0, "skipped_missing": 1,
+                                  "skipped_invalid": 0})
+
+        # A corrupt stored config is skipped, never raised (injected
+        # directly into the override map — a hand-edited state file is
+        # the realistic source of a corrupt entry).
+        second._limiter_overrides["ep-bad"] = {"rate": "not-a-number"}
+        mgr3 = IPCManager()
+        mgr3.create_endpoint("container-bad", "ep-bad")
+        report = second.apply_limiter_overrides(mgr3)
+        self.assertEqual(report["skipped_invalid"], 1)
+
+        # A broken loader must not break construction.
+        def bad_loader():
+            raise RuntimeError("disk on fire")
+        c = ControlService(self._FakeManager(), operator_id="op",
+                           limiter_loader=bad_loader)
+        self.assertEqual(c._limiter_overrides, {})
+
     def test_operator_container_list_and_kill(self):
         fake = self._FakeManager()
         fake.create(mock.Mock())  # pre-populate the manager with ctr-1
@@ -18519,6 +18593,49 @@ class TestDaemonState(unittest.TestCase):
         data = json.loads(Path(self.state_path).read_text())
         self.assertEqual(data["daemon_pid"], os.getpid())
         self.assertEqual(data["backend_version"], "9.9.9")
+
+    def test_host_reapplies_limiter_overrides_after_restart(self):
+        """The full host restart shape: a daemon with a state file, an
+        operator retune recorded through the control plane, then a new
+        host on the same state file — the retune must be re-applied to
+        the live endpoint (and the payload must carry the map for the
+        next restart)."""
+        host = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            state_file=self.state_path)
+        host.start()
+        try:
+            ep = host.ipc_manager.endpoints["ep-svc"]
+            host.control._record_limiter_override(
+                "ep-svc", __import__("ipc.core",
+                                     fromlist=["FairTokenBucket"])
+                .FairTokenBucket(bucket_size=300,
+                                 tokens_per_second=4321.0,
+                                 fair_shares=6, sender_burst=32,
+                                 dynamic_shares=True))
+            # Persist via the audit-saver path (what a retune triggers).
+            host._save_audit_trail(list(host.control._audit_trail))
+            data = json.loads(Path(self.state_path).read_text())
+            self.assertIn("endpoint_limit_overrides", data)
+            self.assertEqual(
+                data["endpoint_limit_overrides"]["ep-svc"]["rate"], 4321.0)
+        finally:
+            host.stop()
+
+        # Restart on the same state file: the override must come back.
+        host2 = nyrqis_backend.StatusServiceHost(
+            socket_path=self.sock, backend_version="9.9.9",
+            state_file=self.state_path)
+        host2.start()
+        try:
+            ep2 = host2.ipc_manager.endpoints["ep-svc"]
+            limiter = ep2.rate_limit
+            self.assertEqual(limiter.tokens_per_second, 4321.0)
+            self.assertEqual(limiter.bucket_size, 300)
+            self.assertEqual(limiter.fair_shares, 6)
+            self.assertTrue(limiter.dynamic_shares)
+        finally:
+            host2.stop()
 
     def test_host_state_saved_on_start_and_stop(self):
         host = nyrqis_backend.StatusServiceHost(

@@ -5,6 +5,24 @@ All notable changes to the Nyrqis Linux Backend will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.30] - 2026-09-20
+
+### Added
+
+- **Operator limiter overrides persist across a daemon restart** (the
+  §27-audit followup's runbook scope note, now a fix): every
+  `configure_endpoint_rate_limit` retune records the posture in a
+  bounded override map (`endpoint_limit_overrides` in the daemon state
+  file, riding every state write so a plain save cannot clobber it); a
+  restarted daemon re-applies the stored posture to the live endpoints
+  before serving (`apply_limiter_overrides` — unknown ephemeral ids
+  skipped, corrupt entries skipped with a warning, a small report
+  logged). Without a state file the behavior is unchanged (fresh
+  defaults; the runbook's manual re-apply note still applies there).
+  2 new tests: the service-level restart round-trip (restore, apply,
+  unknown/corrupt/broken-loader degradation) and the full host
+  restart shape (retune → persist → new host → re-applied limiter).
+
 ## [0.29.29] - 2026-09-20
 
 ### Fixed
