@@ -764,6 +764,22 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-20 (**v0.29.29 shipped: the §27 fix + audit ride a verified
+  release**): gates on the bumped tree — drift OK, full suite green in
+  three chunks (2,649 core + 6,380 tests/ + 101 GPU/installer/SDK
+  modules, 4 env skips), release-race harness ALL PASS, credential
+  sweep tree + history clean; tag ``v0.29.29`` pushed, main at
+  ``9d150e6``; both tag pipelines green in one pass (amd64 build +
+  direct smoke; arm64 build + UEFI menu smoke), release public
+  immediately with both ISOs; then BOTH assets were re-downloaded
+  anonymously, digest-matched, and booted on this host — amd64 direct
+  PASS, arm64 direct PASS, arm64 GRUB-UEFI menu PASS; the amd64 menu
+  path is **environment-blocked on this host today** (no x86 OVMF
+  firmware installed, no sudo) — three of the four local paths ran,
+  CI covered the amd64 direct smoke. Digests pinned at publish:
+  amd64 254,257,152 B ``3468f7b0…``; arm64 268,853,248 B
+  ``2a55d0cb…``. Scheduled-runs watcher OK (arm64's first weekly cron
+  fire remains Mon Sep 21, the standing Monday item).
 - 2026-09-20 (**v0.29.29: the §27 live-mount wedge root-caused — the
   defect was client-side reply theft, not a muted serve loop — and the
   blocked streaming re-measurement collected**): the hunt the 45 s
