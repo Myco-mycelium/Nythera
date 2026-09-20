@@ -762,8 +762,13 @@ Process and tooling:
     `docs/tutorials/developer-onboarding.md`), and performance budgets
     (`PERF-001` v1.0.0, 2026-09-06). The roadmap's own M14 Phase 1
     checklist records completion (its 2026-09-18 note); this list item
-    was never struck. Residual: `PERF-001` predates the §35
-    container-resource-limit data and should absorb it.
+    was never struck. Residual: ~~`PERF-001` predates the §35
+    container-resource-limit data and should absorb it.~~ **Done
+    2026-09-20** — `PERF-001` v1.1.0 adds §2.3 (the §35 findings),
+    recomputes §4.2's vault-mount overhead from §27's post-fix source
+    columns (the old ~25x/~15x were misread improvement factors), and
+    marks §10.1's benchmark cadence aspirational with current practice
+    stated.
 20. ~~Continue the threat model (Milestone 12, `docs/reference/security/`):
     Phase 7 (Package Trust Model, extending NPS-006, already well-motivated
     by `FIND-PACKAGE-001`) is the last planned phase.~~ **Done 2026-08-12**

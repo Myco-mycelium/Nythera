@@ -1,13 +1,13 @@
 ---
 title: Performance Engineering Budgets
 document_id: PERF-001
-version: 1.0.0
+version: 1.1.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-09-06
-updated: 2026-09-06
+updated: 2026-09-20
 ai_assisted: true
 review_cycle: Quarterly
 depends_on: [NPS-001, NPS-003, NPS-012, BENCHMARK_PLAN]
@@ -60,6 +60,19 @@ benchmarking (per `tests/BENCHMARK_PLAN.md`).
 | Restricted (plugins) | 128 MB | Third-party code |
 | Minimal (services) | 64 MB | Background services |
 
+### 2.3 Container Resource-Limit Measurements (BENCHMARK_RESULTS §35, 2026-09-18)
+
+Measured via real cgroup-v2 enforcement on the user manager's delegated
+subtree (methodology: BENCHMARK_PLAN §7). The §2.2 tier budgets are
+correctly sized against the data:
+
+| Finding | Value | Implication for the budgets |
+|---------|-------|------------------------------|
+| Representative container shapes, peak RSS | 3.2–9.0 MB | The 256 MB standard-tier default carries 28–80× floor headroom |
+| CPU quota throttling is a TAIL phenomenon | 20% quota → p50 unchanged, p95 +8× | Monitor p95 and `nr_throttled`, not mean usage |
+| PID limit vs a modest supervisor shape | default sits 1.5× above peak | 64-PID default is adequate but not generous |
+| SUSPENDED (frozen) containers | 100% of memory held, 0% CPU, kernel-reclaimable via `memory.high` | Full memory accounting, zero CPU accounting — NPS-010 §9's deferral answered with data |
+
 ## 3. IPC Latency
 
 ### 3.1 Target Latencies
@@ -94,16 +107,27 @@ The IPC latency target is challenging due to:
 | Compression ratio (text) | > 3:1 | 3.17:1 | ✅ Met |
 | Compression ratio (mixed) | > 2:1 | 1.29:1 | ⚠️ Below target |
 
-### 4.2 FUSE Overhead
+**Measurement basis:** the write/read/small-file currents are the
+plain-NyFS live-mount and in-process proxy figures (`BENCHMARK_RESULTS`
+§6 and §5, 2026-08-12); the compression ratios are §2/§12. The
+encrypted vault live-mount figures live in §4.2.
 
-| Metric | Target | Current | Status |
-|--------|--------|---------|--------|
-| Write overhead vs native | < 10x | ~25x | ❌ Not met |
-| Read overhead vs native | < 5x | ~15x | ❌ Not met |
+### 4.2 FUSE Overhead — Encrypted Vault Live Mount (BENCHMARK_RESULTS §27)
 
-**Note:** FUSE overhead is inherent to the architecture. The
-decision to use FUSE (ADR-0016) was made for development velocity;
-kernel module fallback remains open if overhead proves unacceptable
+| Metric | Target | Current (2026-09-20, post-wire-streaming-fix) | Status |
+|--------|--------|--------|--------|
+| Write overhead vs native (1 MiB) | < 10x | 9.58–10.47 MB/s vs 1,914–1,995 MB/s native → ~190–200x | ❌ Not met |
+| Read overhead vs native (1 MiB) | < 5x | 6.30–6.34 MB/s vs the 2026-08-15 native band 3,079–4,232 MB/s → ~490–670x | ❌ Not met |
+
+Both rows improved ~3× over the 2026-08-15 pre-streaming baseline
+(write 3.25–3.40 MB/s, read 2.17 MB/s) once ADR-0024's wire-streamed
+paths completed under the real kernel mount (§27's 2026-09-20
+re-measurement; the client-side reply-theft fix). The AEAD per-block
+decode dominates the read path (§29). Earlier revisions of this table
+quoted "~25x/~15x" — those were §6's plain-NyFS *improvement factors*
+misread as overhead ratios; this table now computes overhead from the
+§27 source columns directly. No gate is declared met; ADR-0016's
+kernel-module fallback remains open if the overhead proves unacceptable
 for gaming workloads.
 
 ## 5. Gaming Performance
@@ -216,6 +240,15 @@ for gaming workloads.
 | Weekly | Comprehensive performance report |
 | Monthly | Regression analysis |
 
+**Current reality (2026-09-20):** the cadence above is the *target*
+schedule. Today's practice is benchmark runs at milestone and
+release-gate time (the release gates run the release-race harness and
+the full test suite; BENCHMARK_RESULTS sections are collected
+per-investigation), plus the CI doc gates (`check_depends_on_cycles`,
+`check_doc_premises`, strict build). No per-commit or per-PR benchmark
+stage exists in CI yet — treat the rows above as aspirational until a
+benchmark workflow lands.
+
 ### 10.2 Regression Detection
 
 - **Automated:** CI benchmarks with threshold alerts
@@ -226,4 +259,5 @@ for gaming workloads.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 1.1.0 | 2026-09-20 | §2.3 added (§35 container resource-limit data: headroom, tail throttling, PID adequacy, freeze accounting); §4.2 overhead cells recomputed from §27's 2026-09-20 source columns (the old ~25x/~15x were misread improvement factors); §10.1 cadence marked aspirational with current practice stated |
 | 1.0.0 | 2026-09-06 | Initial performance budgets |
