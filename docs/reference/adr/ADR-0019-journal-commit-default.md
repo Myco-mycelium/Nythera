@@ -2,7 +2,7 @@
 title: Journal Commit as the Default NyFS save() Mode
 document_id: ADR-0019
 version: 1.0.0
-status: Accepted
+status: Proposed
 owners: [Nyrqis Architecture]
 created: 2026-08-12
 updated: 2026-08-12
@@ -133,7 +133,11 @@ acceptance. The flip is reversible without migration
 
 ## Status
 
-Accepted — implemented 2026-08-12, default flipped in `fuse/nyfs.py`.
+**Proposed** — implemented 2026-08-12, default flipped in `fuse/nyfs.py`.
 Journal commit is now the default save mode. Benchmark evidence in
 `tests/BENCHMARK_RESULTS.md` §7–§9, §12–§14. Architecture Group
-review pending.
+review pending. (Corrected 2026-09-20: a 2026-09-06 frontmatter edit
+flipped this to Accepted without any Group decision record — this
+section's own governance line and the ADR index both read Proposed,
+so the frontmatter is reverted to match. The ADR-0025/0026 statuses
+carry the same 2026-09-06 flag and are recorded in the index.)

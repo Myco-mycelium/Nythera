@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.23.0
+version: 1.24.0
 status: Draft
 classification: Reference
 owners:
@@ -75,7 +75,7 @@ index.
 | NPS-007 | Windows Compatibility Runtime | runtime | Accepted |
 | NPS-008 | Android Compatibility Runtime | runtime | Accepted |
 | NPS-009 | Adaptive UI Shell | runtime | Accepted |
-| NPS-010 | Container Runtime | security | Draft — blocked on ADR-0009 (§7.1); §7.1.1 fairness adopted |
+| NPS-010 | Container Runtime | security | Accepted (2026-09-19 AG session: A1–A4 accepted, B2 adopted, C1 ratified; §7.1.1 fairness normative) |
 | NPS-011 | Capability Registry | security | Accepted |
 | NPS-012 | Controller and Input Subsystem | gaming | Accepted |
 | NPS-013 | GPU Feature Support | gaming | Accepted |
@@ -161,6 +161,7 @@ change process.
 | 1.21.0  | 2026-08-12 | Add NPS-027 (Threat Model Phase 7 — Package Trust Model, completing Milestone 12); ADR-0007 status reflects first-pass Zstd data collected |
 | 1.22.0  | 2026-09-10 | NPS-010 v1.3.0: §7.1.1 (new) normatively requires per-sender fairness in the endpoint token bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed; ADR-0009 review package published |
 | 1.23.0  | 2026-09-20 | ADR-0018 status cell corrected to Accepted — the 2026-09-19 review reconciliation ("status reconciled to Accepted everywhere") missed this table and the adr/README.md listing; caught by the docs premise audit |
+| 1.24.0  | 2026-09-20 | NPS-010 status cell corrected from Draft to Accepted — its frontmatter flipped in the sanctioned 2026-09-19 AG decision package (commit 4713c8f) but this table was not updated; caught by the frontmatter-vs-index status sweep |
 
 ---
 **End of Document**
