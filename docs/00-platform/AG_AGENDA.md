@@ -221,6 +221,9 @@ the tree.
   decision-ready** — purely the policy question §32e framed: is the
   larger low-occupancy abuser take acceptable platform-wide? No
   measurement remains to collect; a session can decide it any time.
+  Pre-read: `AG_BRIEF_DYNAMIC_SHARES.md` (AI-drafted, suggest-side —
+  three options with a consequences ledger; recommends retaining the
+  static default).
 
 ---
 
