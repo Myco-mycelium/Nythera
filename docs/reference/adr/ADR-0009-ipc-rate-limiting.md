@@ -1,11 +1,11 @@
 ---
 title: Per-Container Token-Bucket Rate Limiting for IPC
 document_id: ADR-0009
-version: 1.3.1
+version: 1.3.2
 status: Accepted
 owners: [Nyrqis Architecture]
 created: 2026-07-12
-updated: 2026-09-10
+updated: 2026-09-21
 ai_assisted: true
 depends_on: [NTM-000, NPC-001, ADR-0006, NPS-002, NPS-003]
 ---
@@ -137,21 +137,27 @@ The per-sender fairness the benchmark section above calls for is now
   the envelope divided by the live sender count — a lone sender may
   use the whole envelope, the full-occupancy guarantee is unchanged.
   **Posture decided 2026-09-19 (AG, decision log A1):** static default,
-  dynamic opt-in. Making dynamic the DEFAULT is a future policy
-  question, not a pending one — it is registered as a standing agenda
-  item (`AG_AGENDA.md`, standing items). The decision ledger is
-  complete (§32e adversarial, §32f lone-sender + full-occupancy,
-  2026-09-20): the item is pure policy judgment — the measured trade
-  is a ~6.6× lone-sender take and ~3.8× low-occupancy flooder take
-  under dynamic, with the legitimate-client guarantee identical in
-  both modes.
+  dynamic opt-in. **Making dynamic the DEFAULT was decided 2026-09-21
+  (AG, decision log D1): retained static** — the adversarial-optimal
+  posture on the completed ledger (§32e adversarial, §32f
+  lone-sender + full-occupancy, 2026-09-20): dynamic would hand every
+  low-occupancy endpoint's headroom to the loudest sender by default
+  (a ~6.6× larger lone-sender take and ~3.8× larger low-occupancy
+  flooder take) for no legitimacy gain, since the legitimate-client
+  guarantee is identical in both modes and under-utilization is
+  bounded and operator-curable per endpoint with the existing knobs.
+  Dynamic remains an operator opt-in; class-based defaults were
+  considered and deferred until real per-class workload data exists
+  (pre-read `AG_BRIEF_DYNAMIC_SHARES.md`, Option A).
 
 ## Status
 Accepted (2026-09-19) — mechanism and §4 defaults adopted as shipped;
 static `fair_shares` default with dynamic opt-in (the shipped
-posture).
+posture); the dynamic-as-DEFAULT follow-on was decided 2026-09-21
+(decision log D1) — static default retained.
 The fairness mechanism is implemented in the Linux backend
 (Implementation Note above) and adopted normatively in NPS-010 §7.1.1
 (since 2026-09-10, with the accepted posture noted there 2026-09-20) —
-spec-side adoption is complete; nothing remains open in this ADR
-except the standing dynamic-as-default policy item above.
+spec-side adoption is complete, and the one standing policy item in
+this space was decided 2026-09-21: **nothing remains open in this
+ADR.**

@@ -2,7 +2,7 @@
 title: AG Pre-read — Publisher Key Trust (NPS-026 §6.3, REQ-SEC-0004)
 document_id: AG-BRIEF-2026-09-PK
 version: 1.1.0
-status: Pre-read — standing item D3 on AG_AGENDA.md (registered 2026-09-20; draft §6.3 amendment appended for review alongside the decision)
+status: Decided 2026-09-21 — Option A adopted; the appended draft §6.3 text landed as NPS-026 v1.2.0 §6.3 (AG_AGENDA.md decision log D3)
 owners: [Nyrqis Architecture]
 created: 2026-09-20
 ai_assisted: true

@@ -1,13 +1,13 @@
 ---
 title: ADR Index
 document_id: NPC-005
-version: 1.18.0
+version: 1.22.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-08-16
+updated: 2026-09-21
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -83,6 +83,7 @@ only.
 | 1.19.0  | 2026-09-10 | ADR-0009 v1.3.1: Implementation Note — per-sender fairness implemented (`FairTokenBucket`, fair-by-default endpoints, operator control-plane ops, dynamic-shares opt-in), §32b–d benchmark record complete, review package published (`ADR-0009-review-package.md`) |
 | 1.20.0  | 2026-09-16 | Add ADR-0027 (wire-verified protocol constants and fail-closed acceptance gates) — **Accepted** |
 | 1.21.0  | 2026-09-20 | Add the missing ADR-0025/0026 status rows; correct six stale adr/README.md cells (0007/0009/0013/0016/0022/0023 still read pre-2026-09-19-review Proposed); the ADR-0019 frontmatter reverted to Proposed per its own governance line and this index (its 2026-09-06 flip to Accepted was not sanctioned by any Group record) — caught by the frontmatter-vs-index status sweep |
+| 1.22.0  | 2026-09-21 | ADR-0009 v1.3.2 — the standing dynamic-shares-as-default item decided (AG decision log D1): static default retained; nothing remains open in the ADR. Frontmatter version caught up to this table (it had lagged at 1.18.0 through the 1.19–1.21 entries) |
 
 ---
 **End of Document**

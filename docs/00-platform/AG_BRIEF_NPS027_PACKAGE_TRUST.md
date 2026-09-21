@@ -2,7 +2,7 @@
 title: AG Decision Brief — Standing Item D2, NPS-027 Package Trust Model (Draft → Acceptance)
 document_id: AG-BRIEF-2026-09-D2
 version: 1.0.0
-status: Pre-read — awaiting the Group's decision (see AG_AGENDA.md, standing items)
+status: Decided 2026-09-21 — Option A adopted (AG_AGENDA.md decision log D2: NPS-027 Accepted)
 owners: [Nyrqis Architecture]
 created: 2026-09-20
 ai_assisted: true

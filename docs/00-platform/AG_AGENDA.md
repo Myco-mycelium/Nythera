@@ -1,8 +1,8 @@
 ---
 title: Architecture Group Agenda — Pending Decisions
 document_id: AG-AGENDA-2026-09
-version: 1.4.0
-status: Disposed — decisions recorded 2026-09-19 (see the decision log); three standing items registered for the next agenda (2026-09-20: dynamic-shares default; NPS-027 review; publisher key trust REQ-SEC-0004)
+version: 1.5.0
+status: Disposed — decisions recorded 2026-09-19 and 2026-09-21 (see the decision log); all three standing items decided 2026-09-21 (D1 static default retained; D2 NPS-027 Accepted; D3 the ADR-0014 mirror adopted) — no standing items remain
 owners: [Nyrqis Architecture]
 created: 2026-09-18
 ai_assisted: true
@@ -201,13 +201,21 @@ the tree.
 | B2 SUSPENDED normative | Adopted — full memory, zero CPU; suspension is not budget relief (NPS-010 v1.6.0) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
 | C1 confirm/void the 2026-09-06 acceptance | CONFIRMED — sanctioned decision; index rows corrected to match | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
 | C1 NyVault ratification | Ratified as-implemented (§27/§29 performance record = known-cost ledger) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-19 |
+| D1 dynamic shares as the default | Static default retained, dynamic opt-in normative (Option A per the pre-read) — nothing remains open in the rate-limiting space | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
+| D2 NPS-027 Package Trust Model | **Accepted** (Option A per the pre-read) — closes the planned threat-model phase list formally; FIND-PACKAGE-003's design decision owned by NPS-026's review and exercised the same day (D3) | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
+| D3 publisher key trust (REQ-SEC-0004) | The full ADR-0014 mirror adopted (Option A per the pre-read): bundled platform root set, protected-confirmation enrollment, revocation via platform list + expiry with the advisory/block propagation split (advisory at launch, hard block at install/update/verify), cross-signature rotation; concrete crypto scheme stays reserved per NPC-002 §6.2. Draft §6.3 amendment text reviewed and landed as NPS-026 v1.2.0 §6.3 the same day | Architecture Group (decision input: repo operator via recorded session) | 2026-09-21 |
 
 ---
 
-## Standing items for the next agenda (registered 2026-09-20)
+## Standing items — DECIDED 2026-09-21 (the session worked from the registered list below)
+
+All three registered standing items were decided in the 2026-09-21
+session (decision log rows below); the registered text is retained for
+the record, each item marked with its outcome.
 
 - **ADR-0009 follow-on — dynamic shares as the DEFAULT (policy; data
-  COMPLETE).** The 2026-09-19 session decided A1's mechanism
+  COMPLETE).** **DECIDED 2026-09-21 (D1): static default retained —
+  Option A per the pre-read.** The item originated as the The 2026-09-19 session decided A1's mechanism
   question: static `fair_shares` default with dynamic opt-in. Making
   dynamic mode the default is the one remaining policy question in
   the rate-limiting space. Correction (2026-09-20): this item was
@@ -223,10 +231,14 @@ the tree.
   measurement remains to collect; a session can decide it any time.
   Pre-read: `AG_BRIEF_DYNAMIC_SHARES.md` (AI-drafted, suggest-side —
   three options with a consequences ledger; recommends retaining the
-  static default).
+  static default). **Outcome: the recommendation was followed; nothing
+  in the rate-limiting space remains open.**
 
 - **NPS-027 — Package Trust Model (threat model Phase 7; Draft →
-  review for Acceptance).** Found during the 2026-09-20 next-actions
+  review for Acceptance).** **DECIDED 2026-09-21 (D2): Accepted —
+  Option A per the pre-read; FIND-PACKAGE-003's design decision
+  formally owned by NPS-026's review (exercised the same day as D3).**
+  Found during the 2026-09-20 next-actions
   audit: REPOSITORY_STATE items 18/20 still asked for "a real
   package-signing/PKI specification" and called Phase 7 "the last
   planned phase" — but Phase 7 shipped as `NPS-027` on 2026-08-12 and
@@ -254,7 +266,11 @@ the tree.
   **Registered as standing item D3 below** (2026-09-20).
 
 - **REQ-SEC-0004 — Publisher key trust (the mechanism design for
-  NPS-026 §6.3; analysis COMPLETE, decision-ready).** `FIND-PACKAGE-003`
+  NPS-026 §6.3; analysis COMPLETE, decision-ready).** **DECIDED
+  2026-09-21 (D3): the ADR-0014 mirror adopted — Option A per the
+  pre-read, including the advisory/block revocation-propagation split;
+  the draft §6.3 amendment text landed as NPS-026 v1.2.0 §6.3 the same
+  day.** `FIND-PACKAGE-003`
   (routed here by NPS-027) requires the enrollment/revocation design
   §6.3's pattern clause defers. The pre-read
   (`AG_BRIEF_NPS026_KEY_TRUST.md`) frames the four sub-decisions —

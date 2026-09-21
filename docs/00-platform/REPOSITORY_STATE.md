@@ -5,7 +5,7 @@ Nyrqis repository. Update it in the same commit as any document or code
 change, per NPC-001 §6.5 and NPC-003 §6.2.
 
 ## Last Updated
-2026-09-20
+2026-09-21
 
 ## Current Milestone
 Milestones 9–11 complete (Architecture Group Review, backlog closure
@@ -25,8 +25,14 @@ its confirmation UI actually be unspoofable — meaning even a
 perfectly-implemented assistant following the spec as written wouldn't
 have closed the gap. Across all seven phases, every finding recorded has
 a disposition — no bare observations left dangling. Phase 7 (Package
-Trust Model, `NPS-027`) landed 2026-08-12, completing the threat model
-(see `docs/reference/security/README.md`). A docs-backlog pass
+Trust Model, `NPS-027`) landed 2026-08-12 and was **Accepted
+2026-09-21** (AG decision log D2), formally completing the threat
+model's planned phase list (see `docs/reference/security/README.md`).
+The 2026-09-21 Architecture Group session then decided all three
+registered standing agenda items — D1 (dynamic-shares default:
+static retained), D2 (NPS-027 acceptance), D3 (publisher key trust:
+the ADR-0014 mirror, landed as NPS-026 v1.2.0 §6.3) — leaving
+`AG_AGENDA.md` v1.5.0 with no standing items. A docs-backlog pass
 (2026-08-12)
 started Milestone 11's gap categories: the Object Registry (NPS-025),
 Public API (API-001), ABI (ABI-001), and Package Format (NPS-026,
@@ -65,7 +71,7 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [x] ADR-0006 Hybrid microkernel as kernel base — Accepted
 - [x] ADR-0007 Zstandard as default compression codec — **Accepted** (2026-09-19): default level 3 per NPS-005 §3; data §31
 - [x] ADR-0008 AOSP-based container runtime for Android compatibility — Accepted
-- [x] ADR-0009 Per-container token-bucket IPC rate limiting — **Accepted** (2026-09-19): mechanism + §4 defaults as shipped; static `fair_shares` default with dynamic opt-in; data §32a–e. **Follow-on reconciled 2026-09-20**: the accepted posture is normative in NPS-010 §7.1.1 (v1.7.0 — dynamic shares operator-permitted, guarantee mode-independent); dynamic-as-DEFAULT registered as the agenda's one standing item, and its decision ledger **completed the same day** (§32f: lone sender 313/s static vs 2,063/s dynamic, 8 senders 250/s each in both modes, legit client fully protected either way) — the standing item is decision-ready, pure policy judgment. An earlier same-day claim that the dynamic-mode adversarial data was missing was wrong (§32e has existed since 2026-09-10) and is corrected here
+- [x] ADR-0009 Per-container token-bucket IPC rate limiting — **Accepted** (2026-09-19): mechanism + §4 defaults as shipped; static `fair_shares` default with dynamic opt-in; data §32a–e. **Follow-on reconciled 2026-09-20**: the accepted posture is normative in NPS-010 §7.1.1 (v1.7.0 — dynamic shares operator-permitted, guarantee mode-independent); dynamic-as-DEFAULT registered as the agenda's one standing item, and its decision ledger **completed the same day** (§32f: lone sender 313/s static vs 2,063/s dynamic, 8 senders 250/s each in both modes, legit client fully protected either way) — the standing item is decision-ready, pure policy judgment. **Decided 2026-09-21 (AG decision log D1): static default retained** — nothing remains open in the ADR. An earlier same-day claim that the dynamic-mode adversarial data was missing was wrong (§32e has existed since 2026-09-10) and is corrected here
 - [x] ADR-0010 Vulkan as native graphics API foundation — Accepted
 - [x] ADR-0011 AI assistant runs as an ordinary capability-scoped container — Accepted
 - [x] ADR-0012 NyHAL pluggable kernel abstraction layer — Accepted
@@ -113,8 +119,14 @@ documents from the 2026-08-12 Milestone 11 backlog pass).
 - [x] NPS-023 Secure Boot Threat Model — Draft (Threat Model Phase 5, first full pass on TB-BOOT; found zero Secure Boot status visibility on the Linux Backend and unvalidated boot-phase transitions; a measured-boot/TPM gap logged as not fixable by amendment)
 - [x] NPS-024 AI Threat Model — Draft (Threat Model Phase 6, first full pass on TB-AI, no implementation exists yet; found the suggest-vs-act boundary's confirmation UI isn't required to be unspoofable — the most conceptually significant finding since Phase 4's capability-enforcement gap)
 - [x] NPS-025 Object Registry — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 2; 14 object types catalogued, Identity flagged pending its own NPS)
-- [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2). **v1.1.0 (2026-09-18)**: §13 records the implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees (plaintext) compose with vault AEAD (at-rest) without re-encryption, streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14 adds the hardware-root-convergence and registry-vocabulary open questions. Closes the M14 Phase 1 package-format-update item
-- [x] NPS-027 Package Trust Model — Draft (Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was promoted to standing item D3 the same day** (its own pre-read, `AG_BRIEF_NPS026_KEY_TRUST.md`, recommends the ADR-0014 mirror — D2's acceptance and D3's decision unblock each other, and NPS-026's path to Accepted waits on D3)
+- [x] NPS-026 Package Format (.nypkg) — Draft (2026-08-12 backlog pass, closing Milestone 11 gap category 7 and FIND-PACKAGE-001; signed manifests + integrity trees proposed, concrete crypto scheme pending dedicated human review per NPC-002 §6.2). **v1.1.0 (2026-09-18)**: §13 records the implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees (plaintext) compose with vault AEAD (at-rest) without re-encryption, streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14 adds the hardware-root-convergence and registry-vocabulary open questions. Closes the M14 Phase 1 package-format-update item. **v1.2.0
+(2026-09-21)**: §6.3 expanded from the ADR-0014 pattern into the
+decided mechanism (AG decision log D3 — bundled platform root set,
+protected-confirmation enrollment, revocation inputs + expiry, the
+advisory/block propagation split, cross-signature rotation), closing
+`REQ-SEC-0004`; the concrete crypto scheme stays reserved per
+NPC-002 §6.2
+- [x] NPS-027 Package Trust Model — **Accepted** (2026-09-21; Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20, DECIDED ACCEPTED 2026-09-21 (decision log D2)** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was decided the same day (D3 — the ADR-0014 mirror)**, landing as NPS-026 v1.2.0 §6.3 and closing REQ-SEC-0004
 
 ## Requirements Database
 NPC-009 (Draft) + seed ledger at `docs/reference/requirements/REQUIREMENTS.md`:
@@ -747,7 +759,7 @@ Process and tooling:
     (publisher authenticity requires signatures; checksums detect
     corruption, not tampering) and specifies the signature block,
     publisher identity, and the verification boundary. Residual:
-    `NPS-027` is Draft pending Architecture Group review, and no PKI
+    `NPS-027` is **Accepted** (2026-09-21, AG decision log D2), and no PKI
     implementation exists (the package manager itself is still future).
     Found while auditing this list 2026-09-20: the item was left open
     after its deliverable landed.
@@ -774,8 +786,8 @@ Process and tooling:
     by `FIND-PACKAGE-001`) is the last planned phase.~~ **Done 2026-08-12**
     — Phase 7 shipped as `NPS-027` (`TB-PACKAGE`, extends NPS-006/NPS-026,
     dispositions `FIND-PACKAGE-001`/`FIND-PACKAGE-004`); the planned
-    phase list is complete. Residual: `NPS-027` awaits Architecture
-    Group review (Draft). Found stale in the same 2026-09-20 audit as
+    phase list is complete. Residual resolved 2026-09-21: `NPS-027` is
+    **Accepted** (AG decision log D2). Found stale in the same 2026-09-20 audit as
     items 18 and 19.
 21. Once an AI assistant implementation begins, build it against the
     amended `NPS-015` from the start — a protected confirmation UI
@@ -804,6 +816,7 @@ Documentation hygiene, fixed earlier this session:
   see `REBRAND_NOTICE.md`).
 
 ## Documentation Hygiene Notes *(ongoing)*
+- 2026-09-21 (**all three standing AG items decided in one sitting; the tree reconciled; the arm64 cron's first fire recorded missed-or-delayed**): the 2026-09-21 Architecture Group session worked from the three registered pre-reads and decided every standing item per its recommendation — **D1**: dynamic shares do NOT become the default (static `fair_shares` retained, dynamic opt-in normative — the adversarial-optimal posture on the completed §32e/§32f ledger; ADR-0009 v1.3.2 now records "nothing remains open in this ADR"); **D2**: NPS-027 **Accepted** — the planned threat-model phase list (1a/1b/2/3/4/5/6/7) formally closes, and the spec index, security README, and this file's items 18/20 residuals were reconciled; **D3**: the publisher key-trust mechanism adopted as the full ADR-0014 mirror, landing verbatim as NPS-026 v1.2.0 §6.3 (6.3.1 bundled platform root set + TOFU rejection, 6.3.2 protected-confirmation enrollment, 6.3.3 revocation inputs, 6.3.4 the advisory/block propagation split — the one policy call, 6.3.5 cross-signature rotation, 6.3.6 crypto reserved per NPC-002 §6.2), closing `REQ-SEC-0004`. `AG_AGENDA.md` v1.5.0 carries all three decision-log rows and no standing items. Verified same session: premises 15/15 OK, depends-on cycles 0 across 80 documents, `mkdocs build --strict` clean. **Unresolved finding (honest record):** the arm64 cron's first scheduled fire (due Mon 06:00 UTC) had not appeared by 07:35 UTC — the workflow is `active`, the cron string `0 6 * * 1` is pinned by contract tests, and GitHub schedule delays are documented; recorded missed-or-delayed, re-check `scripts/check_scheduled_runs.sh` — recovery paths are the manual workflow_dispatch (still gated on the PAT Actions-write edit) or next Monday's fire.
 - 2026-09-20 (**session summary: the wedge day — two verified releases, the premise machinery, and both AG items packaged**; 19 commits, in six arcs):
   (1) **The §27 live-mount wedge root-caused and fixed** (``312c03e``): the
   45 s faulthandler autopsy caught two libfuse workers inside
@@ -839,7 +852,7 @@ Documentation hygiene, fixed earlier this session:
   all day (Actions/Variables write 403; drill fail-closed — the manual
   PAT edit remains the owner's step) and the arm64 cron's first fire is
   tomorrow 06:00 UTC.
-- 2026-09-20 (**next-actions audit: three more silently-completed items struck**): the sweep for action-17-style staleness found items 18, 19, and 20 open-in-text with their deliverables long since landed — `NPS-027` (threat model Phase 7, `FIND-PACKAGE-001`'s disposition) has existed since 2026-08-12, and all four of item 19's "remaining" backlog docs (`NPC-010`, `BUILD-001`, `TUT-003`, `PERF-001`) shipped by 2026-09-06. Items 8/9/11/12/21 verified genuinely open (owners unassigned, LICENSE placeholder, contributor-count and concrete-need gates, future AI work). Residuals recorded on the struck items: `NPS-027` awaits Architecture Group review; `PERF-001` should absorb the §35 container-resource-limit data. This is the drift class `tools/check_doc_premises.py` (now in CI) hunts — though TODO-list staleness itself still needs the human audit pass.
+- 2026-09-20 (**next-actions audit: three more silently-completed items struck**): the sweep for action-17-style staleness found items 18, 19, and 20 open-in-text with their deliverables long since landed — `NPS-027` (threat model Phase 7, `FIND-PACKAGE-001`'s disposition) has existed since 2026-08-12, and all four of item 19's "remaining" backlog docs (`NPC-010`, `BUILD-001`, `TUT-003`, `PERF-001`) shipped by 2026-09-06. Items 8/9/11/12/21 verified genuinely open (owners unassigned, LICENSE placeholder, contributor-count and concrete-need gates, future AI work). Residuals recorded on the struck items: `NPS-027` awaits Architecture Group review (resolved 2026-09-21 — Accepted, decision log D2); `PERF-001` should absorb the §35 container-resource-limit data (done same day). This is the drift class `tools/check_doc_premises.py` (now in CI) hunts — though TODO-list staleness itself still needs the human audit pass.
 - 2026-09-20 (**v0.29.30 shipped: the limiter-persistence release verified end to end**): gates on the bumped tree — drift OK, suite 2,651 green, release-race harness ALL PASS, credential sweep tree + history clean; tag ``v0.29.30`` pushed (main at ``0b6124b``), both tag pipelines green (``live-iso`` and ``live-iso-arm64``, completed/success), release public with both ISOs; both assets re-downloaded anonymously, digest-matched byte-for-byte, and booted on this host — amd64 direct PASS, arm64 direct PASS (solo run; see the note below), arm64 GRUB-UEFI menu PASS; amd64 menu path again environment-blocked (no x86 OVMF firmware, no sudo), CI covered the amd64 direct smoke. Digests pinned at publish: amd64 254,261,248 B ``cd34c51c…``; arm64 268,861,440 B ``81974a43…``. Verification honesty note: the FIRST arm64 direct attempt ran three guests in parallel and FAILED on the 780 s wall — the serial log shows the guest reached the smoke banner and the daemon, it was starvation from guest contention, not an ISO defect; re-run solo it PASSES. Boot verification is a **one-guest-at-a-time** operation on this host; that is now recorded practice. Scheduled-runs watcher OK (arm64's first weekly cron fire remains Mon Sep 21 — tomorrow). The PAT grants remain unchanged (Actions write + Variables write still 403; the drill keeps failing closed at its gate until the manual PAT edit).
 - 2026-09-20 (**v0.29.30: limiter overrides persist across a daemon
   restart — the runbook's scope note became a fix**): every

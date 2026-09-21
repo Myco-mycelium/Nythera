@@ -1,14 +1,14 @@
 ---
 title: Nyrqis Package Format (.nypkg)
 document_id: NPS-026
-version: 1.1.0
+version: 1.2.0
 status: Draft
 classification: Normative
 subsystem: storage
 owners:
   - Nyrqis Architecture
 created: 2026-08-12
-updated: 2026-09-18
+updated: 2026-09-21
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NTM-000, NPC-001, ADR-0004, NPS-004, NPS-005, NPS-006, NPS-010]
@@ -30,6 +30,12 @@ It is a `Draft`: the *model* below is proposed; exact manifest
 serialization and the concrete signing scheme require implementation
 validation before `Accepted` (NPC-002 §5.1/§5.2). Closing Milestone 11
 gap category 7 (package format specification).
+
+On 2026-09-21 the Architecture Group decided the publisher key-trust
+mechanism (decision log D3, `AG_AGENDA.md`) and its §6.3 text below was
+reviewed and landed in the same sitting — the last open *design* this
+document was waiting on. What remains before `Accepted` is the NPC-002
+§6.2 reserved concrete crypto review and implementation validation.
 
 ## 2. Scope
 
@@ -91,16 +97,47 @@ checksum" hole in `FIND-PACKAGE-001`.
 6.3. Trust anchors **SHOULD** follow the key-management model established
 for boot in ADR-0014: a platform trust anchor plus user-enrollable
 keys, so self-built packages and third-party stores remain possible
-without a single monopoly key.
+without a single monopoly key. The mechanism, decided by the
+Architecture Group on 2026-09-21 (`AG_AGENDA.md` decision log D3,
+pre-read `AG_BRIEF_NPS026_KEY_TRUST.md`):
 
-> Non-normative note (2026-09-20): the enrollment/revocation *mechanism*
-> this clause defers — the design decision routed here by NPS-027's
-> `FIND-PACKAGE-003` / `REQ-SEC-0004` — has a suggest-side pre-read at
-> `docs/00-platform/AG_BRIEF_NPS026_KEY_TRUST.md` (recommendation: the
-> full ADR-0014 mirror — bundled root set, protected-confirmation
-> enrollment, advisory/block revocation propagation, cross-signature
-> rotation). The mechanism text lands in this section on this
-> document's path to `Accepted`.
+6.3.1. Initial trust distribution. The system **MUST** ship with a
+platform root set of publisher trust anchors as part of the OS image
+(ADR-0014's firmware-anchor analogue). A key **MUST NOT** be trusted
+merely because it arrived alongside a package that references it —
+trust-on-first-use is rejected: it provides no authenticity against a
+network attacker intercepting the download (`FIND-PACKAGE-003`).
+
+6.3.2. Enrollment. A publisher key outside the platform root set
+**MUST NOT** verify packages until the user has explicitly enrolled
+it, through a protected confirmation (the NPS-015 §5.5 pattern)
+displaying the publisher identity, the key fingerprint, and the
+enrollment source. The confirmation **MUST NOT** be skippable by the
+enrolling party.
+
+6.3.3. Revocation inputs. Publisher keys **MUST** carry an expiry
+date. The platform **MUST** distribute a revocation list out-of-band
+(the ADR-0014 ``dbx`` analogue). A revoked or expired key **MUST**
+fail verification for new installs, updates, and every
+package-verification touchpoint immediately upon list delivery or
+expiry.
+
+6.3.4. Propagation to installed packages. Revocation **MUST NOT**
+silently block launching already-installed, previously-verified
+content: the system **MUST** surface an advisory notice at launch for
+affected packages and **MUST** block hard at install, update, and
+re-verification touchpoints. The advisory/block split preserves user
+agency over owned software while making a compromised-publisher state
+non-silent and non-propagating.
+
+6.3.5. Rotation. A publisher **MAY** rotate keys by cross-signing the
+new key with the previously trusted one, preserving continuity for
+already-installed content; a rotation that cannot cross-sign requires
+fresh user enrollment per 6.3.2.
+
+6.3.6. Conformance scope. The signature scheme, algorithms, and
+key parameters for all of the above are out of scope of this section —
+reserved per NPC-002 §6.2 for dedicated human review.
 
 6.4. A package **MAY** be updated only by a publisher able to produce a
 valid signature for the update (see §8); update and original signatures
@@ -222,7 +259,10 @@ retain-by-default rule unchanged.
   both want a hardware root of trust — ADR-0023 already names TPM2 /
   PKCS#11 as pluggable backends behind a Rust trait. When the signing
   scheme is designed, the two SHOULD converge on the same hardware-
-  key surface rather than growing separate token stacks.
+  key surface rather than growing separate token stacks. (The §6.3
+  trust-model decision of 2026-09-21 does not prejudge this — whether
+  the package root set shares the boot anchor's hardware root stays
+  open here.)
 - **Manifest vocabulary vs the vault registry (added 2026-09-18):**
   ADR-0023 persists the volume registry + wrapped DEKs across daemon
   restarts; if manifests settle on a structured-text serialization,
@@ -235,6 +275,7 @@ retain-by-default rule unchanged.
 |---------|------------|---------------|
 | 1.0.0   | 2026-08-12 | Initial draft — package structure, signed manifests, integrity trees, deltas, streaming install, rollback, dependencies; closing Milestone 11 gap category 7 and threat-model finding FIND-PACKAGE-001 |
 | 1.1.0   | 2026-09-18 | §13 (new): implementation findings from ADR-0022/0023 (NyVault) — volumes are NyFS images, integrity trees cover plaintext while vault AEAD covers at-rest (composition without re-encryption), streaming install into vaults inherits 32 KiB CALL paging and is commit-bound until write batching, uninstall maps onto creator-scoped volume lifecycle; §14: hardware-root convergence and registry-vocabulary open questions added. Closes the M14 Phase 1 "package format update" item |
+| 1.2.0   | 2026-09-21 | §6.3 expanded from the ADR-0014 pattern into the decided mechanism (AG decision log D3): 6.3.1 bundled platform root set + TOFU rejection, 6.3.2 protected-confirmation enrollment, 6.3.3 revocation inputs (expiry + out-of-band list), 6.3.4 advisory/block propagation split, 6.3.5 cross-signature rotation, 6.3.6 crypto reserved per NPC-002 §6.2; the 2026-09-20 non-normative pointer note replaced by the decision record. Closes REQ-SEC-0004 |
 
 ---
 **End of Document**

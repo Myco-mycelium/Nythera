@@ -1,13 +1,13 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.24.0
+version: 1.25.0
 status: Draft
 classification: Reference
 owners:
   - Nyrqis Architecture
 created: 2026-07-12
-updated: 2026-09-20
+updated: 2026-09-21
 ai_assisted: true
 review_cycle: Continuous
 depends_on: [NPC-001]
@@ -92,7 +92,7 @@ index.
 | NPS-024 | AI Threat Model | security | Draft |
 | NPS-025 | Object Registry | core-architecture | Draft |
 | NPS-026 | Nyrqis Package Format (.nypkg) | storage | Draft |
-| NPS-027 | Package Trust Model | security | Draft |
+| NPS-027 | Package Trust Model | security | Accepted |
 
 Following the Milestone 9 Architecture Group review, 13 of 27 NPS documents
 and 11 of 20 ADRs are `Accepted` (1 rejected; 8 held at `Proposed`). The
@@ -129,7 +129,8 @@ change process.
 
 | ID | Title | Status |
 |----|-------|--------|
-| NPS-026 | Nyrqis Package Format (.nypkg) | Draft |
+| NPS-026 | Nyrqis Package Format (.nypkg) | Draft (v1.2.0: §6.3 key-trust mechanism decided 2026-09-21 — AG decision log D3) |
+| NPS-027 | Package Trust Model | Accepted (2026-09-21 — AG decision log D2) |
 
 ---
 
@@ -162,6 +163,7 @@ change process.
 | 1.22.0  | 2026-09-10 | NPS-010 v1.3.0: §7.1.1 (new) normatively requires per-sender fairness in the endpoint token bucket (ADR-0009 §32b mechanism, implemented as FairTokenBucket with fair-by-default endpoints); §9 status note refreshed; ADR-0009 review package published |
 | 1.23.0  | 2026-09-20 | ADR-0018 status cell corrected to Accepted — the 2026-09-19 review reconciliation ("status reconciled to Accepted everywhere") missed this table and the adr/README.md listing; caught by the docs premise audit |
 | 1.24.0  | 2026-09-20 | NPS-010 status cell corrected from Draft to Accepted — its frontmatter flipped in the sanctioned 2026-09-19 AG decision package (commit 4713c8f) but this table was not updated; caught by the frontmatter-vs-index status sweep |
+| 1.25.0  | 2026-09-21 | AG standing items decided: NPS-027 **Accepted** (D2 — the planned threat-model phase list closes); NPS-026 v1.2.0 records the decided §6.3 publisher key-trust mechanism (D3 — the ADR-0014 mirror), closing REQ-SEC-0004; ADR-0009's dynamic-shares follow-on decided static-default-retained (D1) |
 
 ---
 **End of Document**

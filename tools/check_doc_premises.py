@@ -192,6 +192,30 @@ def _check_dir_absent(paths: list[str], args: dict) -> tuple[str, str]:
     return "fail", f"{label} now exists ({', '.join(present)}); the 'not yet built' premise is stale"
 
 
+def _check_frontmatter_status(paths: list[str], args: dict) -> tuple[str, str]:
+    """A document's frontmatter status equals the recorded decided state.
+
+    Pins AG decision outcomes against the ADR-0019 failure mode: a doc
+    flipped (or reverted) without a Group record. Args: ``file`` (the
+    document whose status is pinned) and ``status`` (expected value).
+    """
+    rel = str(args["file"])
+    expected = str(args["status"])
+    text = _read(REPO_ROOT / rel)
+    if text.startswith("\0READ_ERROR"):
+        return "warn", f"cannot read {rel}: {text.split(':', 1)[1]}"
+    block = text.split("---", 2)
+    if len(block) < 3:
+        return "warn", f"{rel} has no parseable frontmatter block"
+    match = re.search(r"^status:\s*(.+?)\s*$", block[1], re.MULTILINE)
+    if not match:
+        return "fail", f"{rel} frontmatter has no status field"
+    actual = match.group(1)
+    if actual == expected:
+        return "ok", f"{rel} status is {actual} (as recorded)"
+    return "fail", f"{rel} status is {actual!r}; the recorded decision says {expected!r} (reconcile whichever is wrong)"
+
+
 CHECKS = {
     "section_exists": _check_section_exists,
     "subsection_exists": _check_subsection_exists,
@@ -200,6 +224,7 @@ CHECKS = {
     "crate_exists": _check_crate_exists,
     "path_contains": _check_path_contains,
     "dir_absent": _check_dir_absent,
+    "frontmatter_status": _check_frontmatter_status,
 }
 
 
@@ -329,6 +354,37 @@ CLAIMS: list[Claim] = [
         check_args={
             "label": "NyKernel backend",
             "components": ["source/nykernel"],
+        },
+    ),
+    # --- AG decisions of 2026-09-21 (D1/D2/D3): pin the decided state ---
+    Claim(
+        claim_id="nps027-accepted",
+        pattern=r"decision log D2",
+        description="AG decision D2 (2026-09-21): NPS-027's frontmatter status is Accepted",
+        check="frontmatter_status",
+        check_args={
+            "file": "docs/reference/security/NPS-027-package-trust-model.md",
+            "status": "Accepted",
+        },
+    ),
+    Claim(
+        claim_id="nps026-key-trust-landed",
+        pattern=r"decision log D3",
+        description="AG decision D3 (2026-09-21): the §6.3 mechanism text is normative in NPS-026",
+        check="path_contains",
+        check_args={
+            "needle": "6.3.1.",
+            "files": ["docs/reference/package-format/NPS-026-package-format.md"],
+        },
+    ),
+    Claim(
+        claim_id="req-sec-0004-closed",
+        pattern=r"REQ-SEC-0004",
+        description="AG decision D3 (2026-09-21): REQ-SEC-0004 is recorded closed in the requirements ledger",
+        check="path_contains",
+        check_args={
+            "needle": "**closed**",
+            "files": ["docs/reference/requirements/REQUIREMENTS.md"],
         },
     ),
 ]

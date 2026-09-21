@@ -1,14 +1,14 @@
 ---
 title: Package Trust Model
 document_id: NPS-027
-version: 1.0.0
-status: Draft
+version: 1.1.0
+status: Accepted
 classification: Normative
 subsystem: security
 owners:
   - Nyrqis Architecture
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-09-21
 ai_assisted: true
 review_cycle: As needed
 depends_on: [NTM-000, NPC-001, NPC-009, NPS-018, NPS-019, NPS-006, NPS-026, ADR-0014, ADR-0018]
@@ -29,6 +29,13 @@ No installer or package manager exists yet in this repository (the
 `NPS-026` package format is itself `Draft`), so like Phases 3 and 6 this
 analysis works from the specified guarantees of `NPS-006` (`.nygi` image
 format) and `NPS-026` (package format) rather than from real code.
+
+**Accepted 2026-09-21** (Architecture Group, `AG_AGENDA.md` decision
+log D2): the analysis, its five-finding ledger, and its requirements
+stand as recorded; acceptance closes the **planned** threat-model
+phase list (Phases 1a/1b/2/3/4/5/6/7) formally. The one open design
+it routed (`FIND-PACKAGE-003` → `REQ-SEC-0004`) was decided the same
+day (decision log D3) and lands as `NPS-026` §6.3.
 
 ## 2. Scope
 
@@ -128,6 +135,11 @@ boundary).
 its path to `Accepted` with an explicit enrollment/revocation design. This
 phase does not invent the design unilaterally — it fixes the requirement
 and flags the decision for Architecture Group review alongside `NPS-026`.
+**Design decided 2026-09-21** (`AG_AGENDA.md` decision log D3): the full
+ADR-0014 mirror — bundled platform root set, protected-confirmation
+enrollment, revocation via platform list + expiry with the advisory/block
+propagation split, cross-signature rotation. The mechanism text landed as
+`NPS-026` v1.2.0 §6.3 the same day, closing `REQ-SEC-0004`.
 
 ### `FIND-PACKAGE-004` — No Verification Story for the Overlay
 
@@ -208,6 +220,7 @@ requirement; the design decision belongs with `NPS-026`'s own review.
 | Version | Date       | Change       |
 |---------|------------|---------------|
 | 1.0.0   | 2026-08-12 | Initial draft — Phase 7 of the threat model (Package Trust), deepening TB-PACKAGE; 4 new findings plus disposition of FIND-PACKAGE-001; NPS-006 §6 amended |
+| 1.1.0   | 2026-09-21 | **Accepted** (Architecture Group, AG_AGENDA.md decision log D2) — the planned threat-model phase list closes formally; FIND-PACKAGE-003's routed design decided the same day (D3) and recorded in the disposition |
 
 ---
 **End of Document**
