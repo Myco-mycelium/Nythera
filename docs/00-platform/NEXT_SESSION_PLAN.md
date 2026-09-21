@@ -8,6 +8,31 @@ date: 2026-09-19
 
 ## STANDING ITEM — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
 
+**INTERIM VERDICT (2026-09-21, checked 07:12–08:01 UTC): no scheduled
+run exists.** The cron string is correct and contract-pinned
+(`0 6 * * 1`), the workflow is `active` (API-verified), and all runs
+are `push` events — the fire either never happened or is inside
+GitHub's documented schedule-delay window. The watcher
+(`scripts/check_scheduled_runs.sh`) now arms at **09:00 UTC** (3 h
+grace) and its verdict is definitive either way:
+
+- `completed/*` appears → the fire was late but real; check its
+  conclusion and the built artifact.
+- Nothing by 09:00 UTC → the watcher exits 1 with a `::error::`; the
+  miss is recorded and recovery is next Monday's fire (the dispatch
+  fallback still needs the PAT Actions-write edit) — and the new
+  daily `scheduled-runs-watch.yml` makes any recurrence loud within
+  a day.
+
+The structural fix landed the same morning: expected-fire detection
+in the watcher + the daily CI job + 3 contract tests (commit
+`a045428`), so this silence class can never again be the only
+symptom.
+
+---
+
+### Original standing-item text (pre-fire)
+
 `live-iso-arm64.yml` fires its first weekly scheduled build Monday
 morning (cron `0 6 * * 1`; workflow state `active` — pre-verified via
 the API on 2026-09-19). The manual-dispatch fallback is blocked by the
