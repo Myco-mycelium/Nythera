@@ -32,10 +32,14 @@ WATCHER="pat-expiry-watch.yml"
 WATCH=0
 [ "${1:-}" = "--watch" ] && WATCH=1
 
-# Weekly-cron grace: GitHub schedule delays of 30–90 min are documented
-# on busy exporters; 3 hours clears the queue without sitting on a real
-# failure. Daily watchers keep the historical 48 h silence threshold.
-WEEKLY_GRACE_HOURS=3
+# Weekly-cron grace. GitHub schedule delays are documented (30–90 min
+# under load) but measured reality on this repo runs worse: the amd64
+# cron due Mon 2026-09-21 03:00 UTC actually fired 08:45 UTC — 5 h 45 m
+# late. 8 h covers that envelope with headroom while still alerting the
+# same day; the daily scheduled-runs-watch CI job (05:52 UTC) turns any
+# longer miss into a red run within a day regardless of this value.
+# Daily watchers keep the historical 48 h silence threshold.
+WEEKLY_GRACE_HOURS=8
 DAILY_MAX_AGE_DAYS=2
 
 NETRC="$(mktemp)"

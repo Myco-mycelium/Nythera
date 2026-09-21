@@ -8,26 +8,17 @@ date: 2026-09-19
 
 ## STANDING ITEM — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
 
-**INTERIM VERDICT (2026-09-21, checked 07:12–08:01 UTC): no scheduled
-run exists.** The cron string is correct and contract-pinned
-(`0 6 * * 1`), the workflow is `active` (API-verified), and all runs
-are `push` events — the fire either never happened or is inside
-GitHub's documented schedule-delay window. The watcher
-(`scripts/check_scheduled_runs.sh`) now arms at **09:00 UTC** (3 h
-grace) and its verdict is definitive either way:
-
-- `completed/*` appears → the fire was late but real; check its
-  conclusion and the built artifact.
-- Nothing by 09:00 UTC → the watcher exits 1 with a `::error::`; the
-  miss is recorded and recovery is next Monday's fire (the dispatch
-  fallback still needs the PAT Actions-write edit) — and the new
-  daily `scheduled-runs-watch.yml` makes any recurrence loud within
-  a day.
-
-The structural fix landed the same morning: expected-fire detection
-in the watcher + the daily CI job + 3 contract tests (commit
-`a045428`), so this silence class can never again be the only
-symptom.
+**RESOLVED — FIRED 11:49:45 UTC, 5 h 49 m late; in progress at
+12:22 UTC, watching for its conclusion.** The interim "missed" reading
+at 09:05 UTC was a false alarm by calibration, not by fact: the amd64
+cron (due 03:00) fired 08:45 — 5 h 45 m late — and the PAT watcher's
+05:37 fire landed 11:01 (5 h 24 m late): one scheduler-wide backlog.
+The watcher's grace was recalibrated 3 h → 8 h on that evidence
+(`a045428`'s design was right to anchor on expected-fire time; the
+window size was the thing the day's data corrected). The fire is
+`in_progress` at head `4a6f445` — the remote main tip, since this
+session's commits are local-only so far. Pass criterion unchanged:
+`completed/success`, then record the artifact/digest outcome here.
 
 ---
 
