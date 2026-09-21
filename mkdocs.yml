@@ -119,6 +119,7 @@ nav:
           - NPS-023 Secure Boot Threat Model: reference/security/NPS-023-secure-boot-threat-model.md
           - NPS-024 AI Threat Model: reference/security/NPS-024-ai-threat-model.md
           - NPS-027 Package Trust Model: reference/security/NPS-027-package-trust-model.md
+          - NPS-028 Package PKI Implementation Surface: reference/security/NPS-028-package-pki-implementation-surface.md
       - ABI: reference/abi/README.md
       - API: reference/api/README.md
       - Package Format: reference/package-format/README.md

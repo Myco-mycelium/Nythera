@@ -197,6 +197,13 @@ precedent set by `FIND-AI-002`.
 
 ## 4. Specification Amendments
 
+> Pointer (2026-09-21): the implementation surface for the machinery
+> this phase specifies — the key store, verification pipeline,
+> revocation channel, enrollment flow, and audit trail, plus the new
+> attack surfaces the implementation will add — is drafted as
+> [`NPS-028`](NPS-028-package-pki-implementation-surface.md). The PKI
+> implementation residual above is owned there.
+
 **NPS-006** (Nyrqis Game/Application Image Format) — amended in the same
 document (see its revision history), per NPS-018 §8:
 

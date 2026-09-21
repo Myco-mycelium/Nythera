@@ -36,6 +36,9 @@ mechanism (decision log D3, `AG_AGENDA.md`) and its §6.3 text below was
 reviewed and landed in the same sitting — the last open *design* this
 document was waiting on. What remains before `Accepted` is the NPC-002
 §6.2 reserved concrete crypto review and implementation validation.
+The implementation surface for that machinery — key store, verification
+pipeline, revocation channel, enrollment flow, audit trail — is drafted
+as [`NPS-028`](../security/NPS-028-package-pki-implementation-surface.md).
 
 ## 2. Scope
 

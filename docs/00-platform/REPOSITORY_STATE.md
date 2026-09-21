@@ -58,7 +58,7 @@ performance budgets, and developer onboarding — see
 - [x] NPC-009 Requirements Database — Draft (in response to external review feedback)
 
 ## Architecture Decision Records
-18 accepted, 4 held (ADR-0014/0015/0019/0024 — each with its blocker
+22 accepted, 4 held (ADR-0014/0015/0019/0024 — each with its blocker
 named), 1 rejected. The 2026-09-19 Architecture Group decisions
 (recorded in `AG_AGENDA.md`'s decision log) accepted ADR-0007,
 0009, 0013, 0016, and 0018's close-out, and ratified ADR-0022/0023.
@@ -89,10 +89,12 @@ named), 1 rejected. The 2026-09-19 Architecture Group decisions
 - [ ] ADR-0024 Streaming data plane — chunked framing for large CALL payloads — **Proposed** (2026-08-16) with TWO increments already implemented the same day and the evidence run complete (§29: streamed 1 MiB writes 5.6× plaintext / 6.6× encrypted vs paging; reads already AEAD-bound, ~1.02–1.08×): 0.14.20 service-level streaming (chunk envelope over ordinary CALLs, codec untouched) and 0.14.21 wire-level STREAM_CHUNK framing on both serving paths (Rust loop reassembles; close-race fix rode along); the Rust client half's streaming remains the documented follow-on. Review input prepared 2026-09-18 (see the ADR's status block): two structured caveats — the read-path result scopes the win to writes + single dispatch (do not review it as a general I/O accelerator), and §27's absolute numbers are pre-batching/pre-streaming baselines (a post-0.14.21 FUSE-mount re-benchmark is the one missing evidence artifact, not yet collected — §27-style run wedged twice in the child on 2026-09-18, matching the suite's documented environmental skips). **The missing artifact was collected 2026-09-20** (BENCHMARK_RESULTS.md §27 re-measurement: wire-streamed 1 MiB writes 9.58–10.47 MB/s, reads 6.30–6.34 MB/s under a real kernel mount) after the wedge's root cause was found and fixed — see the 2026-09-20 note below)
 
 ## Specifications (NPS)
-13 accepted, 14 held (4 named benchmark/dependency blockers, plus
-NPS-018..NPS-024 and NPS-027 — threat-model phase documents, Draft
-pending Architecture Group sign-off — and NPS-025, NPS-026 — Draft
-documents from the 2026-08-12 Milestone 11 backlog pass).
+15 accepted, 13 held (4 named benchmark/dependency blockers, plus
+NPS-018..NPS-024 — threat-model phase documents, Draft pending
+Architecture Group sign-off — and NPS-025, NPS-026, NPS-028 — Draft
+documents from the 2026-08-12 Milestone 11 backlog pass, with NPS-028
+added 2026-09-21 as the accepted trust model's implementation surface;
+NPS-027 left this column 2026-09-21 on its D2 acceptance).
 
 - [x] NPS-001 Kernel Architecture and Boot (NyKernel Backend) — Accepted (v1.2.0: GPU command buffer validation + submission timeout added, closing threat model findings FIND-KERNEL-001/003)
 - [ ] NPS-002 Process and Thread Model — **Draft**, real-time scheduling numbers require benchmark data (§9, self-blocking)
@@ -126,6 +128,7 @@ protected-confirmation enrollment, revocation inputs + expiry, the
 advisory/block propagation split, cross-signature rotation), closing
 `REQ-SEC-0004`; the concrete crypto scheme stays reserved per
 NPC-002 §6.2
+- [x] NPS-028 Package PKI Implementation Surface — Draft (2026-09-21, the NPS-027 residual: key store, verification pipeline, revocation channel, enrollment flow, audit trail, SURFACE-PKI-0001..0004; exits Draft on implementation validation, crypto reserved per NPC-002 §6.2)
 - [x] NPS-027 Package Trust Model — **Accepted** (2026-09-21; Threat Model Phase 7, 2026-08-12, completing Milestone 12; disposition of FIND-PACKAGE-001 plus 4 new findings closed via NPS-006 §6 amendment and REQ-SEC-0003..0006). **Review REGISTERED 2026-09-20, DECIDED ACCEPTED 2026-09-21 (decision log D2)** — second standing item on `AG_AGENDA.md` v1.3.0 for the next session; the spec existed since 2026-08-12 but was never scheduled (the next-actions audit found items 18/20 still calling for what it already is); acceptance closes the planned threat-model phase list and unblocks item 18's PKI-implementation residual; **the routed FIND-PACKAGE-003 key-trust design was decided the same day (D3 — the ADR-0014 mirror)**, landing as NPS-026 v1.2.0 §6.3 and closing REQ-SEC-0004
 
 ## Requirements Database
@@ -153,6 +156,15 @@ Draft: [`NPS-026`](../reference/package-format/NPS-026-package-format.md)
 streaming install, rollback, dependencies). This is the package-format
 NPS deferred by NPS-006 §2/§9, and the response to `FIND-PACKAGE-001`
 (checksums alone don't establish publisher authenticity).
+
+## Package PKI Implementation Surface
+Draft: [`NPS-028`](../reference/security/NPS-028-package-pki-implementation-surface.md)
+— the buildable surface for the accepted package trust model (NPS-027,
+NPS-026 §6.3): key store, verification pipeline, revocation
+distribution, enrollment flow, audit trail, and the four new attack
+surfaces (SURFACE-PKI-0001..0004) enumerated for the threat model's
+next pass. The concrete crypto scheme stays reserved per NPC-002 §6.2;
+the document exits Draft on implementation validation.
 
 ## Object Registry
 Draft: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md)
@@ -760,7 +772,8 @@ Process and tooling:
     corruption, not tampering) and specifies the signature block,
     publisher identity, and the verification boundary. Residual:
     `NPS-027` is **Accepted** (2026-09-21, AG decision log D2), and no PKI
-    implementation exists (the package manager itself is still future).
+    implementation exists (the package manager itself is still future) —
+    the implementation surface is drafted as `NPS-028` (2026-09-21).
     Found while auditing this list 2026-09-20: the item was left open
     after its deliverable landed.
 19. ~~Continue Milestone 11's remaining prioritized backlog

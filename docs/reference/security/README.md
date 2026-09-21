@@ -21,3 +21,11 @@ methodology and the surface catalog have to exist before anything can be
 analyzed against them, and the four deep-dive phases (3–7) each expand on
 specific trust boundaries that Phase 2's first pass will have already
 touched at a survey level.
+
+Post-phase follow-on: the implementation surface for the accepted
+package trust model (Phase 7 + NPS-026 §6.3) is drafted as
+[`NPS-028`](NPS-028-package-pki-implementation-surface.md) — key store,
+verification pipeline, revocation channel, enrollment flow, audit
+trail, and the `SURFACE-PKI-0001..0004` entries the next threat-model
+pass will analyze. It is not a phase document; it is the build
+checklist the phases left as their residual.

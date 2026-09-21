@@ -1,7 +1,7 @@
 ---
 title: Specification Index
 document_id: NPC-004
-version: 1.25.0
+version: 1.26.0
 status: Draft
 classification: Reference
 owners:
@@ -93,9 +93,11 @@ index.
 | NPS-025 | Object Registry | core-architecture | Draft |
 | NPS-026 | Nyrqis Package Format (.nypkg) | storage | Draft |
 | NPS-027 | Package Trust Model | security | Accepted |
+| NPS-028 | Package PKI Implementation Surface | security | Draft |
 
-Following the Milestone 9 Architecture Group review, 13 of 27 NPS documents
-and 11 of 20 ADRs are `Accepted` (1 rejected; 8 held at `Proposed`). The
+Following the Milestone 9 Architecture Group review and the 2026-09-19/21
+AG sessions, 15 of 28 NPS documents and 22 of 27 ADRs are `Accepted`
+(1 rejected — ADR-0017; 4 ADRs held at `Proposed`). The
 remainder are held at `Draft`/`Proposed` for a specific, named reason (a
 pending benchmark or a dependency on another document that is itself
 benchmark-blocked) rather than incompleteness — see each document's Open
@@ -131,6 +133,7 @@ change process.
 |----|-------|--------|
 | NPS-026 | Nyrqis Package Format (.nypkg) | Draft (v1.2.0: §6.3 key-trust mechanism decided 2026-09-21 — AG decision log D3) |
 | NPS-027 | Package Trust Model | Accepted (2026-09-21 — AG decision log D2) |
+| NPS-028 | Package PKI Implementation Surface | Draft (2026-09-21 — the implementation surface for the accepted trust model; exits Draft on implementation validation) |
 
 ---
 
@@ -164,6 +167,7 @@ change process.
 | 1.23.0  | 2026-09-20 | ADR-0018 status cell corrected to Accepted — the 2026-09-19 review reconciliation ("status reconciled to Accepted everywhere") missed this table and the adr/README.md listing; caught by the docs premise audit |
 | 1.24.0  | 2026-09-20 | NPS-010 status cell corrected from Draft to Accepted — its frontmatter flipped in the sanctioned 2026-09-19 AG decision package (commit 4713c8f) but this table was not updated; caught by the frontmatter-vs-index status sweep |
 | 1.25.0  | 2026-09-21 | AG standing items decided: NPS-027 **Accepted** (D2 — the planned threat-model phase list closes); NPS-026 v1.2.0 records the decided §6.3 publisher key-trust mechanism (D3 — the ADR-0014 mirror), closing REQ-SEC-0004; ADR-0009's dynamic-shares follow-on decided static-default-retained (D1) |
+| 1.26.0  | 2026-09-21 | Add NPS-028 (Package PKI Implementation Surface, Draft) — the key store, verification pipeline, revocation channel, enrollment flow, and audit trail the accepted NPS-027/NPS-026 §6.3 trust model needs built; also reconciles this table's NPS-010 cell which still read Draft after its sanctioned 2026-09-19 acceptance |
 
 ---
 **End of Document**
