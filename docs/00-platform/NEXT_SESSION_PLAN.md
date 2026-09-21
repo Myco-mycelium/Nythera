@@ -6,7 +6,20 @@ date: 2026-09-19
 
 # Next Development Session Plan
 
-## STANDING ITEM — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
+## STANDING ITEM — Tue 2026-09-22 05:52 UTC: scheduled-runs-watch's first fire
+
+The new daily watcher (`scheduled-runs-watch.yml`, pushed 2026-09-21
+in `7ceb2c3`) fires for the first time Tuesday morning. Check via the
+API (`event=schedule` filter on the workflow's runs; the repo-side
+`scripts/check_scheduled_runs.sh` reports all three schedules) and
+record the verdict here. Expected content: arm64/arm64 weekly crons
+within their 8 h windows (arm64 due 06:00, amd64 due 03:00 — both
+already verified live Monday), PAT watcher fired 05:37, verdict
+SCHEDULED RUNS: OK. A red run Tuesday is a real finding: the watcher
+checks the state it just verified, so a failure would mean the
+schedule broke *after* Monday's confirmation.
+
+## STANDING ITEM — CLOSED — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
 
 **CLOSED — PASS.** The fire landed **11:49:45 UTC (5 h 49 m late)**
 and run [#25](https://github.com/Myco-mycelium/Nythera/actions/runs/35596136800)
