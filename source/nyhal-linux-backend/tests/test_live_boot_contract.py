@@ -1022,11 +1022,13 @@ class TestReleaseUploadContract(unittest.TestCase):
         # three-job shape must not have orphaned the schedule blocks,
         # and a future edit must not drop a cron silently. (Outcome of
         # the arm64 cron's first expected fire, Mon 2026-09-21 06:00 UTC:
-        # NO scheduled run appeared — the cron string was correct and
-        # the workflow active, so the miss was GitHub-side; the watcher
-        # + scheduled-runs-watch.yml below now make that class of
-        # silence loud. Scheduled runs are otherwise a strict subset of
-        # the proven-green push runs: same ref, tag-gated steps skip.)
+        # it FIRED 5 h 49 m late — 11:49 UTC, in a scheduler-wide
+        # backlog; the amd64 sibling ran 5 h 45 m late the same day —
+        # and run #25 passed: build + menu-path GRUB-UEFI boot smoke.
+        # The interim "missed" reading was a grace-window calibration
+        # error, corrected the same morning. Scheduled runs are
+        # otherwise a strict subset of the proven-green push runs:
+        # same ref, tag-gated steps skip.)
         for wf, name in ((self.amd64, "amd64"), (self.arm64, "arm64")):
             crons = [s.get("cron") for s in wf[True]["schedule"]]
             self.assertEqual(

@@ -8,17 +8,24 @@ date: 2026-09-19
 
 ## STANDING ITEM — Mon 2026-09-21 06:00 UTC: the arm64 cron's FIRST FIRE
 
-**RESOLVED — FIRED 11:49:45 UTC, 5 h 49 m late; in progress at
-12:22 UTC, watching for its conclusion.** The interim "missed" reading
-at 09:05 UTC was a false alarm by calibration, not by fact: the amd64
-cron (due 03:00) fired 08:45 — 5 h 45 m late — and the PAT watcher's
-05:37 fire landed 11:01 (5 h 24 m late): one scheduler-wide backlog.
-The watcher's grace was recalibrated 3 h → 8 h on that evidence
-(`a045428`'s design was right to anchor on expected-fire time; the
-window size was the thing the day's data corrected). The fire is
-`in_progress` at head `4a6f445` — the remote main tip, since this
-session's commits are local-only so far. Pass criterion unchanged:
-`completed/success`, then record the artifact/digest outcome here.
+**CLOSED — PASS.** The fire landed **11:49:45 UTC (5 h 49 m late)**
+and run [#25](https://github.com/Myco-mycelium/Nythera/actions/runs/35596136800)
+completed **success** by 12:45 UTC: `Build arm64 live demo ISO`
+success (45 min), **`Menu-path boot smoke (GRUB via UEFI)` success**
+—the ISO booted through its own GRUB under UEFI emulation—
+`Re-attach ISO to the release` **skipped** (correct: the
+`startsWith(inputs.release-tag, 'v')` gate refuses non-tag runs). The
+first scheduled arm64 verification passed end-to-end.
+
+**The false-alarm post-mortem (kept, it is the lesson):** the interim
+"missed" reading at 09:05 UTC was wrong by calibration, not by fact —
+the amd64 cron (due 03:00) fired 08:45 (5 h 45 m late) and the PAT
+watcher's 05:37 fire landed 11:01 (5 h 24 m late): one scheduler-wide
+backlog. The watcher's grace was recalibrated 3 h → 8 h on that
+measured evidence (anchoring on expected-fire time was right; the
+window size was the thing the day's data corrected). The fix chain:
+expected-fire detection + daily CI job + 3 contract tests (`a045428`),
+recalibration (`3ecb79d`).
 
 ---
 

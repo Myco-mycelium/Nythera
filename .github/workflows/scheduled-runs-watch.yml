@@ -2,9 +2,11 @@ name: scheduled-runs-watch
 
 # The weekly ISO-refresh crons and the daily PAT-expiry watcher only
 # matter if they actually fire. The repo-side watcher
-# (scripts/check_scheduled_runs.sh) used to report a never-fired cron
-# as "NO RUN YET" and exit 0 — the arm64 cron's first expected fire
-# (Mon 2026-09-21 06:00 UTC) produced no run and no alarm anywhere.
+# (scripts/check_scheduled_runs.sh) used to report a behind-schedule
+# cron as "NO RUN YET" and exit 0 — the arm64 cron's first expected
+# fire (Mon 2026-09-21 06:00 UTC) ran 5 h 49 m late in a scheduler-
+# wide backlog (amd64: 5 h 45 m late; PAT watcher: 5 h 24 m late) and
+# for hours nothing anywhere distinguished "delayed" from "dead".
 # This job runs the same checker daily in CI, where a non-zero exit is
 # a visible red run: a schedule that stops firing can now never be
 # silent for more than a day. Runs daily at 05:52 UTC — after the
