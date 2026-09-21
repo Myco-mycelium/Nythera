@@ -54,6 +54,14 @@ LIVE_ISO_ARM64_WF = os.path.join(
 ATTACH_SCRIPT = os.path.join(
     _REPO_ROOT, "scripts", "attach_release_asset.sh")
 
+# The scheduled-runs watcher: reports cron misses for the release
+# workflows and the PAT-expiry watcher, and runs daily in CI
+# (scheduled-runs-watch.yml) so a stopped schedule is a red run.
+SCHEDULED_RUNS_SCRIPT = os.path.join(
+    _REPO_ROOT, "scripts", "check_scheduled_runs.sh")
+SCHEDULED_RUNS_WF = os.path.join(
+    _REPO_ROOT, ".github", "workflows", "scheduled-runs-watch.yml")
+
 # Any login-shell re-exec from inside the demo session loops: the
 # profile execs the demo, the demo execs the login shell, the shell
 # re-reads the profile. `bash -l`, `sh -l`, `exec bash --login`, etc.
@@ -1012,11 +1020,13 @@ class TestReleaseUploadContract(unittest.TestCase):
         # keeps its daily one. Scheduled runs execute the workflow file
         # as it exists on the default branch at fire time — the new
         # three-job shape must not have orphaned the schedule blocks,
-        # and a future edit must not drop a cron silently. (arm64's
-        # cron has never fired yet — created after Mon Sep 14 06:00 UTC,
-        # first fire Mon Sep 21 — so this pin is its only proof until
-        # then; scheduled runs are otherwise a strict subset of the
-        # proven-green push runs: same ref, tag-gated steps skip.)
+        # and a future edit must not drop a cron silently. (Outcome of
+        # the arm64 cron's first expected fire, Mon 2026-09-21 06:00 UTC:
+        # NO scheduled run appeared — the cron string was correct and
+        # the workflow active, so the miss was GitHub-side; the watcher
+        # + scheduled-runs-watch.yml below now make that class of
+        # silence loud. Scheduled runs are otherwise a strict subset of
+        # the proven-green push runs: same ref, tag-gated steps skip.)
         for wf, name in ((self.amd64, "amd64"), (self.arm64, "arm64")):
             crons = [s.get("cron") for s in wf[True]["schedule"]]
             self.assertEqual(
@@ -1078,6 +1088,64 @@ class TestReleaseUploadContract(unittest.TestCase):
                 any(u.get("with", {}).get("path") == f"dist/{iso}"
                     for u in upload),
                 f"{build_job}: must upload the artifact dist/{iso}")
+
+
+class TestScheduledRunsWatchContract(unittest.TestCase):
+    """Pin the missed-cron-fire machinery (added 2026-09-21 after the
+    arm64 cron's first expected fire produced no run and the watcher
+    reported only "NO RUN YET" with exit 0): the watcher must fail on
+    a fire overdue past the grace window, anchor that window on the
+    EXPECTED fire time (not the last run's created_at — a weekly
+    cadence would let every late run push its own alarm out), suppress
+    imminent fires, and run daily in CI where exit 1 is a red run.
+    """
+
+    def setUp(self):
+        self.script = read(SCHEDULED_RUNS_SCRIPT)
+        self.wf = yaml.safe_load(read(SCHEDULED_RUNS_WF))
+
+    def test_watcher_exists_and_fails_closed(self):
+        self.assertTrue(os.path.isfile(SCHEDULED_RUNS_SCRIPT),
+                        "scripts/check_scheduled_runs.sh must exist")
+        self.assertIn("FAIL=1", self.script,
+                      "watcher must be able to fail")
+        self.assertIn("::error::", self.script,
+                      "watcher must emit visible annotations on failure")
+        self.assertIn("cron_epoch", self.script,
+                      "watcher must compute expected fire times from the cron")
+        self.assertIn("WEEKLY_GRACE_HOURS", self.script,
+                      "watcher must declare its grace window")
+        self.assertIn("next_due", self.script,
+                      "watcher must suppress imminent fires (pre-fire CI run)")
+
+    def test_watcher_covers_both_iso_workflows_and_the_pat_watcher(self):
+        self.assertIn('WORKFLOWS="live-iso.yml live-iso-arm64.yml"',
+                      self.script,
+                      "watcher must check both ISO-refresh schedules")
+        self.assertIn('WATCHER="pat-expiry-watch.yml"', self.script,
+                      "watcher must check the PAT-expiry schedule")
+
+    def test_ci_job_runs_the_watcher_daily(self):
+        d = self.wf
+        triggers = d.get(True) or d.get("on") or {}
+        crons = [s.get("cron") for s in triggers.get("schedule", [])]
+        self.assertEqual(len(crons), 1,
+                         "scheduled-runs-watch: exactly one daily cron")
+        self.assertRegex(crons[0], r"^\d+ 5 \* \* \*$",
+                         "scheduled-runs-watch: runs daily before 06:00 UTC "
+                         "(after the PAT watcher's 05:37 fire)")
+        self.assertIn("workflow_dispatch", triggers,
+                      "scheduled-runs-watch: manual run must be possible")
+        jobs = d["jobs"]
+        self.assertIn("watch", jobs, "scheduled-runs-watch: watch job")
+        steps = jobs["watch"]["steps"]
+        self.assertTrue(
+            any("check_scheduled_runs.sh" in (s.get("run") or "")
+                for s in steps),
+            "scheduled-runs-watch: must run the shared watcher script, "
+            "not a transcription of it (the race-harness drift lesson)")
+        self.assertLessEqual(jobs["watch"].get("timeout-minutes", 999), 10,
+                             "scheduled-runs-watch: job budget bounded")
 
 
 class TestSkipRegister(unittest.TestCase):

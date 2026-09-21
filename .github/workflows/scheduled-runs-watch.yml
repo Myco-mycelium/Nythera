@@ -1,0 +1,37 @@
+name: scheduled-runs-watch
+
+# The weekly ISO-refresh crons and the daily PAT-expiry watcher only
+# matter if they actually fire. The repo-side watcher
+# (scripts/check_scheduled_runs.sh) used to report a never-fired cron
+# as "NO RUN YET" and exit 0 — the arm64 cron's first expected fire
+# (Mon 2026-09-21 06:00 UTC) produced no run and no alarm anywhere.
+# This job runs the same checker daily in CI, where a non-zero exit is
+# a visible red run: a schedule that stops firing can now never be
+# silent for more than a day. Runs daily at 05:52 UTC — after the
+# PAT watcher's 05:37 fire (so its freshness is checkable) and well
+# clear of the top-of-hour queue that schedule delays feed on.
+
+on:
+  schedule:
+    - cron: "52 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: Scheduled workflows are firing
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scheduled-run status (weekly crons + daily watcher)
+        run: |
+          bash scripts/check_scheduled_runs.sh
+      - name: Scheduled-runs verdict
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::error::A scheduled workflow missed or failed its expected fire — see the step above for which. Recovery: a manual workflow_dispatch with release-tag=v<latest> (Actions-write-gated), or investigate the workflow's schedule block."
+          fi
