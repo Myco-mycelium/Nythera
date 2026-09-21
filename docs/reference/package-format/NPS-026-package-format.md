@@ -39,6 +39,11 @@ document was waiting on. What remains before `Accepted` is the NPC-002
 The implementation surface for that machinery — key store, verification
 pipeline, revocation channel, enrollment flow, audit trail — is drafted
 as [`NPS-028`](../security/NPS-028-package-pki-implementation-surface.md).
+The propose-side review package for the §6.2-reserved concrete crypto
+scheme — grounded in the Ed25519 signing half that already ships
+(`package_signing.py`/`update_signing.py`/`package_repo.py`) — is at
+`docs/00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md`, awaiting the
+dedicated human review this section's reserve requires.
 
 ## 2. Scope
 

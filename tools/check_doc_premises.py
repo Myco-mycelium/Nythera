@@ -378,6 +378,26 @@ CLAIMS: list[Claim] = [
         },
     ),
     Claim(
+        claim_id="crypto-brief-registered",
+        pattern=r"AG_BRIEF_NPS026_CRYPTO_SCHEME",
+        description="The NPC-002 §6.2 crypto review package exists and is registered in AG_AGENDA.md",
+        check="path_contains",
+        check_args={
+            "needle": "AG_BRIEF_NPS026_CRYPTO_SCHEME.md",
+            "files": ["docs/00-platform/AG_AGENDA.md"],
+        },
+    ),
+    Claim(
+        claim_id="package-signing-shipped",
+        pattern=r"signing half (already )?ships",
+        description="NPS-028/REPOSITORY_STATE record the shipped Ed25519 signing half (package_signing.py)",
+        check="path_contains",
+        check_args={
+            "needle": "PackageSignError",
+            "files": ["source/nyhal-linux-backend/backend/package_signing.py"],
+        },
+    ),
+    Claim(
         claim_id="req-sec-0004-closed",
         pattern=r"REQ-SEC-0004",
         description="AG decision D3 (2026-09-21): REQ-SEC-0004 is recorded closed in the requirements ledger",

@@ -166,6 +166,17 @@ surfaces (SURFACE-PKI-0001..0004) enumerated for the threat model's
 next pass. The concrete crypto scheme stays reserved per NPC-002 §6.2;
 the document exits Draft on implementation validation.
 
+**The signing half already ships** (found while drafting the crypto
+review package, 2026-09-21): Ed25519 package/delta signatures and a
+signed repository index (`backend/package_signing.py`,
+`backend/update_signing.py`, `backend/package_repo.py`; 37 tests,
+fail-closed with no stub fallback). What does not exist is the trust
+machinery: key store, enrollment, revocation, root set. The propose-
+side review package for the §6.2-reserved scheme is at
+`AG_BRIEF_NPS026_CRYPTO_SCHEME.md` — a registered standing item on
+`AG_AGENDA.md`; the dedicated human review it requires is the owner's
+to convene.
+
 ## Object Registry
 Draft: [`NPS-025`](../reference/object-registry/NPS-025-object-registry.md)
 — every object type (Workspace, Window, Application, Package,

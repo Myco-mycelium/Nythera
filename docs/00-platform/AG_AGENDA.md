@@ -207,7 +207,25 @@ the tree.
 
 ---
 
-## Standing items — DECIDED 2026-09-21 (the session worked from the registered list below)
+## Standing items
+
+**Registered 2026-09-21 (after the D1/D2/D3 session):**
+
+- **NPS-026 §6.2 — the concrete crypto-scheme review (review input
+  READY).** The propose-side package is at
+  `AG_BRIEF_NPS026_CRYPTO_SCHEME.md` (v1.0.0): Ed25519 + SHA-256 per
+  role, grounded in the Ed25519 signing half that already ships
+  (`package_signing.py`/`update_signing.py`/`package_repo.py`, 37
+  tests), with four recorded gaps (G1 fingerprint definition being the
+  real decision) and an explicit freeze/defer split. NPC-002 §6.2
+  requires **dedicated human expert review** — this is that review's
+  input, not its outcome. On a positive review the scheme text lands
+  as an NPS-026 v1.3.0 amendment (§6.7) with the reserve removed;
+  a negative review returns objections to the brief, not the trust
+  model. NPS-026's path to `Accepted` waits on this review's
+  conclusion.
+
+**Decided 2026-09-21 — the session that worked from the registered list below:**
 
 All three registered standing items were decided in the 2026-09-21
 session (decision log rows below); the registered text is retained for

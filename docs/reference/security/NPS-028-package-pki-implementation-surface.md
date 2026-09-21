@@ -26,12 +26,16 @@ the Architecture Group on 2026-09-21, decision log D3) and whose
 *threat analysis* is `NPS-027` (Accepted 2026-09-21, decision log D2).
 
 It exists because NPS-027's acceptance left a named residual: the
-planned threat-model phase list is closed, but **no PKI implementation
-exists** — the package manager itself is still future work. This
-document enumerates the components that implementation must provide,
-the requirements each satisfies (REQ-SEC-0003..0006), the interfaces it
-must offer, and the attack surfaces it will add. It does not restate
-the trust model; it turns it into a buildable checklist.
+planned threat-model phase list is closed, and the **trust machinery**
+— key store, enrollment, revocation, root set — has no implementation.
+The **signing half** is the exception and ships today: Ed25519
+manifest/delta signatures and a signed repository index
+(`backend/package_signing.py`, `backend/update_signing.py`,
+`backend/package_repo.py`; 37 tests). This document enumerates the
+components the remaining implementation must provide, the requirements
+each satisfies (REQ-SEC-0003..0006), the interfaces it must offer, and
+the attack surfaces it will add. It does not restate the trust model;
+it turns it into a buildable checklist.
 
 It is a `Draft` **by dependency, not by deficiency**: its normative
 anchors (NPS-026 §6.3, NPS-027) are Accepted, but no implementation
@@ -40,6 +44,10 @@ coverage table against. Like NPS-026, it exits Draft on implementation
 validation (NPC-002 §5.1/§5.2), and the concrete cryptographic scheme
 remains **reserved per NPC-002 §6.2** for dedicated human expert review
 — nothing in this document chooses algorithms, key sizes, or formats.
+The propose-side review package for that scheme is drafted at
+`docs/00-platform/AG_BRIEF_NPS026_CRYPTO_SCHEME.md` (grounded in the
+shipped Ed25519 implementation; the review, not this document,
+disposes it).
 
 ## 2. Scope
 
